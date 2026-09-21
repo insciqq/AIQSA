@@ -3,9 +3,13 @@ import {
   type SkillDetail,
   type SkillListResponse,
   type SkillMutationResponse,
-  type SkillSummary
+  type SkillSummary,
+  type SkillValidationError
 } from "../../contracts/skills";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import { logEvent } from "../observability";
+import type { SkillPreferenceService } from "./preferenceService";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
@@ -21,6 +25,49 @@ export type SkillHandlerDeps = {
   resolveAuth: RequestAuthResolver;
 };
 
+export function createEnableAllSkillsHandler(deps: {
+  resolveAuth: RequestAuthResolver; service: Pick<SkillPreferenceService, "enableAll">;
+}) {
+  return async (request: Request) => {
+    const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "private, no-store", vary: "Cookie" } });
+    const session = await deps.resolveAuth(request);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    if (session.user.status !== "active") return json({ error: "forbidden" }, 403);
+    try {
+      const result = await deps.service.enableAll(session.userId);
+      return result ? json(result) : json({ error: "forbidden" }, 403);
+    } catch (error) {
+      logEvent("service_operation", { subsystem: "configuration", stage: "write", outcome: "failed", code: "skill_preference_failed", prisma_code: databaseFailureCode(error) });
+      return json({ error: "skill_preference_failed" }, 503);
+    }
+  };
+}
+
+export function createSetSkillPreferenceHandler(deps: {
+  resolveAuth: RequestAuthResolver; service: Pick<SkillPreferenceService, "set">;
+}) {
+  return async (request: Request, context: { params: Promise<{ skillId: string }> | { skillId: string } }) => {
+    const session = await deps.resolveAuth(request);
+    const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "private, no-store", vary: "Cookie" } });
+    if (!session) return json({ error: "unauthorized" }, 401);
+    if (session.user.status !== "active") return json({ error: "forbidden" }, 403);
+    const { skillId } = await context.params;
+    const value = await readJsonBodyOrNull(request, "json"), bodyError = requestBodyErrorResponse(value);
+    if (bodyError) return bodyError;
+    if (!/^[a-zA-Z0-9_-]{1,128}$/u.test(skillId) || !isRecord(value) ||
+      Object.keys(value).some((key) => key !== "enabled") || typeof value.enabled !== "boolean") {
+      return json({ error: "skill_preference_invalid" }, 400);
+    }
+    try {
+      const result = await deps.service.set(session.userId, skillId, value.enabled);
+      return result ? json(result) : json({ error: "skill_not_available" }, 404);
+    } catch (error) {
+      logEvent("service_operation", { subsystem: "configuration", stage: "write", outcome: "failed", code: "skill_preference_failed", prisma_code: databaseFailureCode(error) });
+      return json({ error: "skill_preference_failed" }, 503);
+    }
+  };
+}
+
 const DEFAULT_LIST_LIMIT = 30;
 const MAX_LIST_LIMIT = 50;
 const MAX_SEARCH_LENGTH = 200;
@@ -34,6 +81,14 @@ function errorJson(code: string, status: number): Response {
   return Response.json({ error: code }, { status });
 }
 
+function validationError(issue: SkillValidationError): Response {
+  return Response.json({ error: issue.code,
+    ...(issue.field === undefined ? {} : { field: issue.field }),
+    ...(issue.actual === undefined ? {} : { actual: issue.actual }),
+    ...(issue.limit === undefined ? {} : { limit: issue.limit })
+  }, { status: 400 });
+}
+
 async function body(request: Request): Promise<[Record<string, unknown> | null, Response | null]> {
   const value = await readJsonBodyOrNull(request, "json");
   return [isRecord(value) ? value : null, requestBodyErrorResponse(value)];
@@ -42,9 +97,13 @@ async function body(request: Request): Promise<[Record<string, unknown> | null, 
 function summary(entry: SkillListEntry): SkillSummary {
   return {
     archived: entry.archived,
+    enabled: entry.enabled ?? entry.owned,
     description: entry.description,
     id: entry.id,
     instructionCharacterCount: entry.instructionCharacterCount,
+    instructionApproxTokens: entry.instructionApproxTokens,
+    fileCount: entry.fileCount ?? 0,
+    hasExecutables: entry.hasExecutables ?? false,
     name: entry.name,
     owned: entry.owned,
     ownerDisplayName: entry.ownerDisplayName,
@@ -58,7 +117,7 @@ function summary(entry: SkillListEntry): SkillSummary {
   };
 }
 
-function detail(entry: SkillDetailEntry, actorIsAdmin: boolean): SkillDetail {
+export function skillDetail(entry: SkillDetailEntry, actorIsAdmin: boolean): SkillDetail {
   return {
     ...summary(entry),
     assistantUsageCount: entry.assistantUsageCount,
@@ -77,7 +136,12 @@ function detail(entry: SkillDetailEntry, actorIsAdmin: boolean): SkillDetail {
     canPublish: entry.owned && !entry.archived,
     canUnshare: entry.owned || actorIsAdmin,
     instructions: entry.revision.instructions,
+    files: (entry.revision.files ?? []).map(({ path, byteSize, kind, executable }) => ({ path, byteSize, kind, executable })),
+    bundle: { fileCount: entry.revision.fileCount ?? 0,
+      totalBytes: entry.revision.bundleByteSize ?? Buffer.byteLength(entry.revision.instructions),
+      hasExecutables: entry.revision.hasExecutables ?? false },
     owner: { displayName: entry.ownerDisplayName },
+    ...(entry.owned && entry.sharing ? { sharing: entry.sharing } : {}),
     workspaceUsageCount: entry.workspaceUsageCount
   };
 }
@@ -142,7 +206,7 @@ async function mutationResponse(
 ): Promise<Response> {
   const entry = await deps.repository.getForUser(userId, skillId);
   return entry
-    ? Response.json({ skill: detail(entry, actorIsAdmin) } satisfies SkillMutationResponse, { status })
+    ? Response.json({ skill: skillDetail(entry, actorIsAdmin) } satisfies SkillMutationResponse, { status })
     : errorJson("skill_not_available", 404);
 }
 
@@ -184,7 +248,7 @@ export function createGetSkillHandler(deps: SkillHandlerDeps) {
       await routeParam(context, "skillId")
     );
     return entry
-      ? Response.json({ skill: detail(entry, session.user.role === "admin") })
+      ? Response.json({ skill: skillDetail(entry, session.user.role === "admin") })
       : errorJson("skill_not_available", 404);
   };
 }
@@ -196,7 +260,7 @@ export function createCreateSkillHandler(deps: SkillHandlerDeps) {
     const [value, bodyError] = await body(request);
     if (bodyError) return bodyError;
     const decoded = decodeSkillDraft(value);
-    if (!decoded.ok) return errorJson(decoded.code, 400);
+    if (!decoded.ok) return validationError(decoded);
     const skillId = await deps.repository.create(session.userId, decoded.draft);
     return mutationResponse(
       deps,
@@ -230,6 +294,10 @@ export function createUpdateSkillHandler(deps: SkillHandlerDeps) {
     if (hasRevision === hasArchived || Object.keys(value).some((key) => !allowedKeys.has(key))) {
       return errorJson("skill_draft_invalid", 400);
     }
+    if (hasRevision) {
+      const decoded = decodeSkillDraft(value.revision);
+      if (!decoded.ok) return validationError(decoded);
+    }
     const result = hasRevision
       ? (() => {
           const decoded = decodeSkillDraft(value.revision);
@@ -252,6 +320,7 @@ export function createUpdateSkillHandler(deps: SkillHandlerDeps) {
         : null;
     if (!result) return errorJson("skill_draft_invalid", 400);
     const settled = await result;
+    if (settled.kind === "invalid") return validationError(settled.issue);
     if (settled.kind === "not_found") return errorJson("skill_not_available", 404);
     if (settled.kind === "version_conflict") return errorJson("skill_version_conflict", 409);
     if (settled.kind === "archived") return errorJson("skill_archived", 409);
@@ -311,6 +380,9 @@ export function createPublishSkillHandler(deps: SkillHandlerDeps) {
       if (result.kind === "forbidden") return errorJson("forbidden", 403);
       return errorJson("skill_publication_invalid", 400);
     }
+    if (session.user.role === "admin") logEvent("service_operation", {
+      subsystem: "admin", stage: "write", outcome: "completed", code: "skill_publication_saved"
+    });
     return Response.json({ publication: { id: result.id } });
   };
 }

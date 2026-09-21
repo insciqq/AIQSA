@@ -360,7 +360,8 @@ function accumulateToolCalls(
   maxOutputChars: number,
   snapshot: ProviderStreamSafetySnapshot | null,
   errors: Readonly<{ invalid: string; limit: string }>,
-  replaceArguments = false
+  replaceArguments = false,
+  observations?: import("./types").ProviderToolArgumentEvent[]
 ): void {
   if (!Array.isArray(value)) {
     return;
@@ -390,6 +391,7 @@ function accumulateToolCalls(
         index
       };
     }
+    const previousName = current.name;
     const fn = isOpenAIChatRecord(candidate.function) ? candidate.function : {};
 
     if (typeof candidate.id === "string" && candidate.id) {
@@ -432,6 +434,12 @@ function accumulateToolCalls(
     }
 
     target.set(index, current);
+    if (observations && current.name) {
+      const snapshot = replaceArguments || previousName !== current.name || isOpenAIChatRecord(fn.arguments);
+      observations.push({ callIndex: index, callId: current.id, name: current.name,
+        ...(snapshot ? { snapshot: current.arguments instanceof BoundedTextAccumulator ? current.arguments.value() : current.arguments }
+          : typeof fn.arguments === "string" ? { delta: fn.arguments } : {}) });
+    }
   });
 }
 
@@ -459,7 +467,8 @@ export async function* streamOpenAIChatSseResponse<
   request: Context,
   profile: OpenAIChatResponseProfile<Context>,
   signal?: AbortSignal,
-  configuredStreamLimits?: Partial<ProviderStreamLimits>
+  configuredStreamLimits?: Partial<ProviderStreamLimits>,
+  onToolArguments?: import("./types").ProviderToolArgumentObserver
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
   if (!response.body) {
     throw new Error(profile.bodyMissingError);
@@ -551,12 +560,13 @@ export async function* streamOpenAIChatSseResponse<
     }
 
     finishReason = choice.finish_reason ?? finishReason;
+    const observations: import("./types").ProviderToolArgumentEvent[] = [];
     accumulateToolCalls(
       toolCallParts,
       delta.tool_calls,
       streamLimits.maxOutputChars,
       snapshot,
-      toolCallErrors
+      toolCallErrors, false, observations
     );
     accumulateToolCalls(
       toolCallParts,
@@ -564,8 +574,9 @@ export async function* streamOpenAIChatSseResponse<
       streamLimits.maxOutputChars,
       snapshot,
       toolCallErrors,
-      true
+      true, observations
     );
+    for (const observation of observations) await onToolArguments?.(observation);
 
     const text = openAIChatText(delta.content);
     if (text) {

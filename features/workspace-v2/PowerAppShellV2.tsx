@@ -1,7 +1,7 @@
 "use client";
 
 import { removePermanentlyDeletedChat } from "@/components/app-shell/permanentChatDeletionReconciliation";
-import { composerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
+import { useComposerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
 import { useChatTitleReconciliation } from "@/components/app-shell/useChatTitleReconciliation";
 
 import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND } from "@/lib/contracts/answerSound";
@@ -565,6 +565,12 @@ export function PowerAppShellV2({
       current?.chatId === activeChatId && current.messageId === anchorKey ? null : current
     );
   });
+  const contextConfigurationKey = useComposerContextConfigurationKey({
+    agentEnabled: composerSession.agentEnabled,
+    workspaceEnabled: chats.find(chat => chat.id === activeChatId)?.workspace?.enabled ?? composerSession.workspaceEnabled,
+    memoryMode: chats.find(chat => chat.id === activeChatId)?.pendingInitialMemoryMode ??
+      chats.find(chat => chat.id === activeChatId)?.memoryMode ?? composerSessionModeFromKey(activeComposerSessionKey)
+  });
   const {
     activeChat,
     activeChatStreaming,
@@ -592,12 +598,7 @@ export function PowerAppShellV2({
     renderActiveLeafId,
     runSurface: activeRunSurface,
     contextRejectionGeneration: composerSession.contextRejectionGeneration,
-    contextConfigurationKey: composerContextConfigurationKey(useComposerControlStore.getState(), {
-      agentEnabled: composerSession.agentEnabled,
-      workspaceEnabled: chats.find((chat) => chat.id === activeChatId)?.workspace?.enabled ?? composerSession.workspaceEnabled,
-      memoryMode: chats.find((chat) => chat.id === activeChatId)?.pendingInitialMemoryMode ??
-        chats.find((chat) => chat.id === activeChatId)?.memoryMode ?? composerSessionModeFromKey(activeComposerSessionKey)
-    }),
+    contextConfigurationKey,
     selectedAssistantPromptCharacterCount: selectedAssistant?.promptCharacterCount ?? null,
     selectedSkillPromptCharacterCount: selectedSkills.reduce(
       (total, skill) => total + skill.promptCharacterCount,
@@ -717,6 +718,7 @@ export function PowerAppShellV2({
     selectSearchPlan,
     setDefaultKnowledgePlan,
     setDefaultMcpMode,
+    setDefaultSkillsMode,
     setDefaultSearchPlan,
     setSendWithEnter,
     setAnswerSoundEnabled,
@@ -1000,7 +1002,7 @@ export function PowerAppShellV2({
     );
     const skillsById = new Map(project.resources.flatMap((resource) =>
       resource.type === "skill"
-        ? [[resource.resourceId, resource.label] as const]
+        ? [[resource.resourceId, resource] as const]
         : []
     ));
     if (!projectAssistant || !applyAssistantToComposer({
@@ -1010,8 +1012,11 @@ export function PowerAppShellV2({
         id: projectAssistant.summary.id,
         includedSkills: projectAssistant.content.skillIds.map((id) => ({
           id,
-          name: skillsById.get(id) ?? "Project Skill"
+          name: skillsById.get(id)?.label ?? "Project Skill",
+          instructionApproxTokens: skillsById.get(id)?.instructionApproxTokens,
+          mode: projectAssistant.content.skillModes?.[id] ?? "pinned"
         })),
+        skillsMode: projectAssistant.content.skills?.mode ?? "auto",
         knowledgeLabel: projectAssistant.summary.fingerprint.knowledgeLabel,
         knowledgeResourceCount: projectAssistant.summary.fingerprint.knowledgeResourceCount,
         name: projectAssistant.summary.name,
@@ -1488,6 +1493,7 @@ export function PowerAppShellV2({
       moveChat: updateChatFolder,
       moveFolder: updateFolderParent,
       openChatMessage: openPersonalChatMessageEvent,
+      openChat: activatePersonalChatDeepLink,
       retry: retryWorkspace,
       saveChatTitle: renameChat,
       saveFolder: renameFolder,
@@ -1539,6 +1545,8 @@ export function PowerAppShellV2({
     editingMessageId,
     editingMessagePending,
     events: activeRunSurface.events,
+    artifactDrafts: activeRunSurface.artifactDrafts,
+    artifactDraftMessageId: activeRunSurface.contextMessageId,
     handleBranchFromMessage,
     handleCopyMessage,
     handleDeleteMessage,
@@ -1931,9 +1939,11 @@ export function PowerAppShellV2({
     chatDefaults: projectContext || !catalog ? undefined : {
       knowledgePlan: catalog.defaults.knowledgePlan ?? null,
       mcpMode: catalog.defaults.mcpMode ?? "auto",
+      skillsMode: catalog.defaults.skillsMode ?? "auto",
       searchPlan: catalog.defaults.searchPlan,
       setKnowledgePlan: setDefaultKnowledgePlan,
       setMcpMode: setDefaultMcpMode,
+      setSkillsMode: setDefaultSkillsMode,
       setSearchPlan: setDefaultSearchPlan
     },
     sendWithEnter: catalog?.defaults.sendWithEnter ?? true,

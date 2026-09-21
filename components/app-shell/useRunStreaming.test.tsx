@@ -26,6 +26,19 @@ function chat(id: string, title: string): WorkspaceChatSummary {
 }
 
 describe("run streaming", () => {
+  it("shows real file chunks without adding them to raw events and drops the preview on transport loss", async () => {
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
+    const frames = [
+      { draftId: "draft", phase: "started" },
+      { draftId: "draft", phase: "file", index: 0, path: "index.html", offset: 0, text: "<h1>" },
+      { draftId: "draft", phase: "file", index: 0, offset: 4, text: "Hello</h1>" }
+    ].map(data => `event: artifact_generation\ndata: ${JSON.stringify(data)}\n\n`).join("");
+    await expect(result.current.consumeRunStream({ chatId: "chat-a", failurePrefix: "send_failed",
+      onRunId: vi.fn(), onMessageIds: vi.fn(), response: new Response(frames), tokenBuffer: { flush: vi.fn(), push: vi.fn() } })).rejects.toThrow("stream_connection_lost");
+    const surface = selectRunSurface(useRunSurfaceStore.getState(), "chat-a");
+    expect(surface.events).toEqual([]);
+    expect(surface.artifactDrafts).toMatchObject([{ draftId: "draft", status: "interrupted", files: [] }]);
+  });
   it("publishes the answer before EOF and keeps late predecessor events out of the next run", async () => {
     const applyChatUpdate = vi.fn(() => false);
     const { result } = renderHook(() => useRunStreaming({ applyChatUpdate }));

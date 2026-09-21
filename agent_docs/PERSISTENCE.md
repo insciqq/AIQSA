@@ -9,9 +9,9 @@ Scope: Durable ownership, migrations, retention, backup, restore, and deletion.
 
 Enforce tenant-consistent parents/children in the database wherever representable. Accepted revisions, bindings, generations, and recovery evidence stay immutable and restrictive while referenced. Preferences and drafts grant no entitlement; null, explicit Off, and a concrete choice remain distinct. Subject semantics belong to [Critical invariants](CRITICAL_INVARIANTS.md), [Run contracts](RUN_CONTRACTS.md), and [Memory](MEMORY.md).
 
-Persist run/tool data only for execution, recovery, duplicate-side-effect prevention, security, deletion, citations/generated output, retention, or accounting. Inspection and presentation histories are insufficient justification. Before dropping storage, remove its projection, prove recovery consumers, stop writes, then apply a forward migration. Retired execution shapes may remain only for required inert historical read/recovery; current admission must not write them.
+Persist run/tool data only for execution, recovery, side-effect prevention, security, deletion, citations/outputs, retention or accounting. Before dropping storage, remove projections, prove recovery consumers, stop writes, then migrate forward. Retired shapes serve required historical read/recovery only; current admission never writes them.
 
-Personal and Project principals are disjoint. Account deletion removes membership, not shared Project content; nullable actor references and bounded attribution snapshots preserve history. Historical bindings whose missing recovery authority cannot be reconstructed fail closed before external I/O; terminal records remain readable. Skill publication is a live future grant, while accepted text revisions survive unpublication/deletion. Personal Library files have independent lifetimes; removal does not delete already-admitted chat copies, and Project/Temporary attachments are not implicitly promoted to personal files.
+Personal and Project principals are disjoint. Account deletion removes membership, not shared content; nullable actors and bounded attribution preserve history. Unrecoverable historical authority fails closed before external I/O; terminal records remain readable. Skill publication grants future use; accepted revisions survive unpublication/deletion. Revisions and bundle objects are append-only, including private incomplete imports. Personal Library removal preserves admitted chat copies; Project/Temporary attachments never implicitly become personal files.
 
 The protected `Full access` group's explicit members receive all current/future active provider connections, answer models, and Search sources. Its name/lifecycle are immutable. MCP remains explicitly materialized per server and grants no personal identity or secret authority.
 
@@ -27,9 +27,11 @@ Workspace originals/outputs remain downloadable after runtime loss. Only the exa
 
 Published outputs require verified size/checksum and atomic relational settlement. Attempts use separate writable keys and retain cleanup obligations for unpublished/redundant objects; downloads do not claim pre-header digest verification. Completed exports never downgrade. Confirmed disk loss/reset/restore retires unfinished export/process obligations before recreation, preserving completed attachments. Reset affects runtime state, not messages or attachments.
 
+Artifact deduplication stays owner-scoped; publication membership never owns or changes author bytes. Replaceable renderer caches preserve source identity/revocation. Cleanup reservations and references protect concurrent writes/reuse and deletion.
+
 ## Migrations And Bootstrap
 
-v0.2.0 is the first supported persistent-installation baseline; earlier development databases need no upgrade bridge. From this baseline, stable updates preserve operator data, credentials, and configuration through forward migrations. Migrations must tolerate the previous release's writers during the short Compose replacement window. A destructive or incompatible upgrade requires a separately declared operator procedure, never an ordinary `pull`/`up` update. This policy never authorizes resetting operator data during verification.
+v0.2.0 starts supported persistent upgrades; earlier development databases need no bridge. Forward migrations preserve operator data, credentials and configuration, tolerating previous-release writers during Compose replacement. Destructive/incompatible upgrades require a separate operator procedure, never ordinary `pull`/`up`. Verification never resets operator data.
 
 `20260815000000_baseline` is the immutable first migration anchor, including custom PostgreSQL DDL that Prisma cannot reconstruct. Changes are append-only migrations. Persistent installations use `prisma migrate deploy`, never `prisma db push`.
 

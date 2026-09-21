@@ -11,6 +11,8 @@ import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { createWorkspaceRunnerServer } from "./runnerServer";
 import { WorkspaceRuntimeError } from "./runtime";
+import { tarGzipStream } from "../chats/tarArchive";
+import { SKILL_RUNTIME_ARCHIVE_MAX_BYTES } from "./skillBundles";
 
 const token = "workspace-runner-test-token-that-is-long-enough";
 const operation = { generation: 1, owner: "run:protocol_fixture" };
@@ -44,6 +46,51 @@ describe("remote Workspace runner protocol", () => {
       server.close((error) => error ? reject(error) : resolve());
       server.closeAllConnections();
     })));
+  });
+
+  it("installs a 201-file Skill with one fenced streaming request and rejects invalid envelopes before dispatch", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const install = vi.spyOn(local, "installSkillBundle");
+    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "ws_" + "d".repeat(40);
+    const created = await remote.ensureSession({ sessionId, runtimeSandboxId: null, operation,
+      sandboxName: workspaceSandboxName(sessionId), imageRef: deterministicConfig.imageRef, cpus: 1, diskMiB: 1024, memoryMiB: 512, internetEnabled: false });
+    const identity = { sessionId, runtimeSandboxId: created.runtimeSandboxId, operation, modelRunId: "run", manifestHash: "a".repeat(64) };
+    const bundle = { alias: "many-files", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
+    await expect(remote.prepareSkillRun({ ...identity, initial: [bundle] })).resolves.toEqual({ state: "preparing" });
+    await expect(remote.completeSkillRunPreparation(identity)).rejects.toMatchObject({ code: "workspace_skills_prepare_failed" });
+    const bytes = Buffer.from(await new Response(tarGzipStream((async function* () {
+      yield { path: "SKILL.md", content: "Synthetic skill", mtime: new Date(0) };
+      for (let index = 0; index < 200; index++) yield { path: `files/${index}.txt`, content: "Synthetic file", mtime: new Date(0) };
+    })())).arrayBuffer());
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(remote.installSkillBundle({ ...identity, bundle, archive: stream(bytes), byteSize: bytes.length, checksum }))
+      .resolves.toEqual({ workspacePath: "/workspace/.aiqsa/skills/many-files" });
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith("/skills/install"))).toHaveLength(1);
+    expect(install).toHaveBeenCalledTimes(1);
+    await remote.completeSkillRunPreparation(identity);
+    await expect(remote.prepareSkillRun({ ...identity, initial: [] })).resolves.toEqual({ state: "ready" });
+
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/gzip", "content-length": "0",
+      "x-aiqsa-byte-size": String(SKILL_RUNTIME_ARCHIVE_MAX_BYTES + 1), "x-aiqsa-checksum": checksum,
+      "x-aiqsa-runtime-sandbox-id": identity.runtimeSandboxId, "x-aiqsa-operation": JSON.stringify(operation),
+      "x-aiqsa-skill-run": JSON.stringify({ modelRunId: identity.modelRunId, manifestHash: identity.manifestHash, bundle }) };
+    const oversized = await fetch(new URL(`/v1/sessions/${sessionId}/skills/install`, runnerUrl), { method: "POST", headers, body: "" });
+    expect(oversized.status).toBe(400);
+    expect(await oversized.json()).toEqual({ error: "workspace_skill_bundle_limit_exceeded" });
+    const invalid = await fetch(new URL(`/v1/sessions/${sessionId}/skills/install`, runnerUrl), { method: "POST", body: "",
+      headers: { ...headers, "x-aiqsa-byte-size": "1", "x-aiqsa-skill-run": JSON.stringify({
+        modelRunId: identity.modelRunId, manifestHash: identity.manifestHash, bundle: { ...bundle, alias: "../outside" } }) } });
+    expect(invalid.status).toBe(400);
+    expect(install).toHaveBeenCalledTimes(1);
+    await remote.claimSessionOperation({ ...identity, operation: { generation: 2, owner: "successor" } });
+    await expect(remote.installSkillBundle({ ...identity, bundle, archive: stream(bytes), byteSize: bytes.length, checksum }))
+      .rejects.toMatchObject({ code: "workspace_operation_stale" });
+    expect(install).toHaveBeenCalledTimes(1);
   });
 
   it("streams browser states only under the current operation, preserves same-run writes and excludes output capture", async () => {

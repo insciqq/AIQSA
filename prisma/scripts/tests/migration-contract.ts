@@ -1,3 +1,4 @@
+import { ARTIFACT_VERSIONED_MIGRATION, artifactVersionedFixtureSql, artifactVersionedProofSql } from "./artifact-versioned-adoption";
 import { NATIVE_ROUTING_MIGRATION, nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql } from "./openrouter-native-routing-adoption";
 import { CHAT_TITLE_SETUP_MIGRATION, chatTitleSetupFixtureSql, chatTitleSetupProofSql } from "./chat-title-setup-adoption";
 import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
@@ -19,6 +20,8 @@ import { MEMORY_RECOMMENDATION_MIGRATION, memoryRecommendationFixtureSql, memory
 import { MEMORY_RECOMMENDATION_V2_MIGRATION, memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql } from "./memory-recommendation-adoption";
 import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
 import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
+import { SKILLS_SHARING_MIGRATION, skillsSharingFixtureSql, skillsSharingProofSql } from "./skills-sharing-adoption";
+import { SKILLS_PROGRESSIVE_MIGRATION, skillsProgressiveFixtureSql, skillsProgressiveProofSql } from "./skills-progressive-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -40,7 +43,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "1d986041460a35a7eac140fe4626697ec496e9cedb1b78ad40247580540132e9";
+  "c6854dab0e0f91b21cf417488959bc900852dc07973a68dc1f8df6d71b3a8dd8";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -7399,6 +7402,12 @@ function main(
   runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, migrations);
   runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANT_LIVE_MIGRATION,
     assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_SHARING_MIGRATION,
+    skillsSharingFixtureSql, skillsSharingProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_PROGRESSIVE_MIGRATION,
+    skillsProgressiveFixtureSql, skillsProgressiveProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, ARTIFACT_VERSIONED_MIGRATION,
+    artifactVersionedFixtureSql, artifactVersionedProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, GEMINI_GROUNDING_MIGRATION,
     geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_CONFIGURATION_WAIT_MIGRATION,

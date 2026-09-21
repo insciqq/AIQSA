@@ -66,6 +66,7 @@ for (const theme of ["dark", "light"] as const) {
               description: "Checks every factual claim before the answer is sent.",
               id: "careful-editor",
               instructionCharacterCount: 42,
+              instructionApproxTokens: 11,
               name: "Careful editor",
               owned: true,
               ownerDisplayName: "You",
@@ -83,8 +84,9 @@ for (const theme of ["dark", "light"] as const) {
       await expect(page.getByTestId("skill-library-section")).toBeVisible();
       await expect(page.getByRole("dialog", { name: "Skills" })).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Open Careful editor" })).toBeVisible();
-      await page.getByRole("button", { name: "Use Careful editor" }).click();
-      await expect(page.getByText(/1 selected · up to 8/)).toBeVisible();
+      await page.getByRole("button", { name: "Always use Careful editor" }).click();
+      const selection = page.getByRole("region", { name: "Selected Skills" });
+      await expect(selection).toContainText("1 always included · ≈11 instruction tokens");
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     });
   }

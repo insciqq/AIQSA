@@ -1,5 +1,6 @@
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { describe, expect, it, vi } from "vitest";
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import type { McpRunPlanResult } from "../mcp/runPlan";
@@ -690,11 +691,11 @@ describe("assistant run admission", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.prepared.skillBindings).toEqual([
-        { revisionId: "revision-skill-assistant", skillId: "skill-assistant" },
-        { revisionId: "revision-skill-shared", skillId: "skill-shared" },
-        { revisionId: "revision-skill-manual", skillId: "skill-manual" }
+        { alias: "skill-1", revisionId: "revision-skill-assistant", skillId: "skill-assistant" },
+        { alias: "skill-2", revisionId: "revision-skill-shared", skillId: "skill-shared" },
+        { alias: "skill-3", revisionId: "revision-skill-manual", skillId: "skill-manual" }
       ]);
-      expect(result.prepared.normalizedRequest.skills?.map((skill) => skill.skillId)).toEqual([
+      expect(decodeFrozenSkillManifest(result.prepared.normalizedRequest.skills)?.pinned.map((skill) => skill.skillId)).toEqual([
         "skill-assistant",
         "skill-shared",
         "skill-manual"
@@ -708,7 +709,7 @@ describe("assistant run admission", () => {
       deps({
         assistants: {
           resolveForRun: async () => assistantResolution({
-            skillIds: Array.from({ length: 8 }, (_, index) => `skill-${index + 1}`)
+            skillIds: Array.from({ length: 32 }, (_, index) => `skill-${index + 1}`)
           })
         },
         skills: { resolveForRun: resolveSkills }
@@ -716,7 +717,7 @@ describe("assistant run admission", () => {
       {
         body: {
           assistantId: "assistant-1",
-          skillIds: ["skill-8", "skill-9"],
+          skillIds: ["skill-32", "skill-33"],
           text: "Review this"
         },
         source: sendSource(),
@@ -724,7 +725,7 @@ describe("assistant run admission", () => {
       }
     );
 
-    expect(result).toMatchObject({ code: "skills_invalid", ok: false, status: 400 });
+    expect(result).toMatchObject({ code: "skills_count_exceeded", ok: false, status: 400, skillValidation: { actual: 33, limit: 32 } });
     expect(resolveSkills).not.toHaveBeenCalled();
   });
 

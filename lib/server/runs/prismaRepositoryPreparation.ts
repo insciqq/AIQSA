@@ -1,4 +1,5 @@
 import { assertInstructionPresetSelection } from "../instructions/store";
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { insertAcceptedMcpRoutingBindings } from "../mcp/decisionBinding";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
@@ -818,7 +819,9 @@ export async function finalizeUnavailablePreparingRunAdmission(
 
 function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void {
   const initialMode = "initialChatMode" in input ? input.initialChatMode : undefined;
-  const requestSkills = input.normalizedRequest.skills ?? [];
+  const manifest = decodeFrozenSkillManifest(input.normalizedRequest.skills);
+  if (!manifest) throw new SkillRunConflictError();
+  const requestSkills = manifest.pinned;
   const skillBindings = input.skillBindings ?? [];
   if (requestSkills.length !== skillBindings.length || requestSkills.some((skill, index) =>
     skill.skillId !== skillBindings[index]?.skillId ||

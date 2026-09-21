@@ -1,3 +1,8 @@
+export {
+  decodeArtifactEdit,
+  type ArtifactEdit
+} from "./artifacts";
+
 export type EditedMessageWire = {
   chatId: string;
   content: unknown;
@@ -56,3 +61,6 @@ export function decodeEditMessageResponse(value: unknown): EditMessageResponseWi
     }
   };
 }
+
+export type ArtifactIntent = "create";
+export function decodeArtifactIntent(value: unknown): ArtifactIntent | null { return value === "create" ? "create" : null; }

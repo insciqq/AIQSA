@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codexExecArguments, renderCodexManagedProfile, type CodexManagedProfile } from "./codexProfile";
+import { CODEX_MANAGED_PROFILE_VERSION, codexExecArguments, renderCodexManagedProfile, type CodexManagedProfile } from "./codexProfile";
 
 const profile: CodexManagedProfile = {
   contextWindowTokens: 128_000,
@@ -12,6 +12,19 @@ const profile: CodexManagedProfile = {
 };
 
 describe("managed Codex invocation", () => {
+  it("allows two native reconnects without multiplying them through HTTP retries", () => {
+    const config = renderCodexManagedProfile(profile);
+    expect(config).toContain("stream_max_retries = 2\n");
+    expect(config).toContain("request_max_retries = 0\n");
+    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(2);
+  });
+  it("disables bundled Skills without overriding project or user discovery", () => {
+    const config = renderCodexManagedProfile(profile);
+    expect(CODEX_MANAGED_PROFILE_VERSION).toBeGreaterThan(0);
+    expect(config).toContain("[skills.bundled]\nenabled = false\n");
+    expect(config).not.toContain("[[skills.config]]");
+    expect(config).not.toContain("include_instructions");
+  });
   it.each(["off", "auto", "all"] as const)("keeps selected AIQSA Search available with MCP %s and alongside native search", (mcpMode) => {
     const config = renderCodexManagedProfile({ ...profile, mcpMode, aiqsaSearch: true, standaloneWebSearch: true });
     expect(config).toContain("[mcp_servers.aiqsa]");

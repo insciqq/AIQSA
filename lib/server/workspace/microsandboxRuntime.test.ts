@@ -11,6 +11,7 @@ import { getWorkspaceConfig } from "./config";
 import { MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
+import { tarGzipStream } from "../chats/tarArchive";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -67,6 +68,8 @@ const sessionId = "ws_" + "1".repeat(40);
 const sandboxName = workspaceSandboxName(sessionId);
 const runtimeSandboxId = "runtime_fixture";
 const sessionInput = { runtimeSandboxId, sessionId };
+const skillDirectories: string[] = [];
+const skillIdentity = { ...sessionInput, modelRunId: "run_fixture", manifestHash: "a".repeat(64) };
 const ensureInput = {
   ...sessionInput,
   cpus: config.cpus,
@@ -90,6 +93,12 @@ function fixture() {
   const fs = {
     exists: vi.fn(async (path: string) => [...files.keys()].some((file) => file.startsWith(path))),
     read: vi.fn(async (path: string) => files.get(path)!),
+    remove: vi.fn(async (path: string) => { files.delete(path); }),
+    writeStream: vi.fn(async (path: string) => ({
+      write: vi.fn(async (bytes: Uint8Array) => { files.set(path, bytes.slice()); }),
+      close: vi.fn(async () => {}),
+      async [Symbol.asyncDispose]() {}
+    })),
     stat: vi.fn(async (path: string) => ({ kind: "file", size: files.get(path)!.length })),
     list: vi.fn(async (directory: string) => [...files.entries()]
       .filter(([path]) => path.startsWith(directory + "/"))
@@ -154,7 +163,10 @@ function fixture() {
 
 describe("Microsandbox Workspace lifecycle", () => {
   beforeEach(() => vi.clearAllMocks());
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await Promise.all(skillDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+  });
 
   it.each([true, false, undefined])("qualifies Agent only when its gateway is configured: %s", async (agentGatewayEnabled) => {
     vi.mocked(access).mockResolvedValueOnce(undefined);
@@ -165,8 +177,11 @@ describe("Microsandbox Workspace lifecycle", () => {
 
   it.each([null, 2])("passes Agent deadline %s explicitly, omitting the SDK timer in Off", async (timeoutSeconds) => {
     const value = fixture();
-    const runtime = new MicrosandboxWorkspaceRuntime({ ...config, agentGatewayEnabled: true });
+    const directory = await mkdtemp(join(tmpdir(), "aiqsa-skill-runtime-")); skillDirectories.push(directory);
+    const runtime = new MicrosandboxWorkspaceRuntime({ ...config, agentGatewayEnabled: true }, undefined, directory);
     await runtime.ensureSession(ensureInput);
+    await runtime.prepareSkillRun({ ...skillIdentity, initial: [] });
+    await runtime.completeSkillRunPreparation(skillIdentity);
     const builder = { args: vi.fn().mockReturnThis(), cwd: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(),
       envs: vi.fn().mockReturnThis(), stdinBytes: vi.fn().mockReturnThis() };
     const handle = { recv: vi.fn(async () => null), kill: vi.fn(async () => {}) };
@@ -174,11 +189,75 @@ describe("Microsandbox Workspace lifecycle", () => {
       configure(builder); return handle;
     }) });
     await runtime.startAgent({ ...sessionInput, modelRunId: "run_fixture", runtimeExecSessionId: `agent-${randomUUID()}`,
+      skillManifestHash: skillIdentity.manifestHash,
       prompt: "Synthetic task", runToken: "a".repeat(43), timeoutSeconds,
       profile: { gatewayOrigin: AGENT_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
         maxOutputTokens: 4096, developerInstructions: "Synthetic instructions", mcpMode: "off", mcpTimeoutSeconds: 90 } });
     if (timeoutSeconds === null) expect(builder.timeout).not.toHaveBeenCalled();
     else expect(builder.timeout).toHaveBeenCalledWith(2000);
+    expect(builder.envs).toHaveBeenCalledWith(expect.objectContaining({ HOME: "/root" }));
+  });
+
+  it("serializes a bundle transfer with Agent start and rejects subsequent mutation while the Agent is owned", async () => {
+    const value = fixture();
+    const directory = await mkdtemp(join(tmpdir(), "aiqsa-skill-runtime-")); skillDirectories.push(directory);
+    const runtime = new MicrosandboxWorkspaceRuntime({ ...config, agentGatewayEnabled: true }, undefined, directory);
+    await runtime.ensureSession(ensureInput);
+    const start = { ...sessionInput, modelRunId: "run_fixture", runtimeExecSessionId: `agent-${randomUUID()}`,
+      skillManifestHash: skillIdentity.manifestHash, prompt: "Synthetic task", runToken: "a".repeat(43), timeoutSeconds: 30,
+      profile: { gatewayOrigin: AGENT_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
+        maxOutputTokens: 4096, developerInstructions: "Synthetic", mcpMode: "off" as const, mcpTimeoutSeconds: 90 } };
+    await expect(runtime.startAgent(start)).rejects.toMatchObject({ code: "workspace_skills_prepare_failed" });
+    await runtime.prepareSkillRun({ ...skillIdentity, initial: [] });
+    await runtime.completeSkillRunPreparation(skillIdentity);
+    await expect(runtime.startAgent({ ...start, skillManifestHash: "f".repeat(64) })).rejects.toMatchObject({ code: "workspace_skills_prepare_failed" });
+    const bytes = Buffer.from(await new Response(tarGzipStream((async function* () {
+      yield { path: "SKILL.md", content: "Synthetic", mtime: new Date(0) };
+    })())).arrayBuffer());
+    const install = { ...skillIdentity, bundle: { alias: "example", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false },
+      byteSize: bytes.length, checksum: createHash("sha256").update(bytes).digest("hex") };
+    const archive = () => new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } });
+    let release!: () => void; let entered!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const writing = new Promise<void>(resolve => { entered = resolve; });
+    value.fs.writeStream.mockImplementationOnce(async () => ({ write: vi.fn(async () => { entered(); await barrier; }),
+      close: vi.fn(async () => {}), async [Symbol.asyncDispose]() {} }));
+    const execStreamWith = vi.fn(async () => ({ recv: vi.fn(async () => null), kill: vi.fn(async () => {}) }));
+    Object.assign(value.sandbox, { execStreamWith });
+    const pendingInstall = runtime.installSkillBundle({ ...install, archive: archive() });
+    await writing;
+    const pendingStart = runtime.startAgent(start);
+    await Promise.resolve(); expect(execStreamWith).not.toHaveBeenCalled();
+    release(); await pendingInstall; await pendingStart;
+    expect(value.fs.writeStream).toHaveBeenCalledTimes(1);
+    await expect(runtime.installSkillBundle({ ...install, archive: archive() })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    await expect(runtime.prepareSkillRun({ ...skillIdentity, modelRunId: "next", initial: [] })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    expect(value.fs.writeStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the Skills mutex until cancellation has stopped the exact guest", async () => {
+    const value = fixture();
+    const directory = await mkdtemp(join(tmpdir(), "aiqsa-skill-runtime-")); skillDirectories.push(directory);
+    const runtime = new MicrosandboxWorkspaceRuntime(config, undefined, directory);
+    await runtime.ensureSession(ensureInput);
+    await runtime.prepareSkillRun({ ...skillIdentity, initial: [] });
+    let reading!: () => void; let stopped!: () => void;
+    const entered = new Promise<void>(resolve => { reading = resolve; });
+    const stop = new Promise<void>(resolve => { stopped = resolve; });
+    value.sandbox.stopWithTimeout.mockImplementationOnce(async () => { await stop; });
+    const controller = new AbortController();
+    const pending = runtime.installSkillBundle({ ...skillIdentity, signal: controller.signal,
+      bundle: { alias: "example", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false },
+      byteSize: 1, checksum: "c".repeat(64), archive: new ReadableStream<Uint8Array>({ pull() { reading(); } }, { highWaterMark: 0 }) });
+    const rejected = expect(pending).rejects.toThrow("synthetic_cancelled");
+    await entered; controller.abort(new Error("synthetic_cancelled"));
+    const next = runtime.prepareSkillRun({ ...skillIdentity, modelRunId: "next", initial: [] });
+    await Promise.resolve(); await Promise.resolve();
+    expect(value.sandbox.stopWithTimeout).toHaveBeenCalledTimes(1);
+    expect(value.sandbox.execWith).toHaveBeenCalledTimes(1);
+    stopped(); await rejected; await next;
+    expect(value.sandbox.execWith).toHaveBeenCalledTimes(2);
+    expect(value.fs.writeStream).not.toHaveBeenCalled();
   });
 
   it.each([true, false])("reports only a proven SDK timeout before the public fallback (typed=%s)", async (typed) => {

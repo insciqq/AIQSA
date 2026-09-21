@@ -9,6 +9,7 @@ import {
 import "katex/dist/katex.min.css";
 import "../styles/tokens-v2.css";
 import "../components/ui-v2/primitives.css";
+import "../components/artifacts/artifacts.css";
 import "../features/navigation-v2/navigation.css";
 import "../features/conversation-v2/conversation.css";
 import "../features/run-lifecycle-v2/run-lifecycle.css";

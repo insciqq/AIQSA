@@ -8,7 +8,7 @@ import {
   decodeKnowledgeSelection,
   type KnowledgeSelection
 } from "./knowledge";
-import { SKILL_MAX_SELECTED } from "./skills";
+import { decodeSkillsSelection, SKILL_MAX_PINNED, SKILL_ASSISTANT_MAX_AVAILABLE, type AssistantSkillMode, type SkillsSelection } from "./skills";
 
 export const ASSISTANT_NAME_MAX_LENGTH = 80;
 export const ASSISTANT_DESCRIPTION_MAX_LENGTH = 400;
@@ -342,16 +342,32 @@ export type AssistantDraft = {
   runControls: AssistantRunControls;
   searchPlan: SearchPlan;
   skillIds: string[];
+  skillModes?: Record<string, AssistantSkillMode>;
+  skills?: SkillsSelection;
   starterPrompts: string[];
   systemPrompt: string;
 };
 
 export type AssistantDraftDecodeResult =
-  | { code: string; field?: AssistantRunControlField; ok: false }
+  | { code: string; field?: AssistantRunControlField | "pinned" | "available"; actual?: number; limit?: number; ok: false }
   | { draft: AssistantDraft; ok: true };
 
 function boundedId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= 64;
+}
+
+/** Every link remains a dependency. Modes control delivery, never authority. */
+export function decodeAssistantSkillModes(skillIds: readonly string[], value: unknown):
+  | { ok: true; modes: Record<string, AssistantSkillMode> }
+  | { ok: false; code: string; field?: "pinned" | "available"; actual?: number; limit?: number } {
+  if (value !== undefined && (!isRecord(value) || Object.keys(value).some((id) => !skillIds.includes(id)) ||
+    Object.values(value).some((mode) => mode !== "pinned" && mode !== "available"))) return { ok: false, code: "assistant_skills_invalid" };
+  const modes = Object.fromEntries(skillIds.map((id) => [id, isRecord(value) && value[id] === "available" ? "available" : "pinned"])) as Record<string, AssistantSkillMode>;
+  for (const [field, limit] of [["pinned", SKILL_MAX_PINNED], ["available", SKILL_ASSISTANT_MAX_AVAILABLE]] as const) {
+    const actual = Object.values(modes).filter((mode) => mode === field).length;
+    if (actual > limit) return { ok: false, code: "skills_count_exceeded", field, actual, limit };
+  }
+  return { ok: true, modes };
 }
 
 /**
@@ -442,12 +458,15 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
     : skillIds;
   if (
     !Array.isArray(normalizedSkillIds) ||
-    normalizedSkillIds.length > SKILL_MAX_SELECTED ||
     !normalizedSkillIds.every(boundedId) ||
     new Set(normalizedSkillIds).size !== normalizedSkillIds.length
   ) {
     return { code: "assistant_skills_invalid", ok: false };
   }
+  const decodedSkillModes = decodeAssistantSkillModes(normalizedSkillIds, value.skillModes);
+  if (!decodedSkillModes.ok) return decodedSkillModes;
+  const skills = decodeSkillsSelection(value.skills);
+  if (!skills) return { code: "assistant_skills_invalid", ok: false };
 
   const starterPromptsInput = value.starterPrompts ?? [];
   if (
@@ -475,6 +494,8 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
       runControls,
       searchPlan: decodedPlan.plan,
       skillIds: normalizedSkillIds as string[],
+      skillModes: decodedSkillModes.modes,
+      skills,
       starterPrompts: starterPromptsInput.map((starter) => (starter as string).trim()),
       systemPrompt
     },
@@ -544,6 +565,8 @@ export type AssistantContent = {
   runControls: AssistantRunControls;
   searchPlan: SearchPlan;
   skillIds: string[];
+  skillModes?: Record<string, AssistantSkillMode>;
+  skills?: SkillsSelection;
   starterPrompts: string[];
   systemPrompt: string;
 };
@@ -565,7 +588,7 @@ export type AssistantDetail = {
   pinned: boolean;
   publications?: AssistantPublicationView[];
   content: AssistantContent;
-  skills?: { id: string; name: string; available?: boolean }[];
+  skills?: { id: string; name: string; available?: boolean; mode?: AssistantSkillMode; instructionApproxTokens?: number }[];
   version?: number;
 };
 
@@ -749,13 +772,15 @@ export function decodeAssistantContent(value: unknown): AssistantContent | null 
     !stringArray(skillIds) ||
     !skillIds.every(boundedId) ||
     skillIds.some((id) => id !== id.trim()) ||
-    skillIds.length > SKILL_MAX_SELECTED ||
     new Set(skillIds).size !== skillIds.length ||
     !stringArray(value.starterPrompts) ||
     typeof value.systemPrompt !== "string"
   ) {
     return null;
   }
+  const decodedSkillModes = decodeAssistantSkillModes(skillIds, value.skillModes);
+  const skills = decodeSkillsSelection(value.skills);
+  if (!decodedSkillModes.ok || !skills) return null;
 
   return {
     avatar,
@@ -770,6 +795,8 @@ export function decodeAssistantContent(value: unknown): AssistantContent | null 
     runControls,
     searchPlan: searchPlan.plan,
     skillIds,
+    skillModes: decodedSkillModes.modes,
+    skills,
     starterPrompts: value.starterPrompts,
     systemPrompt: value.systemPrompt
   };
@@ -833,7 +860,11 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
     for (const skill of value.skills) {
       if (!isRecord(skill) || !boundedId(skill.id) || !nonEmptyString(skill.name)) return null;
       if (skill.available !== undefined && typeof skill.available !== "boolean") return null;
-      skills.push({ id: skill.id, name: skill.name, ...(skill.available === undefined ? {} : { available: skill.available }) });
+      if (skill.mode !== undefined && skill.mode !== "pinned" && skill.mode !== "available") return null;
+      if (skill.instructionApproxTokens !== undefined && (!Number.isSafeInteger(skill.instructionApproxTokens) || Number(skill.instructionApproxTokens) < 0)) return null;
+      skills.push({ id: skill.id, name: skill.name, ...(skill.available === undefined ? {} : { available: skill.available }),
+        ...(skill.mode === undefined ? {} : { mode: skill.mode }),
+        ...(skill.instructionApproxTokens === undefined ? {} : { instructionApproxTokens: Number(skill.instructionApproxTokens) }) });
     }
     if (
       skills.length !== content.skillIds.length ||

@@ -134,7 +134,7 @@ test("Skill availability refreshes owner repair and privacy-safe recipient cards
     }
     await recipient.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: `Use ${name}`, exact: true }).click();
     await expect(recipient.getByTestId("library-v2")).toHaveCount(0);
-    await expect(recipient.getByRole("button", { name: "Manage selected Skills" })).toHaveText("Skills: 1");
+    await expect(recipient.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 1");
   } finally {
     await recipientContext.close();
     await cleanFixtures(page, assistantId, skills);
@@ -151,7 +151,8 @@ test("Assistant Skill discovery spans pages, retries failures and preserves orde
   try {
     for (let index = 0; index < 33; index += 1) skills.push(await createSkill(page, `Paged ${suffix} ${String(index).padStart(2, "0")}`));
     const oldest = skills[0]!;
-    const originalIds = skills.slice(1, 8).map(({ id }) => id);
+    const originalSkills = skills.slice(1, 32);
+    const originalIds = originalSkills.map(({ id }) => id);
     assistantId = await createAssistant(page, `Paged Assistant ${suffix}`, originalIds);
     await openLibrary(page);
     await page.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: "Edit", exact: true }).click();
@@ -159,7 +160,7 @@ test("Assistant Skill discovery spans pages, retries failures and preserves orde
     const description = editor.getByLabel("Description", { exact: true });
     await description.fill("Preserve this unsaved description through discovery.");
     await editor.locator('button[aria-controls="assistant-setup-skills"]').click();
-    for (const [index, skill] of skills.slice(1, 8).entries()) {
+    for (const [index, skill] of originalSkills.entries()) {
       await expect(editor.getByRole("checkbox", { name: `${skill.name} Order ${index + 1}`, exact: true })).toBeChecked();
     }
     let pageAttempts = 0;
@@ -181,24 +182,28 @@ test("Assistant Skill discovery spans pages, retries failures and preserves orde
     await expectWithinViewport(page, picker);
     await expectNoHorizontalOverflow(page);
     const available = picker.getByRole("list", { name: "Available Skills" });
-    await expect(available.getByRole("button", { name: `Use ${oldest.name}`, exact: true })).toHaveCount(0);
+    await expect(available.getByRole("button", { name: `Select ${skills[32]!.name}`, exact: true })).toBeEnabled();
+    await expect(available.getByRole("button", { name: `Select ${oldest.name}`, exact: true })).toHaveCount(0);
     await picker.getByRole("button", { name: "Load more", exact: true }).click();
     await expect(picker.getByRole("alert")).toHaveText("More Skills could not be loaded.");
     await picker.getByRole("button", { name: "Load more", exact: true }).click();
-    await available.getByRole("button", { name: `Use ${oldest.name}`, exact: true }).click();
+    await available.getByRole("button", { name: `Select ${oldest.name}`, exact: true }).click();
     const selection = picker.getByRole("region", { name: "Selected Skills" });
-    await expect(selection).toContainText("8 of 8 Skills selected.");
-    await expect(available.getByRole("button", { name: `Use ${skills[32]!.name}`, exact: true })).toBeDisabled();
+    await expect(selection).toContainText("32 Skills selected");
+    await expect(selection.getByRole("button", { name: /^Remove manual / })).toHaveCount(32);
+    await expect(available.getByRole("button", { name: `Select ${skills[32]!.name}`, exact: true })).toBeEnabled();
     await selection.getByRole("button", { name: `Remove manual ${oldest.name}`, exact: true }).click();
+    await expect(selection).toContainText("31 Skills selected");
+    await expect(available.getByRole("button", { name: `Select ${skills[32]!.name}`, exact: true })).toBeEnabled();
     await picker.getByRole("searchbox", { name: "Search Skills" }).fill(oldest.name);
     await expect(picker.getByRole("alert")).toContainText("Skills could not be loaded. Earlier results are shown.");
     await picker.getByRole("button", { name: "Try again", exact: true }).click();
     await expect(available.getByRole("button", { name: /^Open / })).toHaveCount(1);
-    await available.getByRole("button", { name: `Use ${oldest.name}`, exact: true }).click();
+    await available.getByRole("button", { name: `Select ${oldest.name}`, exact: true }).click();
     await page.keyboard.press("Escape");
     await expect(browse).toBeFocused();
     await expect(description).toHaveValue("Preserve this unsaved description through discovery.");
-    await expect(editor.getByRole("checkbox", { name: `${oldest.name} Order 8`, exact: true })).toBeChecked();
+    await expect(editor.getByRole("checkbox", { name: `${oldest.name} Order 32`, exact: true })).toBeChecked();
     expect(detailRequests).toBe(0);
     await editor.getByTestId("assistant-editor-save").click();
     await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved. Future runs use these changes.");
@@ -211,10 +216,10 @@ test("Assistant Skill discovery spans pages, retries failures and preserves orde
     await openLibrary(page);
     await page.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: "Edit setup", exact: true }).click();
     await editor.locator('button[aria-controls="assistant-setup-skills"]').click();
-    await expect(editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 8`, exact: true })).toBeChecked();
+    await expect(editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 32`, exact: true })).toBeChecked();
     // Removal deletes the row, so there is no unchecked input left to await.
-    await editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 8`, exact: true }).click();
-    await expect(editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 8`, exact: true })).toHaveCount(0);
+    await editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 32`, exact: true }).click();
+    await expect(editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 32`, exact: true })).toHaveCount(0);
     await editor.getByTestId("assistant-editor-save").click();
     await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved. Future runs use these changes.");
     const repaired = (await (await page.request.get(`/api/me/assistants/${assistantId}`)).json()).assistant;

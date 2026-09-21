@@ -31,8 +31,17 @@ export type ComposerPendingEdit = {
   messageId: string;
 };
 
+export type ComposerArtifactEdit = Readonly<{
+  artifactId: string;
+  versionId: string;
+  title: string;
+  versionNumber: number;
+}>;
+
 export type ComposerSessionSnapshot = {
   agentEnabled?: boolean;
+  artifactCreate: Readonly<{ intent: "create" }> | null;
+  artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
   draft: string;
   editGeneration: number;
@@ -65,6 +74,8 @@ export type ComposerEditToken = ComposerPendingEdit & {
 };
 
 export type ComposerSendToken = {
+  artifactCreate: ComposerSessionSnapshot["artifactCreate"];
+  artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
   draft: string;
   generation: number;
@@ -89,6 +100,8 @@ export type ComposerSessionPatch = Partial<
     | "operationError"
     | "workspaceEnabled"
     | "agentEnabled"
+    | "artifactEdit"
+    | "artifactCreate"
   >
 >;
 
@@ -98,6 +111,7 @@ type ComposerSessionPatchUpdate =
 
 type ComposerSessionStore = {
   activeSessionKey: ComposerSessionKey;
+  acceptArtifactIntent(token: ComposerSendToken): boolean;
   activateSession(key: ComposerSessionKey): void;
   applyWorkspaceDefault(key: ComposerSessionKey, enabled: boolean): void;
   appendUploadedAttachment(
@@ -143,6 +157,8 @@ const emptyUploadGenerations = Object.freeze([]) as unknown as number[];
 
 export const emptyComposerSessionSnapshot = Object.freeze({
   agentEnabled: false,
+  artifactCreate: null,
+  artifactEdit: null,
   attachments: emptyAttachments,
   draft: "",
   editGeneration: 0,
@@ -281,6 +297,8 @@ function patchedSession(
   const workspaceChanged = hasOwn(patch, "workspaceEnabled") &&
     (patch.workspaceEnabled !== current.workspaceEnabled || !current.workspaceInitialized);
   const agentChanged = hasOwn(patch, "agentEnabled") && patch.agentEnabled !== current.agentEnabled;
+  const artifactEditChanged = hasOwn(patch, "artifactEdit") && patch.artifactEdit !== current.artifactEdit;
+  const artifactCreateChanged = hasOwn(patch, "artifactCreate") && patch.artifactCreate !== current.artifactCreate;
 
   if (
     !attachmentsChanged &&
@@ -290,7 +308,7 @@ function patchedSession(
     !editingMessageChanged &&
     !errorChanged &&
     !retryabilityChanged &&
-    !workspaceChanged && !agentChanged
+    !workspaceChanged && !agentChanged && !artifactEditChanged && !artifactCreateChanged
   ) {
     return current;
   }
@@ -298,19 +316,21 @@ function patchedSession(
   return {
     ...current,
     ...(agentChanged ? { agentEnabled: patch.agentEnabled ?? false } : {}),
+    ...(artifactEditChanged ? { artifactEdit: patch.artifactEdit ?? null } : {}),
+    ...(artifactCreateChanged ? { artifactCreate: patch.artifactCreate ?? null } : {}),
     ...(attachmentsChanged ? { attachments: [...(patch.attachments ?? [])] } : {}),
     ...(draftChanged ? { draft: patch.draft ?? "" } : {}),
     ...(editingDraftChanged ? { editingDraft: patch.editingDraft ?? "" } : {}),
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
-    ...(attachmentsChanged || draftChanged || workspaceChanged || agentChanged || errorPatched
+    ...(attachmentsChanged || draftChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged || errorPatched
       ? { contextRejectionGeneration: null } : {}),
     ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false, workspaceInitialized: true } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
     editRevision:
       current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
-    revision: current.revision + (attachmentsChanged || draftChanged || workspaceChanged || agentChanged ? 1 : 0)
+    revision: current.revision + (attachmentsChanged || draftChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged ? 1 : 0)
   };
 }
 
@@ -436,6 +456,8 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     const generation = state.sendGenerationCounter + 1;
     const clearedRevision = session.revision + 1;
     const token: ComposerSendToken = {
+      artifactCreate: session.artifactCreate,
+      artifactEdit: session.artifactEdit,
       attachments: [...session.attachments],
       draft: session.draft,
       generation,
@@ -563,6 +585,21 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     });
     return true;
   },
+  acceptArtifactIntent(token) {
+    if (!token.artifactEdit && !token.artifactCreate) return false;
+    const state = get();
+    const key = (Object.keys(state.sessionsByKey) as ComposerSessionKey[]).find(
+      candidate => state.sessionsByKey[candidate]?.pendingSend?.generation === token.generation
+    );
+    const session = key ? state.sessionsByKey[key] : undefined;
+    if (!key || !session) return false;
+    const clearEdit = token.artifactEdit !== null && session.artifactEdit === token.artifactEdit;
+    const clearCreate = token.artifactCreate !== null && session.artifactCreate === token.artifactCreate;
+    if (!clearEdit && !clearCreate) return false;
+    set({ sessionsByKey: { ...state.sessionsByKey, [key]: { ...session,
+      ...(clearEdit ? { artifactEdit: null } : {}), ...(clearCreate ? { artifactCreate: null } : {}) } } });
+    return true;
+  },
   finishSend(token, outcome, error = null, operationErrorLive = true, runId = null, contextTooLarge = false) {
     const state = get();
     const sourceSession = state.sessionsByKey[token.sourceKey];
@@ -590,6 +627,8 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         ...state.sessionsByKey,
         [key]: {
           ...session,
+          ...(runId !== null && session.artifactEdit === token.artifactEdit ? { artifactEdit: null } : {}),
+          ...(runId !== null && session.artifactCreate === token.artifactCreate ? { artifactCreate: null } : {}),
           ...(restore
             ? {
                 attachments: [...pending.attachments],
@@ -733,6 +772,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     delete sessionsByKey[sourceKey];
     sessionsByKey[targetKey] = {
       ...source,
+      artifactEdit: null,
       attachments: [...source.attachments],
       pendingEdit: source.pendingEdit ? { ...source.pendingEdit } : null,
       pendingSend: source.pendingSend

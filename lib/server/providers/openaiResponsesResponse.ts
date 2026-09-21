@@ -51,6 +51,7 @@ export type OpenAIResponseSummaryInput = Readonly<{
 }>;
 
 export type ParseOpenAIResponsesSseInput = Readonly<{
+  onToolArguments?: import("./types").ProviderToolArgumentObserver;
   background: unknown;
   provider?: string;
   responseBody: ReadableStream<Uint8Array>;
@@ -534,6 +535,7 @@ export async function* parseOpenAIResponsesSse(
   let publishedProviderResponseId: string | undefined;
   let terminalSeen = false;
   let latestSnapshot: ProviderStreamSafetySnapshot | null = null;
+  const toolItems = new Map<string, { callIndex: number; callId: string; name: string; arguments: BoundedTextAccumulator }>();
 
   for await (const event of parseSseStream(input.responseBody, {
     idleTimeoutMs: streamLimits.idleTimeoutMs,
@@ -617,6 +619,34 @@ export async function* parseOpenAIResponsesSse(
         });
     if (searchArtifact) {
       yield searchArtifact;
+    }
+
+    if (input.onToolArguments && eventType === "response.output_item.added" && isRecord(parsed.item) && parsed.item.type === "function_call") {
+      const item = parsed.item;
+      if (typeof item.id !== "string" || !item.id || item.id.length > MAX_OPENAI_TOOL_ID_LENGTH ||
+        typeof item.call_id !== "string" || !item.call_id || item.call_id.length > MAX_OPENAI_TOOL_ID_LENGTH ||
+        typeof item.name !== "string" || !item.name || item.name.length > MAX_OPENAI_TOOL_NAME_LENGTH ||
+        !Number.isSafeInteger(parsed.output_index) || Number(parsed.output_index) < 0 || toolItems.has(item.id) || toolItems.size >= MAX_OPENAI_TOOL_CALLS) throw new Error("openai_tool_call_invalid");
+      const tool = { callIndex: Number(parsed.output_index), callId: item.call_id, name: item.name,
+        arguments: new BoundedTextAccumulator({ maxChars: streamLimits.maxOutputChars, retainedTextKind: "tool_arguments" }) };
+      toolItems.set(item.id, tool);
+      if (typeof item.arguments === "string" && item.arguments) tool.arguments.append(item.arguments, latestSnapshot);
+      await input.onToolArguments({ callIndex: tool.callIndex, callId: tool.callId, name: tool.name,
+        ...(tool.arguments.length ? { delta: tool.arguments.value() } : {}) });
+    }
+    if (input.onToolArguments && eventType === "response.function_call_arguments.delta") {
+      const tool = typeof parsed.item_id === "string" ? toolItems.get(parsed.item_id) : undefined;
+      if (!tool || parsed.output_index !== tool.callIndex || typeof parsed.delta !== "string") throw new Error("openai_tool_call_invalid");
+      tool.arguments.append(parsed.delta, latestSnapshot);
+      await input.onToolArguments({ callIndex: tool.callIndex, callId: tool.callId, name: tool.name, delta: parsed.delta });
+    }
+    if (input.onToolArguments && eventType === "response.function_call_arguments.done") {
+      const tool = typeof parsed.item_id === "string" ? toolItems.get(parsed.item_id) : undefined;
+      if (!tool || parsed.output_index !== tool.callIndex || typeof parsed.arguments !== "string") throw new Error("openai_tool_call_invalid");
+      if (tool.arguments.value() !== parsed.arguments) {
+        tool.arguments = new BoundedTextAccumulator({ initialValue: parsed.arguments, maxChars: streamLimits.maxOutputChars, retainedTextKind: "tool_arguments", snapshot: latestSnapshot });
+        await input.onToolArguments({ callIndex: tool.callIndex, callId: tool.callId, name: tool.name, snapshot: parsed.arguments });
+      }
     }
 
     if (eventType === "response.output_text.delta" && typeof parsed.delta === "string") {

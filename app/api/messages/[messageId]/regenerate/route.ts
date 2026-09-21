@@ -18,7 +18,8 @@ import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRun
 import { createRegenerateModelRunHandler } from "@/lib/server/runs/handlers";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { installationToolBudgetPolicy } from "@/lib/server/runs/toolBudgets";
-import { defaultSkillRepository } from "@/lib/server/skills/defaultSkills";
+import { defaultSkillRepository, defaultSkillCatalogRelevance } from "@/lib/server/skills/defaultSkills";
+import { defaultSkillTools } from "@/lib/server/skills/defaultSkillTools";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 import {
   workspaceAdmissionService,
@@ -51,6 +52,8 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createRegenerateModelRunH
   agentPolicy: agentPolicyRepository,
   runPolicy: installationToolBudgetPolicy,
   skills: defaultSkillRepository,
+  skillCatalogRelevance: defaultSkillCatalogRelevance,
+  skillTools: defaultSkillTools,
   storage,
   workspace: workspaceAdmissionService,
   workspaceCoordinator: workspaceCoordinatorForStorage(storage)

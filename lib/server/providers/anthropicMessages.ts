@@ -879,6 +879,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
                 value: block.input
               });
             }
+            if (block.type === "tool_use") await runOptions.onToolArguments?.({ callIndex: index, callId: String(block.id), name: String(block.name),
+              ...(objectValue(block.input) && Object.keys(block.input as object).length ? { snapshot: block.input as Record<string, unknown> } : {}) });
             if (block.type === "web_search_tool_result") {
               assertBoundedStructuredTextLength({
                 maxChars: ANTHROPIC_WEB_SEARCH_REPLAY_MAX_CHARACTERS,
@@ -1048,6 +1050,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
                 throw new Error("anthropic_stream_truncated");
               }
               accumulator.inputJson.append(delta.partial_json, snapshot);
+              if (accumulator.block.type === "tool_use") await runOptions.onToolArguments?.({ callIndex: index!, callId: String(accumulator.block.id),
+                name: String(accumulator.block.name), delta: delta.partial_json });
             }
 
             if (delta?.type === "citations_delta") {

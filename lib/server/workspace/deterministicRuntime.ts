@@ -15,6 +15,8 @@ import {
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
+import { WorkspaceSkillRunState } from "./skillRunState";
+import { parseSkillArchive, readSkillArchive, skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
 import { WORKSPACE_SECRETS_GUIDE_PATH, WORKSPACE_SECRETS_PATH, WORKSPACE_BROWSER_SESSIONS_PATH, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceSecretAssetPath, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide } from "./secrets/manifest";
@@ -65,6 +67,8 @@ type DeterministicSession = {
   execs: Map<string, DeterministicExec>;
   faults: Set<DeterministicFault>;
   files: Map<string, Uint8Array>;
+  fileModes: Map<string, 0o644 | 0o755>;
+  skillLinks: Map<string, string>;
   internetEnabled: boolean;
   metrics: {
     guestFileWrites: number;
@@ -411,10 +415,11 @@ type DeterministicState = Readonly<{
   captures: { store?: WorkspaceOutputCaptureStore };
   generations: Map<string, number>;
   sessions: Map<string, DeterministicSession>;
+  skills: WorkspaceSkillRunState;
 }>;
 
 function createDeterministicState(): DeterministicState {
-  return { captures: {}, generations: new Map(), sessions: new Map() };
+  return { captures: {}, generations: new Map(), sessions: new Map(), skills: new WorkspaceSkillRunState() };
 }
 
 const globalForDeterministic = globalThis as unknown as {
@@ -431,6 +436,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   private readonly generations: Map<string, number>;
   private readonly sessions: Map<string, DeterministicSession>;
   private readonly captures: DeterministicState["captures"];
+  private readonly skills: WorkspaceSkillRunState;
 
   constructor(
     private readonly config: WorkspaceConfig,
@@ -444,6 +450,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     this.generations = state.generations;
     this.sessions = state.sessions;
     this.captures = state.captures;
+    this.skills = state.skills;
   }
 
   private outputCaptures(): WorkspaceOutputCaptureStore {
@@ -524,6 +531,8 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         execs: new Map(),
         faults: new Set(),
         files: new Map(),
+        fileModes: new Map(),
+        skillLinks: new Map(),
         internetEnabled: input.internetEnabled,
         metrics: {
           guestFileWrites: 0,
@@ -814,7 +823,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         if (!content && !session.directories.has(path)) return toolResult(null, "error");
         return toolResult({
           kind: content ? "file" : "directory",
-          mode: content ? 0o644 : 0o755,
+          mode: content ? session.fileModes.get(path) ?? 0o644 : 0o755,
           readonly: false,
           size: content?.byteLength ?? 0
         });
@@ -995,6 +1004,52 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     }));
   }
 
+  private clearSkillTree(session: DeterministicSession, root: string): void {
+    for (const path of [...session.files.keys()]) if (path === root || path.startsWith(root + "/")) {
+      session.files.delete(path); session.fileModes.delete(path);
+    }
+    for (const path of [...session.directories]) if (path === root || path.startsWith(root + "/")) session.directories.delete(path);
+    session.directories.add(root);
+  }
+
+  async prepareSkillRun(input: Parameters<WorkspaceRuntime["prepareSkillRun"]>[0]) {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    return this.skills.prepare(input, async () => {
+      this.clearSkillTree(session, WORKSPACE_SKILLS_DIRECTORY);
+      session.skillLinks.clear();
+    });
+  }
+
+  async installSkillBundle(input: Parameters<WorkspaceRuntime["installSkillBundle"]>[0]) {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    return this.skills.install(input, input.bundle, async () => {
+      const entries = parseSkillArchive(await readSkillArchive(input));
+      input.signal?.throwIfAborted();
+      const workspacePath = `${WORKSPACE_SKILLS_DIRECTORY}/${input.bundle.alias}`;
+      this.clearSkillTree(session, workspacePath);
+      for (const entry of entries) {
+        const path = `${workspacePath}/${entry.path}`;
+        const parts = path.split("/");
+        for (let index = 2; index < parts.length; index++) session.directories.add(parts.slice(0, index).join("/"));
+        if (entry.directory) session.directories.add(path);
+        else { session.files.set(path, entry.content.slice()); session.fileModes.set(path, entry.mode); }
+      }
+      return { workspacePath };
+    });
+  }
+
+  async completeSkillRunPreparation(input: Parameters<WorkspaceRuntime["completeSkillRunPreparation"]>[0]): Promise<void> {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    await this.skills.complete(input, async refs => {
+      if (refs.some(ref => !session.files.has(`${WORKSPACE_SKILLS_DIRECTORY}/${ref.alias}/SKILL.md`))) skillPreparationFailed();
+      session.skillLinks.clear();
+      for (const ref of refs) session.skillLinks.set(ref.alias, `${WORKSPACE_SKILLS_DIRECTORY}/${ref.alias}`);
+    });
+  }
+
   async createProjectArchive(input: Parameters<WorkspaceRuntime["createProjectArchive"]>[0]): Promise<WorkspaceOutputStream> {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
     const prefix = `${WORKSPACE_PROJECT_DIRECTORY}/`;
@@ -1057,12 +1112,13 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
 
   async removeSession(input: Parameters<WorkspaceRuntime["removeSession"]>[0]): Promise<void> {
     const session = this.sessions.get(input.sessionId);
-    if (!session) { await this.captures.store?.removeSession(input); return; }
+    if (!session) { await this.captures.store?.removeSession(input); await this.skills.removeSession(input); return; }
     if (input.runtimeSandboxId && input.runtimeSandboxId !== session.runtimeSandboxId) {
       throw new WorkspaceRuntimeError("workspace_session_lost");
     }
     for (const exec of session.allExecs) terminateExec(exec, 137);
     await this.captures.store?.removeSession({ ...input, runtimeSandboxId: session.runtimeSandboxId });
     this.sessions.delete(input.sessionId);
+    await this.skills.removeSession({ ...input, runtimeSandboxId: session.runtimeSandboxId });
   }
 }

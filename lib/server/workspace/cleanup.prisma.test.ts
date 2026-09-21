@@ -91,6 +91,9 @@ describe("Prisma Workspace maintenance", () => {
       removeSession,
       stageAttachments: unused,
       syncPersonalSecrets: unused,
+      prepareSkillRun: unused,
+      installSkillBundle: unused,
+      completeSkillRunPreparation: unused,
       collectBrowserSessions: unused,
       stopSession,
       terminateExecutions: unused
@@ -338,6 +341,9 @@ describe("Prisma Workspace maintenance", () => {
       removeSession,
       stageAttachments: unused,
       syncPersonalSecrets: unused,
+      prepareSkillRun: unused,
+      installSkillBundle: unused,
+      completeSkillRunPreparation: unused,
       collectBrowserSessions: unused,
       stopSession,
       terminateExecutions: unused
@@ -469,6 +475,9 @@ describe("Prisma Workspace maintenance backstop", () => {
       removeSession: unused,
       stageAttachments: unused,
       syncPersonalSecrets: unused,
+      prepareSkillRun: unused,
+      installSkillBundle: unused,
+      completeSkillRunPreparation: unused,
       collectBrowserSessions: unused,
       stopSession,
       terminateExecutions

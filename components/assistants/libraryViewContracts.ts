@@ -44,6 +44,8 @@ export type AssistantEditorDraftState = {
   searchOptionIds: string[];
   searchPlanMode: SearchPlanMode;
   skillIds: string[];
+  skills?: { mode: "auto" | "off" };
+  skillModes?: Record<string, "pinned" | "available">;
   starterPrompts: string[];
   streamMode: boolean | null;
   backgroundMode: boolean | null;
@@ -255,6 +257,8 @@ export function assistantDraftFromEditorState(
         optionIds: [...state.searchOptionIds]
       },
       skillIds: [...state.skillIds],
+      skills: state.skills ?? { mode: "auto" },
+      skillModes: { ...state.skillModes },
       starterPrompts: state.starterPrompts
         .map((starter) => starter.trim())
         .filter((starter) => starter.length > 0),
@@ -362,6 +366,8 @@ export function editorStateFromContent(
     searchOptionIds: [...content.searchPlan.optionIds],
     searchPlanMode: content.searchPlan.mode,
     skillIds: [...content.skillIds],
+    skills: content.skills ?? { mode: "auto" },
+    skillModes: { ...content.skillModes },
     starterPrompts: [...content.starterPrompts],
     streamMode: controls.streamMode ?? null,
     systemPrompt: content.systemPrompt,

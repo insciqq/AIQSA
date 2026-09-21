@@ -2,7 +2,7 @@ import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import type { AssistantUnavailabilityCopy } from "./assistantAvailabilityCopy";
 import type { ReactNode } from "react";
 
-export type LibraryTabIdV2 = "assistants" | "knowledge" | "files" | "memory" | "skills";
+export type LibraryTabIdV2 = "assistants" | "knowledge" | "files" | "artifacts" | "memory" | "skills";
 
 export type LibraryNavigationIntentV2 =
   | Readonly<{ from: LibraryTabIdV2; kind: "exit" }>

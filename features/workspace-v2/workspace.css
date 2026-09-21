@@ -8,16 +8,19 @@
 
 .v2-live-workspace {
   position: relative;
-  display: grid;
+  display: flex;
   width: 100%;
   min-width: 0;
   height: 100dvh;
-  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
+.v2-live-conversation { position: relative; display: grid; min-width: 0; min-height: 0; width: 100%; flex: 1 1 0; grid-template-rows: auto minmax(0, 1fr); }
+.v2-live-workspace[data-artifact-docked] > .v2-live-conversation { min-width: 24rem; }
+.v2-live-artifact-panel { display: flex; flex: 0 0 clamp(28rem, 56%, 60rem); width: clamp(28rem, 56%, 60rem); max-width: calc(100% - 24rem); min-height: 0; overflow: hidden; border-left: 1px solid var(--v2-color-border); background: var(--v2-color-canvas); }
+
 /* The reading column fills the row under the header instead of the viewport. */
-.v2-live-workspace > .v2-conversation {
+.v2-live-conversation > .v2-conversation {
   height: 100%;
   min-height: 0;
 }
@@ -802,7 +805,7 @@
    * Mobile has no header bar (PRD §4.8): the title pill and the "⋯" island
    * float over the thread beside the menu island (`.v2-sidebar-floats`).
    */
-  .v2-live-workspace {
+  .v2-live-conversation {
     grid-template-rows: minmax(0, 1fr);
   }
 

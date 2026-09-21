@@ -1215,7 +1215,17 @@ export function createPrismaRunRepository(
       };
 
       if (sourceMessage.role === "user") {
+        const sourceRun = await prismaClient.modelRun.findFirst({
+          where: { userMessageId: sourceMessage.id, ...(sourceMessage.chat.projectId ? {} : { userId }) },
+          orderBy: { createdAt: "desc" },
+          select: { normalizedRequest: true }
+        }).catch(retainRunPrismaCode);
+        const normalizedRequest = sourceRun?.normalizedRequest;
+        const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
+          ? normalizedRequest.artifactEdit : undefined;
         return {
+          ...(artifactEdit !== undefined ? { artifactEdit } : {}),
+          ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
           assistantMessage: null,
           chat,
           userMessage: {
@@ -1232,6 +1242,7 @@ export function createPrismaRunRepository(
       const sourceRun = await prismaClient.modelRun.findFirst({
         orderBy: { createdAt: "desc" },
         select: {
+          normalizedRequest: true,
           providerRunBindings: {
             select: {
               connectionId: true,
@@ -1246,8 +1257,13 @@ export function createPrismaRunRepository(
         }
       }).catch(retainRunPrismaCode);
       const answerBinding = sourceRun?.providerRunBindings[0];
+      const normalizedRequest = sourceRun?.normalizedRequest;
+      const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
+        ? normalizedRequest.artifactEdit : undefined;
 
       return {
+        ...(artifactEdit !== undefined ? { artifactEdit } : {}),
+        ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
         assistantMessage: {
           id: sourceMessage.id,
           modelId: answerBinding?.providerModelId ?? null,

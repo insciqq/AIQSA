@@ -88,7 +88,8 @@ import type {
   WorkspaceAvailabilitySnapshot
 } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
-import { activityName, toolActivityDescriptors } from "../tools/activityDescriptors";
+import { activityName, toolActivityDescriptors, skillToolActivityFacts } from "../tools/activityDescriptors";
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import {
   applyMemoryScopedTargetOwnerLifecycle,
@@ -161,6 +162,7 @@ const assistantRunDetailSelect = {
   toolCalls: {
     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
     select: {
+      arguments: true,
       completedAt: true,
       ordinal: true,
       roundIndex: true,
@@ -321,6 +323,7 @@ type HydratedMessagePath = Readonly<{
 }>;
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
+  normalizedRequest?: unknown;
   answerStartedAt?: Date | null;
   createdAt?: Date;
   events: { eventType?: string; payload: unknown }[];
@@ -370,6 +373,7 @@ type ToolActivityRun = {
   normalizedRequest: unknown;
   status: string;
   toolCalls: {
+    arguments?: unknown;
     completedAt: Date | null;
     ordinal: number;
     roundIndex: number;
@@ -1004,6 +1008,7 @@ export function summarizeMessageRunToolActivity(
       ? call.state
       : "running";
     return {
+      ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
       origin: descriptor.origin,
       // Automatic Knowledge retrieval is persisted before the provider loop at
@@ -1282,6 +1287,8 @@ export function summarizeMessageRunArtifacts(
   const workDurationMs = reasoningTexts.length > 0 || (run.toolCalls?.length ?? 0) > 0
     ? runWorkDurationMs(run)
     : null;
+  const skillCatalogOmittedCount = isRecord(run.normalizedRequest)
+    ? decodeFrozenSkillManifest(run.normalizedRequest.skills)?.omittedCount ?? 0 : 0;
   const groundingOutcome = run.knowledgeRetrievalSession?.groundingResult?.outcome;
   const knowledgeState = groundingOutcome === "answered" ||
     groundingOutcome === "insufficient_evidence" ||
@@ -1298,6 +1305,7 @@ export function summarizeMessageRunArtifacts(
 
   if (
     citations.length === 0 &&
+    skillCatalogOmittedCount === 0 &&
     generatedImages.length === 0 &&
     generatedFiles.length === 0 &&
     generatedArtifacts.length === 0 &&
@@ -1316,6 +1324,7 @@ export function summarizeMessageRunArtifacts(
 
   return {
     citations,
+    ...(skillCatalogOmittedCount > 0 ? { skillCatalogOmittedCount } : {}),
     ...(generatedArtifacts.length > 0 ? { generatedArtifacts } : {}),
     ...(generatedImages.length > 0 ? { generatedImages } : {}),
     ...(generatedFiles.length > 0 ? { generatedFiles } : {}),

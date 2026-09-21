@@ -1,6 +1,7 @@
 "use client";
 
 import { mcpReadinessPresentation } from "@/components/app-shell/mcpReadiness";
+import type { ComposerArtifactEdit } from "@/components/app-shell/composerSessionStore";
 
 import { isImeCompositionEvent } from "@/components/keyboard";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
@@ -32,7 +33,7 @@ import type {
   ChatWorkspaceState,
   WorkspaceUnavailableReason
 } from "@/lib/contracts/workspace";
-import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
+import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
 import type {
   ComposerConfig,
   ComposerConfigKnowledgeBase,
@@ -65,7 +66,7 @@ import {
   type CSSProperties
 } from "react";
 
-export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | "workspace" | "agent" | null;
+export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | "skills" | "workspace" | "agent" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -85,6 +86,7 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   model: "Choose model",
   search: "Web search",
   workspace: "Workspace",
+  skills: "Skills",
   tools: "MCP tools"
 };
 const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
@@ -95,6 +97,7 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
   model: "Model",
   search: "Web search",
   workspace: "Workspace",
+  skills: "Skills",
   tools: "MCP tools"
 };
 /* Desktop popover widths (see composer.css) used to keep a chip-anchored layer
@@ -107,6 +110,7 @@ const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   model: 380,
   search: 330,
   workspace: 340,
+  skills: 340,
   tools: 340
 };
 const SEARCH_PROVIDER_FAMILY_NAMES: Readonly<Record<string, string>> = {
@@ -194,6 +198,11 @@ const EMPTY_PROVIDERS: readonly CatalogProvider[] = [];
 export type ComposerV2Props = Readonly<{
   agent?: Readonly<{ enabled: boolean; unavailableReason?: string; onToggle(value: boolean): void }>;
   activeRun?: boolean;
+  artifactEdit?: ComposerArtifactEdit | null;
+  artifactCreate?: boolean;
+  artifactUnavailableReason?: string | null;
+  onCreateArtifact?(): void;
+  onRemoveArtifactCreate?(): void;
   assistantRemovedNotice?: boolean;
   attachmentItems?: readonly ComposerAttachmentItemV2[];
   attachmentLimitUsage?: AttachmentLimitUsage | null;
@@ -228,6 +237,7 @@ export type ComposerV2Props = Readonly<{
   onOpenModelParameters?(): void;
   onRemoveAssistant?(): void;
   onRemoveAttachment?(id: string): void;
+  onRemoveArtifactEdit?(): void;
   onRejectedFiles?(files: readonly File[]): void;
   onRetryConfig?(): void;
   onRetryAttachment?(id: string): void;
@@ -248,12 +258,15 @@ export type ComposerV2Props = Readonly<{
   onReuseFile?(attachmentId: string, fileName: string): Promise<boolean>;
   runId?: string | null;
   selectedAssistant?: (Pick<AssistantSummary, "id" | "name"> & {
-    includedSkills?: readonly { id: string; name: string }[];
+    includedSkills?: readonly { id: string; name: string; mode?: "pinned" | "available" }[];
+    skillsMode?: "auto" | "off";
     knowledgeLabel?: string | null;
     knowledgeResourceCount?: number;
   }) | null;
   knowledgePlanSource?: "assistant" | "chat" | "explicit" | "off" | "project";
   mcpSelection?: McpRunSelection;
+  skillsMode?: "auto" | "off";
+  onSelectSkillsMode?(mode: "auto" | "off"): void;
   selectedKnowledgeSelection?: KnowledgeSelection;
   /** @deprecated Use selectedKnowledgeSelection. */
   selectedKnowledgeBaseIds?: readonly string[];
@@ -386,6 +399,11 @@ function CapabilityRow({
 export function ComposerV2({
   agent,
   activeRun = false,
+  artifactEdit = null,
+  artifactCreate = false,
+  artifactUnavailableReason = null,
+  onCreateArtifact,
+  onRemoveArtifactCreate,
   assistantRemovedNotice = false,
   attachmentItems = [],
   attachmentLimitUsage = null,
@@ -411,6 +429,7 @@ export function ComposerV2({
   onOverrideKnowledgePlan,
   onRemoveAssistant,
   onRemoveAttachment,
+  onRemoveArtifactEdit,
   onRejectedFiles,
   onRetryConfig,
   onRetryAttachment,
@@ -428,6 +447,8 @@ export function ComposerV2({
   selectedAssistant = null,
   sendWithEnter = true,
   mcpSelection = { mode: "auto" },
+  skillsMode = "auto",
+  onSelectSkillsMode,
   selectedKnowledgeSelection,
   selectedKnowledgeBaseIds = [],
   knowledgePlanSource = "off",
@@ -481,6 +502,9 @@ export function ComposerV2({
     ((selectedKnowledgeSelection && selectedKnowledgeSelection.mode !== "none") || selectedKnowledgeBaseIds.length > 0
       ? "Turn off Knowledge to use Agent." : null);
   const agentBlockReason = agent?.enabled ? agentReason : null;
+  const artifactReason = artifactUnavailableReason ?? (agent?.enabled ? "Not available in Agent mode"
+    : sharedProject ? "Not available in projects" : null);
+  const artifactBlockReason = artifactCreate || artifactEdit ? artifactReason : null;
   const bootstrapReason = configError
     ? "Could not load available capabilities."
     : !config
@@ -497,15 +521,14 @@ export function ComposerV2({
   const readyAttachment = hasReadyAttachments || attachmentItems.some(
     (item) => !attachmentItemBlocksSend(item)
   );
-  const effectiveSkillIds = resolveEffectiveSkillIds((selectedAssistant?.includedSkills ?? []).map(({ id }) => id), selectedSkillIds);
-  const skillLimitReason = effectiveSkillIds.length > SKILL_MAX_SELECTED
-    ? `Choose at most ${SKILL_MAX_SELECTED} Skills. Remove manual selections or change the Assistant before sending.` : null;
+  const effectiveSkillIds = resolveEffectiveSkillIds((selectedAssistant?.includedSkills ?? []).filter(skill => skill.mode !== "available").map(({ id }) => id), selectedSkillIds);
+  const effectiveSkillsMode = selectedAssistant?.skillsMode ?? skillsMode;
   const sendDisabled = Boolean(
-    sending || inputDisabled || agentBlockReason || attachmentBlockReason || skillLimitReason || (!draft.trim() && !readyAttachment)
+    sending || inputDisabled || artifactBlockReason || agentBlockReason || attachmentBlockReason || (!draft.trim() && !readyAttachment)
   );
   const sendDisabledReason = sending
     ? "Sending message…"
-    : bootstrapReason ?? agentBlockReason ?? attachmentBlockReason ?? skillLimitReason ??
+    : bootstrapReason ?? artifactBlockReason ?? agentBlockReason ?? attachmentBlockReason ??
       (!draft.trim() && !readyAttachment ? "Type a message." : null);
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
@@ -1041,7 +1064,6 @@ export function ComposerV2({
             </span>
           </div>
         ) : null}
-        {skillLimitReason ? <p className="v2-composer-status" role="alert">{skillLimitReason}</p> : null}
         {assistantRemovedNotice && !selectedAssistant ? (
           <div
             className="v2-composer-status"
@@ -1061,6 +1083,20 @@ export function ComposerV2({
           </div>
         ) : null}
 
+        {artifactCreate ? <div className="v2-composer-artifact-edit">
+          <UiV2Icon name="artifact" /><span>Artifact</span>
+          <UiV2IconButton icon="close" label="Remove artifact creation" disabled={sending} onClick={onRemoveArtifactCreate} />
+        </div> : artifactEdit ? (
+          <div className="v2-composer-artifact-edit">
+            <UiV2Icon name="artifact" />
+            <span title={`Editing “${artifactEdit.title}” · v${artifactEdit.versionNumber}`}>
+              Editing “{artifactEdit.title}” · v{artifactEdit.versionNumber}
+            </span>
+            <UiV2IconButton icon="close" label="Remove artifact edit" disabled={sending}
+              onClick={onRemoveArtifactEdit} />
+          </div>
+        ) : null}
+        {artifactBlockReason ? <p className="v2-composer-status" role="alert">{artifactBlockReason}. Remove the artifact selection or change the chat mode before sending.</p> : null}
         <AttachmentTrayV2
           items={attachmentItems}
           onRemove={onRemoveAttachment}
@@ -1080,7 +1116,7 @@ export function ComposerV2({
           value={draft}
           disabled={inputDisabled}
           aria-describedby={bootstrapReason ? statusId : undefined}
-          placeholder="Ask anything…"
+          placeholder={artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={submitFromKeyboard}
           onPaste={pasteFiles}
@@ -1266,17 +1302,13 @@ export function ComposerV2({
               </button>
             ) : null}
             {mcpAttentionLabel ? <span className="v2-sr-only" id={`${layerId}-mcp-attention`}>{mcpAttentionLabel}</span> : null}
-            {effectiveSkillIds.length > 0 ? (
-              <button
-                className="v2-composer-indicator v2-focusable"
-                type="button"
-                disabled={activeRun || !onOpenSkillLibrary}
-                aria-label="Manage selected Skills"
-                onClick={onOpenSkillLibrary}
-              >
-                <span aria-hidden="true" />Skills: {effectiveSkillIds.length}
-              </button>
-            ) : null}
+            <button className="v2-composer-indicator v2-focusable" type="button" data-quiet={effectiveSkillIds.length ? undefined : ""}
+              data-glyph="wand" aria-label="Change Skills mode" aria-controls={`${layerId}-skills`} aria-expanded={layer === "skills"}
+              aria-haspopup="menu" disabled={activeRun} onClick={event => openLayer("skills", event.currentTarget)}>
+              <span aria-hidden="true" /><UiV2Icon className="v2-composer-indicator-glyph" name="wand" />
+              <span className="v2-composer-indicator-label">Skills: {effectiveSkillsMode === "off" ? "Off" : "Auto"}{effectiveSkillIds.length ? ` · ${effectiveSkillIds.length}` : ""}</span>
+              <UiV2Icon name={controlsLocked ? "lock" : "chevron-down"} />
+            </button>
           </div>
 
           <span className="v2-composer-spacer" />
@@ -1422,6 +1454,21 @@ export function ComposerV2({
                   onUse={async (id, fileName) => await onReuseFile?.(id, fileName) ?? false}
                   onUsed={closeLayer}
                 />
+              ) : layer === "skills" ? (
+                <div className="v2-composer-layer-scroll">
+                  <p className="v2-composer-layer-title">Skills</p>
+                  {controlsLocked ? <CapabilityRow selected disabled selectionRole="radio" reason={`Defined by the selected Assistant · ${effectiveSkillsMode === "off" ? "Off" : "Auto"}`}>
+                    Assistant Skills
+                  </CapabilityRow> : <>
+                    <CapabilityRow selected={skillsMode === "auto"} selectionRole="radio" disabled={activeRun || !currentModel?.capabilities.toolCalling || !onSelectSkillsMode}
+                      reason={!currentModel?.capabilities.toolCalling ? "This model cannot load Skills on demand. Always use instructions still apply." : "The model loads enabled Skills when useful"}
+                      onClick={() => { onSelectSkillsMode?.("auto"); closeLayer(); }}>Auto</CapabilityRow>
+                    <CapabilityRow selected={skillsMode === "off"} selectionRole="radio" disabled={activeRun || !onSelectSkillsMode}
+                      reason="Always use instructions still apply" onClick={() => { onSelectSkillsMode?.("off"); closeLayer(); }}>Off</CapabilityRow>
+                  </>}
+                  <CapabilityRow icon="wand" selectionRole="item" disabled={activeRun || !onOpenSkillLibrary} reason="Choose Auto loading or Always use"
+                    onClick={() => { closeLayer(); onOpenSkillLibrary?.(); }}>Skill library…</CapabilityRow>
+                </div>
               ) : layer === "tools" ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">MCP tools</p>
@@ -1749,9 +1796,14 @@ export function ComposerV2({
                   </div>
                 </div>
               ) : (
-                /* "+" is Add only (PRD §4.6): files, Knowledge, an Assistant,
-                   Skills. Search, MCP and parameters live behind their chips. */
+                /* Search, MCP and parameters live behind their own chips. */
                 <div className="v2-composer-layer-scroll">
+                  <CapabilityRow icon="artifact" selectionRole="item"
+                    disabled={Boolean(artifactReason || !onCreateArtifact || inputDisabled || activeRun)}
+                    reason={artifactReason ?? "Page, slides, game or chart"}
+                    onClick={() => { onCreateArtifact?.(); closeLayer(); textareaRef.current?.focus({ preventScroll: true }); }}>
+                    Create artifact
+                  </CapabilityRow>
                   <CapabilityRow
                     icon="attach"
                     disabled={attachmentSelectionDisabled}

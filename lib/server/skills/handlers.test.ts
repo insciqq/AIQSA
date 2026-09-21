@@ -8,9 +8,60 @@ import {
   createPublishSkillHandler,
   createRevokeSkillPublicationHandler,
   createUpdateSkillHandler,
+  createSetSkillPreferenceHandler,
+  createEnableAllSkillsHandler,
   type SkillHandlerDeps
 } from "./handlers";
 import type { SkillDetailEntry, SkillListEntry } from "./prismaRepository";
+
+describe("Skill discovery preferences", () => {
+  it("enables only the authenticated caller's library and handles revoked access and failure privately", async () => {
+    const service = { enableAll: vi.fn(async (): Promise<{ enabledCount: number } | null> => ({ enabledCount: 60 })) };
+    const request = () => new Request("http://localhost/api/me/skills/enable-all", { method: "POST" });
+    expect((await createEnableAllSkillsHandler({ resolveAuth: async () => null, service })(request())).status).toBe(401);
+    const inactive = session();
+    inactive.user.status = "disabled";
+    expect((await createEnableAllSkillsHandler({ resolveAuth: async () => inactive, service })(request())).status).toBe(403);
+    expect(service.enableAll).not.toHaveBeenCalled();
+    const handler = createEnableAllSkillsHandler({ resolveAuth: async () => session(), service });
+    const response = await handler(request());
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toEqual({ enabledCount: 60 });
+    expect(service.enableAll).toHaveBeenCalledWith("user-1");
+    service.enableAll.mockResolvedValueOnce(null);
+    expect((await handler(request())).status).toBe(403);
+    service.enableAll.mockRejectedValueOnce(new Error("private database detail"));
+    const failure = await handler(request());
+    expect(failure.status).toBe(503);
+    expect(await failure.json()).toEqual({ error: "skill_preference_failed" });
+  });
+
+  it("rejects unauthenticated and malformed updates before any write", async () => {
+    const service = { set: vi.fn(async () => ({ skillId: "skill-1", enabled: true })) };
+    const context = { params: { skillId: "skill-1" } };
+    const request = (body: unknown) => new Request("http://localhost/api/me/skills/skill-1/preference", { method: "PATCH", body: JSON.stringify(body) });
+    expect((await createSetSkillPreferenceHandler({ resolveAuth: async () => null, service })(request({ enabled: true }), context)).status).toBe(401);
+    const handler = createSetSkillPreferenceHandler({ resolveAuth: async () => session(), service });
+    for (const body of [{}, { enabled: "yes" }, { enabled: true, userId: "other" }]) expect((await handler(request(body), context)).status).toBe(400);
+    expect(service.set).not.toHaveBeenCalled();
+  });
+
+  it("updates only the caller's preference and preserves unavailable-resource privacy", async () => {
+    const service = { set: vi.fn(async (): Promise<{ skillId: string; enabled: boolean } | null> => ({ skillId: "skill-1", enabled: false })) };
+    const handler = createSetSkillPreferenceHandler({ resolveAuth: async () => session(), service });
+    const request = () => new Request("http://localhost/api/me/skills/skill-1/preference", { method: "PATCH", body: JSON.stringify({ enabled: false }) });
+    const response = await handler(request(), { params: { skillId: "skill-1" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toEqual({ skillId: "skill-1", enabled: false });
+    expect(service.set).toHaveBeenCalledWith("user-1", "skill-1", false);
+    service.set.mockResolvedValueOnce(null);
+    const denied = await handler(request(), { params: { skillId: "skill-1" } });
+    expect(denied.status).toBe(404);
+    expect(await denied.json()).toEqual({ error: "skill_not_available" });
+  });
+});
 
 function session(role: "admin" | "user" = "user"): AuthenticatedSession {
   return {
@@ -73,8 +124,10 @@ function repository(overrides: Partial<SkillHandlerDeps["repository"]> = {}) {
     create: vi.fn(async () => "skill-1"),
     delete: vi.fn(async () => "ok" as const),
     getForUser: vi.fn(async () => detailEntry()),
+    listEnabledForRun: vi.fn(async () => []),
     listForUser: vi.fn(async () => ({ entries: [entry()], nextCursor: null })),
     listPublishableWorkspaces: vi.fn(async () => []),
+    loadedBeforeForMessages: vi.fn(async () => []),
     publish: vi.fn(async () => ({ id: "publication-1", kind: "ok" as const })),
     resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [] })),
     revise: vi.fn(async () => ({ kind: "ok" as const, skillId: "skill-1" })),

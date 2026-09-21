@@ -1,5 +1,5 @@
 import { randomUUID } from "@/lib/browser/randomUUID";
-import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
+import { artifactUnavailableReason } from "@/components/artifacts/artifactAvailability";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { composerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
 import {
@@ -12,6 +12,7 @@ import {
   chatIdFromComposerSessionKey,
   composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
+  projectIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore,
   type ComposerSessionKey
@@ -65,6 +66,7 @@ type MessageRunControlSnapshot = {
   knowledgeSelection: KnowledgeSelection;
   knowledgePlanSource: ComposerKnowledgePlanSource;
   mcpSelection: ComposerMcpSelection;
+  skillsMode: "auto" | "off";
   params: Record<string, unknown>;
   provider: string;
   searchPreferencePlan: {
@@ -233,6 +235,7 @@ export function useMessageRunActions({
       },
       knowledgePlanSource,
       mcpSelection: { ...mcpSelection },
+      skillsMode: controls.skillsMode,
       model,
       modelId: selectedModelId,
       params: { ...buildParams() },
@@ -338,6 +341,7 @@ export function useMessageRunActions({
         : {}),
       params: snapshot.params,
       ...(snapshot.mcpSelection.mode === "auto" ? {} : { mcp: snapshot.mcpSelection }),
+      ...(snapshot.skillsMode === "off" ? { skills: { mode: "off" } } : {}),
       provider: snapshot.provider,
       searchPlan: effectiveSearchPlan,
       ...(!projectScoped && snapshot.searchPreferenceSource
@@ -359,7 +363,6 @@ export function useMessageRunActions({
     if (!sourceChatId || sourceChatId !== activeChatId) {
       return;
     }
-    if (!skillSelectionValid()) return;
     const runControlSnapshot = captureRunControlSnapshot();
 
     const committed = await editMessageBranchAction({
@@ -458,13 +461,6 @@ export function useMessageRunActions({
     if (isTemporaryChat(chatId)) {
       await reconcileTemporaryAdmission(chatId);
     }
-  }
-
-  function skillSelectionValid(): boolean {
-    const { selectedAssistant, selectedSkills } = useComposerControlStore.getState();
-    if (resolveEffectiveSkillIds((selectedAssistant?.includedSkills ?? []).map(({ id }) => id), selectedSkills.map(({ id }) => id)).length <= SKILL_MAX_SELECTED) return true;
-    setNotice({ kind: "error", text: `Choose at most ${SKILL_MAX_SELECTED} Skills. Remove manual selections or change the Assistant before sending.` });
-    return false;
   }
 
   async function submitComposer() {
@@ -612,10 +608,18 @@ export function useMessageRunActions({
     ) {
       return;
     }
-    if (!skillSelectionValid()) return;
     const runControlSnapshot = captureRunControlSnapshot();
     const modelForSend = runControlSnapshot.model;
     if (!modelForSend) {
+      return;
+    }
+    const artifactBlockReason = artifactUnavailableReason({
+      agent: runControlSnapshot.agentEnabled,
+      project: Boolean(activeChat?.projectId || projectIdFromComposerSessionKey(sourceSessionKey)),
+      temporary: (activeChat?.pendingInitialMemoryMode ?? activeChat?.memoryMode ?? composerSessionModeFromKey(sourceSessionKey)) === "TEMPORARY"
+    });
+    if ((sourceSession.artifactCreate || sourceSession.artifactEdit) && artifactBlockReason) {
+      setNotice({ kind: "error", text: artifactBlockReason });
       return;
     }
     // A Search engine the model cannot run is never kept silently (UX audit
@@ -830,6 +834,9 @@ export function useMessageRunActions({
         onAnswerPublished(runId) {
           useComposerSessionStore.getState().finishSend(sendToken, "succeeded", null, true, runId);
         },
+        onRunAdmitted() {
+          useComposerSessionStore.getState().acceptArtifactIntent(sendToken);
+        },
         optimisticAssistantMessageId: assistantId,
         primeAnswerSound,
         reconcileMessageIds({ currentRunId, messageIds }) {
@@ -878,6 +885,11 @@ export function useMessageRunActions({
                 blocks: contentBlocks
               },
               expectedActiveLeafId: parentLeafForSend,
+              ...(sendToken.artifactCreate ? { artifactIntent: "create" } : {}),
+              ...(sendToken.artifactEdit ? { artifactEdit: {
+                artifactId: sendToken.artifactEdit.artifactId,
+                versionId: sendToken.artifactEdit.versionId
+              } } : {}),
               ...(personalDraftForSend ? { personalDraft: personalDraftForSend } : {}),
               ...(projectDraftForSend ? { projectDraft: projectDraftForSend } : {}),
               ...initialMemoryPayload,
@@ -990,7 +1002,6 @@ export function useMessageRunActions({
     ) {
       return;
     }
-    if (!skillSelectionValid()) return;
     const runControlSnapshot = captureRunControlSnapshot();
     if (!runControlSnapshot.model) {
       return;
@@ -1193,7 +1204,6 @@ export function useMessageRunActions({
     if (useRunLifecycleStore.getState().activeStreams[chatIdForRegenerate]) {
       return;
     }
-    if (!skillSelectionValid()) return;
     const runControlSnapshot = captureRunControlSnapshot();
     if (
       hasUnreconciledOptimisticLeaf(chatIdForRegenerate) &&

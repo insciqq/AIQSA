@@ -1,9 +1,15 @@
+import { createArtifactGeneration } from "../artifacts/generation";
 import { AgentExecutionError, agentFailureCode, agentFailureMessage } from "../agents/failures";
 import { knowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
-import { artifactTool, ARTIFACT_TOOL_NAME } from "../tools/artifact";
+import { artifactTool, readArtifactTool, READ_ARTIFACT_TOOL_NAME, ARTIFACT_TOOL_NAME } from "../tools/artifact";
+import { acceptsSkillTool, isSkillToolName, skillToolsForRequest } from "../tools/skill";
+import { createSkillToolResultBudget } from "../skills/toolResultBudget";
+import { deliverSkillWorkspaceBundle } from "../skills/workspaceDelivery";
+import { skillToolActivityFacts } from "../tools/activityDescriptors";
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
@@ -231,6 +237,7 @@ export type RunExecutionRepository = Pick<
 >;
 
 export type RunExecutionInput = Readonly<{
+  skillTools?: import("../skills/toolService").SkillToolService;
   agentResponses?: AgentResponsesTransport;
   artifacts?: Pick<import("../artifacts/service").ArtifactService, "execute" | "restore">;
   images?: import("../images/service").ImageGenerationService;
@@ -636,6 +643,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const executionStartedAt = Date.now();
       let executionStage: "dispatch" | "execution" | "completion" = "dispatch";
       let answerPublished = false;
+      const artifactGeneration = createArtifactGeneration(runId, async data => {
+        await assertProjectRunAccessCurrent(true);
+        emitTransient(controller, encoder, { type: "artifact_generation", data });
+      });
       logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "started" });
       const workspaceTurnController = normalizedRequest.workspace
         ? new AbortController()
@@ -1586,6 +1597,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       async function publishRequestContext(request: ProviderRunRequest): Promise<void> {
+        const omitted = decodeFrozenSkillManifest(request.skills)?.omittedCount;
+        if (omitted) emitTransient(controller, encoder, { type: "artifact", data: {
+          artifactType: "summary", payload: { skillCatalogOmittedCount: omitted }
+        } });
         const event = {
           type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
             bridge: input.toolBridge ?? providerToolBridges[request.provider as keyof typeof providerToolBridges],
@@ -1600,7 +1615,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function* streamAnswerProviderWithEgress(
         request: ProviderRunRequest,
-        dispatchSignal: AbortSignal = signal
+        dispatchSignal: AbortSignal = signal,
+        onToolArguments?: import("../providers/types").ProviderToolArgumentObserver
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
         lastSessionRequest = request;
         let preview: Record<string, unknown> | null = null;
@@ -1664,7 +1680,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             : null;
           await assertProjectRunAccessCurrent(true);
           await publishRequestContext(request);
-          const stream = input.adapter.stream(request, { signal: dispatchSignal });
+          const stream = input.adapter.stream(request, { signal: dispatchSignal, onToolArguments });
           let next = await stream.next();
           while (!next.done) {
             yield next.value;
@@ -1749,10 +1765,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const isMcpDiscoveryCall = (name: string) =>
           name === MCP_FIND_TOOLS_NAME && activeMcpDiscovery !== undefined;
         const isImageCall = (name: string) => clientToolsEnabled && Boolean(normalizedRequest.imagePlan) && name === IMAGE_GENERATION_TOOL_NAME;
-        const isArtifactCall = (name: string) => clientToolsEnabled && normalizedRequest.artifactTool === true && name === ARTIFACT_TOOL_NAME;
+        const isArtifactCall = (name: string) => clientToolsEnabled && normalizedRequest.artifactTool === true && (name === ARTIFACT_TOOL_NAME || name === READ_ARTIFACT_TOOL_NAME && Boolean(normalizedRequest.artifactReferences?.length));
+        const isSkillCall = (name: string) => acceptsSkillTool(normalizedRequest, name);
         const tools: RunTool[] = [
+          ...skillToolsForRequest(normalizedRequest),
           ...(clientToolsEnabled && normalizedRequest.imagePlan ? [imageGenerationTool(normalizedRequest.imagePlan)] : []),
-          ...(clientToolsEnabled && normalizedRequest.artifactTool ? [artifactTool()] : []),
+          ...(clientToolsEnabled && normalizedRequest.artifactTool ? [artifactTool(normalizedRequest.artifactToolDescription), ...(normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
           ...(normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
@@ -1761,6 +1779,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...workspaceTools
         ];
         let sessionRequest = request;
+        const skillResultBudget = createSkillToolResultBudget();
         const isSessionCall = (name: string) => normalizedRequest.sessionStatusTool === true && name === SESSION_STATUS_TOOL_NAME;
         if (tools.length === 0) {
           throw new RunPipelineError("tool_configuration_empty", "No run tools are configured");
@@ -1796,11 +1815,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           stream(request, options) {
             return streamAnswerProviderWithEgress(
               request,
-              options?.signal ?? signal
+              options?.signal ?? signal,
+              options?.onToolArguments
             );
           }
         };
         const outcome = await continueProviderToolLoop({
+          deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
             if (!persisted) return undefined;
@@ -1872,6 +1893,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               for (const artifact of result.artifacts ?? []) {
                 await emit(controller, encoder, input.repository, runId, artifact);
               }
+              await artifactGeneration.settled(call.id, result);
             }
             await persistReportedUsageForIncompleteRun();
           },
@@ -1941,7 +1963,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const restored = await input.artifacts.restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId });
                 if (restored) {
                   const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
-                  const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot, runId, state: "complete", userId: input.userId });
+                  const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot, runId, state: restored.status, userId: input.userId });
                   if (settled === "settled" || settled === "reused") return { status: "complete", value: restored };
                 }
               }
@@ -1969,6 +1991,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               }
               if (claim.kind === "settled") {
                 const stored = parsePersistedToolExecutionResult(call, claim.call.result);
+                if (stored) skillResultBudget.restore(stored);
                 if (stored && isKnowledgeCall(call.name) &&
                   knowledgeEvidenceFromToolResult(stored) && input.memoryEgress &&
                   !(await input.memoryEgress.settleRecoveredToolDispatch({
@@ -2031,7 +2054,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !preflightResult && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isArtifactCall(call.name);
+                const externalCall = !preflightResult && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2137,9 +2160,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 }
                 if (preflightResult) {
                   result = preflightResult;
+                } else if (isSkillCall(call.name)) {
+                  if (!input.skillTools) throw new Error("skill_tool_unavailable");
+                  result = await input.skillTools.execute(call, { ...executionContext,
+                    ...(input.prepared.project ? { projectId: input.prepared.project.projectId } : {}) });
                 } else if (isArtifactCall(call.name)) {
                   if (!input.artifacts) throw new Error("artifact_tool_unavailable");
-                  result = await input.artifacts.execute(call, executionContext);
+                  result = await input.artifacts.execute(call, executionContext, { signal });
                 } else if (isImageCall(call.name)) {
                   if (!input.images) throw new Error("image_tool_unavailable");
                   result = await input.images.execute(call, executionContext, signal);
@@ -2303,6 +2330,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   );
                 }
               }
+              result = skillResultBudget.accept(result);
+              result = await deliverSkillWorkspaceBundle({ call, result, request: normalizedRequest,
+                coordinator: input.workspace, runId, userId: input.userId, signal: context.signal,
+                onActivity: onWorkspaceActivity });
+              skillResultBudget.restore(result);
               const storedResult = snapshotToolExecutionResult(
                 result,
                 toolLoopPersistenceLimits.resultBytes
@@ -2337,6 +2369,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           },
           initialRequest: request,
           onEvent: applyProviderEvent,
+          onToolArguments: ({ round, event }) => artifactGeneration.observe(round, event),
           onFinalSynthesis: (budget) => {
             emitTransient(controller, encoder, {
               type: "artifact",
@@ -2380,12 +2413,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             ? normalizeWorkspaceProviderToolName
             : undefined,
           persistToolBatch: async ({ calls, continuation, round }) => {
+            skillResultBudget.begin({ calls, bridge: toolBridge, request: {
+              ...sessionRequest, providerToolMessages: [...continuation.providerToolMessages]
+            } });
+            if (normalizedRequest.artifactTool === true) await artifactGeneration.requested(round, calls.map(modelToolCall));
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name)) {
+                  !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -2510,6 +2547,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 input.repository,
                 runId,
                 liveToolCallStatus(modelToolCall(call), {
+                  ...skillToolActivityFacts(normalizedRequest, call.name, call.arguments),
                   origin: route ? "mcp" : registeredTool
                     ? call.name === "find_tools" ? "discovery" : registeredTool.capability
                     : "tool",
@@ -2674,7 +2712,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;
@@ -3019,6 +3057,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           });
         }
       } finally {
+        await artifactGeneration.stop(signal.aborted ? "cancelled" : "failed").catch(() => undefined);
         if (workspaceTurnTimer) clearTimeout(workspaceTurnTimer);
         if (input.prepared.project) notifyProjectEvent(input.prepared.project.projectId);
         if (activeRunControllers.get(runId) === abortController) {

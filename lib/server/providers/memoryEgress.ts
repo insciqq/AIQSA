@@ -8,7 +8,7 @@ export function requestHasHostedSearchCapability(request: ProviderRunRequest): b
 
 export function requestHasServerExternalTools(request: ProviderRunRequest): boolean {
   return (request.tools ?? []).some((tool) =>
-    tool.capability !== "artifact" && tool.capability !== "memory" && tool.capability !== "session"
+    tool.capability !== "artifact" && tool.capability !== "memory" && tool.capability !== "session" && tool.capability !== "skill"
   );
 }
 

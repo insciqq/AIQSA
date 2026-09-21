@@ -22,6 +22,27 @@ function presentation(
 }
 
 describe("Run lifecycle v2", () => {
+  it("shows safe Skill activity with Pin for a completed load and a catalog omission notice", async () => {
+    const onPinSkill = vi.fn(async () => undefined);
+    const toolActivity = { calls: [
+      { origin: "skill" as const, toolName: "load_skill", status: "complete" as const, round: 1, skillId: "review", skillName: "Careful review" },
+      { origin: "skill" as const, toolName: "read_skill_file", status: "complete" as const, round: 2, skillId: "review", skillName: "Careful review", skillPath: "references/check.md" },
+      { origin: "skill" as const, toolName: "load_skill", status: "error" as const, round: 3, skillId: "missing", skillName: "Missing" }
+    ] };
+    const input = { content: "Reviewed.", presentation: presentation({ kind: "complete" }), onPinSkill, toolActivity,
+      artifact: { skillCatalogOmittedCount: 4, citations: [], reasoningText: [], sources: [] } };
+    const { rerender } = render(<RunAnswerV2 {...input} />);
+    fireEvent.click(screen.getByTestId("tool-activity-disclosure").querySelector("summary")!);
+    expect(screen.getByText("Loaded skill “Careful review”")).toBeVisible();
+    expect(screen.getByText("Read references/check.md · Careful review")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Pin Skill for next turn" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Pin Skill for next turn" }));
+    await waitFor(() => expect(onPinSkill).toHaveBeenCalledWith("review"));
+    rerender(<RunAnswerV2 {...input} pinnedSkillIds={["review"]} />);
+    expect(screen.getByRole("button", { name: "Skill pinned for next turn" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("4 enabled Skills were omitted from Auto discovery for this response");
+  });
+
   it("offers only explicit Load all for a deterministic System Model routing rejection", () => {
     const retry = vi.fn();
     const useLoadAll = vi.fn();

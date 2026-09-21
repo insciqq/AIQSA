@@ -9,6 +9,7 @@ import {
   type KnowledgeSelection
 } from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
+import type { AssistantSkillMode, SkillsSelection } from "../../contracts/skills";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
@@ -52,8 +53,10 @@ export type AssistantContentRow = {
   providerModelId: string;
   runControls: unknown;
   searchPlan: unknown;
-  skillSummaries?: { id: string; name: string; available?: boolean }[];
+  skillSummaries?: { id: string; name: string; available?: boolean; mode?: AssistantSkillMode; instructionApproxTokens?: number }[];
   skillIds: string[];
+  skillModes?: Record<string, AssistantSkillMode>;
+  skills?: SkillsSelection;
   starterPrompts: string[];
   systemPrompt: string;
 };
@@ -132,6 +135,7 @@ const contentSelect = {
   description: true,
   developerPrompt: true,
   responseReminder: true,
+  skillsMode: true,
   id: true,
   knowledgeSelection: true,
   mcpServerIds: true,
@@ -142,8 +146,9 @@ const contentSelect = {
   skillLinks: {
     orderBy: { ordinal: "asc" },
     select: {
-      skill: { select: { currentRevision: { select: { name: true } } } },
-      skillId: true
+      skill: { select: { ownerUserId: true, currentRevision: { select: { name: true } }, sharedRevision: { select: { name: true } } } },
+      skillId: true,
+      mode: true
     }
   },
   starterPrompts: true,
@@ -152,7 +157,7 @@ const contentSelect = {
 
 type ContentRecord = Prisma.AssistantDefinitionGetPayload<{ select: typeof contentSelect }>;
 
-function contentRow(record: ContentRecord): AssistantContentRow {
+function contentRow(record: ContentRecord, userId?: string): AssistantContentRow {
   const knowledge = decodeKnowledgePlan(record.knowledgeSelection);
   if (!knowledge.ok || knowledge.plan.mode === "all_my_knowledge" ||
     knowledge.plan.mode === "inherited") {
@@ -164,6 +169,8 @@ function contentRow(record: ContentRecord): AssistantContentRow {
     description: record.description,
     developerPrompt: record.developerPrompt,
     responseReminder: record.responseReminder ?? "",
+    skills: { mode: record.skillsMode },
+    skillModes: Object.fromEntries(record.skillLinks.map((link) => [link.skillId, link.mode])),
     id: record.id,
     knowledgeSelection: knowledge.plan,
     mcpServerIds: [...record.mcpServerIds],
@@ -171,11 +178,10 @@ function contentRow(record: ContentRecord): AssistantContentRow {
     providerModelId: record.providerModelId,
     runControls: record.runControls,
     searchPlan: record.searchPlan,
-    skillSummaries: record.skillLinks.flatMap((link) =>
-      link.skill.currentRevision
-        ? [{ id: link.skillId, name: link.skill.currentRevision.name }]
-        : []
-    ),
+    skillSummaries: record.skillLinks.flatMap((link) => {
+      const revision = link.skill.ownerUserId === userId ? link.skill.currentRevision : link.skill.sharedRevision;
+      return revision ? [{ id: link.skillId, name: revision.name, mode: link.mode }] : [];
+    }),
     skillIds: record.skillLinks.map((link) => link.skillId),
     starterPrompts: [...record.starterPrompts],
     systemPrompt: record.systemPrompt
@@ -207,6 +213,7 @@ function contentDraftData(draft: AssistantDraft): Omit<
     description: draft.description,
     developerPrompt: draft.developerPrompt,
     responseReminder: draft.responseReminder ?? "",
+    skillsMode: draft.skills?.mode ?? "auto",
     knowledgeSelection: draft.knowledgeSelection as unknown as Prisma.InputJsonValue,
     mcpServerIds: [...draft.mcpServerIds],
     name: draft.name,
@@ -224,14 +231,16 @@ function contentDraftData(draft: AssistantDraft): Omit<
 async function createAssistantSkillLinks(
   tx: Prisma.TransactionClient,
   assistantId: string,
-  skillIds: readonly string[]
+  skillIds: readonly string[],
+  skillModes: Readonly<Record<string, AssistantSkillMode>> = {}
 ): Promise<void> {
   if (skillIds.length === 0) return;
   await tx.assistantSkill.createMany({
     data: skillIds.map((skillId, ordinal) => ({
       assistantId,
       ordinal,
-      skillId
+      skillId,
+      mode: skillModes[skillId] ?? "pinned"
     }))
   });
 }
@@ -380,6 +389,7 @@ async function skillDependenciesAvailable(
       OR: [
         { ownerUserId: userId },
         {
+          sharedRevisionId: { not: null },
           publications: {
             some: {
               OR: [
@@ -425,6 +435,7 @@ async function skillsReachPublicationAudience(
       currentRevisionId: { not: null },
       deletedAt: null,
       id: { in: ids },
+      sharedRevisionId: { not: null },
       publications: {
         some: audience.scope === "installation"
           ? { scope: "installation" }
@@ -655,7 +666,7 @@ export function createPrismaAssistantRepository(
       ownerDisplayName: definition.owner.displayName,
       pinned,
       published: definition.publications.length > 0 || (owned && definition.projectBindings.length > 0),
-      content: contentRow(definition),
+      content: contentRow(definition, userId),
       updatedAt: definition.updatedAt,
       version: definition.version
     };
@@ -673,7 +684,7 @@ export function createPrismaAssistantRepository(
         const definition = await tx.assistantDefinition.create({
           data: { ...contentDraftData(draft), ownerUserId: userId }
         });
-        await createAssistantSkillLinks(tx, definition.id, draft.skillIds);
+        await createAssistantSkillLinks(tx, definition.id, draft.skillIds, draft.skillModes);
         return { assistantId: definition.id, kind: "ok" as const };
       });
     },
@@ -764,6 +775,7 @@ export function createPrismaAssistantRepository(
                 description: source.content.description,
                 developerPrompt: source.content.developerPrompt,
                 responseReminder: source.content.responseReminder ?? "",
+                skillsMode: source.content.skills?.mode ?? "auto",
                 knowledgeSelection: source.content.knowledgeSelection as unknown as Prisma.InputJsonValue,
                 mcpServerIds: [...source.content.mcpServerIds],
                 name: copyName,
@@ -774,7 +786,7 @@ export function createPrismaAssistantRepository(
                 systemPrompt: source.content.systemPrompt
               }
             });
-            await createAssistantSkillLinks(tx, definition.id, source.content.skillIds);
+            await createAssistantSkillLinks(tx, definition.id, source.content.skillIds, source.content.skillModes);
             return { assistantId: definition.id, kind: "ok" as const };
           }, {
             isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
@@ -891,7 +903,7 @@ export function createPrismaAssistantRepository(
             where: { id: assistantId }
           });
           await tx.assistantSkill.deleteMany({ where: { assistantId } });
-          await createAssistantSkillLinks(tx, assistantId, draft.skillIds);
+          await createAssistantSkillLinks(tx, assistantId, draft.skillIds, draft.skillModes);
           return { assistantId, kind: "ok" as const };
         });
       } catch (error) {
@@ -1172,6 +1184,10 @@ export function createPrismaAssistantRepository(
         if (!binding || binding.assistant.archivedAt || binding.assistant.providerModel.modelClass !== "answer") {
           return { code: "assistant_not_available", ok: false, status: 404 };
         }
+        const skillIds = binding.assistant.skillLinks.map((link) => link.skillId);
+        if (skillIds.length && await tx.projectSkillBinding.count({ where: {
+          projectId, skillId: { in: skillIds }, skill: { archivedAt: null, deletedAt: null, sharedRevisionId: { not: null } }
+        } }) !== skillIds.length) return { code: "assistant_not_available", ok: false, status: 404 };
         return materialize(contentRow(binding.assistant), binding.assistant.version,
           binding.assistant.providerModel.connectionId);
       });
@@ -1182,6 +1198,9 @@ export function createPrismaAssistantRepository(
           WHERE "id" = ${assistantId} FOR SHARE`;
         const entry = await loadAccessEntryWith(tx, userId, assistantId);
         if (!entry || entry.archived) {
+          return { code: "assistant_not_available", ok: false, status: 404 };
+        }
+        if (!await skillDependenciesAvailable(tx, userId, entry.content.skillIds)) {
           return { code: "assistant_not_available", ok: false, status: 404 };
         }
         const model = await tx.providerModel.findUnique({
@@ -1217,6 +1236,8 @@ export function createPrismaAssistantRepository(
       runControls,
       searchPlan: searchPlan.plan,
       skillIds: [...content.skillIds],
+      skillModes: content.skillModes ?? Object.fromEntries(content.skillIds.map((id) => [id, "pinned" as const])),
+      skills: content.skills ?? { mode: "auto" },
       systemPrompt: content.systemPrompt
     };
     return { assistant, ok: true };

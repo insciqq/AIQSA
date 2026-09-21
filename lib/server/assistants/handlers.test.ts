@@ -457,8 +457,8 @@ describe("assistant detail handler", () => {
               optionIds: ["openai-native-web-search", "hidden-search"]
             },
             skillSummaries: [
-              { id: "skill-review", name: "Careful reviewer" },
-              { id: "skill-finish", name: "Action closer" }
+              { id: "skill-review", name: "Careful reviewer", instructionApproxTokens: 42 },
+              { id: "skill-finish", name: "Action closer", instructionApproxTokens: 12 }
             ],
             skillIds: ["skill-review", "skill-finish"]
           })
@@ -490,8 +490,8 @@ describe("assistant detail handler", () => {
     });
     expect(content.skillIds).toEqual(["skill-review", "skill-finish"]);
     expect(body.assistant.skills).toEqual([
-      { id: "skill-review", name: "Careful reviewer" },
-      { id: "skill-finish", name: "Action closer" }
+      { id: "skill-review", name: "Careful reviewer", instructionApproxTokens: 42 },
+      { id: "skill-finish", name: "Action closer", instructionApproxTokens: 12 }
     ]);
     expect(body.assistant.publications).toBeUndefined();
     expect(body.assistant.version).toBeUndefined();

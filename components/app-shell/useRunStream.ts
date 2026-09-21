@@ -26,6 +26,7 @@ type UseRunStreamInput = {
   appendRunEventView(event: RunEventView, chatId: string): void;
   appendSseParseWarningOnce(event: RunEventView, chatId: string, warningLogged: boolean): boolean;
   applyChatUpdate(event: RunEventView, expectedChatId: string): boolean;
+  onStreamEnded?(chatId: string, status: RunStreamTerminalStatus | "interrupted"): void;
 };
 
 type ConsumeRunStreamInput = {
@@ -51,7 +52,8 @@ type ConsumeRunStreamResult = {
 export function useRunStream({
   appendRunEventView,
   appendSseParseWarningOnce,
-  applyChatUpdate
+  applyChatUpdate,
+  onStreamEnded
 }: UseRunStreamInput) {
   return useCallback(
     async function consumeRunStream({
@@ -137,33 +139,38 @@ export function useRunStream({
       let buffer = "";
       let done = false;
 
-      while (!done) {
-        const result = await reader.read();
-        done = result.done;
-        buffer += decoder.decode(result.value ?? new Uint8Array(), { stream: !done });
-        const chunks = buffer.split("\n\n");
-        buffer = chunks.pop() ?? "";
+      try {
+        while (!done) {
+          const result = await reader.read();
+          done = result.done;
+          buffer += decoder.decode(result.value ?? new Uint8Array(), { stream: !done });
+          const chunks = buffer.split("\n\n");
+          buffer = chunks.pop() ?? "";
 
-        for (const chunk of chunks) {
-          const event = parseSseBlock(chunk);
-          if (event) {
-            handleEvent(event);
+          for (const chunk of chunks) {
+            const event = parseSseBlock(chunk);
+            if (event) {
+              handleEvent(event);
+            }
           }
         }
-      }
 
-      const trailing = parseSseBlock(buffer.trim());
-      if (trailing) {
-        handleEvent(trailing);
-      }
-      tokenBuffer.flush();
+        const trailing = parseSseBlock(buffer.trim());
+        if (trailing) {
+          handleEvent(trailing);
+        }
+        tokenBuffer.flush();
 
-      if (!terminalStatus) {
-        throw new Error("stream_connection_lost");
-      }
+        if (!terminalStatus) {
+          throw new Error("stream_connection_lost");
+        }
 
-      return { failed, receivedChatUpdate, runId, terminalStatus };
+        return { failed, receivedChatUpdate, runId, terminalStatus };
+      } finally {
+        reader.releaseLock();
+        if (isCurrent()) onStreamEnded?.(chatId, terminalStatus ?? "interrupted");
+      }
     },
-    [appendRunEventView, appendSseParseWarningOnce, applyChatUpdate]
+    [appendRunEventView, appendSseParseWarningOnce, applyChatUpdate, onStreamEnded]
   );
 }

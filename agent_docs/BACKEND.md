@@ -7,7 +7,7 @@ Scope: HTTP/API and control-plane boundaries.
 
 [`app/api/`](../app/api/) owns routes and methods; [`lib/contracts/`](../lib/contracts/) owns client-safe wire shapes. Authenticate, bound/decode input, invoke the server owner, and serialize an explicit projection. Recheck ownership, entitlement, and lifecycle at the operation; browser filtering grants no authority. Browser mutations use the shared same-origin and bounded-body boundary. Stable errors omit raw exceptions and resource-existence clues.
 
-Project SSE uses session authentication and reauthorizes membership during delivery. Cursors order invalidations but grant no authority; expired history requires canonical resync and access loss closes delivery. Mutations remain bounded HTTP requests. Skill lists expose metadata; full instructions require individually authorized detail reads and discovery/pagination stay server-side.
+Project SSE authenticates sessions and reauthorizes membership during delivery. Cursors order invalidations, never grant authority; expired history requires canonical resync, and access loss closes delivery. Mutations stay bounded. Skill lists expose metadata; instructions/files require authorized reads. Discovery/pagination stay server-side.
 
 Dependency direction belongs to [Architecture](ARCHITECTURE.md), authentication threats to [Security](SECURITY.md).
 
@@ -19,7 +19,7 @@ Diagnostics validate event fields at runtime. HTTP completion, operation outcome
 
 Configuration transitions use optimistic concurrency and atomic validation. Never silently clamp, substitute, or partially apply a multi-resource change. Accepted runs retain their admitted configuration; edits affect future work.
 
-Assistant publication must preserve direct Skill audience coverage. Project publication or explicit manager refresh applies the complete eligible dependency plan atomically; later Assistant edits never silently change Project grants. Missing dependencies make it unavailable until authorized refresh. Unlink/unpublish clears affected defaults/plans/dependent authorities atomically and reports safe consequences.
+Assistant publication must preserve direct Skill audience coverage and require approved revisions for all linked Skills. Project publication or explicit manager refresh applies the complete eligible dependency plan atomically; later Assistant edits never silently change Project grants. Missing dependencies make it unavailable until authorized refresh. Unlink/unpublish clears affected defaults/plans/dependent authorities atomically and reports safe consequences.
 
 Answer recommendations and purpose-specific System Model assignments are independent and grant no entitlement. Each system role uses its configured deployment and installation credential without substitution. Consolidated administration does not merge domain ownership: Knowledge activation creates an immutable profile with explicit reprocessing/reindexing, while Personal Memory retains owner-scoped entitlement and generation rules.
 

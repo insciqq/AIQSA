@@ -517,7 +517,8 @@ export function useRunControlsActions({
       avatar: import("@/lib/contracts/assistants").AssistantAvatarRecipe;
       description: string;
       id: string;
-      includedSkills?: { id: string; name: string }[];
+      includedSkills?: { id: string; name: string; mode?: "pinned" | "available"; instructionApproxTokens?: number }[];
+      skillsMode?: "auto" | "off";
       knowledgeLabel?: string | null;
       knowledgeResourceCount?: number;
       name: string;
@@ -625,6 +626,9 @@ export function useRunControlsActions({
 
   function setDefaultMcpMode(mode: ChatDefaultMcpMode) {
     void persistUserDefaults({ mcpMode: mode }, { noticeScope: "settings" });
+  }
+  function setDefaultSkillsMode(mode: "auto" | "off") {
+    void persistUserDefaults({ skillsMode: mode }, { noticeScope: "settings" });
   }
 
   function setDefaultKnowledgePlan(plan: KnowledgeSelection | null) {
@@ -772,6 +776,7 @@ export function useRunControlsActions({
     selectSearchStrategy,
     setDefaultKnowledgePlan,
     setDefaultMcpMode,
+    setDefaultSkillsMode,
     setDefaultSearchPlan,
     setSendWithEnter,
     toggleCitationsVisibility,

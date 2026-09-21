@@ -1,4 +1,4 @@
-import { agentFailureCode, agentFailureMessage } from "./failures";
+import { agentFailureCode, agentFailureMessage, type AgentFailureCode } from "./failures";
 import { transportFailureFacts } from "../providers/providerObservability";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import type { ModelRunUsage } from "@/lib/domain/modelRunEvents";
@@ -14,8 +14,28 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function modelFailureCode(error: unknown) {
-  return agentFailureCode(error) ?? (transportFailureFacts(error).category === "dns"
-    ? "agent_provider_dns_failed" : "agent_provider_failed");
+  const existing = agentFailureCode(error);
+  if (existing) return existing;
+  const transport = transportFailureFacts(error);
+  if (transport.category === "dns") return "agent_provider_dns_failed";
+  if (["ECONNRESET", "EPIPE"].includes(transport.code ?? "")) return "agent_provider_connection_lost";
+  return "agent_provider_failed";
+}
+
+class RetryableProviderError extends Error {
+  constructor(code: AgentFailureCode) { super(code); }
+}
+
+function retryableProviderFailure(error: unknown): boolean {
+  if (error instanceof RetryableProviderError) return true;
+  const facts = transportFailureFacts(error);
+  return facts.category === "dns" || facts.category === "connect" ||
+    ["provider_http_request_failed", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "ETIMEDOUT"].includes(facts.code ?? "");
+}
+
+function providerEventFailure(value: unknown): Error {
+  return record(value) && ["server_error", "rate_limit_exceeded"].includes(String(value.code))
+    ? new RetryableProviderError("agent_provider_failed") : new Error("agent_provider_failed");
 }
 
 function admitLocalTools(value: unknown, budget: { remaining: number }, webSearch = false, depth = 0): void {
@@ -78,7 +98,7 @@ export function admittedAgentRequest(value: unknown, modelId: string, maxOutputT
 export function createAgentModelGateway(input: Readonly<{
   configuration: NormalizedRunAgent;
   transport: AgentResponsesTransport;
-  store: Pick<ReturnType<typeof createAgentRunStore>, "assertActive" | "reserveProvider" | "settleProvider">;
+  store: Pick<ReturnType<typeof createAgentRunStore>, "assertActive" | "reserveProvider" | "settleProvider" | "canRetryProvider">;
   signal: AbortSignal;
   onFailure(code: string): Promise<void>;
   onUsage(): Promise<void>;
@@ -96,6 +116,18 @@ export function createAgentModelGateway(input: Readonly<{
       settled = true;
       await input.onUsage();
     };
+    const failure = async (error: unknown) => {
+      let code = modelFailureCode(error);
+      if (attemptId && settled && !signal.aborted && retryableProviderFailure(error)) {
+        try {
+          if (await input.store.canRetryProvider(attemptId)) return code;
+        } catch (authorityError) {
+          code = agentFailureCode(authorityError) ?? code;
+        }
+      }
+      await input.onFailure(code).catch(() => undefined);
+      return code;
+    };
     try {
       await input.store.assertActive();
       const bytes = await readBoundedRequestBody(request, { maxBytes: AGENT_REQUEST_MAX_BYTES, signal });
@@ -112,6 +144,7 @@ export function createAgentModelGateway(input: Readonly<{
       if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
         await response.body?.cancel().catch(() => undefined);
         await settle("ERROR");
+        if ([408, 429, 500, 502, 503, 504].includes(response.status)) throw new RetryableProviderError("agent_provider_failed");
         throw new Error("agent_provider_failed");
       }
       const events = parseSseStream(response.body, { signal, maxBytes: 64 * 1024 * 1024,
@@ -124,27 +157,28 @@ export function createAgentModelGateway(input: Readonly<{
           try {
             const next = await events.next();
             if (next.done) {
-              if (!terminal) throw new Error("agent_provider_incomplete");
+              if (!terminal) throw new RetryableProviderError("agent_provider_connection_lost");
               controller.close();
               return;
             }
             const event = next.value;
             if (event.data === "[DONE]") {
-              if (!terminal) throw new Error("agent_provider_incomplete");
+              if (!terminal) throw new RetryableProviderError("agent_provider_connection_lost");
               controller.enqueue(encoder.encode("data: [DONE]\n\n"));
               return;
             }
             const payload: unknown = JSON.parse(event.data);
             if (!record(payload)) throw new Error("agent_provider_invalid");
-            if (payload.type === "error") throw new Error("agent_provider_failed");
+            if (payload.type === "error") throw providerEventFailure(payload.error ?? payload);
             if (["response.completed", "response.failed", "response.incomplete"].includes(String(payload.type))) {
               if (terminal || !record(payload.response)) throw new Error("agent_provider_invalid");
               terminal = true;
               usage = extractOpenAIUsage(payload.response);
               await settle(payload.type === "response.completed" ? "COMPLETE" : "ERROR");
-              if (payload.type !== "response.completed") throw new Error(payload.type === "response.incomplete" &&
+              if (payload.type === "response.failed") throw providerEventFailure(payload.response.error);
+              if (payload.type === "response.incomplete") throw new Error(
                 record(payload.response.incomplete_details) && payload.response.incomplete_details.reason === "max_output_tokens"
-                ? "agent_generation_output_limit" : "agent_provider_failed");
+                  ? "agent_generation_output_limit" : "agent_provider_failed");
               completed = true;
             }
             controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${event.data}\n\n`));
@@ -158,8 +192,10 @@ export function createAgentModelGateway(input: Readonly<{
             if (completed) return;
             await settle("UNKNOWN").catch(() => undefined);
             await events.return(undefined).catch(() => undefined);
-            const code = modelFailureCode(error);
-            await input.onFailure(code).catch(() => undefined);
+            // Codex owns reconnection and already-executed tool history. A
+            // recoverable physical failure settles its receipt without
+            // revoking the live executor; exhausted/permanent failures do.
+            const code = await failure(error);
             controller.error(new Error(code));
           }
         },
@@ -174,8 +210,7 @@ export function createAgentModelGateway(input: Readonly<{
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
     } catch (error) {
       await settle("UNKNOWN").catch(() => undefined);
-      const code = modelFailureCode(error);
-      await input.onFailure(code).catch(() => undefined);
+      const code = await failure(error);
       return Response.json({ error: { code, message: agentFailureMessage(code) } }, { status: 502 });
     }
   };

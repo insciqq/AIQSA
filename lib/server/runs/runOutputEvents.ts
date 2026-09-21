@@ -28,6 +28,7 @@ type RunOutputCitation = {
 };
 
 type RunOutputGeneratedArtifact = {
+  byteSize?: number;
   artifactId: string;
   entrypoint: string | null;
   kind: "chart" | "game" | "html" | "image" | "slides" | "svg";
@@ -156,6 +157,7 @@ function projectGeneratedArtifact(value: unknown): RunOutputGeneratedArtifact | 
     decoded.title.length > 240 || decoded.versionNumber > 2_147_483_647 ||
     decoded.entrypoint !== null && decoded.entrypoint.length > 192) return null;
   return {
+    ...(decoded.byteSize !== undefined ? { byteSize: decoded.byteSize } : {}),
     artifactId: decoded.artifactId,
     entrypoint: decoded.entrypoint,
     kind: decoded.kind,
@@ -293,7 +295,7 @@ export function isRunOutputArtifactEvent(
     !hasOnlyKeys(event.data, ["artifactType", "payload"])) return false;
 
   if (event.data.artifactType === "generated_artifact") return isRecord(event.data.payload) &&
-    hasOnlyKeys(event.data.payload, ["artifactId", "entrypoint", "kind", "title", "versionId", "versionNumber"]) &&
+    hasOnlyKeys(event.data.payload, ["artifactId", "byteSize", "entrypoint", "kind", "title", "versionId", "versionNumber"]) &&
     projectGeneratedArtifact(event.data.payload) !== null;
   if (event.data.artifactType === "image") return decodeThreadGeneratedImage(event.data.payload) !== null;
   if (event.data.artifactType === "context_status") {

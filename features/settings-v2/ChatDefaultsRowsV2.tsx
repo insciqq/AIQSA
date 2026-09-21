@@ -88,6 +88,8 @@ export function ChatDefaultsRowsV2({
   knowledgeBases,
   knowledgePlan,
   mcpMode,
+  skillsMode = "auto",
+  onSkillsMode,
   onKnowledgePlan,
   onMcpMode,
   onSearchPlan,
@@ -97,6 +99,8 @@ export function ChatDefaultsRowsV2({
   knowledgeBases: readonly ComposerConfigKnowledgeBase[];
   knowledgePlan: KnowledgeSelection | null;
   mcpMode: ChatDefaultMcpMode;
+  skillsMode?: "auto" | "off";
+  onSkillsMode?(mode: "auto" | "off"): void;
   onKnowledgePlan(plan: KnowledgeSelection | null): void;
   onMcpMode(mode: ChatDefaultMcpMode): void;
   onSearchPlan(plan: SearchPlan): void;
@@ -136,6 +140,10 @@ export function ChatDefaultsRowsV2({
           value={mcpMode}
           onChange={onMcpMode}
         />
+      </SettingsRowV2>
+      <SettingsRowV2 description="Let the model load your enabled Skills when useful. Pinned Skills are always included." testId="settings-default-skills" title="Skills">
+        <SettingsSegmentV2 label="Skills default" options={[{ label: "Auto", value: "auto" }, { label: "Off", value: "off" }]}
+          value={skillsMode} onChange={mode => onSkillsMode?.(mode)} />
       </SettingsRowV2>
       <SettingsRowV2 description="Base attached to new chats by default." testId="settings-default-knowledge" title="Knowledge">
         <SettingsSelectV2

@@ -1,16 +1,29 @@
 // @vitest-environment node
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import type { ArtifactOperation } from "@/lib/contracts/artifacts";
+import type { ArtifactOperation, ArtifactReference } from "@/lib/contracts/artifacts";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
 import { prisma } from "../prisma";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
 import type { StorageAdapter, StoredObjectInput } from "../uploads/storage";
 import { createPrismaRetentionRepository } from "../retention/prune";
+import type { ProviderRunRequest } from "../providers/types";
 import { createArtifactService } from "./service";
 
 const operation: ArtifactOperation = { intent: "create", kind: "game", title: "Counter", entrypoint: "index.html",
   files: [{ path: "index.html", mimeType: "text/html", text: '<button id="count">Count</button><script>let n=0;count.onclick=()=>count.textContent=String(++n)</script>' }] };
+function artifactReadRequest(chatId: string, reference: ArtifactReference): ProviderRunRequest {
+  return {
+    artifactTool: true, artifactReferences: [reference], attachmentIds: [], attachments: [], chatId,
+    content: { blocks: [{ type: "text", text: "Read the accepted artifact version." }] },
+    knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
+    modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false,
+      reasoning: false, streaming: false, toolCalling: true, vision: false },
+    modelId: "artifact-read-fixture", provider: "fake", params: {},
+    prompt: { system: null, developer: null }, searchPlan: { mode: "all_selected", options: [] },
+    toolMode: "auto"
+  };
+}
 function barrier() {
   let release!: () => void;
   const wait = new Promise<void>((resolve) => { release = resolve; });
@@ -18,7 +31,7 @@ function barrier() {
 }
 async function fixture(temporary = false) {
   const { owner, chat } = await prisma.$transaction(async (tx) => {
-    const owner = await tx.user.create({ data: { id: `artifact-test-${randomUUID()}`, displayName: "Artifact test" } });
+    const owner = await tx.user.create({ data: { id: `artifact-test-${randomUUID()}`, displayName: "Artifact test", status: "active" } });
     const now = new Date();
     const deadline = temporary ? temporaryRetentionDeadline(now) : null;
     const chat = await tx.chat.create({ data: { userId: owner.id, title: "Artifact test", memoryMode: temporary ? "TEMPORARY" : "EXCLUDED",
@@ -136,15 +149,45 @@ describe("artifact settlement and lifecycle in PostgreSQL", () => {
       await prisma.artifactPublication.update({ where: { id: pub.id }, data: { expiresAt: new Date(0) } });
       expect(await f.service.publicBundle(pub.shareToken)).toBeNull();
       await prisma.artifactPublication.update({ where: { id: pub.id }, data: { expiresAt: null } });
-      const row = await prisma.artifactPublication.findUniqueOrThrow({ where: { id: pub.id } });
-      f.objects.set(row.bundleStorageKey, { body: Buffer.from("corrupted"), contentType: "application/json", storageKey: row.bundleStorageKey });
+      const privateInput = { ownerUserId: f.owner.id, artifactId: version.artifactId, versionId: version.id };
+      const versionRow = await prisma.artifactVersion.findUniqueOrThrow({ where: { id: version.id } });
+      const originalBundle = f.objects.get(versionRow.bundleStorageKey)!;
+      const corruptBundle = Buffer.from(originalBundle.body.toString().replace('"image.png"', '"Image.png"'));
+      expect(corruptBundle.byteLength).toBe(originalBundle.body.byteLength);
+      expect(corruptBundle.equals(originalBundle.body)).toBe(false);
+      f.objects.set(versionRow.bundleStorageKey, { ...originalBundle, body: corruptBundle });
+      await expect(f.service.getPrivateBundle(privateInput)).rejects.toThrow("artifact_bundle_unavailable");
+      f.objects.set(versionRow.bundleStorageKey, originalBundle);
+
+      const blob = await prisma.artifactBlob.findFirstOrThrow({ where: { ownerUserId: f.owner.id } });
+      // The deferred FK still rejects deleting a live blob at commit; owner
+      // cascades below may remove its references before that final check.
+      await expect(prisma.artifactBlob.delete({ where: { id: blob.id } })).rejects.toMatchObject({ code: "P2003" });
+      const originalBlob = f.objects.get(blob.storageKey)!;
+      const corruptBlob = Buffer.from(originalBlob.body);
+      corruptBlob[0] = corruptBlob[0]! ^ 1;
+      f.objects.set(blob.storageKey, { ...originalBlob, body: corruptBlob });
+      await expect(f.service.getPrivateBundle(privateInput)).rejects.toThrow("artifact_blob_unavailable");
+      expect(await f.service.publicZip(pub.shareToken)).toBeNull();
+      f.objects.set(blob.storageKey, originalBlob);
+      expect((await f.service.getPrivateBundle(privateInput))?.body).toEqual(bytes);
+
+      const render = await prisma.artifactRender.findFirstOrThrow({ where: { versionId: version.id } });
+      const originalRender = f.objects.get(render.renderedStorageKey)!;
+      const corruptRender = Buffer.from(originalRender.body);
+      corruptRender[0] = corruptRender[0]! ^ 1;
+      f.objects.set(render.renderedStorageKey, { ...originalRender, body: corruptRender });
       expect(await f.service.publicBundle(pub.shareToken)).toBeNull();
+      f.objects.set(render.renderedStorageKey, originalRender);
+      expect((await f.service.publicBundle(pub.shareToken))?.body).toEqual(bytes);
       expect(await f.service.revoke({ ownerUserId: f.owner.id, publicationId: pub.id })).toBe(true);
       expect(await f.service.revoke({ ownerUserId: f.owner.id, publicationId: pub.id })).toBe(true);
       expect(await f.service.publicBundle(pub.shareToken)).toBeNull();
       await prisma.user.delete({ where: { id: f.owner.id } });
       expect(await prisma.artifact.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
-      expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: { contains: f.owner.id } } })).toBe(2);
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
+      expect(await prisma.artifactVersionBlob.count({ where: { versionId: version.id } })).toBe(0);
+      expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: { contains: f.owner.id } } })).toBe(4);
     } finally { await f.cleanup(); }
   });
 
@@ -208,6 +251,158 @@ describe("artifact settlement and lifecycle in PostgreSQL", () => {
         operation: { ...operation, intent: "update", baseVersionId: first.id } }))!;
       expect(next.versionNumber).toBe(3);
       expect(next.status).toBe("READY");
+    } finally { await f.cleanup(); }
+  });
+});
+
+
+describe("artifact blob/render economy and frozen edits", () => {
+  it("reuses vendored code and font blobs across edits, copies and anonymous snapshots", async () => {
+    const f = await fixture();
+    const root = "https://cdnjs.cloudflare.com/ajax/libs/synthetic/1.2.3/";
+    const resources = new Map([
+      [`${root}library.js`, { bytes: Buffer.from("window.syntheticLibrary = 42;"), mimeType: "text/javascript" }],
+      [`${root}theme.css`, { bytes: Buffer.from('@font-face{font-family:Synthetic;src:url("font.woff2")}body{color:rgb(1,2,3)}'), mimeType: "text/css" }],
+      [`${root}font.woff2`, { bytes: Buffer.from("wOF2synthetic-font"), mimeType: "font/woff2" }]
+    ]);
+    let downloads = 0;
+    const service = createArtifactService(prisma, f.storage, { fetchResource: async input => {
+      downloads++;
+      const resource = resources.get(input.url);
+      if (!resource || downloads > 3) throw new Error("unexpected_external_download");
+      return { ...resource, resolvedUrl: input.url };
+    } });
+    try {
+      const first = (await service.createVersion({ ownerUserId: f.owner.id, sourceChatId: f.chat.id, operation: {
+        intent: "create", kind: "html", title: "Bundled resources", entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html",
+          text: `<script src="${root}library.js"></script><link rel="stylesheet" href="${root}theme.css"><p>version one</p>` }]
+      } }))!;
+      const second = (await service.createVersion({ ownerUserId: f.owner.id, sourceChatId: f.chat.id, operation: {
+        intent: "update", baseVersionId: first.id, edits: [{ path: "index.html", old_string: "version one", new_string: "version two" }]
+      } }))!;
+      const copy = await service.duplicate({ ownerUserId: f.owner.id, artifactId: first.artifactId });
+      expect(downloads).toBe(3);
+      const blobs = await prisma.artifactBlob.findMany({ where: { ownerUserId: f.owner.id } });
+      expect(blobs).toHaveLength(3);
+      expect(new Set(blobs.map(blob => blob.sha256))).toEqual(new Set([...resources.values()].map(resource => createHash("sha256").update(resource.bytes).digest("hex"))));
+      expect(await prisma.artifactVersionBlob.count({ where: { blob: { ownerUserId: f.owner.id } } })).toBe(9);
+      const source = await service.source({ ownerUserId: f.owner.id, artifactId: first.artifactId, versionId: second.id });
+      expect(source?.files.filter(file => file.group === "vendored")).toHaveLength(3);
+      expect(source?.files.find(file => file.path.endsWith("/library.js"))).toMatchObject({ text: resources.get(`${root}library.js`)!.bytes.toString() });
+      expect(source?.files.find(file => file.path.endsWith("/font.woff2"))).toMatchObject({ binary: true, group: "vendored" });
+      expect(source?.files.some(file => "sourceUrl" in file || "resolvedUrl" in file || "sha256" in file)).toBe(false);
+      const context = await service.contextForChat({ ownerUserId: f.owner.id, chatId: f.chat.id });
+      expect(context[0]?.files).toHaveLength(1);
+      const publication = await service.publish({ ownerUserId: f.owner.id, artifactId: first.artifactId, versionId: first.id });
+      const rendered = await service.publicBundle(publication.shareToken);
+      expect(rendered?.body.toString()).toContain("version one");
+      expect(rendered?.body.toString()).not.toContain("version two");
+      expect(rendered?.body.toString()).toContain("window.syntheticLibrary = 42;");
+      expect(rendered?.body.toString()).toContain("data:font/woff2;base64,");
+      expect(downloads).toBe(3);
+      const retention = createPrismaRetentionRepository(prisma);
+      const jobs = await prisma.attachmentDeletionJob.findMany({ where: { storageKey: { in: blobs.map(blob => blob.storageKey) } } });
+      expect(jobs).toHaveLength(3);
+      await service.remove({ ownerUserId: f.owner.id, artifactId: first.artifactId });
+      expect(await service.publicBundle(publication.shareToken)).toBeNull();
+      const retained = await retention.findClaimableAttachmentDeletionJobIds({ claimableBefore: new Date(), limit: 1000 });
+      expect(jobs.some(job => retained.includes(job.id))).toBe(false);
+      expect(await prisma.artifactVersionBlob.count({ where: { blob: { ownerUserId: f.owner.id } } })).toBe(3);
+      await service.remove({ ownerUserId: f.owner.id, artifactId: copy.id });
+      const released = await retention.findClaimableAttachmentDeletionJobIds({ claimableBefore: new Date(), limit: 1000 });
+      expect(released).toEqual(expect.arrayContaining(jobs.map(job => job.id)));
+    } finally { await f.cleanup(); }
+  });
+
+  it("releases binary references after failed settlement while retaining cleanup evidence", async () => {
+    const f = await fixture();
+    try {
+      const bytes = Buffer.from("synthetic image bytes");
+      const image = await prisma.attachment.create({ data: { userId: f.owner.id, chatId: f.chat.id, fileName: "photo.png", mimeType: "image/png", kind: "image", status: "ready",
+        byteSize: bytes.length, checksum: createHash("sha256").update(bytes).digest("hex"), storageKey: `source/${f.owner.id}/failed-photo.png`, metadata: {} } });
+      f.objects.set(image.storageKey, { body: bytes, contentType: image.mimeType, storageKey: image.storageKey });
+      f.setBeforePut(async value => { if (value.storageKey.endsWith(".bundle.json")) throw new Error("synthetic_bundle_failure"); });
+      await expect(f.service.createVersion({ ownerUserId: f.owner.id, operation: { intent: "create", kind: "image", title: "Failed image",
+        files: [{ path: "photo.png", mimeType: "image/png", assetRef: image.id }] } })).rejects.toThrow("synthetic_bundle_failure");
+      const blob = await prisma.artifactBlob.findFirstOrThrow({ where: { ownerUserId: f.owner.id } });
+      expect(await prisma.artifactVersionBlob.count({ where: { blobId: blob.id } })).toBe(0);
+      const job = await prisma.attachmentDeletionJob.findUniqueOrThrow({ where: { storageKey: blob.storageKey } });
+      const retention = createPrismaRetentionRepository(prisma);
+      const claims = await retention.claimAttachmentDeletionJobs({ claimableBefore: new Date(), now: new Date(), limit: 1000 });
+      expect(claims.map(claim => claim.id)).toContain(job.id);
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
+    } finally { await f.cleanup(); }
+  });
+
+  it("deduplicates ten image-bearing versions, synchronizes all chats and shares one immutable render", async () => {
+    const f = await fixture();
+    try {
+      const bytes = Buffer.alloc(5 * 1024 * 1024, 42);
+      const image = await prisma.attachment.create({ data: { userId: f.owner.id, chatId: f.chat.id, fileName: "photo.png", mimeType: "image/png", kind: "image", status: "ready",
+        byteSize: bytes.length, checksum: createHash("sha256").update(bytes).digest("hex"), storageKey: `source/${f.owner.id}/photo.png`, metadata: {} } });
+      f.objects.set(image.storageKey, { body: bytes, contentType: image.mimeType, storageKey: image.storageKey });
+      const first = (await f.service.createVersion({ ownerUserId: f.owner.id, sourceChatId: f.chat.id, operation: {
+        intent: "create", kind: "html", title: "Picture counter", entrypoint: "index.html", files: [
+          { path: "index.html", mimeType: "text/html", text: '<p>count:1</p><img src="photo.png">' },
+          { path: "photo.png", mimeType: "image/png", assetRef: image.id }
+        ] } }))!;
+      const secondChat = await prisma.chat.create({ data: { userId: f.owner.id, title: "Second binding" } });
+      await f.service.prepareEdit({ ownerUserId: f.owner.id, artifactId: first.artifactId, versionId: first.id, chatId: secondChat.id });
+      await prisma.attachment.delete({ where: { id: image.id } }); f.objects.delete(image.storageKey);
+      let version = first;
+      for (let number = 2; number <= 10; number++) {
+        version = (await f.service.createVersion({ ownerUserId: f.owner.id, sourceChatId: f.chat.id, operation: { intent: "update", baseVersionId: version.id,
+          edits: [{ path: "index.html", old_string: `count:${number - 1}`, new_string: `count:${number}` }] } }))!;
+      }
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(1);
+      expect(await prisma.artifactVersionBlob.count({ where: { version: { artifactId: first.artifactId } } })).toBe(10);
+      expect((await prisma.artifactChatBinding.findUniqueOrThrow({ where: { artifactId_chatId: { artifactId: first.artifactId, chatId: secondChat.id } } })).versionId).toBe(version.id);
+      const versionRow = await prisma.artifactVersion.findUniqueOrThrow({ where: { id: version.id } });
+      expect(versionRow.byteSize).toBeLessThan(2048);
+      const storedBundle = JSON.parse(f.objects.get(versionRow.bundleStorageKey)!.body.toString());
+      expect(storedBundle).toMatchObject({ version: 2, files: [expect.anything(), { path: "photo.png", blob: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.length }] });
+      expect(JSON.stringify(storedBundle)).not.toContain("base64");
+      const read = await f.service.execute({ id: "read-call", name: "read_artifact", arguments: { artifact_id: first.artifactId, paths: ["index.html"] } }, {
+        userId: f.owner.id, runId: "accepted-run", request: artifactReadRequest(f.chat.id, { artifactId: first.artifactId, versionId: first.id })
+      });
+      expect(JSON.stringify(read.content)).toContain("count:1"); expect(JSON.stringify(read.content)).not.toContain("count:10");
+      const publications = await Promise.all([1, 2].map(() => f.service.publish({ ownerUserId: f.owner.id, artifactId: first.artifactId, versionId: version.id })));
+      expect(await prisma.artifactRender.count({ where: { versionId: version.id } })).toBe(1);
+      expect((await f.service.publicMetadata(publications[0]!.shareToken))?.title).toBe("Picture counter");
+      const checksumBefore = versionRow.checksum;
+      await prisma.artifactRender.updateMany({ where: { versionId: version.id }, data: { rendererVersion: 1 } });
+      expect((await f.service.publicBundle(publications[0]!.shareToken))?.body.toString()).toContain("count:10");
+      expect(await prisma.artifactRender.count({ where: { versionId: version.id } })).toBe(1);
+      expect((await prisma.artifactVersion.findUniqueOrThrow({ where: { id: version.id } })).checksum).toBe(checksumBefore);
+      const copy = await f.service.duplicate({ ownerUserId: f.owner.id, artifactId: first.artifactId });
+      expect(copy).toMatchObject({ title: "Copy of Picture counter", sourceChatId: null, publicationCount: 0, version: { versionNumber: 1 } });
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(1);
+      const blob = await prisma.artifactBlob.findFirstOrThrow({ where: { ownerUserId: f.owner.id } });
+      const job = await prisma.attachmentDeletionJob.findUniqueOrThrow({ where: { storageKey: blob.storageKey } });
+      const retention = createPrismaRetentionRepository(prisma);
+      await f.service.remove({ ownerUserId: f.owner.id, artifactId: first.artifactId });
+      expect(await retention.findClaimableAttachmentDeletionJobIds({ claimableBefore: new Date(), limit: 1000 })).not.toContain(job.id);
+      await f.service.remove({ ownerUserId: f.owner.id, artifactId: copy.id });
+      const claims = await retention.claimAttachmentDeletionJobs({ claimableBefore: new Date(), now: new Date(), limit: 1000 });
+      expect(claims.map(claim => claim.id)).toContain(job.id);
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
+    } finally { await f.cleanup(); }
+  });
+
+  it("keeps a large focused artifact as a compact manifest and rejects cross-owner reads", async () => {
+    const f = await fixture();
+    try {
+      const version = (await f.service.createVersion({ ownerUserId: f.owner.id, sourceChatId: f.chat.id, operation: {
+        intent: "create", title: "Large", kind: "html", entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", text: "x".repeat(300 * 1024) }]
+      } }))!;
+      const context = await f.service.contextForChat({ ownerUserId: f.owner.id, chatId: f.chat.id });
+      expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThan(8 * 1024);
+      expect(context[0]!.files[0]).toMatchObject({ path: "index.html", bytes: 300 * 1024 });
+      expect(context[0]!.files[0]).not.toHaveProperty("text");
+      const result = await f.service.execute({ id: "call", name: "read_artifact", arguments: { artifact_id: version.artifactId } }, {
+        userId: "foreign", runId: "run", request: artifactReadRequest(f.chat.id, { artifactId: version.artifactId, versionId: version.id })
+      });
+      expect(result.status).toBe("error"); expect(JSON.stringify(result)).not.toContain("Large");
     } finally { await f.cleanup(); }
   });
 });

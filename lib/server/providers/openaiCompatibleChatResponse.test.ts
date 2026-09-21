@@ -366,3 +366,18 @@ describe("OpenAI-compatible Chat Completions response", () => {
     expect((failure as Error).message).not.toContain(remoteSecret);
   });
 });
+
+
+it("observes Chat argument fragments privately, including a late name and a final replacement", async () => {
+  const observations: import("./types").ProviderToolArgumentEvent[] = [];
+  const args = '{"files":[{"text":"private-code-canary"}]}';
+  const frames = [
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", function: { arguments: args.slice(0, 12) } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "create_artifact", arguments: args.slice(12) } }] } }] },
+    { choices: [{ finish_reason: "tool_calls", delta: {} }] }
+  ].map(payload => `data: ${JSON.stringify(payload)}\n\n`);
+  const normalized = await collect(streamOpenAICompatibleChatSseResponse(sseResponse([...frames, "data: [DONE]\n\n"]), responseContext,
+    undefined, DEFAULT_PROVIDER_STREAM_LIMITS, async event => { observations.push(event); }));
+  expect(observations).toMatchObject([{ name: "create_artifact", callId: "call-1", snapshot: args }]);
+  expect(JSON.stringify(normalized.events)).not.toContain("private-code-canary");
+});

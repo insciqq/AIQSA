@@ -17,7 +17,7 @@ for (const theme of ["light", "dark"]) {
           return rect.left >= box.left - 1 && rect.right <= box.right + 1;
         });
       })).toBe(true);
-      await expect(page.getByRole("button", { name: "Manage selected Skills" })).toHaveText("Skills: 3");
+      await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 3");
       await expect(page.getByRole("button", { name: "Add", exact: true })).toBeInViewport();
       await expect(page.getByRole("button", { name: "Send message" })).toBeInViewport();
       const workspace = page.getByRole("button", { name: /Workspace details/ });
@@ -34,7 +34,7 @@ for (const theme of ["light", "dark"]) {
     // Actual composer width, independent of a wide desktop viewport and at enlarged text.
     await page.addStyleTag({ content: ".v2-composer-wrap { width: 340px; } html { font-size: 32px; }" });
     await expect.poll(() => page.getByLabel("Active capabilities").evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-    await expect(page.getByRole("button", { name: "Manage selected Skills" })).toBeInViewport();
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toBeInViewport();
   });
 }
 

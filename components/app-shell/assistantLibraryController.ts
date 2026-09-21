@@ -79,6 +79,7 @@ function editorErrorText(code: string, message: string): string {
     assistant_skill_audience_mismatch:
       "Share every included Skill with this audience before publishing the Assistant.",
     assistant_skills_invalid: "The Skill selection is invalid.",
+    skills_count_exceeded: "Choose up to 32 Always and 64 On demand Skills. Change delivery or remove a Skill before saving.",
     assistant_skills_not_available: "One selected Skill is no longer available to you.",
     assistant_knowledge_bases_invalid: "The Knowledge selection is invalid.",
     assistant_starter_prompts_invalid: "Starter prompts must be short, non-empty lines.",
@@ -161,6 +162,8 @@ function blankEditorDraft(prefill?: Partial<AssistantEditorDraftState>): Assista
     searchOptionIds: [],
     searchPlanMode: "all_selected",
     skillIds: [],
+    skillModes: {},
+    skills: { mode: "auto" },
     starterPrompts: [],
     streamMode: null,
     systemPrompt: "",
@@ -196,7 +199,8 @@ export type AssistantLibraryControllerInput = {
       avatar: import("@/lib/contracts/assistants").AssistantAvatarRecipe;
       description: string;
       id: string;
-      includedSkills: { id: string; name: string }[];
+      includedSkills: { id: string; name: string; mode?: "pinned" | "available"; instructionApproxTokens?: number }[];
+      skillsMode?: "auto" | "off";
       knowledgeLabel?: string | null;
       knowledgeResourceCount?: number;
       name: string;
@@ -379,6 +383,8 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       searchOptionIds: [...controls.selectedSearchOptionIds],
       searchPlanMode: controls.searchPlanMode,
       skillIds: controls.selectedSkills.map((skill) => skill.id),
+      skillModes: Object.fromEntries(controls.selectedSkills.map(skill => [skill.id, "pinned" as const])),
+      skills: { mode: controls.skillsMode },
       streamMode: controls.streamMode,
       temperature: controls.temperature
     });
@@ -669,18 +675,19 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     if (options.navigate) {
       input.activateBlankWorkspace();
     }
-    const skillSummaries = new Map(
-      input.skills.map((skill) => [skill.id, { id: skill.id, name: skill.name }] as const)
+    const skillSummaries = new Map<string, { id: string; name: string; instructionApproxTokens?: number }>(
+      input.skills.map((skill) => [skill.id, { id: skill.id, name: skill.name, instructionApproxTokens: skill.instructionApproxTokens }] as const)
     );
-    for (const skill of detail.skills ?? []) skillSummaries.set(skill.id, skill);
+    for (const skill of detail.skills ?? []) skillSummaries.set(skill.id, { ...skillSummaries.get(skill.id), ...skill });
     const applied = input.applyAssistantToComposer({
       assistant: {
         avatar: detail.content.avatar,
         description: detail.content.description,
         id: detail.id,
-        includedSkills: detail.content.skillIds.map((id) =>
-          skillSummaries.get(id) ?? { id, name: "Unavailable Skill" }
-        ),
+        includedSkills: detail.content.skillIds.map((id) => ({
+          ...(skillSummaries.get(id) ?? { id, name: "Unavailable Skill" }), mode: detail.content.skillModes?.[id] ?? "pinned"
+        })),
+        skillsMode: detail.content.skills?.mode ?? "auto",
         knowledgeLabel: snapshot.data?.assistants.find((assistant) =>
           assistant.id === assistantId
         )?.fingerprint.knowledgeLabel ?? null,

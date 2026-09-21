@@ -27,6 +27,72 @@ function session(key: ReturnType<typeof composerSessionKey>) {
 }
 
 describe("composer session store", () => {
+  it("transfers creation to an admitted chat, preserves rejected intent and consumes only the exact selection", () => {
+    const store = useComposerSessionStore.getState();
+    const blank = composerSessionKey(null);
+    const saved = composerSessionKey("created-chat");
+    store.activateSession(blank);
+    const create = { intent: "create" as const };
+    store.updateSession(blank, { artifactCreate: create, draft: "Make a clock" });
+    const rejected = store.beginSend(blank)!;
+    store.finishSend(rejected, "failed", "Try again");
+    expect(session(blank).artifactCreate).toBe(create);
+    const send = store.beginSend(blank)!;
+    expect(store.transferSession(blank, saved)).toBe(true);
+    expect(store.acceptArtifactIntent(send)).toBe(true);
+    expect(session(saved)).toMatchObject({ artifactCreate: null, draft: "" });
+    expect(session(saved).pendingSend?.generation).toBe(send.generation);
+    const replacement = { intent: "create" as const };
+    store.updateSession(saved, { artifactCreate: replacement, draft: "Create a second page" });
+    store.finishSend(send, "succeeded", null, true, "run");
+    expect(session(saved)).toMatchObject({ artifactCreate: replacement, draft: "Create a second page" });
+    const another = store.beginSend(saved)!;
+    store.updateSession(saved, { artifactCreate: { intent: "create" } });
+    expect(store.acceptArtifactIntent(another)).toBe(false);
+    store.finishSend(another, "succeeded", null, true, "run2");
+    expect(session(saved).artifactCreate).not.toBeNull();
+  });
+  it("keeps an artifact edit in its chat through rejection and clears it only on admission", () => {
+    const store = useComposerSessionStore.getState();
+    const source = composerSessionKey("artifact-chat");
+    const other = composerSessionKey("other-chat");
+    const target = { artifactId: "artifact", versionId: "v1", title: "A small game", versionNumber: 1 };
+    store.activateSession(source);
+    store.updateSession(source, { artifactEdit: target, draft: "Make the button larger" });
+    const rejected = store.beginSend(source)!;
+    expect(rejected.artifactEdit).toEqual(target);
+    expect(session(source).artifactEdit).toEqual(target);
+    store.activateSession(other);
+    expect(session(other).artifactEdit).toBeNull();
+    store.finishSend(rejected, "failed", "A newer version exists");
+    expect(session(source)).toMatchObject({ artifactEdit: target, draft: "Make the button larger" });
+    const admitted = store.beginSend(source)!;
+    const pendingSend = session(source).pendingSend;
+    expect(store.acceptArtifactIntent(admitted)).toBe(true);
+    expect(session(source).artifactEdit).toBeNull();
+    expect(session(source).pendingSend).toBe(pendingSend);
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(other);
+    store.finishSend(admitted, "succeeded", null, true, "accepted-run");
+    expect(session(other).draft).toBe("");
+  });
+
+  it("preserves a new identical selection made before admission and a selection cancelled before admission", () => {
+    const store = useComposerSessionStore.getState();
+    const source = composerSessionKey("artifact-chat");
+    const target = { artifactId: "artifact", versionId: "v1", title: "Counter", versionNumber: 1 };
+    store.activateSession(source);
+    store.updateSession(source, { artifactEdit: target, draft: "Make the button larger" });
+    const admitted = store.beginSend(source)!;
+    store.updateSession(source, { artifactEdit: { ...target }, draft: "Next edit" });
+    expect(store.acceptArtifactIntent(admitted)).toBe(false);
+    expect(session(source).pendingSend?.generation).toBe(admitted.generation);
+    store.finishSend(admitted, "succeeded", null, true, "accepted-run");
+    expect(session(source)).toMatchObject({ artifactEdit: target, draft: "Next edit", pendingSend: null });
+    const next = store.beginSend(source)!;
+    store.finishSend(next, "cancelled");
+    expect(session(source).artifactEdit).toEqual(target);
+  });
+
   it("retains Agent for the open conversation across sends without enabling a new chat", () => {
     const store = useComposerSessionStore.getState();
     const blank = composerSessionKey(null);
@@ -318,6 +384,8 @@ describe("composer session store", () => {
     expect(store.updateSession(composerSessionKey("deleted"), { draft: "resurrected" })).toBe(false);
     expect(session(chat)).toEqual({
       agentEnabled: false,
+      artifactCreate: null,
+      artifactEdit: null,
       attachments: [],
       draft: "",
       editGeneration: 0,

@@ -26,6 +26,7 @@ export type AdminSectionId =
   | "retrieval"
   | "roles"
   | "search"
+  | "skills"
   | "usage"
   | "users"
   | "workspace";
@@ -58,6 +59,7 @@ export const adminSections = [
   { Icon: ShieldCheck, group: "people", id: "access-rules", label: "Sign-up rules" },
   { Icon: Megaphone, group: "people", id: "announcements", label: "Announcements" },
   { Icon: Wrench, group: "platform", id: "mcp", label: "MCP servers" },
+  { Icon: BookOpenText, group: "platform", id: "skills", label: "Skills" },
   { Icon: SquareTerminal, group: "platform", id: "workspace", label: "Workspace" },
   { Icon: Mail, group: "platform", id: "email", label: "Email" },
   { Icon: BarChart3, group: "platform", id: "usage", label: "Usage" }

@@ -27,6 +27,24 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> 
 }
 
 describe("tar archive writer", () => {
+  it("preserves executable modes and exact UTF-8 ustar boundaries", () => {
+    const path = `${"я".repeat(77)}x/${"界".repeat(33)}x`;
+    const header = tarHeader(path, 0, new Date(0), 0o755);
+    expect(`${field(header, 345, 155)}/${field(header, 0, 100)}`).toBe(path);
+    expect(parseInt(field(header, 100, 8), 8)).toBe(0o755);
+    const blocks = tarEntryBlocks({ content: "#!", mtime: new Date(0), path: "scripts/run.sh", mode: 0o755 });
+    expect(parseInt(field(blocks[0]!, 100, 8), 8)).toBe(0o755);
+  });
+
+  it.each(["a".repeat(101), `${"я".repeat(78)}/${"n".repeat(100)}`, "/absolute", "../escape", "a/../escape", "a\\b", "bad\ud800"])(
+    "rejects an unsafe or unrepresentable path without truncation: %s", path => {
+      expect(() => tarHeader(path, 1, new Date(0))).toThrow("tar_path_invalid");
+    });
+
+  it("rejects unrepresentable sizes instead of truncating numeric fields", () => {
+    expect(() => tarHeader("file", 8 ** 11, new Date(0))).toThrow("tar_field_invalid");
+    expect(() => tarHeader("file", -1, new Date(0))).toThrow("tar_field_invalid");
+  });
   it("writes a ustar header whose checksum matches its bytes", () => {
     const header = tarHeader("archived/release-2026-09-01.md", 7, new Date("2026-09-01T00:00:00Z"));
     expect(header.length).toBe(512);

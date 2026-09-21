@@ -367,8 +367,80 @@ describe("message run actions", () => {
     vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
   });
 
-  it("rejects over-limit Assistant and manual Skills before admission without consuming the draft", async () => {
+  it("sends an exact artifact edit target and retains the target and draft when admission rejects it", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: "artifact_version_conflict" }, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Make the counter larger" });
+    const artifactEdit = { artifactId: "artifact-1", versionId: "version-2", versionNumber: 2, title: "Counter" };
+    useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { artifactEdit });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const request = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(request[1].body))).toMatchObject({
+      artifactEdit: { artifactId: "artifact-1", versionId: "version-2" },
+      content: { blocks: [{ type: "text", text: "Make the counter larger" }] }
+    });
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+      artifactEdit, draft: "Make the counter larger", pendingSend: null
+    });
+  });
+
+  it("sends creation intent and retains it when admission rejects the request", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: "artifact_edit_unavailable" }, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Create a page" });
+    useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { artifactCreate: { intent: "create" } });
+    await actions.submitComposer();
+    const request = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(request[1].body))).toMatchObject({ artifactIntent: "create" });
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ artifactCreate: { intent: "create" }, draft: "Create a page", pendingSend: null });
+  });
+
+  it("blocks an existing creation chip before fetch when Agent becomes enabled", async () => {
     const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Create a page" });
+    useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { artifactCreate: { intent: "create" }, agentEnabled: true });
+    await actions.submitComposer();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ artifactCreate: { intent: "create" }, draft: "Create a page", pendingSend: null });
+    expect(actions.setNotice).toHaveBeenCalledWith({ kind: "error", text: "Not available in Agent mode" });
+  });
+
+  it("consumes an admitted artifact edit before the answer arrives without releasing send or consuming the next intent", async () => {
+    let release!: () => void;
+    const stream = new Promise<void>(resolve => { release = resolve; });
+    let accepted!: () => void;
+    const admission = new Promise<void>(resolve => { accepted = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("")));
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Make the counter larger",
+      consumeRunStream: async ({ onRunId }) => {
+        onRunId("accepted-run");
+        accepted();
+        await stream;
+        return { failed: false, receivedChatUpdate: true, runId: "accepted-run", terminalStatus: "complete" };
+      }
+    });
+    const artifactEdit = { artifactId: "artifact-1", versionId: "version-2", versionNumber: 2, title: "Counter" };
+    const store = useComposerSessionStore.getState();
+    store.updateSession(actions.sourceSessionKey, { artifactEdit });
+    const sending = actions.submitComposer();
+    await admission;
+    expect(actions.session(actions.sourceSessionKey).artifactEdit).toBeNull();
+    expect(actions.session(actions.sourceSessionKey).pendingSend).not.toBeNull();
+    expect(actions.activeStreamAbortRef.current.has("chat-a")).toBe(true);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-a"]).toMatchObject({ runId: "accepted-run" });
+    expect(useRunLifecycleStore.getState().activeStreams["chat-a"].answerComplete).toBeUndefined();
+    store.updateSession(actions.sourceSessionKey, { artifactEdit: { ...artifactEdit }, draft: "Another change" });
+    release();
+    await sending;
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ artifactEdit, draft: "Another change", pendingSend: null });
+  });
+
+  it("preserves the draft when server Skill admission rejects the effective selection", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: "skills_count_exceeded", actual: 33, limit: 32 }, { status: 400 }));
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({ attachments: [], draft: "Keep this draft" });
     useComposerControlStore.setState({
@@ -376,14 +448,14 @@ describe("message run actions", () => {
         id: "assistant", name: "Reviewer", description: "", promptCharacterCount: 0, starterPrompts: [],
         avatar: { kind: "generated", recipeVersion: 1, paletteId: "ocean", backgroundShape: "circle",
           foregroundShape: "diamond", accents: [0, 2], rotations: [0, 1] },
-        includedSkills: Array.from({ length: 6 }, (_, index) => ({ id: `included-${index}`, name: `Included ${index}` }))
+        includedSkills: Array.from({ length: 30 }, (_, index) => ({ id: `included-${index}`, name: `Included ${index}` }))
       },
       selectedSkills: Array.from({ length: 3 }, (_, index) => ({ id: `manual-${index}`, name: `Manual ${index}`,
         description: "", promptCharacterCount: 0 }))
     });
     await actions.submitComposer();
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(actions.setNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error", text: expect.stringContaining("at most 8 Skills") }));
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(actions.session(actions.sourceSessionKey).operationError).toContain("33 Skills are pinned; the limit is 32");
     expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "Keep this draft", pendingSend: null });
     expect(useComposerControlStore.getState().selectedSkills).toHaveLength(3);
   });
@@ -943,6 +1015,7 @@ describe("message run actions", () => {
     });
     useComposerControlStore.setState({
       knowledgePlanSource: "assistant",
+      skillsMode: "off",
       selectedAssistant: {
         avatar: {
           accents: [0],
@@ -1004,6 +1077,20 @@ describe("message run actions", () => {
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
       knowledgePlan: { baseIds: ["base-policies", "base-release"] }
     });
+  });
+
+  it.each(["auto", "off"] as const)("sends only explicit Off while preserving pinned Skills: %s", async skillsMode => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Use pinned instructions" });
+    useComposerControlStore.setState({ skillsMode, selectedSkills: [{ id: "review", name: "Review", description: "", promptCharacterCount: 20 }] });
+    const sending = actions.submitComposer();
+    useComposerControlStore.getState().setSkillsMode(skillsMode === "off" ? "auto" : "off");
+    await sending;
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body.skillIds).toEqual(["review"]);
+    if (skillsMode === "off") expect(body.skills).toEqual({ mode: "off" });
+    else expect(body).not.toHaveProperty("skills");
   });
 
   it("freezes Load all and manual Skills in the outgoing run", async () => {

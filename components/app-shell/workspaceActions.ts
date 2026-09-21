@@ -731,6 +731,7 @@ export function useWorkspaceActions({
       useComposerControlStore.getState().setMcpSelection({
         mode: catalog?.defaults.mcpMode ?? "auto"
       });
+      useComposerControlStore.getState().setSkillsMode(catalog?.defaults.skillsMode ?? "auto");
     }
   }
 

@@ -1,5 +1,6 @@
 import { imageGenerationForStorage } from "../images/defaultImages";
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
+import { defaultSkillTools } from "../skills/defaultSkillTools";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
@@ -49,6 +50,7 @@ function createDefaultChatPdf() {
     continueRun: createChatPdfRunContinuation({
       images: imageGenerationForStorage(storage),
       artifacts: artifactServiceForStorage(storage),
+      skillTools: defaultSkillTools,
       chatTitleGenerator: createPrismaChatTitleGenerator(),
       knowledgeAdmission: knowledgeRunAdmissionService, knowledgeExecutor: knowledgeToolExecutor,
       knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle, memoryEgress: defaultMemoryToolEgressReceiptService,

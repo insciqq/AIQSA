@@ -34,6 +34,7 @@ describe("composer control store", () => {
   });
 
   it("applies assistant selection and control defaults", () => {
+    useComposerControlStore.getState().setSkillsMode("off");
     useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
     useComposerControlStore.getState().applyAssistantSelection({
       assistant: assistantSelection(),
@@ -51,6 +52,8 @@ describe("composer control store", () => {
       searchOptionIds: ["perplexity-tool-search"],
       searchPlanMode: "model_choice"
     });
+    useComposerControlStore.getState().setSkillsMode("auto");
+    expect(useComposerControlStore.getState().skillsMode).toBe("off");
     useComposerControlStore.getState().applyControlDefaults({
       backgroundMode: false,
       maxOutputTokens: "96",
@@ -65,6 +68,7 @@ describe("composer control store", () => {
       backgroundMode: false,
       maxOutputTokens: "96",
       mcpSelection: { mode: "load_all" },
+      skillsMode: "off",
       reasoningEffort: "high",
       reasoningMode: "pro",
       searchPlanMode: "model_choice",

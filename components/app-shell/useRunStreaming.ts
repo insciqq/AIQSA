@@ -100,7 +100,8 @@ export function useRunStreaming({ applyChatUpdate }: RunStreamingInput) {
   const consumeRunStream = useRunStream({
     appendRunEventView,
     appendSseParseWarningOnce,
-    applyChatUpdate
+    applyChatUpdate,
+    onStreamEnded: (chatId, status) => useRunSurfaceStore.getState().endArtifactStream(chatId, status)
   });
 
   return {

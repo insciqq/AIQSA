@@ -9,6 +9,7 @@ import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT } from "./workspaceActivityPersistence";
 import { summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
+import { freezeSkillManifest } from "../skills/runManifest";
 
 function activityStore() {
   const rows: { eventType: string; payload: unknown; sequence: number }[] = [];
@@ -449,6 +450,59 @@ describe("provider dispatch recovery request loading", () => {
     searchPlan: { mode: "all_selected", options: [] },
     toolMode: "none"
   } satisfies NormalizedRunRequest;
+
+  it("restores legacy pinned arrays and frozen v2 catalogs without consulting the current library", async () => {
+    const reference = { skillId: "skill", revisionId: "revision", name: "review", description: "Review text", fileCount: 1 };
+    const { manifest } = freezeSkillManifest({ mode: "auto", pinned: [], available: [reference], toolsSupported: true });
+    let accepted: unknown;
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    for (const skills of [[{ name: "legacy name", skillId: "skill", revisionId: "old" }], manifest]) {
+      accepted = { ...normalizedRequest, skills };
+      await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
+    }
+    accepted = { ...normalizedRequest, skills: { ...manifest, available: [...manifest.available, ...manifest.available] } };
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
+  it("recovers the accepted artifact edit only when its exact base was admitted", async () => {
+    const artifactEdit = { artifactId: "artifact-one", versionId: "version-one" };
+    let accepted: unknown = { ...normalizedRequest, toolMode: "auto", artifactTool: true,
+      artifactReferences: [artifactEdit], artifactEdit };
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
+    for (const target of [{ artifactId: "artifact-other", versionId: "version-one" },
+      { artifactId: "artifact-one", versionId: "version-other" }, { ...artifactEdit, versionId: "bad\n" }]) {
+      accepted = { ...normalizedRequest, toolMode: "auto", artifactTool: true, artifactReferences: [artifactEdit], artifactEdit: target };
+      await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+        .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+    }
+  });
+
+  it("restores artifact capabilities, create intent and exact focus while rejecting corrupted snapshots", async () => {
+    const focus = { artifactId: "artifact-one", versionId: "version-one" };
+    const snapshot = { ...normalizedRequest, toolMode: "auto", artifactTool: true,
+      artifactToolDescription: "Frozen offline viewer and allowed resources", artifactIntent: "create",
+      artifactReferences: [focus], artifactFocus: focus };
+    let accepted: unknown = snapshot;
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(snapshot);
+    for (const patch of [{ artifactTool: undefined }, { artifactToolDescription: " " }, { artifactToolDescription: "x".repeat(16_385) },
+      { artifactToolDescription: 7 }, { artifactIntent: "update" }, { artifactEdit: focus },
+      { artifactFocus: { ...focus, versionId: "other" } }, { artifactFocus: { ...focus, extra: true } }]) {
+      accepted = { ...snapshot, ...patch };
+      await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+        .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+    }
+  });
 
   it("restores current admitted model capabilities without weakening their validation", async () => {
     const capabilities = { ...normalizedRequest.modelCapabilities, vision: true, forcedToolCalling: true,

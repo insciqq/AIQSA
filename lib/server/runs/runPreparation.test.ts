@@ -23,6 +23,8 @@ import type { ProjectRunAdmission, RunAttachmentRecord } from "./runRepositoryCo
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import { materializePreparedRunData, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
+import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -989,6 +991,48 @@ describe("run preparation", () => {
     }
   });
 
+  it("binds Agent native discovery and compatibility to the full catalog and profile", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+      const pinned = { skillId: "p", revisionId: "p-r", name: "pinned", instructions: "PINNED_BODY", fileCount: 1 };
+      const available = { skillId: "a", revisionId: "a-r", name: "available", description: "NATIVE_DESCRIPTION", fileCount: 1 };
+      const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [pinned] })),
+        listEnabledForRun: vi.fn(async () => [available]), loadedBeforeForMessages: vi.fn(async () => ["a"]) };
+      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async input => ({ ok: true as const, tools: [], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60_000).toISOString(), policyRevision: 1, sandboxName: "synthetic-skills", sessionId: "ws_skills", toolDefinitions: [],
+        normalized: { enabled: true as const, imageRef: "synthetic-image", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/synthetic/manifest.json",
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_skills",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+      } })) };
+      const deps = { ...h.deps, skills, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
+      const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture", skillIds: ["p"] });
+      const first = preparedFrom(await prepareRun(deps, sendInput(body)));
+      expect(first.normalizedRequest.skills).toMatchObject({ mode: "auto", available: [{ skillId: "a", revisionId: "a-r", alias: "available", loadedBefore: false }] });
+      expect(first.providerRequest.context?.messages.some(message => message.purpose === "skill_catalog")).toBe(false);
+      expect(JSON.stringify(first.providerRequest.context)).toContain('/workspace/.aiqsa/skills/pinned');
+      expect(JSON.stringify(first.providerRequest.context)).toContain("PINNED_BODY");
+      expect(JSON.stringify(first.providerRequest.context)).not.toContain("NATIVE_DESCRIPTION");
+      expect(first.providerRequest.tools?.some(tool => tool.capability === "skill")).toBe(false);
+      expect(skills.loadedBeforeForMessages).not.toHaveBeenCalled();
+      const filtered = preparedFrom(await prepareRun({ ...deps, skillCatalogRelevance: async decision => {
+        await decision.authorize(); return [];
+      } }, { ...sendInput(body), skillCatalogDecision: { operationKey: "agent-admission", authorizeScope: async () => undefined } }));
+      expect(filtered.normalizedRequest.skills).toMatchObject({ pinned: [{ skillId: "p" }], available: [] });
+      expect(filtered.normalizedRequest.agent!.compatibilityHash).not.toBe(first.normalizedRequest.agent!.compatibilityHash);
+      expect(filtered.providerRequest.tools?.some(tool => tool.capability === "skill")).toBe(false);
+      const same = preparedFrom(await prepareRun(deps, sendInput(body)));
+      expect(same.normalizedRequest.agent!.compatibilityHash).toBe(first.normalizedRequest.agent!.compatibilityHash);
+      available.revisionId = "a-r2";
+      const revised = preparedFrom(await prepareRun(deps, sendInput(body)));
+      expect(revised.normalizedRequest.agent!.compatibilityHash).not.toBe(first.normalizedRequest.agent!.compatibilityHash);
+      const off = preparedFrom(await prepareRun(deps, sendInput({ ...body, skills: { mode: "off" } })));
+      expect(off.normalizedRequest.skills).toMatchObject({ mode: "off", available: [], pinned: [{ skillId: "p" }] });
+      expect(off.normalizedRequest.agent!.compatibilityHash).not.toBe(revised.normalizedRequest.agent!.compatibilityHash);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
 
   it("requires a configured default model for the first Project send", async () => {
     const result = await prepareRun(
@@ -1426,13 +1470,13 @@ describe("run preparation", () => {
 
     expect(resolveForRun).toHaveBeenCalledWith("user-1", ["skill-editor", "skill-actions"]);
     expect(prepared.skillBindings).toEqual([
-      { revisionId: "skill-revision-2", skillId: "skill-editor" },
-      { revisionId: "skill-revision-4", skillId: "skill-actions" }
+      { alias: "careful-editor", revisionId: "skill-revision-2", skillId: "skill-editor" },
+      { alias: "action-closer", revisionId: "skill-revision-4", skillId: "skill-actions" }
     ]);
-    expect(prepared.normalizedRequest.skills).toEqual([
-      { name: "Careful editor", revisionId: "skill-revision-2", skillId: "skill-editor" },
-      { name: "Action closer", revisionId: "skill-revision-4", skillId: "skill-actions" }
-    ]);
+    expect(prepared.normalizedRequest.skills).toEqual({ version: 2, mode: "auto", available: [], pinned: [
+      { alias: "careful-editor", fileCount: 0, name: "Careful editor", revisionId: "skill-revision-2", skillId: "skill-editor" },
+      { alias: "action-closer", fileCount: 0, name: "Action closer", revisionId: "skill-revision-4", skillId: "skill-actions" }
+    ] });
     expect(prepared.providerRequest.prompt.developer).not.toContain("Careful editor");
     expect(prepared.providerRequest.context?.messages.slice(-2)).toEqual([
       {
@@ -1440,10 +1484,10 @@ describe("run preparation", () => {
           blocks: [{
             text: [
               "<selected_skills>",
-              "  <skill name=\"Careful editor\">",
+              "  <skill name=\"Careful editor\" alias=\"careful-editor\" files=\"0\">",
               "Verify every factual claim before answering.",
               "  </skill>",
-              "  <skill name=\"Action closer\">",
+              "  <skill name=\"Action closer\" alias=\"action-closer\" files=\"0\">",
               "End with a short action list.",
               "  </skill>",
               "</selected_skills>"
@@ -1467,6 +1511,111 @@ describe("run preparation", () => {
     expect(JSON.stringify(prepared.providerRequestPreview)).toContain(
       "[selected Skill instructions omitted]"
     );
+  });
+
+  it("admits an Auto catalog without its bodies and retains pinned files under Off or tool degradation", async () => {
+    const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const pinned = { skillId: "p", revisionId: "p-r", name: "pinned", instructions: "PINNED_SECRET", fileCount: 1,
+      files: [{ path: "references/p.md", byteSize: 42, kind: "text" as const, executable: false }] };
+    const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [pinned] })),
+      listEnabledForRun: vi.fn(async () => [{ skillId: "a", revisionId: "a-r", name: "available", description: "CATALOG_SECRET", fileCount: 1 }]),
+      loadedBeforeForMessages: vi.fn(async () => ["a"]) };
+    const auto = preparedFrom(await prepareRun({ ...h.deps, skills }, sendInput(successBody({ skillIds: ["p"] }))));
+    expect(auto.normalizedRequest.skills).toMatchObject({ version: 2, mode: "auto", tools: "load_and_read", available: [{ skillId: "a", loadedBefore: true }] });
+    expect(auto.providerRequest.tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["load_skill", "read_skill_file"]));
+    expect(auto.providerRequest.context?.messages.slice(-3).map((message) => message.purpose)).toEqual(["skill_context", "skill_catalog", undefined]);
+    expect(JSON.stringify(auto.providerRequestPreview)).not.toMatch(/PINNED_SECRET|CATALOG_SECRET|references\/p.md/);
+    const off = preparedFrom(await prepareRun({ ...h.deps, skills }, sendInput(successBody({ skillIds: ["p"], skills: { mode: "off" } }))));
+    expect(off.normalizedRequest.skills).toMatchObject({ mode: "off", tools: "read", available: [] });
+    expect(off.providerRequest.tools?.map((tool) => tool.name)).toContain("read_skill_file");
+    expect(off.providerRequest.tools?.map((tool) => tool.name)).not.toContain("load_skill");
+    const none = preparedFrom(await prepareRun({ ...h.deps, skills }, sendInput(successBody({ skillIds: ["p"], tools: "none" }))));
+    expect(none.normalizedRequest.skills).toMatchObject({ available: [], pinned: [{ skillId: "p" }] });
+    expect(none.providerRequest.tools?.some((tool) => tool.capability === "skill")).toBe(false);
+    expect(JSON.stringify(none.providerRequest.context)).toContain("PINNED_SECRET");
+  });
+
+  it.each(["send", "regenerate"] as const)("freezes only the complete authorized relevance selection for %s, preserving pins and aliases", async kind => {
+    const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const pinned = { skillId: "p", revisionId: "p-r", name: "Procedure 1", instructions: "PINNED_BODY", fileCount: 1 };
+    const available = Array.from({ length: 40 }, (_, index) => ({ skillId: `s${index}`, revisionId: `r${index}`,
+      name: `Procedure ${index}`, description: `Task ${index}`, instructions: "AVAILABLE_BODY" }));
+    const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [pinned] })),
+      listEnabledForRun: vi.fn(async () => available), loadedBeforeForMessages: vi.fn(async () => ["s1"]) };
+    const input = (kind === "send" ? sendInput : regenerateInput)(successBody({ skillIds: ["p"] }));
+    const baseline = preparedFrom(await prepareRun({ ...h.deps, skills }, input));
+    const authorizeScope = vi.fn(async () => undefined);
+    const relevance = vi.fn<NonNullable<RunPreparationDeps["skillCatalogRelevance"]>>(async decision => {
+      expect(decision.query).toBe("Shared question");
+      expect(decision.operationKey).toBe("admission-identity");
+      expect(decision.candidates).toHaveLength(40);
+      await decision.authorize();
+      return ["s2", "s1"];
+    });
+    const filtered = preparedFrom(await prepareRun({ ...h.deps, skills, skillCatalogRelevance: relevance }, {
+      ...input, skillCatalogDecision: { operationKey: "admission-identity", authorizeScope }
+    }));
+    expect(relevance).toHaveBeenCalledOnce();
+    expect(authorizeScope).toHaveBeenCalledTimes(2);
+    expect(filtered.normalizedRequest.skills).toMatchObject({ version: 2, pinned: decodeFrozenSkillManifest(baseline.normalizedRequest.skills)!.pinned,
+      available: [{ skillId: "s2", alias: "procedure-2" }, { skillId: "s1", alias: "procedure-1-2", loadedBefore: true }] });
+    expect(filtered.skillBindings?.map(binding => binding.skillId)).toEqual(["p"]);
+    expect(JSON.stringify(filtered.providerRequest.context)).toContain("PINNED_BODY");
+    expect(JSON.stringify(filtered.providerRequest.context)).not.toContain("AVAILABLE_BODY");
+    const frozen = JSON.stringify(filtered.normalizedRequest.skills);
+    available[1]!.revisionId = "later-revision";
+    expect(JSON.stringify(filtered.normalizedRequest.skills)).toBe(frozen);
+  });
+
+  it("keeps fallback preparation byte-identical and never filters Off or unsupported catalogs", async () => {
+    const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [] })),
+      listEnabledForRun: vi.fn(async () => [{ skillId: "a", revisionId: "r", name: "A", description: "Task A" }]) };
+    const relevance = vi.fn<NonNullable<RunPreparationDeps["skillCatalogRelevance"]>>(async () => null);
+    const input = sendInput();
+    const baseline = preparedFrom(await prepareRun({ ...h.deps, skills }, input));
+    const authority = { operationKey: "fallback-admission", authorizeScope: vi.fn(async () => undefined) };
+    const fallback = preparedFrom(await prepareRun({ ...h.deps, skills, skillCatalogRelevance: relevance }, { ...input, skillCatalogDecision: authority }));
+    expect(JSON.stringify(fallback.normalizedRequest.skills)).toBe(JSON.stringify(baseline.normalizedRequest.skills));
+    expect(JSON.stringify(fallback.providerRequest.context)).toBe(JSON.stringify(baseline.providerRequest.context));
+    expect(authority.authorizeScope).not.toHaveBeenCalled();
+    for (const body of [{ skills: { mode: "off" } }, { tools: "none" }]) {
+      await prepareRun({ ...h.deps, skills, skillCatalogRelevance: relevance }, { ...sendInput(successBody(body)), skillCatalogDecision: authority });
+    }
+    expect(relevance).toHaveBeenCalledOnce();
+  });
+
+  it.each(["scope", "catalog", "pin"] as const)("rejects changed %s authority instead of hiding it behind relevance fallback", async changed => {
+    const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const pinned = { skillId: "p", revisionId: "pr", name: "Pin", instructions: "Pinned" };
+    const skill = { skillId: "a", revisionId: "ar", name: "Available", description: "Available task" };
+    const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [pinned] })),
+      listEnabledForRun: vi.fn(async () => [skill]) };
+    const authorizeScope = vi.fn(async () => undefined);
+    const relevance: NonNullable<RunPreparationDeps["skillCatalogRelevance"]> = async decision => {
+      if (changed === "scope") authorizeScope.mockRejectedValueOnce(new SkillCatalogAuthorityChangedError());
+      else if (changed === "catalog") skills.listEnabledForRun.mockResolvedValueOnce([]);
+      else skills.resolveForRun.mockResolvedValueOnce({ ok: true, skills: [{ ...pinned, revisionId: "new" }] });
+      await decision.authorize();
+      return [];
+    };
+    expect(await prepareRun({ ...h.deps, skills, skillCatalogRelevance: relevance }, {
+      ...sendInput(successBody({ skillIds: ["p"] })), skillCatalogDecision: { operationKey: "changed-admission", authorizeScope }
+    })).toMatchObject({ ok: false, code: "skill_not_available", status: 404 });
+  });
+
+  it("rejects an unavailable required Project Skill before optional relevance can hide it", async () => {
+    const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const relevance = vi.fn<NonNullable<RunPreparationDeps["skillCatalogRelevance"]>>(async () => []);
+    const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [] })),
+      resolveForProject: vi.fn(async () => ({ ok: false as const, code: "skill_not_available" as const, status: 404 as const })) };
+    const result = await prepareRun({ ...h.deps, skills, skillCatalogRelevance: relevance }, {
+      ...sendInput(successBody(), { project: projectAdmission({ skillIds: ["required"] }) }),
+      skillCatalogDecision: { operationKey: "project-admission", authorizeScope: async () => undefined }
+    });
+    expect(result).toMatchObject({ ok: false, code: "skill_not_available" });
+    expect(relevance).not.toHaveBeenCalled();
+    expect(skills.resolveForRun).not.toHaveBeenCalled();
   });
 
   it("fails before snapshotting unsupported Buffer data without mutating it", async () => {
@@ -1975,6 +2124,92 @@ describe("run preparation", () => {
 
     expect(prepared.normalizedRequest.mcp).toBeUndefined();
     expect(prepared.mcpBindings).toBeUndefined();
+  });
+
+  it("freezes current artifact capabilities independently of subsequent resource policy changes", async () => {
+    const artifacts = { contextForChat: async () => [] } as unknown as NonNullable<RunPreparationDeps["artifacts"]>;
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai" });
+    try {
+      vi.stubEnv("AIQSA_ARTIFACT_EXTERNAL_RESOURCES", "on");
+      vi.stubEnv("AIQSA_ARTIFACT_LIBRARY_HOSTS", "cdnjs.cloudflare.com");
+      vi.stubEnv("AIQSA_ARTIFACT_IMAGE_HOSTS", "images.example.com");
+      const accepted = preparedFrom(await prepareRun({ ...harness.deps, artifacts }, sendInput(body)));
+      const description = accepted.normalizedRequest.artifactToolDescription;
+      expect(description).toContain("cdnjs.cloudflare.com");
+      expect(description).toContain("images.example.com");
+      expect(description).not.toContain("fonts.gstatic.com");
+      expect(description).not.toContain("Google Fonts");
+      expect(description).not.toContain("jsDelivr");
+      expect(description).toContain("Forms may handle submit in JavaScript");
+      expect(accepted.providerRequest.tools).toContainEqual(expect.objectContaining({ name: "create_artifact", description }));
+      vi.stubEnv("AIQSA_ARTIFACT_EXTERNAL_RESOURCES", "off");
+      const later = preparedFrom(await prepareRun({ ...harness.deps, artifacts }, sendInput(body)));
+      expect(later.normalizedRequest.artifactToolDescription).toContain("New external resource downloads are disabled");
+      expect(later.normalizedRequest.artifactToolDescription).toContain("localStorage persists");
+      expect(later.normalizedRequest.artifactToolDescription).not.toContain("images.example.com");
+      expect(accepted.normalizedRequest.artifactToolDescription).toBe(description);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("freezes explicit artifact creation and rejects incompatible or malformed intent", async () => {
+    const artifacts = { contextForChat: async () => [] } as unknown as NonNullable<RunPreparationDeps["artifacts"]>;
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai", artifactIntent: "create" });
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, artifacts }, sendInput(body)));
+    expect(prepared.normalizedRequest.artifactIntent).toBe("create");
+    expect(prepared.normalizedRequest.prompt.system).toContain("The user explicitly asked for an artifact: call create_artifact");
+    expect(prepared.providerRequest.tools).toContainEqual(expect.objectContaining({ name: "create_artifact" }));
+    expect(prepared.providerRequest.toolChoice).not.toEqual({ type: "function", name: "create_artifact" });
+    await expect(prepareRun({ ...harness.deps, artifacts }, sendInput({ ...body, artifactIntent: "other" }))).resolves.toMatchObject({ ok: false, code: "artifact_intent_invalid", status: 400 });
+    await expect(prepareRun({ ...harness.deps, artifacts }, sendInput({ ...body, tools: "none" }))).resolves.toMatchObject({ ok: false, code: "artifact_intent_unavailable", status: 409 });
+  });
+
+  it("freezes an exact artifact edit target and revalidates it for regeneration", async () => {
+    const artifactEdit = { artifactId: "artifact-one", versionId: "version-one" };
+    const validateEditTarget = vi.fn(async () => ({ ok: true as const, ...artifactEdit }));
+    const contextForChat = vi.fn(async () => [{ artifact_id: artifactEdit.artifactId,
+      base_version_id: artifactEdit.versionId, kind: "html", title: "Page", version_number: 1,
+      entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", text: "<p>Existing page</p>" }] }]);
+    const artifacts = { validateEditTarget, contextForChat } as unknown as NonNullable<RunPreparationDeps["artifacts"]>;
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai" });
+    for (const request of [sendInput({ ...body, artifactEdit }), regenerateInput(body, { artifactEdit })]) {
+      const prepared = preparedFrom(await prepareRun({ ...harness.deps, artifacts }, request));
+      expect(prepared.normalizedRequest.artifactEdit).toEqual(artifactEdit);
+      expect(prepared.normalizedRequest.artifactReferences).toContainEqual(artifactEdit);
+      expect(prepared.normalizedRequest.artifactFocus).toEqual(artifactEdit);
+      expect(Object.isFrozen(prepared.normalizedRequest.artifactFocus)).toBe(true);
+      expect(prepared.normalizedRequest.prompt.system).toContain("The user's current message edits artifact_id=\"artifact-one\" from base_version_id=\"version-one\"");
+      expect(prepared.normalizedRequest.content).toEqual(textMessageContent("Shared question"));
+      expect(Object.isFrozen(prepared.normalizedRequest.artifactEdit)).toBe(true);
+    }
+    expect(validateEditTarget).toHaveBeenCalledTimes(2);
+    expect(validateEditTarget).toHaveBeenLastCalledWith({ ...artifactEdit, chatId: "chat-1", ownerUserId: "user-1" });
+    expect(contextForChat).toHaveBeenLastCalledWith({ chatId: "chat-1", ownerUserId: "user-1", requiredArtifactId: "artifact-one" });
+  });
+
+  it("rejects malformed, unavailable, stale, and missing-context explicit edit targets without substitution", async () => {
+    const artifactEdit = { artifactId: "artifact-one", versionId: "version-one" };
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai", artifactEdit });
+    const validateEditTarget = vi.fn(async () => ({ ok: false as const, code: "artifact_edit_unavailable" as const }));
+    const contextForChat = vi.fn(async () => []);
+    const artifacts = { validateEditTarget, contextForChat } as unknown as NonNullable<RunPreparationDeps["artifacts"]>;
+    expect(await prepareRun({ ...harness.deps, artifacts }, sendInput({ ...body, artifactEdit: { ...artifactEdit, versionId: "bad\n" } })))
+      .toMatchObject({ ok: false, code: "artifact_edit_invalid", status: 400 });
+    expect(validateEditTarget).not.toHaveBeenCalled();
+    expect(await prepareRun({ ...harness.deps, artifacts }, sendInput(body)))
+      .toMatchObject({ ok: false, code: "artifact_edit_unavailable", status: 404 });
+    expect(contextForChat).not.toHaveBeenCalled();
+    const staleArtifacts = { ...artifacts, validateEditTarget: vi.fn(async () => ({ ok: false as const, code: "artifact_version_conflict" as const })) };
+    expect(await prepareRun({ ...harness.deps, artifacts: staleArtifacts }, regenerateInput(body)))
+      .toMatchObject({ ok: false, code: "artifact_version_conflict", status: 409 });
+    const missingContext = { ...artifacts, validateEditTarget: vi.fn(async () => ({ ok: true as const, ...artifactEdit })) };
+    expect(await prepareRun({ ...harness.deps, artifacts: missingContext }, sendInput(body)))
+      .toMatchObject({ ok: false, code: "artifact_edit_unavailable", status: 409 });
+    expect(await prepareRun({ ...harness.deps, artifacts }, sendInput({ ...body, tools: "none" })))
+      .toMatchObject({ ok: false, code: "artifact_edit_unavailable", status: 409 });
   });
 
   it("starts Auto with only schema-free discovery and no eager runtime plan", async () => {

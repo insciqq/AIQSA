@@ -399,13 +399,15 @@ export async function* streamOpenRouterSseResponse(
   response: Response,
   request: OpenRouterResponseContext,
   signal?: AbortSignal,
-  configuredStreamLimits?: Partial<ProviderStreamLimits>
+  configuredStreamLimits?: Partial<ProviderStreamLimits>,
+  onToolArguments?: import("./types").ProviderToolArgumentObserver
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
   return yield* streamOpenAIChatSseResponse(
     response,
     request,
     responseProfile,
     signal,
-    configuredStreamLimits
+    configuredStreamLimits,
+    onToolArguments
   );
 }

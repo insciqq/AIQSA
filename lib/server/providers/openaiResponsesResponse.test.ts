@@ -819,3 +819,26 @@ describe("OpenAI Responses response normalization", () => {
     await expect(malformed.next()).rejects.toThrow("openai_stream_truncated");
   });
 });
+
+
+describe("private Responses tool argument observations", () => {
+  it("reports bounded deltas before terminal settlement without exposing arguments as run events", async () => {
+    const observations: import("./types").ProviderToolArgumentEvent[] = [];
+    const argumentsText = JSON.stringify({ files: [{ path: "index.html", text: "private-code-canary" }] });
+    const item = { type: "function_call", id: "item-1", call_id: "call-1", name: "create_artifact", arguments: argumentsText };
+    const payloads = [
+      { type: "response.created", response: { id: "response-1", status: "in_progress" } },
+      { type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } },
+      ...[argumentsText.slice(0, 18), argumentsText.slice(18)].map(delta => ({ type: "response.function_call_arguments.delta", output_index: 0, item_id: "item-1", delta })),
+      { type: "response.function_call_arguments.done", output_index: 0, item_id: "item-1", arguments: argumentsText },
+      { type: "response.completed", response: { id: "response-1", status: "completed", output: [item] } }
+    ];
+    const frames = payloads.map(payload => `data: ${JSON.stringify(payload)}\n\n`);
+    const normalized = await collectSse(sseInput(frames, { onToolArguments: async event => { observations.push(event); } }));
+    expect(observations).toHaveLength(3);
+    expect(observations.map(event => event.delta ?? "").join("")).toBe(argumentsText);
+    expect(normalized.result.toolCalls?.[0]?.arguments).toMatchObject({ files: [{ text: "private-code-canary" }] });
+    expect(JSON.stringify(normalized.events)).not.toContain("private-code-canary");
+    await expect(collectSse(sseInput(frames.slice(0, -1), { onToolArguments: async () => {} }))).rejects.toThrow("openai_stream_truncated");
+  });
+});

@@ -25,6 +25,7 @@ const sourceLabel: Record<AdminAttentionSource, string> = {
   memory: "Memory",
   providers: "providers",
   search: "Search",
+  skills: "Skills",
   system_roles: "system roles"
 };
 

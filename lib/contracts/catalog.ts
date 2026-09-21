@@ -124,6 +124,7 @@ export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
   /** Personal chat defaults applied when a new chat starts; absent on older wires. */
   knowledgePlan?: KnowledgeSelection | null;
   mcpMode?: ChatDefaultMcpMode;
+  skillsMode?: import("./chatDefaults").ChatDefaultSkillsMode;
   sendWithEnter?: boolean;
   workspaceEnabled?: boolean;
   modelId: string;
@@ -473,6 +474,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const chatDefaults = decodeOptionalChatDefaults({
     knowledgePlan: defaults.knowledgePlan,
     mcpMode: defaults.mcpMode,
+    skillsMode: defaults.skillsMode,
     sendWithEnter: defaults.sendWithEnter
   });
   if (
@@ -513,6 +515,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       hasPersonalModelDefault: defaults.hasPersonalModelDefault,
       knowledgePlan: chatDefaults.knowledgePlan,
       mcpMode: chatDefaults.mcpMode,
+      skillsMode: chatDefaults.skillsMode,
       modelId: defaults.modelId,
       modelPreferenceSource: defaults.modelPreferenceSource,
       organizationModelDefault: defaults.organizationModelDefault,

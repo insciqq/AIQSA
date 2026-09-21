@@ -1618,3 +1618,28 @@
     visibility: visible;
   }
 }
+.v2-composer-artifact-edit {
+  display: flex;
+  width: fit-content;
+  max-width: calc(100% - 1.5rem);
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0.625rem 0.75rem 0;
+  padding: 0.125rem 0.25rem 0.125rem 0.5rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-accent-dim);
+  font-size: 0.75rem;
+}
+
+.v2-composer-artifact-edit > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-composer-artifact-edit > .v2-icon,
+.v2-composer-artifact-edit > button { flex: 0 0 auto; }

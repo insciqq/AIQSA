@@ -12,6 +12,7 @@ import {
 
 export type UiV2IconName =
   | "alert"
+  | "artifact"
   | "archive"
   | "arrow-left"
   | "arrow-up"
@@ -21,18 +22,23 @@ export type UiV2IconName =
   | "braces"
   | "branch"
   | "brand"
+  | "chart"
   | "chat"
   | "check"
   | "chevron-down"
   | "chevron-right"
   | "close"
+  | "collapse"
   | "copy"
   | "download"
   | "edit"
+  | "expand"
+  | "external"
   | "file"
   | "flask"
   | "folder"
   | "folder-plus"
+  | "gamepad"
   | "globe"
   | "history"
   | "image"
@@ -78,6 +84,10 @@ export function UiV2IconSprite() {
           <circle cx="12" cy="12" r="9" />
           <path d="M12 8v5M12 16h.01" />
         </symbol>
+        <symbol id="v2-icon-artifact" viewBox="0 0 24 24">
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <path d="M10 4v4M2 8h20M6 4v4" />
+        </symbol>
         <symbol id="v2-icon-archive" viewBox="0 0 24 24">
           <path d="M4 8h16v12H4zM3 4h18v4H3zM9 12h6" />
         </symbol>
@@ -113,6 +123,9 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-chat" viewBox="0 0 24 24">
           <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4z" />
         </symbol>
+        <symbol id="v2-icon-chart" viewBox="0 0 24 24">
+          <path d="M3 3v16a2 2 0 0 0 2 2h16M18 17V9M13 17V5M8 17v-3" />
+        </symbol>
         <symbol id="v2-icon-check" viewBox="0 0 24 24">
           <path d="m5 12.5 4.2 4.2L19 7" />
         </symbol>
@@ -125,6 +138,9 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-close" viewBox="0 0 24 24">
           <path d="m6 6 12 12M18 6 6 18" />
         </symbol>
+        <symbol id="v2-icon-collapse" viewBox="0 0 24 24">
+          <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3" />
+        </symbol>
         <symbol id="v2-icon-copy" viewBox="0 0 24 24">
           <rect x="8" y="8" width="11" height="11" rx="2" />
           <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
@@ -134,6 +150,12 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-edit" viewBox="0 0 24 24">
           <path d="M13.5 6.5 17.5 10.5M4 20l4.3-1 10.9-10.9a2.8 2.8 0 0 0-4-4L4.3 15 4 20Z" />
+        </symbol>
+        <symbol id="v2-icon-expand" viewBox="0 0 24 24">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" />
+        </symbol>
+        <symbol id="v2-icon-external" viewBox="0 0 24 24">
+          <path d="M15 3h6v6M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
         </symbol>
         <symbol id="v2-icon-file" viewBox="0 0 24 24">
           <path d="M6 3h8l4 4v14H6zM14 3v5h5M9 13h6M9 17h6" />
@@ -150,6 +172,9 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-globe" viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="9" />
           <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+        </symbol>
+        <symbol id="v2-icon-gamepad" viewBox="0 0 24 24">
+          <path d="M6 11h4M8 9v4M15 12h.01M18 10h.01M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z" />
         </symbol>
         <symbol id="v2-icon-history" viewBox="0 0 24 24">
           <path d="M4 5v5h5M5.6 9.2A8 8 0 1 1 4 14M12 8v5l3 2" />

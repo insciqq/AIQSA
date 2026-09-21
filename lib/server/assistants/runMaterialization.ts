@@ -25,6 +25,8 @@ export type AssistantRunMaterialization = {
   runControls: AssistantRunControls;
   searchPlan: SearchPlan;
   skillIds: string[];
+  skills?: { mode: "auto" | "off" };
+  skillModes?: Record<string, "pinned" | "available">;
   systemPrompt: string;
 };
 

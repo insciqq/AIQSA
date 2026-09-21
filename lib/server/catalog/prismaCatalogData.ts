@@ -52,6 +52,7 @@ type UserSettingsRow = {
   defaultControlValues: unknown;
   defaultKnowledgePlan: unknown;
   defaultMcpMode: string;
+  defaultSkillsMode: string;
   defaultWorkspaceEnabled: boolean;
   defaultProviderModelId: string | null;
   defaultSearchPlan: unknown;
@@ -610,6 +611,7 @@ export function createPrismaCatalogDataLoader({
             defaultControlValues: true,
             defaultKnowledgePlan: true,
             defaultMcpMode: true,
+            defaultSkillsMode: true,
             defaultWorkspaceEnabled: true,
             defaultProviderModelId: true,
             defaultSearchPlan: true,
@@ -726,6 +728,7 @@ export function createPrismaCatalogDataLoader({
         defaultControlValues: user.settings.defaultControlValues,
         defaultKnowledgePlan: user.settings.defaultKnowledgePlan,
         defaultMcpMode: user.settings.defaultMcpMode,
+        defaultSkillsMode: user.settings.defaultSkillsMode,
         defaultWorkspaceEnabled: user.settings.defaultWorkspaceEnabled,
         defaultProviderModelId: user.settings.defaultProviderModelId,
         defaultSearchPlan: user.settings.defaultSearchPlan,

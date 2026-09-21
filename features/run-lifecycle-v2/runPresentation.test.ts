@@ -31,6 +31,31 @@ function summary(payload: Record<string, unknown>): RunEventView {
 }
 
 describe("run lifecycle v2 presentation", () => {
+  it("projects safe Skill facts only from the Skill origin and keeps model payloads out of activity", () => {
+    const event = { type: "artifact", data: { artifactType: "tool_call", payload: {
+      name: "load_skill", origin: "skill", skillId: "review", skillName: "Careful review", round: 1,
+      status: "requested", arguments: { secret: "hidden instructions" }, result: "hidden file content"
+    } } } satisfies RunEventView;
+    expect(presentToolActivityV2([event])).toEqual({ calls: [{ toolName: "load_skill", origin: "skill", skillId: "review", skillName: "Careful review", round: 1, status: "running" }] });
+    expect(presentRunLifecycleV2(state({ events: [event] })).activity?.label).toBe("Loading skill “Careful review”…");
+    const external = { ...event, data: { ...event.data, payload: { ...event.data.payload, origin: "mcp", serverName: "Team tools" } } };
+    expect(presentToolActivityV2([external])?.calls[0]).not.toHaveProperty("skillId");
+    expect(presentToolActivityV2([external])?.calls[0]).not.toHaveProperty("skillName");
+  });
+
+  it("names artifact lifecycle phases and preserves an explicit MCP origin", () => {
+    for (const call of [{ origin: "artifact" }, { toolName: "create_artifact" }]) {
+      expect(describeToolCallV2(call, "running")).toBe("Creating artifact");
+      expect(describeToolCallV2(call, "settled")).toBe("Artifact ready");
+      expect(describeToolCallV2(call, "failed")).toBe("Artifact creation failed");
+      expect(describeToolCallV2(call, "cancelled")).toBe("Artifact creation stopped");
+    }
+    expect(toolActivityOriginV2({ origin: "mcp", toolName: "create_artifact" })).toBe("mcp");
+    expect(describeToolCallV2({ toolName: "read_artifact" }, "running")).toBe("Reading artifact");
+    expect(describeToolCallV2({ origin: "artifact", toolName: "read_artifact" }, "settled")).toBe("Read artifact");
+    expect(describeToolCallV2({ origin: "artifact", toolName: "read_artifact" }, "failed")).toBe("Artifact reading failed");
+  });
+
   it("shows Workspace waiting before document work, and leaves a published answer complete", () => {
     expect(presentRunLifecycleV2(state({ status: "queued", runId: "next", workspacePreparation: true,
       pdfPreparation: [{ completedPages: 0, pageCount: null, phase: "checking", retryable: false,

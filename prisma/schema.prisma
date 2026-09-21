@@ -150,6 +150,11 @@ enum ArtifactVersionStatus {
   FAILED
 }
 
+enum ArtifactPublicationMode {
+  SINGLE
+  VERSION_SET
+}
+
 enum ArtifactPublicationStatus {
   PENDING
   READY
@@ -799,6 +804,7 @@ model User {
   announcementReads AnnouncementRead[]
   artifacts Artifact[]
   artifactPublications ArtifactPublication[]
+  artifactBlobs ArtifactBlob[]
   instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
   id                                  String                             @id @default(uuid())
@@ -866,6 +872,9 @@ model User {
   skillDefinitions                    SkillDefinition[]                  @relation("SkillDefinitionOwner")
   skillPublications                   SkillPublication[]                 @relation("SkillPublicationPublisher")
   skillRevisionsAuthored              SkillRevision[]                    @relation("SkillRevisionAuthor")
+  skillShareRequests                  SkillShareRequest[]                @relation("SkillShareRequester")
+  skillShareReviews                   SkillShareRequest[]                @relation("SkillShareReviewer")
+  skillPreferences                    UserSkillPreference[]
   smtpActivations                     SmtpControl[]                      @relation("SmtpControlActivator")
   smtpConfigurationEdits              SmtpControl[]                      @relation("SmtpControlUpdater")
   systemModelPolicyUpdates            SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
@@ -910,6 +919,7 @@ model Artifact {
   publications     ArtifactPublication[]
   chatBindings     ArtifactChatBinding[]
 
+  @@unique([ownerUserId, id])
   @@index([ownerUserId, updatedAt])
   @@index([ownerUserId, archivedAt, updatedAt])
   @@index([sourceChatId])
@@ -935,7 +945,10 @@ model ArtifactVersion {
   readyAt          DateTime?
   artifact         Artifact              @relation(fields: [artifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
   publications     ArtifactPublication[]
+  publicationMembers ArtifactPublicationVersion[]
   chatBindings     ArtifactChatBinding[]
+  blobs            ArtifactVersionBlob[]
+  renders          ArtifactRender[]
 
   @@unique([artifactId, versionNumber])
   @@unique([artifactId, id])
@@ -945,31 +958,90 @@ model ArtifactVersion {
   @@index([status, createdAt])
 }
 
-/// Immutable anonymous publication of one ready version. Only token hash is persisted.
+model ArtifactBlob {
+  id          String                @id @default(uuid())
+  ownerUserId String
+  sha256      String                @db.Char(64)
+  byteSize    Int
+  storageKey  String                @unique @db.VarChar(512)
+  createdAt   DateTime              @default(now())
+  owner       User                  @relation(fields: [ownerUserId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  versions    ArtifactVersionBlob[]
+
+  @@unique([ownerUserId, sha256])
+}
+
+model ArtifactVersionBlob {
+  versionId String
+  blobId    String
+  path      String          @db.VarChar(192)
+  version   ArtifactVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  blob      ArtifactBlob    @relation(fields: [blobId], references: [id], onDelete: NoAction, onUpdate: Restrict)
+
+  @@id([versionId, path])
+  @@index([blobId])
+}
+
+model ArtifactRender {
+  id                 String          @id @default(uuid())
+  versionId          String
+  rendererVersion    Int
+  renderedStorageKey String          @unique @db.VarChar(512)
+  renderedChecksum   String          @db.Char(64)
+  renderedByteSize   Int
+  contentType        String          @db.VarChar(128)
+  createdAt          DateTime        @default(now())
+  version            ArtifactVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([versionId, rendererVersion])
+}
+
+/// Only the token hash is stored. Legacy single snapshots retain their bytes;
+/// explicit sets reference immutable versions and share their render cache.
 model ArtifactPublication {
   id                String                    @id @default(uuid())
   ownerUserId       String
   artifactId        String
-  artifactVersionId String
+  mode              ArtifactPublicationMode   @default(SINGLE)
+  revision          Int                       @default(1)
+  defaultVersionId  String?
+  artifactVersionId String?
   tokenHash         String                    @unique @db.Char(64)
-  bundleStorageKey  String                    @unique @db.VarChar(512)
-  publicManifest    Json
-  title             String                    @db.VarChar(240)
-  kind              ArtifactKind
-  checksum          String                    @db.Char(64)
-  byteSize          Int
+  bundleStorageKey  String?                   @unique @db.VarChar(512)
+  publicManifest    Json?
+  title             String?                   @db.VarChar(240)
+  kind              ArtifactKind?
+  checksum          String?                   @db.Char(64)
+  byteSize          Int?
   status            ArtifactPublicationStatus @default(PENDING)
   expiresAt         DateTime?
   revokedAt         DateTime?
   createdAt         DateTime                  @default(now())
   owner             User                      @relation(fields: [ownerUserId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  artifact          Artifact                  @relation(fields: [artifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
-  artifactVersion   ArtifactVersion           @relation(fields: [artifactVersionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  artifact          Artifact                  @relation(fields: [ownerUserId, artifactId], references: [ownerUserId, id], onDelete: Cascade, onUpdate: Restrict)
+  artifactVersion   ArtifactVersion?          @relation(fields: [artifactId, artifactVersionId], references: [artifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "ArtifactPublication_version_artifact_match_fkey")
+  members           ArtifactPublicationVersion[] @relation("ArtifactPublicationMembers")
+  defaultMember     ArtifactPublicationVersion? @relation("ArtifactPublicationDefault", fields: [id, defaultVersionId], references: [publicationId, versionId], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([artifactId, id])
   @@index([ownerUserId, createdAt])
   @@index([artifactId, createdAt])
   @@index([artifactVersionId])
   @@index([status, expiresAt])
+}
+
+model ArtifactPublicationVersion {
+  publicationId String
+  artifactId    String
+  versionId     String
+  position      Int
+  publication   ArtifactPublication @relation("ArtifactPublicationMembers", fields: [artifactId, publicationId], references: [artifactId, id], onDelete: Cascade, onUpdate: Restrict)
+  version       ArtifactVersion @relation(fields: [artifactId, versionId], references: [artifactId, id], onDelete: NoAction, onUpdate: Restrict)
+  defaultFor    ArtifactPublication[] @relation("ArtifactPublicationDefault")
+
+  @@id([publicationId, versionId])
+  @@unique([publicationId, position])
+  @@index([artifactId, versionId])
 }
 
 /// The exact artifact version available as bounded context in one personal chat.
@@ -1216,6 +1288,7 @@ model UserSettings {
   defaultControlValues    Json           @default("{}")
   defaultKnowledgePlan    Json?
   defaultMcpMode          String         @default("auto")
+  defaultSkillsMode       SkillsMode     @default(auto)
   defaultWorkspaceEnabled Boolean        @default(true)
   answerSoundEnabled      Boolean        @default(true)
   answerSoundId           String         @default("rise") @db.VarChar(16)
@@ -1439,6 +1512,29 @@ enum SkillPublicationScope {
   installation
 }
 
+enum SkillShareRequestState {
+  pending
+  approved
+  rejected
+  withdrawn
+  superseded
+}
+
+enum SkillsMode {
+  auto
+  off
+}
+
+enum AssistantSkillMode {
+  pinned
+  available
+}
+
+enum ModelRunSkillMode {
+  pinned
+  loaded
+}
+
 enum KnowledgeBasePublicationScope {
   group
   installation
@@ -1573,6 +1669,7 @@ model AssistantDefinition {
   systemPrompt       String
   developerPrompt    String?
   responseReminder   String                    @default("")
+  skillsMode         SkillsMode                @default(auto)
   runControls        Json                      @default("{}")
   searchPlan         Json
   mcpServerIds       String[]                  @default([])
@@ -1623,6 +1720,7 @@ model SkillDefinition {
   id                     String                   @id @default(uuid())
   ownerUserId            String
   currentRevisionId      String?                  @unique
+  sharedRevisionId       String?                  @unique
   version                Int                      @default(1)
   archivedAt             DateTime?
   deletedAt              DateTime?
@@ -1630,13 +1728,17 @@ model SkillDefinition {
   updatedAt              DateTime                 @updatedAt
   /// The composite relation proves the current pointer targets a revision of this definition.
   currentRevision        SkillRevision?           @relation("SkillCurrentRevision", fields: [id, currentRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_currentRevision_fkey")
+  sharedRevision         SkillRevision?           @relation("SkillSharedRevision", fields: [id, sharedRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_sharedRevision_fkey")
   owner                  User                     @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   assistantLinks         AssistantSkill[]
   publications           SkillPublication[]
   projectBindings        ProjectSkillBinding[]
   revisions              SkillRevision[]          @relation("SkillRevisions")
+  shareRequests          SkillShareRequest[]
+  preferences            UserSkillPreference[]
 
   @@unique([id, currentRevisionId])
+  @@unique([id, sharedRevisionId])
   @@unique([ownerUserId, id])
   @@index([ownerUserId, archivedAt])
   @@index([deletedAt, updatedAt, id])
@@ -1650,16 +1752,43 @@ model SkillRevision {
   name             String
   description      String                 @default("")
   instructions     String
+  frontmatterJson  Json?
+  bundleDigest     String                 @default("")
+  fileCount        Int                    @default(0)
+  bundleByteSize   Int                    @default(0)
+  hasExecutables   Boolean                @default(false)
+  /// Staged binary objects are never selected before checksum settlement.
+  bundleReady      Boolean                @default(true)
   authorUserId     String?
   createdAt        DateTime               @default(now())
   skill            SkillDefinition        @relation("SkillRevisions", fields: [skillId], references: [id], onDelete: Restrict)
   author           User?                  @relation("SkillRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
   currentFor       SkillDefinition?       @relation("SkillCurrentRevision")
+  sharedFor        SkillDefinition?       @relation("SkillSharedRevision")
   modelRunBindings ModelRunSkillBinding[]
+  files            SkillRevisionFile[]
+  shareRequests    SkillShareRequest[]
 
   @@unique([skillId, revisionNumber])
   @@unique([skillId, id])
   @@index([authorUserId])
+}
+
+model SkillRevisionFile {
+  revisionId  String
+  skillId     String
+  path        String
+  byteSize    Int
+  checksum    String
+  kind        String
+  executable  Boolean       @default(false)
+  textContent String?
+  storageKey  String?
+  revision    SkillRevision @relation(fields: [skillId, revisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([revisionId, path])
+  @@index([skillId, revisionId])
+  @@index([storageKey])
 }
 
 model SkillPublication {
@@ -1679,15 +1808,49 @@ model SkillPublication {
   @@index([skillId, scope])
 }
 
+model SkillShareRequest {
+  id                String                 @id @default(uuid())
+  skillId           String
+  revisionId        String
+  requestedByUserId String
+  state             SkillShareRequestState @default(pending)
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+  reviewNote        String?
+  createdAt         DateTime               @default(now())
+  skill             SkillDefinition        @relation(fields: [requestedByUserId, skillId], references: [ownerUserId, id], onDelete: Restrict, onUpdate: Restrict)
+  revision          SkillRevision          @relation(fields: [skillId, revisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict)
+  requestedBy       User                   @relation("SkillShareRequester", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  reviewedBy        User?                  @relation("SkillShareReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([state, createdAt, id])
+  @@index([skillId, createdAt, id])
+  @@index([requestedByUserId])
+  @@index([reviewedByUserId])
+}
+
 model AssistantSkill {
   assistantId String
   skillId     String
   ordinal     Int
+  mode        AssistantSkillMode @default(pinned)
   assistant   AssistantDefinition @relation(fields: [assistantId], references: [id], onDelete: Cascade, onUpdate: Restrict)
   skill       SkillDefinition     @relation(fields: [skillId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
   @@id([assistantId, skillId])
   @@unique([assistantId, ordinal])
+  @@index([skillId])
+}
+
+model UserSkillPreference {
+  userId    String
+  skillId   String
+  enabled   Boolean
+  updatedAt DateTime        @updatedAt
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  skill     SkillDefinition @relation(fields: [skillId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([userId, skillId])
   @@index([skillId])
 }
 
@@ -3253,12 +3416,18 @@ model ModelRunSkillBinding {
   modelRunId String
   skillId    String
   revisionId String
+  mode       ModelRunSkillMode @default(pinned)
+  alias      String            @default("") @db.VarChar(64)
+  modelRunToolCallId String?
   createdAt  DateTime      @default(now())
   modelRun   ModelRun      @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
   revision   SkillRevision @relation(fields: [skillId, revisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRunSkillBinding_revision_fkey")
+  modelRunToolCall ModelRunToolCall? @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: NoAction, onUpdate: Restrict)
 
   @@id([modelRunId, skillId])
   @@unique([modelRunId, revisionId])
+  @@unique([modelRunId, alias])
+  @@index([modelRunId, modelRunToolCallId])
   @@index([skillId, revisionId])
 }
 
@@ -3677,6 +3846,7 @@ model ModelRunToolCall {
   memoryToolEvents           MemoryToolEvent[]
   memoryToolEgressReceipts   MemoryToolEgressReceipt[]
   workspaceExecution         WorkspaceExecution?
+  skillBindings              ModelRunSkillBinding[]
 
   @@unique([modelRunId, roundIndex, providerCallId])
   @@unique([modelRunId, roundIndex, ordinal])
@@ -4651,7 +4821,7 @@ model ProjectAssistantBinding {
   @@index([assistantId])
 }
 
-/// Canonical Project authority for a published Skill. The current Skill
+/// Canonical Project authority for a published Skill. The approved Skill
 /// revision is resolved at admission; accepted runs retain their exact
 /// revision through ModelRunSkillBinding.
 model ProjectSkillBinding {

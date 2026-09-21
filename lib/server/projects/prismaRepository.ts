@@ -38,6 +38,7 @@ import {
   type KnowledgeSelection
 } from "../../contracts/knowledge";
 import { buildCatalogModel, toCatalogSearchStrategy } from "../../domain/catalogMatrix";
+import { estimateApproxTokens } from "../../domain/contextBudget";
 import { decodeSearchPlan } from "../../domain/search";
 import {
   providerModelToCatalogEntry,
@@ -65,6 +66,7 @@ import {
 import { notifyProjectEvent } from "./events";
 import type { WorkspaceRuntime } from "../workspace/runtime";
 import { removeWorkspaceForDeletion } from "../workspace/removal";
+import { ensureSkillShareRequest } from "../skills/shareRequests";
 
 export type ProjectRepositoryResult<Value> =
   | Readonly<{ kind: "conflict"; reason: string }>
@@ -114,7 +116,8 @@ const projectDetailInclude = {
           providerModelId: true,
           runControls: true,
           searchPlan: true,
-          skillLinks: { orderBy: { ordinal: "asc" }, select: { skillId: true } },
+          skillsMode: true,
+          skillLinks: { orderBy: { ordinal: "asc" }, select: { skillId: true, mode: true } },
           starterPrompts: true,
           systemPrompt: true
         }
@@ -372,7 +375,7 @@ const projectDetailInclude = {
   skillBindings: {
     include: {
       skill: {
-        include: { currentRevision: { select: { description: true, id: true, instructions: true, name: true } } }
+        include: { sharedRevision: { select: { description: true, id: true, instructions: true, name: true } } }
       }
     }
   }
@@ -655,16 +658,17 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
     })),
     ...row.skillBindings.map((binding) => ({
       available: binding.skill.archivedAt === null && binding.skill.deletedAt === null &&
-        binding.skill.currentRevision !== null,
+        binding.skill.sharedRevision !== null,
       id: binding.id,
-      label: binding.skill.currentRevision?.name ?? "Unavailable skill",
-      ...(binding.skill.currentRevision ? {
-        description: binding.skill.currentRevision.description,
-        promptCharacterCount: binding.skill.currentRevision.instructions.length
+      label: binding.skill.sharedRevision?.name ?? "Unavailable skill",
+      ...(binding.skill.sharedRevision ? {
+        description: binding.skill.sharedRevision.description,
+        promptCharacterCount: binding.skill.sharedRevision.instructions.length,
+        instructionApproxTokens: estimateApproxTokens(binding.skill.sharedRevision.instructions)
       } : {}),
-      reason: binding.skill.currentRevision ? null : "resource_unavailable",
+      reason: binding.skill.sharedRevision ? null : "resource_unavailable",
       resourceId: binding.skillId,
-      revisionId: binding.skill.currentRevision?.id,
+      revisionId: binding.skill.sharedRevision?.id,
       type: "skill" as const
     }))
   ];
@@ -801,6 +805,8 @@ function projectComposer(
         runControls: controls,
         searchPlan: searchPlan.plan,
         skillIds,
+        skills: { mode: binding.assistant.skillsMode },
+        skillModes: Object.fromEntries(binding.assistant.skillLinks.map((link) => [link.skillId, link.mode])),
         starterPrompts: binding.assistant.starterPrompts,
         systemPrompt: ""
       },
@@ -1182,12 +1188,12 @@ async function resolveBoundProjectResource(
     type: "assistant"
   };
   const skill = await db.projectSkillBinding.findFirst({
-    include: { skill: { include: { currentRevision: { select: { name: true } } } } },
+    include: { skill: { include: { sharedRevision: { select: { name: true } } } } },
     where: { id: bindingId, projectId }
   });
   return skill ? {
     bindingId,
-    label: skill.skill.currentRevision?.name ?? "Unavailable Skill",
+    label: skill.skill.sharedRevision?.name ?? "Unavailable Skill",
     resourceId: skill.skillId,
     storageId: skill.id,
     type: "skill"
@@ -1717,10 +1723,10 @@ export function createPrismaProjectRepository(
         : Promise.resolve([]),
       requiredSkillIds.length > 0
         ? db.skillDefinition.findMany({
-            include: { currentRevision: { select: { name: true } } },
+            include: { sharedRevision: { select: { name: true } } },
             where: {
               archivedAt: null,
-              currentRevisionId: { not: null },
+              sharedRevisionId: { not: null },
               deletedAt: null,
               id: { in: requiredSkillIds },
               OR: [
@@ -1863,7 +1869,7 @@ export function createPrismaProjectRepository(
     for (const skillId of requiredSkillIds) {
       const skill = skillsById.get(skillId);
       dependencies.push(skill ? {
-        label: skill.currentRevision?.name ?? "Skill",
+        label: skill.sharedRevision?.name ?? "Skill",
         reason: null,
         state: active.skill.has(skill.id) ? "active" : "will_add",
         type: "skill"
@@ -3043,7 +3049,11 @@ export function createPrismaProjectRepository(
               data: { addedByUserId: input.userId, knowledgeBaseId: input.resourceId, projectId: input.projectId }
             });
           } else if (input.type === "skill") {
+            // The approval request and first Project audience share this lock
+            // and transaction; an unapproved binding cannot authorize a run.
+            await tx.$queryRaw`SELECT "id" FROM "SkillDefinition" WHERE "id" = ${input.resourceId} FOR UPDATE`;
             const target = await tx.skillDefinition.findFirst({
+              include: { _count: { select: { publications: true, projectBindings: true } } },
               where: {
                 archivedAt: null,
                 currentRevisionId: { not: null },
@@ -3056,6 +3066,8 @@ export function createPrismaProjectRepository(
             await tx.projectSkillBinding.create({
               data: { addedByUserId: input.userId, projectId: input.projectId, skillId: target.id }
             });
+            await ensureSkillShareRequest(tx, { userId: input.userId, skillId: target.id,
+              firstAudience: target._count.publications + target._count.projectBindings === 0 });
           } else {
             const plan = await assistantResourcePlan(tx, input);
             if (!plan || input.expectedAssistantVersion !== plan.definition.version) {

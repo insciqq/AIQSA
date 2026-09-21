@@ -38,6 +38,7 @@
   "accepted",
   "active_conflict",
   "agent_mcp_outcome_unknown",
+  "agent_provider_connection_lost",
   "agent_provider_dns_failed",
   "agent_provider_failed",
   "ambiguous_after_data",

@@ -1,15 +1,22 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useRef, useState } from "react";
-import { artifactButtonClass } from "./artifactClient";
+import { useEffect, useState } from "react";
+import { UiV2Button } from "@/components/ui-v2";
+import type { ArtifactRuntimeError } from "@/lib/contracts/artifactRuntime";
+import { ArtifactFrameV2 } from "./ArtifactFrameV2";
 
-type State = { body: string; contentType: string; runtimeError: boolean } | { error: string } | { loading: true };
+type State = { body: string; contentType: string; runtimeError: ArtifactRuntimeError | null } | { error: string } | { loading: true };
 
-export function PrivateArtifactView({ artifactId, versionId, onFix, fixDisabled }: { artifactId: string; versionId: string; onFix?(): void; fixDisabled?: boolean }) {
+export function PrivateArtifactView({ artifactId, versionId, onFix, onEscape, fixDisabled }: {
+  artifactId: string;
+  versionId: string;
+  onFix?(error: ArtifactRuntimeError): void;
+  onEscape?(): void;
+  fixDisabled?: boolean;
+}) {
   const [state, setState] = useState<State>({ loading: true });
   const [attempt, setAttempt] = useState(0);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
@@ -25,11 +32,11 @@ export function PrivateArtifactView({ artifactId, versionId, onFix, fixDisabled 
           const blob = await response.blob();
           if (!active || controller.signal.aborted) return;
           objectUrl = URL.createObjectURL(blob);
-          setState({ body: objectUrl, contentType, runtimeError: false });
+          setState({ body: objectUrl, contentType, runtimeError: null });
         } else {
           const body = await response.text();
           if (!active || controller.signal.aborted) return;
-          setState({ body, contentType, runtimeError: false });
+          setState({ body, contentType, runtimeError: null });
         }
       } catch (error: unknown) {
         if (!active || controller.signal.aborted) return;
@@ -39,32 +46,20 @@ export function PrivateArtifactView({ artifactId, versionId, onFix, fixDisabled 
     return () => { active = false; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [artifactId, versionId, attempt]);
 
-  useEffect(() => {
-    const onMessage = (event: MessageEvent<unknown>) => {
-      if (event.origin !== "null" || event.source !== iframeRef.current?.contentWindow) return;
-      const data = event.data;
-      if (typeof data !== "object" || data === null || Array.isArray(data)) return;
-      const message = data as { code?: unknown; type?: unknown };
-      if (message.type === "aiqsa_artifact_runtime_error" && message.code === "runtime_error") {
-        setState((current) => "body" in current ? { ...current, runtimeError: true } : current);
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
-
-  if ("loading" in state) return <p className="p-6 text-sm text-ink-secondary">Loading artifact…</p>;
-  if ("error" in state) return <div className="flex flex-wrap items-center gap-3 p-6 text-sm text-ink-secondary" role="alert"><p>{state.error}</p><button className={artifactButtonClass} onClick={() => { setState({ loading: true }); setAttempt(value => value + 1); }} type="button">Retry preview</button></div>;
-  const image = state.contentType.startsWith("image/");
-  return image
-    ? <img alt="Artifact preview" className="mx-auto block max-h-[calc(100dvh-8rem)] max-w-full object-contain" src={state.body} />
-    : <div className="space-y-3">
-        {state.runtimeError ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-trace-subtle px-3 py-2 text-sm text-ink" role="alert">
-            <span>The artifact reported a runtime error.</span>
-            {onFix ? <button className="v2-focusable min-h-10 rounded-md border border-current px-3 py-1.5 text-xs font-medium disabled:opacity-50" disabled={fixDisabled} onClick={onFix} type="button">Fix with AI</button> : null}
-          </div>
-        ) : null}
-        <iframe ref={iframeRef} aria-label="Artifact preview" className="h-[65dvh] min-h-[18rem] w-full border-0" sandbox="allow-scripts" srcDoc={state.body} title="Artifact preview" />
-      </div>;
+  if ("loading" in state) return <div className="v2-artifact-empty" role="status"><span className="v2-spinner" aria-hidden="true" />Loading preview…</div>;
+  if ("error" in state) return <div className="v2-artifact-empty" role="alert"><p>{state.error}</p><UiV2Button onClick={() => { setState({ loading: true }); setAttempt(value => value + 1); }} type="button">Retry</UiV2Button></div>;
+  return state.contentType.startsWith("image/")
+    ? <div className="v2-artifact-scene"><img alt="Artifact preview" className="v2-artifact-image" src={state.body} /></div>
+    : <>
+        {state.runtimeError ? <div className="v2-artifact-banner" role="alert">
+          <span className="v2-artifact-runtime-error">{state.runtimeError.kind === "csp" ? <>
+            The artifact tried to use a blocked resource: <code title={`${state.runtimeError.directive} · ${state.runtimeError.blocked}`}>{state.runtimeError.directive} · {state.runtimeError.blocked}</code>
+          </> : <>The artifact reported a runtime error: <code title={state.runtimeError.message}>{state.runtimeError.message}</code>
+            <small> (line {state.runtimeError.line}, approximate)</small></>}</span>
+          {onFix ? <UiV2Button disabled={fixDisabled} icon="edit" onClick={() => onFix(state.runtimeError!)} type="button">Fix with AI</UiV2Button> : null}
+        </div> : null}
+        <ArtifactFrameV2 artifactId={artifactId} body={state.body} title="Artifact preview" onEscape={onEscape}
+          onReset={() => setState(current => "body" in current ? { ...current, runtimeError: null } : current)}
+          onRuntimeError={runtimeError => setState(current => "body" in current && !current.runtimeError ? { ...current, runtimeError } : current)} />
+      </>;
 }

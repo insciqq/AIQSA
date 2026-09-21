@@ -1,3 +1,5 @@
+import { clearAllArtifactSavedState } from "@/components/artifacts/artifactBrowserStorage";
+
 export type SignOutResult =
   | {
       ok: true;
@@ -71,6 +73,7 @@ export async function signOutCurrentSession(options: SignOutOptions = {}): Promi
       };
     }
 
+    await clearAllArtifactSavedState();
     navigate("/login");
     return { ok: true };
   } catch {

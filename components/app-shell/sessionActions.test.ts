@@ -2,11 +2,26 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { signOutCurrentSession } from "./sessionActions";
 
 afterEach(() => {
+  localStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe("signOutCurrentSession", () => {
+  it("clears private and public artifact state only after successful logout, preserving other browser preferences", async () => {
+    localStorage.setItem("aiqsa.artifact.state.private-id", "private progress");
+    localStorage.setItem("aiqsa.artifact.state.pub.abcdef0123456789", "viewer progress");
+    localStorage.setItem("aiqsa.artifact.state.$index", "[]");
+    localStorage.setItem("aiqsa.theme", "dark");
+    const navigate = vi.fn();
+    await signOutCurrentSession({ fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 503 })), navigate });
+    expect(localStorage.getItem("aiqsa.artifact.state.private-id")).toBe("private progress");
+    await signOutCurrentSession({ fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), navigate });
+    expect(localStorage.length).toBe(1);
+    expect(localStorage.getItem("aiqsa.theme")).toBe("dark");
+    expect(navigate).toHaveBeenCalledWith("/login");
+  });
+
   it("revokes through the JSON same-site route before navigating to login", async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     const navigate = vi.fn();

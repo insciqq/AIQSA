@@ -198,6 +198,8 @@ export type RunAnswerV2Props = Readonly<{
   leadingSlot?: ReactNode;
   /** The memory-saved notice, rendered under the process line and above the text. */
   noticeSlot?: ReactNode;
+  onPinSkill?(skillId: string): Promise<void>;
+  pinnedSkillIds?: readonly string[];
   onRefresh?(): MaybePromise;
   onRegenerate?(): void;
   onRetry?(): void;
@@ -225,6 +227,8 @@ export function RunAnswerV2({
   knowledgeReference,
   leadingSlot = null,
   noticeSlot = null,
+  onPinSkill,
+  pinnedSkillIds,
   onRefresh,
   onRegenerate,
   onRetry,
@@ -259,6 +263,8 @@ export function RunAnswerV2({
   const process = (
     <AnswerProcessV2
       liveLabel={liveLabel}
+      onPinSkill={onPinSkill}
+      pinnedSkillIds={pinnedSkillIds}
       memorySources={settled ? artifact?.memorySources ?? [] : []}
       reasoningTexts={settled && showReasoning ? artifact?.reasoningText ?? [] : []}
       toolActivity={toolActivity}
@@ -309,6 +315,9 @@ export function RunAnswerV2({
                 ? CHAT_PDF_LOCAL_TEXT_NOTICE : CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE}</p> : null}
             </div>
           ) : null}
+          {(artifact?.skillCatalogOmittedCount ?? 0) > 0 ? <p className="v2-tool-budget-warning" role="status">
+            {artifact!.skillCatalogOmittedCount} enabled Skills were omitted from Auto discovery for this response because the Skill descriptions exceeded its budget. Choose Always use in the Skill library to include a specific Skill.
+          </p> : null}
           {noticeSlot}
         </>
       )}

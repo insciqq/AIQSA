@@ -193,8 +193,8 @@ describe("assistant draft decode", () => {
       [{ ...validDraft(), mcpServerIds: ["a", "a"] }, "assistant_mcp_servers_invalid"],
       [{ ...validDraft(), skillIds: ["a", "a"] }, "assistant_skills_invalid"],
       [
-        { ...validDraft(), skillIds: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] },
-        "assistant_skills_invalid"
+        { ...validDraft(), skillIds: Array.from({ length: 33 }, (_, index) => `skill-${index}`) },
+        "skills_count_exceeded"
       ],
       [{ ...validDraft(), skillIds: ["  "] }, "assistant_skills_invalid"],
       [
@@ -219,9 +219,30 @@ describe("assistant draft decode", () => {
       skillIds: ["skill-review", "skill-finish"]
     });
     expect(decoded).toMatchObject({
-      draft: { skillIds: ["skill-review", "skill-finish"] },
+      draft: { skillIds: ["skill-review", "skill-finish"], skills: { mode: "auto" },
+        skillModes: { "skill-review": "pinned", "skill-finish": "pinned" } },
       ok: true
     });
+  });
+
+  it("accepts independent pinned and available ceilings while preserving all dependencies under Off", () => {
+    const pinned = Array.from({ length: 32 }, (_, index) => `pin-${index}`);
+    const available = Array.from({ length: 64 }, (_, index) => `available-${index}`);
+    const skillModes = Object.fromEntries(available.map((id) => [id, "available"]));
+    expect(decodeAssistantDraft({ ...validDraft(), skillIds: [...pinned, ...available], skillModes, skills: { mode: "off" } }))
+      .toMatchObject({ ok: true, draft: { skillIds: [...pinned, ...available], skills: { mode: "off" },
+        skillModes: { "pin-0": "pinned", "available-0": "available" } } });
+    expect(decodeAssistantDraft({ ...validDraft(), skillIds: [...pinned, "extra"] }))
+      .toEqual({ ok: false, code: "skills_count_exceeded", field: "pinned", actual: 33, limit: 32 });
+    expect(decodeAssistantDraft({ ...validDraft(), skillIds: [...available, "extra"], skillModes: { ...skillModes, extra: "available" } }))
+      .toEqual({ ok: false, code: "skills_count_exceeded", field: "available", actual: 65, limit: 64 });
+  });
+
+  it("rejects unknown delivery modes and mode entries for unlinked Skills", () => {
+    for (const extra of [{ skillModes: { secret: "available" } }, { skillModes: { linked: "optional" } },
+      { skills: { mode: "always" } }, { skills: { mode: "auto", enabled: true } }]) {
+      expect(decodeAssistantDraft({ ...validDraft(), skillIds: ["linked"], ...extra })).toMatchObject({ ok: false, code: "assistant_skills_invalid" });
+    }
   });
 
   it("identifies a structurally invalid run-control field", () => {
@@ -413,11 +434,14 @@ describe("assistant wire decoders", () => {
       content,
       skills: [
         { id: "skill-review", name: "Careful reviewer", available: false },
-        { id: "skill-finish", name: "Action closer", available: true }
+        { id: "skill-finish", name: "Action closer", available: true, instructionApproxTokens: 42 }
       ]
     };
 
     expect(decodeAssistantDetail(detail)?.skills).toEqual(detail.skills);
+    for (const instructionApproxTokens of [-1, 1.5, "42", null, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(decodeAssistantDetail({ ...detail, skills: [detail.skills[0], { ...detail.skills[1], instructionApproxTokens }] })).toBeNull();
+    }
     expect(decodeAssistantDetail({ ...detail, skills: [{ ...detail.skills[0], available: "false" }, detail.skills[1]] })).toBeNull();
     expect(decodeAssistantDetail({
       ...detail,

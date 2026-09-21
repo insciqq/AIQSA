@@ -28,6 +28,7 @@ function serializeSettings(settings: {
   defaultControlValues: unknown;
   defaultKnowledgePlan: unknown;
   defaultMcpMode: string;
+  defaultSkillsMode: string;
   defaultWorkspaceEnabled: boolean;
   defaultProviderModel: { id: string } | null;
   defaultSearchPlan: unknown;
@@ -42,6 +43,7 @@ function serializeSettings(settings: {
     defaultControlValues: settings.defaultControlValues,
     defaultKnowledgePlan: settings.defaultKnowledgePlan,
     defaultMcpMode: settings.defaultMcpMode,
+    defaultSkillsMode: settings.defaultSkillsMode,
     defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled,
     defaultProviderModelId,
     defaultSearchPlan: settings.defaultSearchPlan,
@@ -177,6 +179,7 @@ export async function applySettingsUpdateInTransaction(
       defaultControlValues: true,
       defaultKnowledgePlan: true,
       defaultMcpMode: true,
+      defaultSkillsMode: true,
       defaultWorkspaceEnabled: true,
       defaultProviderModel: {
         select: {

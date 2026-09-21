@@ -10,6 +10,8 @@ import { createPrismaProjectContentRepository } from "./contentRepository";
 import { createPrismaProjectMemoryRepository } from "./memoryRepository";
 import { createPrismaProjectRepository } from "./prismaRepository";
 import { createPrismaSkillRepository } from "../skills/prismaRepository";
+import { createSkillSharingService } from "../skills/shareRequests";
+import { estimateApproxTokens } from "../../domain/contextBudget";
 
 type ProjectFixture = Readonly<{
   ownerId: string;
@@ -845,7 +847,7 @@ describe("Prisma-backed Project repository", () => {
         expectedAssistantVersion: assistant.assistantVersion })).toMatchObject({ kind: "ok" });
       const beforeEdit = (await repository.getDetail(ownerId, projectId))!;
       const skillId = await createPrismaSkillRepository(prisma).create(ownerId, {
-        name: "New private dependency", description: "", instructions: "Use the new workflow."
+        name: "New private dependency", description: "Synthetic Project dependency", instructions: "Use the new workflow."
       });
       try {
         const event = await prisma.projectEvent.findFirst({ where: { projectId }, orderBy: { sequence: "desc" } });
@@ -866,6 +868,13 @@ describe("Prisma-backed Project repository", () => {
             eventType: "assistant_definition_changed", entityId: null, entityType: null
           })]));
 
+        const pendingPreview = await repository.previewResourceChange({ action: "add", projectId, userId: ownerId,
+          expectedPolicyRevision: unavailable.policyRevision, type: "assistant", resourceId: assistant.assistantId });
+        expect(pendingPreview).toMatchObject({ kind: "ok", value: { canCommit: false, dependencies: expect.arrayContaining([
+          expect.objectContaining({ type: "skill", state: "ineligible" })
+        ]) } });
+        await prisma.user.update({ where: { id: ownerId }, data: { role: "admin" } });
+        await createSkillSharingService(prisma).request(ownerId, skillId, 1);
         const preview = await repository.previewResourceChange({ action: "add", projectId, userId: ownerId,
           expectedPolicyRevision: unavailable.policyRevision, type: "assistant", resourceId: assistant.assistantId });
         if (preview.kind !== "ok") throw new Error("assistant_refresh_preview_failed");
@@ -882,11 +891,23 @@ describe("Prisma-backed Project repository", () => {
         expect(refreshed.composer?.assistants).toEqual([expect.objectContaining({
           content: expect.objectContaining({ name: "Changed private title", skillIds: [skillId] })
         })]);
+        expect(refreshed.resources.find(resource => resource.type === "skill" && resource.resourceId === skillId))
+          .toMatchObject({ instructionApproxTokens: estimateApproxTokens("Use the new workflow.") });
+        const privateInstructions = "Unapproved private instructions 🙂".repeat(30);
+        const currentSkill = await prisma.skillDefinition.findUniqueOrThrow({ where: { id: skillId }, select: { version: true } });
+        expect(await createPrismaSkillRepository(prisma).revise(ownerId, skillId, currentSkill.version, {
+          name: "Private updated workflow", description: "Not approved for Project use", instructions: privateInstructions
+        })).toMatchObject({ kind: "ok" });
+        const afterPrivateEdit = (await repository.getDetail(ownerId, projectId))!;
+        expect(afterPrivateEdit.resources.find(resource => resource.type === "skill" && resource.resourceId === skillId))
+          .toMatchObject({ label: "New private dependency", instructionApproxTokens: estimateApproxTokens("Use the new workflow.") });
+        expect(JSON.stringify(afterPrivateEdit)).not.toMatch(/Private updated workflow|Unapproved private instructions/);
         expect(await prisma.projectSkillBinding.count({ where: { projectId, skillId } })).toBe(1);
       } finally {
         await prisma.projectSkillBinding.deleteMany({ where: { projectId, skillId } });
         await prisma.assistantSkill.deleteMany({ where: { skillId } });
-        await prisma.skillDefinition.update({ where: { id: skillId }, data: { currentRevisionId: null } });
+        await prisma.skillDefinition.update({ where: { id: skillId }, data: { currentRevisionId: null, sharedRevisionId: null } });
+        await prisma.skillShareRequest.deleteMany({ where: { skillId } });
         await prisma.skillRevision.deleteMany({ where: { skillId } });
         await prisma.skillDefinition.delete({ where: { id: skillId } });
       }

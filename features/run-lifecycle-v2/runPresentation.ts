@@ -106,10 +106,19 @@ function safeServerName(value: unknown): string | null {
   return boundedText(value, 160);
 }
 
+function skillActivityMetadata(payload: Record<string, unknown>) {
+  if (payload.origin !== "skill") return {};
+  const skillId = typeof payload.skillId === "string" && payload.skillId.length <= 64 && !/[\u0000-\u001f\u007f]/u.test(payload.skillId) ? payload.skillId : null;
+  const skillName = boundedText(payload.skillName, 160);
+  const skillPath = boundedText(payload.skillPath, 256);
+  return { ...(skillId ? { skillId } : {}), ...(skillName ? { skillName } : {}), ...(skillPath ? { skillPath } : {}) };
+}
+
 function toolActivityMetadata(payload: Record<string, unknown>) {
   const toolName = safeToolName(payload.name ?? payload.toolName);
   const serverName = safeServerName(payload.serverName);
   return {
+    ...skillActivityMetadata(payload),
     ...(isThreadToolActivityOrigin(payload.origin) ? { origin: payload.origin } : {}),
     ...(serverName ? { serverName } : {}),
     ...(toolName ? { toolName } : {})
@@ -192,6 +201,9 @@ function humanizeToolName(toolName: string): string {
 }
 
 type ToolActivityIdentity = Readonly<{
+  skillId?: unknown;
+  skillName?: unknown;
+  skillPath?: unknown;
   origin?: unknown;
   serverName?: unknown;
   toolName?: unknown;
@@ -203,6 +215,7 @@ export function toolActivityOriginV2(call: ToolActivityIdentity): ThreadToolActi
   if (isThreadToolActivityOrigin(call.origin)) return call.origin;
   const serverName = safeServerName(call.serverName);
   const toolName = safeToolName(call.toolName) ?? "";
+  if (!call.serverName && (toolName === "create_artifact" || toolName === "read_artifact")) return "artifact";
   if (serverName === "Workspace") return "workspace";
   if ((!call.serverName || serverName === "Auto tools") && toolName === "find_tools") {
     return "discovery";
@@ -226,6 +239,29 @@ export function describeToolCallV2(
 ): string {
   const running = phase === "running";
   const origin = toolActivityOriginV2(call);
+  if (origin === "skill") {
+    const name = boundedText(call.skillName, 160);
+    const path = boundedText(call.skillPath, 256);
+    if (call.toolName === "read_skill_file") {
+      if (phase === "failed") return `Skill file reading failed${name ? ` · ${name}` : ""}`;
+      if (phase === "cancelled") return `Skill file reading stopped${name ? ` · ${name}` : ""}`;
+      return `${running ? "Reading" : "Read"} ${path ?? "Skill file"}${name ? ` · ${name}` : ""}`;
+    }
+    const label = name ? `skill “${name}”` : "Skill";
+    if (phase === "failed") return `Could not load ${label}`;
+    if (phase === "cancelled") return `Loading ${label} stopped`;
+    return `${running ? "Loading" : "Loaded"} ${label}`;
+  }
+  if (origin === "artifact") {
+    if (call.toolName === "read_artifact") {
+      if (phase === "failed") return "Artifact reading failed";
+      if (phase === "cancelled") return "Artifact reading stopped";
+      return running ? "Reading artifact" : "Read artifact";
+    }
+    if (phase === "failed") return "Artifact creation failed";
+    if (phase === "cancelled") return "Artifact creation stopped";
+    return running ? "Creating artifact" : "Artifact ready";
+  }
   if (origin === "image") {
     if (phase === "failed") return "Image generation failed";
     if (phase === "cancelled") return "Image generation stopped";

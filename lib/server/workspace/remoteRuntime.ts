@@ -10,6 +10,7 @@ import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } 
 import { transportFailureFacts } from "../providers/providerObservability";
 import { parseWorkspaceOperation } from "./operationFence";
 import { parseOutputCaptureRequest } from "./outputManifest";
+import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import {
@@ -41,6 +42,9 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
   switch (code) {
     case "workspace_attachment_unavailable":
     case "workspace_secrets_prepare_failed":
+    case "workspace_skills_prepare_failed":
+    case "workspace_skill_bundle_invalid":
+    case "workspace_skill_bundle_limit_exceeded":
     case "workspace_archive_limit_exceeded":
     case "workspace_agent_output_invalid":
     case "workspace_archive_invalid":
@@ -369,6 +373,49 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     await this.json(`/v1/sessions/${encodeURIComponent(sessionId)}/agent/start`, {
       body: JSON.stringify({ ...body, operation: parseWorkspaceOperation(input.operation) }),
       method: "POST", signal
+    });
+  }
+
+  async prepareSkillRun(input: Parameters<WorkspaceRuntime["prepareSkillRun"]>[0]) {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    validateSkillIdentity(input);
+    const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/skills/prepare`, {
+      body: JSON.stringify({ modelRunId: input.modelRunId, manifestHash: input.manifestHash,
+        runtimeSandboxId: input.runtimeSandboxId, operation: parseWorkspaceOperation(input.operation), initial: parseSkillInitial(input.initial) }),
+      method: "POST", signal: input.signal
+    });
+    if (!isRecord(value) || (value.state !== "preparing" && value.state !== "ready")) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    return { state: value.state as "preparing" | "ready" };
+  }
+
+  async installSkillBundle(input: Parameters<WorkspaceRuntime["installSkillBundle"]>[0]) {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    validateSkillIdentity(input); validateSkillArchiveMetadata(input);
+    const bundle = parseSkillBundleRef(input.bundle);
+    const response = await this.request(`/v1/sessions/${encodeURIComponent(input.sessionId)}/skills/install`, {
+      body: input.archive, duplex: "half", method: "POST", signal: input.signal,
+      headers: {
+        "content-length": String(input.byteSize), "content-type": "application/gzip",
+        "x-aiqsa-byte-size": String(input.byteSize), "x-aiqsa-checksum": input.checksum,
+        "x-aiqsa-operation": JSON.stringify(parseWorkspaceOperation(input.operation)),
+        "x-aiqsa-runtime-sandbox-id": input.runtimeSandboxId,
+        "x-aiqsa-skill-run": JSON.stringify({ modelRunId: input.modelRunId, manifestHash: input.manifestHash, bundle })
+      }
+    });
+    const value = await jsonResponse(response);
+    if (!response.ok) throw workspaceError(value);
+    const workspacePath = `${WORKSPACE_SKILLS_DIRECTORY}/${bundle.alias}`;
+    if (!isRecord(value) || value.workspacePath !== workspacePath) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    return { workspacePath };
+  }
+
+  async completeSkillRunPreparation(input: Parameters<WorkspaceRuntime["completeSkillRunPreparation"]>[0]): Promise<void> {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    validateSkillIdentity(input);
+    await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/skills/complete`, {
+      body: JSON.stringify({ modelRunId: input.modelRunId, manifestHash: input.manifestHash,
+        runtimeSandboxId: input.runtimeSandboxId, operation: parseWorkspaceOperation(input.operation) }),
+      method: "POST", signal: input.signal
     });
   }
 

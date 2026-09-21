@@ -47,6 +47,70 @@ function ComposerWithModelOpener(overrides: Partial<Parameters<typeof ComposerV2
 }
 
 describe("Composer v2", () => {
+  it("offers keyboard Auto and Off plus Pin without removing pinned Skills", () => {
+    const onSelectSkillsMode = vi.fn();
+    const onOpenSkillLibrary = vi.fn();
+    render(<ComposerV2 {...props({ onSelectSkillsMode, onOpenSkillLibrary, skillsMode: "auto", selectedSkillIds: ["review"] })} />);
+    const opener = screen.getByRole("button", { name: "Change Skills mode" });
+    expect(opener).toHaveTextContent("Skills: Auto · 1");
+    fireEvent.click(opener);
+    const off = screen.getByRole("menuitemradio", { name: /^Off/ });
+    screen.getByRole("menuitemradio", { name: /^Auto/ }).focus();
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: /^Auto/ }), { key: "ArrowDown" });
+    expect(off).toHaveFocus();
+    fireEvent.click(off);
+    expect(onSelectSkillsMode).toHaveBeenCalledWith("off");
+    expect(screen.queryByRole("menu", { name: "Skills" })).toBeNull();
+    fireEvent.click(opener);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Skill library/ }));
+    expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
+  });
+
+  it("disables Auto for a model without tools while pinned instructions and sending remain available", () => {
+    const config = { ...composerGalleryConfig, catalog: { ...composerGalleryConfig.catalog, models: composerGalleryConfig.catalog.models.map(model => ({ ...model, capabilities: { ...model.capabilities, toolCalling: false } })) } };
+    render(<ComposerV2 {...props({ config, initialLayer: "skills", onSelectSkillsMode: vi.fn(), selectedSkillIds: ["review"] })} />);
+    expect(screen.getByRole("menuitemradio", { name: /^Auto/ })).toBeDisabled();
+    expect(screen.getByRole("menuitemradio", { name: /^Auto/ })).toHaveTextContent("Always use instructions still apply");
+    expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+  });
+
+  it("offers one-use artifact creation and preserves its draft while explaining an incompatible mode", () => {
+    const onCreateArtifact = vi.fn();
+    const onRemoveArtifactCreate = vi.fn();
+    const onSend = vi.fn();
+    const value = props({ draft: "Build a clock", onCreateArtifact, onRemoveArtifactCreate, onSend });
+    const { rerender } = render(<ComposerV2 {...value} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Create artifact/ }));
+    expect(onCreateArtifact).toHaveBeenCalledOnce();
+    rerender(<ComposerV2 {...value} artifactCreate />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Describe the page, slides, game or chart…");
+    rerender(<ComposerV2 {...value} artifactCreate artifactUnavailableReason="Not available in Agent mode" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Not available in Agent mode");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Build a clock");
+    fireEvent.click(screen.getByRole("button", { name: "Remove artifact creation" }));
+    expect(onRemoveArtifactCreate).toHaveBeenCalledOnce();
+  });
+  it.each(["Not available in Agent mode", "Not available in projects", "Not available in temporary chats"])("explains unavailable creation: %s", reason => {
+    render(<ComposerV2 {...props({ onCreateArtifact: vi.fn(), artifactUnavailableReason: reason })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("menuitem", { name: new RegExp(`Create artifact.*${reason}`) })).toBeDisabled();
+  });
+  it("shows a removable artifact edit without adding instruction text to the draft", () => {
+    const onRemoveArtifactEdit = vi.fn();
+    render(<ComposerV2 {...props({ draft: "Make it blue", onRemoveArtifactEdit,
+      artifactEdit: { artifactId: "artifact", versionId: "version", title: "A small game", versionNumber: 3 } })} />);
+    expect(screen.getByText("Editing “A small game” · v3")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Make it blue");
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Describe the change…");
+    fireEvent.click(screen.getByRole("button", { name: "Remove artifact edit" }));
+    expect(onRemoveArtifactEdit).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])("explains unavailable Agent without losing the draft or trapping an enabled selection: %s", async (enabled) => {
     const onToggle = vi.fn();
     const onSend = vi.fn();
@@ -477,40 +541,43 @@ describe("Composer v2", () => {
         ...composerGalleryConfig.assistants[0]!,
         includedSkills: [
           { id: "skill-incident", name: "Incident brief" },
-          { id: "skill-review", name: "Careful reviewer" }
+          { id: "skill-review", name: "Careful reviewer" },
+          { id: "skill-optional", name: "Charts", mode: "available" }
         ]
       },
       selectedSkillIds: [manualSkill.id],
       selectedSkills: [{ id: manualSkill.id, name: manualSkill.name }]
     })} />);
 
-    const chip = screen.getByRole("button", { name: "Manage selected Skills" });
-    expect(chip).toHaveTextContent("Skills: 3");
+    const chip = screen.getByRole("button", { name: "Change Skills mode" });
+    expect(chip).toHaveTextContent("Skills: Auto · 3");
     // Manual Skills are chosen in the Skill Library; the Add menu only
     // discloses the current count and names.
     expect(screen.getByRole("menuitem", { name: /^Skills…/ })).toHaveTextContent("3 selected · Careful editor");
     expect(screen.queryByRole("menuitemcheckbox", { name: /Careful editor/ })).toBeNull();
     fireEvent.click(chip);
+    expect(screen.getByRole("menuitemradio", { name: /Assistant Skills/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Skill library/ }));
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
   });
 
-  it("preserves choices and blocks sends when an Assistant exceeds the effective Skill limit", () => {
-    const includedSkills = Array.from({ length: 6 }, (_, i) => ({ id: `included-${i}`, name: `Included ${i}` }));
+  it("leaves final Skill budget admission to the server and counts only pinned dependencies", () => {
+    const includedSkills = Array.from({ length: 30 }, (_, i) => ({ id: `included-${i}`, name: `Included ${i}` }));
     const onSend = vi.fn();
     const selection = props({ draft: "Keep this draft", onSend, onOpenSkillLibrary: vi.fn(),
       selectedAssistant: { ...composerGalleryConfig.assistants[0]!, includedSkills },
       selectedSkillIds: ["manual-a", "manual-b", "manual-c"] });
     const { rerender } = render(<ComposerV2 {...selection} />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Choose at most 8 Skills");
-    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
-    expect(onSend).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledOnce();
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Keep this draft");
     rerender(<ComposerV2 {...selection} selectedSkillIds={["included-0", "manual-a", "manual-b"]} />);
-    expect(screen.getByRole("button", { name: "Manage selected Skills" })).toHaveTextContent("Skills: 8");
+    expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveTextContent("Skills: Auto · 32");
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
     rerender(<ComposerV2 {...selection} selectedSkillIds={[]} />);
-    expect(screen.getByRole("button", { name: "Manage selected Skills" })).toHaveTextContent("Skills: 6");
+    expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveTextContent("Skills: Auto · 30");
   });
 
   it("keeps loading, malformed, and zero-entitlement authority states explicit", () => {

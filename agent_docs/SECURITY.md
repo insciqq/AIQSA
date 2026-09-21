@@ -13,7 +13,7 @@ Rate-limit identities use installation-secret, domain-separated HMACs. Explicit 
 
 Secret API fields are write-only. SMTP test recipients are ephemeral and candidate configuration activates only after successful delivery. Cryptographic-purpose separation, key history, rotation, and secret backups belong to [Environment](ENV_VARIABLES.md). Raw user IDs never become OpenSearch routing/document IDs.
 
-Application/access logs are structured, content-free: no prompts/answers, queries, Skill instructions, filenames/content, custom endpoints, upstream/tool bodies, Memory text, credentials, token-bearing URLs. Previews omit hidden Skills; recovery retains them privately. Allowlist bounded fields; exclude raw errors. Review third-party output separately.
+Application/access logs are structured, content-free: no prompts/answers, queries, instructions, filenames/content, endpoints, tool bodies, Memory, credentials or bearer URLs. Previews omit Skill bodies/catalogs/results; recovery retains them privately. Skill activity exposes only admitted identity/bounded relative paths. Allowlist bounded fields; exclude raw errors; review third-party output.
 
 Exceptional operator-controlled Nginx error diagnostics may contain public-share bearer paths. Restrict retention, redact support copies and revoke leaked shares. This exception excludes normal access/application logs, authorization headers and provider/MCP/session credentials.
 
@@ -28,6 +28,10 @@ Parsers are private stateless siblings without data credentials or host ports; a
 Catalogs, JSON/SSE, URLs, and upstream bodies are untrusted. Discovery cannot grant capabilities. Enforce deadlines, pre-parse bounds, SSRF-safe DNS pinning, and redirect policy. Browser/durable Search output is safe normalized findings/citations; Gemini Suggestions require closed server/browser structural allowlists. Raw provider markup/CSS/query records and operation metadata are not grounding output.
 
 Markdown remains React text except reviewed local Shiki and KaTeX sinks. Code highlighting is bounded; math disables trust, rejects hostile HTML/link/resource commands, bounds macro/source work, and falls back to escaped text. Real-library hostile-input tests protect these exceptions.
+
+Artifact prompt injection can encode private context in URLs. Enforce opaque origins and viewer/parent CSP: no same-origin, popups/top navigation, nested frames or runtime network. Vendoring rechecks host/path policy and pinned DNS per redirect; hashes preserve bytes, not trust. Require exact iframe source/opaque origin; confirm every external link's full address. Browser state needs per-artifact/origin quotas, isolation and logout cleanup; exclude it from shared renders. Bound requests before bearer lookup; reauthorize owner/publication/membership around loading. Diagnostics grant no authority.
+
+Publication sets explicitly grant immutable versions; future edits stay private. Explicit hash-only reissue never extends expiry or restores access; token-scoped browser state starts empty.
 
 ## MCP And Runtime Trust
 
@@ -65,11 +69,11 @@ Agent-capable Internet-On sessions allow a loopback runner gateway exclusively f
 
 Persistent deployment binds the app to loopback by default; private services have no host ports. OpenSearch is unauthenticated only on its dedicated internal control network, accessible to app/projection worker; off-host placement, exposure, or untrusted network peers require a new authenticated transport boundary. HTTP, including MCP OAuth, requires peer admission without transport warnings; authentication and egress rules remain unchanged. TLS proxies keep the app loopback-bound and support SSE/uploads. Liveness is dependency-free; security contradictions/required data-service failures block readiness while optional failures stay local.
 
-Application runtime images run non-root. Build inputs and third-party services are digest-pinned; production Compose follows published stable application/component tags so ordinary updates need only `pull`/`up`. Releases record immutable digests, and image overrides may select them for a frozen deployment. Runtime roles receive distinct commands/configuration; Workspace admission requires reproducible guest image and matching catalog/version health. Backup/restore isolation is owned by [Persistence](PERSISTENCE.md). Deterministic auth/demo credentials require every disposable non-production gate and never authorize persistent-installation tests. Fake-provider tests cannot silently become external calls; real-provider permission belongs to [Testing](TESTING.md).
+Runtime images run non-root with role-specific commands/configuration. Build inputs/services are digest-pinned; production Compose uses stable tags for `pull`/`up`. Releases record digests, selectable through overrides. Workspace requires reproducible guest identity and matching catalog/version health. [Persistence](PERSISTENCE.md) owns backup/restore isolation; [Testing](TESTING.md) owns disposable gates/explicit external-call authority. Fake providers never make implicit real calls.
 
-For dependency changes, inspect manifest/lockfile, registry sources, and lifecycle scripts; use `npm ci`, then the operator-approved `npm run security:deps`. Never apply forced/breaking automated remediation implicitly.
+Review dependency manifests/locks, registry sources and lifecycle scripts; run `npm ci` and `npm run security:deps`. Never implicitly force breaking remediation.
 
-Do not add a repository-owned OSV client, lockfile scanner, or aggregate dependency gate while this npm-only tree is covered by manifest/lockfile review and registry audit. Reconsider only when another package ecosystem or required advisory source enters the runtime/build boundary. Exact pins live in [package.json](../package.json) and the lockfile; preserve these reasons until upstream/input changes justify review:
+Manifest/lockfile review and registry audit cover this npm-only tree; add tooling only when another ecosystem/advisory source requires it. [package.json](../package.json) and its lockfile own pins; retain these reasons until upstream/input changes:
 
 | Dependency | Boundary/rationale |
 | --- | --- |
@@ -78,6 +82,6 @@ Do not add a repository-owned OSV client, lockfile scanner, or aggregate depende
 | `sharp` | Handles untrusted raster uploads and image-provider output as well as PDF rendering. Keep byte, pixel and frame limits plus full decoding at input boundaries; reject SVG and MIME mismatches. |
 | `pdfjs-dist` | Standard-font assets only; adopting its engine or optional canvas requires compatibility/security review. |
 | `nanoid` | Patched compatible override addresses zero-size custom-generator denial of service; current use is transitive build tooling, not affected APIs. |
-| `postcss` | Override crosses Next's exact older dependency and processes repository CSS only; review before user/runtime CSS or when upstream is safe. |
+| `postcss`, `acorn` | Bound untrusted CSS/JavaScript parsing; retain structural checks and hostile-input tests. PostCSS override enforces the advisory floor. |
 
 Keep overrides only while focused hostile-input/build/hermetic verification passes; revisit when upstream constraints or input surfaces change. Repository/publication privacy is owned by root [AGENTS](../AGENTS.md).

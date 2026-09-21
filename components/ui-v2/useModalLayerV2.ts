@@ -27,9 +27,11 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 
 export function useModalLayerV2({
   closeBlocked = false,
+  enabled = true,
   onClose
 }: {
   closeBlocked?: boolean;
+  enabled?: boolean;
   onClose(): void;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
@@ -42,7 +44,10 @@ export function useModalLayerV2({
   );
 
   useLayoutEffect(() => {
-    if (!portalReady) return;
+    if (!portalReady || !enabled) {
+      openerRef.current = null;
+      return;
+    }
     const activeElement = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
@@ -62,6 +67,7 @@ export function useModalLayerV2({
       item.element.setAttribute("aria-hidden", "true");
     }
     const previousOverflow = document.body.style.overflow;
+    const opener = openerRef.current;
     document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = previousOverflow;
@@ -71,13 +77,13 @@ export function useModalLayerV2({
         else item.element.setAttribute("aria-hidden", item.ariaHidden);
       }
       queueMicrotask(() => {
-        if (openerRef.current?.isConnected) openerRef.current.focus();
+        if (opener?.isConnected) opener.focus();
       });
     };
-  }, [portalReady]);
+  }, [enabled, portalReady]);
 
   const onDialogKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
-    if (event.defaultPrevented) return;
+    if (!enabled || event.defaultPrevented) return;
     // A nested confirmation owns its Escape and Tab before the enclosing sheet.
     const owner = event.target instanceof Element ? event.target.closest("[role='dialog']") : null;
     if (owner && owner !== dialogRef.current) return;
@@ -99,7 +105,7 @@ export function useModalLayerV2({
       event.preventDefault();
       first.focus();
     }
-  }, [closeBlocked, onClose]);
+  }, [closeBlocked, enabled, onClose]);
 
   return {
     dialogRef,

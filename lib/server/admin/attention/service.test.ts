@@ -667,4 +667,15 @@ describe("createAdminAttentionService", () => {
     expect(result.items.map((item) => item.code)).toEqual(["email_not_configured"]);
     expect(result.unavailable).toEqual(["knowledge", "memory"]);
   });
+
+  it("links pending Skill reviews to the approval queue and distinguishes an unavailable count", async () => {
+    const skills = vi.fn().mockResolvedValue(2);
+    const service = createAdminAttentionService({ now: () => new Date(at), sources: sources({ skills }) });
+    const result = await service.list("admin-1");
+    expect(skills).toHaveBeenCalledWith("admin-1");
+    expect(result.items).toEqual([expect.objectContaining({ code: "skills_pending_approval", count: 2,
+      target: { section: "skills", filter: "pending" } })]);
+    skills.mockRejectedValueOnce(new Error("unavailable"));
+    expect(await service.list("admin-1")).toMatchObject({ items: [], unavailable: ["skills"] });
+  });
 });

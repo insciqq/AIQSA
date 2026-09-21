@@ -16,8 +16,9 @@ const sse = (...events: unknown[]) => new Response(events.map((event) => `data: 
   { headers: { "content-type": "text/event-stream" } });
 
 function fixture(response: Response, nativeSearch = false) {
-  const store = { assertActive: vi.fn(async () => {}), reserveProvider: vi.fn(async () => "00000000-0000-4000-8000-000000000001" as const),
-    settleProvider: vi.fn(async () => {}) };
+  let nextAttempt = 0;
+  const store = { assertActive: vi.fn(async () => {}), reserveProvider: vi.fn(async () => `00000000-0000-4000-8000-${String(++nextAttempt).padStart(12, "0")}` as const),
+    settleProvider: vi.fn(async () => {}), canRetryProvider: vi.fn(async () => false) };
   const transport = { snapshot: { connection: { responseTimeoutMs: 300000 }, model: { upstreamModelId: "fixture-model", adapterKind: "openai_responses_compatible", capabilities: { nativeSearch } } },
     request: vi.fn(async () => response) } as unknown as AgentResponsesTransport;
   const onFailure = vi.fn(async () => {});
@@ -26,6 +27,92 @@ function fixture(response: Response, nativeSearch = false) {
 }
 
 describe("Agent model gateway", () => {
+  it("allows bounded native reconnects with distinct physical receipts and revokes only after exhaustion", async () => {
+    const f = fixture(sse());
+    vi.mocked(f.transport.request).mockRejectedValue(new TypeError("PRIVATE_SOCKET", {
+      cause: Object.assign(new Error("PRIVATE_ENDPOINT"), { code: "ECONNRESET" })
+    }));
+    f.store.canRetryProvider.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+    for (let index = 0; index < 3; index++) {
+      const response = await f.handle(request());
+      expect((await response.json()).error.code).toBe("agent_provider_connection_lost");
+      expect(f.transport.request).toHaveBeenCalledTimes(index + 1);
+      expect(f.onFailure).toHaveBeenCalledTimes(index === 2 ? 1 : 0);
+    }
+    const receipts = f.store.settleProvider.mock.calls as unknown as [string, string, unknown][];
+    expect(new Set(receipts.map(([id]) => id)).size).toBe(3);
+    expect(receipts.every(([, state, usage]) => state === "UNKNOWN" && usage === null)).toBe(true);
+    expect(f.onFailure).toHaveBeenCalledExactlyOnceWith("agent_provider_connection_lost");
+  });
+
+  it("keeps an interrupted stream recoverable without replaying its events inside the gateway", async () => {
+    const f = fixture(sse({ type: "response.output_item.done", item: {
+      type: "function_call", call_id: "once", name: "shell", arguments: "{}"
+    } }));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    const reader = (await f.handle(request())).body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('"call_id":"once"');
+    await expect(reader.read()).rejects.toThrow("agent_provider_connection_lost");
+    expect(f.onFailure).not.toHaveBeenCalled();
+    expect(f.transport.request).toHaveBeenCalledOnce();
+    expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "UNKNOWN", null);
+    vi.mocked(f.transport.request).mockResolvedValue(sse({ type: "response.completed", response: {
+      usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 }
+    } }));
+    // Codex owns the next input and carries completed tool results forward.
+    const continuation = { ...body, input: [...body.input, { type: "function_call_output", call_id: "once", output: "done" }] };
+    await (await f.handle(new Request("http://agent.invalid/v1/responses", { method: "POST", body: JSON.stringify(continuation) }))).text();
+    expect(vi.mocked(f.transport.request).mock.calls[1]![0].input).toEqual(continuation.input);
+    expect(f.store.settleProvider).toHaveBeenLastCalledWith(expect.any(String), "COMPLETE", expect.objectContaining({ totalTokens: 15 }));
+    expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([408, 429, 500, 502, 503, 504])("permits a native retry for HTTP %s after settling the failed attempt", async (status) => {
+    const f = fixture(new Response("PRIVATE_PROVIDER_ERROR", { status }));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    const response = await f.handle(request());
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain("PRIVATE_");
+    expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "ERROR", null);
+    expect(f.store.canRetryProvider).toHaveBeenCalledOnce();
+    expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([400, 401, 403, 404, 413, 422, 501])("fails HTTP %s immediately", async (status) => {
+    const f = fixture(new Response("PRIVATE_PROVIDER_ERROR", { status }));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    await f.handle(request());
+    expect(f.store.canRetryProvider).not.toHaveBeenCalled();
+    expect(f.onFailure).toHaveBeenCalledExactlyOnceWith("agent_provider_failed");
+  });
+
+  it.each(["server_error", "rate_limit_exceeded"])("permits classified Responses failure %s and preserves its usage", async (code) => {
+    const f = fixture(sse({ type: "response.failed", response: { error: { code, message: "PRIVATE_ERROR" },
+      usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 } } }));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_failed");
+    expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "ERROR", expect.objectContaining({ totalTokens: 5 }));
+    expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not reconnect after cancellation, lost authority, or an unsettled receipt", async () => {
+    const error = Object.assign(new Error("PRIVATE_NETWORK"), { code: "ECONNRESET" });
+    for (const mode of ["cancelled", "authority", "unsettled"] as const) {
+      const f = fixture(sse());
+      f.store.canRetryProvider.mockResolvedValue(true);
+      const controller = new AbortController();
+      if (mode === "authority") f.store.canRetryProvider.mockRejectedValue(new Error("agent_time_limit"));
+      if (mode === "unsettled") f.store.settleProvider.mockRejectedValue(new Error("receipt_unavailable"));
+      vi.mocked(f.transport.request).mockImplementation(async () => { if (mode === "cancelled") controller.abort(); throw error; });
+      const handle = createAgentModelGateway({ configuration, store: f.store, transport: f.transport,
+        signal: controller.signal, onFailure: f.onFailure, onUsage: async () => {} });
+      await handle(request());
+      expect(f.onFailure).toHaveBeenCalledOnce();
+      if (mode !== "authority") expect(f.store.canRetryProvider).not.toHaveBeenCalled();
+      else expect(f.onFailure).toHaveBeenCalledWith("agent_time_limit");
+      expect(f.transport.request).toHaveBeenCalledOnce();
+    }
+  });
   it.each([
     new ProviderSafeFetchError("provider_http_dns_failed"),
     new TypeError("PRIVATE_ENDPOINT", { cause: Object.assign(new Error("PRIVATE_DNS_ERROR"), { code: "ENOTFOUND" }) })
@@ -49,6 +136,49 @@ describe("Agent model gateway", () => {
   it("does not classify an arbitrary provider error message as DNS", async () => {
     const f = fixture(sse());
     vi.mocked(f.transport.request).mockRejectedValue(new Error("ENOTFOUND PRIVATE_ENDPOINT"));
+    const payload = await (await f.handle(request())).json();
+    expect(payload.error.code).toBe("agent_provider_failed");
+    expect(JSON.stringify(payload)).not.toContain("PRIVATE_");
+  });
+  it.each(["ECONNRESET", "EPIPE"])("reports %s without exposing details or replaying the request", async (code) => {
+    const f = fixture(sse());
+    vi.mocked(f.transport.request).mockRejectedValue(new TypeError("PRIVATE_ENDPOINT", {
+      cause: Object.assign(new Error("PRIVATE_SOCKET_DETAIL"), { code })
+    }));
+    const response = await f.handle(request());
+    const payload = await response.json();
+    expect(response.status).toBe(502);
+    expect(payload.error.code).toBe("agent_provider_connection_lost");
+    expect(payload.error.message).toContain("connection");
+    expect(JSON.stringify(payload)).not.toContain("PRIVATE_");
+    expect(f.transport.request).toHaveBeenCalledOnce();
+    expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "UNKNOWN", null);
+    expect(f.onFailure).toHaveBeenCalledWith("agent_provider_connection_lost");
+    expect(observedFailure(new AgentExecutionError(payload.error.code))).toEqual({
+      code: "agent_provider_connection_lost", reason: "network"
+    });
+  });
+
+  it("preserves received data and the unknown outcome when a streaming connection resets", async () => {
+    let upstream!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { upstream = controller; } });
+    const f = fixture(new Response(stream, { headers: { "content-type": "text/event-stream" } }));
+    const response = await f.handle(request());
+    const reader = response.body!.getReader();
+    upstream.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"partial"}\n\n'));
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('"delta":"partial"');
+    upstream.error(new TypeError("PRIVATE_SOCKET_DETAIL", {
+      cause: Object.assign(new Error("PRIVATE_ENDPOINT"), { code: "ECONNRESET" })
+    }));
+    await expect(reader.read()).rejects.toThrow("agent_provider_connection_lost");
+    expect(f.store.settleProvider).toHaveBeenCalledExactlyOnceWith(expect.any(String), "UNKNOWN", null);
+    expect(f.onFailure).toHaveBeenCalledExactlyOnceWith("agent_provider_connection_lost");
+    expect(f.transport.request).toHaveBeenCalledOnce();
+  });
+
+  it("does not infer connection loss from an untrusted error message", async () => {
+    const f = fixture(sse());
+    vi.mocked(f.transport.request).mockRejectedValue(new Error("ECONNRESET PRIVATE_ENDPOINT"));
     const payload = await (await f.handle(request())).json();
     expect(payload.error.code).toBe("agent_provider_failed");
     expect(JSON.stringify(payload)).not.toContain("PRIVATE_");
@@ -164,7 +294,7 @@ describe("Agent model gateway", () => {
   it("records an unknown physical outcome when the provider stream has no terminal", async () => {
     const f = fixture(sse({ type: "response.output_text.delta", delta: "partial" }));
     const response = await f.handle(request());
-    await expect(response.text()).rejects.toThrow("agent_provider_failed");
+    await expect(response.text()).rejects.toThrow("agent_provider_connection_lost");
     expect(f.store.settleProvider).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000001", "UNKNOWN", null);
     expect(f.onFailure).toHaveBeenCalledOnce();
   });

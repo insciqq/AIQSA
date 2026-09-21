@@ -22,6 +22,8 @@ import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type
 import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
 import { renderCodexManagedProfile, type CodexManagedProfile } from "../agents/codexProfile";
 import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
+import { parseSkillBundleRef, parseSkillInitial, SKILL_RUNTIME_JSON_MAX_BYTES,
+  skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity } from "./skillBundles";
 
 const JSON_BODY_MAX_BYTES = 2 * 1_024 * 1_024;
 const HEADER_VALUE_MAX_BYTES = 2_048;
@@ -282,6 +284,42 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       const execute = <T>(operation: unknown, action: (signal: AbortSignal) => Promise<T>) =>
         fence.run({ operation: parseWorkspaceOperation(operation), sessionId }, action);
 
+      if (request.method === "POST" && (suffix === "/skills/prepare" || suffix === "/skills/complete")) {
+        stage = "prepare";
+        const body = await readJson(request, SKILL_RUNTIME_JSON_MAX_BYTES);
+        const identity = { modelRunId: requiredString(body.modelRunId, 128), manifestHash: requiredString(body.manifestHash, 64),
+          runtimeSandboxId: requiredString(body.runtimeSandboxId, 256), sessionId };
+        validateSkillIdentity(identity);
+        if (suffix === "/skills/prepare") {
+          const initial = parseSkillInitial(body.initial);
+          sendJson(response, 200, await execute(body.operation, signal => input.runtime.prepareSkillRun({ ...identity, initial, signal: skillOperationSignal(signal) })));
+        } else {
+          await execute(body.operation, signal => input.runtime.completeSkillRunPreparation({ ...identity, signal: skillOperationSignal(signal) }));
+          sendJson(response, 200, { ok: true });
+        }
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/skills/install") {
+        stage = "prepare";
+        if (header(request, "content-type") !== "application/gzip") throw new Error("field_invalid");
+        const operation = parseWorkspaceOperation(JSON.parse(requiredString(header(request, "x-aiqsa-operation"), HEADER_VALUE_MAX_BYTES)));
+        const metadata = JSON.parse(requiredString(header(request, "x-aiqsa-skill-run"), HEADER_VALUE_MAX_BYTES)) as Record<string, unknown>;
+        if (!isRecord(metadata)) throw new Error("field_invalid");
+        const identity = { modelRunId: requiredString(metadata.modelRunId, 128), manifestHash: requiredString(metadata.manifestHash, 64),
+          runtimeSandboxId: requiredString(header(request, "x-aiqsa-runtime-sandbox-id"), 256), sessionId };
+        validateSkillIdentity(identity);
+        const bundle = parseSkillBundleRef(metadata.bundle);
+        const byteSize = Number(requiredString(header(request, "x-aiqsa-byte-size"), 32));
+        const checksum = requiredString(header(request, "x-aiqsa-checksum"), 64);
+        validateSkillArchiveMetadata({ byteSize, checksum });
+        if (Number(requiredString(header(request, "content-length"), 32)) !== byteSize) throw new Error("field_invalid");
+        sendJson(response, 200, await execute(operation, signal => input.runtime.installSkillBundle({
+          ...identity, bundle, byteSize, checksum, archive: incomingBody(request), signal: skillOperationSignal(signal)
+        })));
+        return;
+      }
+
       if (request.method === "POST" && suffix === "/secrets") {
         stage = "prepare";
         const body = await readJson(request, WORKSPACE_SECRETS_REQUEST_MAX_BYTES);
@@ -408,6 +446,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           renderCodexManagedProfile(profile);
           await execute(body.operation, (signal) => input.runtime.startAgent!({
             ...identity, signal, profile, prompt: body.prompt as string,
+            skillManifestHash: requiredString(body.skillManifestHash, 64),
             runToken: requiredString(body.runToken, 128),
             threadId: body.threadId === undefined ? undefined : requiredString(body.threadId, 36),
             timeoutSeconds: body.timeoutSeconds === null ? null : integer(body.timeoutSeconds, 1, 7200)
