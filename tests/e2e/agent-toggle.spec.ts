@@ -14,7 +14,7 @@ for (const viewport of [
   test.describe(`Agent control at ${viewport.width}x${viewport.height}`, () => {
     test.use({ viewport, hasTouch: viewport.touch });
     for (const theme of ["light", "dark"] as const) {
-      test(`toggles directly and keeps details accessible in ${theme}`, async ({ page, context }, testInfo) => {
+      test(`toggles directly and explains the mode in ${theme}`, async ({ page, context }, testInfo) => {
         await context.addCookies([{ name: "aiqsa.theme", value: theme, url: testInfo.project.use.baseURL! }]);
         const catalog = {
           ...matrixCatalog,
@@ -32,7 +32,6 @@ for (const viewport of [
         await signInWithLocalToken(page);
         const draft = page.getByRole("textbox", { name: "Message" });
         const toggle = page.getByRole("button", { name: "Agent", exact: true });
-        const details = page.getByRole("button", { name: "Agent details", exact: true });
         await draft.fill("Inspect the project and prepare a short report.");
         await expect(toggle).toHaveAttribute("aria-pressed", "false");
         await expect(toggle).toBeEnabled();
@@ -41,9 +40,11 @@ for (const viewport of [
         await expect(page.getByRole("menu", { name: "Agent", exact: true })).toHaveCount(0);
         await expect(draft).toHaveValue("Inspect the project and prepare a short report.");
         await expect(toggle).toBeInViewport();
-        await expect(details).toBeInViewport();
+        await expect(page.getByRole("button", { name: "Agent details", exact: true })).toHaveCount(0);
+        await expect(toggle).toHaveAccessibleDescription(/Uses the selected model, Skills, MCP mode/);
+        await expect(page.getByRole("status").filter({ hasText: "Agent on" })).toContainText("Memory and image generation are unavailable.");
         if (viewport.touch) {
-          for (const control of [toggle, details]) {
+          for (const control of [toggle]) {
             const box = await control.boundingBox();
             expect(box!.width).toBeGreaterThanOrEqual(44);
             expect(box!.height).toBeGreaterThanOrEqual(44);
@@ -55,15 +56,8 @@ for (const viewport of [
         await page.keyboard.press("Space");
         await expect(toggle).toHaveAttribute("aria-pressed", "false");
         await page.keyboard.press("Tab");
-        await expect(details).toBeFocused();
-        await page.keyboard.press("Enter");
-        const menu = page.getByRole("menu", { name: "Agent", exact: true });
-        await expect(menu).toBeVisible();
-        await expect(menu).toContainText("Uses the selected model, Skills, MCP mode");
-        await page.screenshot({ path: testInfo.outputPath("agent-details.png") });
-        await page.keyboard.press("Escape");
-        await expect(menu).toHaveCount(0);
-        await expect(details).toBeFocused();
+        await expect(page.getByRole("button", { name: /^Workspace details/ })).toBeFocused();
+        await expect(page.getByRole("status").filter({ hasText: "Agent off." })).toBeVisible();
         await expect(draft).toHaveValue("Inspect the project and prepare a short report.");
         await expect(toggle).toHaveAttribute("aria-pressed", "false");
         await expectNoHorizontalOverflow(page);

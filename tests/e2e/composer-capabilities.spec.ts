@@ -17,7 +17,7 @@ for (const theme of ["light", "dark"]) {
           return rect.left >= box.left - 1 && rect.right <= box.right + 1;
         });
       })).toBe(true);
-      await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 3");
+      await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 3 pinned \(always loaded\)/);
       await expect(page.getByRole("button", { name: "Add", exact: true })).toBeInViewport();
       await expect(page.getByRole("button", { name: "Send message" })).toBeInViewport();
       const workspace = page.getByRole("button", { name: /Workspace details/ });
@@ -45,8 +45,9 @@ test("Workspace running and failed states remain visible from the closed chip on
     for (const state of ["workspace-running", "workspace-failed"]) {
       await page.goto(`/ui-v2-fixture?fixture=composer&state=${state}`);
       const chip = page.getByRole("button", { name: /Workspace details/ });
-      await expect(chip).toContainText(state === "workspace-running" ? "Running" : "Unavailable");
-      await expect(chip.locator(".v2-composer-workspace-signal")).toBeVisible();
+      await expect(chip).toHaveAccessibleDescription(state === "workspace-running" ? /Running a command/ : /Workspace unavailable/);
+      if (state === "workspace-running") await expect(chip.locator('[data-signal="running"]')).toBeVisible();
+      else await expect(chip).toHaveAttribute("data-workspace-state", "failed");
       const box = await chip.boundingBox();
       expect(box?.height).toBeGreaterThanOrEqual(44);
       expect(box?.width).toBeGreaterThanOrEqual(44);

@@ -166,7 +166,7 @@ test("v2 Knowledge picker keeps exact mixed selections and explicit inherited ov
 
   await picker.getByRole("menuitemcheckbox", { name: /Quarterly source 1/ }).click();
   await expect(page.getByRole("button", { name: "Choose Knowledge" }))
-    .toContainText("Knowledge: 2");
+    .toHaveAccessibleDescription("Knowledge: Финансы 2026, Quarterly source 1");
   await picker.getByRole("searchbox", { name: "Search Knowledge resources" })
     .fill("governance");
   await expect(picker.getByRole("menuitemcheckbox", { name: /Quarterly source 1/ }))
@@ -177,7 +177,7 @@ test("v2 Knowledge picker keeps exact mixed selections and explicit inherited ov
   await page.goto("/ui-v2-fixture?fixture=composer&state=assistant-knowledge");
   picker = page.getByRole("menu", { name: "Knowledge" });
   await expect(page.getByRole("button", { name: "Choose Knowledge" }))
-    .toContainText("Knowledge: 2 from Assistant");
+    .toHaveAccessibleDescription("Knowledge: 2 from Assistant");
   await expect(picker.getByText("Research editor controls Knowledge.", { exact: false }))
     .toBeVisible();
   await expect(picker.getByRole("menuitemradio", { name: /^Off/ })).toBeDisabled();

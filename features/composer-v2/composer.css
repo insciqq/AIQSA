@@ -154,61 +154,19 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
-  align-items: end;
+  align-items: start;
   gap: 0.375rem;
 }
 
 .v2-composer-controls > .v2-composer-spacer { display: none; }
-
-@container composer (max-width: 22rem) {
-  .v2-composer-controls { grid-template-columns: minmax(0, 1fr) auto; }
-  .v2-composer-controls > .v2-composer-indicators { grid-column: 1 / -1; grid-row: 1; }
-  .v2-composer-controls > .v2-icon-button { grid-column: 1; grid-row: 2; }
-  .v2-composer-controls > .v2-composer-run-action { grid-column: 2; grid-row: 2; }
-}
-
 .v2-composer-controls > .v2-icon-button {
   width: 2rem;
   height: 2rem;
   color: var(--v2-color-text2);
 }
 
-/*
- * Chips are neutral at rest (surface2 / text2 / border) and carry exactly one
- * accent when active: accent-dim wash, accent ink, and a glowing 6px dot.
- * Violet never appears here (PRD §3.2).
- */
-.v2-composer-indicator {
-  display: inline-flex;
-  min-width: 0;
-  height: 1.75rem;
-  min-height: 1.75rem;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0 0.625rem;
-  border: 1px solid var(--v2-color-border);
-  border-radius: 999px;
-  color: var(--v2-color-text2);
-  background: var(--v2-color-surface2);
-  font: inherit;
-  font-size: 0.78125rem;
-  font-weight: 500;
-  line-height: 1.2;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    color var(--v2-motion-fast),
-    background-color var(--v2-motion-fast),
-    border-color var(--v2-motion-fast);
-}
-
-.v2-composer-indicator[data-quiet]:hover:not(:disabled) {
-  border-color: var(--v2-color-border2);
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
-}
-
 .v2-composer-indicators {
+  position: relative;
   display: flex;
   min-width: 0;
   align-items: center;
@@ -216,61 +174,130 @@
   gap: 0.375rem;
 }
 
-/* Each capability remains a whole reachable control, including on wrapped rows. */
-.v2-composer-indicators > * {
+.v2-composer-indicator {
+  --v2-chip-border: var(--v2-color-border);
+  --v2-chip-background: var(--v2-color-surface2);
+  display: inline-flex;
   flex: 0 0 auto;
+  min-width: 0;
+  min-height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--v2-color-text2);
+  background: transparent;
+  font: inherit;
+  font-size: 0.78125rem;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-composer-indicator-face {
+  position: relative;
+  display: inline-flex;
+  box-sizing: border-box;
+  min-height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--v2-chip-border);
+  border-radius: inherit;
+  background: var(--v2-chip-background);
+  transition: color var(--v2-motion-fast), background-color var(--v2-motion-fast), border-color var(--v2-motion-fast);
 }
 
 .v2-composer-indicator:not([data-quiet]) {
-  border-color: color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
+  --v2-chip-border: color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
+  --v2-chip-background: var(--v2-color-accent-dim);
   color: var(--v2-color-accent);
-  background: var(--v2-color-accent-dim);
 }
 
-.v2-composer-indicator:not([data-quiet]):hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--v2-color-accent) 40%, transparent);
+.v2-composer-indicator[data-quiet]:hover:not(:disabled):not([aria-disabled="true"]) {
+  --v2-chip-border: var(--v2-color-border2);
+  --v2-chip-background: var(--v2-color-hover);
+  color: var(--v2-color-text);
 }
 
-.v2-composer-indicator > span:first-child {
-  width: 0.375rem;
-  height: 0.375rem;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--v2-color-accent);
-  box-shadow: 0 0 0.375rem var(--v2-color-accent);
+.v2-composer-indicator:not([data-quiet]):hover:not(:disabled):not([aria-disabled="true"]) {
+  --v2-chip-border: color-mix(in srgb, var(--v2-color-accent) 40%, transparent);
 }
 
-.v2-composer-indicator[data-quiet] > span:first-child {
-  display: none;
+.v2-composer-indicator-icon { position: relative; display: inline-flex; flex: 0 0 auto; }
+.v2-composer-indicator-glyph { width: 0.875rem; height: 0.875rem; }
+.v2-composer-indicator:disabled,
+.v2-composer-indicator[aria-disabled="true"] { cursor: default; }
+.v2-composer-indicator:disabled > .v2-composer-indicator-face,
+.v2-composer-indicator[aria-disabled="true"] > .v2-composer-indicator-face { opacity: 0.55; }
+
+.v2-composer-indicator[data-off] {
+  --v2-chip-background: transparent;
+  color: var(--v2-color-text3);
+}
+.v2-composer-indicator[data-off] .v2-composer-indicator-label { text-decoration: line-through; }
+.v2-composer-indicator[data-off] .v2-composer-indicator-icon::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.125rem;
+  height: 1.5px;
+  background: currentColor;
+  content: "";
+  transform: translate(-50%, -50%) rotate(45deg);
 }
 
-.v2-composer-indicator .v2-icon {
-  width: 0.75rem;
-  height: 0.75rem;
-  color: currentcolor;
-  opacity: 0.8;
-}
-
-/* Icon-pill glyphs (globe/book) show only in the compact mobile row. */
-.v2-composer-indicator-glyph {
-  display: none;
-}
-
-.v2-composer-indicator:disabled {
-  opacity: 0.62;
-  cursor: default;
-}
-
-.v2-composer-mcp-attention {
+.v2-composer-indicator-count {
   display: inline-flex;
-  width: 1rem;
-  height: 1rem;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  color: var(--v2-color-warn);
+  border-radius: 999px;
+  color: var(--v2-color-accent-ink);
+  background: var(--v2-color-accent);
+  font-size: 0.625rem;
   font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.v2-composer-indicator-signal {
+  position: absolute;
+  top: -0.1875rem;
+  right: -0.1875rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--v2-color-accent);
+}
+.v2-composer-indicator-signal[data-signal="attention"] { background: var(--v2-color-warn); }
+.v2-composer-workspace-toggle[data-workspace-state="failed"] {
+  --v2-chip-border: var(--v2-color-danger);
+  color: var(--v2-color-danger);
+}
+.v2-composer-workspace-toggle[data-workspace-state="failed"] .v2-composer-indicator-face {
+  border-color: var(--v2-color-danger);
+  color: var(--v2-color-danger);
+}
+
+/* One bounded anchor for long descriptions keeps edge chips' tooltips in the
+   composer. The icon and badge have their own positioning contexts. */
+.v2-composer-indicator[data-tooltip] { position: static; }
+.v2-composer-indicator[data-tooltip]::after {
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(26rem, 100%);
+  max-height: min(18rem, 40dvh);
+  padding: 0.5rem 0.625rem;
+  overflow: hidden;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .v2-composer-mcp-problems {
@@ -279,122 +306,6 @@
   font-size: 0.75rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
-}
-
-.v2-composer-workspace-toggle[data-workspace-state="failed"] {
-  color: var(--v2-color-danger);
-  border-color: var(--v2-color-danger);
-}
-/* Agent's primary control toggles directly; details remain reachable on touch. */
-.v2-composer-agent {
-  display: inline-flex;
-  align-items: stretch;
-  border: 1px solid var(--v2-color-border);
-  border-radius: 999px;
-  color: var(--v2-color-text2);
-  background: var(--v2-color-surface2);
-}
-
-.v2-composer-agent:not([data-quiet]) {
-  border-color: color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
-  color: var(--v2-color-accent);
-  background: var(--v2-color-accent-dim);
-}
-
-.v2-composer-agent > .v2-composer-indicator {
-  border: 0;
-  border-radius: 999px 0 0 999px;
-  color: inherit;
-  background: transparent;
-}
-
-.v2-composer-agent-details {
-  display: inline-flex;
-  width: 1.75rem;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-left: 1px solid var(--v2-color-border);
-  border-radius: 0 999px 999px 0;
-  color: inherit;
-  background: transparent;
-  cursor: pointer;
-}
-
-.v2-composer-agent-details:hover {
-  background: var(--v2-color-hover);
-}
-
-.v2-composer-agent-details > .v2-icon {
-  width: 0.75rem;
-  height: 0.75rem;
-}
-
-@media (hover: none), (pointer: coarse) {
-  .v2-composer-agent-details {
-    min-width: 2.75rem;
-    min-height: 2.75rem;
-  }
-}
-
-.v2-composer-workspace-signal { font-size: 0.875rem; line-height: 1; }
-
-/* An active Search/Knowledge chip pairs its picker trigger with a clear
-   control inside ONE accent pill (UX audit 2026-09-02 #9): the group carries
-   the pill chrome and both buttons inside are flat, so the "×" never reads as
-   a stray glyph between chips. */
-.v2-composer-indicator-group {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-}
-
-.v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
-  height: 1.75rem;
-  border: 1px solid color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
-  border-radius: 999px;
-  background: var(--v2-color-accent-dim);
-  transition: border-color var(--v2-motion-fast);
-}
-
-.v2-composer-indicator-group:has(.v2-composer-indicator-clear):hover {
-  border-color: color-mix(in srgb, var(--v2-color-accent) 40%, transparent);
-}
-
-.v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator {
-  height: calc(1.75rem - 2px);
-  min-height: 0;
-  padding-right: 0.25rem;
-  border: 0;
-  border-radius: 999px 0 0 999px;
-  background: transparent;
-}
-
-.v2-composer-indicator-clear {
-  display: inline-flex;
-  width: 1.5rem;
-  height: calc(1.75rem - 2px);
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  padding-right: 0.125rem;
-  border: 0;
-  border-radius: 0 999px 999px 0;
-  color: var(--v2-color-accent);
-  background: transparent;
-  opacity: 0.75;
-  cursor: pointer;
-  transition: opacity var(--v2-motion-fast), background-color var(--v2-motion-fast);
-}
-
-.v2-composer-indicator-clear:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--v2-color-accent) 14%, transparent);
-  opacity: 1;
-}
-
-.v2-composer-indicator-clear .v2-icon {
-  width: 0.75rem;
-  height: 0.75rem;
 }
 
 .v2-composer-spacer {
@@ -1371,48 +1282,34 @@
   background: var(--v2-color-hover);
 }
 
-@media (max-width: 42rem) {
-
-  .v2-composer-indicators {
-    flex: 1 1 auto;
-  }
-
-  .v2-composer-indicator {
-    max-width: 8.5rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+/* Full labels fit the widest state only near the full reading measure.
+   Container width also covers a desktop narrowed by an artifact panel. */
+@container composer (max-width: 46rem) {
+  .v2-composer-indicator-label { display: none; }
+  .v2-composer-indicator-face { width: 1.75rem; height: 1.75rem; padding: 0; }
+  .v2-composer-indicator-icon { position: static; }
+  .v2-composer-indicator-glyph { width: 1rem; height: 1rem; }
+  .v2-composer-indicator-count { position: absolute; top: -0.25rem; right: -0.25rem; }
+  .v2-composer-indicator-signal { top: -0.0625rem; right: -0.0625rem; }
 }
 
-/*
- * Compact composer row (PRD §4.5): the Search, Knowledge, and MCP chips
- * compact to icon pills based on the composer width, then wrap whole controls. MCP stays visible in every
- * mode (FRONTEND: the ordinary MCP choice is always visible).
- */
-@container composer (max-width: 42rem) {
-  .v2-composer-indicator[data-glyph] {
-    min-width: 1.75rem;
-    justify-content: center;
-    padding: 0 0.25rem;
+@container composer (max-width: 26rem) {
+  .v2-composer-entry {
+    display: grid;
+    grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
+    grid-template-areas: "add input send" "chips chips chips";
+    align-items: end;
+    column-gap: 0.25rem;
+    row-gap: 0.375rem;
   }
-
-  .v2-composer-indicator[data-glyph] > span:first-child,
-  .v2-composer-indicator[data-glyph] > .v2-composer-indicator-label,
-  .v2-composer-indicator[data-glyph] > .v2-icon:not(.v2-composer-indicator-glyph) {
-    display: none;
-  }
-
-  .v2-composer-indicator[data-glyph] > .v2-composer-indicator-glyph {
-    display: block;
-    width: 0.9375rem;
-    height: 0.9375rem;
-    opacity: 1;
-  }
-
-  /* The icon pill has no room for a clear control; the menu offers None. */
-  .v2-composer-indicator-clear {
-    display: none;
-  }
+  .v2-composer-controls { display: contents; }
+  .v2-composer-input { grid-area: input; min-height: 2.75rem; padding: 0.6875rem 0.25rem; }
+  .v2-composer-controls > .v2-icon-button { grid-area: add; width: 2.75rem; height: 2.75rem; }
+  .v2-composer-run-action { grid-area: send; align-self: end; }
+  .v2-composer-run-action .v2-icon-button { width: 2.75rem; height: 2.75rem; }
+  .v2-composer-indicators { grid-area: chips; gap: 0.125rem; }
+  .v2-composer-indicator { width: 2.75rem; min-height: 2.75rem; }
+  .v2-composer-indicator-face { width: 2.25rem; height: 2.25rem; }
 }
 
 @media (max-width: 840px), (max-height: 32rem) {
@@ -1532,20 +1429,13 @@
 
   /* Touch targets stay ≥44px (interaction contract) even though the chips
      read as 28px pills on fine pointers. */
-  .v2-composer-indicator,
-  .v2-composer-indicator-clear {
-    height: auto;
-    min-height: 2.75rem;
-  }
+  .v2-composer-indicator { min-height: 2.75rem; }
 
   .v2-composer-indicator[data-glyph] {
     width: auto;
     min-width: 2.75rem;
   }
 
-  .v2-composer-indicator-clear {
-    width: 2rem;
-  }
 }
 
 @media (max-width: 26rem) {
@@ -1559,38 +1449,7 @@
   }
 
   .v2-composer-input {
-    padding-top: 0.875rem;
-  }
-}
-
-/* Icon pills (≤767px) hide the clear control, so the chip group hands the
-   pill chrome back to its trigger. */
-@container composer (max-width: 42rem) {
-  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
-    height: auto;
-    border: 0;
-    background: transparent;
-  }
-
-  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator {
-    height: 1.75rem;
-    padding: 0;
-    border: 1px solid color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
-    border-radius: 999px;
-    background: var(--v2-color-accent-dim);
-  }
-}
-
-/* Coarse pointers keep the 44px hit area inside the grouped pill. */
-@media (hover: none), (pointer: coarse) {
-  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
-    min-height: 2.75rem;
-  }
-
-  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator,
-  .v2-composer-indicator-group:has(.v2-composer-indicator-clear) > .v2-composer-indicator-clear {
-    height: auto;
-    min-height: 2.75rem;
+    padding-top: 0.6875rem;
   }
 }
 
