@@ -66,7 +66,7 @@ import {
   type CSSProperties
 } from "react";
 
-export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | "skills" | "workspace" | "agent" | null;
+export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | "skills" | "workspace" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -79,7 +79,6 @@ export type ComposerV2LayerController = Readonly<{
 }>;
 
 const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
-  agent: "Agent",
   add: "Add",
   files: "Saved files",
   knowledge: "Knowledge",
@@ -90,7 +89,6 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   tools: "MCP tools"
 };
 const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
-  agent: "Agent",
   add: "Add",
   files: "Saved files",
   knowledge: "Knowledge",
@@ -103,7 +101,6 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
 /* Desktop popover widths (see composer.css) used to keep a chip-anchored layer
    inside the composer frame. */
 const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
-  agent: 340,
   add: 300,
   files: 380,
   knowledge: 380,
@@ -121,6 +118,29 @@ const SEARCH_PROVIDER_FAMILY_NAMES: Readonly<Record<string, string>> = {
   openrouter: "OpenRouter",
   perplexity: "Perplexity"
 };
+
+const AGENT_HELP = "Codex carries out your task in Workspace. Uses the selected model, Skills, MCP mode and saved Workspace secrets. Available while this Workspace exists. Personal Memory and image generation are unavailable.";
+
+function CapabilityChipContent({ label, icon, count = 0, signal, description, descriptionId }: Readonly<{
+  label: string;
+  icon: UiV2IconName;
+  count?: number;
+  signal?: "running" | "attention";
+  description: string;
+  descriptionId: string;
+}>) {
+  return <>
+    <span className="v2-composer-indicator-face" aria-hidden="true">
+      <span className="v2-composer-indicator-icon">
+        <UiV2Icon className="v2-composer-indicator-glyph" name={icon} />
+        {signal ? <span className="v2-composer-indicator-signal" data-signal={signal} /> : null}
+      </span>
+      <span className="v2-composer-indicator-label">{label}</span>
+      {count > 0 ? <span className="v2-composer-indicator-count">{count > 99 ? "99+" : count}</span> : null}
+    </span>
+    <span className="v2-sr-only" id={descriptionId}>{description}</span>
+  </>;
+}
 
 function searchEngineShortName(
   strategy: CatalogSearchStrategy,
@@ -196,6 +216,8 @@ const EMPTY_MODELS: readonly CatalogModel[] = [];
 const EMPTY_PROVIDERS: readonly CatalogProvider[] = [];
 
 export type ComposerV2Props = Readonly<{
+  /** Scopes transient notices without remounting the draft or its controls. */
+  sessionKey?: string;
   agent?: Readonly<{ enabled: boolean; unavailableReason?: string; onToggle(value: boolean): void }>;
   activeRun?: boolean;
   artifactEdit?: ComposerArtifactEdit | null;
@@ -397,6 +419,7 @@ function CapabilityRow({
 }
 
 export function ComposerV2({
+  sessionKey = "composer",
   agent,
   activeRun = false,
   artifactEdit = null,
@@ -478,6 +501,7 @@ export function ComposerV2({
     sources: readonly ComposerConfigKnowledgeSource[];
   }> | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [agentNotice, setAgentNotice] = useState<{ sessionKey: string; kind: "mode" | "blocked" } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
@@ -984,9 +1008,10 @@ export function ComposerV2({
   // An engine the current model cannot run leaves the chip inactive and the
   // menu on Off (UX audit 2026-09-02 A6); the plan itself is dropped by the
   // model change and rejected at send.
-  const activeSearchStrategy = concreteSearchOptions.find((option) =>
+  const activeSearchStrategies = concreteSearchOptions.filter((option) =>
     selectedSearchSet.has(option.strategyId) && compatibleSearchOptionIds.has(option.strategyId)
   );
+  const activeSearchStrategy = activeSearchStrategies[0];
   const searchActive = Boolean(activeSearchStrategy);
   const activeSearchEngineName = activeSearchStrategy
     ? searchEngineShortName(
@@ -994,9 +1019,8 @@ export function ComposerV2({
         currentModel?.providerFamily ?? currentProvider?.family
       )
     : null;
-  const searchChipLabel = activeSearchStrategy
-    ? `Search: ${activeSearchEngineName}`
-    : "Search";
+  const searchDescription = `Search: ${activeSearchStrategies.length ? activeSearchStrategies.map(option =>
+    searchEngineShortName(option, currentModel?.providerFamily ?? currentProvider?.family)).join(", ") : "Off"}${controlsLocked ? " · from Assistant" : ""}`;
   const searchChipVisible = Boolean(config) && (
     searchActive || (concreteSearchOptions.length > 0 && !controlsLocked)
   );
@@ -1011,6 +1035,18 @@ export function ComposerV2({
   const mcpAttentionLabel = mcpServersNeedingAttention
     ? `${mcpServersNeedingAttention} MCP ${mcpServersNeedingAttention === 1 ? "server needs" : "servers need"} attention. Open MCP settings.`
     : undefined;
+  const mcpDescription = `MCP: ${mcpSelection.mode === "load_all" ? "Load all" : mcpSelection.mode === "off" ? "Off" : "Auto"}${mcpAttentionLabel ? `. ${mcpAttentionLabel}` : ""}`;
+  const skillsDescription = `Skills: ${effectiveSkillsMode === "off" ? "Auto off" : "Auto"}${effectiveSkillIds.length ? ` · ${effectiveSkillIds.length} pinned (always loaded)` : ""}${controlsLocked ? " · from Assistant" : ""}`;
+  const knowledgeDescription = `Knowledge: ${knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? "Off"
+    : selectedKnowledgeNames.length ? `${selectedKnowledgeNames.join(", ")}${knowledgeInheritedFrom ? ` · from ${knowledgeInheritedFrom === "project" ? "Project" : "Assistant"}` : ""}`
+      : knowledgeChipValue}`;
+  const agentDisabledReason = activeRun ? "A response is running." : !agent?.enabled ? agentReason : null;
+  const agentExplanation = activeRun ? "A response is running." : agentReason;
+  const agentDescription = `Agent: ${agent?.enabled ? "On" : "Off"}. ${agentExplanation ? `${agentExplanation} ` : ""}${AGENT_HELP}`;
+  const agentStatus = agentNotice && agentNotice.sessionKey === sessionKey && agent
+    ? agentNotice.kind === "blocked" ? agentDisabledReason : agent.enabled ? "Agent on · Codex in Workspace. Memory and image generation are unavailable." : "Agent off."
+    : null;
+  const workspaceDescription = workspace ? `Workspace: ${workspace.busy ? "Saving" : workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}` : "";
 
   return (
     <div className="v2-composer-wrap" data-testid="composer-v2">
@@ -1105,23 +1141,6 @@ export function ComposerV2({
           sharedProject={sharedProject}
         />
 
-        <label className="v2-composer-input-label" htmlFor={`${layerId}-input`}>
-          Message
-        </label>
-        <textarea
-          ref={textareaRef}
-          className="v2-composer-input"
-          id={`${layerId}-input`}
-          rows={1}
-          value={draft}
-          disabled={inputDisabled}
-          aria-describedby={bootstrapReason ? statusId : undefined}
-          placeholder={artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
-          onChange={(event) => onDraftChange(event.target.value)}
-          onKeyDown={submitFromKeyboard}
-          onPaste={pasteFiles}
-        />
-
         {bootstrapReason ? (
           <div className="v2-composer-status" id={statusId} role={configError ? "alert" : "status"}>
             <span>{bootstrapReason}</span>
@@ -1132,197 +1151,129 @@ export function ComposerV2({
             ) : null}
           </div>
         ) : null}
-
-        <div className="v2-composer-controls">
-          <UiV2IconButton
-            ref={plusTriggerRef}
-            icon="plus"
-            label="Add"
-            aria-controls={`${layerId}-add`}
-            aria-expanded={layer === "add"}
-            aria-haspopup="menu"
-            disabled={!config || configError || noModels || activeRun}
-            onClick={(event) => openLayer("add", event.currentTarget)}
+        {agentStatus ? <p className="v2-composer-status" role="status">{agentStatus}</p> : null}
+        <div className="v2-composer-entry">
+          <label className="v2-composer-input-label" htmlFor={`${layerId}-input`}>
+            Message
+          </label>
+          <textarea
+            ref={textareaRef}
+            className="v2-composer-input"
+            id={`${layerId}-input`}
+            rows={1}
+            value={draft}
+            disabled={inputDisabled}
+            aria-describedby={bootstrapReason ? statusId : undefined}
+            placeholder={artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={submitFromKeyboard}
+            onPaste={pasteFiles}
           />
 
-          {/* The model is chosen in the header (operator, 2026-09-02); the
-              composer row holds only this message's tools. */}
-          <div className="v2-composer-indicators" aria-label="Active capabilities">
-            {agent ? (
-              <span className="v2-composer-agent" data-quiet={agent.enabled ? undefined : ""}>
+          <div className="v2-composer-controls">
+            <UiV2IconButton
+              ref={plusTriggerRef}
+              icon="plus"
+              label="Add"
+              aria-controls={`${layerId}-add`}
+              aria-expanded={layer === "add"}
+              aria-haspopup="menu"
+              disabled={!config || configError || noModels || activeRun}
+              onClick={(event) => openLayer("add", event.currentTarget)}
+            />
+
+            {/* The model is chosen in the header (operator, 2026-09-02); the
+                composer row holds only this message's tools. */}
+            <div className="v2-composer-indicators" aria-label="Active capabilities">
+              {agent ? (
                 <button type="button" className="v2-composer-indicator v2-focusable"
-                  data-quiet={agent.enabled ? undefined : ""}
+                  data-glyph="bot" data-quiet={agent.enabled ? undefined : ""}
+                  data-tooltip={agentDescription} data-tooltip-side="top"
                   aria-label="Agent" aria-pressed={agent.enabled}
-                  aria-describedby={agentReason ? `${layerId}-agent-reason` : undefined}
-                  disabled={Boolean(activeRun || (!agent.enabled && agentReason))}
-                  onClick={() => agent.onToggle(!agent.enabled)}>
-                  <UiV2Icon className="v2-composer-indicator-glyph" name="braces" />
-                  <span className="v2-composer-indicator-label">Agent: {agent.enabled ? "On" : "Off"}</span>
+                  aria-describedby={`${layerId}-agent-reason`} aria-disabled={Boolean(agentDisabledReason)}
+                  onClick={() => {
+                    if (agentDisabledReason) { setAgentNotice({ sessionKey, kind: "blocked" }); return; }
+                    agent.onToggle(!agent.enabled);
+                    setAgentNotice({ sessionKey, kind: "mode" });
+                  }}>
+                  <CapabilityChipContent label="Agent" icon="bot" description={agentDescription} descriptionId={`${layerId}-agent-reason`} />
                 </button>
-                <button type="button" className="v2-composer-agent-details v2-focusable"
-                  aria-label="Agent details" title="Agent details"
-                  aria-controls={`${layerId}-agent`} aria-expanded={layer === "agent"} aria-haspopup="menu"
-                  onClick={(event) => openLayer("agent", event.currentTarget)}>
-                  <UiV2Icon name="chevron-down" />
+              ) : null}
+              {workspace ? (
+                <button type="button" className="v2-composer-indicator v2-composer-workspace-toggle v2-focusable"
+                  aria-label={`Workspace details. ${workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}`}
+                  aria-controls={`${layerId}-workspace`} aria-expanded={layer === "workspace"} aria-haspopup="menu"
+                  aria-describedby={`${layerId}-workspace-description`}
+                  data-glyph="monitor" data-quiet={workspace.enabled ? undefined : ""}
+                  data-workspace-state={workspace.commandRunning ? "running" : workspace.sessionState ?? "off"}
+                  data-tooltip={workspaceDescription} data-tooltip-side="top"
+                  onClick={event => openLayer("workspace", event.currentTarget)}>
+                  <CapabilityChipContent label="Workspace" icon="monitor" signal={workspace.commandRunning ? "running" : undefined}
+                    description={workspaceDescription} descriptionId={`${layerId}-workspace-description`} />
                 </button>
-                {agentReason ? <span className="v2-sr-only" id={`${layerId}-agent-reason`}>{agentReason}</span> : null}
-              </span>
-            ) : null}
-            {workspace ? (
-              <button
-                aria-label={`Workspace details. ${workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}`}
-                aria-controls={`${layerId}-workspace`} aria-expanded={layer === "workspace"} aria-haspopup="menu"
-                className="v2-composer-indicator v2-composer-workspace-toggle v2-focusable"
-                data-glyph="monitor" data-quiet={workspace.enabled ? undefined : ""}
-                data-workspace-state={workspace.commandRunning ? "running" : workspace.sessionState ?? "off"}
-                title={workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}
-                type="button" onClick={(event) => openLayer("workspace", event.currentTarget)}
-              >
-                <span aria-hidden="true" />
-                <UiV2Icon className="v2-composer-indicator-glyph" name="monitor" />
-                <span className="v2-composer-indicator-label">
-                  Workspace: {workspace.busy ? "Saving…" : workspace.commandRunning ? "Running"
-                    : workspace.sessionState === "failed" ? "Unavailable" : workspace.enabled ? "On" : "Off"}
-                </span>
-                {workspace.sessionState === "failed" || workspace.commandRunning ? (
-                  <small aria-hidden="true" className="v2-composer-workspace-signal">{workspace.sessionState === "failed" ? "!" : "•"}</small>
-                ) : null}
-              </button>
-            ) : null}
-            {searchChipVisible ? (
-              <span className="v2-composer-indicator-group">
-                <button
-                  ref={searchTriggerRef}
-                  className="v2-composer-indicator v2-focusable"
-                  type="button"
-                  data-quiet={searchActive ? undefined : ""}
-                  data-glyph="globe"
+              ) : null}
+              {searchChipVisible ? (
+                <button ref={searchTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
+                  data-quiet={searchActive ? undefined : ""} data-glyph="globe"
+                  data-tooltip={searchDescription} data-tooltip-side="top"
                   disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
-                  aria-controls={`${layerId}-search`}
-                  aria-expanded={layer === "search"}
-                  aria-haspopup="menu"
-                  aria-label={activeSearchEngineName
-                    ? `Choose web search: ${activeSearchEngineName}`
-                    : "Choose web search"}
-                  onClick={(event) => openLayer("search", event.currentTarget)}
-                >
-                  <span aria-hidden="true" />
-                  <UiV2Icon className="v2-composer-indicator-glyph" name="globe" />
-                  <span className="v2-composer-indicator-label">{searchChipLabel}</span>
-                  {controlsLocked ? <UiV2Icon name="lock" /> : searchActive ? null : <UiV2Icon name="chevron-down" />}
+                  aria-controls={`${layerId}-search`} aria-expanded={layer === "search"} aria-haspopup="menu"
+                  aria-label={activeSearchEngineName ? `Choose web search: ${activeSearchEngineName}` : "Choose web search"}
+                  aria-describedby={`${layerId}-search-description`}
+                  onClick={event => openLayer("search", event.currentTarget)}>
+                  <CapabilityChipContent label="Search" icon="globe" count={activeSearchStrategies.length > 1 ? activeSearchStrategies.length : 0}
+                    description={searchDescription} descriptionId={`${layerId}-search-description`} />
                 </button>
-                {searchActive && !controlsLocked ? (
-                  <button
-                    className="v2-composer-indicator-clear v2-focusable"
-                    type="button"
-                    disabled={activeRun || !onSelectSearchOptionIds}
-                    aria-label="Turn off Search"
-                    onClick={() => onSelectSearchOptionIds?.([])}
-                  >
-                    <UiV2Icon name="close" />
-                  </button>
-                ) : null}
-              </span>
-            ) : null}
-            {knowledgeChipVisible ? (
-              <span className="v2-composer-indicator-group">
-                <button
-                  ref={knowledgeTriggerRef}
-                  className="v2-composer-indicator v2-focusable"
-                  type="button"
-                  data-quiet={knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? "" : undefined}
-                  disabled={activeRun || (
-                    !knowledgeControlsLocked && !onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds
-                  )}
-                  aria-controls={`${layerId}-knowledge`}
-                  aria-expanded={layer === "knowledge"}
-                  aria-haspopup="menu"
-                  aria-label="Choose Knowledge"
-                  data-glyph="book"
-                  onClick={(event) => openLayer("knowledge", event.currentTarget)}
-                >
-                  <span aria-hidden="true" />
-                  <UiV2Icon className="v2-composer-indicator-glyph" name="book" />
-                  <span className="v2-composer-indicator-label">
-                    {knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? (
-                      "Knowledge"
-                    ) : (
-                      <>
-                        <span className="v2-composer-indicator-prefix">Knowledge: </span>
-                        {knowledgeChipValue}
-                      </>
-                    )}
-                  </span>
-                  {knowledgeControlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
+              ) : null}
+              {knowledgeChipVisible ? (
+                <button ref={knowledgeTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
+                  data-quiet={knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? "" : undefined} data-glyph="book"
+                  disabled={activeRun || (!knowledgeControlsLocked && !onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds)}
+                  aria-controls={`${layerId}-knowledge`} aria-expanded={layer === "knowledge"} aria-haspopup="menu"
+                  aria-label="Choose Knowledge" aria-describedby={`${layerId}-knowledge-description`}
+                  data-tooltip={knowledgeDescription} data-tooltip-side="top"
+                  onClick={event => openLayer("knowledge", event.currentTarget)}>
+                  <CapabilityChipContent label="Knowledge" icon="book" count={selectedKnowledgeResourceCount > 1 ? selectedKnowledgeResourceCount : 0}
+                    description={knowledgeDescription} descriptionId={`${layerId}-knowledge-description`} />
                 </button>
-                {knowledgeSelection.mode !== "none" && !knowledgeControlsLocked ? (
-                  <button
-                    className="v2-composer-indicator-clear v2-focusable"
-                    type="button"
-                    disabled={activeRun || (!onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds)}
-                    aria-label="Turn off Knowledge"
-                    onClick={() => selectKnowledge(EMPTY_KNOWLEDGE_SELECTION)}
-                  >
-                    <UiV2Icon name="close" />
-                  </button>
-                ) : null}
-              </span>
-            ) : null}
-            {!controlsLocked ? (
-              <button
-                className="v2-composer-indicator v2-focusable"
-                type="button"
-                data-quiet={mcpSelection.mode === "load_all" ? undefined : ""}
-                data-glyph="tool"
-                data-mcp-mode={mcpSelection.mode}
-                disabled={activeRun || controlsLocked}
-                aria-controls={`${layerId}-tools`}
-                aria-expanded={layer === "tools"}
-                aria-haspopup="menu"
-                aria-label="Change MCP mode"
-                aria-describedby={mcpAttentionLabel ? `${layerId}-mcp-attention` : undefined}
-                title={mcpAttentionLabel}
-                onClick={(event) => openLayer("tools", event.currentTarget)}
-              >
-                {/* The accent dot marks a loaded capability; Auto (discover
-                    on demand) and Off stay quiet so the dot never reads as
-                    "tools are on" by default. The chip names MCP, not
-                    "Tools": Search and Knowledge are tools too. */}
-                <span aria-hidden="true" />
-                <UiV2Icon className="v2-composer-indicator-glyph" name="tool" />
-                <span className="v2-composer-indicator-label">
-                  MCP: {mcpSelection.mode === "load_all"
-                    ? "Load all"
-                    : mcpSelection.mode === "off" ? "Off" : "Auto"}
-                </span>
-                {mcpAttentionLabel ? (
-                  <span aria-hidden="true" className="v2-composer-mcp-attention">!</span>
-                ) : null}
-                <UiV2Icon name="chevron-down" />
+              ) : null}
+              {!controlsLocked ? (
+                <button className="v2-composer-indicator v2-focusable" type="button"
+                  data-quiet={mcpSelection.mode === "load_all" ? undefined : ""} data-glyph="tool"
+                  data-off={mcpSelection.mode === "off" || undefined} data-mcp-mode={mcpSelection.mode}
+                  disabled={activeRun} aria-controls={`${layerId}-tools`} aria-expanded={layer === "tools"} aria-haspopup="menu"
+                  aria-label="Change MCP mode" aria-describedby={`${layerId}-mcp-description`}
+                  data-tooltip={mcpDescription} data-tooltip-side="top"
+                  onClick={event => openLayer("tools", event.currentTarget)}>
+                  <CapabilityChipContent label="MCP" icon="tool" signal={mcpAttentionLabel ? "attention" : undefined}
+                    description={mcpDescription} descriptionId={`${layerId}-mcp-description`} />
+                </button>
+              ) : null}
+              <button className="v2-composer-indicator v2-focusable" type="button"
+                data-quiet={effectiveSkillIds.length && effectiveSkillsMode !== "off" ? undefined : ""} data-glyph="wand"
+                data-off={effectiveSkillsMode === "off" || undefined} data-skills-mode={effectiveSkillsMode}
+                aria-label="Change Skills mode" aria-controls={`${layerId}-skills`} aria-expanded={layer === "skills"}
+                aria-haspopup="menu" aria-describedby={`${layerId}-skills-description`} disabled={activeRun}
+                data-tooltip={skillsDescription} data-tooltip-side="top" onClick={event => openLayer("skills", event.currentTarget)}>
+                <CapabilityChipContent label="Skills" icon="wand" count={effectiveSkillIds.length}
+                  description={skillsDescription} descriptionId={`${layerId}-skills-description`} />
               </button>
-            ) : null}
-            {mcpAttentionLabel ? <span className="v2-sr-only" id={`${layerId}-mcp-attention`}>{mcpAttentionLabel}</span> : null}
-            <button className="v2-composer-indicator v2-focusable" type="button" data-quiet={effectiveSkillIds.length ? undefined : ""}
-              data-glyph="wand" aria-label="Change Skills mode" aria-controls={`${layerId}-skills`} aria-expanded={layer === "skills"}
-              aria-haspopup="menu" disabled={activeRun} onClick={event => openLayer("skills", event.currentTarget)}>
-              <span aria-hidden="true" /><UiV2Icon className="v2-composer-indicator-glyph" name="wand" />
-              <span className="v2-composer-indicator-label">Skills: {effectiveSkillsMode === "off" ? "Off" : "Auto"}{effectiveSkillIds.length ? ` · ${effectiveSkillIds.length}` : ""}</span>
-              <UiV2Icon name={controlsLocked ? "lock" : "chevron-down"} />
-            </button>
+            </div>
+
+            <span className="v2-composer-spacer" />
+            <span className="v2-composer-run-action">
+              <RunComposerActionV2
+                active={activeRun}
+                onSend={onSend}
+                onStop={onStop}
+                runId={runId}
+                sendDisabled={sendDisabled}
+                sendDisabledReason={sendDisabledReason}
+                stopping={stopping}
+              />
+            </span>
           </div>
 
-          <span className="v2-composer-spacer" />
-          <span className="v2-composer-run-action">
-            <RunComposerActionV2
-              active={activeRun}
-              onSend={onSend}
-              onStop={onStop}
-              runId={runId}
-              sendDisabled={sendDisabled}
-              sendDisabledReason={sendDisabledReason}
-              stopping={stopping}
-            />
-          </span>
         </div>
 
         {layer ? portalLayer(
@@ -1359,19 +1310,7 @@ export function ComposerV2({
                 <UiV2IconButton icon="close" label="Close" onClick={closeLayer} />
               </header>
 
-              {layer === "agent" && agent ? (
-                <div className="v2-composer-layer-scroll">
-                  <p className="v2-composer-layer-title">Agent</p>
-                  <CapabilityRow selected={agent.enabled}
-                    disabled={Boolean(activeRun || (!agent.enabled && agentReason))}
-                    reason={agentReason ?? "Codex carries out your task in Workspace."}
-                    onClick={() => agent.onToggle(!agent.enabled)}>
-                    {agent.enabled ? "Turn off Agent" : "Turn on Agent"}
-                  </CapabilityRow>
-                  <p className="v2-composer-layer-note">Uses the selected model, Skills, MCP mode and saved Workspace secrets. Available while this Workspace exists.</p>
-                  <p className="v2-composer-layer-note">Turn off Knowledge for Agent. Personal Memory and image generation are unavailable.</p>
-                </div>
-              ) : layer === "workspace" && workspace ? (
+              {layer === "workspace" && workspace ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">Workspace</p>
                   <CapabilityRow selected={workspace.enabled} disabled={workspaceToggleDisabled}

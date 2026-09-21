@@ -30,6 +30,10 @@ export type ComposerGalleryState =
   | "add"
   | "attachments"
   | "capabilities"
+  | "chips-wide"
+  | "chips-off"
+  | "chips-off-pinned"
+  | "chips-agent"
   | "workspace-running"
   | "workspace-failed"
   | "default"
@@ -350,6 +354,9 @@ function initialLayer(state: ComposerGalleryState): ComposerV2Layer {
 }
 
 export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalleryState }) {
+  const wideChips = state === "chips-wide";
+  const offChips = state === "chips-off" || state === "chips-off-pinned";
+  const chipFixture = wideChips || offChips || state === "chips-agent";
   const [config, setConfig] = useState<ComposerConfig>(() => state === "zero"
     ? {
         ...composerGalleryConfig,
@@ -369,14 +376,19 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
         },
         mcpServers: []
       }
-    : composerGalleryConfig);
-  const [workspaceEnabled, setWorkspaceEnabled] = useState(true);
-  const allCapabilities = ["capabilities", "workspace-running", "workspace-failed"].includes(state);
+    : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
+        wideChips || offChips ? { ...server, enabled: true } : server
+      ) });
+  const [workspaceEnabled, setWorkspaceEnabled] = useState(!offChips);
+  const [agentEnabled, setAgentEnabled] = useState(false);
+  const allCapabilities = chipFixture || ["capabilities", "workspace-running", "workspace-failed"].includes(state);
   const [draft, setDraft] = useState(state === "default" ? "Подготовь краткое резюме" : "");
   const [selectedModel, setSelectedModel] = useState({ modelId: "gpt-5.2", provider: "openai-work" });
-  const [searchIds, setSearchIds] = useState<string[]>(state === "zero" ? [] : ["web-primary"]);
+  const [searchIds, setSearchIds] = useState<string[]>(state === "zero" || offChips || state === "chips-agent"
+    ? [] : wideChips ? ["web-primary", "research-search"] : ["web-primary"]);
   const [knowledgeSelection, setKnowledgeSelection] = useState<KnowledgeSelection>(() => {
-    if (state === "zero") return EMPTY_KNOWLEDGE_SELECTION;
+    if (state === "zero" || offChips || state === "chips-agent") return EMPTY_KNOWLEDGE_SELECTION;
+    if (wideChips) return explicitKnowledgeSelection({ baseIds: ["kb-finance", "kb-product"], sourceIds: ["source-7"] });
     if (state === "assistant-knowledge") return inheritedKnowledgeSelection("assistant");
     if (state === "project-knowledge") {
       return explicitKnowledgeSelection({ baseIds: ["kb-product"], sourceIds: ["source-7"] });
@@ -388,7 +400,8 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   >(() => state === "assistant-knowledge"
     ? "assistant"
     : state === "project-knowledge" ? "project" : state === "zero" ? "off" : "explicit");
-  const [mcpSelection, setMcpSelection] = useState<McpRunSelection>({ mode: "auto" });
+  const [mcpSelection, setMcpSelection] = useState<McpRunSelection>({ mode: wideChips ? "load_all" : offChips ? "off" : "auto" });
+  const [skillsMode, setSkillsMode] = useState<"auto" | "off">(offChips ? "off" : "auto");
   const [attachmentItems, setAttachmentItems] = useState<ComposerAttachmentItemV2[]>(
     state === "attachments" ? attachmentGalleryItems : []
   );
@@ -490,6 +503,10 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
           />
           <div className="v2-composer-gallery-dock">
             <ComposerV2
+              agent={allCapabilities ? {
+                enabled: agentEnabled, onToggle: setAgentEnabled,
+                unavailableReason: workspaceEnabled ? undefined : "Enable Workspace to use Agent."
+              } : undefined}
               attachmentItems={attachmentItems}
               attachmentLimitUsage={state === "attachments" ? attachmentGalleryUsage : null}
               config={state === "error" ? null : config}
@@ -542,6 +559,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                 setKnowledgePlanSource(selection.mode === "none" ? "off" : "explicit");
               }}
               onSelectMcp={setMcpSelection}
+              onSelectSkillsMode={setSkillsMode}
               onSelectModel={(model) => setSelectedModel({ modelId: model.modelId, provider: model.provider })}
               onSelectSearchOptionIds={(ids) => setSearchIds([...ids])}
               onSend={() => setDraft("")}
@@ -566,8 +584,11 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               ])}
               workspace={allCapabilities ? { available: true, busy: false, enabled: workspaceEnabled,
                 internetEnabled: false, loading: false, onToggle: setWorkspaceEnabled,
-                sessionState: state === "workspace-failed" ? "failed" : "ready", commandRunning: state === "workspace-running" } : undefined}
-              selectedSkillIds={allCapabilities ? ["one", "two", "three"] : []}
+                sessionState: state === "workspace-failed" || offChips ? "failed" : "ready", commandRunning: state === "workspace-running" || wideChips } : undefined}
+              skillsMode={skillsMode}
+              selectedSkillIds={wideChips || state === "chips-off-pinned"
+                ? Array.from({ length: 32 }, (_, index) => `skill-${index}`)
+                : allCapabilities && !chipFixture ? ["one", "two", "three"] : []}
               selectedAssistant={assistant}
               knowledgePlanSource={knowledgePlanSource}
               selectedKnowledgeSelection={knowledgeSelection}

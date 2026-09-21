@@ -421,7 +421,7 @@ test("Skills bundles: one 51-Skill ZIP supports 32 manual pins and an honest mod
     await testInfo.attach("Skills bundles · 32 pinned budget", { path, contentType: "image/png" });
     await picker.getByRole("button", { name: "Close Skills", exact: true }).click();
     const chip = page.getByRole("button", { name: "Change Skills mode", exact: true });
-    await expect(chip).toHaveText("Skills: Auto · 32");
+    await expect(chip).toHaveAccessibleDescription(/Skills: Auto · 32 pinned \(always loaded\)/);
     await chip.click();
     await page.getByRole("menuitem", { name: /Skill library/ }).click();
     await expect(picker.getByRole("region", { name: "Selected Skills" })).toContainText("32 always included · ≈");

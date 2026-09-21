@@ -19,6 +19,7 @@ export type UiV2IconName =
   | "assistant"
   | "attach"
   | "book"
+  | "bot"
   | "braces"
   | "branch"
   | "brand"
@@ -107,6 +108,10 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-brand" viewBox="0 0 24 24">
           <rect x="3.5" y="3.5" width="14" height="14" rx="4.5" />
           <path d="M12.5 12.5 21 21" />
+        </symbol>
+        <symbol id="v2-icon-bot" viewBox="0 0 24 24">
+          <rect x="5" y="8" width="14" height="11" rx="3" />
+          <path d="M12 8V4.5M9.5 13v1.5M14.5 13v1.5M2.5 13v2M21.5 13v2" />
         </symbol>
         <symbol id="v2-icon-braces" viewBox="0 0 24 24">
           <path d="M8 4a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2M16 4a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2 2 2 0 0 0-2 2v4a2 2 0 0 1-2 2" />

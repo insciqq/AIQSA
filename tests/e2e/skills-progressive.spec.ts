@@ -75,7 +75,7 @@ test("Skills preferences, Auto/Off, and Assistant delivery persist with usable r
     const chip = page.getByRole("button", { name: "Change Skills mode" });
     await chip.click();
     await page.getByRole("menuitemradio", { name: /^Off/ }).click();
-    await expect(chip).toHaveText("Skills: Off · 1");
+    await expect(chip).toHaveAccessibleDescription(/Skills: Auto off · 1 pinned \(always loaded\)/);
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Keep this draft.");
     await chip.click();
     await page.getByRole("menuitemradio", { name: /^Auto/ }).click();
@@ -116,7 +116,7 @@ test("Skills preferences, Auto/Off, and Assistant delivery persist with usable r
     }
     await page.setViewportSize(sizes[0]);
     await editor.getByRole("button", { name: "Use in chat", exact: true }).click();
-    await expect(chip).toHaveText("Skills: Off · 2");
+    await expect(chip).toHaveAccessibleDescription(/Skills: Auto off · 2 pinned \(always loaded\)/);
     await chip.click();
     await expect(page.getByRole("menuitemradio", { name: /Assistant Skills/ })).toBeDisabled();
     await page.keyboard.press("Escape");
@@ -178,7 +178,7 @@ test("a settled load can pin an authorized Skill for the next turn without chang
     await expect(page.getByText(`Read references/check.md · ${skill.name}`, { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Pin Skill for next turn", exact: true }).click();
     await expect(page.getByRole("button", { name: "Skill pinned for next turn" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Off · 1");
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto off · 1 pinned \(always loaded\)/);
     for (const size of [sizes[0], sizes[2], sizes[4], sizes[5]]) {
       await page.setViewportSize(size!);
       await expectNoHorizontalOverflow(page);

@@ -52,7 +52,7 @@ describe("Composer v2", () => {
     const onOpenSkillLibrary = vi.fn();
     render(<ComposerV2 {...props({ onSelectSkillsMode, onOpenSkillLibrary, skillsMode: "auto", selectedSkillIds: ["review"] })} />);
     const opener = screen.getByRole("button", { name: "Change Skills mode" });
-    expect(opener).toHaveTextContent("Skills: Auto · 1");
+    expect(opener).toHaveAccessibleDescription(/Skills: Auto · 1 pinned \(always loaded\)/);
     fireEvent.click(opener);
     const off = screen.getByRole("menuitemradio", { name: /^Off/ });
     screen.getByRole("menuitemradio", { name: /^Auto/ }).focus();
@@ -111,83 +111,95 @@ describe("Composer v2", () => {
     expect(onRemoveArtifactEdit).toHaveBeenCalledOnce();
   });
 
-  it.each([false, true])("explains unavailable Agent without losing the draft or trapping an enabled selection: %s", async (enabled) => {
-    const onToggle = vi.fn();
-    const onSend = vi.fn();
+  it.each([false, true])("explains unavailable Agent without trapping an enabled selection: %s", (enabled) => {
+    const onToggle = vi.fn(), onSend = vi.fn();
     const unavailableReason = "Agent is unavailable. Ask an administrator to check the Workspace runner.";
     render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], onSend,
       agent: { enabled, onToggle, unavailableReason } })} />);
-    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
-    expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent(unavailableReason);
-    const toggle = screen.getByRole("menuitemcheckbox", { name: enabled ? /Turn off Agent/ : /Turn on Agent/ });
-    if (enabled) expect(toggle).toBeEnabled();
-    else expect(toggle).toBeDisabled();
+    const toggle = screen.getByRole("button", { name: "Agent" });
+    expect(toggle).toHaveAttribute("aria-pressed", String(enabled));
+    expect(toggle).toHaveAttribute("aria-disabled", String(!enabled));
+    expect(toggle).toHaveAccessibleDescription(expect.stringContaining(unavailableReason));
+    toggle.focus();
+    expect(toggle).toHaveFocus();
     fireEvent.click(toggle);
-    if (enabled) expect(onToggle).toHaveBeenCalledWith(false);
-    else expect(onToggle).not.toHaveBeenCalled();
-    if (!enabled) {
-      const menu = screen.getByRole("menu", { name: "Agent" });
-      await waitFor(() => expect(menu).toHaveFocus());
-      fireEvent.keyDown(menu, { key: "Escape" });
-      expect(screen.queryByRole("menu", { name: "Agent" })).not.toBeInTheDocument();
-      await waitFor(() => expect(screen.getByRole("button", { name: "Agent details" })).toHaveFocus());
+    if (enabled) expect(onToggle).toHaveBeenCalledExactlyOnceWith(false);
+    else {
+      expect(onToggle).not.toHaveBeenCalled();
+      expect(screen.getByRole("status")).toHaveTextContent(unavailableReason);
     }
+    expect(screen.queryByRole("button", { name: "Agent details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menu", { name: "Agent" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Проверь источники");
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
     if (enabled) expect(onSend).not.toHaveBeenCalled();
     else expect(onSend).toHaveBeenCalledOnce();
   });
 
-  it("enables Agent without changing the selected MCP mode or Skills", () => {
-    const onToggle = vi.fn();
+  it("toggles Agent directly, explains its restrictions and preserves other controls", () => {
     const onSelectMcp = vi.fn();
-    render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], selectedSearchOptionIds: [],
-      selectedSkills: [{ id: "summary", name: "Signed summary" }], selectedSkillIds: ["summary"],
-      mcpSelection: { mode: "auto" }, onSelectMcp, agent: { enabled: false, onToggle } })} />);
+    function ControlledAgent() {
+      const [enabled, onToggle] = useState(false);
+      return <ComposerV2 {...props({ selectedKnowledgeBaseIds: [], selectedSearchOptionIds: [],
+        selectedSkills: [{ id: "summary", name: "Signed summary" }], selectedSkillIds: ["summary"],
+        mcpSelection: { mode: "auto" }, onSelectMcp, agent: { enabled, onToggle } })} />;
+    }
+    render(<ControlledAgent />);
     const toggle = screen.getByRole("button", { name: "Agent" });
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(toggle);
-    expect(onToggle).toHaveBeenCalledExactlyOnceWith(true);
-    expect(screen.queryByRole("menu", { name: "Agent" })).not.toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Проверь источники");
-    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Memory and image generation are unavailable.");
+    expect(toggle).toHaveAccessibleDescription(expect.stringContaining("selected model, Skills, MCP mode"));
+    expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/1 pinned/);
     expect(onSelectMcp).not.toHaveBeenCalled();
-    expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent("selected model, Skills, MCP mode");
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Проверь источники");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("status")).toHaveTextContent("Agent off.");
   });
 
   it("explains incompatible Agent controls and permits turning Agent off", () => {
-    const onToggle = vi.fn();
-    const onSend = vi.fn();
+    const onToggle = vi.fn(), onSend = vi.fn();
     render(<ComposerV2 {...props({ onSend, agent: { enabled: true, onToggle } })} />);
+    const toggle = screen.getByRole("button", { name: "Agent" });
+    expect(toggle).toHaveAccessibleDescription(expect.stringContaining("Turn off Knowledge"));
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
-    expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent("Turn off Knowledge");
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Turn off Agent/ }));
-    expect(onToggle).toHaveBeenCalledWith(false);
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalledExactlyOnceWith(false);
   });
 
-  it.each([false, true])("keeps Agent details accessible while direct activation is unavailable: %s", (enabled) => {
+  it("keeps blocked Agent focusable and prevents changes during an active run", () => {
     const onToggle = vi.fn();
-    const unavailableReason = "Turn on Workspace first.";
-    const { rerender } = render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [],
-      agent: { enabled, onToggle, unavailableReason } })} />);
+    render(<ComposerV2 {...props({ activeRun: true, selectedKnowledgeBaseIds: [],
+      agent: { enabled: true, onToggle } })} />);
     const toggle = screen.getByRole("button", { name: "Agent" });
-    expect(toggle).toHaveAttribute("aria-pressed", String(enabled));
-    expect(toggle).toHaveAccessibleDescription(unavailableReason);
-    if (enabled) expect(toggle).toBeEnabled();
-    else expect(toggle).toBeDisabled();
-    fireEvent.click(toggle);
-    if (enabled) expect(onToggle).toHaveBeenCalledExactlyOnceWith(false);
-    else expect(onToggle).not.toHaveBeenCalled();
-    onToggle.mockClear();
-    rerender(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], activeRun: true,
-      agent: { enabled, onToggle } })} />);
-    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    toggle.focus();
+    expect(toggle).toHaveFocus();
     fireEvent.click(toggle);
     expect(onToggle).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
-    expect(screen.getByRole("menu", { name: "Agent" })).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("A response is running.");
+  });
+
+  it("distinguishes disabled automatic Skills from still-active pinned instructions", () => {
+    render(<ComposerV2 {...props({ skillsMode: "off", selectedSkillIds: ["pinned"] })} />);
+    const chip = screen.getByRole("button", { name: "Change Skills mode" });
+    expect(chip).toHaveAccessibleDescription("Skills: Auto off · 1 pinned (always loaded)");
+    expect(chip.querySelector(".v2-composer-indicator-count")).toHaveTextContent("1");
+    fireEvent.click(chip);
+    expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("does not carry an Agent notice into another chat or retain a resolved restriction", () => {
+    const agent = { enabled: false, onToggle: vi.fn() };
+    const { rerender } = render(<ComposerV2 {...props({ sessionKey: "chat-a", agent })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Turn off Knowledge");
+    rerender(<ComposerV2 {...props({ sessionKey: "chat-b", agent })} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    rerender(<ComposerV2 {...props({ sessionKey: "chat-a", agent, selectedKnowledgeBaseIds: [] })} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("sends with Agent and Search enabled when Knowledge is off", () => {
@@ -210,17 +222,17 @@ describe("Composer v2", () => {
     };
     const { rerender } = render(<ComposerV2 {...props({ config, onOpenMcpSettings })} />);
     const chip = screen.getByRole("button", { name: "Change MCP mode" });
-    expect(chip).toHaveTextContent("!");
-    expect(chip).toHaveAttribute("title", "2 MCP servers need attention. Open MCP settings.");
-    expect(chip).toHaveAccessibleDescription("2 MCP servers need attention. Open MCP settings.");
+    expect(chip.querySelector('[data-signal="attention"]')).not.toBeNull();
+    expect(chip).toHaveAttribute("data-tooltip", "MCP: Auto. 2 MCP servers need attention. Open MCP settings.");
+    expect(chip).toHaveAccessibleDescription("MCP: Auto. 2 MCP servers need attention. Open MCP settings.");
     fireEvent.click(chip);
     expect(screen.getByRole("status")).toHaveTextContent("Tracker · Needs authorization");
     expect(screen.getByRole("status")).toHaveTextContent("Files · Reconnect required");
     fireEvent.click(screen.getByRole("menuitem", { name: "Manage enabled MCP servers" }));
     expect(onOpenMcpSettings).toHaveBeenCalledOnce();
     rerender(<ComposerV2 {...props({ config: { ...config, mcpServers: [config.mcpServers[2]] }, onOpenMcpSettings })} />);
-    expect(chip).not.toHaveTextContent("!");
-    expect(chip).not.toHaveAttribute("aria-describedby");
+    expect(chip.querySelector('[data-signal="attention"]')).toBeNull();
+    expect(chip).toHaveAccessibleDescription("MCP: Auto");
   });
   it("keeps context controls in the header, outside the composer", () => {
     const { container } = render(<ComposerV2 {...props()} />);
@@ -430,13 +442,13 @@ describe("Composer v2", () => {
     expect(screen.queryByRole("group", { name: "Ways to start" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Choose web search: OpenAI" }))
-      .toHaveTextContent(/^Search: OpenAI$/);
-    expect(screen.getByRole("button", { name: "Turn off Search" })).toBeVisible();
+      .toHaveAccessibleDescription("Search: OpenAI");
+    expect(screen.queryByRole("button", { name: "Turn off Search" })).toBeNull();
     expect(screen.getByRole("button", { name: "Choose Knowledge" })).toBeVisible();
 
     rerender(<ComposerV2 {...initial} selectedSearchOptionIds={[]} />);
     expect(screen.getByRole("button", { name: "Choose web search" }))
-      .toHaveTextContent(/^Search$/);
+      .toHaveAccessibleDescription("Search: Off");
     expect(screen.queryByRole("button", { name: "Turn off Search" })).toBeNull();
   });
 
@@ -550,7 +562,7 @@ describe("Composer v2", () => {
     })} />);
 
     const chip = screen.getByRole("button", { name: "Change Skills mode" });
-    expect(chip).toHaveTextContent("Skills: Auto · 3");
+    expect(chip).toHaveAccessibleDescription(/Skills: Auto · 3 pinned \(always loaded\)/);
     // Manual Skills are chosen in the Skill Library; the Add menu only
     // discloses the current count and names.
     expect(screen.getByRole("menuitem", { name: /^Skills…/ })).toHaveTextContent("3 selected · Careful editor");
@@ -574,10 +586,10 @@ describe("Composer v2", () => {
     expect(onSend).toHaveBeenCalledOnce();
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Keep this draft");
     rerender(<ComposerV2 {...selection} selectedSkillIds={["included-0", "manual-a", "manual-b"]} />);
-    expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveTextContent("Skills: Auto · 32");
+    expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 32 pinned \(always loaded\)/);
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
     rerender(<ComposerV2 {...selection} selectedSkillIds={[]} />);
-    expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveTextContent("Skills: Auto · 30");
+    expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 30 pinned \(always loaded\)/);
   });
 
   it("keeps loading, malformed, and zero-entitlement authority states explicit", () => {
@@ -682,7 +694,7 @@ describe("Composer v2", () => {
     })} />);
 
     expect(screen.getByRole("button", { name: "Choose Knowledge" }))
-      .toHaveTextContent("Knowledge: 2");
+      .toHaveAccessibleDescription("Knowledge: Финансы 2026, Selected appendix");
     expect(screen.getByText("Bases")).toBeVisible();
     expect(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ }))
       .toHaveTextContent("42 documents · ready");
@@ -723,7 +735,7 @@ describe("Composer v2", () => {
     })} />);
 
     expect(screen.getByRole("button", { name: "Choose Knowledge" }))
-      .toHaveTextContent("Knowledge: 2 from Assistant");
+      .toHaveAccessibleDescription("Knowledge: 2 from Assistant");
     expect(screen.getByRole("status")).toHaveTextContent(
       "Shared analyst controls Knowledge"
     );
@@ -748,7 +760,7 @@ describe("Composer v2", () => {
     })} />);
 
     expect(screen.getByRole("button", { name: "Choose Knowledge" }))
-      .toHaveTextContent("Knowledge: Финансы 2026 from Project");
+      .toHaveAccessibleDescription("Knowledge: Финансы 2026 · from Project");
     expect(screen.queryByRole("menuitemradio", { name: /All my knowledge/i }))
       .not.toBeInTheDocument();
     expect(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ })).toBeDisabled();

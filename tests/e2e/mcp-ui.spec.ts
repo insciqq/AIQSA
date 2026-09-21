@@ -306,9 +306,9 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await signIn(page);
   const capabilitiesTrigger = page.getByRole("button", { name: "Add" });
   const toolsTrigger = page.getByRole("button", { name: "Change MCP mode" });
-  await expect(toolsTrigger).toContainText("!");
-  await expect(toolsTrigger).toHaveAttribute("title", "2 MCP servers need attention. Open MCP settings.");
-  await expect(toolsTrigger).toHaveAccessibleDescription("2 MCP servers need attention. Open MCP settings.");
+  await expect(toolsTrigger.locator('[data-signal="attention"]')).toBeVisible();
+  await expect(toolsTrigger).toHaveAttribute("data-tooltip", "MCP: Auto. 2 MCP servers need attention. Open MCP settings.");
+  await expect(toolsTrigger).toHaveAccessibleDescription("MCP: Auto. 2 MCP servers need attention. Open MCP settings.");
   await page.setViewportSize({ height: 844, width: 390 });
   await expectTouchSafe(capabilitiesTrigger);
   await expectTouchSafe(toolsTrigger);
@@ -384,7 +384,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   // reopened menu shows the new checked row.
   await loadAllMode.click();
   await expect(tools).toHaveCount(0);
-  await expect(toolsTrigger).toContainText("MCP: Load all");
+  await expect(toolsTrigger).toHaveAccessibleDescription(/^MCP: Load all/);
   await toolsTrigger.click();
   await expect(loadAllMode).toHaveAttribute("aria-checked", "true");
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
@@ -409,20 +409,20 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   let skillLibrary = page.getByRole("dialog", { name: "Skills" });
   await expect(skillLibrary.getByRole("button", { name: "Open Incident brief" })).toBeVisible();
   expect(skillListRequests).toBe(1);
-  await skillLibrary.getByRole("button", { name: "Use Incident brief" }).click();
+  await skillLibrary.getByRole("button", { name: "Always use Incident brief" }).click();
   await skillLibrary.getByRole("button", { name: "Close Skills" }).click();
-  await expect(page.getByRole("button", { name: "Change MCP mode" })).toContainText("MCP: Auto");
+  await expect(page.getByRole("button", { name: "Change MCP mode" })).toHaveAccessibleDescription(/^MCP: Auto/);
 
   const skillsIndicator = page.getByRole("button", { name: "Change Skills mode" });
-  await expect(skillsIndicator).toContainText("Skills: Auto · 1");
+  await expect(skillsIndicator).toHaveAccessibleDescription(/Skills: Auto · 1 pinned \(always loaded\)/);
   await page.setViewportSize({ height: 844, width: 390 });
   await skillsIndicator.click();
-  await page.getByRole("menuitem", { name: /Pin skills/ }).click();
+  await page.getByRole("menuitem", { name: /Skill library/ }).click();
   skillLibrary = page.getByRole("dialog", { name: "Skills" });
   await expectWithinViewport(page, skillLibrary);
   await expectNoHorizontalOverflow(page);
-  await expect(skillLibrary.getByText(/1 pinned ·/u)).toBeVisible();
-  await expect(skillLibrary.getByRole("button", { name: "Remove Incident brief" }))
+  await expect(skillLibrary.getByText(/1 always included ·/u)).toBeVisible();
+  await expect(skillLibrary.getByRole("button", { name: "Stop always using Incident brief" }))
     .toHaveAttribute("aria-pressed", "true");
   await expect(skillLibrary.getByRole("button", { name: "Close Skills" })).toBeFocused();
   await page.keyboard.press("Escape");
@@ -458,5 +458,5 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await refreshStatus.scrollIntoViewIfNeeded();
   await expect(refreshStatus).toBeInViewport();
   await settings.getByRole("button", { name: "Close settings" }).click();
-  await expect(toolsTrigger).not.toContainText("!");
+  await expect(toolsTrigger.locator('[data-signal="attention"]')).toHaveCount(0);
 });

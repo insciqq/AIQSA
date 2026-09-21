@@ -134,7 +134,7 @@ test("Skill availability refreshes owner repair and privacy-safe recipient cards
     }
     await recipient.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: `Use ${name}`, exact: true }).click();
     await expect(recipient.getByTestId("library-v2")).toHaveCount(0);
-    await expect(recipient.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 1");
+    await expect(recipient.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 1 pinned \(always loaded\)/);
   } finally {
     await recipientContext.close();
     await cleanFixtures(page, assistantId, skills);

@@ -50,7 +50,7 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
     await expect(picker.getByRole("button", { name: "Close Skills" })).toBeFocused();
     await picker.getByRole("button", { name: `Always use ${shared.name}`, exact: true }).click();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 1");
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 1 pinned \(always loaded\)/);
     await expect(message).toHaveValue("Summarize the shared checklist.");
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
@@ -140,12 +140,12 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
       await picker.getByRole("button", { name: `Always use ${skill.name}`, exact: true }).click();
     }
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 3");
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 3 pinned \(always loaded\)/);
     await page.getByRole("button", { name: "Add", exact: true }).click();
     await page.getByRole("menuitem", { name: /Use an Assistant/ }).click();
     await page.getByTestId(`assistant-picker-row-${assistantId}`).click();
     await expect(page.getByTestId("assistant-picker")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 33");
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 33 pinned \(always loaded\)/);
     await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
     const rejection = page.waitForResponse(response => response.request().method() === "POST" && /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname));
     await page.getByRole("button", { name: "Send message" }).click();

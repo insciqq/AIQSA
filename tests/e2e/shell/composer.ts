@@ -57,17 +57,10 @@ export async function reasoningOptionValues(page: Page): Promise<string[]> {
 }
 
 export async function chooseSearchStrategy(page: Page, label: string): Promise<void> {
-  if (/off/iu.test(label)) {
-    const indicator = page.getByRole("button", { name: "Turn off Search" });
-    if (await indicator.isVisible()) await indicator.click();
-    await expect(indicator).toHaveCount(0);
-    return;
-  }
-
   // The Search chip owns its engine menu; choosing an engine closes it.
   await page.getByRole("button", { name: /^Choose web search/u }).click();
   const search = page.getByRole("menu", { name: "Web search" });
-  await search.getByRole("menuitemradio", { name: new RegExp(label, "iu") }).click();
+  await search.getByRole("menuitemradio", { name: new RegExp(/off/iu.test(label) ? "^Off" : label, "iu") }).click();
   await expect(search).toHaveCount(0);
 }
 
@@ -95,9 +88,9 @@ export async function expectRunSummary(
   }
   if (expected.search !== undefined) {
     if (/off/iu.test(expected.search)) {
-      await expect(page.getByRole("button", { name: "Turn off Search" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: /^Choose web search/u })).toHaveAccessibleDescription("Search: Off");
     } else {
-      await expect(page.getByRole("button", { name: "Turn off Search" })).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Choose web search/u })).not.toHaveAccessibleDescription("Search: Off");
     }
   }
 }
