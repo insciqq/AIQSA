@@ -703,18 +703,20 @@ describe("Library resource panels", () => {
     render(
       <FilesPanelV2
         files={[{
+          byteSize: 214000,
           canOpenChat: true,
+          chatId: "chat",
+          chatTitle: "Quarterly brief",
+          createdAt: "2026-09-21T14:00:00.000Z",
           id: "upload",
-          saved: false,
-          meta: "214 kB",
+          savedAt: null,
           name: "source.csv",
-          private: true,
           status: "ready"
         }]}
         onOpen={onOpen}
       />
     );
-    expect(screen.getByText("Files are private and visible only to you.")).toBeInTheDocument();
+    expect(screen.getByText(/Files are private and visible only to you\./)).toBeInTheDocument();
     expect(screen.queryByText("Upload · Private")).not.toBeInTheDocument();
     expect(screen.queryByText(/generated files/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "More actions for source.csv" }));
@@ -722,17 +724,62 @@ describe("Library resource panels", () => {
     expect(onOpen).toHaveBeenCalledWith("upload");
   });
 
+  it("searches loaded file names and chats without hiding pagination or claiming complete counts", () => {
+    const onLoadMore = vi.fn();
+    const source = { byteSize: 1200, canOpenChat: true, chatId: "chat", chatTitle: "Quarterly brief",
+      createdAt: "2026-09-21T14:31:00.000Z", id: "one", name: "report.md", savedAt: null, status: "ready" as const };
+    const files = [source, { ...source, id: "two", createdAt: "2026-09-21T14:02:00.000Z" },
+      { ...source, id: "saved", chatId: null, chatTitle: null, canOpenChat: false, name: "template.md", savedAt: "2026-09-20T09:00:00.000Z" }];
+    const { rerender } = render(<FilesPanelV2 files={files} complete={false} onLoadMore={onLoadMore} />);
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("list")[0]).toHaveAccessibleName("Saved files");
+    expect(screen.getByRole("list", { name: "Files from Quarterly brief" }).textContent).not.toContain("Quarterly brief");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search files" }), { target: { value: "QUARTERLY" } });
+    expect(screen.getAllByRole("heading", { name: "report.md" })).toHaveLength(2);
+    expect(screen.queryByRole("heading", { name: "template.md" })).not.toBeInTheDocument();
+    expect(screen.getByText("Searching 3 loaded files.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Saved" }));
+    expect(screen.getByText(/No loaded files match/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Load more files" }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
+    rerender(<FilesPanelV2 files={files} complete />);
+    expect(screen.getByRole("button", { name: "Saved 1" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "From chats 2" })).toBeVisible();
+    expect(screen.queryByText(/Searching .* loaded files/)).not.toBeInTheDocument();
+  });
+
+  it("offers named downloads only for ready files and preserves file mutation feedback", () => {
+    const onSave = vi.fn();
+    const onUse = vi.fn();
+    const source = { byteSize: 1200, canOpenChat: true, chatId: "chat", chatTitle: "Brief",
+      createdAt: "2026-09-21T14:31:00.000Z", id: "one", name: "report.md", savedAt: null, status: "ready" as const };
+    render(<FilesPanelV2 files={[source, { ...source, id: "two", name: "pending.txt", status: "processing" },
+      { ...source, id: "three", name: "failed.txt", status: "failed", mutation: "error" }]}
+      onSave={onSave} onUse={onUse} />);
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+    expect(screen.getByText("Processing…")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Download report.md" })).toHaveAttribute("download");
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("The file action failed.");
+    fireEvent.click(screen.getByRole("button", { name: "More actions for report.md" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save file" }));
+    expect(onSave).toHaveBeenCalledWith("one");
+  });
+
   it("explains failed processing, disables an unavailable chat action, and retries load failure", () => {
     const onRetry = vi.fn();
     const { rerender } = render(
       <FilesPanelV2
         files={[{
+          byteSize: 214000,
           canOpenChat: true,
+          chatId: "chat",
+          chatTitle: "Quarterly brief",
+          createdAt: "2026-09-21T14:00:00.000Z",
           id: "upload",
-          saved: false,
-          meta: "214 kB",
+          savedAt: null,
           name: "source.csv",
-          private: true,
           status: "failed"
         }]}
       />

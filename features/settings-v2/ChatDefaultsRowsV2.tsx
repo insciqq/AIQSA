@@ -123,7 +123,7 @@ export function ChatDefaultsRowsV2({
   return (
     <>
       <SettingsRowV2 description="Search engine offered first in new chats." testId="settings-default-search" title="Web search">
-        <SettingsSegmentV2
+        <SettingsSelectV2
           label="Web search default"
           options={searchOptions}
           value={searchValue}

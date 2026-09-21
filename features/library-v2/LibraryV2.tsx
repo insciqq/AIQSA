@@ -5,6 +5,7 @@ import {
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
+import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
 import {
   type UiV2IconName,
   UiV2Button,
@@ -45,6 +46,8 @@ import type {
   LibraryTabV2,
   MemoryOverviewV2
 } from "./contracts";
+import { fileExtension, fileTypeLabel, groupLibraryFiles } from "./filePresentation";
+import { formatStudioDate, formatStudioTime } from "./studioDate";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
   return memoryUiCopy(key);
@@ -83,8 +86,6 @@ export function LibraryV2({
   const previousSubviewKey = useRef<string | null>(null);
   const availableTabs = tabOrder.filter((id) => tabs.some((tab) => tab.id === id));
   const selected = tabs.find((tab) => tab.id === activeTab) ?? tabs[0];
-  const primaryTabs = tabs.filter((tab) => tab.id !== "skills");
-  const skillsTab = tabs.find((tab) => tab.id === "skills");
   const subviewKey = subview?.key ?? null;
   const selectedId = selected?.id ?? null;
 
@@ -189,7 +190,7 @@ export function LibraryV2({
         <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Library sections">
           <p className="v2-library-column-title" aria-hidden="true">Library</p>
           <div className="v2-library-tabs" role="presentation">
-            {primaryTabs.map((tab) => (
+            {tabs.map((tab) => (
               <button
                 ref={(node) => { tabRefs.current[tab.id] = node; }}
                 aria-controls={`v2-library-panel-${tab.id}`}
@@ -209,27 +210,6 @@ export function LibraryV2({
               </button>
             ))}
           </div>
-          {skillsTab ? (
-            <div className="v2-library-tabs-group" role="presentation">
-              <p className="v2-library-column-label">Skills</p>
-              <button
-                ref={(node) => { tabRefs.current.skills = node; }}
-                aria-controls="v2-library-panel-skills"
-                aria-selected={skillsTab.id === selected.id}
-                className="v2-library-tab v2-focusable"
-                data-selected={skillsTab.id === selected.id || undefined}
-                id="v2-library-tab-skills"
-                role="tab"
-                tabIndex={skillsTab.id === selected.id ? 0 : -1}
-                type="button"
-                onClick={() => commitTab("skills")}
-                onKeyDown={(event) => handleTabKeyDown(event, "skills")}
-              >
-                <UiV2Icon name={tabIcons.skills} />
-                <span>{skillsTab.label}</span>
-              </button>
-            </div>
-          ) : null}
         </div>
       </header>
       <section
@@ -800,11 +780,12 @@ export function KnowledgePanelV2({
 
 const fileStatusLabel: Record<FileSummaryV2["status"], string> = {
   failed: "Failed",
-  processing: "Processing",
+  processing: "Processing…",
   ready: "Ready"
 };
 
 export function FilesPanelV2({
+  complete = true,
   files,
   loadState = "ready",
   onRetry,
@@ -815,6 +796,7 @@ export function FilesPanelV2({
   onLoadMore,
   useDisabled = false
 }: Readonly<{
+  complete?: boolean;
   files: readonly FileSummaryV2[];
   loadState?: "error" | "idle" | "loading" | "ready";
   onOpen?(id: string): void;
@@ -825,47 +807,82 @@ export function FilesPanelV2({
   useDisabled?: boolean;
   onLoadMore?(): void;
 }>) {
-  const [filter, setFilter] = useState("all");
-  const visibleFiles = files.filter((file) => filter === "all" || (filter === "saved" ? file.saved : !file.saved));
+  const [filter, setFilter] = useState<"all" | "saved" | "recent">("all");
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const counts = {
+    all: files.length,
+    saved: files.filter(file => file.savedAt !== null).length,
+    recent: files.filter(file => file.savedAt === null).length
+  };
+  const groups = groupLibraryFiles(files).filter(group =>
+    filter === "all" || (filter === "saved" ? group.saved : !group.saved)
+  ).map(group => ({
+    ...group,
+    visible: group.files.filter(file => !normalizedQuery ||
+      [file.name, file.chatTitle ?? ""].some(value => value.toLowerCase().includes(normalizedQuery)))
+  })).filter(group => group.visible.length);
   return (
     <div data-testid="library-files-panel">
-      <SectionHeading description="Save files and templates to use them in another chat.">
+      <SectionHeading description="Save files to use them in another chat. Files are private and visible only to you.">
         Files
       </SectionHeading>
-      <p className="v2-library-disclosure">
-        <UiV2Icon name="lock" /> Files are private and visible only to you.
-      </p>
-      <label className="v2-library-disclosure">Show files
-        <select aria-label="Show files" value={filter} onChange={(event) => setFilter(event.target.value)}>
-          <option value="all">All files</option>
-          <option value="saved">Saved files</option>
-          <option value="recent">From chats</option>
-        </select>
-      </label>
+      <div className="v2-file-toolbar">
+        <div aria-label="Filter files" className="v2-resource-filters" role="group">
+          {(["all", "saved", "recent"] as const).map(candidate => (
+            <button aria-pressed={filter === candidate} className="v2-resource-filter v2-focusable"
+              data-selected={filter === candidate || undefined} key={candidate} type="button"
+              onClick={() => setFilter(candidate)}>
+              {candidate === "all" ? "All" : candidate === "saved" ? "Saved" : "From chats"}
+              {complete && loadState === "ready" ? ` ${counts[candidate]}` : ""}
+            </button>
+          ))}
+        </div>
+        <label className="v2-resource-search">
+          <UiV2Icon name="search" />
+          <input aria-label="Search files" placeholder="Search files…" type="search" value={query}
+            onChange={event => setQuery(event.currentTarget.value)} />
+        </label>
+      </div>
       {loadState === "error" && files.length > 0 ? (
         <p role="alert">Files could not be refreshed. <UiV2Button onClick={onRetry}>Retry</UiV2Button></p>
       ) : null}
-      {loadState === "loading" && files.length === 0 ? (
+      {(loadState === "loading" || loadState === "idle") && files.length === 0 ? (
         <p className="v2-resource-empty" role="status">Loading files…</p>
       ) : loadState === "error" && files.length === 0 ? (
         <div className="v2-resource-empty" role="alert">
           <p>Files could not be loaded.</p>
           <UiV2Button onClick={onRetry}>Retry</UiV2Button>
         </div>
-      ) : visibleFiles.length ? (
-        <ul className="v2-resource-list" aria-label="Files">
-          {visibleFiles.map((file) => (
-            <FileRowV2 file={file} key={file.id} onOpen={onOpen} onSave={onSave} onRemove={onRemove} onUse={onUse} useDisabled={useDisabled} />
-          ))}
-        </ul>
-      ) : <p className="v2-resource-empty">No files yet.</p>}
-      {onLoadMore ? <UiV2Button disabled={loadState === "loading"} onClick={onLoadMore}>Load more files</UiV2Button> : null}
+      ) : groups.length ? groups.map(group => {
+        const latest = group.files[0];
+        const chatFile = group.files.find(file => file.canOpenChat);
+        const names = new Map<string, number>();
+        for (const file of group.files) names.set(file.name, (names.get(file.name) ?? 0) + 1);
+        return <section className="v2-file-group" key={group.key} aria-label={group.saved ? "Saved files" : `Files from ${latest.chatTitle ?? "chat"}`}>
+          <div className="v2-file-group-heading">
+            <h3>{group.saved ? <>Saved · {group.visible.length} {group.visible.length === 1 ? "file" : "files"}</>
+              : <>From chat · <strong>{latest.chatTitle ?? "Chat unavailable"}</strong> · {formatStudioDate(latest.createdAt)}</>}</h3>
+            {!group.saved ? <UiV2Button disabled={!chatFile || !onOpen} icon="external" onClick={() => chatFile && onOpen?.(chatFile.id)}>Open chat</UiV2Button> : null}
+          </div>
+          <ul className="v2-resource-list" aria-label={group.saved ? "Saved files" : `Files from ${latest.chatTitle ?? "chat"}`}>
+            {group.visible.map(file => <FileRowV2 file={file} key={file.id} repeatedName={(names.get(file.name) ?? 0) > 1}
+              onOpen={onOpen} onSave={onSave} onRemove={onRemove} onUse={onUse} useDisabled={useDisabled} />)}
+          </ul>
+        </section>;
+      }) : <p className="v2-resource-empty">{normalizedQuery ? `No loaded files match “${query.trim()}”.`
+        : filter === "saved" ? "No saved files yet." : "No files yet."}</p>}
+      {onLoadMore ? <div className="v2-file-pagination">
+        {normalizedQuery && !complete ? <span>Searching {files.length} loaded files.</span> : null}
+        <UiV2Button disabled={loadState === "loading"} onClick={onLoadMore}>Load more files</UiV2Button>
+      </div> : null}
     </div>
   );
 }
 
 function FileRowV2({
   file,
+  repeatedName,
   onOpen,
   onSave,
   onRemove,
@@ -873,6 +890,7 @@ function FileRowV2({
   useDisabled
 }: Readonly<{
   file: FileSummaryV2;
+  repeatedName: boolean;
   onOpen?(id: string): void;
   onSave?(id: string): void;
   onRemove?(id: string): void;
@@ -886,21 +904,23 @@ function FileRowV2({
   });
   return (
     <li className="v2-resource-row v2-file-row">
-      <span className="v2-resource-row-icon" aria-hidden="true"><UiV2Icon name="file" /></span>
+      <span className="v2-resource-row-icon v2-file-type" aria-hidden="true">{fileExtension(file.name).slice(0, 4).toUpperCase() || <UiV2Icon name="file" />}</span>
       <div className="v2-resource-row-main">
         <div className="v2-resource-row-title">
-          <h3>{file.name}</h3>
-          <span data-status={file.status}>{fileStatusLabel[file.status]}</span>
+          <h3 title={file.name}>{file.name}</h3>
+          {file.status !== "ready" ? <span data-status={file.status}>{fileStatusLabel[file.status]}</span> : null}
         </div>
-        <p>{file.meta}</p>
+        <p>{fileTypeLabel(file.name)} · {formatAttachmentBytes(file.byteSize)}
+          {file.savedAt ? ` · Saved ${formatStudioDate(file.savedAt)}` : ""}
+          {repeatedName ? ` · ${formatStudioTime(file.savedAt ?? file.createdAt)}` : ""}</p>
         {file.status === "failed" ? (
           <p className="v2-file-failure">Text processing failed. You can still download the file or use it in Workspace.</p>
         ) : null}
         {file.mutation === "error" ? <p role="alert">The file action failed. Try again.</p> : null}
       </div>
       <span className="v2-file-row-actions">
-      <a className="v2-focusable" download href={attachmentDownloadHref(file.id)}>Download</a>
       {onUse ? <UiV2Button disabled={useDisabled} onClick={() => onUse(file.id)}>Use in chat</UiV2Button> : null}
+      {file.status === "ready" ? <a aria-label={`Download ${file.name}`} className="v2-icon-button v2-focusable" download href={attachmentDownloadHref(file.id)} title={`Download ${file.name}`}><UiV2Icon name="download" /></a> : null}
       <span className="v2-file-actions-menu">
         <UiV2IconButton
           ref={triggerRef}
@@ -917,7 +937,7 @@ function FileRowV2({
             menuRef={menuRef}
             onClose={() => setMenuOpen(false)}
           >
-            {!file.saved ? <UiV2MenuItem
+            {!file.savedAt ? <UiV2MenuItem
               disabled={!onOpen || !file.canOpenChat}
               icon="chat"
               onClick={() => {
@@ -927,16 +947,16 @@ function FileRowV2({
             >
               Open in chat
             </UiV2MenuItem> : null}
-            {file.saved ? (
+            {file.savedAt ? (
               <UiV2MenuItem
                 disabled={!onRemove || file.mutation === "removing"}
                 onClick={() => { setMenuOpen(false); onRemove?.(file.id); }}
-              >Remove from Library</UiV2MenuItem>
+              >Remove from saved</UiV2MenuItem>
             ) : (
               <UiV2MenuItem
                 disabled={!onSave || file.mutation === "saving" || file.mutation === "saved"}
                 onClick={() => { setMenuOpen(false); onSave?.(file.id); }}
-              >{file.mutation === "saved" ? "Saved to Library" : "Save to Library"}</UiV2MenuItem>
+              >{file.mutation === "saved" ? "Saved" : "Save file"}</UiV2MenuItem>
             )}
           </UiV2ResponsiveMenu>
         ) : null}
@@ -1261,7 +1281,7 @@ function MemoryListRowV2({
         ) : null}
         <small>
           {item.provenance === "SAVED" ? mt("manager.savedByYou") : mt("manager.learnedFromChat")}
-          {` · ${formatMemoryDate(item.updatedAt)}`}
+          {` · ${formatStudioDate(item.updatedAt)}`}
           {!item.sourceAvailable ? ` · ${mt("manager.sourceUnavailable")}` : ""}
         </small>
       </div>
@@ -1376,11 +1396,4 @@ function MemoryForgetRowV2({
       </div>
     </li>
   );
-}
-
-function formatMemoryDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? mt("manager.notSet")
-    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
 }

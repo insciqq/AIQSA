@@ -255,7 +255,7 @@ describe("Knowledge citation viewer", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Open document K1" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Open in Library" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open in Knowledge" }));
 
     await waitFor(() => expect(onOpenLibrarySource).toHaveBeenCalledWith("source-1"));
     expect(shellFetch).toHaveBeenCalledWith(

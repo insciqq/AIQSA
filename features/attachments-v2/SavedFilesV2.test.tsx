@@ -43,7 +43,7 @@ describe("saved file controls", () => {
     render(<SavedFilePickerV2 onUse={vi.fn()} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("Files could not be loaded");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText("Save a file from a message or Library to use it here.")).toBeVisible();
+    expect(await screen.findByText("Save a file from a message or from Files to use it here.")).toBeVisible();
   });
 
   it("keeps save retryable and disables another save after confirmed success", async () => {
@@ -52,10 +52,10 @@ describe("saved file controls", () => {
       .mockResolvedValueOnce(Response.json({ nextCursor: null, files: [saved] }));
     vi.stubGlobal("fetch", fetch);
     render(<SaveFileButtonV2 attachmentId="source-file" />);
-    fireEvent.click(screen.getByRole("button", { name: "Save to Library" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save file" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not save");
-    fireEvent.click(screen.getByRole("button", { name: "Save to Library" }));
-    expect(await screen.findByRole("button", { name: "Saved to Library" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save file" }));
+    expect(await screen.findByRole("button", { name: "Saved" })).toBeDisabled();
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
   });
 });

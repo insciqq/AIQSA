@@ -62,7 +62,7 @@ describe("Composer v2", () => {
     expect(onSelectSkillsMode).toHaveBeenCalledWith("off");
     expect(screen.queryByRole("menu", { name: "Skills" })).toBeNull();
     fireEvent.click(opener);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Skill library/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Skills…/ }));
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
   });
 
@@ -569,7 +569,7 @@ describe("Composer v2", () => {
     expect(screen.queryByRole("menuitemcheckbox", { name: /Careful editor/ })).toBeNull();
     fireEvent.click(chip);
     expect(screen.getByRole("menuitemradio", { name: /Assistant Skills/ })).toBeDisabled();
-    fireEvent.click(screen.getByRole("menuitem", { name: /Skill library/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Skills…/ }));
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
   });
 

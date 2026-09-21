@@ -55,7 +55,7 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
     await page.getByRole("button", { name: "Change Skills mode" }).click();
-    await page.getByRole("menuitem", { name: /Skill library/ }).click();
+    await page.getByRole("menuitem", { name: /^Skills…/ }).click();
     await expectWithinViewport(page, picker);
     await expectNoHorizontalOverflow(page);
     await picker.getByRole("button", { name: `Remove manual ${shared.name}` }).click();
@@ -72,7 +72,7 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
     await expect(page.getByRole("button", { name: "Send message" })).toBeVisible({ timeout: 30_000 });
 
     await page.getByRole("button", { name: "Change Skills mode" }).click();
-    await page.getByRole("menuitem", { name: /Skill library/ }).click();
+    await page.getByRole("menuitem", { name: /^Skills…/ }).click();
     const current = (await (await page.request.get(`/api/projects/${project.id}`)).json()).project;
     const binding = current.resources.find((resource: { resourceId: string }) => resource.resourceId === shared.id);
     const removed = await page.request.delete(`/api/projects/${project.id}/resources/${binding.id}?expectedPolicyRevision=${current.policyRevision}`);
@@ -83,7 +83,7 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByRole("button", { name: "Chats", exact: true }).click();
     await page.getByRole("button", { name: "Change Skills mode" }).click();
-    await page.getByRole("menuitem", { name: /Skill library/ }).click();
+    await page.getByRole("menuitem", { name: /^Skills…/ }).click();
     await expect(page.getByRole("dialog", { name: "Skills", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: `Remove manual ${personal.name}` })).toBeVisible();
   } finally {
@@ -158,7 +158,7 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     await expect(message).toHaveValue("Keep this draft while fixing the selection.");
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("button", { name: "Change Skills mode" }).click();
-    await page.getByRole("menuitem", { name: /Skill library/ }).click();
+    await page.getByRole("menuitem", { name: /^Skills…/ }).click();
     await expectWithinViewport(page, picker);
     const selection = picker.getByRole("region", { name: "Selected Skills" });
     await expect(selection).toContainText("Always from Assistant");

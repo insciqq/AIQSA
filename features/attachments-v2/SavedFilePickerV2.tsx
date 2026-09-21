@@ -63,7 +63,7 @@ export function SavedFilePickerV2({ disabled, onUse, onUsed }: Readonly<{
       </ul>
       {data?.nextCursor ? <UiV2Button disabled={loadState === "loading"} onClick={() => void loadMoreFileLibrary()?.catch(() => undefined)}>Load more files</UiV2Button> : null}
       {loadState === "ready" && files.length === 0 ? (
-        <p>{saved.length ? "No matching saved files." : "Save a file from a message or Library to use it here."}</p>
+        <p>{saved.length ? "No matching saved files." : "Save a file from a message or from Files to use it here."}</p>
       ) : null}
     </div>
   );

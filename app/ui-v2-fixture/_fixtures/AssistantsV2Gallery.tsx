@@ -218,7 +218,7 @@ export function AssistantsV2Gallery({
     return (
       <main className="v2-library-fixture-return">
         <p>{usedAssistant ? `${usedAssistant} is applied to the next message.` : "The chat is open again."}</p>
-        <UiV2Button onClick={() => { setClosed(false); setUsedAssistant(null); }}>Open Library</UiV2Button>
+        <UiV2Button onClick={() => { setClosed(false); setUsedAssistant(null); }}>Open Assistants</UiV2Button>
       </main>
     );
   }

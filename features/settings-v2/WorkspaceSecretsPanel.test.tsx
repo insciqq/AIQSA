@@ -21,6 +21,48 @@ afterEach(() => vi.unstubAllGlobals());
 describe("WorkspaceSecretsPanel", () => {
   beforeEach(() => request.mockReset());
 
+  it("reports dirty only while a create draft differs from its opening state", async () => {
+    request.mockResolvedValueOnce([]);
+    const onDirtyChange = vi.fn();
+    render(<WorkspaceSecretsPanel onDirtyChange={onDirtyChange} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "env" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(screen.getByLabelText("Variable name 1"), { target: { value: "API_TOKEN" } });
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "ssh_key" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    fireEvent.change(screen.getByLabelText("Private SSH key"), { target: { value: "synthetic key" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(screen.getByLabelText("Private SSH key"), { target: { value: "" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("reports edit metadata and replacement changes and clears dirty when they are reverted", async () => {
+    request.mockResolvedValueOnce([saved]);
+    const onDirtyChange = vi.fn();
+    render(<WorkspaceSecretsPanel onDirtyChange={onDirtyChange} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Saved access" }));
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed access" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: saved.name } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByLabelText("Replace saved value"));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(screen.getByLabelText("Secret text"), { target: { value: "replacement synthetic token" } });
+    fireEvent.click(screen.getByLabelText("Replace saved value"));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("shows browser origin metadata and imports original state bytes without showing saved cookies", async () => {
     const browser: WorkspaceSecretSummary = { ...saved, kind: "browser_session", name: "Shop session", originalName: "shop.example.json",
       browserSession: { autoSaved: true } };

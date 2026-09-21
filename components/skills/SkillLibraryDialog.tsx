@@ -405,7 +405,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
           <p>Auto loads matching Skills when needed. Always use includes instructions in every message until removed.</p>
           <UiV2Button
             disabled={busy || Boolean(editor) || !data || (!data.nextCursor && !query.trim() && !skills.some(skill => !skill.archived && !(skill.enabled ?? skill.owned)))}
-            icon="check" title="Enable Auto for every active Skill in your library, including those outside the current search."
+            icon="check" title="Enable Auto for every active Skill, including those outside the current search."
             onClick={() => void enableAllForAuto()}>Enable all for Auto</UiV2Button>
         </div> : null}
       </header>
@@ -424,7 +424,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
       </div> : null}
 
       <div className="v2-skill-layout">
-        <section className="v2-skill-list-pane" aria-label="Skill library">
+        <section className="v2-skill-list-pane" aria-label="Skills">
           {assistantSelection ? <section aria-label="Selected Skills" className="v2-skill-selection">
             <p>{selectedIds.length} Skills selected. Choose Always or On demand in the Assistant.</p>
             <ol>{manualSkills.map((skill, index) => <li key={skill.id}><span>{index + 1}. {skill.name}</span>

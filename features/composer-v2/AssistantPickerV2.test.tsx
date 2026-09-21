@@ -72,7 +72,7 @@ describe("Assistant picker v2", () => {
     expect(screen.getByTestId("assistant-picker-actions")).toHaveTextContent(
       "Use applies to your next message only."
     );
-    fireEvent.click(screen.getByRole("button", { name: /Manage in Library/u }));
+    fireEvent.click(screen.getByRole("button", { name: /Manage Assistants/u }));
     expect(manage).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Fix in Settings…" }));
     expect(repair).toHaveBeenCalledWith("assistant-unavailable", "mcp-settings");

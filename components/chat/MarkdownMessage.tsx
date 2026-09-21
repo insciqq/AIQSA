@@ -23,6 +23,7 @@ type ListBlock = {
 type ListItem = {
   children: ListBlock[];
   content: string;
+  literalChildren: string[];
 };
 
 type ListLine = {
@@ -37,6 +38,10 @@ type DisplayMathBlock = {
   raw: string;
   source: string;
 };
+
+const MAX_NESTING_DEPTH = 32;
+// Deep structures retain their semantics without consuming the whole phone viewport.
+const MAX_INDENT_DEPTH = 8;
 
 function codeFenceStart(line: string): RegExpExecArray | null {
   const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
@@ -365,7 +370,12 @@ function parseListLine(line: string): ListLine | null {
   };
 }
 
-function parseList(lines: string[], startIndex: number, baseIndent?: number): { block: ListBlock; nextIndex: number } {
+function parseList(
+  lines: string[],
+  startIndex: number,
+  depth: number,
+  baseIndent?: number
+): { block: ListBlock; nextIndex: number } {
   const first = parseListLine(lines[startIndex]);
   if (!first) {
     return {
@@ -401,7 +411,17 @@ function parseList(lines: string[], startIndex: number, baseIndent?: number): { 
         break;
       }
 
-      const child = parseList(lines, index, parsed.indent);
+      if (depth >= MAX_NESTING_DEPTH) {
+        while (index < lines.length) {
+          const nested = parseListLine(lines[index]);
+          if (!nested || nested.indent <= indent) break;
+          lastItem.literalChildren.push(lines[index]);
+          index += 1;
+        }
+        continue;
+      }
+
+      const child = parseList(lines, index, depth + 1, parsed.indent);
       lastItem.children.push(child.block);
       index = child.nextIndex;
       continue;
@@ -413,7 +433,8 @@ function parseList(lines: string[], startIndex: number, baseIndent?: number): { 
 
     block.items.push({
       children: [],
-      content: parsed.content
+      content: parsed.content,
+      literalChildren: []
     });
     index += 1;
   }
@@ -428,12 +449,11 @@ function renderList(
   block: ListBlock,
   keyPrefix: string,
   renderCitation?: MarkdownCitationRenderer,
-  resolveHref?: MarkdownHrefResolver
+  resolveHref?: MarkdownHrefResolver,
+  nestingDepth = 0
 ): ReactNode {
   const Tag = block.ordered ? "ol" : "ul";
-  const className = block.ordered
-    ? "list-decimal space-y-1 break-words pl-5 marker:text-ink-muted [overflow-wrap:anywhere]"
-    : "list-disc space-y-1 break-words pl-5 marker:text-ink-muted [overflow-wrap:anywhere]";
+  const className = `${block.ordered ? "list-decimal" : "list-disc"} space-y-1 break-words marker:text-ink-muted [overflow-wrap:anywhere] ${nestingDepth < MAX_INDENT_DEPTH ? "pl-5" : "list-inside pl-0"}`;
 
   return (
     <Tag className={className} key={keyPrefix} start={block.start}>
@@ -442,9 +462,14 @@ function renderList(
           {renderInline(item.content, `${keyPrefix}-item-${index}`, renderCitation, resolveHref)}
           {item.children.map((child, childIndex) => (
             <div className="mt-1" key={`${keyPrefix}-item-${index}-child-${childIndex}`}>
-              {renderList(child, `${keyPrefix}-item-${index}-child-${childIndex}`, renderCitation, resolveHref)}
+              {renderList(child, `${keyPrefix}-item-${index}-child-${childIndex}`, renderCitation, resolveHref, nestingDepth + 1)}
             </div>
           ))}
+          {item.literalChildren.length > 0 ? (
+            <div className="mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+              {item.literalChildren.join("\n")}
+            </div>
+          ) : null}
         </li>
       ))}
     </Tag>
@@ -598,7 +623,8 @@ function renderTextLines(
   keyPrefix: string,
   renderCitation?: MarkdownCitationRenderer,
   resolveHref?: MarkdownHrefResolver,
-  streaming = false
+  streaming = false,
+  nestingDepth = 0
 ): ReactNode[] {
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const nodes: ReactNode[] = [];
@@ -651,6 +677,20 @@ function renderTextLines(
     }
 
     if (lines[index].trim().startsWith(">")) {
+      if (nestingDepth >= MAX_NESTING_DEPTH) {
+        const literalLines: string[] = [];
+        while (index < lines.length && lines[index].trim().startsWith(">")) {
+          literalLines.push(lines[index]);
+          index += 1;
+        }
+        nodes.push(
+          <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]" key={`${keyPrefix}-quote-limit-${index}`}>
+            {literalLines.join("\n")}
+          </p>
+        );
+        continue;
+      }
+
       const quoteLines: string[] = [];
       while (index < lines.length && lines[index].trim().startsWith(">")) {
         quoteLines.push(lines[index].replace(/^\s*>\s?/, ""));
@@ -658,8 +698,15 @@ function renderTextLines(
       }
 
       nodes.push(
-        <blockquote className="space-y-2 border-l-2 border-proof/40 pl-4 text-ink-secondary" key={`${keyPrefix}-quote-${index}`}>
-          {renderTextLines(quoteLines.join("\n"), `${keyPrefix}-quote-${index}`, renderCitation, resolveHref, streaming)}
+        <blockquote className={`space-y-2 text-ink-secondary ${nestingDepth < MAX_INDENT_DEPTH ? "border-l-2 border-proof/40 pl-4" : "border-0 pl-0"}`} key={`${keyPrefix}-quote-${index}`}>
+          {renderTextLines(
+            quoteLines.join("\n"),
+            `${keyPrefix}-quote-${index}`,
+            renderCitation,
+            resolveHref,
+            streaming,
+            nestingDepth + 1
+          )}
         </blockquote>
       );
       continue;
@@ -673,8 +720,22 @@ function renderTextLines(
     }
 
     if (parseListLine(lines[index])) {
-      const list = parseList(lines, index);
-      nodes.push(renderList(list.block, `${keyPrefix}-list-${index}`, renderCitation, resolveHref));
+      if (nestingDepth >= MAX_NESTING_DEPTH) {
+        const literalLines: string[] = [];
+        while (index < lines.length && parseListLine(lines[index])) {
+          literalLines.push(lines[index]);
+          index += 1;
+        }
+        nodes.push(
+          <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]" key={`${keyPrefix}-list-limit-${index}`}>
+            {literalLines.join("\n")}
+          </p>
+        );
+        continue;
+      }
+
+      const list = parseList(lines, index, nestingDepth + 1);
+      nodes.push(renderList(list.block, `${keyPrefix}-list-${index}`, renderCitation, resolveHref, nestingDepth));
       index = list.nextIndex;
       continue;
     }

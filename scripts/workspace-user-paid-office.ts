@@ -78,8 +78,8 @@ export async function runOfficeUserScenarios(ctx: Context) {
       ? page.locator('article[data-role="assistant"]').last().getByRole("region", { name: "Generated files" }).getByRole("listitem")
       : page.locator('article[data-role="user"]').last().getByRole("listitem");
     const row = rows.filter({ has: page.getByText(name, { exact: true }) });
-    await row.getByRole("button", { name: "Save to Library", exact: true }).click();
-    await expect(row.getByRole("button", { name: "Saved to Library" })).toBeDisabled();
+    await row.getByRole("button", { name: "Save file", exact: true }).click();
+    await expect(row.getByRole("button", { name: "Saved" })).toBeDisabled();
     await saved(name, expected);
   }
   async function attachSaved(name: string, library = false) {

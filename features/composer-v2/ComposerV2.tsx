@@ -250,7 +250,7 @@ export type ComposerV2Props = Readonly<{
   onLayerChange?(layer: ComposerV2Layer): void;
   onMakeModelDefault?(model: CatalogModel): void;
   onOpenAssistantPicker?(): void;
-  /** Opens the Library's Knowledge section ("Manage in Library ›"). */
+  /** Opens the Knowledge section ("Manage Knowledge ›"). */
   onOpenKnowledgeLibrary?(): void;
   onOpenMcpSettings?(): void;
   onOpenSkillLibrary?(): void;
@@ -1406,7 +1406,7 @@ export function ComposerV2({
                       reason="Always use instructions still apply" onClick={() => { onSelectSkillsMode?.("off"); closeLayer(); }}>Off</CapabilityRow>
                   </>}
                   <CapabilityRow icon="wand" selectionRole="item" disabled={activeRun || !onOpenSkillLibrary} reason="Choose Auto loading or Always use"
-                    onClick={() => { closeLayer(); onOpenSkillLibrary?.(); }}>Skill library…</CapabilityRow>
+                    onClick={() => { closeLayer(); onOpenSkillLibrary?.(); }}>Skills…</CapabilityRow>
                 </div>
               ) : layer === "tools" ? (
                 <div className="v2-composer-layer-scroll">
@@ -1727,7 +1727,7 @@ export function ComposerV2({
                             closeLayer();
                           }}
                         >
-                          Manage in Library
+                          Manage Knowledge
                           <UiV2Icon name="chevron-right" />
                         </button>
                       ) : null}

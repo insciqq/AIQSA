@@ -37,6 +37,12 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await panel.getByRole("button", { name: "New preset" }).click();
       await expect(panel.getByLabel("Name", { exact: true })).toBeFocused();
       await panel.getByLabel("Name", { exact: true }).fill("Writing");
+      await panel.getByLabel("System instructions", { exact: true }).fill(`${">".repeat(3000)} bounded preview`);
+      await panel.getByRole("button", { name: "Preview", exact: true }).click();
+      await expect(panel.locator("blockquote")).toHaveCount(32);
+      await expect(panel.getByText(/bounded preview/)).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await panel.getByRole("button", { name: "Write", exact: true }).click();
       const longText = "# Writing instructions\n" + ("Кратко🙂 ".repeat(100) + "\n").repeat(35);
       const reminderText = "Напоминание".repeat(350);
       expect(Buffer.byteLength(JSON.stringify({ systemInstructions: longText, responseReminder: reminderText }), "utf8")).toBeGreaterThan(65_536);
@@ -72,9 +78,11 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await expect(panel.getByRole("button", { name: "Active instructions" })).toContainText("Writing");
       await expect(panel.getByLabel("Active instructions: Writing", { exact: true })).toBeFocused();
       await panel.getByRole("button", { name: "Make active: AIQSA default instructions", exact: true }).click();
+      await expect(panel.getByRole("button", { name: "Active instructions" })).toContainText("AIQSA default instructions");
       await expect(panel.getByLabel("Active instructions: AIQSA default instructions", { exact: true })).toBeFocused();
       expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBeNull();
       await panel.getByRole("button", { name: "Make active: Writing", exact: true }).click();
+      await expect(panel.getByRole("button", { name: "Active instructions" })).toContainText("Writing");
       await expect(panel.getByLabel("Active instructions: Writing", { exact: true })).toBeFocused();
       await page.screenshot({ path: testInfo.outputPath("instruction-preset-activation.png") });
 
@@ -141,6 +149,7 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await expect(panel.getByText(/Your chats will use the AIQSA default instructions/)).toBeVisible();
       const remove = panel.getByRole("button", { name: "Delete preset", exact: true });
       await remove.scrollIntoViewIfNeeded(); await expectWithinViewport(page, remove); await remove.click();
+      await expect(remove).toHaveCount(0);
       await expect(panel.getByRole("button", { name: "Edit Writing" })).toHaveCount(0);
       expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBeNull();
       await expectNoHorizontalOverflow(page); expect(pageErrors).toBe(0);

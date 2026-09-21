@@ -43,7 +43,7 @@ async function detailFor(page: Page, id: string): Promise<SkillDetail> {
 
 async function openLibrary(page: Page): Promise<Locator> {
   await runAccountMenuAction(page, "Assistants");
-  await page.getByTestId("library-v2").getByRole("tab", { name: "Skill library", exact: true }).click();
+  await page.getByTestId("library-v2").getByRole("tab", { name: "Skills", exact: true }).click();
   const library = page.getByTestId("skill-library-section");
   await expect(library).toBeVisible();
   return library;
@@ -423,7 +423,7 @@ test("Skills bundles: one 51-Skill ZIP supports 32 manual pins and an honest mod
     const chip = page.getByRole("button", { name: "Change Skills mode", exact: true });
     await expect(chip).toHaveAccessibleDescription(/Skills: Auto · 32 pinned \(always loaded\)/);
     await chip.click();
-    await page.getByRole("menuitem", { name: /Skill library/ }).click();
+    await page.getByRole("menuitem", { name: /^Skills…/ }).click();
     await expect(picker.getByRole("region", { name: "Selected Skills" })).toContainText("32 always included · ≈");
     await page.keyboard.press("Escape");
     await expect(chip).toBeFocused();
