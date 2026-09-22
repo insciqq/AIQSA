@@ -45,6 +45,16 @@ const nextConfig = {
     "pdf-lib",
     "unpdf"
   ],
+  // Framework redirects discard configured headers. Public-share redirects
+  // belong to proxy.ts so even their 308 responses retain the privacy policy.
+  skipTrailingSlashRedirect: true,
+  async redirects() {
+    return [{
+      source: "/:path((?!s(?:/|$)|a(?:/|$)|api/(?:public-shares|artifact-public)(?:/|$)).+)/",
+      destination: "/:path",
+      permanent: true
+    }];
+  },
   async headers() {
     return [
       {

@@ -53,6 +53,7 @@ function isPublicPath(
   pathname: string,
   env: Record<string, string | undefined>
 ): boolean {
+  if (pathname === "/robots.txt") return true;
   if (pathname === "/ui-v2-fixture" && isTestAuthAllowedEnv(env)) {
     return true;
   }
@@ -105,6 +106,12 @@ export function proxyWithEnv(
     return secured(new NextResponse(null, { status: 404 }));
   }
 
+  if (isPublicSharePath(pathname) && pathname.endsWith("/")) {
+    const canonicalUrl = new URL(request.url);
+    canonicalUrl.pathname = pathname.slice(0, -1);
+    return securedPublicShare(NextResponse.redirect(canonicalUrl, 308), artifactViewer, artifactContent);
+  }
+
   if (
     isProtectedMutationPath(request.method, pathname) &&
     !isAllowedMutationOrigin({
@@ -114,12 +121,13 @@ export function proxyWithEnv(
       secFetchSite: request.headers.get("sec-fetch-site")
     })
   ) {
-    return secured(
-      NextResponse.json(
-        { error: "invalid_origin" } satisfies ErrorResponse<MutationOriginErrorCode>,
-        { status: 403 }
-      )
+    const response = NextResponse.json(
+      { error: "invalid_origin" } satisfies ErrorResponse<MutationOriginErrorCode>,
+      { status: 403 }
     );
+    return isPublicSharePath(pathname)
+      ? securedPublicShare(response, artifactViewer, artifactContent)
+      : secured(response);
   }
 
   if (isPublicPath(pathname, env)) {
