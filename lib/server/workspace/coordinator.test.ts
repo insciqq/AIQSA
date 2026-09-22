@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithContext } from "../observability";
@@ -310,6 +310,45 @@ function fixture() {
 
 describe("Workspace coordinator", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("interrupts only after a native command settles and resumes without reinitializing Skills or files", async () => {
+    const f = fixture(), threadId = randomUUID(), first = randomUUID(), second = randomUUID();
+    const startAgent = vi.fn(async () => undefined), interruptAgent = vi.fn(async () => true);
+    let cursor = 0;
+    const page = (events: unknown[], done = false, exitCode: number | null = null) => {
+      const bytes = Buffer.from(events.map(event => JSON.stringify(event)).join("\n") + (events.length ? "\n" : ""));
+      const result = { cursor, nextCursor: cursor + bytes.length, stdoutBase64: bytes.toString("base64"), done, exitCode };
+      cursor += bytes.length;
+      return result;
+    };
+    const pollAgent = vi.fn().mockResolvedValueOnce(page([
+      { type: "thread.started", thread_id: threadId }, { type: "turn.started" },
+      { type: "item.started", item: { id: "cmd", type: "command_execution", status: "in_progress" } }
+    ])).mockResolvedValueOnce(page([
+      { type: "item.completed", item: { id: "cmd", type: "command_execution", status: "completed", exit_code: 0 } }
+    ])).mockResolvedValueOnce(page([], true, 1));
+    Object.assign(f.runtime, { startAgent, pollAgent, interruptAgent });
+    const shouldInterrupt = vi.fn(async () => true);
+    const request = { runId: f.runId, userId: "user_1", workspace: f.workspace, modelRunToolCallId: first,
+      prompt: "Original", resumePrompt: "Continuation", runToken: "a".repeat(43), signal: new AbortController().signal,
+      timeoutSeconds: 30, onEvent: vi.fn(), shouldInterrupt,
+      profile: { gatewayOrigin: "http://agent.invalid", modelId: "synthetic", contextWindowTokens: 128000,
+        maxOutputTokens: 4096, developerInstructions: "Synthetic", mcpMode: "off" as const, mcpTimeoutSeconds: 90 } };
+    expect(await f.coordinator.executeAgent!(request)).toBe("interrupted");
+    expect(shouldInterrupt).toHaveBeenCalledOnce(); expect(interruptAgent).toHaveBeenCalledOnce();
+    cursor = 0;
+    pollAgent.mockResolvedValueOnce(page([{ type: "thread.started", thread_id: threadId }, { type: "turn.started" }, { type: "turn.completed" }], true, 0));
+    await f.coordinator.executeAgent!({ ...request, previousToolCallId: first, modelRunToolCallId: second, threadId, resumePrompt: "Use CSV" });
+    expect(startAgent).toHaveBeenLastCalledWith(expect.objectContaining({ prompt: "Use CSV", threadId,
+      previousExecSessionId: `agent-${first}`, runtimeSandboxId: "runtime_1" }));
+    expect(f.runtime.ensureSession).toHaveBeenCalledOnce(); expect(f.runtime.prepareSkillRun).toHaveBeenCalledOnce();
+    expect(f.runtime.stageAttachments).toHaveBeenCalledOnce(); expect(f.registryRows).toHaveLength(2);
+    // Loss is never recovered into a new VM for an in-task continuation.
+    f.setRuntimeSandboxId(null);
+    await expect(f.coordinator.executeAgent!({ ...request, previousToolCallId: second, modelRunToolCallId: randomUUID(), threadId }))
+      .rejects.toMatchObject({ code: "workspace_session_lost" });
+    expect(startAgent).toHaveBeenCalledTimes(2); expect(f.runtime.ensureSession).toHaveBeenCalledOnce();
+  });
 
   it("prepares frozen bundles before tools, preserves a ready guest on recovery and reinstalls only an explicit load", async () => {
     const value = fixture();

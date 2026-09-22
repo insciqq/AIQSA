@@ -376,6 +376,15 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     });
   }
 
+  async interruptAgent(input: Parameters<NonNullable<WorkspaceRuntime["interruptAgent"]>>[0]): Promise<boolean> {
+    const { signal, sessionId, ...body } = input;
+    const value = await this.json(`/v1/sessions/${encodeURIComponent(sessionId)}/agent/interrupt`, {
+      body: JSON.stringify({ ...body, operation: parseWorkspaceOperation(input.operation) }), method: "POST", signal
+    });
+    if (!isRecord(value) || typeof value.interrupted !== "boolean") throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    return value.interrupted;
+  }
+
   async prepareSkillRun(input: Parameters<WorkspaceRuntime["prepareSkillRun"]>[0]) {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     validateSkillIdentity(input);

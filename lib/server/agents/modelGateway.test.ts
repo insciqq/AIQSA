@@ -18,7 +18,8 @@ const sse = (...events: unknown[]) => new Response(events.map((event) => `data: 
 function fixture(response: Response, nativeSearch = false) {
   let nextAttempt = 0;
   const store = { assertActive: vi.fn(async () => {}), reserveProvider: vi.fn(async () => `00000000-0000-4000-8000-${String(++nextAttempt).padStart(12, "0")}` as const),
-    settleProvider: vi.fn(async () => {}), canRetryProvider: vi.fn(async () => false) };
+    settleProvider: vi.fn(async () => {}), closeProvider: vi.fn(async (_id: string) => {}), canRetryProvider: vi.fn(async () => false),
+    releaseModelTools: vi.fn(async (_id: string) => {}), expectedFollowupInterruption: vi.fn(async () => false) };
   const transport = { snapshot: { connection: { responseTimeoutMs: 300000 }, model: { upstreamModelId: "fixture-model", adapterKind: "openai_responses_compatible", capabilities: { nativeSearch } } },
     request: vi.fn(async () => response) } as unknown as AgentResponsesTransport;
   const onFailure = vi.fn(async () => {});
@@ -27,6 +28,57 @@ function fixture(response: Response, nativeSearch = false) {
 }
 
 describe("Agent model gateway", () => {
+  it("does not forward a tool proposal before its durable interrupt fence commits", async () => {
+    const f = fixture(sse({ type: "response.output_item.added", item: { type: "function_call", name: "shell" } },
+      { type: "response.completed", response: { output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }));
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    f.store.releaseModelTools.mockImplementation(async () => blocked);
+    const reader = (await f.handle(request())).body!.getReader();
+    let received = false;
+    const first = reader.read().then(value => { received = true; return value; });
+    await vi.waitFor(() => expect(f.store.releaseModelTools).toHaveBeenCalledOnce());
+    expect(received).toBe(false);
+    release();
+    expect(new TextDecoder().decode((await first).value)).toContain("function_call");
+    await reader.read(); await reader.read();
+    expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("suppresses only an owned native cancellation (owned=%s)", async owned => {
+    const f = fixture(sse({ type: "response.created", response: { id: "synthetic" } }));
+    f.store.expectedFollowupInterruption.mockResolvedValue(owned);
+    const reader = (await f.handle(request())).body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "UNKNOWN", null);
+    expect(f.onFailure).toHaveBeenCalledTimes(owned ? 0 : 1);
+  });
+
+  it("keeps a genuine EOF fatal even when a follow-up intent exists", async () => {
+    const f = fixture(sse());
+    f.store.expectedFollowupInterruption.mockResolvedValue(true);
+    await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_connection_lost");
+    expect(f.onFailure).toHaveBeenCalledExactlyOnceWith("agent_provider_connection_lost");
+  });
+
+  it("does not mistake a provider deadline for an expected follow-up interruption", async () => {
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    try {
+      const f = fixture(sse());
+      f.store.expectedFollowupInterruption.mockResolvedValue(true);
+      vi.mocked(f.transport.request).mockImplementation(async (_body, signal) => {
+        deadline.abort(new DOMException("Synthetic deadline", "TimeoutError"));
+        signal.throwIfAborted();
+        throw new Error("unreachable");
+      });
+      expect((await f.handle(request())).status).toBe(502);
+      expect(f.onFailure).toHaveBeenCalledExactlyOnceWith("agent_provider_failed");
+      expect(f.store.closeProvider).toHaveBeenCalledOnce();
+      expect(f.transport.request).toHaveBeenCalledOnce();
+    } finally { timeout.mockRestore(); }
+  });
   it("allows bounded native reconnects with distinct physical receipts and revokes only after exhaustion", async () => {
     const f = fixture(sse());
     vi.mocked(f.transport.request).mockRejectedValue(new TypeError("PRIVATE_SOCKET", {

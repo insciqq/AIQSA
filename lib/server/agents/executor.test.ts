@@ -9,10 +9,13 @@ import { WorkspaceActivityText } from "../workspace/activityText";
 import { agentLimits } from "./config";
 import { AgentExecutionError } from "./failures";
 import { executeCodexTurn } from "./executor";
+import type { RunFollowupOperations } from "../runs/runFollowups";
+import type { RunFollowup } from "@/lib/contracts/runFollowups";
 
 const store = vi.hoisted(() => ({
   arm: vi.fn(), renew: vi.fn(), toolCall: vi.fn(), settleTool: vi.fn(), failure: vi.fn(),
-  fail: vi.fn(), setThread: vi.fn(), revoke: vi.fn(), drain: vi.fn(), usage: vi.fn()
+  fail: vi.fn(), setThread: vi.fn(), revoke: vi.fn(), drain: vi.fn(), usage: vi.fn(),
+  assertActive: vi.fn(), claimFollowupInterrupt: vi.fn(), continueAfterExit: vi.fn()
 }));
 vi.mock("../prisma", () => ({ prisma: {} }));
 vi.mock("./store", () => ({ createAgentRunStore: () => store }));
@@ -40,6 +43,55 @@ describe("Agent executor terminal behavior", () => {
     store.toolCall.mockResolvedValue("call");
     store.usage.mockResolvedValue([]);
     store.failure.mockResolvedValue(null);
+  });
+
+  it("continues sequentially with only new user input and acknowledges it after native turn start", async () => {
+    const entries: RunFollowup[] = [];
+    const delivery = vi.fn();
+    const operations: RunFollowupOperations = { accept: vi.fn(), beginKnowledge: vi.fn(),
+      load: vi.fn(async () => ({ revision: entries.length, entries: entries.map(entry => ({ ...entry })) })),
+      deliver: vi.fn(async ({ revision, confirmedThrough }) => {
+        expect(confirmedThrough).toBe(true);
+        entries.forEach((entry, index) => { if (entry.ordinal <= revision) entries[index] = { ...entry, delivery: "delivered" }; });
+        return true;
+      }), close: vi.fn(async ({ revision }) => revision === entries.length) };
+    store.toolCall.mockResolvedValueOnce("first-call").mockResolvedValueOnce("next-call");
+    store.claimFollowupInterrupt.mockResolvedValue(true);
+    store.continueAfterExit.mockResolvedValue({ token: "next-token", threadId: "native-thread", timeoutSeconds: 12 });
+    let segment = 0;
+    const f = fixture(async request => {
+      const text = new WorkspaceActivityText();
+      if (++segment === 1) {
+        await request.onEvent({ type: "turn_started" }, text);
+        await request.onEvent({ type: "message", id: "old", text: "Known partial." }, text);
+        entries.push({ id: "followup", ordinal: 1, text: "Use CSV", author: "Synthetic", createdAt: new Date(0).toISOString(), delivery: "accepted" });
+        expect(await request.shouldInterrupt!()).toBe(true);
+        expect(operations.deliver).not.toHaveBeenCalled();
+        return "interrupted";
+      }
+      expect(request).toMatchObject({ threadId: "native-thread", previousToolCallId: "first-call", runToken: "next-token", timeoutSeconds: 12 });
+      expect(JSON.parse(request.resumePrompt)).toEqual([{ role: "user", text: "Use CSV" }]);
+      expect(operations.deliver).not.toHaveBeenCalled();
+      await request.onEvent({ type: "turn_started" }, text);
+      await request.onEvent({ type: "message", id: "new", text: "count,total\n2,20" }, text);
+    });
+    f.input.request = { ...f.input.request, followupContextReserveTokens: 4096 };
+    const result = await executeCodexTurn({ ...f.input, followups: { operations, beforeDelivery: async () => "Known partial.", onDelivery: delivery } });
+    expect(result).toMatchObject({ finalText: "count,total\n2,20", followupRevision: 1 });
+    expect(f.events.filter(event => event.type === "token").map(event => event.data)).toEqual([{ delta: "Known partial." }, { delta: "count,total\n2,20" }]);
+    expect(delivery).toHaveBeenCalledExactlyOnceWith(1);
+    expect(store.arm).toHaveBeenCalledOnce(); expect(store.revoke).toHaveBeenCalledExactlyOnceWith(true);
+    expect(store.continueAfterExit).toHaveBeenCalledExactlyOnceWith("fixture", "first-call");
+  });
+
+  it("does not resume or acknowledge accepted input when Stop wins after native interruption", async () => {
+    const controller = new AbortController();
+    const f = fixture(async () => { controller.abort(); return "interrupted"; }, controller.signal);
+    const operations = { load: vi.fn(async () => ({ revision: 0, entries: [] })), close: vi.fn(), deliver: vi.fn() } as unknown as RunFollowupOperations;
+    await expect(executeCodexTurn({ ...f.input, followups: { operations, beforeDelivery: vi.fn(), onDelivery: vi.fn() } })).rejects.toThrow();
+    expect(operations.deliver).not.toHaveBeenCalled(); expect(operations.close).not.toHaveBeenCalled();
+    expect(store.continueAfterExit).not.toHaveBeenCalled();
+    expect(store.revoke).toHaveBeenCalledExactlyOnceWith(false);
   });
 
   it("delivers received text before a later gateway failure and retains its original cause", async () => {

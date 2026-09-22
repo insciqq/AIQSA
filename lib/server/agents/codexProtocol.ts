@@ -90,6 +90,14 @@ export class CodexJsonlDecoder {
   private started = false;
   private terminal: "completed" | "failed" | null = null;
   private closed = false;
+  private readonly activeTools = new Set<string>();
+  private unknownActivity = false;
+
+  get nativeThreadId(): string | null { return this.threadId; }
+  get toolsSettled(): boolean { return this.activeTools.size === 0 && !this.unknownActivity; }
+  get canInterrupt(): boolean {
+    return !this.closed && Boolean(this.threadId && this.started) && !this.terminal && this.toolsSettled && this.pendingBytes === 0;
+  }
 
   constructor(private readonly limits: Readonly<{
     lineBytes: number;
@@ -141,6 +149,18 @@ export class CodexJsonlDecoder {
     if (this.terminal === "failed") throw new CodexProtocolError("agent_turn_failed");
     if (exitCode !== 0) throw new CodexProtocolError("agent_process_failed");
     if (!this.threadId || !this.started || this.terminal !== "completed") {
+      throw new CodexProtocolError("agent_protocol_incomplete");
+    }
+    return last ? [last] : [];
+  }
+
+  /** Only the owner of an acknowledged SIGINT may use this exit contract. */
+  finishInterrupted(exitCode: number | null): CodexEvent[] {
+    if (this.closed) invalid();
+    this.closed = true;
+    const last = this.pendingBytes ? this.consumeLine() : null;
+    if (!this.threadId || !this.started || !this.toolsSettled || this.terminal === "failed" ||
+      !(exitCode === 1 && this.terminal === null || exitCode === 0 && this.terminal === "completed")) {
       throw new CodexProtocolError("agent_protocol_incomplete");
     }
     return last ? [last] : [];
@@ -230,7 +250,14 @@ export class CodexJsonlDecoder {
       : item.type === "file_change" ? "file_change"
         : item.type === "mcp_tool_call" ? "mcp" : item.type === "web_search" ? "search"
           : ["todo_list", "plan", "plan_update"].includes(item.type) ? "plan" : null) as Extract<CodexEvent, { type: "activity" }>["kind"] | null;
-    if (!kind) return null;
+    if (!kind) {
+      if (item.type !== "reasoning") this.unknownActivity = true;
+      return null;
+    }
+    if (kind !== "plan") {
+      if (type !== "item.completed" || kind === "command" && !Number.isSafeInteger(item.exit_code)) this.activeTools.add(item.id);
+      else this.activeTools.delete(item.id);
+    }
     const phase: Extract<CodexEvent, { type: "activity" }>["phase"] = type !== "item.completed" ? "running"
       : (item.status === "completed" || (kind === "search" || kind === "plan") && item.status !== "failed") && (kind !== "command" || item.exit_code === 0)
         ? "succeeded" : "failed";

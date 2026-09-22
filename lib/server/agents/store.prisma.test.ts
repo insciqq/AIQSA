@@ -7,7 +7,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { textMessageContent } from "@/lib/domain/content";
 import { agentLimits } from "./config";
-import { createAgentRunStore, interruptExpiredAgentRun } from "./store";
+import { agentTokenHash, createAgentRunStore, interruptExpiredAgentRun } from "./store";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { createOptionalDecisionRepository } from "../providerRuntime/optionalDecisionRepository";
@@ -133,6 +133,78 @@ async function imageFixture() {
 
 describe("durable Agent authority and accounting", () => {
   afterAll(() => prisma.$disconnect());
+
+  it.each(["interrupt", "tool"])("serializes a native interrupt against executable model output (%s wins)", async winner => {
+    const f = await fixture();
+    try {
+      const run = await f.run(), grant = await run.store.arm(null);
+      await run.store.setThread(randomUUID());
+      const gateway = createAgentRunStore(prisma, { runId: run.id, userId: f.userId, configuration, tokenHash: agentTokenHash(grant.token) });
+      const attempt = await gateway.reserveProvider(100);
+      if (winner === "tool") {
+        await gateway.releaseModelTools(attempt);
+        expect(await run.store.claimFollowupInterrupt(grant.token)).toBe(false);
+      } else {
+        expect(await run.store.claimFollowupInterrupt(grant.token)).toBe(true);
+        await expect(gateway.releaseModelTools(attempt)).rejects.toThrow("agent_followup_interrupt");
+        await expect(gateway.reserveProvider(100)).rejects.toThrow("agent_followup_interrupt");
+        await expect(gateway.assertLeaseActive()).resolves.toBeUndefined();
+        expect(await gateway.expectedFollowupInterruption()).toBe(true);
+      }
+    } finally { await f.dispose(); }
+  });
+
+  it("rotates only after native exit and preserves budgets while fencing stale requests and late accounting", async () => {
+    const f = await fixture();
+    try {
+      const run = await f.run(), grant = await run.store.arm(null);
+      const threadId = randomUUID(); await run.store.setThread(threadId);
+      const initial = await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: run.id } });
+      const old = createAgentRunStore(prisma, { runId: run.id, userId: f.userId, configuration, tokenHash: agentTokenHash(grant.token) });
+      const call = await run.store.toolCall("workspace__sandbox_exec_start", { managedAgent: true }, true);
+      await prisma.workspaceExecution.create({ data: { modelRunId: run.id, modelRunToolCallId: call,
+        workspaceSessionId: f.session.id, runtimeExecSessionId: `agent-${call}` } });
+      const attempt = await old.reserveProvider(100);
+      expect(await run.store.claimFollowupInterrupt(grant.token)).toBe(true);
+      await expect(run.store.continueAfterExit(grant.token, call)).rejects.toThrow("agent_authority_expired");
+      await run.store.settleTool(call, "complete", { status: "followup_interrupted" });
+      await old.settleProvider(attempt, "UNKNOWN", null);
+      let rotated = false;
+      const continuation = run.store.continueAfterExit(grant.token, call).then(value => { rotated = true; return value; });
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(rotated).toBe(false);
+      expect((await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: run.id } })).tokenHash).toBe(agentTokenHash(grant.token));
+      await old.closeProvider(attempt);
+      const next = await continuation;
+      expect(next.threadId).toBe(threadId); expect(next.token).not.toBe(grant.token);
+      await expect(old.assertLeaseActive()).rejects.toThrow("agent_authority_expired");
+      await expect(old.toolCall("synthetic", {})).rejects.toThrow("agent_authority_expired");
+      await expect(old.reserveProvider(100)).rejects.toThrow("agent_authority_expired");
+      const current = createAgentRunStore(prisma, { runId: run.id, userId: f.userId, configuration, tokenHash: agentTokenHash(next.token) });
+      const later = await current.reserveProvider(120);
+      await old.fail("agent_provider_interrupted"); await old.revoke(false);
+      await old.settleProvider(attempt, "COMPLETE", { inputTokens: 3, outputTokens: 2, totalTokens: 5, completeness: "complete" });
+      const binding = await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: run.id } });
+      expect(binding).toMatchObject({ providerInFlight: true, generationAttemptId: later, modelCalls: 2,
+        startedAt: initial.startedAt, expiresAt: initial.expiresAt, failureCode: null, revokedAt: null });
+      expect((await current.usage()).map(entry => entry.usage.totalTokens)).toEqual([5, null]);
+      await expect(run.store.continueAfterExit(grant.token, call)).rejects.toThrow("agent_authority_expired");
+    } finally { await f.dispose(); }
+  });
+
+  it("defers native interruption while an admitted external tool still owns an effect", async () => {
+    const f = await fixture();
+    try {
+      const run = await f.run(), grant = await run.store.arm(null);
+      await run.store.setThread(randomUUID()); await run.store.reserveProvider(100);
+      const external = await run.store.toolCall("synthetic_mcp", {});
+      expect(await run.store.claimFollowupInterrupt(grant.token)).toBe(false);
+      await run.store.settleTool(external, "complete", {});
+      expect(await run.store.claimFollowupInterrupt(grant.token)).toBe(true);
+      await prisma.modelRun.update({ where: { id: run.id }, data: { status: "cancelled" } });
+      await expect(run.store.continueAfterExit(grant.token, external)).rejects.toThrow("agent_authority_expired");
+    } finally { await f.dispose(); }
+  });
 
   it("settles paid images once across duplicate delivery and lost ACK, with separate usage and immutable artifact assets", async () => {
     const f = await imageFixture();

@@ -430,7 +430,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         return;
       }
 
-      if (request.method === "POST" && (suffix === "/agent/start" || suffix === "/agent/poll")) {
+      if (request.method === "POST" && ["/agent/start", "/agent/poll", "/agent/interrupt"].includes(suffix)) {
         stage = "dispatch";
         const body = await readJson(request);
         const identity = {
@@ -449,9 +449,13 @@ export function createWorkspaceRunnerServer(input: Readonly<{
             skillManifestHash: requiredString(body.skillManifestHash, 64),
             runToken: requiredString(body.runToken, 128),
             threadId: body.threadId === undefined ? undefined : requiredString(body.threadId, 36),
+            previousExecSessionId: body.previousExecSessionId === undefined ? undefined : requiredString(body.previousExecSessionId, 128),
             timeoutSeconds: body.timeoutSeconds === null ? null : integer(body.timeoutSeconds, 1, 7200)
           }));
           sendJson(response, 200, { started: true });
+        } else if (suffix === "/agent/interrupt") {
+          if (!input.runtime.interruptAgent) throw new Error("field_invalid");
+          sendJson(response, 200, { interrupted: await execute(body.operation, signal => input.runtime.interruptAgent!({ ...identity, signal })) });
         } else {
           if (!input.runtime.pollAgent) throw new Error("field_invalid");
           sendJson(response, 200, await execute(body.operation, (signal) => input.runtime.pollAgent!({

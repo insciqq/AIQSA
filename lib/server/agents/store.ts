@@ -33,12 +33,15 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
   runId: string;
   userId: string;
   configuration: NormalizedRunAgent;
+  /** Captured at gateway admission; never adopt a successor's bearer. */
+  tokenHash?: string;
 }>) {
   const { runId, userId, configuration } = input;
-  const assertActive = async (tx: Prisma.TransactionClient = database) => {
+  const assertActive = async (tx: Prisma.TransactionClient = database, allowInterrupt = false) => {
     const now = new Date();
     const binding = await tx.agentRunBinding.findFirst({ where: {
       modelRunId: runId, revokedAt: null, completedAt: null,
+      ...(input.tokenHash ? { tokenHash: input.tokenHash } : {}),
       leaseExpiresAt: { gt: now },
       workspaceRun: { modelRun: { userId, status: { in: [...ACTIVE] }, chat: { user: { status: "active" } } } }
     } });
@@ -47,6 +50,7 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     }
     if (binding.failureCode) throw new AgentExecutionError(agentFailureCode(binding.failureCode) ?? "agent_execution_interrupted");
     if (binding.expiresAt && binding.expiresAt <= now) throw new AgentExecutionError("agent_time_limit");
+    if (!allowInterrupt && input.tokenHash && binding.followupInterruptAt) throw new Error("agent_followup_interrupt");
     return binding;
   };
   const lock = async (tx: Prisma.TransactionClient) => {
@@ -85,11 +89,15 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     async fail(code: AgentFailureCode) {
       // A transport cancellation can arrive before the executor observes its
       // deadline. Preserve the expired budget as the cause in that race.
-      await database.agentRunBinding.updateMany({ where: { modelRunId: runId, failureCode: null,
+      const owner = { modelRunId: runId, ...(input.tokenHash ? { tokenHash: input.tokenHash } : {}) };
+      await database.agentRunBinding.updateMany({ where: { ...owner, failureCode: null,
         expiresAt: { lte: new Date() } }, data: { failureCode: "agent_time_limit" } });
-      await database.agentRunBinding.updateMany({ where: { modelRunId: runId, failureCode: null }, data: { failureCode: code } });
+      await database.agentRunBinding.updateMany({ where: { ...owner, failureCode: null }, data: { failureCode: code } });
     },
     assertActive: async () => { await assertActive(); },
+    // Existing streams remain alive until the exact native process receives
+    // SIGINT. A lease check must not race that signal with a synthetic EOF.
+    assertLeaseActive: async () => { await assertActive(database, true); },
     async assertActiveInTransaction(tx: Prisma.TransactionClient) {
       await lock(tx);
       await assertActive(tx);
@@ -181,6 +189,71 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
           data: { leaseExpiresAt: new Date(Date.now() + AGENT_GRANT_LEASE_MS) } });
       });
     },
+    /** Serialize the interrupt intent with release of executable model output. */
+    async claimFollowupInterrupt(token: string) {
+      return locked(async tx => {
+        const current = await assertActive(tx);
+        if (current.tokenHash !== agentTokenHash(token) || !current.threadId || current.followupInterruptAt ||
+          !current.providerInFlight || current.generationToolsReleased || !current.generationAttemptId) return false;
+        if (await tx.agentProviderAttempt.count({ where: { modelRunId: runId, state: "DISPATCHED",
+          id: { not: current.generationAttemptId } } }) || await tx.modelRunToolCall.count({ where: {
+          modelRunId: runId, workspaceRunBindingId: null, state: { in: ["pending", "running"] }
+        } })) return false;
+        await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: { followupInterruptAt: new Date() } });
+        return true;
+      });
+    },
+    async releaseModelTools(attemptId: string) {
+      await locked(async tx => {
+        const current = await assertActive(tx);
+        if (current.followupInterruptAt) throw new Error("agent_followup_interrupt");
+        if (current.generationAttemptId !== attemptId) throw new Error("agent_authority_expired");
+        await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: { generationToolsReleased: true } });
+      });
+    },
+    async expectedFollowupInterruption() {
+      if (!input.tokenHash) return false;
+      const now = new Date();
+      return Boolean(await database.agentRunBinding.findFirst({ where: {
+        modelRunId: runId, tokenHash: input.tokenHash, followupInterruptAt: { not: null }, failureCode: null,
+        revokedAt: null, completedAt: null, leaseExpiresAt: { gt: now },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        workspaceRun: { modelRun: { userId, status: { in: [...ACTIVE] }, chat: { user: { status: "active" } } } }
+      }, select: { modelRunId: true } }));
+    },
+    /** Only an observed native exit, settled by this executor, permits rotation. */
+    async continueAfterExit(token: string, toolCallId: string) {
+      await locked(async tx => {
+        const current = await assertActive(tx);
+        const previous = await tx.modelRunToolCall.findFirst({ where: { id: toolCallId, modelRunId: runId,
+          workspaceRunBindingId: runId, state: "complete", workspaceExecution: { is: { modelRunId: runId } } } });
+        if (current.tokenHash !== agentTokenHash(token) || !current.threadId || !previous) throw new Error("agent_authority_expired");
+        await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: { followupInterruptAt: current.followupInterruptAt ?? new Date() } });
+      });
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        const rotated = await locked(async tx => {
+          const current = await assertActive(tx);
+          if (current.tokenHash !== agentTokenHash(token) || !current.followupInterruptAt || !current.threadId) {
+            throw new Error("agent_authority_expired");
+          }
+          if (await tx.agentProviderAttempt.count({ where: { modelRunId: runId,
+            OR: [{ state: "DISPATCHED" }, { providerBindingKey: "answer", transportClosedAt: null }] } }) ||
+            await tx.modelRunToolCall.count({ where: { modelRunId: runId, workspaceRunBindingId: null,
+              state: { in: ["pending", "running"] } } })) return null;
+          const nextToken = randomBytes(32).toString("base64url");
+          await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: {
+            tokenHash: agentTokenHash(nextToken), followupInterruptAt: null,
+            generationAttemptId: null, generationToolsReleased: true, providerInFlight: false
+          } });
+          return { token: nextToken, threadId: current.threadId,
+            timeoutSeconds: current.expiresAt ? Math.max(1, Math.ceil((current.expiresAt.getTime() - Date.now()) / 1000)) : null };
+        });
+        if (rotated) return rotated;
+        if (Date.now() >= deadline) throw new AgentExecutionError("agent_execution_interrupted");
+        await sleep(100);
+      }
+    },
     async setThread(threadId: string) {
       if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(threadId)) {
         throw new Error("agent_protocol_invalid");
@@ -193,8 +266,10 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     },
     async revoke(completed: boolean) {
       await locked(async (tx) => {
-        await tx.agentRunBinding.updateMany({ where: { modelRunId: runId, revokedAt: null },
+        const revoked = await tx.agentRunBinding.updateMany({ where: { modelRunId: runId, revokedAt: null,
+          ...(input.tokenHash ? { tokenHash: input.tokenHash } : {}) },
           data: { revokedAt: new Date(), ...(completed ? { completedAt: new Date() } : {}) } });
+        if (!revoked.count) return;
         // A restart/abort cannot imply that a dispatched physical operation did not execute.
         await tx.agentProviderAttempt.updateMany({ where: { modelRunId: runId, state: "DISPATCHED" },
           data: { state: "UNKNOWN", completedAt: new Date() } });
@@ -252,7 +327,7 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
           ...(utility?.kind === "aiqsa_search" ? { searchOptionId: utility.optionId, searchInvocationId: utility.invocationId } : {}) } });
         await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: {
           modelCalls: { increment: 1 }, reservedTokens: { increment: reservedTokens },
-          ...(!utility ? { providerInFlight: true } : {})
+          ...(!utility ? { providerInFlight: true, generationAttemptId: id, generationToolsReleased: false } : {})
         } });
         return { id };
       });
@@ -273,9 +348,16 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
         } });
         await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: {
           reservedTokens: { increment: consumed - attempt.reservedTokens },
-          ...(attempt.providerBindingKey === "answer" ? { providerInFlight: false } : {})
+          ...(attempt.providerBindingKey === "answer" ? { providerInFlight: Boolean(await tx.agentProviderAttempt.count({
+            where: { modelRunId: runId, providerBindingKey: "answer", state: "DISPATCHED" }
+          })) } : {})
         } });
       });
+    },
+    async closeProvider(id: string) {
+      // Closing an old transport is a receipt, never renewed authority.
+      await database.agentProviderAttempt.updateMany({ where: { id, modelRunId: runId, transportClosedAt: null },
+        data: { transportClosedAt: new Date() } });
     },
     async canRetryProvider(attemptId: string) {
       return locked(async (tx) => {

@@ -198,6 +198,40 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(builder.envs).toHaveBeenCalledWith(expect.objectContaining({ HOME: "/root" }));
   });
 
+  it("requires a settled exact native predecessor before resuming and never replays a lost start", async () => {
+    const value = fixture();
+    const directory = await mkdtemp(join(tmpdir(), "aiqsa-skill-runtime-")); skillDirectories.push(directory);
+    const runtime = new MicrosandboxWorkspaceRuntime({ ...config, agentGatewayEnabled: true }, undefined, directory);
+    await runtime.ensureSession(ensureInput);
+    await runtime.prepareSkillRun({ ...skillIdentity, initial: [] });
+    await runtime.completeSkillRunPreparation(skillIdentity);
+    const threadId = randomUUID(), firstId = `agent-${randomUUID()}`, nextId = `agent-${randomUUID()}`;
+    const bytes = (events: unknown[]) => Buffer.from(events.map(event => JSON.stringify(event)).join("\n") + "\n");
+    let exit!: () => void;
+    const stop = new Promise<void>(resolve => { exit = resolve; });
+    const handle = { recv: vi.fn()
+      .mockResolvedValueOnce({ kind: "stdout", data: bytes([{ type: "thread.started", thread_id: threadId }, { type: "turn.started" }]) })
+      .mockImplementationOnce(async () => { await stop; return { kind: "exited", code: 1 }; }).mockResolvedValue(null),
+      signal: vi.fn(async (signal: number) => { expect(signal).toBe(2); exit(); }), kill: vi.fn() };
+    const execStreamWith = vi.fn().mockResolvedValueOnce(handle).mockRejectedValueOnce(new Error("lost_native_start_ack"));
+    Object.assign(value.sandbox, { execStreamWith });
+    const start = { ...sessionInput, modelRunId: "run_fixture", runtimeExecSessionId: firstId,
+      skillManifestHash: skillIdentity.manifestHash, prompt: "Synthetic", runToken: "a".repeat(43), timeoutSeconds: null,
+      profile: { gatewayOrigin: AGENT_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
+        maxOutputTokens: 4096, developerInstructions: "Synthetic", mcpMode: "off" as const, mcpTimeoutSeconds: 90 } };
+    await runtime.startAgent(start);
+    const next = { ...start, runtimeExecSessionId: nextId, previousExecSessionId: firstId, threadId };
+    await expect(runtime.startAgent(next)).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    expect(await runtime.interruptAgent(start)).toBe(true);
+    await vi.waitFor(async () => expect((await runtime.pollAgent({ ...start, cursor: 0 })).done).toBe(true));
+    await expect(runtime.startAgent({ ...next, threadId: randomUUID() })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    await expect(runtime.startAgent(next)).rejects.toThrow("lost_native_start_ack");
+    await expect(runtime.startAgent(next)).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    await expect(runtime.startAgent({ ...next, runtimeExecSessionId: `agent-${randomUUID()}` })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    expect(execStreamWith).toHaveBeenCalledTimes(2); expect(handle.kill).not.toHaveBeenCalled();
+    expect(handle.signal).toHaveBeenCalledOnce();
+  });
+
   it("serializes a bundle transfer with Agent start and rejects subsequent mutation while the Agent is owned", async () => {
     const value = fixture();
     const directory = await mkdtemp(join(tmpdir(), "aiqsa-skill-runtime-")); skillDirectories.push(directory);

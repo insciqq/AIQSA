@@ -12,11 +12,11 @@ import { takeUtf16SafePrefix } from "../../domain/utf16";
 export function admittedFollowupFields(input: PreparingRunAdmissionInput) {
   if (!input.followupAdmission) return {};
   const budget = input.followupAdmission.budgetTokens;
-  if (input.normalizedRequest.agent || !Number.isSafeInteger(budget) ||
+  if (!Number.isSafeInteger(budget) ||
     budget < 0 || budget > 8_192 || (input.normalizedRequest.followupContextReserveTokens ?? 0) < budget) {
     throw new ActiveLeafConflictError();
   }
-  return { followupMode: input.normalizedRequest.workspace?.enabled ? "workspace" : "chat", followupBudgetTokens: budget };
+  return { followupMode: input.normalizedRequest.agent ? "agent" : input.normalizedRequest.workspace?.enabled ? "workspace" : "chat", followupBudgetTokens: budget };
 }
 
 export async function insertAdmittedRunFollowups(tx: Prisma.TransactionClient, input: PreparingRunAdmissionInput, runId: string) {
@@ -118,20 +118,23 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
       await lockRun(tx, input.runId);
       const run = await tx.modelRun.findFirst({ where: { id: input.runId, userId: input.userId,
         status: { in: activeModelRunStatuses }, answerCompletedAt: null, followupClosedAt: null,
-        followupMode: { not: null }, followupRevision: input.revision },
-        select: { assistantMessageId: true, followups: { where: { deliveredAt: null }, orderBy: { ordinal: "asc" } } } });
+        followupMode: input.confirmedThrough ? "agent" : { not: null },
+        followupRevision: input.confirmedThrough ? { gte: input.revision } : input.revision },
+        select: { assistantMessageId: true, followupBudgetTokens: true,
+          followups: { where: { deliveredAt: null, ordinal: { lte: input.revision } }, orderBy: { ordinal: "asc" } } } });
       if (!run) return false;
       const first = run.followups[0];
       if (first) {
         await tx.runFollowup.update({ where: { id: first.id }, data: {
           deliveredAt: new Date(), ...(input.precedingText ? { precedingText: input.precedingText } : {})
         } });
-        await tx.runFollowup.updateMany({ where: { modelRunId: input.runId, deliveredAt: null }, data: { deliveredAt: new Date() } });
+        await tx.runFollowup.updateMany({ where: { modelRunId: input.runId, deliveredAt: null, ordinal: { lte: input.revision } }, data: { deliveredAt: new Date() } });
         if (run.assistantMessageId) await tx.message.update({ where: { id: run.assistantMessageId },
           data: { content: json(textMessageContent("")), status: "streaming" } });
       }
       await tx.modelRun.update({ where: { id: input.runId }, data: {
-        followupBudgetTokens: Math.max(0, Math.floor(input.budgetTokens)),
+        followupBudgetTokens: Math.max(0, Math.floor(input.confirmedThrough
+          ? Math.min(run.followupBudgetTokens, input.budgetTokens) : input.budgetTokens)),
         ...(first ? { providerResponseId: null } : {})
       } });
       return true;

@@ -712,20 +712,24 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const reportedUsageAttributions: RunUsageAttribution[] = [];
       const usageAccountedToolCallIds = new Set<string>();
       let followupBaseRequest = input.prepared.providerRequest;
+      let agentFollowupRevision = 0;
+      async function publishFollowupDelivery(revision: number) {
+        tokenBuffer.resetLocal();
+        answerStartMarked = false;
+        persistedProviderResponseId = null;
+        emitTransient(controller, encoder, { type: "message_reset", data: { round: revision } });
+        const update = await input.repository.getChatUpdateForRun({
+          ...input.created, chatId: normalizedRequest.chatId, userId: input.userId
+        }).catch(() => null);
+        if (update) emitTransient(controller, encoder, { type: "chat_update", data: serializeChatUpdate(update) });
+      }
       const followups = input.repository.followups && !normalizedRequest.agent
         ? createRunFollowupExecution({
             runId, userId: input.userId, operations: input.repository.followups,
             bridge: input.toolBridge ?? providerToolBridges[normalizedRequest.provider as keyof typeof providerToolBridges],
             async beforeDelivery() { await tokenBuffer.flush(); return tokenBuffer.text; },
             async onDelivery() {
-              tokenBuffer.resetLocal();
-              answerStartMarked = false;
-              persistedProviderResponseId = null;
-              emitTransient(controller, encoder, { type: "message_reset", data: { round: followups!.revision } });
-              const update = await input.repository.getChatUpdateForRun({
-                ...input.created, chatId: normalizedRequest.chatId, userId: input.userId
-              }).catch(() => null);
-              if (update) emitTransient(controller, encoder, { type: "chat_update", data: serializeChatUpdate(update) });
+              await publishFollowupDelivery(followups!.revision);
             },
             async onInterruptedUsage(usage, request, generation) {
               let reported = usage;
@@ -2796,7 +2800,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           },
           type: "message_start"
         });
-        if (followups) {
+        if (input.repository.followups) {
           // Admission owns availability, including inherited clarification
           // history. Publish it before the first external operation/token.
           const update = await input.repository.getChatUpdateForRun({
@@ -2859,6 +2863,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             request: providerRequest, runId, userId: input.userId, signal,
             transport: input.agentResponses, workspace: input.workspace,
             onEvent: applyProviderEvent, onActivity: onWorkspaceActivity,
+            ...(input.repository.followups ? { followups: {
+              operations: input.repository.followups,
+              async beforeDelivery() { await tokenBuffer.flush(); return tokenBuffer.text; },
+              async onDelivery(revision: number) {
+                agentFollowupRevision = revision;
+                await publishFollowupDelivery(revision);
+              }
+            } } : {}),
             async onPersistedEvent(event) {
               // The gateway committed this output with the tool receipt.
               // Forward it live without creating a second durable event.
@@ -2952,7 +2964,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         } as const;
         executionStage = "completion";
         const finalization = await finalizeRunCompletion({
-          ...(followups ? { followupRevision: followups.revision } : {}),
+          ...(followups ? { followupRevision: followups.revision } : normalizedRequest.agent ? { followupRevision: agentFollowupRevision } : {}),
           ...(normalizedRequest.workspace ? { afterAnswerPublished: async (answer: { finalText: string; usage: ModelRunUsage }) => {
             answerPublished = true;
             if (knowledgeCitationAnswer && answer.finalText) {

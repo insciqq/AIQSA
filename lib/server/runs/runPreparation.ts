@@ -2112,10 +2112,10 @@ export async function prepareRun(
   // Regeneration copies receipts atomically at admission. Only the new
   // executor appends them; the temporary request above budgets them once.
   if (inheritedFollowups?.entries.length) delete providerRequest.providerToolMessages;
-  const followupAdmission: RunFollowupAdmission | undefined = !agentEnabled ? {
+  const followupAdmission: RunFollowupAdmission = {
     budgetTokens: Math.min(8_192, Math.floor(followupRequestHeadroom(providerBudget.request, toolBridge) / 2)),
     ...(inheritedFollowups ? { inherited: { messageId: inheritedFollowups.messageId, revision: inheritedFollowups.revision } } : {})
-  } : undefined;
+  };
   if (followupAdmission) {
     const reserve = followupAdmission.budgetTokens + (inheritedFollowups?.entries.reduce((sum, entry) => sum + followupTokenCost(entry.text), 0) ?? 0);
     normalizedRequest.followupContextReserveTokens = reserve;

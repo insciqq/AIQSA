@@ -16,6 +16,8 @@ export type WorkspaceAgentStart = WorkspaceAgentIdentity & Readonly<{
   prompt: string;
   runToken: string;
   threadId?: string;
+  /** Exact predecessor within this logical run; no lost-start replay. */
+  previousExecSessionId?: string;
   timeoutSeconds: number | null;
 }>;
 

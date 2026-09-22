@@ -15,7 +15,7 @@ Personal presets supplement ordinary personal chats, including temporary/Memory-
 
 Acceptance transfers execution to the server; disconnect never cancels preparation/commands. Stop/deadlines/authority remain. Recovery defers to live owners without replaying ambiguous effects. PDF precedes eligible Personal Memory; final admission revalidates authority/evidence and freezes dispatch. Preparing forbids answer-provider/tool I/O. Optional Memory loss cannot bypass authority. Temporary/Project runs bypass Memory; inbound Memory MCP remains independent. [Memory](MEMORY.md) owns preparation.
 
-Follow-up is ordered user input within accepted bindings/budgets, never repeated Memory preparation or a successor. Acceptance races publication; delivery proves executor receipt, not obedience. Preserve partial text; settle dispatched tools, skip obsolete undispatched decisions, fence old generations. Recovery closes admission before replay; executor loss explicitly ends clarified tasks. Regeneration re-admits saved clarifications.
+Follow-up orders user input within accepted bindings/budgets without repeating preparation. Acceptance races publication; delivery proves receipt, not obedience. Preserve partial text, settle dispatched tools, skip obsolete decisions, fence old generations. Recovery closes admission; executor loss ends clarified tasks. Regeneration re-admits clarifications.
 
 Continuation summarizes active-branch text through the admitted System Model, excluding tools, attachments and Workspace inspection. Enabled Workspace may copy project files unread into a private single-use seed. Preserve ownership, retention, source and conversation; never repeat interrupted provider work. [Frontend](FRONTEND.md) owns draft transfer.
 
@@ -25,9 +25,9 @@ Catalog relevance defaults off, receiving only user text/authorized metadata. Co
 
 Workspace stages frozen bundles. New runs reset managed Skills; recovery preserves edits or restores pins/settled loads after recreation. Loads replace files after context acceptance. Agent discovers available Skills natively, receives pins as user instructions, and disables bundled Skills. Catalog/mode/profile changes invalidate continuation, excluding reads.
 
-Agent requires personal manual Workspace. Codex owns planning/tools/compaction/completion; AIQSA owns authority/accounting/settlement without evaluator/context truncation. Resumes refresh authorized paths/Skills/instructions. Knowledge/Memory unavailable. Artifacts, images and query-only Search survive MCP Off. Auto discovers/dispatches; All explicit.
+Agent requires personal manual Workspace. Codex owns planning/tools/compaction/completion; AIQSA owns authority/accounting/settlement without evaluator/context truncation. Ordinary resumes refresh paths/Skills/instructions; Follow-up preserves files/native session after proven process/transport closure, fences old grants and confirms native receipt. Unsettled effects prohibit interruption; Stop is terminal. Knowledge/Memory unavailable; artifacts, images and query-only Search survive MCP Off. Auto discovers/dispatches; All explicit.
 
-Off removes Agent time/call/token/output caps, preserving accounting/leases/Stop/model constraints. Transient provider retries retain tool results, authority/budget checks and separate receipts. Persist first terminal cause before revocation; never replay execution, extend deadlines or buy summaries. MCP exhaustion allows generation. Grants are independent of inbound OAuth. Executor loss terminates; client disconnect does not.
+Off removes Agent time/call/token/output caps, preserving accounting/leases/Stop/model constraints. Retries retain tool results, authority/budgets and separate receipts. Persist first terminal cause before revocation; never replay execution, extend deadlines or buy summaries. MCP exhaustion allows generation. Grants are independent of inbound OAuth.
 
 ## Search And Documents
 

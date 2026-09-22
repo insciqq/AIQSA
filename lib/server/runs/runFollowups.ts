@@ -75,7 +75,9 @@ export type RunFollowupBatch = Readonly<{
 export type RunFollowupOperations = Readonly<{
   accept(input: RunFollowupInput & { runId: string; userId: string }): Promise<AcceptRunFollowupResult>;
   load(input: { runId: string; userId: string }): Promise<RunFollowupBatch | null>;
-  deliver(input: { runId: string; userId: string; revision: number; precedingText: string; budgetTokens: number }): Promise<boolean>;
+  deliver(input: { runId: string; userId: string; revision: number; precedingText: string; budgetTokens: number;
+    /** Native input already accepted; acknowledge this prefix despite newer arrivals. */
+    confirmedThrough?: boolean }): Promise<boolean>;
   /** The final answer can settle only after this compare-and-close wins. */
   close(input: { runId: string; userId: string; revision: number }): Promise<boolean>;
   /** New question, fresh review cohort; the original eight-operation ceiling remains. */
