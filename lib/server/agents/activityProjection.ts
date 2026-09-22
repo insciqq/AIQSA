@@ -78,10 +78,13 @@ export function createCodexActivityProjection(runId: string, request: ProviderRu
           } else {
             descriptors ??= toolActivityDescriptors(request, (value) => text.text(value));
             const descriptor = descriptors.get(event.tool === "call_tool" ? event.toolId ?? "" : event.tool ?? "");
+            const builtin = event.tool === "generate_image" && request.imagePlan ? "Generate image"
+              : request.artifactTool && event.tool === "create_artifact" ? "Create artifact"
+                : request.artifactTool && event.tool === "read_artifact" ? "Read artifact" : null;
             entry = { ...base, kind: "mcp_call",
               ...(event.discoveryFailure ? { text: mcpDiscoveryFailureMessage(event.discoveryFailure) } : {}),
               ...(event.toolFailure ? { text: mcpToolFailureMessage(event.toolFailure) } : {}),
-              mcp: descriptor?.origin === "discovery"
+              mcp: builtin ? { serverName: "AIQSA", toolName: builtin } : descriptor?.origin === "discovery"
               ? { discovery: true, serverName: "Auto tools", toolName: "find_tools" }
               : descriptor?.origin === "mcp" ? { serverName: descriptor.serverName, toolName: descriptor.toolName }
                 : { toolName: "MCP tool" } };

@@ -5,31 +5,74 @@ import { defaultArtifactService } from "../artifacts/defaultArtifacts";
 import type { ArtifactService } from "../artifacts/service";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import type { createAgentRunStore } from "./store";
+import { IMAGE_GENERATION_TOOL_NAME, imageGenerationTool } from "../tools/imageGeneration";
+import type { ImageGenerationService } from "../images/service";
+import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
 
-export const AGENT_BUILTIN_TOOL_NAMES = [ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME] as const;
-export const agentBuiltinTools = (request: NormalizedRunRequest) => request.artifactTool
-  ? [artifactTool(request.artifactToolDescription), readArtifactTool()] : [];
+export const AGENT_BUILTIN_TOOL_NAMES = [ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME] as const;
+export const agentBuiltinTools = (request: NormalizedRunRequest) => [
+  ...(request.artifactTool ? [artifactTool(request.artifactToolDescription), readArtifactTool()] : []),
+  ...(request.imagePlan ? [imageGenerationTool(request.imagePlan)] : [])
+];
+
+const imageErrors = new Set(["image_input_invalid", "image_parameters_invalid", "image_reference_unavailable", "image_reference_invalid",
+  "image_provider_revoked", "image_binding_unavailable", "image_editing_unavailable", "image_generation_unavailable", "image_tool_budget_exhausted",
+  "image_response_invalid", "image_response_too_large", "image_provider_http_error", "image_provider_request_failed", "image_request_timed_out",
+  "image_request_cancelled", "image_output_missing"]);
 
 /** Shared domain tools, with one durable claim per gateway delivery. Native
  * Codex remains the only planner; no file path grants host filesystem access. */
 export function createAgentBuiltinDispatcher(input: {
   request: NormalizedRunRequest; runId: string; userId: string;
   store: ReturnType<typeof createAgentRunStore>;
-  artifacts?: Pick<ArtifactService, "execute" | "restore">;
+  artifacts?: Pick<ArtifactService, "execute">;
+  images?: Pick<ImageGenerationService, "execute">;
+  workspace?: Pick<WorkspaceCoordinator, "imagePath">;
 }) {
   const admitted = new Set(agentBuiltinTools(input.request).map(tool => tool.name));
+  const deliver = async (result: ToolExecutionResult, signal: AbortSignal): Promise<ToolExecutionResult> => {
+    if (result.name !== IMAGE_GENERATION_TOOL_NAME || result.status !== "complete" || !input.request.workspace || signal.aborted) return result;
+    const event = result.artifacts?.find(event => event.type === "artifact" && event.data.artifactType === "image");
+    const image = event?.type === "artifact" ? decodeThreadGeneratedImage(event.data.payload) : null;
+    if (!image) return result;
+    let metadata: Record<string, string>;
+    try {
+      await input.store.assertActive();
+      const workspace = input.workspace ?? (await import("../workspace/defaultServices")).workspaceCoordinatorForStorage(
+        (await import("../uploads/storage")).createS3StorageAdapter());
+      if (!workspace.imagePath) throw new Error("image_workspace_unavailable");
+      const path = await workspace.imagePath({ runId: input.runId, userId: input.userId,
+        workspace: input.request.workspace, attachmentId: image.attachmentId, signal });
+      metadata = { workspace_path: path };
+    } catch {
+      metadata = { workspace_error: "image_workspace_unavailable", hint: "The image is saved in chat. Do not generate it again. Workspace staging can be retried on this delivery or a later turn." };
+    }
+    return { ...result, content: result.content.map(part => part.type === "json" && part.value && typeof part.value === "object"
+      ? { ...part, value: { ...part.value, ...metadata } } : part) };
+  };
   return async (call: ModelToolCall, signal: AbortSignal): Promise<ToolExecutionResult> => {
     signal.throwIfAborted();
     if (!admitted.has(call.name)) throw new Error("agent_builtin_unavailable");
     const claim = await input.store.claimBuiltinTool(call, hashCanonicalMcpValue(call.arguments));
-    if (claim.result) return claim.result;
+    if (claim.result) return deliver(claim.result, signal);
     // An active or crash-ambiguous delivery cannot authorize a second write.
     if (!claim.claimed) return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
       error: "agent_builtin_in_progress", hint: "This delivery is still pending. Do not repeat a write with a new call ID."
     } }] };
-    const artifacts = input.artifacts ?? defaultArtifactService();
     const context = { request: input.request, userId: input.userId, runId: input.runId, persistedToolCallId: claim.id };
     try {
+      if (call.name === IMAGE_GENERATION_TOOL_NAME) {
+        const images = input.images ?? (await import("../images/defaultImages")).imageGenerationForStorage(
+          (await import("../uploads/storage")).createS3StorageAdapter());
+        const result = await images.execute(call, context, signal, {
+          beforeDispatch: () => input.store.startBuiltinImage(claim.id),
+          beforeSettlement: input.store.lockBuiltinSettlement,
+          onResult: (tx, result) => input.store.settleBuiltinToolInTransaction(tx, claim.id, result)
+        });
+        return deliver(result, signal);
+      }
+      const artifacts = input.artifacts ?? defaultArtifactService();
       const result = await artifacts.execute(call, context, { signal,
         assertActive: input.store.assertActiveInTransaction,
         onResult: (tx, result) => input.store.settleBuiltinToolInTransaction(tx, claim.id, result) });
@@ -40,11 +83,13 @@ export function createAgentBuiltinDispatcher(input: {
       // READY and its output were committed together. A lost acknowledgement
       // can only restore the exact receipt, never repeat artifact creation.
       const restored = await input.store.builtinResult(claim.id);
-      if (restored) return restored;
+      if (restored) return deliver(restored, signal);
+      const code = call.name === IMAGE_GENERATION_TOOL_NAME && error instanceof Error && imageErrors.has(error.message) ? error.message : "agent_builtin_interrupted";
       const result: ToolExecutionResult = { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
-        error: "agent_builtin_interrupted", hint: "The operation did not finish. No completed result is available for this delivery."
+        error: code, hint: "The operation did not finish. No completed result is available for this delivery. Do not repeat an unconfirmed paid request."
       } }] };
       if (!signal.aborted) await input.store.settleBuiltinTool(claim.id, result);
+      if (code !== "agent_builtin_interrupted") return result;
       throw error;
     }
   };

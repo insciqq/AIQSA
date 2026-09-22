@@ -1,3 +1,4 @@
+import { syntheticImagePlan } from "@/tests/support/imagePlan";
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as hub from "../mcp/hubService";
@@ -31,9 +32,9 @@ function codexModelOutput(result: {
 vi.mock("../prisma", () => ({ prisma: {} }));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 describe("Agent MCP discovery surface", () => {
-  it.each(["off", "auto", "all"] as const)("exposes frozen built-in artifacts with external MCP %s", async mcpMode => {
+  it.each(["off", "auto", "all"] as const)("exposes frozen built-in artifacts and images with external MCP %s", async mcpMode => {
     const store = { mcpTools: async () => [], admitMcpPlan: async () => {} } as unknown as ReturnType<typeof createAgentRunStore>;
-    const request = { artifactTool: true, artifactToolDescription: "Frozen admitted artifact contract",
+    const request = { artifactTool: true, artifactToolDescription: "Frozen admitted artifact contract", imagePlan: syntheticImagePlan(),
       agent: { mcpMode }, searchPlan: { mode: "all_selected", options: [] }, mcp: { tools: [], servers: [], version: 1 } } as unknown as NormalizedRunRequest;
     const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
       signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
@@ -43,7 +44,7 @@ describe("Agent MCP discovery surface", () => {
     const text = await response.text();
     const body = JSON.parse(text.startsWith("event:") ? text.split("\n").find(line => line.startsWith("data: "))!.slice(6) : text);
     expect(body.result.tools.map((tool: { name: string }) => tool.name).sort())
-      .toEqual(mcpMode === "auto" ? ["call_tool", "create_artifact", "find_tools", "read_artifact"] : ["create_artifact", "read_artifact"]);
+      .toEqual(mcpMode === "auto" ? ["call_tool", "create_artifact", "find_tools", "generate_image", "read_artifact"] : ["create_artifact", "generate_image", "read_artifact"]);
     expect(body.result.tools.find((tool: { name: string }) => tool.name === "create_artifact").description).toBe(request.artifactToolDescription);
   });
   it.each([false, true])("uses the shared request envelope and safely reports an over-limit body (%s)", async lowerLimit => {

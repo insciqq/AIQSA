@@ -119,7 +119,7 @@ const SEARCH_PROVIDER_FAMILY_NAMES: Readonly<Record<string, string>> = {
   perplexity: "Perplexity"
 };
 
-const AGENT_HELP = "Codex carries out your task in Workspace. Uses the selected model, Skills, MCP mode and saved Workspace secrets. Available while this Workspace exists. Personal Memory and image generation are unavailable.";
+const AGENT_HELP = "Codex carries out your task in Workspace. Uses the selected model, Skills, MCP mode and saved Workspace secrets. Can create artifacts and use the configured image model. Available while this Workspace exists. Personal Memory and Knowledge are unavailable.";
 
 function CapabilityChipContent({ label, icon, count = 0, signal, description, descriptionId }: Readonly<{
   label: string;
@@ -1043,7 +1043,7 @@ export function ComposerV2({
   const agentExplanation = activeRun ? "A response is running." : agentReason;
   const agentDescription = `Agent: ${agent?.enabled ? "On" : "Off"}. ${agentExplanation ? `${agentExplanation} ` : ""}${AGENT_HELP}`;
   const agentStatus = agentNotice && agentNotice.sessionKey === sessionKey && agent
-    ? agentNotice.kind === "blocked" ? agentDisabledReason : agent.enabled ? "Agent on · Codex in Workspace. Memory and image generation are unavailable." : "Agent off."
+    ? agentNotice.kind === "blocked" ? agentDisabledReason : agent.enabled ? "Agent on · Codex in Workspace. Memory and Knowledge are unavailable." : "Agent off."
     : null;
   const workspaceDescription = workspace ? `Workspace: ${workspace.busy ? "Saving" : workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}` : "";
 

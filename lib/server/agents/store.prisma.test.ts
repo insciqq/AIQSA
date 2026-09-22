@@ -1,7 +1,9 @@
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { textMessageContent } from "@/lib/domain/content";
 import { agentLimits } from "./config";
@@ -15,6 +17,12 @@ import type { StorageAdapter, StoredObjectInput } from "../uploads/storage";
 import type { NormalizedRunRequest } from "../providers/types";
 import { createAgentBuiltinDispatcher } from "./builtinTools";
 import type { ModelToolCall } from "../tools/types";
+import { syntheticImagePlan } from "@/tests/support/imagePlan";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { createPrismaImageGenerationService } from "../images/service";
+import { encryptProviderCredentialSecret } from "../providers/credentialSecrets";
+import { createPrismaWorkspaceCoordinatorRepository, type WorkspaceExecutionBinding } from "../workspace/coordinator";
+import { readSkillZip } from "../skills/zipReader";
 
 const configuration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
   compatibilityHash: "a".repeat(64), mcpMode: "auto" as const, maxModelCalls: 2 };
@@ -77,8 +85,209 @@ async function artifactFixture() {
   return { ...f, accepted: run, request, artifacts, dispatch, objects, setBeforePut(value: typeof beforePut) { beforePut = value; } };
 }
 
+async function imageFixture() {
+  const f = await fixture();
+  const run = await f.run(); await run.store.arm(null);
+  const plan = syntheticImagePlan();
+  const authority = { ...plan.authority, connectionId: randomUUID(), providerModelId: randomUUID(), credentialId: randomUUID(), credentialVersionId: randomUUID() };
+  plan.authority = authority;
+  plan.snapshot = { ...plan.snapshot, connectionId: authority.connectionId, providerModelId: authority.providerModelId,
+    credentialId: authority.credentialId, credentialVersionId: authority.credentialVersionId };
+  const key = Buffer.alloc(32, 69);
+  const json = (value: unknown) => value as Prisma.InputJsonValue;
+  await prisma.providerConnection.create({ data: { id: authority.connectionId, displayName: "Synthetic image provider", family: "openai", enabled: true,
+    activeConfig: json(plan.snapshot.connection), activeVersion: 1, activatedAt: new Date() } });
+  await prisma.providerCredential.create({ data: { id: authority.credentialId, connectionId: authority.connectionId, label: "Fixture", enabled: true } });
+  await prisma.providerCredentialVersion.create({ data: { id: authority.credentialVersionId, credentialId: authority.credentialId, version: 1,
+    testEvidence: { authenticationMode: "bearer" }, activatedAt: new Date(), testedAt: new Date(),
+    secretEnvelope: encryptProviderCredentialSecret({ credentialId: authority.credentialId, valueId: authority.credentialVersionId, key, secret: "synthetic-key" }) } });
+  await prisma.providerModel.create({ data: { id: authority.providerModelId, connectionId: authority.connectionId, modelId: plan.snapshot.model.upstreamModelId,
+    modelClass: "image", provider: "openai", displayName: "Synthetic image model", enabled: true, capabilities: json(plan.snapshot.model.capabilities),
+    defaultParams: {}, activeConfig: json(plan.snapshot.model), activeVersion: 1, activatedAt: new Date() } });
+  const bind = (runId: string) => prisma.providerRunBinding.create({ data: { modelRunId: runId, bindingKey: "image", role: "image", credentialSource: "default",
+    connectionId: authority.connectionId, providerModelId: authority.providerModelId, credentialId: authority.credentialId,
+    credentialVersionId: authority.credentialVersionId, executionSnapshot: json(plan.snapshot) } });
+  await bind(run.id);
+  const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: "blue" } }).png().toBuffer();
+  const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ data: [{ b64_json: png.toString("base64") }],
+    usage: { input_tokens: 3, output_tokens: 11, total_tokens: 14, cost: 0.012 } }));
+  const storage = createMemoryStorageAdapter();
+  const images = createPrismaImageGenerationService(prisma, storage, { encryptionKey: () => key, fetchFn });
+  const artifacts = createArtifactService(prisma, storage);
+  const request = { chatId: run.chatId, imagePlan: plan, imageReferences: [], artifactTool: true, agent: configuration } as unknown as NormalizedRunRequest;
+  const call: ModelToolCall = { id: "image", name: "generate_image", arguments: { prompt: "SYNTHETIC_PRIVATE_IMAGE_PROMPT", image_ids: [] } };
+  const dispatch = (accepted = request, selected = run, imageService: Pick<typeof images, "execute"> = images, store = selected.store) =>
+    createAgentBuiltinDispatcher({ request: accepted, runId: selected.id, userId: f.userId, store, images: imageService, artifacts });
+  return { ...f, accepted: run, request, call, images, artifacts, dispatch, fetchFn, bind, storage, png, async dispose() {
+    const objects = await prisma.attachment.findMany({ where: { userId: f.userId }, select: { storageKey: true } });
+    await prisma.attachment.deleteMany({ where: { userId: f.userId } });
+    await f.dispose();
+    await prisma.providerRunBinding.deleteMany({ where: { connectionId: authority.connectionId } });
+    await prisma.providerModel.delete({ where: { id: authority.providerModelId } });
+    await prisma.providerCredentialVersion.delete({ where: { id: authority.credentialVersionId } });
+    await prisma.providerCredential.delete({ where: { id: authority.credentialId } });
+    await prisma.providerConnection.delete({ where: { id: authority.connectionId } });
+    await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { in: [...objects.map(row => row.storageKey), ...storage.objects.keys()] } } });
+  } };
+}
+
 describe("durable Agent authority and accounting", () => {
   afterAll(() => prisma.$disconnect());
+
+  it("settles paid images once across duplicate delivery and lost ACK, with separate usage and immutable artifact assets", async () => {
+    const f = await imageFixture();
+    try {
+      let release!: () => void, entered!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const waiting = new Promise<void>(resolve => { release = resolve; });
+      const response = f.fetchFn.getMockImplementation()!;
+      f.fetchFn.mockImplementationOnce(async (...args) => { entered(); await waiting; return response(...args); });
+      const lostAck = { async execute(...args: Parameters<typeof f.images.execute>) {
+        await f.images.execute(...args); throw new Error("lost_ack");
+      } };
+      const other = createAgentRunStore(prisma, { runId: f.accepted.id, userId: f.userId, configuration });
+      const first = f.dispatch(f.request, f.accepted, lostAck)(f.call, new AbortController().signal);
+      await started;
+      expect(await f.dispatch(f.request, f.accepted, f.images, other)(f.call, new AbortController().signal)).toMatchObject({ status: "error" });
+      release();
+      const result = await first;
+      expect(result.status).toBe("complete");
+      expect(await f.dispatch()(f.call, new AbortController().signal)).toEqual(result);
+      expect(f.fetchFn).toHaveBeenCalledOnce();
+      const workspace = { imagePath: vi.fn<NonNullable<import("../workspace/coordinator").WorkspaceCoordinator["imagePath"]>>()
+        .mockRejectedValueOnce(new Error("synthetic_transfer_failure")).mockResolvedValue("/workspace/inbox/messages/fixture/picture.png") };
+      const delivery = createAgentBuiltinDispatcher({ request: { ...f.request, workspace: { enabled: true } as NormalizedRunRequest["workspace"] },
+        runId: f.accepted.id, userId: f.userId, store: f.accepted.store, images: f.images, workspace });
+      expect(await delivery(f.call, new AbortController().signal)).toMatchObject({ status: "complete",
+        content: [{ type: "json", value: { workspace_error: "image_workspace_unavailable" } }] });
+      expect(await delivery(f.call, new AbortController().signal)).toMatchObject({ status: "complete",
+        content: [{ type: "json", value: { workspace_path: "/workspace/inbox/messages/fixture/picture.png" } }] });
+      expect(f.fetchFn).toHaveBeenCalledOnce();
+      const attachment = await prisma.attachment.findFirstOrThrow({ where: { producerModelRunId: f.accepted.id } });
+      expect(await prisma.usageEvent.findMany({ where: { modelRunId: f.accepted.id, imageGeneration: true } }))
+        .toMatchObject([{ totalTokens: 14, estimatedCostMicros: 12000, imageToolCallId: attachment.imageToolCallId }]);
+      const repository = createPrismaRunRepository(prisma);
+      await repository.recordRunUsageEvents({ runId: f.accepted.id, chatId: f.accepted.chatId, userId: f.userId, usageAttributions: [] });
+      expect(await f.accepted.store.usage()).toEqual([]);
+      expect(await prisma.usageEvent.count({ where: { modelRunId: f.accepted.id, imageGeneration: true } })).toBe(1);
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: f.accepted.id, eventType: "artifact" } })).toBe(1);
+      const stored = await prisma.modelRunToolCall.findFirstOrThrow({ where: { modelRunId: f.accepted.id, toolName: f.call.name } });
+      expect(stored.state).toBe("complete"); expect(JSON.stringify(stored)).not.toContain("SYNTHETIC_PRIVATE_IMAGE_PROMPT");
+      expect((await f.dispatch()({ ...f.call, id: "same-turn-edit", arguments: { ...f.call.arguments, image_ids: [attachment.id] } }, new AbortController().signal)).status).toBe("complete");
+      const page = { ...pageCall, arguments: { ...pageCall.arguments, files: [
+        { path: "index.html", mimeType: "text/html", text: '<img src="picture.png" alt="Synthetic picture">' },
+        { path: "picture.png", mimeType: "image/png", asset_ref: attachment.id }
+      ] } };
+      expect((await f.dispatch()(page, new AbortController().signal)).status).toBe("complete");
+      const version = await prisma.artifactVersion.findFirstOrThrow({ where: { sourceModelRunId: f.accepted.id } });
+      const bundle = await f.artifacts.getPrivateBundle({ ownerUserId: f.userId, artifactId: version.artifactId });
+      expect(bundle).not.toBeNull();
+      const zip = await f.artifacts.getPrivateZip({ ownerUserId: f.userId, artifactId: version.artifactId });
+      expect(readSkillZip(zip!.body).find(file => file.path === "picture.png")!.bytes).toEqual(f.png);
+      const inputs = createPrismaWorkspaceCoordinatorRepository(prisma);
+      const binding = { chatId: f.accepted.chatId, runId: f.accepted.id, assistantMessageId: f.accepted.assistantMessageId,
+        userId: f.userId, projectId: null } as WorkspaceExecutionBinding;
+      expect((await inputs.attachments(binding)).map(row => row.attachmentId)).toContain(attachment.id);
+      const next = await f.run(); await next.store.arm(null); await f.bind(next.id);
+      const later = { ...f.request, imageReferences: [{ attachmentId: attachment.id, messageId: f.accepted.assistantMessageId!, fileName: attachment.fileName, origin: "generated" as const }] };
+      expect((await inputs.attachments({ ...binding, runId: next.id, assistantMessageId: next.assistantMessageId! })).map(row => row.attachmentId)).not.toContain(attachment.id);
+      await prisma.modelRun.update({ where: { id: next.id }, data: { normalizedRequest: later as unknown as Prisma.InputJsonValue } });
+      expect((await inputs.attachments({ ...binding, runId: next.id, assistantMessageId: next.assistantMessageId! })).map(row => row.attachmentId)).toContain(attachment.id);
+      expect((await f.dispatch(later, next)({ ...f.call, id: "edit", arguments: { ...f.call.arguments, image_ids: [attachment.id] } }, new AbortController().signal)).status).toBe("complete");
+      expect(f.fetchFn).toHaveBeenCalledTimes(3);
+      expect((f.fetchFn.mock.calls[2]![1]!.body as FormData).get("image[]")).toBeInstanceOf(Blob);
+      expect((await f.storage.getObject(attachment.storageKey)).body).toEqual(f.png);
+    } finally { await f.dispose(); }
+  });
+
+  it.each(["revoke", "lease", "Stop"])("prevents a paid image dispatch after %s during input preparation", async cause => {
+    const f = await imageFixture();
+    try {
+      const imageService = { async execute(...args: Parameters<typeof f.images.execute>) {
+        const options = args[3]!;
+        return f.images.execute(args[0], args[1], args[2], { ...options, beforeDispatch: async () => {
+          if (cause === "revoke") await f.accepted.store.revoke(false);
+          if (cause === "lease") await prisma.agentRunBinding.update({ where: { modelRunId: f.accepted.id }, data: { leaseExpiresAt: new Date(0) } });
+          if (cause === "Stop") await prisma.modelRun.update({ where: { id: f.accepted.id }, data: { status: "cancelled" } });
+          await options.beforeDispatch!();
+        } });
+      } };
+      await expect(f.dispatch(f.request, f.accepted, imageService)(f.call, new AbortController().signal)).rejects.toThrow();
+      expect(f.fetchFn).not.toHaveBeenCalled();
+      expect(await prisma.attachment.count({ where: { producerModelRunId: f.accepted.id } })).toBe(0);
+    } finally { await f.dispose(); }
+  });
+
+  it("does not retry an unknown paid outcome or authorize a foreign image", async () => {
+    const f = await imageFixture();
+    try {
+      const invalid = await f.dispatch()({ ...f.call, id: "foreign", arguments: { ...f.call.arguments, image_ids: [randomUUID()] } }, new AbortController().signal);
+      expect(invalid).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "image_reference_unavailable" } }] });
+      expect(f.fetchFn).not.toHaveBeenCalled();
+      f.fetchFn.mockRejectedValueOnce(new Error("synthetic_network_loss_after_dispatch"));
+      const result = await f.dispatch()(f.call, new AbortController().signal);
+      expect(result.status).toBe("error");
+      expect(await f.dispatch()(f.call, new AbortController().signal)).toEqual(result);
+      expect(f.fetchFn).toHaveBeenCalledOnce();
+      expect(await prisma.attachment.count({ where: { producerModelRunId: f.accepted.id } })).toBe(0);
+      expect(await prisma.usageEvent.count({ where: { modelRunId: f.accepted.id, imageGeneration: true } })).toBe(0);
+    } finally { await f.dispose(); }
+  });
+
+  it("enforces the image dispatch budget and frozen credential revocation", async () => {
+    const f = await imageFixture();
+    try {
+      for (let n = 0; n < 4; n++) expect((await f.dispatch()({ ...f.call, id: `image-${n}` }, new AbortController().signal)).status).toBe("complete");
+      expect(await f.dispatch()({ ...f.call, id: "over-budget" }, new AbortController().signal))
+        .toMatchObject({ status: "error", content: [{ type: "json", value: { error: "image_tool_budget_exhausted" } }] });
+      expect(f.fetchFn).toHaveBeenCalledTimes(4);
+      const next = await f.run(); await next.store.arm(null); await f.bind(next.id);
+      await prisma.providerCredentialVersion.update({ where: { id: f.request.imagePlan!.authority.credentialVersionId }, data: { revokedAt: new Date() } });
+      expect(await f.dispatch(f.request, next)(f.call, new AbortController().signal))
+        .toMatchObject({ status: "error", content: [{ type: "json", value: { error: "image_provider_revoked" } }] });
+      expect(f.fetchFn).toHaveBeenCalledTimes(4);
+    } finally { await f.dispose(); }
+  });
+
+  it("rolls back image publication and usage with a failed receipt without repeating the paid request", async () => {
+    const f = await imageFixture();
+    try {
+      const store = { ...f.accepted.store, async settleBuiltinToolInTransaction(...args: Parameters<typeof f.accepted.store.settleBuiltinToolInTransaction>) {
+        await f.accepted.store.settleBuiltinToolInTransaction(...args);
+        throw new Error("synthetic_image_receipt_failure");
+      } };
+      await expect(f.dispatch(f.request, f.accepted, f.images, store)(f.call, new AbortController().signal)).rejects.toThrow("synthetic_image_receipt_failure");
+      expect(await prisma.attachment.count({ where: { producerModelRunId: f.accepted.id } })).toBe(0);
+      expect(await prisma.usageEvent.count({ where: { modelRunId: f.accepted.id, imageGeneration: true } })).toBe(0);
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: f.accepted.id, eventType: "artifact" } })).toBe(0);
+      expect((await f.dispatch()(f.call, new AbortController().signal)).status).toBe("error");
+      expect(f.fetchFn).toHaveBeenCalledOnce();
+    } finally { await f.dispose(); }
+  });
+
+  it("settles received image bytes, usage and output after Stop without granting Workspace writes", async () => {
+    const f = await imageFixture();
+    try {
+      const response = f.fetchFn.getMockImplementation()!;
+      f.fetchFn.mockImplementationOnce(async (...args) => {
+        const value = await response(...args);
+        await prisma.modelRun.update({ where: { id: f.accepted.id }, data: { status: "cancelled" } });
+        await f.accepted.store.revoke(false);
+        await prisma.modelRunToolCall.updateMany({ where: { modelRunId: f.accepted.id, toolName: f.call.name }, data: { state: "cancelled" } });
+        return value;
+      });
+      const workspace = { imagePath: vi.fn<NonNullable<import("../workspace/coordinator").WorkspaceCoordinator["imagePath"]>>() };
+      const dispatch = createAgentBuiltinDispatcher({ request: { ...f.request, workspace: { enabled: true } as NormalizedRunRequest["workspace"] },
+        runId: f.accepted.id, userId: f.userId, store: f.accepted.store, images: f.images, workspace });
+      expect((await dispatch(f.call, new AbortController().signal)).status).toBe("complete");
+      expect(workspace.imagePath).not.toHaveBeenCalled();
+      expect(await prisma.attachment.count({ where: { producerModelRunId: f.accepted.id } })).toBe(1);
+      expect(await prisma.usageEvent.count({ where: { modelRunId: f.accepted.id, imageGeneration: true } })).toBe(1);
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: f.accepted.id, eventType: "artifact" } })).toBe(1);
+      await expect(f.dispatch()({ ...f.call, id: "new" }, new AbortController().signal)).rejects.toThrow();
+      expect(f.fetchFn).toHaveBeenCalledOnce();
+    } finally { await f.dispose(); }
+  });
 
   it("commits an Agent artifact, receipt and output once across concurrent gateway deliveries and a lost acknowledgement", async () => {
     const f = await artifactFixture();

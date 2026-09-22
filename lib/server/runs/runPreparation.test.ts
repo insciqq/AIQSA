@@ -25,6 +25,7 @@ import { materializePreparedRunData, prepareRun, type PreparedRun, type Regenera
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
+import { syntheticImagePlan } from "@/tests/support/imagePlan";
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -983,16 +984,25 @@ describe("run preparation", () => {
           outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
           syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
       } })) };
-      const deps = { ...h.deps, artifacts, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
+      let imagePlan: ReturnType<typeof syntheticImagePlan> | null = syntheticImagePlan();
+      const deps = { ...h.deps, artifacts, workspace, images: { resolve: async () => imagePlan }, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
       const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } });
       const first = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
       expect(first).toMatchObject({ artifactTool: true, agent: { mcpMode: "off" }, artifactReferences: [{ artifactId: "artifact-one", versionId: version }] });
       expect(first.artifactResourcePolicy).toBeDefined();
+      expect(first.imagePlan).toEqual(imagePlan);
       const same = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
       expect(same.agent!.compatibilityHash).toBe(first.agent!.compatibilityHash);
+      imagePlan = { ...imagePlan!, parameters: { quality: "high" } };
+      const changedImage = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
+      expect(changedImage.agent!.compatibilityHash).not.toBe(first.agent!.compatibilityHash);
+      imagePlan = null;
+      const missingImage = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
+      expect(missingImage.imagePlan).toBeUndefined();
+      expect(missingImage.agent!.compatibilityHash).not.toBe(changedImage.agent!.compatibilityHash);
       version = "version-two";
       const next = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
-      expect(next.agent!.compatibilityHash).not.toBe(first.agent!.compatibilityHash);
+      expect(next.agent!.compatibilityHash).not.toBe(missingImage.agent!.compatibilityHash);
       const edited = preparedFrom(await prepareRun(deps, sendInput({ ...body, artifactEdit: { artifactId: "artifact-one", versionId: version } }))).normalizedRequest;
       expect(edited.artifactEdit?.versionId).toBe(version);
       expect(edited.agent!.compatibilityHash).not.toBe(next.agent!.compatibilityHash);

@@ -43,7 +43,7 @@ export async function executeCodexTurn(input: Readonly<{
   let finalText = "";
   let textPublished = false;
   const projectActivity = createCodexActivityProjection(input.runId, input.request);
-  const progress = input.request.artifactTool ? createAgentBuiltinProgress({ runId: input.runId, store,
+  const progress = input.request.artifactTool || input.request.imagePlan ? createAgentBuiltinProgress({ runId: input.runId, store,
     onEvent: input.onEvent, onPersistedEvent: input.onPersistedEvent }) : null;
   const publishFinalText = async () => {
     if (!textPublished && finalText) {
@@ -75,6 +75,7 @@ export async function executeCodexTurn(input: Readonly<{
       mcpMode: configuration.mcpMode === "all" && !input.request.mcp?.tools.length ? "off" : configuration.mcpMode,
       aiqsaSearch: input.request.searchPlan.options.length > 0,
       artifacts: input.request.artifactTool === true,
+      images: Boolean(input.request.imagePlan),
       mcpTimeoutSeconds: agentMcpEnvelopeTimeoutSeconds(input.request),
       ...(effort && ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
         ? { reasoningEffort: effort as CodexManagedProfile["reasoningEffort"] } : {})

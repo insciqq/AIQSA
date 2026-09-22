@@ -20,6 +20,7 @@ import { snapshotToolLoopJson, toolLoopPersistenceLimits } from "../runs/toolLoo
 import { runOutputArtifactEvents } from "../runs/runOutputEvents";
 import { appendRunOutputEvents } from "../runs/prismaRepositoryToolLoop";
 import { decodeArtifactGenerationEvent } from "@/lib/contracts/artifactGeneration";
+import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 
 export function agentTokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -66,7 +67,9 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     const call = await tx.modelRunToolCall.findFirst({ where: { id, modelRunId: runId,
       toolName: { in: [...AGENT_BUILTIN_TOOL_NAMES] } } });
     if (!call || call.providerCallId !== result.callId || call.toolName !== result.name) throw new Error("agent_builtin_result_invalid");
-    if (call.state !== "pending") {
+    const receivedImage = call.toolName === IMAGE_GENERATION_TOOL_NAME && result.status === "complete" &&
+      await tx.attachment.count({ where: { imageToolCallId: id, producerModelRunId: runId, origin: "IMAGE_OUTPUT", status: "ready" } }) === 1;
+    if (!["pending", "running"].includes(call.state) && !receivedImage || call.state === "complete") {
       if (hashCanonicalMcpValue(call.result) !== hashCanonicalMcpValue(snapshot)) throw new Error("agent_builtin_result_conflict");
       return;
     }
@@ -91,6 +94,15 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
       await lock(tx);
       await assertActive(tx);
     },
+    lockBuiltinSettlement: lock,
+    async startBuiltinImage(id: string) {
+      await locked(async tx => {
+        await assertActive(tx);
+        const changed = await tx.modelRunToolCall.updateMany({ where: { id, modelRunId: runId,
+          toolName: IMAGE_GENERATION_TOOL_NAME, state: "pending" }, data: { state: "running" } });
+        if (changed.count !== 1) throw new Error("agent_builtin_in_progress");
+      });
+    },
     async claimBuiltinTool(call: ModelToolCall, argumentHash: string) {
       if (!AGENT_BUILTIN_TOOL_NAMES.some(name => name === call.name)) throw new Error("agent_builtin_unavailable");
       return locked(async tx => {
@@ -104,7 +116,7 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
           return { id: previous.id, claimed: false, result: builtinResult(previous) };
         }
         if (configuration.limitsEnabled && current.toolCalls >= configuration.maxToolCalls) throw new AgentExecutionError("agent_mcp_call_limit");
-        if (await tx.modelRunToolCall.count({ where: { modelRunId: runId, state: "pending", workspaceRunBindingId: null } }) >= 4) {
+        if (await tx.modelRunToolCall.count({ where: { modelRunId: runId, state: { in: ["pending", "running"] }, workspaceRunBindingId: null } }) >= 4) {
           throw new Error("agent_mcp_busy");
         }
         const metadata = decodeArtifactGenerationEvent({ draftId: call.id, phase: "metadata", title: call.arguments.title, kind: call.arguments.kind });
@@ -133,7 +145,7 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
         orderBy: { ordinal: "asc" }, take: 16, select: { id: true, providerCallId: true, toolName: true,
           ordinal: true, arguments: true, state: true, result: true } });
       return calls.map(call => ({ id: call.id, callId: call.providerCallId, name: call.toolName,
-        ordinal: call.ordinal, arguments: call.arguments, pending: call.state === "pending", result: builtinResult(call) }));
+        ordinal: call.ordinal, arguments: call.arguments, pending: call.state === "pending" || call.state === "running", result: builtinResult(call) }));
     },
     async arm(previousAssistantMessageId: string | null) {
       const token = randomBytes(32).toString("base64url");
@@ -375,7 +387,9 @@ async function drainAgentRequests(database: PrismaClient, runId: string): Promis
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const binding = await database.agentRunBinding.findUnique({ where: { modelRunId: runId }, select: { providerInFlight: true } });
-    if (!binding?.providerInFlight) return;
+    if (!binding?.providerInFlight && !await database.modelRunToolCall.count({ where: {
+      modelRunId: runId, toolName: IMAGE_GENERATION_TOOL_NAME, state: "running"
+    } })) return;
     await sleep(100);
   }
 }
@@ -401,7 +415,7 @@ export async function interruptExpiredAgentRun(database: PrismaClient, input: {
     } });
     await tx.agentProviderAttempt.updateMany({ where: { modelRunId: input.runId, state: "DISPATCHED" },
       data: { state: "UNKNOWN", completedAt: input.now } });
-    await tx.modelRunToolCall.updateMany({ where: { modelRunId: input.runId, state: "pending" },
+    await tx.modelRunToolCall.updateMany({ where: { modelRunId: input.runId, state: { in: ["pending", "running"] } },
       data: { state: "error", completedAt: input.now, result: json({ code: "agent_execution_interrupted", outcome: "unknown" }) } });
     return "interrupted" as const;
   });
