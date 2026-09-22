@@ -1,3 +1,4 @@
+import { syntheticImagePlan } from "@/tests/support/imagePlan";
 import { describe, expect, it } from "vitest";
 import type { ProviderRunRequest } from "../providers/types";
 import { textMessageContent } from "@/lib/domain/content";
@@ -5,6 +6,15 @@ import { agentPrompts } from "./prompt";
 import { withSelectedSkillContext } from "../skills/userContext";
 
 describe("Codex conversation delivery", () => {
+  it("explains authorized image reuse and forbids regenerating an unconfirmed paid result", () => {
+    const request = { content: textMessageContent("Create a picture"), attachments: [], prompt: { system: "baseline" },
+      imagePlan: syntheticImagePlan() } as unknown as ProviderRunRequest;
+    const prompt = agentPrompts(request).developerInstructions;
+    expect(prompt).toContain("workspace_path");
+    expect(prompt).toContain("image_id as asset_ref");
+    expect(prompt).toContain("Do not regenerate");
+    expect(prompt).not.toContain(request.imagePlan!.authority.credentialId);
+  });
   it("explains explicit Workspace bundle submission only when artifacts were admitted", () => {
     const request = { content: textMessageContent("Build a page"), attachments: [], prompt: { system: "baseline" } } as unknown as ProviderRunRequest;
     expect(agentPrompts(request).developerInstructions).not.toContain("files[].text");

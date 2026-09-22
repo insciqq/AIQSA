@@ -16,7 +16,7 @@ describe("managed Codex invocation", () => {
     const config = renderCodexManagedProfile(profile);
     expect(config).toContain("stream_max_retries = 2\n");
     expect(config).toContain("request_max_retries = 0\n");
-    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(3);
+    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(4);
   });
   it("disables bundled Skills without overriding project or user discovery", () => {
     const config = renderCodexManagedProfile(profile);
@@ -59,6 +59,12 @@ describe("managed Codex invocation", () => {
     const all = renderCodexManagedProfile({ ...profile, mcpMode: "all" });
     expect(all).toContain("[mcp_servers.aiqsa]");
     expect(all).not.toContain("enabled_tools");
+  });
+
+  it("allows the configured image tool with external MCP Off and without artifacts", () => {
+    const config = renderCodexManagedProfile({ ...profile, mcpMode: "off", images: true });
+    expect(config).toContain('[mcp_servers.aiqsa]');
+    expect(config).toContain('enabled_tools = ["generate_image"]');
   });
 
   it("enables live native search only for an explicitly admitted capability", () => {

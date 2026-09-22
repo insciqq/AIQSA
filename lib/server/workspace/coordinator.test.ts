@@ -1049,6 +1049,37 @@ describe("Workspace coordinator settlement", () => {
 });
 
 describe("Workspace coordinator incremental staging", () => {
+  it("stages a generated image in the current operation without restarting the guest or redelivering secrets", async () => {
+    const value = fixture();
+    await value.coordinator.execute({ call: { arguments: { command: "pwd" }, id: "init", name: value.shellToolName },
+      modelRunToolCallId: "init", runId: value.runId, userId: "user_1", workspace: value.workspace });
+    const first = (await value.repository.attachments(value.workspace as never))[0]!;
+    const bytes = Buffer.from("verified immutable pixels");
+    const image = { ...first, attachmentId: "generated_image", messageId: "assistant_1", kind: "image" as const,
+      origin: "IMAGE_OUTPUT" as const, fileName: "generated.png", mimeType: "image/png", storageKey: "user_1/generated",
+      byteSize: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex") };
+    await value.storage.putObject({ storageKey: image.storageKey, contentType: image.mimeType, body: bytes });
+    vi.spyOn(value.repository, "attachments").mockResolvedValue([first, image]);
+    vi.mocked(value.runtime.stageAttachments).mockClear();
+    const path = await value.coordinator.imagePath!({ attachmentId: image.attachmentId, runId: value.runId,
+      userId: "user_1", workspace: value.workspace });
+    expect(path).toBe(workspaceAttachmentPath({ attachmentId: image.attachmentId, messageId: image.messageId, originalName: image.fileName }));
+    const staged = vi.mocked(value.runtime.stageAttachments).mock.calls[0]![0];
+    const body = await new Response(staged.attachments.find(entry => entry.attachmentId === image.attachmentId)!.body).arrayBuffer();
+    expect(Buffer.from(body)).toEqual(bytes);
+    expect(staged).toMatchObject({ operation: { owner: `run:${value.runId}`, generation: 1 },
+      inboxIndex: { attachments: [expect.anything(), expect.objectContaining({ source: "export", sandboxPath: path })] } });
+    expect(value.runtime.ensureSession).toHaveBeenCalledOnce();
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledOnce();
+    await expect(value.coordinator.imagePath!({ attachmentId: "foreign", runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .rejects.toThrow("workspace_attachment_unavailable");
+    expect(value.runtime.stageAttachments).toHaveBeenCalledOnce();
+    const controller = new AbortController(); controller.abort();
+    await expect(value.coordinator.imagePath!({ attachmentId: image.attachmentId, runId: value.runId,
+      userId: "user_1", workspace: value.workspace, signal: controller.signal })).rejects.toThrow();
+    expect(value.runtime.stageAttachments).toHaveBeenCalledOnce();
+  });
+
   it("reads and writes only originals the guest index does not already hold", async () => {
     const value = fixture();
     const secondBytes = Buffer.from("second input", "utf8");

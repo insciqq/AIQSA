@@ -16,6 +16,16 @@ const MAX_IMAGE_CALLS_PER_RUN = 4;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
+type ImageToolContext = Omit<ToolExecutionContext, "request"> & {
+  request: Pick<ToolExecutionContext["request"], "chatId" | "imagePlan" | "imageReferences">;
+};
+type ImageExecutionOptions = {
+  /** Atomically authorize the one paid dispatch after input checks. */
+  beforeDispatch?: () => Promise<void>;
+  beforeSettlement?: (tx: Prisma.TransactionClient) => Promise<void>;
+  onResult?: (tx: Prisma.TransactionClient, result: ToolExecutionResult) => Promise<void>;
+};
+
 function result(call: ModelToolCall, image: ThreadGeneratedImage): ToolExecutionResult {
   return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value: {
     image_id: image.attachmentId, width: image.width, height: image.height,
@@ -67,7 +77,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         return Boolean(model && credential);
       } catch { return false; }
     },
-    async restore(call: ModelToolCall, context: ToolExecutionContext): Promise<ToolExecutionResult | null> {
+    async restore(call: ModelToolCall, context: ImageToolContext): Promise<ToolExecutionResult | null> {
       if (!context.persistedToolCallId || !context.runId || !context.userId) return null;
       const attachment = await prisma.attachment.findFirst({ where: {
         imageToolCallId: context.persistedToolCallId, producerModelRunId: context.runId,
@@ -77,7 +87,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       const image = object(attachment.metadata) ? decodeThreadGeneratedImage(attachment.metadata.image) : null;
       return image ? result(call, image) : null;
     },
-    async execute(call: ModelToolCall, context: ToolExecutionContext, signal?: AbortSignal): Promise<ToolExecutionResult> {
+    async execute(call: ModelToolCall, context: ImageToolContext, signal?: AbortSignal, execution?: ImageExecutionOptions): Promise<ToolExecutionResult> {
       const { runId, userId, persistedToolCallId: toolCallId, request } = context;
       const plan = request.imagePlan;
       if (!runId || !userId || !toolCallId || !plan || call.name !== IMAGE_GENERATION_TOOL_NAME) throw new Error("image_tool_unavailable");
@@ -106,7 +116,8 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       if (!run?.assistantMessageId || !["streaming", "in_progress"].includes(run.status)) throw new Error("image_run_inactive");
       const access = await resolveChatAccess(prisma, { chatId: request.chatId, userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" });
       if (!access) throw new Error("image_access_revoked");
-      const tool = await prisma.modelRunToolCall.findFirst({ where: { id: toolCallId, modelRunId: runId, state: "running", toolName: call.name } });
+      const tool = await prisma.modelRunToolCall.findFirst({ where: { id: toolCallId, modelRunId: runId,
+        state: execution?.beforeDispatch ? "pending" : "running", toolName: call.name } });
       if (!tool) throw new Error("image_tool_not_claimed");
       if (await prisma.modelRunToolCall.count({ where: { modelRunId: runId, toolName: call.name, startedAt: { not: null } } }) > MAX_IMAGE_CALLS_PER_RUN) {
         throw new Error("image_tool_budget_exhausted");
@@ -135,6 +146,9 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
           return decryptProviderCredentialSecret({ credentialId: credential.credentialId, valueId: credential.id,
             envelope: credential.secretEnvelope, key: (options.encryptionKey ?? getSecretEncryptionKey)() });
         } });
+      signal?.throwIfAborted();
+      await execution?.beforeDispatch?.();
+      signal?.throwIfAborted();
       const generated = await adapter.generate({ prompt: args.prompt, images, parameters, signal });
       const attachmentId = randomUUID();
       const token = randomUUID();
@@ -154,6 +168,9 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             } }) });
         } else await storage.putObject({ storageKey, contentType: generated.mimeType, body: Buffer.from(generated.bytes) });
         await prisma.$transaction(async (tx) => {
+          // Already received pixels retain the ordinary image settlement rules,
+          // including accounting after Stop. This grants no new execution.
+          await execution?.beforeSettlement?.(tx);
           await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE`;
           const jobs = await tx.$queryRaw<Array<{ claimToken: string | null }>>`SELECT "claimToken" FROM "AttachmentDeletionJob" WHERE "storageKey" = ${storageKey} FOR UPDATE`;
           if (jobs[0]?.claimToken !== token) throw new Error("image_publication_stale");
@@ -174,6 +191,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             inputTokens: generated.usage.inputTokens, outputTokens: generated.usage.outputTokens, totalTokens: generated.usage.totalTokens,
             estimatedCostMicros: micros !== null && micros <= 2_147_483_647 ? micros : null } });
           await tx.attachmentDeletionJob.delete({ where: { storageKey } });
+          await execution?.onResult?.(tx, result(call, image));
         });
       } catch (error) {
         await prisma.attachmentDeletionJob.updateMany({ where: { storageKey, claimToken: token }, data: { claimToken: null, claimedAt: null } }).catch(() => undefined);

@@ -155,7 +155,7 @@ type RunPreparationRepository = Pick<
 
 export type RunPreparationDeps = Readonly<{
   artifacts?: import("../artifacts/service").ArtifactService;
-  images?: import("../images/service").ImageGenerationService;
+  images?: Pick<import("../images/service").ImageGenerationService, "resolve">;
   allowFakeProvider?: boolean;
   assistants?: AssistantRunResolver;
   instructions?: Pick<import("../instructions/store").InstructionPresetStore, "resolveForRun">;
@@ -1709,7 +1709,8 @@ export async function prepareRun(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
 
-  const imagePlan = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider })
+  const imagePlan = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+    (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }))
     ? await deps.images?.resolve() ?? null : null;
   const artifactToolAvailable = !project && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
     modelCapabilities.toolCalling === true && (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true);
@@ -1875,6 +1876,7 @@ export async function prepareRun(
           pinned: frozenSkills.manifest.pinned.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })),
           available: frozenSkills.manifest.available.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })) },
         search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
+        images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
         artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
           references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
           imageReferences } : null,

@@ -52,6 +52,14 @@ export function agentPrompts(request: ProviderRunRequest) {
         (request.agent.mcpMode === "auto" ? "Use find_tools to discover the relevant capabilities. " : "") +
         "A tool-discovery failure is not an authorization denial by the connected service. Report the actual diagnostic and which checks were not completed."
       ] : []),
+      ...(request.imagePlan ? [
+        "Use generate_image on the AIQSA MCP server for requested images and edits, even with external MCP Off. " +
+        "It uses the configured image model; never ask for provider credentials or substitute shell network calls. " +
+        "Reference exact image_ids from this conversation or earlier generate_image results. " +
+        "Successful results identify the displayed image and its verified workspace_path when staging succeeds. " +
+        "Use that path to inspect or copy pixels in Workspace; use image_id as asset_ref in an artifact. " +
+        "Do not regenerate an image because staging failed, a response was lost or an outcome is unconfirmed."
+      ] : []),
       ...(request.artifactTool ? [
         "Use create_artifact and read_artifact on the AIQSA MCP server for native private artifacts, even when external MCP is Off. " +
         "You may author and test source in Workspace, then submit the complete bounded files[].text bundle (or exact accepted asset_ref images) to create_artifact. " +

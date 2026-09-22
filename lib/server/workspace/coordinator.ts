@@ -75,7 +75,7 @@ type WorkspaceAttachmentRecord = Readonly<{
   byteSize: number;
   checksum: string;
   createdAt?: string;
-  origin?: "USER_UPLOAD" | "WORKSPACE_OUTPUT";
+  origin?: "USER_UPLOAD" | "WORKSPACE_OUTPUT" | "IMAGE_OUTPUT";
   fileName: string;
   kind: "document" | "file" | "image" | "pdf";
   messageId: string;
@@ -447,6 +447,9 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async attachments(binding) {
+      const accepted = await prisma.modelRun.findUnique({ where: { id: binding.runId }, select: { normalizedRequest: true } });
+      const snapshot = accepted?.normalizedRequest as { imageReferences?: Array<{ attachmentId: string }> } | null;
+      const imageIds = snapshot?.imageReferences?.map(reference => reference.attachmentId) ?? [];
       // Earlier exported bytes are admitted from this run's immutable message
       // ancestry, not from the mutable current branch or guest output folders.
       const ancestors = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -483,6 +486,10 @@ export function createPrismaWorkspaceCoordinatorRepository(
               origin: "WORKSPACE_OUTPUT",
               messageId: { in: ancestors.map(({ id }) => id) },
               producerModelRun: { workspaceRunBinding: { exportState: "COMPLETE" } }
+            },
+            {
+              origin: "IMAGE_OUTPUT", status: "ready", savedAt: null,
+              OR: [{ id: { in: imageIds } }, { producerModelRunId: binding.runId }]
             }
           ],
           ...(binding.projectId
@@ -502,7 +509,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
               kind: row.kind,
               messageId: row.messageId,
               mimeType: row.mimeType,
-              origin: row.origin === "WORKSPACE_OUTPUT" ? "WORKSPACE_OUTPUT" as const : "USER_UPLOAD" as const,
+              origin: row.origin === "IMAGE_OUTPUT" ? "IMAGE_OUTPUT" as const : row.origin === "WORKSPACE_OUTPUT" ? "WORKSPACE_OUTPUT" as const : "USER_UPLOAD" as const,
               storageKey: row.storageKey
             }]
           : []
@@ -1002,6 +1009,10 @@ export type WorkspaceSettlementResult = Readonly<{
 }>;
 
 export type WorkspaceCoordinator = Readonly<{
+  /** Stage authorized immutable images into an already running operation. */
+  imagePath?(input: Readonly<{
+    attachmentId: string; runId: string; userId: string; workspace: NormalizedRunWorkspace; signal?: AbortSignal;
+  }>): Promise<string>;
   /** Deliver only a frozen, server-resolved bundle after the tool result budget accepts it. */
   skillBundlePath?(input: Readonly<{
     alias: string;
@@ -1259,6 +1270,145 @@ export function createWorkspaceCoordinator(input: Readonly<{
     return binding;
   }
 
+  async function stageInputs(binding: WorkspaceExecutionBinding, signal?: AbortSignal, onActivity?: WorkspaceActivityListener, requiredImageId?: string) {
+    if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+    signal?.throwIfAborted();
+    const lifecycle = (entry: Parameters<typeof workspaceLifecycleActivity>[0]) =>
+      onActivity?.(workspaceLifecycleActivity(entry)).catch(() => undefined) ?? Promise.resolve();
+    const attachments = await input.repository.attachments(binding);
+    if (requiredImageId && !attachments.some(attachment => attachment.attachmentId === requiredImageId && attachment.kind === "image")) {
+      throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
+    }
+    const prepareStartedAt = new Date();
+    const prepareOrdinal = nextLifecycleOrdinal(binding.runId);
+    const entries = attachments.map((attachment) => ({
+      attachmentId: attachment.attachmentId,
+      byteSize: attachment.byteSize,
+      checksum: attachment.checksum,
+      createdAt: attachment.createdAt,
+      kind: attachment.kind,
+      messageId: attachment.messageId,
+      mimeType: attachment.mimeType,
+      originalName: attachment.fileName,
+      source: attachment.origin === "WORKSPACE_OUTPUT" || attachment.origin === "IMAGE_OUTPUT" ? "export" : "upload",
+      sandboxPath: workspaceAttachmentPath({
+        attachmentId: attachment.attachmentId,
+        messageId: attachment.messageId,
+        originalName: attachment.fileName
+      }),
+      storageKey: attachment.storageKey
+    }));
+    // Incremental staging: the guest index says which originals already
+    // exist as intact files; only missing or changed ones are read from
+    // private storage and written again. A fresh or recreated sandbox
+    // has no index and receives everything.
+    const staged = await input.runtime.listStagedAttachments({
+      attachments: entries.map(({ attachmentId, byteSize, checksum, sandboxPath }) => ({ attachmentId, byteSize, checksum, sandboxPath })),
+      runtimeSandboxId: binding.runtimeSandboxId,
+      operation: ownedOperation(binding), sessionId: binding.sessionId,
+      signal
+    }).catch(() => []);
+    const streams: WorkspaceAttachmentStream[] = [];
+    for (const entry of entries) {
+      const present = staged.some((candidate) =>
+        candidate.attachmentId === entry.attachmentId &&
+        candidate.byteSize === entry.byteSize &&
+        candidate.checksum === entry.checksum &&
+        candidate.sandboxPath === entry.sandboxPath);
+      if (present) continue;
+      let object;
+      try {
+        object = await getStoredObjectStream(input.storage, entry.storageKey, {
+          maxBytes: entry.byteSize,
+          signal
+        });
+      } catch {
+        throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
+      }
+      if (object.byteSize !== entry.byteSize) {
+        throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
+      }
+      streams.push({
+        attachmentId: entry.attachmentId,
+        body: object.body,
+        byteSize: entry.byteSize,
+        checksum: entry.checksum,
+        kind: entry.kind,
+        messageId: entry.messageId,
+        mimeType: entry.mimeType,
+        originalName: entry.originalName,
+        sandboxPath: entry.sandboxPath
+      });
+    }
+    // Only originals that actually transfer are "prepared"; an unchanged
+    // inbox produces no row at all.
+    if (streams.length > 0) {
+      await lifecycle({
+        count: streams.length,
+        kind: "attachments_prepare",
+        ordinal: prepareOrdinal,
+        phase: "running",
+        runId: binding.runId,
+        startedAt: prepareStartedAt
+      });
+    }
+    const byMessage = new Map<string, typeof entries>();
+    for (const entry of entries) {
+      const values = byMessage.get(entry.messageId) ?? [];
+      values.push(entry);
+      byMessage.set(entry.messageId, values);
+    }
+    const project = (entry: (typeof entries)[number]) => ({
+      attachmentId: entry.attachmentId,
+      byteSize: entry.byteSize,
+      checksum: entry.checksum,
+      createdAt: entry.createdAt,
+      kind: entry.kind,
+      mimeType: entry.mimeType,
+      originalName: entry.originalName,
+      messageId: entry.messageId,
+      source: entry.source,
+      sandboxPath: entry.sandboxPath
+    });
+    // The index, every message manifest, and the current run's output
+    // directory are always rewritten so the guest view stays complete.
+    await input.runtime.stageAttachments({
+      attachments: streams,
+      inboxIndex: {
+        attachments: entries.map(project),
+        manifests: [...byMessage.keys()].sort().map((messageId) => ({
+          messageId,
+          path: workspaceMessageManifestPath(messageId)
+        })),
+        version: 1
+      },
+      manifests: [...byMessage.entries()].map(([messageId, values]) => ({
+        body: { attachments: values.map(project), messageId, version: 1 },
+        messageId
+      })),
+      outputDirectory: binding.outputDirectory,
+      runtimeSandboxId: binding.runtimeSandboxId,
+      operation: ownedOperation(binding), sessionId: binding.sessionId,
+      signal
+    });
+    inboxNamesByRun.set(
+      binding.runId,
+      new Map(entries.map((entry) => [entry.sandboxPath, entry.originalName]))
+    );
+    if (streams.length > 0) {
+      await lifecycle({
+        count: streams.length,
+        durationMs: Date.now() - prepareStartedAt.getTime(),
+        kind: "attachments_prepare",
+        ordinal: prepareOrdinal,
+        phase: "succeeded",
+        runId: binding.runId,
+        startedAt: prepareStartedAt
+      });
+    }
+    return entries;
+  }
+
   async function initialize(
     binding: WorkspaceExecutionBinding,
     purpose: "execution" | "export",
@@ -1384,134 +1534,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           if (error instanceof WorkspaceRuntimeError) throw error;
           throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
         }
-        const attachments = await input.repository.attachments(binding);
-        const prepareStartedAt = new Date();
-        const prepareOrdinal = nextLifecycleOrdinal(binding.runId);
-        const entries = attachments.map((attachment) => ({
-          attachmentId: attachment.attachmentId,
-          byteSize: attachment.byteSize,
-          checksum: attachment.checksum,
-          createdAt: attachment.createdAt,
-          kind: attachment.kind,
-          messageId: attachment.messageId,
-          mimeType: attachment.mimeType,
-          originalName: attachment.fileName,
-          source: attachment.origin === "WORKSPACE_OUTPUT" ? "export" : "upload",
-          sandboxPath: workspaceAttachmentPath({
-            attachmentId: attachment.attachmentId,
-            messageId: attachment.messageId,
-            originalName: attachment.fileName
-          }),
-          storageKey: attachment.storageKey
-        }));
-        // Incremental staging: the guest index says which originals already
-        // exist as intact files; only missing or changed ones are read from
-        // private storage and written again. A fresh or recreated sandbox
-        // has no index and receives everything.
-        const staged = await input.runtime.listStagedAttachments({
-          attachments: entries.map(({ attachmentId, byteSize, checksum, sandboxPath }) => ({ attachmentId, byteSize, checksum, sandboxPath })),
-          runtimeSandboxId: session.runtimeSandboxId,
-          operation: ownedOperation(binding), sessionId: binding.sessionId,
-          signal
-        }).catch(() => []);
-        const streams: WorkspaceAttachmentStream[] = [];
-        for (const entry of entries) {
-          const present = staged.some((candidate) =>
-            candidate.attachmentId === entry.attachmentId &&
-            candidate.byteSize === entry.byteSize &&
-            candidate.checksum === entry.checksum &&
-            candidate.sandboxPath === entry.sandboxPath);
-          if (present) continue;
-          let object;
-          try {
-            object = await getStoredObjectStream(input.storage, entry.storageKey, {
-              maxBytes: entry.byteSize,
-              signal
-            });
-          } catch {
-            throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
-          }
-          if (object.byteSize !== entry.byteSize) {
-            throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
-          }
-          streams.push({
-            attachmentId: entry.attachmentId,
-            body: object.body,
-            byteSize: entry.byteSize,
-            checksum: entry.checksum,
-            kind: entry.kind,
-            messageId: entry.messageId,
-            mimeType: entry.mimeType,
-            originalName: entry.originalName,
-            sandboxPath: entry.sandboxPath
-          });
-        }
-        // Only originals that actually transfer are "prepared"; an unchanged
-        // inbox produces no row at all.
-        if (streams.length > 0) {
-          await lifecycle({
-            count: streams.length,
-            kind: "attachments_prepare",
-            ordinal: prepareOrdinal,
-            phase: "running",
-            runId: binding.runId,
-            startedAt: prepareStartedAt
-          });
-        }
-        const byMessage = new Map<string, typeof entries>();
-        for (const entry of entries) {
-          const values = byMessage.get(entry.messageId) ?? [];
-          values.push(entry);
-          byMessage.set(entry.messageId, values);
-        }
-        const project = (entry: (typeof entries)[number]) => ({
-          attachmentId: entry.attachmentId,
-          byteSize: entry.byteSize,
-          checksum: entry.checksum,
-          createdAt: entry.createdAt,
-          kind: entry.kind,
-          mimeType: entry.mimeType,
-          originalName: entry.originalName,
-          messageId: entry.messageId,
-          source: entry.source,
-          sandboxPath: entry.sandboxPath
-        });
-        // The index, every message manifest, and the current run's output
-        // directory are always rewritten so the guest view stays complete.
-        await input.runtime.stageAttachments({
-          attachments: streams,
-          inboxIndex: {
-            attachments: entries.map(project),
-            manifests: [...byMessage.keys()].sort().map((messageId) => ({
-              messageId,
-              path: workspaceMessageManifestPath(messageId)
-            })),
-            version: 1
-          },
-          manifests: [...byMessage.entries()].map(([messageId, values]) => ({
-            body: { attachments: values.map(project), messageId, version: 1 },
-            messageId
-          })),
-          outputDirectory: binding.outputDirectory,
-          runtimeSandboxId: session.runtimeSandboxId,
-          operation: ownedOperation(binding), sessionId: binding.sessionId,
-          signal
-        });
-        inboxNamesByRun.set(
-          binding.runId,
-          new Map(entries.map((entry) => [entry.sandboxPath, entry.originalName]))
-        );
-        if (streams.length > 0) {
-          await lifecycle({
-            count: streams.length,
-            durationMs: Date.now() - prepareStartedAt.getTime(),
-            kind: "attachments_prepare",
-            ordinal: prepareOrdinal,
-            phase: "succeeded",
-            runId: binding.runId,
-            startedAt: prepareStartedAt
-          });
-        }
+        await stageInputs({ ...binding, runtimeSandboxId: session.runtimeSandboxId }, signal, onActivity);
         // Export settles an accepted output obligation, including after access
         // revocation. It must not authorize or redeliver Skill instructions.
         if (purpose === "execution") {
@@ -1760,6 +1783,15 @@ export function createWorkspaceCoordinator(input: Readonly<{
   }
 
   return {
+    async imagePath(request) {
+      const binding = await requireBinding(request.runId, request.userId, request.workspace);
+      if (!binding.runtimeSandboxId || binding.sessionState !== "RUNNING") throw new WorkspaceRuntimeError("workspace_session_lost");
+      const entries = await stageInputs(binding, request.signal, undefined, request.attachmentId);
+      const image = entries.find(entry => entry.attachmentId === request.attachmentId && entry.kind === "image");
+      if (!image) throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
+      request.signal?.throwIfAborted();
+      return image.sandboxPath;
+    },
     async skillBundlePath(request) {
       if (!input.skills) throw new WorkspaceRuntimeError("workspace_skills_prepare_failed");
       const initial = await requireBinding(request.runId, request.userId, request.workspace);

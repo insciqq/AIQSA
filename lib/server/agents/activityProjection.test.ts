@@ -6,6 +6,7 @@ import { isRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import { WorkspaceActivityText } from "../workspace/activityText";
 import { createCodexActivityProjection } from "./activityProjection";
 import { CodexJsonlDecoder } from "./codexProtocol";
+import { syntheticImagePlan } from "@/tests/support/imagePlan";
 
 const request = {
   searchPlan: { mode: "model_choice", options: [{ displayName: "Research" }] },
@@ -17,6 +18,15 @@ const request = {
 const text = new WorkspaceActivityText(["credential-fixture"]);
 
 describe("masked Codex activity", () => {
+  it.each(["running", "succeeded", "failed"] as const)("labels an admitted image operation in its actual %s state", phase => {
+    const project = createCodexActivityProjection("run", { ...request, imagePlan: syntheticImagePlan() });
+    const entry = project({ type: "activity", id: "image", kind: "mcp", tool: "generate_image", phase }, text)!;
+    expect(entry).toMatchObject({ phase, mcp: { serverName: "AIQSA", toolName: "Generate image" } });
+    expect(decodeThreadWorkspaceActivityEntry(entry)).toEqual(entry);
+    expect(JSON.stringify(entry)).not.toContain("image-credential");
+    expect(createCodexActivityProjection("run", request)({ type: "activity", id: "image", kind: "mcp", tool: "generate_image", phase }, text)!.mcp)
+      .toEqual({ toolName: "MCP tool" });
+  });
   it.each(["structuredContent", "structured_content", "text"])("shows a rejected response through %s without its private contents", (format) => {
     const value = { code: "result_unsupported", toolFailure: "mcp_call_result_too_large", message: "PRIVATE_RESULT" };
     const decoder = new CodexJsonlDecoder();

@@ -102,8 +102,8 @@ describe("Composer v2", () => {
   });
   it("lets Agent select artifact creation and send a create or edit intent", () => {
     const onCreateArtifact = vi.fn(), onSend = vi.fn();
-    const value = props({ onCreateArtifact, onSend, selectedKnowledgeBaseIds: [], artifactUnavailableReason: null,
-      agent: { enabled: true, onToggle: vi.fn(), unavailableReason: null } });
+    const value = props({ onCreateArtifact, onSend, selectedKnowledgeBaseIds: [], artifactUnavailableReason: undefined,
+      agent: { enabled: true, onToggle: vi.fn() } });
     const { rerender } = render(<ComposerV2 {...value} />);
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     const create = screen.getByRole("menuitem", { name: /Create artifact/ });
@@ -165,7 +165,7 @@ describe("Composer v2", () => {
     const toggle = screen.getByRole("button", { name: "Agent" });
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("status")).toHaveTextContent("Memory and image generation are unavailable.");
+    expect(screen.getByRole("status")).toHaveTextContent("Memory and Knowledge are unavailable.");
     expect(toggle).toHaveAccessibleDescription(expect.stringContaining("selected model, Skills, MCP mode"));
     expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/1 pinned/);
     expect(onSelectMcp).not.toHaveBeenCalled();
