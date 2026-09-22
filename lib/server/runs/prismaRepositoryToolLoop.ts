@@ -535,6 +535,7 @@ export type PrismaRunToolLoopOperations = Pick<
 >;
 
 const normalizedRequestKeys = new Set([
+  "followupContextReserveTokens",
   "agent",
   "artifactTool",
   "artifactToolDescription",
@@ -706,8 +707,9 @@ function validContext(value: unknown): boolean {
   if (!isRecord(value) || !onlyKnownKeys(value, new Set(["messages", "mode", "summary"])) ||
     value.mode !== "branch_path" || !Array.isArray(value.messages)) return false;
   for (const message of value.messages) {
-    if (!isRecord(message) || !onlyKnownKeys(message, new Set(["content", "id", "purpose", "role"])) ||
+    if (!isRecord(message) || !onlyKnownKeys(message, new Set(["content", "contextTurnId", "id", "purpose", "role"])) ||
       !nonBlank(message.id, 1_024) ||
+      (message.contextTurnId !== undefined && !nonBlank(message.contextTurnId, 1_024)) ||
       (message.role !== "assistant" && message.role !== "user") ||
       (message.purpose !== undefined && message.purpose !== "knowledge_evidence" &&
         message.purpose !== "skill_context" && message.purpose !== "skill_catalog") ||
@@ -911,6 +913,8 @@ function decodeProviderDispatchRecoveryRequest(
     !isRecord(value.content) || !onlyKnownKeys(value.content, new Set(["blocks"])) ||
     !Array.isArray(value.content.blocks) || !finiteJson(value.content.blocks) ||
     !validAcceptedInstructions(value) ||
+    (value.followupContextReserveTokens !== undefined && (!Number.isSafeInteger(value.followupContextReserveTokens) ||
+      Number(value.followupContextReserveTokens) < 0 || Number(value.followupContextReserveTokens) > 100_000)) ||
     !validContext(value.context) || !validKnowledgeAnswering(value.knowledgeAnswering) ||
     value.knowledgeAnswerWorkflowVersion !== undefined && value.knowledgeAnswerWorkflowVersion !== 2 && value.knowledgeAnswerWorkflowVersion !== 3 && value.knowledgeAnswerWorkflowVersion !== 4 && value.knowledgeAnswerWorkflowVersion !== 5 && value.knowledgeAnswerWorkflowVersion !== 6 && value.knowledgeAnswerWorkflowVersion !== 7 && value.knowledgeAnswerWorkflowVersion !== 8 && value.knowledgeAnswerWorkflowVersion !== 9 && value.knowledgeAnswerWorkflowVersion !== 10 && value.knowledgeAnswerWorkflowVersion !== 11 ||
     value.knowledgeReviewRepairFeedbackVersion !== undefined &&
@@ -1086,6 +1090,8 @@ export function createPrismaRunToolLoopOperations(
     },
     appendAssistantText: async (assistantMessageId, text, options) => {
       await prismaClient.$transaction(async (tx) => {
+        await lockRunSettlementScope(tx, options.runId);
+        await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${options.runId} FOR UPDATE`;
         const updated = await tx.message.updateMany({
           data: {
             content: json(textMessageContent(text)),

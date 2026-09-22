@@ -71,6 +71,7 @@ import {
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
 import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
+import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
@@ -354,6 +355,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const artifactPanel = useArtifactPanelStore(state => state.open);
   const composerArtifactEdit = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactEdit ?? null);
   const composerArtifactCreate = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactCreate ?? null);
+  const followupSubmission = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.followupSubmission ?? null);
   const skillsMode = useComposerControlStore(state => state.skillsMode);
   const liveWorkspaceRef = useRef<HTMLElement | null>(null);
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
@@ -895,6 +897,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
       onSend={() => void composer.submitComposer()}
+      onFollowup={latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
+        !activeProjectChat?.archived && (!projectContext || activeProject?.status === "ACTIVE" && activeProject.capabilities.mutateChats) && composer.submitFollowup
+          ? runId => void composer.submitFollowup?.(runId) : undefined}
+      followupSending={Boolean(followupSubmission?.inFlight)}
       onStop={() => void composer.stopCurrentRun(thread.currentRunId)}
       stopping={composer.stopping}
       onUploadFiles={(files) => composer.uploadFiles(files)}
@@ -933,8 +939,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     <ComposerOperationErrorV2
       error={composer.operationError}
       live={composer.operationErrorLive}
-      onRetry={() => void composer.submitComposer()}
-      retryable={Boolean(composer.operationErrorRetryable)}
+      onRetry={() => followupSubmission ? void composer.submitFollowup?.(followupSubmission.runId) : void composer.submitComposer()}
+      retryable={Boolean(composer.operationErrorRetryable || followupSubmission && !followupSubmission.inFlight)}
     />
   );
   const shellNotice = session.notice ? (
@@ -1138,6 +1144,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const copiedAttachments = attachmentBlocksFromThreadContent(source.content)
       .filter((block) => !artifact?.generatedImages?.some((image) => image.attachmentId === block.attachmentId));
     return (
+      <>
+      <RunFollowupHistoryV2 entries={source.followups?.entries ?? []} />
       <RunAnswerV2
         actions={settled ? actions : undefined}
         actionsSlot={<>
@@ -1207,6 +1215,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         workDurationMs={workDurationMs}
         workspaceActivity={workspaceActivity}
       />
+      </>
     );
   };
 

@@ -1,6 +1,10 @@
+import type { RunFollowupState } from "../contracts/runFollowups";
+import { followupHistoryTurns } from "./runFollowupContext";
+
 export type ChatExportMessage = Readonly<{
   content: unknown;
   role: string;
+  followups?: RunFollowupState;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -38,9 +42,12 @@ export function chatExportMarkdown(
   title: string,
   messages: readonly ChatExportMessage[]
 ): string {
-  const turns = messages.map((message) => {
+  const turns = messages.flatMap((message) => {
     const speaker = message.role === "assistant" ? "Assistant" : "User";
-    return `## ${speaker}\n\n${chatExportText(message.content).trim()}`;
+    return [
+      ...followupHistoryTurns(message.followups?.entries ?? []).map(turn => `## ${turn.role === "assistant" ? "Assistant" : "User"}\n\n${turn.text}`),
+      `## ${speaker}\n\n${chatExportText(message.content).trim()}`
+    ];
   });
   return `# ${title}\n\n${turns.join("\n\n")}\n`;
 }

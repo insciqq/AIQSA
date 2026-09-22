@@ -1,3 +1,5 @@
+import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
+import { projectMessageFollowups } from "../runs/runFollowups";
 import { sumTokenUsage } from "../../domain/usage";
 import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
@@ -106,6 +108,7 @@ import {
 } from "../memory/suppressionKeyring";
 
 const assistantRunDetailSelect = {
+  ...runFollowupSelect,
   answerCompletedAt: true,
   workspaceWaitPending: true,
   chatPdfPreparation: { select: { retryable: true, state: true } },
@@ -189,6 +192,7 @@ const assistantRunDetailSelect = {
 } satisfies Prisma.ModelRunSelect;
 
 const hydratedMessageSelect = {
+  branchFollowups: true,
   assistantModelRuns: {
     orderBy: {
       createdAt: "desc"
@@ -714,6 +718,7 @@ function serializeHydratedMessage(
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
+  const followups = projectMessageFollowups(message);
   const artifactSummary = modelRun
     ? summarizeMessageRunArtifacts(
         modelRun,
@@ -730,6 +735,7 @@ function serializeHydratedMessage(
             retryable: modelRun.status === "error" && modelRun.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
     ...(message.assistantModelRuns.length && modelRun?.workspaceWaitPending && modelRun.status === "preparing"
       ? { workspacePreparation: true as const } : {}),
+    ...(followups ? { followups } : {}),
     ...(message.assistantModelRuns.length && modelRun?.answerCompletedAt && message.status === "complete" &&
       ["streaming", "queued", "in_progress"].includes(modelRun.status)
       ? { workspaceSettling: true as const } : {}),

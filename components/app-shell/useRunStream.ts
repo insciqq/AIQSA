@@ -106,7 +106,13 @@ export function useRunStream({
         }
         if (isCurrent() && (!answerPublished || event.type !== "error")) {
           appendRunEventView(event, chatId);
-          receivedChatUpdate = applyChatUpdate(event, chatId) || receivedChatUpdate;
+          const applied = applyChatUpdate(event, chatId);
+          // Admission and clarification delivery also publish chat updates.
+          // Only a settled answer replaces the terminal detail fallback.
+          if (applied && isRecord(event.data) && Array.isArray(event.data.messages)) {
+            receivedChatUpdate = event.data.messages.some(message => isRecord(message) &&
+              message.id === assistantMessageId && ["complete", "cancelled", "error"].includes(String(message.status))) || receivedChatUpdate;
+          }
         }
 
         const maybeRunId = runIdFromEvent(event);

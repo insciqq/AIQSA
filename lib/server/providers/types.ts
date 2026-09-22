@@ -114,6 +114,8 @@ export type NormalizedRunWorkspace = Readonly<{
 }>;
 
 export type NormalizedRunRequest = {
+  /** Preparation keeps room for accepted clarifications. Released at execution. */
+  followupContextReserveTokens?: number;
   agent?: import("../agents/config").NormalizedRunAgent;
   /** Server-admitted provider-neutral browser artifact tool. */
   artifactTool?: true;
@@ -290,6 +292,8 @@ export type ProviderSearchPolicy =
     }>;
 
 export type ProviderConversationMessage = {
+  /** Keeps clarifications with their original question during history trimming. */
+  contextTurnId?: string;
   content: {
     blocks: unknown[];
   };

@@ -18,6 +18,7 @@ export type ApproxTokenProjectedPart =
     }>;
 
 export type ContextBudgetMessage = {
+  contextTurnId?: string;
   content: {
     blocks: unknown[];
   };
@@ -202,7 +203,8 @@ function groupPriorTurns(messages: ContextBudgetMessage[]): ContextBudgetMessage
   let current: ContextBudgetMessage[] = [];
 
   for (const message of messages) {
-    if (message.role === "user" && current.length > 0) {
+    if (message.role === "user" && current.length > 0 &&
+      (!message.contextTurnId || message.contextTurnId !== (current[0]?.contextTurnId ?? current[0]?.id))) {
       groups.push(current);
       current = [message];
       continue;
@@ -249,7 +251,11 @@ export function applyContextBudget(input: ContextBudgetInput): ContextBudgetResu
   }
 
   const currentMessage = input.messages[input.messages.length - 1];
-  const currentTokens = tokenCounts[tokenCounts.length - 1] ?? 0;
+  const groupStart = currentMessage.contextTurnId
+    ? input.messages.findIndex(message => message.id === currentMessage.contextTurnId) : -1;
+  const currentStart = groupStart >= 0 ? groupStart : input.messages.length - 1;
+  const currentMessages = input.messages.slice(currentStart);
+  const currentTokens = sum(tokenCounts.slice(currentStart));
   const irreducibleTokens = estimatedPromptTokens + currentTokens;
 
   if (irreducibleTokens > budgetTokens) {
@@ -265,7 +271,7 @@ export function applyContextBudget(input: ContextBudgetInput): ContextBudgetResu
     };
   }
 
-  const priorMessages = input.messages.slice(0, -1);
+  const priorMessages = input.messages.slice(0, currentStart);
   const priorGroups = groupPriorTurns(priorMessages);
   const groupTokenCounts = priorGroups.map((group) => sum(group.map((message) => messageTokens(input, message))));
   let usedTokens = irreducibleTokens;
@@ -286,7 +292,7 @@ export function applyContextBudget(input: ContextBudgetInput): ContextBudgetResu
   const droppedGroups = priorGroups.slice(0, firstKeptGroupIndex);
   const droppedMessages = droppedGroups.flat();
   const approxDroppedTokens = sum(droppedGroups.flatMap((group) => group.map((message) => messageTokens(input, message))));
-  const messages = [...keptPriorMessages, currentMessage];
+  const messages = [...keptPriorMessages, ...currentMessages];
 
   return {
     approxFinalTokens: usedTokens,

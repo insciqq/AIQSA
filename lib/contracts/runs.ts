@@ -1,4 +1,5 @@
 import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
+import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import type { ErrorResponse, SessionErrorCode } from "./http";
 
 export const TOOL_SYNTHESIS_FAILURE = {
@@ -113,6 +114,7 @@ export const RUN_OUTCOME_RESPONSE_VERSION = 1 as const;
  * Answer content and outputs are reconciled through the chat projection.
  */
 export type RunOutcome = Readonly<{
+  followups?: RunFollowupState;
   answerComplete?: true;
   workspacePreparation?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
@@ -229,11 +231,13 @@ export function decodeRunOutcomeResponse(value: unknown): RunOutcome | null {
   const id = nonEmptyString(value.run.id);
   const status = modelRunStatus(value.run.status);
   const pdfPreparation = value.run.pdfPreparation === undefined ? undefined : decodeChatPdfPreparations(value.run.pdfPreparation);
+  const followups = value.run.followups === undefined ? undefined : decodeRunFollowupState(value.run.followups);
+  if (followups === null) return null;
   if ((value.run.answerComplete !== undefined && value.run.answerComplete !== true) ||
     (value.run.workspacePreparation !== undefined && value.run.workspacePreparation !== true) ||
     (value.run.workspacePreparation === true && (status !== "queued" || value.run.answerComplete === true))) return null;
   return id && status && pdfPreparation !== null
-    ? { id, status, ...(pdfPreparation ? { pdfPreparation } : {}),
+    ? { id, status, ...(pdfPreparation ? { pdfPreparation } : {}), ...(followups ? { followups } : {}),
         ...(value.run.answerComplete === true ? { answerComplete: true } : {}),
         ...(value.run.workspacePreparation === true ? { workspacePreparation: true } : {}) } : null;
 }

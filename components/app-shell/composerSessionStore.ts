@@ -39,6 +39,13 @@ export type ComposerArtifactEdit = Readonly<{
 }>;
 
 export type ComposerSessionSnapshot = {
+  followupSubmission?: Readonly<{
+    runId: string;
+    assistantMessageId: string;
+    nonce: string;
+    text: string;
+    inFlight: boolean;
+  }> | null;
   agentEnabled?: boolean;
   artifactCreate: Readonly<{ intent: "create" }> | null;
   artifactEdit: ComposerArtifactEdit | null;
@@ -102,6 +109,7 @@ export type ComposerSessionPatch = Partial<
     | "agentEnabled"
     | "artifactEdit"
     | "artifactCreate"
+    | "followupSubmission"
   >
 >;
 
@@ -156,6 +164,7 @@ const emptyAttachments = Object.freeze([]) as unknown as ComposerAttachment[];
 const emptyUploadGenerations = Object.freeze([]) as unknown as number[];
 
 export const emptyComposerSessionSnapshot = Object.freeze({
+  followupSubmission: null,
   agentEnabled: false,
   artifactCreate: null,
   artifactEdit: null,
@@ -299,6 +308,7 @@ function patchedSession(
   const agentChanged = hasOwn(patch, "agentEnabled") && patch.agentEnabled !== current.agentEnabled;
   const artifactEditChanged = hasOwn(patch, "artifactEdit") && patch.artifactEdit !== current.artifactEdit;
   const artifactCreateChanged = hasOwn(patch, "artifactCreate") && patch.artifactCreate !== current.artifactCreate;
+  const followupChanged = hasOwn(patch, "followupSubmission") && patch.followupSubmission !== current.followupSubmission;
 
   if (
     !attachmentsChanged &&
@@ -308,13 +318,14 @@ function patchedSession(
     !editingMessageChanged &&
     !errorChanged &&
     !retryabilityChanged &&
-    !workspaceChanged && !agentChanged && !artifactEditChanged && !artifactCreateChanged
+    !workspaceChanged && !agentChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged
   ) {
     return current;
   }
 
   return {
     ...current,
+    ...(followupChanged ? { followupSubmission: patch.followupSubmission } : {}),
     ...(agentChanged ? { agentEnabled: patch.agentEnabled ?? false } : {}),
     ...(artifactEditChanged ? { artifactEdit: patch.artifactEdit ?? null } : {}),
     ...(artifactCreateChanged ? { artifactCreate: patch.artifactCreate ?? null } : {}),

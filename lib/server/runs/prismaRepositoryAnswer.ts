@@ -7,6 +7,7 @@ import type { RunCompletionInput, RunRepository } from "./runRepositoryContract"
 import { activeMessageStatuses, dispatchableModelRunStatuses, isRecord, json, lockRunSettlementScope } from "./prismaRepositoryShared";
 import { appendRunOutputEvents } from "./prismaRepositoryToolLoop";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
+import { runFollowupsAllowCompletion } from "./prismaRepositoryFollowups";
 
 /** The caller owns the run lock and invokes this only for the first answer
  * publication (or ordinary terminal completion without earlier publication). */
@@ -51,6 +52,7 @@ export function createPrismaRunAnswerOperations(prismaClient: PrismaClient): Pic
       await lockRunSettlementScope(tx, input.runId);
       const [run] = await tx.$queryRaw<Array<{
         answerCompletedAt: Date | null;
+        followupMode: string | null;
         assistantMessageId: string | null;
         chatId: string;
         modelId: string;
@@ -58,7 +60,7 @@ export function createPrismaRunAnswerOperations(prismaClient: PrismaClient): Pic
         provider: string;
         status: ModelRunStatus;
       }>>(Prisma.sql`
-        SELECT run."answerCompletedAt", run."assistantMessageId", run."chatId", run."modelId",
+        SELECT run."answerCompletedAt", run."followupMode", run."assistantMessageId", run."chatId", run."modelId",
           run."provider", run."status", chat."projectId"
         FROM "ModelRun" AS run INNER JOIN "Chat" AS chat ON chat."id" = run."chatId"
         WHERE run."id" = ${input.runId} AND run."userId" = ${input.userId}
@@ -67,6 +69,7 @@ export function createPrismaRunAnswerOperations(prismaClient: PrismaClient): Pic
       if (!run || run.answerCompletedAt || !dispatchableModelRunStatuses.includes(run.status) ||
         run.assistantMessageId !== input.assistantMessageId || run.chatId !== input.chatId ||
         run.modelId !== input.modelId || run.provider !== input.provider) return false;
+      if (run.followupMode && !(await runFollowupsAllowCompletion(tx, input.runId, input.followupRevision))) return false;
 
       const message = await tx.message.updateMany({
         data: {
@@ -99,7 +102,7 @@ export function createPrismaRunAnswerOperations(prismaClient: PrismaClient): Pic
     loadPublishedRunAnswer: async ({ runId, userId }) => {
       const run = await prismaClient.modelRun.findFirst({
         select: { id: true, chatId: true, userId: true, modelId: true, provider: true,
-          providerResponseId: true, answerCompletionUsage: true,
+          providerResponseId: true, answerCompletionUsage: true, followupRevision: true,
           assistantMessage: { select: { id: true, content: true, status: true } } },
         where: { id: runId, userId, answerCompletedAt: { not: null },
           status: { in: dispatchableModelRunStatuses } }
@@ -120,6 +123,7 @@ export function createPrismaRunAnswerOperations(prismaClient: PrismaClient): Pic
       });
       const estimatedCostMicros = reportedTokenCount(snapshot.estimatedCostMicros);
       const completion: RunCompletionInput = {
+        followupRevision: run.followupRevision,
         assistantMessageId: message.id, chatId: run.chatId, estimatedCostMicros,
         finalText: textFromContentBlocks(message.content), modelId: run.modelId, provider: run.provider,
         ...(run.providerResponseId ? { providerResponseId: run.providerResponseId } : {}),

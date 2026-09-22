@@ -314,6 +314,7 @@
 
 .v2-composer-run-action {
   display: inline-flex;
+  gap: 0.375rem;
   flex: 0 0 auto;
 }
 
@@ -322,6 +323,11 @@
   height: 2rem;
   color: var(--v2-color-accent-ink);
   background: var(--v2-color-accent);
+}
+
+.v2-composer-run-action[data-followup="true"] .v2-icon-button {
+  width: 2.75rem;
+  height: 2.75rem;
 }
 
 .v2-composer-run-action .v2-icon-button .v2-icon {
@@ -1296,7 +1302,7 @@
 @container composer (max-width: 26rem) {
   .v2-composer-entry {
     display: grid;
-    grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
+    grid-template-columns: 2.75rem minmax(0, 1fr) auto;
     grid-template-areas: "add input send" "chips chips chips";
     align-items: end;
     column-gap: 0.25rem;

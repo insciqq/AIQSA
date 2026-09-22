@@ -1,4 +1,5 @@
 import { ARTIFACT_VERSIONED_MIGRATION, artifactVersionedFixtureSql, artifactVersionedProofSql } from "./artifact-versioned-adoption";
+import { RUN_FOLLOWUPS_MIGRATION, runFollowupsFixtureSql, runFollowupsProofSql } from "./run-followups-adoption";
 import { NATIVE_ROUTING_MIGRATION, nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql } from "./openrouter-native-routing-adoption";
 import { CHAT_TITLE_SETUP_MIGRATION, chatTitleSetupFixtureSql, chatTitleSetupProofSql } from "./chat-title-setup-adoption";
 import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
@@ -7408,6 +7409,8 @@ function main(
     skillsProgressiveFixtureSql, skillsProgressiveProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, ARTIFACT_VERSIONED_MIGRATION,
     artifactVersionedFixtureSql, artifactVersionedProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, RUN_FOLLOWUPS_MIGRATION,
+    runFollowupsFixtureSql, runFollowupsProofSql, runFollowupsProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, GEMINI_GROUNDING_MIGRATION,
     geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_CONFIGURATION_WAIT_MIGRATION,

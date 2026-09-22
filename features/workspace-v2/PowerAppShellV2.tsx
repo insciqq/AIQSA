@@ -1271,7 +1271,8 @@ export function PowerAppShellV2({
     regenerateMessage,
     sendStarterPrompt,
     submitMessageEdit,
-    submitComposer
+    submitComposer,
+    submitFollowup
   } = useMessageRunActions({
     activeChat,
     activeChatDetailLoading,
@@ -1962,6 +1963,7 @@ export function PowerAppShellV2({
     stopping,
     streamMode,
     submitComposer,
+    submitFollowup,
     temperature,
     toggleCitationsVisibility,
     toggleNotificationSound: () => {

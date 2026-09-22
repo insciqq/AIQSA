@@ -47,6 +47,42 @@ function ComposerWithModelOpener(overrides: Partial<Parameters<typeof ComposerV2
 }
 
 describe("Composer v2", () => {
+  it("sends text follow-ups with keyboard or button while Stop stays separate", () => {
+    const onFollowup = vi.fn(), onStop = vi.fn(), onSend = vi.fn();
+    const value = props({ activeRun: true, runId: "run", onFollowup, onStop, onSend, uploading: true, artifactCreate: true });
+    const { rerender } = render(<ComposerV2 {...value} />);
+    const textbox = screen.getByRole("textbox", { name: "Message" });
+    expect(textbox).toHaveAttribute("placeholder", "Follow up…");
+    expect(screen.getByRole("button", { name: "Send follow-up" })).toBeEnabled();
+    fireEvent.keyDown(textbox, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(textbox, { key: "Enter", isComposing: true });
+    expect(onFollowup).not.toHaveBeenCalled();
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Send follow-up" }));
+    expect(onFollowup).toHaveBeenNthCalledWith(1, "run");
+    expect(onFollowup).toHaveBeenCalledTimes(2);
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Stop answer" }));
+    expect(onStop).toHaveBeenCalledWith("run");
+    rerender(<ComposerV2 {...value} followupSending />);
+    expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stop answer" })).toBeEnabled();
+    rerender(<ComposerV2 {...value} draft={"x".repeat(16_001)} />);
+    expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
+    rerender(<ComposerV2 {...value} activeRun={false} uploading={false} />);
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Stop answer" })).toBeNull();
+  });
+
+  it("keeps unsupported active modes and empty follow-ups unsendable", () => {
+    const onSend = vi.fn(), onFollowup = vi.fn();
+    const { rerender } = render(<ComposerV2 {...props({ activeRun: true, runId: "run", onSend })} />);
+    expect(screen.queryByRole("button", { name: "Send follow-up" })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    rerender(<ComposerV2 {...props({ activeRun: true, runId: "run", onFollowup, draft: "  " })} />);
+    expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
+  });
   it("offers keyboard Auto and Off plus Pin without removing pinned Skills", () => {
     const onSelectSkillsMode = vi.fn();
     const onOpenSkillLibrary = vi.fn();

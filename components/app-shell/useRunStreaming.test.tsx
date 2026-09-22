@@ -26,6 +26,21 @@ function chat(id: string, title: string): WorkspaceChatSummary {
 }
 
 describe("run streaming", () => {
+  it.each(["streaming", "complete"])("applies %s updates and only trusts settled reconciliation", async status => {
+    const applyChatUpdate = vi.fn(event => event.type === "chat_update");
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate }));
+    const events = [
+      { type: "run_start", data: { runId: "run" } },
+      { type: "message_start", data: { assistantMessageId: "answer" } },
+      { type: "chat_update", data: { messages: [{ id: "answer", status, followups: { available: status === "streaming", entries: [] } }] } },
+      { type: "done", data: { runId: "run", status: "complete" } }
+    ];
+    const outcome = await result.current.consumeRunStream({ chatId: "chat-a", failurePrefix: "send_failed",
+      onRunId: vi.fn(), onMessageIds: vi.fn(), tokenBuffer: { flush: vi.fn(), push: vi.fn() },
+      response: new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`).join("")) });
+    expect(applyChatUpdate).toHaveBeenCalledWith(events[2], "chat-a");
+    expect(outcome.receivedChatUpdate).toBe(status === "complete");
+  });
   it("shows real file chunks without adding them to raw events and drops the preview on transport loss", async () => {
     const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
     const frames = [

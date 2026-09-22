@@ -87,6 +87,7 @@ export async function usageAttributionsWithEstimatedCost(
 }
 
 export async function finalizeRunCompletion(input: Readonly<{
+  followupRevision?: number;
   /** Called only after the final, grounded text has been durably published.
    * Full terminal persistence still waits for this obligation to finish. */
   afterAnswerPublished?: (answer: Readonly<{ finalText: string; usage: ModelRunUsage }>) => Promise<void>;
@@ -124,7 +125,8 @@ export async function finalizeRunCompletion(input: Readonly<{
         throw new Error("knowledge_answer_finalization_snapshot_invalid");
       }
       if (!input.repository.groundKnowledgeEvidenceAnswer) throw new Error("knowledge_evidence_answer_finalizer_unavailable");
-      knowledgeFinalization = await input.repository.groundKnowledgeEvidenceAnswer({ runId: input.run.runId, userId: input.run.userId });
+      knowledgeFinalization = await input.repository.groundKnowledgeEvidenceAnswer({ runId: input.run.runId, userId: input.run.userId,
+        ...(input.followupRevision ? { followupRevision: input.followupRevision } : {}) });
     } else if (isKnowledgeAnswerV21Contracts(input.knowledgeAnswerContracts)) {
       if (!input.repository.groundKnowledgeAnswerV21) {
         throw new Error("knowledge_answer_v21_finalizer_unavailable");
@@ -170,6 +172,7 @@ export async function finalizeRunCompletion(input: Readonly<{
       sumEstimatedCostMicros(attributedCosts)
   };
   const completion: Parameters<RunRepository["completeRun"]>[0] = {
+    ...(input.followupRevision !== undefined ? { followupRevision: input.followupRevision } : {}),
     assistantMessageId: input.run.assistantMessageId,
     chatId: input.run.chatId,
     estimatedCostMicros: usage.estimatedCostMicros ?? null,

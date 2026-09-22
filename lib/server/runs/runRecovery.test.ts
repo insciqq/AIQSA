@@ -1606,6 +1606,32 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run recovery", () => {
+  it.each(["accepted", "delivered"] as const)("ends a lost executor honestly with a %s clarification instead of replaying the old question", async delivery => {
+    const refresh = vi.fn();
+    const adapter = providerWithRefresh(refresh);
+    adapter.cancel = vi.fn(async () => ({ status: "cancelled" }));
+    const harness = createHarness({ providers: { openai: adapter } });
+    harness.repository.followups = { accept: vi.fn(), deliver: vi.fn(), close: vi.fn(), beginKnowledge: vi.fn(),
+      load: async () => ({ revision: 1, entries: [{ id: "f", ordinal: 1, text: "Clarification", author: "Author",
+        createdAt: new Date().toISOString(), delivery }] }) };
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(adapter.cancel).toHaveBeenCalledOnce();
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.failed).toMatchObject([{ error: { code: "followup_executor_lost" } }]);
+    expect(harness.repository.followups.deliver).not.toHaveBeenCalled();
+  });
+
+  it("does not resume an old checkpoint when Follow-up wins the recovery admission race", async () => {
+    const refresh = vi.fn();
+    const harness = createHarness({ providers: { openai: providerWithRefresh(refresh) } });
+    harness.repository.followups = { accept: vi.fn(), deliver: vi.fn(), close: vi.fn(async () => false), beginKnowledge: vi.fn(),
+      load: async () => ({ revision: 0, entries: [] }) };
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.repository.followups.close).toHaveBeenCalledWith({ runId, userId, revision: 0 });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.failed).toMatchObject([{ error: { code: "followup_executor_lost" } }]);
+  });
 
   it("reconstructs the accepted browser guidance unchanged after a process restart", async () => {
     const requests: ProviderRunRequest[] = [];

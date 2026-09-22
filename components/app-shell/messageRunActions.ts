@@ -1,4 +1,5 @@
 import { randomUUID } from "@/lib/browser/randomUUID";
+import { submitRunFollowup } from "./runFollowupAction";
 import { artifactUnavailableReason } from "@/components/artifacts/artifactAvailability";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { composerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
@@ -1312,6 +1313,7 @@ export function useMessageRunActions({
   }
 
   return {
+    submitFollowup: submitRunFollowup,
     refreshInterruptedRun,
     regenerateMessage,
     sendStarterPrompt,

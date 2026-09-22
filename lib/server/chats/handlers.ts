@@ -41,6 +41,7 @@ export type {
 } from "../../contracts/chats";
 
 export type ChatMessageRecord = {
+  followups?: ChatMessageWire["followups"];
   workspacePreparation?: true;
   workspaceSettling?: true;
   artifactSummary?: ThreadArtifactSummary | null;
@@ -270,6 +271,7 @@ function iso(value: Date | string): string {
 
 function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
   return {
+    ...(message.followups ? { followups: message.followups } : {}),
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     ...(message.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
     ...(message.workspaceSettling === true ? { workspaceSettling: true as const } : {}),

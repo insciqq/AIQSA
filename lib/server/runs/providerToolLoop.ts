@@ -253,6 +253,8 @@ export async function runProviderToolLoop(
           // already failed and must not replace its causal classification.
         }
         throw error;
+      } finally {
+        await stream.return(undefined as never).catch(() => undefined);
       }
       const result = { ...next.value, usage: mergeTokenUsage(lastReportedUsage ?? {}, next.value.usage) };
       let publicationFailed = false;

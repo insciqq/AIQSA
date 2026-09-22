@@ -268,6 +268,7 @@ export type RunRecoveryRepository = Pick<
 > & Partial<Pick<
   RunRepository,
   | "getRunControlForRecovery"
+  | "followups"
   | "groundKnowledgeAnswer"
   | "groundKnowledgeAnswerV5"
   | "groundKnowledgeAnswerV21"
@@ -3976,6 +3977,23 @@ async function refreshProviderRunOnceRegistered(
   }
 
   if (await recoverAgentIfNeeded(deps, runId, userId)) return;
+
+  // Recovery has no live generation fence. Close admission atomically before
+  // replaying any old checkpoint; a clarified task cannot reuse an answer or
+  // Knowledge review from the lost executor's earlier question.
+  const clarifications = await deps.repository.followups?.load({ runId, userId });
+  if (clarifications && (clarifications.revision > 0 ||
+    !(await deps.repository.followups!.close({ runId, userId, revision: 0 })))) {
+    if (control.providerResponseId) {
+      const runtime = await resolveAnswerRuntime(deps, runId, control.provider).catch(() => null);
+      await runtime?.adapter.cancel?.(control.providerResponseId).catch(() => undefined);
+    }
+    if (control.assistantMessageId) await failRecoveredRun(deps.repository, runId, control.assistantMessageId, {
+      code: "followup_executor_lost",
+      message: "This task was interrupted before it could finish with your follow-ups. Your question and clarifications are saved; regenerate to try again."
+    }, { recoveryTerminal: true });
+    return;
+  }
 
   if (deps.knowledgeProviderDispatch) {
     let draftDispatch: Awaited<ReturnType<KnowledgeProviderDispatchLifecycle["inspect"]>> = null;

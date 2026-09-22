@@ -283,6 +283,7 @@ export type ShellComposerView = {
   stopping?: boolean;
   streamMode: boolean;
   submitComposer(): Promise<void> | void;
+  submitFollowup?(runId: string): Promise<void> | void;
   temperature: string;
   toggleCitationsVisibility(): void;
   toggleNotificationSound(): void;

@@ -4,6 +4,7 @@ import { mcpReadinessPresentation } from "@/components/app-shell/mcpReadiness";
 import type { ComposerArtifactEdit } from "@/components/app-shell/composerSessionStore";
 
 import { isImeCompositionEvent } from "@/components/keyboard";
+import { RUN_FOLLOWUP_MAX_CHARS } from "@/lib/contracts/runFollowups";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
   attachmentAcceptForPolicy,
@@ -271,6 +272,8 @@ export type ComposerV2Props = Readonly<{
   onSelectMcp?(selection: McpRunSelection): void;
   onSelectSearchOptionIds?(optionIds: readonly string[]): void;
   onSend?(): void;
+  onFollowup?(runId: string): void;
+  followupSending?: boolean;
   onStop?(runId: string): void;
   /** Keyboard contract: Enter sends (default), or inserts a newline while Ctrl/⌘+Enter sends. */
   sendWithEnter?: boolean;
@@ -463,6 +466,8 @@ export function ComposerV2({
   onSelectModel,
   onSelectSearchOptionIds,
   onSend,
+  onFollowup,
+  followupSending = false,
   onStop,
   onUploadFiles,
   onReuseFile,
@@ -528,14 +533,15 @@ export function ComposerV2({
   const agentBlockReason = agent?.enabled ? agentReason : null;
   const artifactReason = artifactUnavailableReason ?? (sharedProject ? "Not available in projects" : null);
   const artifactBlockReason = artifactCreate || artifactEdit ? artifactReason : null;
-  const bootstrapReason = configError
+  const followupMode = activeRun && Boolean(onFollowup) && Boolean(runId);
+  const bootstrapReason = followupMode ? disabledReason : configError
     ? "Could not load available capabilities."
     : !config
       ? "Loading available capabilities…"
       : noModels
         ? "No models available. Contact your administrator."
         : disabledReason;
-  const inputDisabled = Boolean(configError || !config || noModels || disabledReason);
+  const inputDisabled = followupMode ? Boolean(disabledReason) : Boolean(configError || !config || noModels || disabledReason);
   const attachmentBlockReason = attachmentSendBlockReasonV2(
     attachmentItems,
     attachmentLimitUsage,
@@ -546,10 +552,14 @@ export function ComposerV2({
   );
   const effectiveSkillIds = resolveEffectiveSkillIds((selectedAssistant?.includedSkills ?? []).filter(skill => skill.mode !== "available").map(({ id }) => id), selectedSkillIds);
   const effectiveSkillsMode = selectedAssistant?.skillsMode ?? skillsMode;
-  const sendDisabled = Boolean(
+  const followupTooLong = draft.length > RUN_FOLLOWUP_MAX_CHARS;
+  const sendDisabled = followupMode ? Boolean(followupSending || stopping || inputDisabled || !draft.trim() || followupTooLong) : Boolean(
     sending || inputDisabled || artifactBlockReason || agentBlockReason || attachmentBlockReason || (!draft.trim() && !readyAttachment)
   );
-  const sendDisabledReason = sending
+  const sendDisabledReason = followupMode
+    ? followupSending ? "Sending follow-up…" : bootstrapReason ?? (followupTooLong
+      ? `Keep the follow-up under ${RUN_FOLLOWUP_MAX_CHARS.toLocaleString()} characters.` : !draft.trim() ? "Type a follow-up." : null)
+    : sending
     ? "Sending message…"
     : bootstrapReason ?? artifactBlockReason ?? agentBlockReason ?? attachmentBlockReason ??
       (!draft.trim() && !readyAttachment ? "Type a message." : null);
@@ -845,7 +855,9 @@ export function ComposerV2({
     const sends = sendWithEnter ? !event.shiftKey : event.ctrlKey || event.metaKey;
     if (!sends) return;
     event.preventDefault();
-    if (!activeRun && !sendDisabled) onSend?.();
+    if (sendDisabled) return;
+    if (followupMode && runId) onFollowup?.(runId);
+    else if (!activeRun) onSend?.();
   }
 
   function submitFiles(files: FileList | readonly File[]) {
@@ -1131,7 +1143,7 @@ export function ComposerV2({
               onClick={onRemoveArtifactEdit} />
           </div>
         ) : null}
-        {artifactBlockReason ? <p className="v2-composer-status" role="alert">{artifactBlockReason}. Remove the artifact selection or change the chat mode before sending.</p> : null}
+        {artifactBlockReason && !followupMode ? <p className="v2-composer-status" role="alert">{artifactBlockReason}. Remove the artifact selection or change the chat mode before sending.</p> : null}
         <AttachmentTrayV2
           items={attachmentItems}
           onRemove={onRemoveAttachment}
@@ -1139,6 +1151,10 @@ export function ComposerV2({
           usage={attachmentLimitUsage}
           sharedProject={sharedProject}
         />
+        {followupMode && (attachmentItems.length > 0 || artifactCreate || artifactEdit) ? (
+          <p className="v2-composer-status">Only your text is sent as a follow-up. Files and artifact choices are kept for your next message.</p>
+        ) : null}
+        {followupMode && followupTooLong ? <p className="v2-composer-status" role="alert">{sendDisabledReason}</p> : null}
 
         {bootstrapReason ? (
           <div className="v2-composer-status" id={statusId} role={configError ? "alert" : "status"}>
@@ -1163,7 +1179,7 @@ export function ComposerV2({
             value={draft}
             disabled={inputDisabled}
             aria-describedby={bootstrapReason ? statusId : undefined}
-            placeholder={artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
+            placeholder={followupMode ? "Follow up…" : artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={submitFromKeyboard}
             onPaste={pasteFiles}
@@ -1260,10 +1276,11 @@ export function ComposerV2({
             </div>
 
             <span className="v2-composer-spacer" />
-            <span className="v2-composer-run-action">
+            <span className="v2-composer-run-action" data-followup={followupMode || undefined}>
               <RunComposerActionV2
                 active={activeRun}
-                onSend={onSend}
+                followup={followupMode}
+                onSend={followupMode && runId ? () => onFollowup?.(runId) : onSend}
                 onStop={onStop}
                 runId={runId}
                 sendDisabled={sendDisabled}

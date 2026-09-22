@@ -20,6 +20,7 @@ import {
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { decodeChatSummaryResponse } from "@/lib/contracts/chats";
+import { followupHistoryTurns } from "@/lib/domain/runFollowupContext";
 
 type ThreadActionsInput = {
   activeChat: WorkspaceChatSummary | null;
@@ -101,9 +102,10 @@ export function createThreadActions({
       if (!chatId) throw new Error("Nothing to copy yet.");
       setNotice({ kind: "success", text: "Preparing the complete thread…" });
       const thread = (await loadCompleteActiveBranch(chatId))
-        .map(
+        .flatMap(
           (message) =>
-            `${message.role === "assistant" ? "Assistant" : "User"}:\n${textFromThreadContent(message.content).trim()}`
+            [...followupHistoryTurns(message.followups?.entries ?? []).map(turn => `${turn.role === "assistant" ? "Assistant" : "User"}:\n${turn.text}`),
+              `${message.role === "assistant" ? "Assistant" : "User"}:\n${textFromThreadContent(message.content).trim()}`]
         )
         .join("\n\n");
       if (!thread.trim()) throw new Error("Nothing to copy yet.");

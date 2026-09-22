@@ -801,6 +801,7 @@ enum MemoryToolEgressDispatchState {
 }
 
 model User {
+  runFollowups RunFollowup[]
   announcementReads AnnouncementRead[]
   artifacts Artifact[]
   artifactPublications ArtifactPublication[]
@@ -3183,6 +3184,7 @@ model Message {
   authorDisplayName      String?
   authorProjectRole      ProjectRole?
   branchSourceModelRunId String?
+  branchFollowups        Json?
   createdAt              DateTime          @default(now())
   updatedAt              DateTime          @updatedAt
   assistantModelRuns     ModelRun[]        @relation("AssistantMessageRun")
@@ -3313,6 +3315,14 @@ model ChatTitleGeneration {
 }
 
 model ModelRun {
+  followups                    RunFollowup[]
+  /// Null for older writers and executors that do not support steering.
+  followupMode                 String?                             @db.VarChar(16)
+  followupRevision             Int                                 @default(0)
+  followupBudgetTokens         Int                                 @default(0)
+  followupClosedAt             DateTime?
+  followupKnowledgeRevision    Int                                 @default(0)
+  followupKnowledgeOffset      Int                                 @default(0)
   workspaceFollowup            WorkspaceFollowup?                  @relation("WaitingWorkspaceRun")
   dependentWorkspaceFollowups   WorkspaceFollowup[]                 @relation("PreviousWorkspaceRun")
   chatTitleGeneration          ChatTitleGeneration?
@@ -3386,6 +3396,28 @@ model ModelRun {
   @@index([provider, modelId])
   @@index([status])
   @@index([userId, createdAt])
+}
+
+/// Ordered user clarifications of this exact task, independent of message DAG edges.
+model RunFollowup {
+  id              String   @id @default(uuid())
+  chatId          String
+  modelRunId      String
+  ordinal         Int
+  nonce           String   @db.VarChar(128)
+  text            String
+  authorUserId    String?
+  authorName      String   @db.VarChar(256)
+  createdAt       DateTime @default(now())
+  deliveredAt     DateTime?
+  precedingText   String?
+  modelRun        ModelRun @relation(fields: [chatId, modelRunId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  author          User?    @relation(fields: [authorUserId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+
+  @@unique([modelRunId, ordinal])
+  @@unique([modelRunId, nonce])
+  @@index([chatId, modelRunId])
+  @@index([authorUserId])
 }
 
 /// One accepted next message waiting for its predecessor to retire Workspace authority.

@@ -1,3 +1,4 @@
+import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
 import { decodeSessionContextStatus, type SessionContextStatus } from "./sessionStatus";
 import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
@@ -66,6 +67,7 @@ export type {
 export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
+  followups?: RunFollowupState;
   workspacePreparation?: true;
   workspaceSettling?: true;
   errorMessage?: string | null;
@@ -267,6 +269,7 @@ export type ChatDetail = WorkspaceChatSummary & {
 };
 
 export type ChatMessageWire = {
+  followups?: RunFollowupState;
   workspacePreparation?: true;
   workspaceSettling?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
@@ -951,6 +954,8 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   }
 
   const pdfPreparation = value.pdfPreparation === undefined ? undefined : decodeChatPdfPreparations(value.pdfPreparation);
+  const followups = value.followups === undefined ? undefined : decodeRunFollowupState(value.followups);
+  if (followups === null) return null;
   if (pdfPreparation === null) return null;
   const id = requiredString(value.id);
   const citationMessageId = value.citationMessageId === undefined
@@ -1041,6 +1046,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   }
   return {
     ...(pdfPreparation ? { pdfPreparation } : {}),
+    ...(followups ? { followups } : {}),
     ...(value.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
     ...(value.workspaceSettling === true ? { workspaceSettling: true as const } : {}),
     artifactSummary,

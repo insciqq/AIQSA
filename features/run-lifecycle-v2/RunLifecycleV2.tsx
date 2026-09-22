@@ -340,6 +340,7 @@ export function RunAnswerV2({
 
 export type RunComposerActionV2Props = Readonly<{
   active: boolean;
+  followup?: boolean;
   onSend?(): void;
   onStop?(runId: string): void;
   runId: string | null;
@@ -350,6 +351,7 @@ export type RunComposerActionV2Props = Readonly<{
 
 export function RunComposerActionV2({
   active,
+  followup = false,
   onSend,
   onStop,
   runId,
@@ -386,6 +388,9 @@ export function RunComposerActionV2({
     : "Stopping this run is unavailable.";
   return (
     <>
+      {followup ? <UiV2IconButton icon="arrow-up" label="Send follow-up"
+        title={sendDisabled && sendDisabledReason ? sendDisabledReason : "Send follow-up"}
+        disabled={sendDisabled || !onSend} onClick={onSend} round /> : null}
       <UiV2IconButton
         icon="stop"
         label="Stop answer"

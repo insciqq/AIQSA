@@ -319,7 +319,7 @@ function validGoogleSearchResult(step: Record<string, unknown>): boolean {
 
 function validateContinuationStep(step: Record<string, unknown>): void {
   const valid =
-    (step.type === "model_output" && validModelOutput(step)) ||
+    ((step.type === "model_output" || step.type === "user_input") && validModelOutput(step)) ||
     (step.type === "thought" && validThought(step)) ||
     (step.type === "function_call" && validFunctionCall(step)) ||
     (step.type === "function_result" && validFunctionResult(step)) ||
