@@ -1,4 +1,5 @@
 import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
+import type { AttachmentPreviewKind } from "@/lib/contracts/uploads";
 import type { AssistantUnavailabilityCopy } from "./assistantAvailabilityCopy";
 import type { ReactNode } from "react";
 
@@ -99,6 +100,7 @@ export type FileSummaryV2 = Readonly<{
   id: string;
   name: string;
   savedAt: string | null;
+  previewKind: AttachmentPreviewKind;
   mutation?: "saving" | "saved" | "removing" | "error";
   status: "failed" | "processing" | "ready";
 }>;

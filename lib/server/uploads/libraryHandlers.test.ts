@@ -12,6 +12,21 @@ const config = getAuthConfig({
 const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
 
 describe("attachment library handler", () => {
+  it("projects preview eligibility without exposing content or storage metadata", async () => {
+    const base = { byteSize: 12, chatId: null, chatTitle: null, createdAt: new Date(),
+      messageId: null, savedAt: new Date(), status: "ready" as const };
+    const records = [
+      { ...base, id: "image", fileName: "animated.gif", mimeType: "image/gif" },
+      { ...base, id: "source", fileName: "page.html", mimeType: "text/html" },
+      { ...base, id: "pending", fileName: "pending.png", mimeType: "image/png", status: "processing" as const }
+    ];
+    const GET = createAttachmentLibraryHandler({ repository: { listSent: async () => records }, resolveAuth: auth.resolveAuth });
+    const response = await GET(new Request("http://app.local/api/uploads", { headers: { cookie: auth.cookie } }));
+    const body = await response.json();
+    expect(body.files.map((file: { previewKind: unknown }) => file.previewKind)).toEqual(["image", "text", null]);
+    for (const file of body.files) expect(file).not.toHaveProperty("mimeType");
+  });
+
   it("authenticates before listing and projects only source-navigation fields", async () => {
     const listSent = vi.fn(async () => [{
       byteSize: 4_096,
@@ -21,7 +36,11 @@ describe("attachment library handler", () => {
       fileName: "report.pdf",
       id: "attachment-1",
       messageId: "message-1",
-        savedAt: null,
+      mimeType: "application/pdf",
+      kind: "pdf",
+      origin: "workspace",
+      storageKey: "private-object",
+      savedAt: null,
       status: "ready" as const
     }]);
     const GET = createAttachmentLibraryHandler({
@@ -50,11 +69,12 @@ describe("attachment library handler", () => {
         fileName: "report.pdf",
         id: "attachment-1",
         messageId: "message-1",
+        previewKind: null,
         savedAt: null,
         status: "ready"
       }]
     });
-    expect(JSON.stringify(body)).not.toContain("storageKey");
+    for (const key of ["mimeType", "kind", "origin", "storageKey"]) expect(body.files[0]).not.toHaveProperty(key);
     expect(listSent).toHaveBeenCalledWith({ cursor: null, limit: 201, userId: config.bootstrapUserId });
   });
 });

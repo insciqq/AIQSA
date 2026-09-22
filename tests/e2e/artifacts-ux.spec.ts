@@ -297,6 +297,14 @@ test("Library artifact rows support preview, rename, archive confirmation, resto
     await openLibrary();
     await list.getByRole("searchbox", { name: "Search artifacts" }).fill(title);
     await list.getByRole("button", { name: `Open ${title}`, exact: true }).click();
+    await expect(page.locator("iframe.v2-artifact-frame")).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Artifact actions", exact: true }).focus();
+    await page.keyboard.press("Escape");
+    await expect(list.getByRole("button", { name: `Open ${title}`, exact: true })).toBeVisible();
+    await list.getByRole("button", { name: `Open ${title}`, exact: true }).click();
+    await page.frameLocator("iframe.v2-artifact-frame").getByRole("button", { name: "Add one", exact: true }).press("Escape");
+    await expect(list.getByRole("button", { name: `Open ${title}`, exact: true })).toBeVisible();
+    await list.getByRole("button", { name: `Open ${title}`, exact: true }).click();
     await page.getByRole("button", { name: "Artifact actions", exact: true }).click();
     await page.getByRole("menuitem", { name: "Open source chat", exact: true }).click();
     await expect(composer).toHaveValue("Keep the draft while I inspect the library");

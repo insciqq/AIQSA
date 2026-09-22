@@ -348,14 +348,16 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(settings.getByRole("heading", { name: "MCP servers", exact: true })).toBeVisible();
   await expect(settings.getByText("Inactive", { exact: true })).toHaveCount(3);
   await settings.getByRole("button", { name: "Complete setup for Mem0" }).click();
-  await expect(settings.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
+  const sheet = page.getByTestId("mcp-server-sheet");
+  await expect(sheet.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
 
-  const secret = settings.getByLabel("Mem0 API key");
+  const secret = sheet.getByLabel("Mem0 API key");
   await expect(secret).toHaveAttribute("type", "password");
   await secret.fill("personal-mem0-token");
-  await settings.getByRole("button", { name: "Save personal values" }).click();
-  await expect(settings.getByText("Personal value configured")).toBeVisible();
+  await sheet.getByRole("button", { name: "Save personal values" }).click();
+  await expect(sheet.getByText("Personal value configured")).toBeVisible();
   await expect(secret).toHaveValue("");
+  await sheet.getByRole("button", { name: "Close", exact: true }).click();
 
   // Rows toggle with a switch (UX audit 2026-09-02 A13); the switch appears
   // for Mem0 only after its personal value is saved.
@@ -446,7 +448,9 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await page.goto("/?library=mcp&oauth=connected&server=notion");
   settings = page.getByTestId("library-v2");
   await expect(settings.getByText("External account connected and MCP enabled.")).toBeVisible();
-  await expect(settings.getByText("Team workspace")).toBeVisible();
+  await settings.getByRole("button", { name: "Open Notion" }).click();
+  await expect(sheet.getByText("Team workspace")).toBeVisible();
+  await sheet.getByRole("button", { name: "Close", exact: true }).click();
   await expect(page).not.toHaveURL(/oauth=|library=mcp|settings=mcp|server=notion/u);
 
   await page.setViewportSize({ height: 844, width: 390 });

@@ -1,8 +1,9 @@
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
-import { IMAGE_MAX_BYTES, IMAGE_MIME_TYPES } from "../../contracts/imageGeneration";
-import { validateGeneratedImage } from "../providers/imageGeneration";
+import { attachmentPreviewKind } from "@/lib/domain/attachmentPreview";
+import { createPreviewThumbnail, validatePreviewImage } from "./previewImage";
 import {
   getStoredObjectStream,
+  isStoredObjectTooLargeError,
   type StorageAdapter
 } from "./storage";
 
@@ -53,6 +54,10 @@ export function createAttachmentDownloadHandler(input: Readonly<{
   ): Promise<Response> {
     const auth = await input.resolveAuth(request);
     if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
+    const preview = new URL(request.url).searchParams.get("preview");
+    if (preview && !["image", "thumb", "text"].includes(preview)) {
+      return Response.json({ error: "invalid_preview_mode" }, { status: 400 });
+    }
     const { attachmentId } = await context.params;
     if (!attachmentId || attachmentId.length > 128) {
       return Response.json({ error: "attachment_not_found" }, { status: 404 });
@@ -69,19 +74,46 @@ export function createAttachmentDownloadHandler(input: Readonly<{
     ) {
       return Response.json({ error: "attachment_unavailable" }, { status: 503 });
     }
-    try {
-      if (new URL(request.url).searchParams.get("preview") === "image") {
-        if (!IMAGE_MIME_TYPES.includes(record.mimeType as typeof IMAGE_MIME_TYPES[number]) || record.byteSize > IMAGE_MAX_BYTES) {
-          return Response.json({ error: "image_preview_unavailable" }, { status: 415 });
-        }
+    if (preview) {
+      const unavailable = () => Response.json({ error: preview === "text" ? "text_preview_unavailable" : "image_preview_unavailable" }, {
+        headers: { "cache-control": "private, no-store, max-age=0" }, status: 415
+      });
+      // The repository reauthorizes personal/Project access and resolves only ready attachments.
+      const kind = attachmentPreviewKind({ ...record, status: "ready" });
+      if (kind !== (preview === "text" ? "text" : "image")) return unavailable();
+      let bytes: Uint8Array;
+      try {
         const stored = await input.storage.getObject(record.storageKey, { maxBytes: record.byteSize, signal: request.signal });
-        if (stored.body.byteLength !== record.byteSize) throw new Error("image_preview_invalid");
-        await validateGeneratedImage(stored.body, record.mimeType);
+        bytes = stored.body;
+      } catch (error) {
+        if (isStoredObjectTooLargeError(error)) return unavailable();
+        return Response.json({ error: "attachment_unavailable" }, {
+          headers: { "cache-control": "private, no-store, max-age=0" }, status: 503
+        });
+      }
+      if (bytes.byteLength !== record.byteSize) return unavailable();
+      try {
         const headers = privateHeaders(record);
         headers.set("content-disposition", "inline");
         headers.set("content-security-policy", "default-src 'none'; sandbox");
-        return new Response(new Uint8Array(stored.body), { headers });
+        if (preview === "text") {
+          // UTF-8 decoding strips its BOM; never substitute extracted model-facing text.
+          bytes = new TextEncoder().encode(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+          headers.set("content-type", "text/plain; charset=utf-8");
+        } else {
+          await validatePreviewImage(bytes, record.mimeType);
+          if (preview === "thumb") {
+            bytes = await createPreviewThumbnail(bytes);
+            headers.set("content-type", "image/webp");
+          }
+        }
+        headers.set("content-length", String(bytes.byteLength));
+        return new Response(new Uint8Array(bytes), { headers });
+      } catch {
+        return unavailable();
       }
+    }
+    try {
       const object = await getStoredObjectStream(input.storage, record.storageKey, {
         maxBytes: record.byteSize,
         signal: request.signal

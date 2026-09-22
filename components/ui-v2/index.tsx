@@ -35,6 +35,7 @@ export type UiV2IconName =
   | "edit"
   | "expand"
   | "external"
+  | "eye"
   | "file"
   | "flask"
   | "folder"
@@ -144,6 +145,10 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-chevron-right" viewBox="0 0 24 24">
           <path d="m9 6 6 6-6 6" />
+        </symbol>
+        <symbol id="v2-icon-eye" viewBox="0 0 24 24">
+          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+          <circle cx="12" cy="12" r="3" />
         </symbol>
         <symbol id="v2-icon-close" viewBox="0 0 24 24">
           <path d="m6 6 12 12M18 6 6 18" />

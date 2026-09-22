@@ -55,6 +55,7 @@ export function createPrismaAttachmentLibraryRepository(
           attachment."fileName",
           attachment."id",
           attachment."messageId",
+          attachment."mimeType",
           attachment."savedAt",
           attachment."status",
           chat."id" AS "chatId",

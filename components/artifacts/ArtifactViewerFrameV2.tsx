@@ -9,12 +9,13 @@ type Props = Readonly<{
   compact: boolean;
   expanded: boolean;
   host: "chat" | "library" | "page";
+  label?: string;
   onClose(): void;
   title: string;
 }>;
 
 /** Keep the iframe in one body portal; reparenting a live iframe resets its browsing context. */
-export function ArtifactViewerFrameV2({ children, compact, expanded, host, onClose, title }: Props) {
+export function ArtifactViewerFrameV2({ children, compact, expanded, host, label, onClose, title }: Props) {
   const modal = compact || expanded;
   const dockRef = useRef<HTMLDivElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
@@ -50,11 +51,11 @@ export function ArtifactViewerFrameV2({ children, compact, expanded, host, onClo
       data-compact={compact || undefined} ref={dockRef} />
     {portalReady ? createPortal(<div className="v2-artifact-host-layer" data-host={host}
       data-mode={modal ? "modal" : "docked"} ref={layerRef}>
-      <section aria-label={`Artifact: ${title}`} aria-modal={modal || undefined} className="v2-artifact-host"
-        data-artifact-panel={host === "chat" || undefined} ref={dialogRef} role={modal ? "dialog" : host === "chat" ? "complementary" : undefined}
+      <section aria-label={label ?? `Artifact: ${title}`} aria-modal={modal || undefined} className="v2-artifact-host"
+        data-artifact-panel={host === "chat" || undefined} ref={dialogRef} role={modal ? "dialog" : host === "chat" || label ? "complementary" : undefined}
         tabIndex={-1} onKeyDown={event => {
           if (modal) onDialogKeyDown(event);
-          else if (host === "chat" && event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); onClose(); }
+          else if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); onClose(); }
         }}>
         {children(initialFocusRef)}
       </section>

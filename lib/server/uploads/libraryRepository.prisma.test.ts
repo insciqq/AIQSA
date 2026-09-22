@@ -56,6 +56,7 @@ describe("Prisma attachment Library repository", () => {
       for (let page = 0; page < 4; page += 1) {
         const files = await repository.listSent({ cursor, limit: 1, userId });
         if (!files.length) break;
+        expect(files[0]!.mimeType).toBe("text/plain");
         cursor = files[0]!.id;
         actual.push(cursor);
       }

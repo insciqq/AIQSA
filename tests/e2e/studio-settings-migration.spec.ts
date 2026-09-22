@@ -8,8 +8,8 @@ import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } fro
 
 const sizes = [{ width: 1440, height: 900 }, { width: 768, height: 1024 },
   { width: 1024, height: 768 }, { width: 390, height: 844 }, { width: 844, height: 390 }];
-const resources = ["Instructions", "MCP servers"] as const;
-type Resource = typeof resources[number];
+const resources = ["Instructions"] as const;
+type Resource = typeof resources[number] | "MCP servers";
 const server: UserMcpServer = {
   accountLabel: null, description: "Synthetic personal connection", enabled: true,
   fields: [{ configured: true, label: "Personal API key", minLength: 8, sensitive: true,
@@ -47,7 +47,8 @@ async function openDraft(page: Page, resource: Resource) {
   await runAccountMenuAction(page, resource);
   const library = page.getByTestId("library-v2");
   if (resource === "MCP servers") {
-    const input = library.getByLabel("Personal API key", { exact: true });
+    await library.getByRole("button", { name: "Open Research service" }).click();
+    const input = page.getByTestId("mcp-server-sheet").getByLabel("Personal API key", { exact: true });
     await input.fill("synthetic-studio-value");
     return input;
   }

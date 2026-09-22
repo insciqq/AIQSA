@@ -37,6 +37,11 @@ function userServer(id: string, name: string): UserMcpServer {
   };
 }
 
+async function openServer(name: string) {
+  fireEvent.click(await screen.findByRole("button", { name: `Open ${name}` }));
+  return screen.findByRole("dialog", { name });
+}
+
 describe("McpSettingsSection", () => {
   afterEach(() => {
     cleanup();
@@ -94,7 +99,6 @@ describe("McpSettingsSection", () => {
     expect(within(card!).getByRole("switch", { name: "Enable Todoist" })).toHaveAttribute("aria-checked", "true");
     // Persisted ready alone does not make a dormant server active.
     expect(within(card!).getByText("Inactive")).toBeVisible();
-    expect(within(card!).getByText("Enable connection")).toBeVisible();
     fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(false));
     expect(within(card!).getByText("Inactive")).toBeVisible();
@@ -125,10 +129,12 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Mem0" });
-
+    const sheet = await openServer("Mem0");
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-token" } });
     fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
     await waitFor(() => expect(servers[0]?.fields[0]?.source).toBe("personal"));
+    await waitFor(() => expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeEnabled());
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
 
     fireEvent.click(await screen.findByRole("switch", { name: "Enable Mem0" }));
     fireEvent.click(screen.getByRole("switch", { name: "Enable Todoist" }));
@@ -157,6 +163,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
+    await openServer("Notion");
     const connect = screen.getByRole("link", { name: "Connect" });
     expect(connect).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
     connect.addEventListener("click", (event) => event.preventDefault());
@@ -182,19 +189,21 @@ describe("McpSettingsSection", () => {
     expect(isMcpOAuthAuthorizing("notion")).toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
     expect(isMcpOAuthAuthorizing("notion")).toBe(false);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open Notion" })); });
     expect(screen.getByRole("link", { name: "Connect" })).toHaveAttribute("href");
   });
 
   it("blocks OAuth on every server while any personal values have an unsaved draft", async () => {
     const notion: UserMcpServer = {
-      ...userServer("notion", "Notion"), enabled: true, oauthAvailable: true,
+      ...userServer("notion", "Notion"), oauthAvailable: true,
       oauthState: "disconnected", readiness: "needs_authorization"
     };
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [userServer("mem0", "Mem0"), notion] })));
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
+    await openServer("Mem0");
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "synthetic-draft" } });
-    const connect = screen.getByRole("link", { name: "Connect" });
+    const connect = screen.getByRole("link", { name: "Connect Notion to enable", hidden: true });
     expect(connect).toHaveAttribute("aria-disabled", "true");
     expect(connect).not.toHaveAttribute("href");
     expect(screen.getByText("Save or clear your personal values first")).toBeVisible();
@@ -254,10 +263,13 @@ describe("McpSettingsSection", () => {
     await screen.findByRole("heading", { name: "Notion" });
     expect(screen.getByRole("button", { name: "Complete setup for Notion" })).toBeVisible();
     expect(screen.queryByRole("link", { name: "Connect Notion to enable" })).not.toBeInTheDocument();
-
+    fireEvent.click(screen.getByRole("button", { name: "Complete setup for Notion" }));
+    const sheet = await screen.findByRole("dialog", { name: "Notion" });
+    expect(within(sheet).getByRole("link", { name: "Connect" })).not.toHaveAttribute("href");
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-token" } });
     fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
-
+    await waitFor(() => expect(within(sheet).getByRole("link", { name: "Connect" })).toHaveAttribute("href"));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
     expect(await screen.findByRole("link", { name: "Connect Notion to enable" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Complete setup for Notion" })).not.toBeInTheDocument();
   });
@@ -285,6 +297,7 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Enable Notion" }));
 
     expect(await screen.findByText("Connect Notion to an external account before enabling it.")).toBeVisible();
+    await openServer("Notion");
     const reconnect = screen.getByRole("link", { name: "Reconnect" });
     expect(reconnect).toHaveAttribute("href", "/api/me/mcp/notion/oauth/reconnect");
     expect(screen.queryByText(/invalid_mcp_values/u)).not.toBeInTheDocument();
@@ -303,7 +316,7 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Complete setup for Mem0" }));
 
     expect(screen.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
-    expect(screen.getByLabelText("API key")).toHaveFocus();
+    await waitFor(() => expect(screen.getByLabelText("API key")).toHaveFocus());
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
@@ -396,7 +409,7 @@ describe("McpSettingsSection", () => {
     expect(idle).toHaveAttribute("data-tone", "neutral");
     expect(idle.closest("p")).toHaveTextContent("Inactive · 1 tool");
     expect(idle.closest("p")).toHaveAttribute("aria-live", "polite");
-    expect(screen.getAllByText("Enable connection")).toHaveLength(3);
+    expect(screen.getAllByRole("switch")).toHaveLength(3);
   });
 
   it("omits internal failure details from ordinary settings", async () => {
@@ -435,6 +448,85 @@ describe("McpSettingsSection", () => {
     expect(within(card!).getByText("Inactive")).toBeVisible();
     expect(within(card!).getByRole("switch", { name: "Enable Notion" })).toHaveAttribute("aria-checked", "true");
     expect(within(card!).getByText("Needs authorization")).toHaveAttribute("data-tone", "warn");
-    expect(within(card!).getByRole("link", { name: "Connect" })).toBeVisible();
+    const sheet = await openServer("Notion");
+    expect(within(sheet).getByRole("link", { name: "Connect" })).toBeVisible();
+  });
+
+  it("filters the catalog locally, opens details without fetching or starting servers, and keeps Hub lazy", async () => {
+    const servers: UserMcpServer[] = [userServer("mem0", "Mem0"), {
+      ...userServer("active", "Active server"), enabled: true, operationalStatus: "active", readiness: "ready"
+    }, { ...userServer("idle", "Idle server"), description: "Search this description" }];
+    const fetchMock = vi.fn(async () => response({ servers }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Idle server" });
+    expect(screen.getByRole("button", { name: "All 3" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Enabled 1" }));
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: "Active server" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Needs setup 1" }));
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: "Mem0" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "All 3" }));
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "  DESCRIPTION " } });
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    const sheet = await openServer("Idle server");
+    expect(within(sheet).getByText("Search this description")).toBeVisible();
+    expect(within(sheet).getByText("idle_tool")).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/me/mcp", expect.objectContaining({ cache: "no-store" }));
+  });
+
+  it("preserves personal drafts across refresh, protects closing, and settles failed saves before discarding", async () => {
+    let server = userServer("mem0", "Mem0");
+    let finishSave!: (response: Response) => void;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "PATCH"
+      ? new Promise<Response>(resolve => { finishSave = resolve; }) : response({ servers: [server] }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<McpSettingsSection />);
+    const sheet = await openServer("Mem0");
+    const input = within(sheet).getByLabelText("API key");
+    fireEvent.change(input, { target: { value: "synthetic-personal-value" } });
+    input.focus();
+    server = { ...server, description: "Refreshed description" };
+    fireEvent.click(within(sheet).getByRole("button", { name: "Refresh status" }));
+    await within(sheet).findByText("Refreshed description");
+    expect(within(sheet).getByLabelText("API key")).toBe(input);
+    expect(input).toHaveValue("synthetic-personal-value");
+    const beforeUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(beforeUnload);
+    expect(beforeUnload.defaultPrevented).toBe(true);
+    fireEvent.keyDown(sheet, { key: "Escape" });
+    const confirmation = await screen.findByRole("dialog", { name: "Unsaved MCP changes" });
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+    expect(input).toHaveValue("synthetic-personal-value");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+    await waitFor(() => expect(finishSave).toBeTypeOf("function"));
+    expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(within(sheet).getByRole("button", { name: "Close" })).toBeDisabled();
+    fireEvent.keyDown(sheet, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Unsaved MCP changes" })).toBeNull();
+    await act(async () => { finishSave(new Response("{}", { status: 503 })); });
+    expect(within(sheet).getByRole("alert")).toHaveTextContent("The MCP server could not be updated. Try again.");
+    expect(input).toHaveValue("synthetic-personal-value");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Unsaved MCP changes" }))
+      .getByRole("button", { name: "Confirm discard changes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Mem0" })).toHaveFocus());
+    expect(within(await openServer("Mem0")).getByLabelText("API key")).toHaveValue("");
+  });
+
+  it.each(["reauthorization_required", "needs_setup"] as const)("keeps the switch when an enabled server needs %s", async readiness => {
+    const server: UserMcpServer = { ...userServer("mem0", "Mem0"), enabled: true, readiness,
+      oauthAvailable: true, oauthState: "reauthorization_required" };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "PATCH"
+      ? response({ server: { ...server, enabled: false } }) : response({ servers: [server] }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<McpSettingsSection />);
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Mem0" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/me/mcp/mem0", expect.objectContaining({
+      method: "PATCH", body: JSON.stringify({ enabled: false })
+    })));
   });
 });

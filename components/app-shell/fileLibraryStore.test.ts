@@ -15,7 +15,8 @@ const response = () => Response.json({
     fileName: "brief.pdf",
     id: "attachment-1",
     messageId: "message-1",
-        savedAt: null,
+    savedAt: null,
+    previewKind: null,
     status: "ready"
   }]
 });
