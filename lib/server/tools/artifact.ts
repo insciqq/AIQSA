@@ -19,6 +19,8 @@ export function describeArtifactTool(policy: ArtifactResourcePolicy = getArtifac
       "Only self-contained UMD/IIFE or single-file modules without imports work; remote module graphs are unsupported. "
     : "New external resource downloads are disabled. Use inline or included files and exact conversation asset_ref images; saved vendored resources remain usable. ";
   return "Create or update a browser artifact (webpage, slides, HTML game, SVG, chart or image composition) when the user asks for one. " +
+    "For intent=create, provide kind, title and files. Every kind except image also requires an explicit entrypoint matching an included files[].path, for example entrypoint=\"index.html\" for an included index.html. " +
+    "The entrypoint file must have MIME type text/html or image/svg+xml; kind=svg requires image/svg+xml. For kind=image, omit entrypoint or set it to null and use only asset_ref image files. " +
     "Write HTML, CSS and JavaScript. Prefer plain CSS; ready precompiled CSS is supported. React/JSX compilation, Tailwind Play CDN and browser/server Tailwind compilation are unavailable. " +
     "Return complete files with relative local paths, inline code, or supported external resources. " + resources +
     "The viewer runs offline: no fetch/XHR/WebSocket/beacon or other network requests. Embed required data already obtained from conversation/tools as inline JSON. " +
@@ -27,7 +29,7 @@ export function describeArtifactTool(policy: ArtifactResourcePolicy = getArtifac
     "Blob downloads, pointer lock, fullscreen and clipboard writes are available subject to browser/user activation rules. " +
     "No nested iframe/object/embed, eval-dependent libraries, alert/confirm/prompt, popups or top navigation. " +
     "Images may use exact asset_ref values from the conversation; never invent identifiers. Make layouts responsive with viewport metadata, border-box sizing and no fixed minimum widths. " +
-    "For follow-up changes use intent=update and the exact base_version_id; unmentioned files/assets are preserved. Prefer edits with exact old_string to new_string replacements for small changes. " +
+    "For follow-up changes use intent=update and the exact base_version_id; unmentioned files/assets are preserved. Omit entrypoint to keep the base version's startup file, or supply the exact path of a valid entry file in the resulting bundle. Prefer edits with exact old_string to new_string replacements for small changes. " +
     "_vendor paths are server-managed read-only resources; never author or edit them. " +
     "The result is saved privately and appears as a conversation card the user can open; do not claim it is already open. Do not use this tool for ordinary prose or a single image generation request.";
 }
