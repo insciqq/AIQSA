@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 8;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 9;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -52,6 +52,11 @@ const candidateDefinitions: Readonly<Record<
   readonly QuickSetupCandidateDefinition[]
 >> = Object.freeze({
   anthropic: Object.freeze([
+    Object.freeze({
+      candidateId: "p9-a5",
+      recommended: false,
+      templateKey: "anthropic:claude-opus-5-5"
+    }),
     Object.freeze({
       candidateId: "p7-a3",
       recommended: false,
@@ -114,6 +119,16 @@ const candidateDefinitions: Readonly<Record<
   ]),
   openai: Object.freeze([
     Object.freeze({
+      candidateId: "p9-o6",
+      recommended: false,
+      templateKey: "openai:gpt-6-sol"
+    }),
+    Object.freeze({
+      candidateId: "p9-o7",
+      recommended: false,
+      templateKey: "openai:gpt-6-luna"
+    }),
+    Object.freeze({
       candidateId: "p7-o4",
       recommended: false,
       templateKey: "openai:gpt-6-astra"
@@ -140,6 +155,31 @@ const candidateDefinitions: Readonly<Record<
     })
   ]),
   openrouter: Object.freeze([
+    Object.freeze({
+      candidateId: "p9-r7",
+      recommended: false,
+      templateKey: "openrouter:anthropic/claude-opus-5.5"
+    }),
+    Object.freeze({
+      candidateId: "p9-r8",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6-sol"
+    }),
+    Object.freeze({
+      candidateId: "p9-r9",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6-luna"
+    }),
+    Object.freeze({
+      candidateId: "p9-r10",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6-sol-pro"
+    }),
+    Object.freeze({
+      candidateId: "p9-r11",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6-luna-pro"
+    }),
     Object.freeze({
       candidateId: "p1-r1",
       recommended: true,

@@ -9,6 +9,14 @@ export const providerTemplateIds = Object.freeze({
 });
 
 export const providerModelTemplateIds = Object.freeze({
+  "openai:gpt-6-sol": "00000000-0000-4000-8000-000000001246",
+  "openai:gpt-6-luna": "00000000-0000-4000-8000-000000001247",
+  "anthropic:claude-opus-5-5": "00000000-0000-4000-8000-000000001248",
+  "openrouter:openai/gpt-6-sol": "00000000-0000-4000-8000-000000001249",
+  "openrouter:openai/gpt-6-luna": "00000000-0000-4000-8000-000000001250",
+  "openrouter:openai/gpt-6-sol-pro": "00000000-0000-4000-8000-000000001251",
+  "openrouter:openai/gpt-6-luna-pro": "00000000-0000-4000-8000-000000001252",
+  "openrouter:anthropic/claude-opus-5.5": "00000000-0000-4000-8000-000000001253",
   "openrouter:typesafe/jev-1.13": "00000000-0000-4000-8000-000000001245",
   "deepseek:deepseek-flash": "00000000-0000-4000-8000-000000001235",
   "openrouter:deepseek/deepseek-v4.1-flash": "00000000-0000-4000-8000-000000001236",

@@ -173,12 +173,15 @@ describe("catalog capability matrix", () => {
     });
   });
 
-  it("publishes the GPT-5.6 family with its exact limits and model-specific reasoning controls", () => {
+  it("publishes GPT-5.6 and the new GPT-6 tiers with their exact limits and reasoning controls", () => {
     const models = defaultProviderModels.filter(
-      (entry) => entry.provider === "openai" && entry.modelId.startsWith("gpt-5.6-")
+      (entry) => entry.provider === "openai" &&
+        (entry.modelId.startsWith("gpt-5.6-") || ["gpt-6-sol", "gpt-6-luna"].includes(entry.modelId))
     );
 
     expect(models.map((model) => model.modelId)).toEqual([
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna"
@@ -224,9 +227,10 @@ describe("catalog capability matrix", () => {
   it("publishes current Claude 5 and native Gemini defaults as reviewed models", () => {
     const claudeModels = defaultProviderModels.filter(
       ({ provider }) => provider === "anthropic"
-    ).slice(0, 3);
+    ).filter(({ modelId }) => modelId !== "claude-opus-4-8");
     expect(claudeModels.map(({ modelId }) => modelId)).toEqual([
       "claude-fable-5-1",
+      "claude-opus-5-5",
       "claude-opus-5",
       "claude-sonnet-5"
     ]);
@@ -272,6 +276,23 @@ describe("catalog capability matrix", () => {
       );
     }
   });
+
+  it.each(["openai/gpt-6-sol", "openai/gpt-6-sol-pro", "openai/gpt-6-luna", "openai/gpt-6-luna-pro"])(
+    "keeps %s on the OpenRouter contract without unsupported temperature or native modes", (modelId) => {
+      const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
+      const catalog = buildCatalogModel(model, defaultSearchStrategies);
+      expect(model.adapterKind).toBe("openrouter_chat_completions");
+      expect(model.contextWindow).toBe(1_050_000);
+      expect(model.parameterControls.maxOutputTokens.maxValue).toBe(128_000);
+      expect(model.parameterControls.reasoningMode).toBeUndefined();
+      expect(model.parameterControls.temperature.supported).toBe(false);
+      expect(model.defaultParams).not.toHaveProperty("temperature");
+      expect(catalog.defaultParams).not.toHaveProperty("temperature");
+      expect(catalog.capabilities.background).toBe(false);
+      expect(catalog.capabilities.streaming).toBe(true);
+      expect(catalog.capabilities.toolCalling).toBe(true);
+    }
+  );
 
   it("distinguishes native PDF input from extracted PDF text in the catalog", () => {
     const openAI = defaultProviderModels.find((entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5");

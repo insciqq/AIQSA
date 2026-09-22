@@ -65,8 +65,12 @@ describe("admin provider credential tester", () => {
     await expect(tester.test({ ...input("openrouter"), modelClasses: ["decision"] })).rejects.toBeInstanceOf(AdminProviderCredentialTestError);
   });
   it("discovers exact native endpoints only for available requested setup models", async () => {
-    const models = adminProviderQuickSetupPolicy("openrouter").candidates.slice(0, 4).map(({ configuration }) => configuration);
-    const slugs = ["anthropic", "google-ai-studio", "deepseek", "deepseek"];
+    const candidates = adminProviderQuickSetupPolicy("openrouter").candidates;
+    const models = [
+      "anthropic/claude-opus-5.5", "google/gemini-3.8-flash", "deepseek/deepseek-v4.1-flash",
+      "deepseek/deepseek-v4-pro-0813", "openai/gpt-6-sol", "openai/gpt-6-luna"
+    ].map(id => candidates.find(({ configuration }) => configuration.upstreamModelId === id)!.configuration);
+    const slugs = ["anthropic", "google-ai-studio", "deepseek", "deepseek", "openai", "openai"];
     const requests: string[] = [];
     const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup, dispatch: async (request) => {
       requests.push(request.url.pathname);
@@ -78,7 +82,7 @@ describe("admin provider credential tester", () => {
     const outcome = await tester.test({ ...input("openrouter"), nativeRoutingModels: models });
     expect(outcome.nativeRoutes).toEqual(Object.fromEntries(models.map((model, i) =>
       [model.upstreamModelId, { available: true, provider: slugs[i] }])));
-    expect(requests).toHaveLength(5);
+    expect(requests).toHaveLength(models.length + 1);
   });
 
   it("feeds the actual compatible catalog projection through the client decoder", async () => {

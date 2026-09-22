@@ -73,6 +73,17 @@ function responseBody(frames: readonly string[]): ReadableStream<Uint8Array> {
 }
 
 describe("compatible Responses adapter", () => {
+  it.each(["gpt-6-sol", "gpt-6-luna"])("keeps %s reasoning portable without native lifecycle or cache fields", (modelId) => {
+    const body = buildCompatibleResponsesRequest(request({ modelId, params: {
+      background: true, store: true, stream: true,
+      reasoning: { effort: "medium", mode: "pro" }, temperature: 0.3
+    } }));
+    expect(body).toMatchObject({ model: modelId, store: false, stream: true,
+      reasoning: { effort: "medium", mode: "pro" } });
+    for (const field of ["background", "previous_response_id", "prompt_cache_options", "prompt_cache_retention", "temperature"]) {
+      expect(body).not.toHaveProperty(field);
+    }
+  });
   it("preserves required tool choice on the portable wire body", () => {
     expect(buildCompatibleResponsesRequest(request({
       toolChoice: "required",
