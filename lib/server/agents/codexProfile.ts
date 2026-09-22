@@ -1,8 +1,9 @@
 import { WORKSPACE_PROJECT_DIRECTORY } from "@/lib/domain/workspace";
+import { providerResponseTimeoutSeconds } from "@/lib/contracts/providerResponseTimeout";
 
 export const CODEX_VERSION = "0.154.0";
 /** Bump when managed profile semantics change; accepted thread compatibility includes it. */
-export const CODEX_MANAGED_PROFILE_VERSION = 4;
+export const CODEX_MANAGED_PROFILE_VERSION = 5;
 export const CODEX_PROVIDER_MAX_RETRIES = 2;
 export const CODEX_HOME_DIRECTORY = "/workspace/.aiqsa/codex";
 export const CODEX_RUN_TOKEN_ENV = "AIQSA_AGENT_TOKEN";
@@ -13,6 +14,8 @@ export type CodexManagedProfile = Readonly<{
   modelId: string;
   contextWindowTokens: number;
   maxOutputTokens: number;
+  /** The admitted provider request budget, including idle model reasoning. */
+  responseTimeoutMs?: number;
   /** Enabled only by the admitted provider capability. */
   nativeWebSearch?: boolean;
   standaloneWebSearch?: boolean;
@@ -45,11 +48,16 @@ function checkedGatewayOrigin(value: string): string {
 /** No provider key or run bearer is serialized into this on-disk profile. */
 export function renderCodexManagedProfile(input: CodexManagedProfile): string {
   const gateway = checkedGatewayOrigin(input.gatewayOrigin);
+  const responseTimeoutMs = input.responseTimeoutMs === undefined
+    ? providerResponseTimeoutSeconds.default * 1_000 : input.responseTimeoutMs;
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/u.test(input.modelId) ||
     !Number.isSafeInteger(input.contextWindowTokens) || input.contextWindowTokens < 4096 ||
     input.contextWindowTokens > 4_194_304 ||
     !Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1 ||
     input.maxOutputTokens >= input.contextWindowTokens ||
+    !Number.isSafeInteger(responseTimeoutMs) ||
+    responseTimeoutMs < providerResponseTimeoutSeconds.minimum * 1_000 ||
+    responseTimeoutMs > providerResponseTimeoutSeconds.maximum * 1_000 ||
     (input.standaloneWebSearch !== undefined && typeof input.standaloneWebSearch !== "boolean") ||
     (input.aiqsaSearch !== undefined && typeof input.aiqsaSearch !== "boolean") ||
     (input.artifacts !== undefined && typeof input.artifacts !== "boolean") ||
@@ -86,6 +94,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     // Nested HTTP retries would multiply physical dispatches behind this bound.
     'request_max_retries = 0',
     `stream_max_retries = ${CODEX_PROVIDER_MAX_RETRIES}`,
+    `stream_idle_timeout_ms = ${responseTimeoutMs}`,
     "",
     "[shell_environment_policy]",
     'inherit = "all"',

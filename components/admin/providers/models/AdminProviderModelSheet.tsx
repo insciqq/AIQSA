@@ -53,7 +53,7 @@ import type {
   AdminProviderModel,
   AdminProviderModelCapabilities
 } from "@/lib/contracts/adminProviders";
-import { ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS } from "@/lib/contracts/adminProviders";
+import { ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS, ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS, ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -828,7 +828,7 @@ function SheetBody({
                 value={form.responseTimeoutSeconds}
               />
             </label>
-            <span className={helpText}>Blank inherits the provider timeout. 5 to 900 seconds.</span>
+            <span className={helpText}>Blank inherits the provider timeout. {ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS} to {ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS} seconds (24 hours maximum). Applies to each provider request; other task limits still apply.</span>
           </div>
           {openRouter && !imageModel && form.modelClass !== "decision" ? (
             <div className="border-t border-trace-subtle">

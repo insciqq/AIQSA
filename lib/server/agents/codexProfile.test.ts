@@ -16,7 +16,15 @@ describe("managed Codex invocation", () => {
     const config = renderCodexManagedProfile(profile);
     expect(config).toContain("stream_max_retries = 2\n");
     expect(config).toContain("request_max_retries = 0\n");
-    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(4);
+    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(5);
+  });
+  it.each([undefined, 5_000, 3_600_000, 86_400_000])("uses the admitted response budget for native idle reasoning: %s", (responseTimeoutMs) => {
+    expect(renderCodexManagedProfile({ ...profile, responseTimeoutMs }))
+      .toContain(`stream_idle_timeout_ms = ${responseTimeoutMs ?? 300_000}\n`);
+  });
+  it.each([4_999, 86_400_001, 5_000.5, NaN, Infinity, null, "3600000"])("rejects an invalid native response timeout: %s", (responseTimeoutMs) => {
+    expect(() => renderCodexManagedProfile({ ...profile, responseTimeoutMs: responseTimeoutMs as number }))
+      .toThrow("agent_profile_invalid");
   });
   it("disables bundled Skills without overriding project or user discovery", () => {
     const config = renderCodexManagedProfile(profile);

@@ -58,6 +58,25 @@ function catalog(configuration: unknown, providerModels: unknown[] = []) {
 }
 
 describe("administrator Search contract", () => {
+  it("decodes long model deadlines without widening the independent Search budget", () => {
+    const model = {
+      connectionDisplayName: "Provider", connectionId: "connection-1", displayName: "Model",
+      enabled: true, id: "search-model-1", searchKind: "web_search", searchReasoningSupported: false
+    };
+    for (const seconds of [3600, 86_400]) {
+      const value = catalog(currentDraft, [{ ...model, responseTimeoutSeconds: seconds }]);
+      Object.assign(value.search.integrations[0]!.providerModel, { responseTimeoutSeconds: seconds });
+      expect(decodeAdminSearchCatalog(value)?.providerModels[0]?.responseTimeoutSeconds).toBe(seconds);
+    }
+    for (const seconds of [4, 86_401, 5.5, "3600"]) {
+      expect(decodeAdminSearchCatalog(catalog(currentDraft, [{ ...model, responseTimeoutSeconds: seconds }]))).toBeNull();
+      const value = catalog(currentDraft, [model]);
+      Object.assign(value.search.integrations[0]!.providerModel, { responseTimeoutSeconds: seconds });
+      expect(decodeAdminSearchCatalog(value)).toBeNull();
+    }
+    expect(decodeAdminSearchDraft({ ...currentDraft, timeoutMs: 3_600_000 })).toBeNull();
+  });
+
   it("requires the complete current execution and capability contract", () => {
     expect(decodeAdminSearchDraft(currentDraft)).toEqual(currentDraft);
     for (const key of [

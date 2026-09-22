@@ -5,6 +5,7 @@ import type {
   SearchPlanMode,
   SearchProtocol
 } from "./search";
+import { providerResponseTimeoutSeconds } from "./providerResponseTimeout";
 
 /** Server-owned physical configuration. The Control Center derives it from a
  * friendly provider-model choice and never presents its transport fields. */
@@ -205,7 +206,7 @@ function integration(value: unknown): boolean {
       (isRecord(providerModel) && string(providerModel.connectionDisplayName) &&
         string(providerModel.connectionId) && string(providerModel.displayName) &&
         string(providerModel.id) && (providerModel.responseTimeoutSeconds === undefined ||
-          boundedInteger(providerModel.responseTimeoutSeconds, 5, 900)))) &&
+          boundedInteger(providerModel.responseTimeoutSeconds, providerResponseTimeoutSeconds.minimum, providerResponseTimeoutSeconds.maximum)))) &&
     typeof value.ready === "boolean" &&
     (value.readiness === "ready" || value.readiness === "setup_required" ||
       value.readiness === "source_unavailable") &&
@@ -218,7 +219,7 @@ function providerModel(value: unknown): boolean {
   return isRecord(value) && string(value.connectionDisplayName) && string(value.connectionId) &&
     string(value.displayName) && typeof value.enabled === "boolean" && string(value.id) &&
     (value.responseTimeoutSeconds === undefined ||
-      boundedInteger(value.responseTimeoutSeconds, 5, 900)) &&
+      boundedInteger(value.responseTimeoutSeconds, providerResponseTimeoutSeconds.minimum, providerResponseTimeoutSeconds.maximum)) &&
     typeof value.searchReasoningSupported === "boolean" &&
     (value.searchKind === "anthropic_web_search" ||
       value.searchKind === "deepseek_web_search" ||

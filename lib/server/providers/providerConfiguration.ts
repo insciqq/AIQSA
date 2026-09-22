@@ -1,4 +1,5 @@
 import { normalizeImageModelConfiguration, normalizeImageGenerationParameters, type ImageModelConfiguration } from "../../contracts/imageGeneration";
+import { providerResponseTimeoutSeconds } from "../../contracts/providerResponseTimeout";
 import type { ProviderModelCapabilities } from "./types";
 import type { EmbeddingProviderFamily } from "../../domain/embeddingModels";
 import {
@@ -44,9 +45,9 @@ const RESERVED_REASONING_REQUEST_ROOTS = new Set([
   "tools"
 ]);
 
-export const DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS = 300_000;
-export const MIN_PROVIDER_RESPONSE_TIMEOUT_MS = 5_000;
-export const MAX_PROVIDER_RESPONSE_TIMEOUT_MS = 900_000;
+export const DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS = providerResponseTimeoutSeconds.default * 1_000;
+export const MIN_PROVIDER_RESPONSE_TIMEOUT_MS = providerResponseTimeoutSeconds.minimum * 1_000;
+export const MAX_PROVIDER_RESPONSE_TIMEOUT_MS = providerResponseTimeoutSeconds.maximum * 1_000;
 
 export const providerAdapterKinds = [
   "anthropic_messages",

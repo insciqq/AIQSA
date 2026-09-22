@@ -161,7 +161,7 @@ function TimeoutField({
   return (
     <Field
       className="sm:max-w-xs"
-      help={`How long one answer may take, from ${ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS} to ${ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS} seconds.`}
+      help={`Maximum time per provider request: ${ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS} to ${ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS} seconds (24 hours maximum). Other task limits still apply.`}
       label="Response timeout (seconds)"
       render={(id) => (
         <input
