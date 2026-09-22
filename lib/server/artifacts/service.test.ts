@@ -104,6 +104,22 @@ describe("artifact authorized projections", () => {
     findFirst.mockRejectedValueOnce(new Error("database_unavailable"));
     await expect(service.execute(call, context)).rejects.toThrow("database_unavailable");
   });
+  it.each([undefined, null, "missing.html"])("explains a missing startup file before allocating storage or a version: %s", async entrypoint => {
+    const transaction = vi.fn();
+    const putObject = vi.fn();
+    const db = { artifactVersion: { findFirst: async () => null, findUnique: async () => null }, $transaction: transaction } as unknown as PrismaClient;
+    const service = createArtifactService(db, { putObject } as unknown as StorageAdapter);
+    const result = await service.execute({ id: "call", name: "create_artifact", arguments: {
+      intent: "create", kind: "game", title: "Synthetic game", ...(entrypoint !== undefined ? { entrypoint } : {}),
+      files: [{ path: "index.html", mimeType: "text/html", text: "<p>PRIVATE_FILE_CANARY</p>" }]
+    } }, { userId: "owner", runId: "run", persistedToolCallId: "persisted", request: { chatId: "chat" } } as ToolExecutionContext);
+    expect(result).toMatchObject({ status: "error", content: [{ type: "json", value: {
+      error: "artifact_entrypoint_missing", hint: expect.stringContaining("Set entrypoint to the exact files[].path")
+    } }] });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_FILE_CANARY");
+    expect(transaction).not.toHaveBeenCalled();
+    expect(putObject).not.toHaveBeenCalled();
+  });
   it("reads anonymous page metadata without object storage or private projections", async () => {
     const findFirst = vi.fn(async () => ({ mode: "SINGLE", title: "Public example", kind: "html", expiresAt: null,
       artifactVersion: { id: "version", title: "Public example", kind: "html", versionNumber: 2, status: "READY" }, members: [] }));

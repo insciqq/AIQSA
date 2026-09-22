@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import type { ArtifactOperation, ArtifactReference } from "@/lib/contracts/artifacts";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
+import { textMessageContent } from "@/lib/domain/content";
 import { prisma } from "../prisma";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
 import type { StorageAdapter, StoredObjectInput } from "../uploads/storage";
@@ -12,9 +13,9 @@ import { createArtifactService } from "./service";
 
 const operation: ArtifactOperation = { intent: "create", kind: "game", title: "Counter", entrypoint: "index.html",
   files: [{ path: "index.html", mimeType: "text/html", text: '<button id="count">Count</button><script>let n=0;count.onclick=()=>count.textContent=String(++n)</script>' }] };
-function artifactReadRequest(chatId: string, reference: ArtifactReference): ProviderRunRequest {
+function artifactReadRequest(chatId: string, reference?: ArtifactReference): ProviderRunRequest {
   return {
-    artifactTool: true, artifactReferences: [reference], attachmentIds: [], attachments: [], chatId,
+    artifactTool: true, artifactReferences: reference ? [reference] : [], attachmentIds: [], attachments: [], chatId,
     content: { blocks: [{ type: "text", text: "Read the accepted artifact version." }] },
     knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false,
@@ -65,6 +66,43 @@ async function fixture(temporary = false) {
 
 describe("artifact settlement and lifecycle in PostgreSQL", () => {
   afterAll(async () => { await prisma.$disconnect(); });
+
+  it("creates exactly one ready game through the tool and preserves its entrypoint on a later edit", async () => {
+    const f = await fixture();
+    try {
+      const message = await prisma.message.create({ data: { chatId: f.chat.id, role: "user", content: textMessageContent("Synthetic game") } });
+      const run = await prisma.modelRun.create({ data: { chatId: f.chat.id, userId: f.owner.id,
+        userMessageId: message.id, provider: "fake", modelId: "fixture", status: "in_progress", normalizedRequest: {} } });
+      const call = { id: "create", name: "create_artifact", arguments: operation };
+      const persisted = await prisma.modelRunToolCall.create({ data: { modelRunId: run.id, roundIndex: 1,
+        ordinal: 0, providerCallId: call.id, toolName: call.name, arguments: {} } });
+      const context = { userId: f.owner.id, runId: run.id, persistedToolCallId: persisted.id,
+        request: artifactReadRequest(f.chat.id) };
+      const { entrypoint: _entrypoint, ...incomplete } = operation;
+      const rejected = await f.service.execute({ ...call, arguments: incomplete }, context);
+      expect(rejected).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "artifact_entrypoint_missing" } }] });
+      expect(await prisma.artifactVersion.count({ where: { sourceModelRunId: run.id } })).toBe(0);
+      expect(f.objects.size).toBe(0);
+      const created = await f.service.execute(call, context);
+      expect(created.status).toBe("complete");
+      const first = await prisma.artifactVersion.findUniqueOrThrow({ where: { sourceToolCallId: persisted.id } });
+      expect(first).toMatchObject({ status: "READY", entrypoint: "index.html", versionNumber: 1 });
+      expect(await f.service.execute(call, context)).toEqual(created);
+      expect(await prisma.artifactVersion.count({ where: { sourceModelRunId: run.id } })).toBe(1);
+      const edit = await prisma.modelRunToolCall.create({ data: { modelRunId: run.id, roundIndex: 2,
+        ordinal: 0, providerCallId: "edit", toolName: call.name, arguments: {} } });
+      const updated = await f.service.execute({ id: "edit", name: call.name, arguments: { intent: "update", base_version_id: first.id,
+        edits: [{ path: "index.html", old_string: "Count</button>", new_string: "Score</button>" }] } }, {
+        ...context, persistedToolCallId: edit.id, request: artifactReadRequest(f.chat.id, { artifactId: first.artifactId, versionId: first.id })
+      });
+      expect(updated.status).toBe("complete");
+      expect(await prisma.artifactVersion.findUniqueOrThrow({ where: { sourceToolCallId: edit.id } }))
+        .toMatchObject({ artifactId: first.artifactId, status: "READY", entrypoint: "index.html", versionNumber: 2 });
+    } finally {
+      await prisma.modelRun.deleteMany({ where: { userId: f.owner.id } });
+      await f.cleanup();
+    }
+  });
 
   it("keeps temporary chats outside durable artifact creation and editing", async () => {
     const f = await fixture(true);

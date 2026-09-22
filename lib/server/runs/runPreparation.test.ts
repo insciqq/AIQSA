@@ -2136,6 +2136,8 @@ describe("run preparation", () => {
       vi.stubEnv("AIQSA_ARTIFACT_IMAGE_HOSTS", "images.example.com");
       const accepted = preparedFrom(await prepareRun({ ...harness.deps, artifacts }, sendInput(body)));
       const description = accepted.normalizedRequest.artifactToolDescription;
+      expect(description).toContain("Every kind except image also requires an explicit entrypoint matching an included files[].path");
+      expect(description).toContain("Omit entrypoint to keep the base version's startup file");
       expect(description).toContain("cdnjs.cloudflare.com");
       expect(description).toContain("images.example.com");
       expect(description).not.toContain("fonts.gstatic.com");

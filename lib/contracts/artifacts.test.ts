@@ -71,6 +71,34 @@ describe("artifact contract", () => {
     expect(() => normalizeArtifactOperation(html({ intent: "update" }))).toThrow("artifact_base_version_invalid");
   });
 
+  it.each(["html", "game", "slides", "chart", "svg"])("requires an included explicit entrypoint for a new %s", kind => {
+    const entrypoint = kind === "svg" ? "drawing.svg" : "page.html";
+    const files = [{ path: entrypoint, mimeType: kind === "svg" ? "image/svg+xml" : "text/html", text: "Synthetic" }];
+    for (const invalid of [undefined, null, "missing.html"]) {
+      expect(() => normalizeArtifactOperation(html({ kind, files, entrypoint: invalid })))
+        .toThrow("artifact_entrypoint_missing");
+    }
+    expect(normalizeArtifactOperation(html({ kind, files, entrypoint })).entrypoint).toBe(entrypoint);
+    expect(() => normalizeArtifactOperation(html({ kind, files: [{ ...files[0], mimeType: "text/css" }], entrypoint })))
+      .toThrow("artifact_entrypoint_invalid");
+  });
+
+  it("inherits an update entrypoint and validates an explicit change against the merged files", () => {
+    const base = normalizeArtifactOperation(html());
+    const update = { intent: "update", baseVersionId: "base", files: [{ path: "next.svg", mimeType: "image/svg+xml", text: "<svg/>" }] };
+    expect(normalizeArtifactOperation(update, base).entrypoint).toBe("index.html");
+    expect(normalizeArtifactOperation({ ...update, entrypoint: "next.svg" }, base).entrypoint).toBe("next.svg");
+    expect(() => normalizeArtifactOperation({ ...update, entrypoint: "absent.html" }, base)).toThrow("artifact_entrypoint_missing");
+    expect(() => normalizeArtifactOperation({ ...update, kind: "svg" }, base)).toThrow("artifact_entrypoint_invalid");
+  });
+
+  it("keeps image compositions free of a startup file", () => {
+    const image = { intent: "create", kind: "image", title: "Picture", files: [{ path: "picture.png", mimeType: "image/png", assetRef: "accepted-image" }] };
+    expect(normalizeArtifactOperation(image).entrypoint).toBeNull();
+    expect(normalizeArtifactOperation({ ...image, entrypoint: null }).entrypoint).toBeNull();
+    expect(() => normalizeArtifactOperation({ ...image, entrypoint: "picture.png" })).toThrow("artifact_entrypoint_invalid");
+  });
+
   it("publishes a restrictive CSP without network or same-origin access", () => {
     const csp = artifactContentSecurityPolicy();
     expect(csp).toContain("connect-src 'none'");
