@@ -144,7 +144,7 @@ import type {
 } from "@/components/app-shell/types";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
@@ -324,10 +324,12 @@ export function restorePersonalComposerControls(
 
 export function PowerAppShellV2({
   accountId,
+  accountDisplayName,
   accountEmail,
   adminEntryVisible = false
 }: {
   accountId: string;
+  accountDisplayName: string;
   accountEmail: string | null;
   adminEntryVisible?: boolean;
 }) {
@@ -337,6 +339,14 @@ export function PowerAppShellV2({
   useLayoutEffect(() => {
     activeSettingsSessionRef.current = settingsSession;
     return () => { activeSettingsSessionRef.current = null; };
+  }, [settingsSession]);
+  const [savedAccountName, setSavedAccountName] = useState<{
+    session: symbol;
+    displayName: string;
+  } | null>(null);
+  const updateAccountDisplayName = useCallback((displayName: string) => {
+    if (activeSettingsSessionRef.current !== settingsSession) return;
+    setSavedAccountName({ session: settingsSession, displayName });
   }, [settingsSession]);
   const catalogError = useWorkspaceStore((state) => state.catalogError);
   const folders = useWorkspaceStore((state) => state.folders);
@@ -1350,7 +1360,10 @@ export function PowerAppShellV2({
 
   const sessionView = {
     accountId,
+    accountDisplayName: savedAccountName?.session === settingsSession
+      ? savedAccountName.displayName : accountDisplayName,
     accountEmail,
+    updateAccountDisplayName,
     activeChatId,
     activeChatTitle,
     adminEntryVisible,

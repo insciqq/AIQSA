@@ -1319,7 +1319,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           column (PRD §4.1/§4.10, FRONTEND "Chat Composition"). */}
       {(
         <ReadingRoomShellV2
-          accountLabel={session.accountEmail}
+          accountLabel={session.accountDisplayName.trim() || session.accountEmail}
           adminEntryVisible={session.adminEntryVisible}
           chatActive={Boolean(session.activeChatId)}
           projectsSectionOpen={projectsSurfaceOpen}
@@ -1772,6 +1772,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onDirtyChange={setAccountDirty}
                 accountEmail={session.accountEmail}
                 adminEntryVisible={session.adminEntryVisible}
+                onDisplayNameChange={session.updateAccountDisplayName}
               />
             ),
             data: dataSubview === "archived" ? (
@@ -1925,9 +1926,11 @@ function SettingsPendingDeletionRowV2() {
 function SettingsAccountPanelV2({
   accountEmail,
   adminEntryVisible,
+  onDisplayNameChange,
   onDirtyChange,
   onBusyChange
 }: Readonly<{ accountEmail: string | null; adminEntryVisible: boolean;
+  onDisplayNameChange(displayName: string): void;
   onDirtyChange(dirty: boolean): void; onBusyChange(busy: boolean): void;
 }>) {
   const [signingOut, setSigningOut] = useState(false);
@@ -1936,7 +1939,8 @@ function SettingsAccountPanelV2({
   useEffect(() => { onBusyChange(saving || signingOut); return () => onBusyChange(false); }, [onBusyChange, saving, signingOut]);
   return (
     <>
-      <AccountSettingsRowsV2 accountEmail={accountEmail} adminEntryVisible={adminEntryVisible} onDirtyChange={onDirtyChange} onBusyChange={setSaving} />
+      <AccountSettingsRowsV2 accountEmail={accountEmail} adminEntryVisible={adminEntryVisible}
+        onDisplayNameChange={onDisplayNameChange} onDirtyChange={onDirtyChange} onBusyChange={setSaving} />
       {adminEntryVisible ? (
         <SettingsRowV2
           description="Installation resources, providers, users and policies."

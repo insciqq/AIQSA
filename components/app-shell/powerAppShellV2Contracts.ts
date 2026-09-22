@@ -41,7 +41,9 @@ import type { ProjectWorkspaceController } from "@/features/projects-v2/useProje
 
 export type ShellSessionView = {
   accountId: string;
+  accountDisplayName: string;
   accountEmail: string | null;
+  updateAccountDisplayName(displayName: string): void;
   activeChatId: string | null;
   activeChatTitle: string;
   adminEntryVisible: boolean;
