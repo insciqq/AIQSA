@@ -61,7 +61,7 @@ The reader receives bounded untrusted evidence with source/speaker authority, da
 
 Digests and contextual keys navigate to supported raw excerpts, never proving whole-chat relevance or exact facts. Missing enrichment uses safe raw history. Settled output/schema failures permit three attempts per source and repair/Memory-role revision. Preserve successful stages, bindings and usage. Never replay ambiguous dispatches; expose exhaustion. Preserve roles, message boundaries, provenance and timestamps. Recall admits only allowlisted sanitized settled tool observations, never raw arguments/results. Digests, observations and assistant speech cannot supply automatic facts/patterns.
 
-Phase B freezes the exact authorized pack; recovery does not retrieve again. Browser sources derive only from committed run items and carry friendly text plus opaque operation-bound references, never repository identities, scores or internal policy. Every source action revalidates current authority; presentation grouping cannot authorize navigation or mutation. [Run contracts](RUN_CONTRACTS.md) owns admission and settlement.
+Before Phase B, index replacement permits bounded fresh retrieval with proven read-only control reuse under unchanged authority. Accepted packs remain frozen through recovery. Browser sources expose committed items through friendly text and opaque operation-bound references, never repository identities, scores or policies. Actions reauthorize; presentation grants no authority. [Run contracts](RUN_CONTRACTS.md) owns settlement.
 
 ## Cutover And Deletion
 

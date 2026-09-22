@@ -2680,7 +2680,7 @@ describe("Personal Memory v1 run admission", () => {
     vi.setSystemTime(now);
     try {
       const local = repository({});
-      const revisedSnapshot = { ...snapshot("generation-1"), memoryRevision: 5 };
+      const revisedSnapshot = { ...snapshot("generation-2"), memoryRevision: 5 };
       vi.mocked(local.value.snapshot).mockResolvedValueOnce(snapshot("generation-1"));
       local.retrieve.mockResolvedValueOnce({
         core: [],
@@ -2709,7 +2709,7 @@ describe("Personal Memory v1 run admission", () => {
         ...runInput("What is my name?"),
         attemptId: "attempt-2",
         controlCache,
-        expected: { ...expected("generation-1"), memoryRevision: 5 }
+        expected: { ...expected("generation-2"), memoryRevision: 5 }
       });
 
       expect(retry).toMatchObject({
@@ -4431,6 +4431,90 @@ describe("Personal Memory v1 run admission", () => {
     expect(temporaryAction.execute).not.toHaveBeenCalled();
     expect(disabledControl.decide).not.toHaveBeenCalled();
     expect(disabledAction.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { controlState: "READY", outcome: "USED" },
+    { controlState: "READY", outcome: "EMPTY" },
+    { controlState: "UNAVAILABLE", outcome: "USED" },
+    { controlState: "UNAVAILABLE", outcome: "EMPTY" }
+  ] as const)("rereads after two projection cutovers: $controlState control, $outcome pack", async ({ controlState, outcome }) => {
+    const local = repository({});
+    const current = (ordinal: number) => ({
+      ...snapshot(`generation-${ordinal + 1}`), memoryRevision: 4 + ordinal
+    });
+    for (let ordinal = 0; ordinal < 3; ordinal += 1) {
+      vi.mocked(local.value.snapshot).mockResolvedValueOnce(current(ordinal));
+      local.retrieve.mockResolvedValueOnce({
+        core: [],
+        laneResults: [{ candidates: (ordinal < 2 ? ["stale-memory"] : outcome === "USED" ? ["current-memory"] : [])
+          .map(laneCandidate), lane: "HISTORY_RECALL_VECTOR" }],
+        lexicalEvidence: [], lexicalFailures: [], lexicalState: "READY",
+        snapshot: current(Math.min(ordinal + 1, 2)), vectorEvidence: [], vectorState: "READY"
+      });
+    }
+    const options = retrievalOptions(outcome === "USED" ? ["c0"] : []);
+    for (let ordinal = 0; ordinal < 3; ordinal += 1) {
+      options.vectorRepository.resolveActiveProfile.mockResolvedValueOnce({
+        profile: { ...profile, generationId: `generation-${ordinal + 1}` }, status: "READY"
+      });
+    }
+    vi.mocked(options.utilities.embedQuery).mockImplementation(async input => ({
+      bindingId: "binding-embedding", profile: input.profile, status: "READY",
+      vector: Array.from({ length: 1_024 }, (_, index) => index === 0 ? 1 : 0)
+    }));
+    const control = controlState === "READY" ? options.control : {
+      decide: vi.fn(async () => ({ bindingId: "failed-control-binding",
+        reason: "memory_action_intent_unavailable", status: "UNAVAILABLE" as const }))
+    };
+    const actionExecutor = { execute: vi.fn() };
+    const controlCache: MemoryRunControlCache = {};
+    const service = createMemoryRunRetrievalService(local.value, { ...options, control, actionExecutor });
+    const input = runInput("What is my name?");
+    for (let ordinal = 0; ordinal < 2; ordinal += 1) {
+      await expect(service.retrieve({ ...input, attemptId: `attempt-${ordinal + 1}`, controlCache,
+        expected: { ...expected(`generation-${ordinal + 1}`), memoryRevision: 4 + ordinal }
+      })).rejects.toMatchObject({ code: "memory_admission_settings_changed", retryable: true });
+    }
+    const retry = await service.retrieve({ ...input, attemptId: "attempt-3", controlCache,
+      expected: { ...expected("generation-3"), memoryRevision: 6 } });
+
+    expect(retry.outcome).toBe(outcome);
+    expect(retry.items?.map(item => item.exactItemId)).toEqual(outcome === "USED" ? ["current-memory"] : []);
+    expect(retry.preparedContext?.text ?? "").not.toContain("stale-memory");
+    expect(retry.budgetSnapshot).toMatchObject(controlState === "READY"
+      ? { readOnlyControlReuse: { sourceAttemptId: "attempt-1", sourceBindingId: "binding-control" } }
+      : { fallbackControlReuse: { sourceAttemptId: "attempt-1", reason: "memory_action_intent_unavailable" } });
+    expect(local.value.snapshot).toHaveBeenCalledTimes(3);
+    expect(local.retrieve).toHaveBeenCalledTimes(3);
+    expect(control.decide).toHaveBeenCalledOnce();
+    expect(actionExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["settings revision", { settingsRevision: 9 }],
+    ["consent", { memoryConsentRevision: 9 }],
+    ["egress", { acceptedUtilityEgressFingerprint: "changed" }],
+    ["egress policy", { acceptedUtilityPolicyVersion: "changed" }],
+    ["learning", { learnAutomatically: false }],
+    ["history", { referenceChatHistory: false }],
+    ["decay", { decayEnabled: true }]
+  ])("does not reuse control across index and %s changes", async (_label, change) => {
+    const local = repository({});
+    const options = retrievalOptions([]);
+    const controlCache: MemoryRunControlCache = {};
+    const service = createMemoryRunRetrievalService(local.value, options);
+    await service.retrieve({ ...runInput("What is my name?"), controlCache });
+    const current = expected("generation-2");
+    const retry = await service.retrieve({ ...runInput("What is my name?"),
+      attemptId: "attempt-2", controlCache,
+      expected: { ...current, settings: { ...current.settings, ...change } }
+    });
+    expect(retry).toMatchObject({ outcome: "FAILED_SAFE",
+      budgetSnapshot: { reason: "memory_control_retry_not_reused" } });
+    expect(options.control.decide).toHaveBeenCalledOnce();
+    expect(local.value.snapshot).toHaveBeenCalledOnce();
+    expect(local.retrieve).toHaveBeenCalledOnce();
   });
 
   it("reuses an exact read-only NONE plan after revision drift and returns candidates", async () => {

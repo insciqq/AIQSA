@@ -657,9 +657,12 @@ describe("read-only control retry scope", () => {
     userId: "user-1"
   });
   const current = Object.freeze({ ...source, attemptOrdinal: 1, id: "attempt-2" });
+  const switched = Object.freeze({ ...current, indexGenerationIdSnapshot: "generation-2",
+    settingsSnapshot: { ...current.settingsSnapshot, activeIndexGenerationId: "generation-2" } });
 
   it("accepts the exact retry scope across the bounded retry chain", () => {
     expect(sameMemoryReadOnlyControlRetryScope(source, current)).toBe(true);
+    expect(sameMemoryReadOnlyControlRetryScope(source, switched)).toBe(true);
     expect(sameMemoryReadOnlyControlRetryScope(source, {
       ...current,
       attemptOrdinal: 2,
@@ -678,6 +681,12 @@ describe("read-only control retry scope", () => {
   });
 
   it.each([
+    ["owner", { userId: "user-2" }],
+    ["chat", { chatId: "chat-2" }],
+    ["user message", { admittedUserMessageId: "user-message-2" }],
+    ["assistant", { assistantIdSnapshot: "assistant-2" }],
+    ["folder", { folderIdSnapshot: "folder-2" }],
+    ["temporary chat", { chatMemoryModeSnapshot: "TEMPORARY" as const }],
     ["run", { modelRunId: "run-2" }],
     ["base request", { baseRequestHash: "c".repeat(64) }],
     ["assistant leaf", { admittedAssistantLeafMessageId: "assistant-message-2" }],
@@ -699,5 +708,23 @@ describe("read-only control retry scope", () => {
   ])("rejects tampered %s lineage", (_label, change) => {
     expect(sameMemoryReadOnlyControlRetryScope(source, { ...current, ...change }))
       .toBe(false);
+  });
+
+  it.each([
+    ["revision", { settingsRevision: 6 }],
+    ["consent", { memoryConsentRevision: 3 }],
+    ["egress", { acceptedUtilityEgressFingerprint: "c".repeat(64) }],
+    ["policy", { acceptedUtilityPolicyVersion: "changed" }],
+    ["pause", { useMemoryFacts: false }],
+    ["history", { referenceChatHistory: false }],
+    ["learning", { learnAutomatically: false }],
+    ["decay", { decayEnabled: true }]
+  ])("rejects %s changes even during an otherwise valid projection cutover", (_label, change) => {
+    expect(sameMemoryReadOnlyControlRetryScope(source, { ...switched,
+      settingsSnapshot: { ...switched.settingsSnapshot, ...change }
+    })).toBe(false);
+    expect(sameMemoryReadOnlyControlRetryScope({ ...source,
+      settingsSnapshot: { ...source.settingsSnapshot, ...change }
+    }, switched)).toBe(false);
   });
 });
