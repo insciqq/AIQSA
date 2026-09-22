@@ -1,14 +1,21 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SettingsV2 } from "./SettingsV2";
 
 describe("SettingsV2", () => {
+  it("contains only the four personal account sections in their intended order", () => {
+    render(<SettingsV2 connectedAppsContent={<p>Apps</p>} panels={{ account: <p>Account</p>, data: <p>Data</p> }}
+      onClose={vi.fn()} onThemeChange={vi.fn()} themeId="light" />);
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(within(nav).getAllByRole("button").map(button => button.textContent?.trim())).toEqual([
+      "General", "Account", "Connected apps", "Data"
+    ]);
+  });
   it("exposes exactly System, Light, and Dark and supports roving selection", () => {
     const onThemeChange = vi.fn();
     render(
       <SettingsV2
         connectedAppsContent={<p>Connected apps owner</p>}
-        mcpContent={<p>MCP owner</p>}
         onClose={vi.fn()}
         onThemeChange={onThemeChange}
         themeId="system"
@@ -41,7 +48,6 @@ describe("SettingsV2", () => {
       render(
         <SettingsV2
           connectedAppsContent={<p>Connected apps owner</p>}
-          mcpContent={<p>MCP owner</p>}
           onClose={vi.fn()}
           onThemeChange={vi.fn()}
           panels={{ data: <p>Data owner</p> }}
@@ -72,8 +78,7 @@ describe("SettingsV2", () => {
   });
 
   it.each([
-    ["mcp", "Unsaved MCP changes"],
-    ["workspace_secrets", "Unsaved Workspace secret"]
+    ["account", "Unsaved account changes"]
   ] as const)("lets the %s owner block section replacement until discard is explicit", (section, label) => {
     const onDiscard = vi.fn();
     render(
@@ -81,8 +86,7 @@ describe("SettingsV2", () => {
         connectedAppsContent={<p>Connected apps owner</p>}
         dirty
         initialSection={section}
-        mcpContent={<p>MCP owner</p>}
-        panels={{ workspace_secrets: <p>Workspace secret owner</p> }}
+        panels={{ account: <p>Account owner</p> }}
         onClose={vi.fn()}
         onDiscard={onDiscard}
         onThemeChange={vi.fn()}
@@ -97,14 +101,13 @@ describe("SettingsV2", () => {
     expect(screen.getByRole("radiogroup", { name: "Theme" })).toBeInTheDocument();
   });
 
-  it("blocks close while the existing MCP owner is busy", () => {
+  it("blocks close while the Account owner is busy", () => {
     const onClose = vi.fn();
     render(
       <SettingsV2
         busy
         connectedAppsContent={<p>Connected apps owner</p>}
-        initialSection="mcp"
-        mcpContent={<p>MCP owner</p>}
+        initialSection="account"
         onClose={onClose}
         onThemeChange={vi.fn()}
         themeId="dark"
@@ -119,7 +122,6 @@ describe("SettingsV2", () => {
     render(
       <SettingsV2
         connectedAppsContent={<p>Personal Memory grants</p>}
-        mcpContent={<p>Outbound MCP servers</p>}
         onClose={vi.fn()}
         onThemeChange={vi.fn()}
         themeId="dark"
@@ -131,9 +133,7 @@ describe("SettingsV2", () => {
     expect(screen.getByText("Personal Memory grants")).toBeInTheDocument();
     expect(screen.queryByText("Outbound MCP servers")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "MCP & tools" }));
-    expect(screen.getByText("Outbound MCP servers")).toBeInTheDocument();
-    expect(screen.queryByText("Personal Memory grants")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "MCP & tools" })).not.toBeInTheDocument();
   });
 
   it("owns a focus-safe section subview and settles it before another tab", async () => {
@@ -143,7 +143,6 @@ describe("SettingsV2", () => {
       <SettingsV2
         connectedAppsContent={<p>Connected apps owner</p>}
         initialSection="data"
-        mcpContent={<p>MCP owner</p>}
         onClose={vi.fn()}
         onSectionChange={onSectionChange}
         onThemeChange={vi.fn()}

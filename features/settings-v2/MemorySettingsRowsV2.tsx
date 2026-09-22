@@ -1,14 +1,16 @@
 "use client";
 
+import { invalidateMemoryManagerData, refreshMemoryList, useMemoryManagerStore } from "@/components/app-shell/memoryManagerStore";
 import { resetPersonalMemory } from "@/components/app-shell/memoryApi";
 import {
   refreshMemorySettings,
+  refreshMemorySettingsAfterReset,
   updateMemoryGate,
   useMemorySettingsStore,
   type MemorySettingsMutation
 } from "@/components/app-shell/memorySettingsStore";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
-import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
+import { UiV2Button } from "@/components/ui-v2";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { SettingsGroupLabelV2, SettingsRowV2, SettingsSwitchV2 } from "./SettingsV2";
 
@@ -18,10 +20,13 @@ function t(key: Parameters<typeof memoryUiCopy>[0]): string {
 
 type ResetNotice = "complete" | "error" | "started" | null;
 
-/** Settings › Memory owns the five controls, Library route, and confirmed reset. */
+/** The Memory page owns its five controls and the confirmed reset. */
 export function MemorySettingsRowsV2({
-  onOpenLibrary
-}: Readonly<{ onOpenLibrary(): void }>) {
+  onBusyChange
+}: Readonly<{ onBusyChange?(busy: boolean): void }> = {}) {
+  const managerMutation = useMemoryManagerStore(state => state.mutationState);
+  const managerAccountId = useMemoryManagerStore(state => state.accountId);
+  const managerResetPending = useMemoryManagerStore(state => state.resetPending);
   const busy = useMemorySettingsStore((state) => state.busy);
   const data = useMemorySettingsStore((state) => state.data);
   const loadState = useMemorySettingsStore((state) => state.loadState);
@@ -31,21 +36,30 @@ export function MemorySettingsRowsV2({
   const [resetNotice, setResetNotice] = useState<ResetNotice>(null);
   const resetInFlight = useRef(false);
   const resetTriggerRef = useRef<HTMLButtonElement>(null);
-  const resetPending = resetNotice === "started" || data?.resetState === "IN_PROGRESS";
+  const resetPending = managerResetPending || resetNotice === "started" || data?.resetState === "IN_PROGRESS";
+  useEffect(() => { onBusyChange?.(resetBusy || busy !== null); return () => onBusyChange?.(false); }, [busy, onBusyChange, resetBusy]);
+  useEffect(() => {
+    if (data?.resetState === "IN_PROGRESS" && !useMemoryManagerStore.getState().resetPending) {
+      invalidateMemoryManagerData(useMemoryManagerStore.getState().accountId, true);
+    }
+  }, [data?.resetState, managerAccountId, managerResetPending]);
 
   useEffect(() => {
     void refreshMemorySettings().catch(() => undefined);
   }, []);
 
   useEffect(() => {
-    if (!resetPending) return;
+    if (!resetPending || resetBusy) return;
     let cancelled = false;
+    const accountId = useMemoryManagerStore.getState().accountId;
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
       const current = await refreshMemorySettings(true).catch(() => null);
-      if (cancelled) return;
+      if (cancelled || useMemoryManagerStore.getState().accountId !== accountId) return;
       if (current?.resetState === "IDLE") {
         setResetNotice("complete");
+        invalidateMemoryManagerData(accountId);
+        await refreshMemoryList().catch(() => undefined);
       } else {
         timer = setTimeout(() => void refresh(), 2_000);
       }
@@ -55,7 +69,7 @@ export function MemorySettingsRowsV2({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [resetPending]);
+  }, [managerAccountId, resetBusy, resetPending]);
 
   if (!data) {
     return loadState === "error" ? (
@@ -139,20 +153,32 @@ export function MemorySettingsRowsV2({
         : null;
 
   const confirmReset = () => {
-    if (resetInFlight.current) return;
+    if (resetInFlight.current || managerMutation) return;
+    const accountId = useMemoryManagerStore.getState().accountId;
+    const currentOwner = () => useMemoryManagerStore.getState().accountId === accountId;
     resetInFlight.current = true;
     setResetBusy(true);
     setResetNotice(null);
+    useMemoryManagerStore.setState({ resetPending: true });
     void resetPersonalMemory().then(
       async (result) => {
+        if (!currentOwner()) return;
+        invalidateMemoryManagerData(accountId, result.status !== "COMPLETE");
         setResetOpen(false);
         setResetNotice(result.status === "COMPLETE" ? "complete" : "started");
-        await refreshMemorySettings(true).catch(() => undefined);
+        await refreshMemorySettingsAfterReset().catch(() => undefined);
+        if (currentOwner() && result.status === "COMPLETE") await refreshMemoryList().catch(() => undefined);
       },
-      () => setResetNotice("error")
+      async () => {
+        if (!currentOwner()) return;
+        setResetNotice("error");
+        invalidateMemoryManagerData(accountId);
+        await refreshMemorySettingsAfterReset().catch(() => undefined);
+        if (currentOwner()) await refreshMemoryList().catch(() => undefined);
+      }
     ).finally(() => {
       resetInFlight.current = false;
-      setResetBusy(false);
+      if (currentOwner()) setResetBusy(false);
     });
   };
   const closeReset = () => {
@@ -186,7 +212,7 @@ export function MemorySettingsRowsV2({
 
   return (
     <>
-      <div
+      {!active ? <div
         className="v2-settings-status-card"
         data-state={active ? "on" : "off"}
         data-testid="settings-memory-status"
@@ -198,7 +224,7 @@ export function MemorySettingsRowsV2({
             <small>{statusDetail}</small>
           </div>
         </div>
-      </div>
+      </div> : null}
       {error ? (
         <div className="v2-settings-note" role="alert">
           <span>{t("settings.confirmationError")}</span>
@@ -220,22 +246,6 @@ export function MemorySettingsRowsV2({
           />
         </SettingsRowV2>
       ))}
-      <p className="v2-settings-note">
-        <UiV2Icon name="chat" />
-        <span>{t("settings.temporaryDescription")}</span>
-      </p>
-      <SettingsRowV2
-        description="Read, edit or forget individual details."
-        title="Saved memories"
-      >
-        <UiV2Button
-          disabled={!managementAvailable}
-          icon="chevron-right"
-          onClick={onOpenLibrary}
-        >
-          Open in Library
-        </UiV2Button>
-      </SettingsRowV2>
       <SettingsGroupLabelV2 tone="danger">Danger zone</SettingsGroupLabelV2>
       <SettingsRowV2
         description="Removes every saved detail. Your chats are not deleted."
@@ -246,7 +256,7 @@ export function MemorySettingsRowsV2({
         <UiV2Button
           ref={resetTriggerRef}
           busy={resetBusy}
-          disabled={!managementAvailable || data.resetState === "IN_PROGRESS"}
+          disabled={!managementAvailable || Boolean(managerMutation) || resetPending || busy !== null}
           tone="destructive"
           onClick={() => {
             setResetNotice(null);

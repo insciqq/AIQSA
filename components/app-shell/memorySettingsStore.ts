@@ -135,6 +135,12 @@ export function activateMemorySettings(accountId: string): void {
   useMemorySettingsStore.setState({ ...initialState, accountId }, true);
 }
 
+/** A reset must not reuse a settings read dispatched before its acknowledgement. */
+export function refreshMemorySettingsAfterReset(): Promise<MemoryConsumerSettingsResponse> {
+  invalidateSettingsLoad();
+  return refreshMemorySettings(true);
+}
+
 export async function updateMemoryGate(
   key: "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "synthesisEnabled" |
     "useMemoryFacts",

@@ -48,6 +48,7 @@ import type {
 } from "./contracts";
 import { fileExtension, fileTypeLabel, groupLibraryFiles } from "./filePresentation";
 import { formatStudioDate, formatStudioTime } from "./studioDate";
+import { MemorySettingsCardV2 } from "./MemorySettingsCardV2";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
@@ -991,7 +992,7 @@ function FileRowV2({
   );
 }
 
-/** Library › Memory owns the direct saved-memory list and row-level CRUD. */
+/** The Memory page owns the saved-memory list and row-level CRUD. */
 export function MemoryPanelV2({
   activeRef,
   busy,
@@ -1011,7 +1012,8 @@ export function MemoryPanelV2({
   onEdit,
   onForget,
   onLoadMore,
-  onOpenSettings,
+  settingsContent,
+  resetPending = false,
   onQueryChange,
   onRetry,
   onSave,
@@ -1038,7 +1040,8 @@ export function MemoryPanelV2({
   onEdit(memoryRef: string): void;
   onForget(memoryRef: string): void;
   onLoadMore(): void;
-  onOpenSettings?(): void;
+  settingsContent?: ReactNode;
+  resetPending?: boolean;
   onQueryChange(value: string): void;
   onRetry?(): void;
   onSave(): void;
@@ -1090,12 +1093,12 @@ export function MemoryPanelV2({
     : memory.status === "PAUSED"
       ? "Answers do not read these facts. Nothing was deleted."
       : statusDescription;
-  const listControlsDisabled = busy !== null || rowMode !== null;
+  const listControlsDisabled = resetPending || busy !== null || rowMode !== null;
   const note = longFactPresent
     ? { icon: "alert" as const, text: mt("library.longFactDescription") }
     : memory.status === "PAUSED"
       ? { icon: "alert" as const, text: mt("library.pausedManagementDescription") }
-      : { icon: "lock" as const, text: mt("library.temporaryDescription") };
+      : null;
   const saveDisabled = busy !== null || mutationOutcomeUnknown || draft.trim().length === 0 ||
     draft.length > MEMORY_CONSUMER_STATEMENT_MAX_LENGTH;
 
@@ -1104,11 +1107,6 @@ export function MemoryPanelV2({
       <SectionHeading
         action={(
           <>
-            {onOpenSettings ? (
-              <UiV2Button className="v2-memory-settings-text" icon="settings" onClick={onOpenSettings}>
-                Memory settings
-              </UiV2Button>
-            ) : null}
             <UiV2Button
               disabled={!memory.explicitCrudAvailable || mutationOutcomeUnknown || listControlsDisabled || listState === "loading"}
               icon="plus"
@@ -1124,6 +1122,10 @@ export function MemoryPanelV2({
       >
         {mt("settings.heading")}
       </SectionHeading>
+      <div className="v2-memory-layout" data-with-settings={Boolean(settingsContent) || undefined}>
+      {settingsContent ? <MemorySettingsCardV2 status={statusLabel}>{settingsContent}</MemorySettingsCardV2> : null}
+      <div className="v2-memory-main">
+      {resetPending ? <p className="v2-resource-empty" role="status">{mt("settings.resetStarted")}</p> : <>
       <div className="v2-memory-toolbar">
         <span className="v2-memory-state" data-tone={memory.status === "ON" ? "ok" : memory.status === "PAUSED" ? "off" : "warn"}>
           <UiV2Icon name={memory.status === "ON" ? "check" : "memory"} />
@@ -1252,10 +1254,17 @@ export function MemoryPanelV2({
           </UiV2Button>
         </div>
       ) : null}
-      <p className="v2-library-note">
+      </>}
+      {note ? <p className="v2-library-note">
         <UiV2Icon name={note.icon} />
         <span>{note.text}</span>
+      </p> : null}
+      <p className="v2-library-note">
+        <UiV2Icon name="lock" />
+        <span>{mt("library.temporaryDescription")}</span>
       </p>
+      </div>
+      </div>
     </div>
   );
 }

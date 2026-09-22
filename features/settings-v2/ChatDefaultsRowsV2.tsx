@@ -92,6 +92,8 @@ export function ChatDefaultsRowsV2({
   onSkillsMode,
   onKnowledgePlan,
   onMcpMode,
+  onOpenMcp,
+  onOpenSkills,
   onSearchPlan,
   searchPlan,
   searchStrategies
@@ -103,6 +105,8 @@ export function ChatDefaultsRowsV2({
   onSkillsMode?(mode: "auto" | "off"): void;
   onKnowledgePlan(plan: KnowledgeSelection | null): void;
   onMcpMode(mode: ChatDefaultMcpMode): void;
+  onOpenMcp?(): void;
+  onOpenSkills?(): void;
   onSearchPlan(plan: SearchPlan): void;
   searchPlan: SearchPlan;
   searchStrategies: readonly CatalogSearchStrategy[];
@@ -133,7 +137,7 @@ export function ChatDefaultsRowsV2({
           })}
         />
       </SettingsRowV2>
-      <SettingsRowV2 description="How a new chat discovers tools from your enabled servers." testId="settings-default-mcp" title="MCP tools">
+      <SettingsRowV2 description={<>How a new chat discovers tools from your enabled servers. {onOpenMcp ? <button className="v2-studio-inline-link v2-focusable" onClick={onOpenMcp} type="button">MCP servers</button> : null}</>} testId="settings-default-mcp" title="MCP tools">
         <SettingsSegmentV2
           label="MCP tools default"
           options={MCP_MODES.map((option) => ({ label: option.label, value: option.mode }))}
@@ -141,7 +145,7 @@ export function ChatDefaultsRowsV2({
           onChange={onMcpMode}
         />
       </SettingsRowV2>
-      <SettingsRowV2 description="Let the model load your enabled Skills when useful. Pinned Skills are always included." testId="settings-default-skills" title="Skills">
+      <SettingsRowV2 description={<>Let the model load your enabled Skills when useful. Pinned Skills are always included. {onOpenSkills ? <button className="v2-studio-inline-link v2-focusable" onClick={onOpenSkills} type="button">Skills</button> : null}</>} testId="settings-default-skills" title="Skills">
         <SettingsSegmentV2 label="Skills default" options={[{ label: "Auto", value: "auto" }, { label: "Off", value: "off" }]}
           value={skillsMode} onChange={mode => onSkillsMode?.(mode)} />
       </SettingsRowV2>

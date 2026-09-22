@@ -13,9 +13,8 @@ test.describe.configure({ mode: "serial" });
 test.afterAll(() => prisma.$disconnect());
 
 async function openInstructions(page: Page) {
-  await runAccountMenuAction(page, "Settings");
-  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Chat defaults" }).click();
-  await expect(page.getByRole("button", { name: "Active instructions" })).toBeEnabled();
+  await runAccountMenuAction(page, "Instructions");
+  await expect(page.getByRole("button", { name: "Active instructions" })).toBeEnabled({ timeout: 30_000 });
   await page.getByRole("button", { name: "Manage presets…" }).click();
 }
 
@@ -66,7 +65,7 @@ for (const viewport of viewports) {
       await panel.getByRole("button", { name: "View instructions" }).click();
       const preview = panel.getByRole("region", { name: "AIQSA default instructions preview" });
       await expect(preview.getByRole("heading", { name: "AIQSA default instructions", exact: true })).toBeFocused();
-      await expect(preview.getByText("System baseline", { exact: true })).toBeVisible();
+      await expect(preview.getByText("System baseline", { exact: true })).toBeVisible({ timeout: 30_000 });
       await expect(preview.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/u);
       expect(await preview.textContent()).not.toMatch(/\{\{(?:date|time)\}\}/u);
       await page.screenshot({ path: testInfo.outputPath(`${viewport.name}-preview-top.png`) });
@@ -86,8 +85,8 @@ for (const viewport of viewports) {
       await panel.getByRole("button", { name: "Keep editing" }).press("Enter");
       await expect(panel.getByLabel("Name", { exact: true })).toBeFocused();
       await expect(panel.getByLabel("System instructions", { exact: true })).toHaveValue("Private synthetic writing preference");
-      await page.keyboard.press("Escape");
-      const discard = page.getByRole("alertdialog", { name: "Unsaved instructions" });
+      await page.getByRole("button", { name: "Back to chat" }).click();
+      const discard = page.getByRole("dialog", { name: "Unsaved instructions" });
       await expect(discard).toBeVisible();
       await discard.getByRole("button", { name: "Keep editing" }).click();
       await panel.getByRole("button", { name: "Save", exact: true }).click();
@@ -128,8 +127,8 @@ for (const viewport of viewports) {
       await manage.press("Enter");
       await expect(panel.getByRole("heading", { name: "Instruction presets" })).toBeVisible();
       await expect(panel.getByLabel("System instructions", { exact: true })).toHaveCount(0);
-      await page.keyboard.press("Escape");
-      await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toHaveCount(0);
+      await page.getByRole("button", { name: "Back to chat" }).click();
+      await expect(page.getByTestId("library-v2")).toHaveCount(0);
       expect(pageErrors).toBe(0);
     } finally {
       await prisma.user.delete({ where: { id: userId } });

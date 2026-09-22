@@ -1,7 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpSettingsSection } from "./McpSettingsSection";
-import { isMcpOAuthAuthorizing } from "./mcpSettingsStore";
+import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing } from "./mcpSettingsStore";
 import { MCP_RUN_PLAN_LIMITS, type UserMcpServer } from "@/lib/contracts/mcp";
 import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
 
@@ -42,6 +42,7 @@ describe("McpSettingsSection", () => {
     cleanup();
     resetMcpSettingsStoreForTest();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("keeps the data warning visible and collapses exact tool and run details until requested", async () => {
@@ -144,7 +145,7 @@ describe("McpSettingsSection", () => {
     expect(screen.getByText("2 of 2 servers enabled · 2 tools")).toBeVisible();
   });
 
-  it("shows the transient authorizing state while an OAuth redirect is in flight", async () => {
+  it("clears the transient authorizing state when OAuth navigation is cancelled", async () => {
     const notion: UserMcpServer = {
       ...userServer("notion", "Notion"),
       enabled: true,
@@ -165,6 +166,42 @@ describe("McpSettingsSection", () => {
     expect(screen.getByRole("link", { name: "Authorizing" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("link", { name: "Authorizing" })).toHaveAttribute("aria-busy", "true");
     expect(isMcpOAuthAuthorizing("notion")).toBe(true);
+    await waitFor(() => expect(screen.getByRole("link", { name: "Connect" })).toBeEnabled());
+    expect(isMcpOAuthAuthorizing("notion")).toBe(false);
+  });
+
+  it("recovers OAuth controls when the current document survives navigation", async () => {
+    const notion: UserMcpServer = {
+      ...userServer("notion", "Notion"), enabled: true, oauthAvailable: true,
+      oauthState: "disconnected", readiness: "needs_authorization"
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [notion] })));
+    vi.useFakeTimers();
+    markMcpOAuthAuthorizing("notion");
+    await act(async () => { render(<McpSettingsSection />); });
+    expect(isMcpOAuthAuthorizing("notion")).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(isMcpOAuthAuthorizing("notion")).toBe(false);
+    expect(screen.getByRole("link", { name: "Connect" })).toHaveAttribute("href");
+  });
+
+  it("blocks OAuth on every server while any personal values have an unsaved draft", async () => {
+    const notion: UserMcpServer = {
+      ...userServer("notion", "Notion"), enabled: true, oauthAvailable: true,
+      oauthState: "disconnected", readiness: "needs_authorization"
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [userServer("mem0", "Mem0"), notion] })));
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Notion" });
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "synthetic-draft" } });
+    const connect = screen.getByRole("link", { name: "Connect" });
+    expect(connect).toHaveAttribute("aria-disabled", "true");
+    expect(connect).not.toHaveAttribute("href");
+    expect(screen.getByText("Save or clear your personal values first")).toBeVisible();
+    fireEvent.click(connect);
+    expect(isMcpOAuthAuthorizing("notion")).toBe(false);
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "" } });
+    expect(connect).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
   });
 
   it("routes a disconnected OAuth server through Connect instead of sending an invalid enable patch", async () => {
@@ -189,6 +226,7 @@ describe("McpSettingsSection", () => {
     expect(screen.getAllByText("Authorizing in your browser…")).toHaveLength(1);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
     expect(screen.queryByText(/invalid_mcp_values/u)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Authorizing in your browser…")).toBeNull());
   });
 
   it("orders personal setup before OAuth connection when both are required", async () => {

@@ -75,7 +75,7 @@ function outcomeUrl(input: Readonly<{
 }>): string {
   const url = new URL(input.purpose === "validation" ? "/admin" : "/", input.appBaseUrl);
   if (input.purpose === "validation") url.searchParams.set("section", "mcp");
-  else url.searchParams.set("settings", "mcp");
+  else url.searchParams.set("library", "mcp");
   url.searchParams.set("oauth", input.outcome);
   url.searchParams.set("server", input.serverId);
   return url.toString();

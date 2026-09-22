@@ -289,7 +289,6 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
                 }}
                 onForget={(memoryRef) => setMemoryRow({ memoryRef, mode: "forget" })}
                 onLoadMore={() => undefined}
-                onOpenSettings={() => undefined}
                 onQueryChange={setMemoryQuery}
                 onRetry={() => undefined}
                 onSave={() => {

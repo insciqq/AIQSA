@@ -9,12 +9,12 @@ export function useMcpOAuthReturn(accountId: string, openMcpSettings: () => void
     queueMicrotask(() => {
       if (!current) return;
       const url = new URL(window.location.href);
-      const shouldOpenMcp = url.searchParams.get("settings") === "mcp";
+      const shouldOpenMcp = url.searchParams.get("settings") === "mcp" ||
+        (url.searchParams.get("library") === "mcp" && url.searchParams.has("oauth"));
+      if (!shouldOpenMcp) return;
       consumeMcpOAuthReturn(url);
-      if (shouldOpenMcp) {
-        openMcpSettings();
-        void refreshMcpSettings(true).catch(() => undefined);
-      }
+      openMcpSettings();
+      void refreshMcpSettings(true).catch(() => undefined);
     });
     return () => { current = false; };
   }, [accountId, openMcpSettings]);

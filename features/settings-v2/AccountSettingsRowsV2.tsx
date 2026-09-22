@@ -14,6 +14,7 @@ import {
 } from "@/lib/contracts/account";
 import { useEffect, useState, type FormEvent } from "react";
 import { SettingsRowV2 } from "./SettingsV2";
+import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 
 /** "operator@aiqsa.local" → "Operator": a readable stand-in for a missing Display name. */
 export function accountNameFromEmailV2(email: string | null | undefined): string {
@@ -38,8 +39,12 @@ type PasswordFormState =
  */
 export function AccountSettingsRowsV2({
   accountEmail,
-  adminEntryVisible
-}: Readonly<{ accountEmail: string | null; adminEntryVisible: boolean }>) {
+  adminEntryVisible,
+  onDirtyChange,
+  onBusyChange
+}: Readonly<{ accountEmail: string | null; adminEntryVisible: boolean;
+  onDirtyChange?(dirty: boolean): void; onBusyChange?(busy: boolean): void;
+}>) {
   const [profile, setProfile] = useState<AccountProfileWire | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -47,6 +52,7 @@ export function AccountSettingsRowsV2({
   const [nameSaved, setNameSaved] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const [password, setPassword] = useState<PasswordFormState>({ kind: "closed" });
+  const [passwordDirty, setPasswordDirty] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +73,11 @@ export function AccountSettingsRowsV2({
 
   const email = profile?.email ?? accountEmail;
   const nameDirty = profile !== null && nameDraft.trim() !== profile.displayName;
+  const dirty = nameDirty || (password.kind === "editing" && passwordDirty);
+  const busy = nameSaving || (password.kind === "editing" && password.saving);
+  useBeforeUnloadGuard(dirty || busy);
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
+  useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
 
   const saveName = () => {
     if (!profile || !nameDirty || nameSaving) return;
@@ -162,25 +173,26 @@ export function AccountSettingsRowsV2({
           title="Password"
         >
           {password.kind === "editing" ? null : (
-            <UiV2Button onClick={() => setPassword({ error: null, kind: "editing", saving: false })}>
+            <UiV2Button onClick={() => { setPasswordDirty(false); setPassword({ error: null, kind: "editing", saving: false }); }}>
               Change…
             </UiV2Button>
           )}
         </SettingsRowV2>
       ) : null}
       {password.kind === "editing" ? (
-        <form className="v2-settings-form" data-testid="settings-password-form" onSubmit={submitPassword}>
+        <form className="v2-settings-form" data-testid="settings-password-form" onSubmit={submitPassword}
+          onChange={event => setPasswordDirty([...new FormData(event.currentTarget).values()].some(value => typeof value === "string" && value.length > 0))}>
           <label>
             <span>Current password</span>
-            <input autoComplete="current-password" className="v2-settings-input" name="currentPassword" required type="password" />
+            <input disabled={password.saving} autoComplete="current-password" className="v2-settings-input" name="currentPassword" required type="password" />
           </label>
           <label>
             <span>New password</span>
-            <input autoComplete="new-password" className="v2-settings-input" minLength={8} name="newPassword" required type="password" />
+            <input disabled={password.saving} autoComplete="new-password" className="v2-settings-input" minLength={8} name="newPassword" required type="password" />
           </label>
           <label>
             <span>Confirm new password</span>
-            <input autoComplete="new-password" className="v2-settings-input" minLength={8} name="confirmPassword" required type="password" />
+            <input disabled={password.saving} autoComplete="new-password" className="v2-settings-input" minLength={8} name="confirmPassword" required type="password" />
           </label>
           {password.error ? <span className="v2-live-menu-error" role="alert">{password.error}</span> : null}
           <div className="v2-settings-form-actions">

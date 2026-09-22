@@ -69,6 +69,11 @@ import type {
 } from "@/features/library-v2/contracts";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
+import { ChatDefaultsPanelV2 } from "@/features/library-v2/ChatDefaultsPanelV2";
+import { InstructionsSettingsPanel } from "@/features/settings-v2/InstructionsSettingsPanel";
+import { WorkspaceSecretsPanel } from "@/features/settings-v2/WorkspaceSecretsPanel";
+import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
+import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
 
 function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: Readonly<{
   composer: ShellComposerView;
@@ -87,6 +92,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const memoryMutationError = useMemoryManagerStore((state) => state.mutationError);
   const memoryMutationOutcomeUnknown = useMemoryManagerStore((state) => state.mutationOutcomeUnknown);
   const memoryBusy = useMemoryManagerStore((state) => state.mutationState);
+  const memoryResetPending = useMemoryManagerStore(state => state.resetPending);
   const memoryNextCursor = useMemoryManagerStore((state) => state.nextCursor);
   const memoryNotice = useMemoryManagerStore((state) => state.notice);
   const memoryQueryApplied = useMemoryManagerStore((state) => state.queryApplied);
@@ -135,6 +141,11 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
   const [assistantExit, setAssistantExit] = useState<(() => void) | null>(null);
   const [memoryExit, setMemoryExit] = useState<(() => void) | null>(null);
+  const [formDirty, setFormDirty] = useState(false);
+  const [formBusy, setFormBusy] = useState(false);
+  const [formKey, setFormKey] = useState(0);
+  const [formExit, setFormExit] = useState<(() => void) | null>(null);
+  useBeforeUnloadGuard(formDirty || formBusy);
   useBeforeUnloadGuard(memoryDraftDirty);
   const assistantDirty = Boolean(
     assistantView?.task === "editor" && assistantView.editor?.dirty
@@ -155,7 +166,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
 
   const navigationBusy = Boolean(
-    assistantView?.busy || assistantView?.editor?.saving || knowledgeView?.busy || memoryBusy
+    assistantView?.busy || assistantView?.editor?.saving || knowledgeView?.busy || memoryBusy || formBusy
   );
   const requestNavigation = useEventCallback((proceed: () => void) => {
     if (navigationBusy) return;
@@ -163,8 +174,13 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     else if (activeTab === "assistants" && assistantDirty) {
       setAssistantExit(() => () => { assistantView?.editor?.onCancel(); proceed(); });
     } else if (activeTab === "memory" && memoryDraftDirty) setMemoryExit(() => proceed);
+    else if (formDirty) setFormExit(() => proceed);
     else proceed();
   });
+  const navigateToSection = (tab: LibraryTabIdV2) => {
+    if (settings.studio) settings.studio.open(tab);
+    else requestNavigation(() => setActiveTab(tab));
+  };
   const registerGuard = settings.studio?.registerGuard;
   useLayoutEffect(() => {
     registerGuard?.(requestNavigation, navigationBusy);
@@ -260,6 +276,10 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     useMemoryFacts: false
   };
   const tabs: LibraryTabV2[] = [
+    { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
+    { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} /> },
+    { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} /> },
+    { id: "mcp", label: "MCP servers", content: <McpSettingsSection key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
     {
       content: (
         assistantView && assistantView.task !== "list" ? (
@@ -380,6 +400,8 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     {
       content: (
         <MemoryPanelV2
+          settingsContent={<MemorySettingsRowsV2 onBusyChange={setFormBusy} />}
+          resetPending={memoryResetPending}
           activeRef={activeMemory?.memoryRef ?? null}
           busy={memoryBusy}
           draft={memoryDraft}
@@ -407,7 +429,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           }}
           onForget={requestForgetMemory}
           onLoadMore={() => void refreshMemoryList({ append: true }).catch(() => undefined)}
-          onOpenSettings={settings.openMemorySettingsTab}
           onQueryChange={setMemoryQuery}
           onRetry={() => void Promise.all([
             refreshMemorySettings(true).catch(() => null),
@@ -508,6 +529,21 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
         }}
       />
       {knowledgeExit.confirmation}
+      {formExit ? <DiscardChangesConfirmationDialog
+        portal label="changes"
+        copy={{
+          title: activeTab === "instructions" ? "Discard your unsaved instructions?" : "Discard unsaved changes?",
+          body: activeTab === "instructions" ? "Your unsaved instructions will be lost." : activeTab === "secrets" ? "Your unsaved Workspace secret will be lost." : "Changes to your personal MCP connection will be lost.",
+          dialogLabel: activeTab === "instructions" ? "Unsaved instructions" : activeTab === "secrets" ? "Unsaved Workspace secret" : "Unsaved MCP changes",
+          cancelLabel: "Keep editing", confirmLabel: "Discard changes"
+        }}
+        onCancel={() => setFormExit(null)}
+        onConfirm={() => {
+          const proceed = formExit;
+          setFormExit(null); setFormDirty(false); setFormKey(value => value + 1);
+          proceed();
+        }}
+      /> : null}
       {assistantExit ? (
         <DiscardChangesConfirmationDialog
           portal

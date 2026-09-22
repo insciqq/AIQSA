@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext } from "@playwright/test";
-import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
+import { memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
 
 const modes = [
@@ -141,12 +141,9 @@ for (const theme of ["dark", "light"] as const) {
 
       if (mode.name === "mobile") {
         const addBox = await panel.getByRole("button", { name: "Add memory" }).boundingBox();
-        const settingsBox = await panel.getByRole("button", { name: "Memory settings" }).boundingBox();
         const searchBox = await panel.getByRole("searchbox", { name: "Search memories" }).boundingBox();
         expect(addBox?.height).toBeGreaterThanOrEqual(44);
-        expect(settingsBox?.height).toBeGreaterThanOrEqual(44);
         expect(searchBox?.height).toBeGreaterThanOrEqual(40);
-        expect((addBox?.width ?? 0) > (settingsBox?.width ?? 0) * 4).toBe(true);
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     });
@@ -178,13 +175,16 @@ for (const theme of ["dark", "light"] as const) {
         resetRequests += 1;
         await route.fulfill({ contentType: "application/json", json: { status: "COMPLETE" } });
       });
-      await page.goto("/ui-v2-fixture?fixture=settings&state=memory");
-
-      const settings = page.getByRole("dialog", { name: "Settings" });
-      await expect(settings.getByTestId("settings-memory-status")).toContainText("Memory is on");
+      await authenticateWithLocalToken(page.request);
+      await page.route("**/api/me/memories**", route => route.fulfill({ json: memoryConsumerListFixture([]) }));
+      await page.goto("/?library=memory");
+      const settings = page.getByRole("complementary", { name: "How Memory works" });
+      const disclosure = settings.getByRole("button", { name: /^How Memory works/ });
+      if (await disclosure.isVisible()) await disclosure.click();
+      await expect(page.locator(".v2-memory-state")).toContainText("Memory is on");
       await expect(settings.getByRole("switch")).toHaveCount(5);
       await expect(settings.getByRole("button", { name: "Pause" })).toHaveCount(0);
-      await expect(settings.getByRole("button", { name: "Open in Library" })).toBeEnabled();
+      await expect(settings.getByRole("button", { name: "Open in Library" })).toHaveCount(0);
 
       await settings.getByRole("button", { name: "Forget everything…" }).click();
       let confirmation = page.getByRole("alertdialog", { name: "Forget everything?" });
@@ -203,11 +203,11 @@ for (const theme of ["dark", "light"] as const) {
   }
 }
 
-test("Settings has one modal layer, a three-value theme registry, and MCP discard ownership", async ({ page }) => {
+test("Settings has one modal layer, a three-value theme registry, and Account discard ownership", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=settings&state=dirty");
   await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
   await page.getByRole("button", { name: "General" }).click();
-  const confirmation = page.getByRole("alertdialog", { name: "Unsaved MCP changes" });
+  const confirmation = page.getByRole("alertdialog", { name: "Unsaved account changes" });
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole("button", { name: "Discard changes" }).click();
   await expect(page.getByRole("radio")).toHaveCount(3);

@@ -174,6 +174,40 @@ describe("AccountSettingsRowsV2", () => {
     expect(screen.getByTestId("settings-account-identity")).toHaveTextContent("ada@example.com · Member");
   });
 
+  it("reports reverted drafts as clean and keeps a password request busy until it settles", async () => {
+    accountApi.loadAccountProfile.mockResolvedValue({
+      displayName: "Ada", email: "ada@example.com", hasPassword: true, role: "user"
+    });
+    let finish!: () => void;
+    accountApi.changeAccountPassword.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    const onDirtyChange = vi.fn();
+    const onBusyChange = vi.fn();
+    render(<AccountSettingsRowsV2 accountEmail="ada@example.com" adminEntryVisible={false}
+      onDirtyChange={onDirtyChange} onBusyChange={onBusyChange} />);
+    const name = screen.getByRole("textbox", { name: "Display name" });
+    await waitFor(() => expect(name).toHaveValue("Ada"));
+    fireEvent.change(name, { target: { value: "Grace" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(name, { target: { value: "Ada" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getByRole("button", { name: "Change…" }));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: "synthetic-current" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: "" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: "synthetic-current" } });
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "synthetic-next" } });
+    fireEvent.change(screen.getByLabelText("Confirm new password"), { target: { value: "synthetic-next" } });
+    fireEvent.submit(screen.getByTestId("settings-password-form"));
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    expect(screen.getByLabelText("Current password")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await act(async () => { finish(); });
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("saves the display name on Enter and changes the password only when both entries match", async () => {
     accountApi.loadAccountProfile.mockResolvedValue({
       displayName: "Ada", email: "ada@example.com", hasPassword: true, role: "admin"

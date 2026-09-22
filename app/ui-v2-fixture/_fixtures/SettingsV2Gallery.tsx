@@ -15,14 +15,12 @@ import { applyThemeId, type ThemeId } from "@/components/app-shell/theme";
 import type { MemoryConsumerSettingsResponse } from "@/lib/contracts/memoryConsumer";
 import { useRef, useState } from "react";
 import {
-  McpSettingsSummaryV2,
   SettingsRowV2,
   SettingsV2
 } from "@/features/settings-v2/SettingsV2";
-import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
 import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
 
-export type SettingsGalleryStateV2 = "appearance" | "archived" | "dirty" | "mcp" | "memory";
+export type SettingsGalleryStateV2 = "appearance" | "archived" | "dirty" | "account";
 
 const archiveMemorySettings: MemoryConsumerSettingsResponse = {
   capabilities: {
@@ -94,26 +92,7 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
             </div>
           )}
           dirty={dirty}
-          initialSection={state === "appearance"
-            ? "general"
-            : state === "memory"
-              ? "memory"
-              : state === "archived"
-                ? "data"
-                : "mcp"}
-          mcpContent={(
-            <>
-              <McpSettingsSummaryV2 servers={[
-                { detail: "Workspace · OAuth connected", enabled: true, id: "jira", name: "Jira", ready: true, tools: 6 },
-                { detail: "Personal setup required", enabled: true, id: "drive", name: "Drive", ready: false, tools: 0 }
-              ]} />
-              <div className="v2-settings-fixture-dirty">
-                <UiV2Button onClick={() => setDirty((value) => !value)}>
-                  {dirty ? "Save fixture" : "Edit personal field"}
-                </UiV2Button>
-              </div>
-            </>
-          )}
+          initialSection={state === "appearance" ? "general" : state === "archived" ? "data" : "account"}
           obscured={deletionObscuresSettings}
           onClose={() => setOpen(false)}
           onDiscard={() => setDirty(false)}
@@ -132,7 +111,9 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
                 </UiV2Button>
               </SettingsRowV2>
             ),
-            memory: <MemorySettingsRowsV2 onOpenLibrary={() => undefined} />
+            account: <SettingsRowV2 title="Display name" description="Shown next to your questions.">
+              <UiV2Button onClick={() => setDirty(value => !value)}>{dirty ? "Save fixture" : "Edit display name"}</UiV2Button>
+            </SettingsRowV2>
           }}
           subview={dataSubview === "archived"
             ? { label: "Archived chats", onBack: closeArchive }

@@ -15,7 +15,7 @@ Chat/composer stay primary across layouts. Models belong in the header, tools ne
 
 The composer preserves one keyed draft and the user's explicit model, Assistant, tools, and run controls. Unavailable configuration never silently substitutes another target. MCP retry must not switch Auto to Load all without an explicit action. Editing a sent message uses its own inline draft, preserves sent attachments and the composer draft, and clearly creates a branch. Keyboard submission respects IME and multiline entry.
 
-Continuation preserves composer controls and the Workspace flag. Only when the new chat successfully opens, its empty composer receives the source's current unsent text and settled attachments; a non-empty destination is never overwritten. Pending uploads and other session work stay with their owner. Focus follows the input without moving the conversation scroll. The continued chat's default model is the user's selection revalidated by the server; an absent or unavailable selection retains the source default. Ordinary New chat still uses Settings defaults.
+Continuation preserves composer controls and Workspace. After the new chat opens, copy the source’s current unsent text and settled attachments only into its empty composer. Pending uploads/session work retain ownership. Focus input without scrolling the conversation. The server revalidates the selected model; an absent/unavailable selection retains the source default. Ordinary New chat uses personal Chat defaults.
 
 Upload integrity/ownership checks gate Send; slower PDF preparation does not. Successful admission immediately shows the committed message, clears its draft, and puts truthful preparation state with Stop/retry in the conversation. Counts describe accepted work, not elapsed time. Informational PDF notices do not require acknowledgement or disable Send.
 
@@ -36,15 +36,17 @@ Project surfaces use only current Project catalogs. Loss of access clears stale 
 
 ## Management
 
-Control Center resources are URL-addressable pages. Add/edit sheets own focus and dirty-discard confirmation; ordinary navigation does not create a global save gate. Errors preserve fields, independent saves preserve other drafts, and refresh cannot undo a committed mutation. Destructive actions name their target and consequence. Secret fields explain preserve/replace behavior without echoing values.
+Studio owns model behavior and resources: Assistants, Instructions, Skills, Knowledge, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings owns appearance, account, external-client permissions and personal data. Lists/editors belong on pages or sheets.
 
-Keep configuration where it is owned: provider deployments in Providers, role/default assignments in Defaults & roles, and health/limits in Knowledge & Memory. Knowledge profile activation/rollback explicitly acknowledges external processing and reindexing; accepted work keeps its frozen profile. Reprocess does not ask ordinary users to choose infrastructure.
+Control Center resources have URLs; add/edit sheets own focus and dirty-discard confirmation. Ordinary navigation has no global save gate. Errors preserve fields; independent saves preserve other drafts; refresh cannot undo committed mutations. Destructive actions name targets and consequences. Secret fields explain preserve/replace without echoing values.
+
+Configuration owners: Providers for deployments, Defaults & roles for assignments, Knowledge & Memory for health/limits. Knowledge profile activation/rollback explicitly acknowledges external processing and reindexing; accepted work retains its frozen profile. Reprocess never asks ordinary users to choose infrastructure.
 
 Knowledge management shows current documents, readiness, access, and product actions. A usable artifact remains Ready; Needs attention requires an executable recovery action. Otherwise unavailable remains unavailable. Keep technical profiles, generations, chunks, scores, raw failures, and processing internals out of ordinary surfaces; support references are opaque. Separate Base membership changes from canonical document deletion, make multi-membership restore consequences explicit, and show permanent deletion as a durable pending operation. Technical retrieval failure never becomes “the documents contain no answer.” Authenticated citations may expose exact source/locator/excerpt context, without a diagnostic inspector.
 
 Assistant edits and Skill pins affect future runs. Auto/Off is independent of pins; personal Enabled preferences exclude Projects/Assistants. Assistant links stay read-only in the composer. Import needs no review gate. Show limits; omit revision/bundle editors.
 
-Keep external client permissions in Connected apps and name each permission's resource in consent and revocation. Memory consent names fact read/add/change/delete authority and excludes chat history; revocation preserves facts. MCP enablement applies to chats and authorized Hub clients. MCP Active requires fresh protocol evidence, independent of enablement. Opening Settings must not wake idle servers. Admin Test & Save validates before replacing active settings and preserves intentional disablement.
+Connected apps owns external-client permissions; consent and revocation name the resource. Memory consent covers fact read/add/change/delete, excluding chat history; revocation preserves facts. MCP enablement covers chats and authorized Hub clients. Active requires fresh protocol evidence independently of enablement; opening Studio or Settings never wakes idle servers. Admin Test & Save validates before replacement and preserves intentional disablement.
 
 ## Interaction And Visual Intent
 
@@ -54,6 +56,7 @@ Keep external client permissions in Connected apps and name each permission's re
 - Keep a quiet reading workspace. Cyan is the control accent; violet marks answer activity, not controls/navigation. Hierarchy comes from placement, typography, and spacing. Avoid decorative cards around prose, badge carpets, idle animation, and diagnostic dashboards.
 - Consume semantic tokens from `styles/tokens-v2.css`, not raw colors or local theme recipes. Use bundled Golos Text for prose and JetBrains Mono for code. Themes remain `system`, `light`, and `dark`; cookie state owns first paint, recognized LocalStorage may repair after hydration, and System follows the OS.
 - Selection uses a readable primary foreground for ordinary text and preserves syntax colors on a softer code highlight. Interactive chrome and identity tiles are not selectable; copyable content and fields opt in. The code editor renders one text layer, with transparent input glyphs over syntax in ordinary themes and native selection colors with one readable layer in forced colors. Unsupported native selection styling needs no workaround.
+- Segmented controls serve two or three fixed choices; catalogs use a select.
 - Busy controls retain labels and reject duplicate submission. Errors remain associated with fields; empty/error states explain the next valid action. Motion communicates state and respects reduced motion; streaming does not animate layout.
 
 For material UI changes, inspect affected Chat/Control Center states, light/dark, long content, narrow and short viewports, and relevant focus/breakpoint transitions using [Testing](TESTING.md). Assert behavior and geometry, not screenshots or component structure.

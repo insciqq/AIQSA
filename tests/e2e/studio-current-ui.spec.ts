@@ -90,9 +90,8 @@ for (const theme of ["dark", "light"] as const) {
 
     for (const size of [sizes[0], sizes[3]]) {
       await page.setViewportSize(size);
-      await runAccountMenuAction(page, "Settings");
-      const settings = page.getByRole("dialog", { name: "Settings", exact: true });
-      await settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Chat defaults" }).click();
+      await runAccountMenuAction(page, "Chat defaults");
+      const settings = page.getByTestId("library-v2");
       await settings.getByRole("button", { name: "Web search default" }).click();
       const menu = page.getByRole("menu", { name: "Web search default" });
       await expect(menu.getByRole("menuitem")).toHaveCount(7);
@@ -101,7 +100,7 @@ for (const theme of ["dark", "light"] as const) {
       await page.screenshot({ path: testInfo.outputPath(`search-${size.width}-${theme}.png`) });
       await menu.press("Escape");
       await expect(settings.getByRole("button", { name: "Web search default" })).toBeFocused();
-      await settings.getByRole("button", { name: "Close settings" }).click();
+      await settings.getByRole("button", { name: "Back to chat" }).click();
     }
   });
 }

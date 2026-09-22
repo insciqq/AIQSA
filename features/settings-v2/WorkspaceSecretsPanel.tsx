@@ -3,6 +3,7 @@
 import { randomUUID } from "@/lib/browser/randomUUID";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { UiV2Button } from "@/components/ui-v2";
+import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
 import {
   WORKSPACE_SECRET_FILE_MAX_BYTES, WORKSPACE_SECRET_KINDS, WORKSPACE_SECRET_MAX_COUNT,
@@ -174,15 +175,16 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
 
   const browserCount = secrets.filter((entry) => entry.kind === "browser_session").length;
   const ordinaryCount = secrets.length - browserCount;
-  return <section className="mx-auto w-full max-w-3xl px-4 py-5 sm:px-6" aria-labelledby="workspace-secrets-heading" data-testid="workspace-secrets-panel">
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0 flex-1"><h3 className="text-base font-semibold text-ink" id="workspace-secrets-heading">Workspace secrets</h3>
-        <p className="mt-1 text-sm leading-6 text-ink-secondary">These secrets are available to the model and programs inside your personal Workspaces. Saving a secret makes it available automatically when Workspace is on.</p>
-        <p className="mt-1 text-xs leading-5 text-ink-muted">Shared Projects do not receive these secrets. Changes apply to the next accepted request.</p>
-        <p className="mt-2 text-xs leading-5 text-ink-muted">Browser sessions are saved automatically after work in Workspace and contain sign-in cookies. Delete a session to remove that saved sign-in from your next Workspace request. You can also import a session after signing in manually.</p>
+  return <section className="v2-studio-settings-page" aria-label="Secrets" data-testid="workspace-secrets-panel">
+    <SectionHeading description="Available to the model and programs inside your personal Workspace. Shared Projects never receive them."
+      action={<UiV2Button type="button" disabled={busy || loading} icon="regenerate" onClick={() => void refresh()}>Refresh</UiV2Button>}>Secrets</SectionHeading>
+    <details className="v2-settings-footnote">
+      <summary className="v2-focusable">How secrets work</summary>
+      <div className="v2-settings-disclosure-body">
+        <p>Saving a secret makes it available automatically when Workspace is on. Changes apply to the next accepted request.</p>
+        <p>Browser sessions are saved automatically after work in Workspace and contain sign-in cookies. Delete a session to remove that saved sign-in from your next Workspace request. You can also import a session after signing in manually.</p>
       </div>
-      <UiV2Button type="button" disabled={busy || loading} icon="regenerate" onClick={() => void refresh()}>Refresh</UiV2Button>
-    </div>
+    </details>
     {error ? <p className="mt-4 break-words text-sm text-critical" role="alert">{error}</p> : null}
     {notice ? <p className="mt-4 text-sm text-positive" role="status">{notice}</p> : null}
     {loading ? <p className="mt-5 text-sm text-ink-muted" role="status">Loading Workspace secrets…</p> : null}

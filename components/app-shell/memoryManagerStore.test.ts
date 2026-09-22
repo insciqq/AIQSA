@@ -6,6 +6,7 @@ import {
   cancelMemoryDraft,
   deactivateMemoryManager,
   forgetCurrentMemory,
+  invalidateMemoryManagerData,
   openMemoryDetail,
   openMemoryManager,
   refreshMemoryList,
@@ -262,6 +263,37 @@ describe("Memory manager store", () => {
 
     await refreshMemoryList({ append: true });
     expect(useMemoryManagerStore.getState().memories).toEqual([item]);
+  });
+
+  it("clears the entire manager on reset and rejects a read started before it", async () => {
+    const original = memoryConsumerItemFixture();
+    let resolve!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>(done => { resolve = done; }));
+    vi.stubGlobal("fetch", fetchMock);
+    useMemoryManagerStore.setState({ accountId: "owner", memories: [original], queryInput: "old", queryApplied: "old" });
+    const oldRead = refreshMemoryList();
+    beginCreateMemory();
+    useMemoryManagerStore.getState().setDraft({ statement: "Unsaved detail" });
+
+    invalidateMemoryManagerData("owner", true);
+    beginCreateMemory();
+    openMemoryDetail(original.memoryRef);
+    requestForgetMemory(original.memoryRef);
+    await saveNewMemory(true);
+    await refreshMemoryList();
+    resolve(json(memoryConsumerListFixture([original])));
+    await oldRead;
+
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      accountId: "owner", memories: [], activeMemory: null, nextCursor: null,
+      draft: { statement: "" }, draftDirty: false, queryInput: "", queryApplied: "",
+      resetPending: true, screen: "list", listLoadState: "idle"
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    invalidateMemoryManagerData("previous-owner");
+    expect(useMemoryManagerStore.getState().resetPending).toBe(true);
+    invalidateMemoryManagerData("owner");
+    expect(useMemoryManagerStore.getState().resetPending).toBe(false);
   });
 
   it.each(["create", "edit", "forget"])("requires a fresh read after an unknown %s outcome", async (kind) => {

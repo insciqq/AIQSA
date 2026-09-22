@@ -4,6 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { hashPassword } from "../../lib/server/auth/password";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { decryptWorkspaceSecret } from "../../lib/server/workspace/secrets/store";
+import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { activeChatId, loginWithPassword, selectFakeModel, sendAndExpect, startNewChat, turnWorkspaceOn } from "./support/workspace";
 
@@ -12,10 +13,7 @@ test.describe.configure({ mode: "serial" });
 test.afterAll(() => prisma.$disconnect());
 
 async function openSecrets(page: Page) {
-  if (!(await page.getByRole("button", { name: "Account menu" }).isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
-  await page.getByRole("button", { name: "Account menu" }).click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Workspace secrets" }).click();
+  await runAccountMenuAction(page, "Secrets");
   await expect(page.getByTestId("workspace-secrets-panel").getByRole("button", { name: "Add secret" })).toBeEnabled();
 }
 
@@ -58,7 +56,7 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       await expect(panel.getByText("synthetic-browser-session", { exact: true })).toHaveCount(0);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: testInfo.outputPath(`browser-saved-${viewport.width}-${viewport.theme}.png`) });
-      await page.getByRole("button", { name: "Close settings" }).click();
+      await page.getByRole("button", { name: "Back to chat" }).click();
       if (!(await page.getByRole("complementary", { name: "Chat navigation" }).isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
       await startNewChat(page);
       await selectFakeModel(page);
@@ -69,7 +67,7 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       await panel.getByRole("button", { name: "Delete shop.example", exact: true }).click();
       await panel.getByRole("button", { name: "Delete permanently", exact: true }).click();
       await expect(panel.getByText("No saved Workspace secrets.")).toBeVisible();
-      await page.getByRole("button", { name: "Close settings" }).click();
+      await page.getByRole("button", { name: "Back to chat" }).click();
       await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:browser_missing]", "Workspace browser session absent.");
       expect(await rows()).toEqual([]);
 

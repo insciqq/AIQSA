@@ -220,7 +220,7 @@ export type ShellComposerView = {
     setPickerOpen(open: boolean): void;
     startFromCurrentSetup(): void;
   };
-  /** Personal chat defaults (Settings › Chat defaults); absent inside a Project. */
+  /** Personal Chat defaults in Studio; absent inside a Project. */
   chatDefaults?: {
     knowledgePlan: KnowledgeSelection | null;
     mcpMode: ChatDefaultMcpMode;
@@ -333,7 +333,6 @@ export type ShellSettingsView = {
   openKnowledge(): void;
   openLibrary(): void;
   openMemory(): void;
-  openMemorySettingsTab(): void;
   openMcp(): void;
   settings: {
     open: boolean;

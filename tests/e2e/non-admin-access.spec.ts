@@ -26,6 +26,7 @@ async function userMcpCatalog(page: Page): Promise<UserMcpCatalogResponse> {
 }
 
 test.describe("seeded ordinary-user MCP access", () => {
+  test.setTimeout(60_000);
   test("MCP Member can write only its exact direct slot and cannot reach admin operations", async ({ page }) => {
     await signIn(page, LOCAL_MCP_MEMBER);
 
@@ -99,8 +100,9 @@ test.describe("seeded ordinary-user MCP access", () => {
     });
     expect(disabled.status()).toBe(200);
 
-    await page.goto("/?settings=mcp");
-    const settings = page.getByTestId("settings-v2");
+    await page.goto("/?library=mcp");
+    const settings = page.getByTestId("library-v2");
+    await expect(settings).toBeVisible({ timeout: 30_000 });
     await expect(settings.getByRole("article", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
     await expect(settings.getByRole("article", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toBeVisible();
     await expect(settings.getByLabel("Fixture workspace")).toHaveValue("member-workspace");
@@ -158,8 +160,9 @@ test.describe("seeded ordinary-user MCP access", () => {
       }
     });
 
-    await page.goto("/?settings=mcp");
-    const settings = page.getByTestId("settings-v2");
+    await page.goto("/?library=mcp");
+    const settings = page.getByTestId("library-v2");
+    await expect(settings).toBeVisible({ timeout: 30_000 });
     await expect(settings.getByRole("article", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
     await expect(settings.getByRole("article", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toHaveCount(0);
     await expect(settings.getByText("Personal configuration")).toHaveCount(0);

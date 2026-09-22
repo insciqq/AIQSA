@@ -6,7 +6,6 @@ import {
   UiV2Icon,
   UiV2IconButton,
   UiV2IconSprite,
-  UiV2Monogram,
   UiV2Switch
 } from "@/components/ui-v2";
 import {
@@ -22,41 +21,24 @@ import {
   type ReactNode
 } from "react";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
+import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 
 export type SettingsSectionV2 =
   | "account"
   | "connected_apps"
   | "data"
-  | "defaults"
-  | "general"
-  | "mcp"
-  | "memory"
-  | "workspace_secrets";
+  | "general";
 
 type SettingsIntentV2 =
   | Readonly<{ kind: "close" }>
   | Readonly<{ kind: "section"; section: SettingsSectionV2 }>;
 
-const SECTION_ORDER: readonly SettingsSectionV2[] = [
-  "general",
-  "defaults",
-  "memory",
-  "workspace_secrets",
-  "connected_apps",
-  "mcp",
-  "data",
-  "account"
-];
-
+const SECTION_ORDER: readonly SettingsSectionV2[] = ["general", "account", "connected_apps", "data"];
 const SECTION_META: Record<SettingsSectionV2, Readonly<{ icon: UiV2IconName; label: string }>> = {
-  account: { icon: "assistant", label: "Account" },
-  connected_apps: { icon: "lock", label: "Connected apps" },
-  data: { icon: "archive", label: "Data" },
-  defaults: { icon: "sliders", label: "Chat defaults" },
   general: { icon: "sun", label: "General" },
-  mcp: { icon: "tool", label: "MCP & tools" },
-  memory: { icon: "memory", label: "Memory" },
-  workspace_secrets: { icon: "lock", label: "Workspace secrets" }
+  account: { icon: "assistant", label: "Account" },
+  connected_apps: { icon: "link", label: "Connected apps" },
+  data: { icon: "archive", label: "Data" }
 };
 
 const THEME_CAPTIONS: Record<ThemeId, string> = {
@@ -117,7 +99,6 @@ export function SettingsV2({
   dirty = false,
   generalSlot = null,
   initialSection = "general",
-  mcpContent,
   noticeSlot,
   obscured = false,
   onClose,
@@ -135,7 +116,6 @@ export function SettingsV2({
   /** Rows rendered under the Theme rows of the General tab. */
   generalSlot?: ReactNode;
   initialSection?: SettingsSectionV2;
-  mcpContent: ReactNode;
   noticeSlot?: ReactNode;
   /** True while a nested confirmation dialog owns interaction above Settings. */
   obscured?: boolean;
@@ -144,18 +124,19 @@ export function SettingsV2({
   onSectionChange?(section: SettingsSectionV2): void;
   onThemeChange(theme: ThemeId): void;
   /** Bodies of the remaining tabs; a tab without a body is not listed. */
-  panels?: Partial<Record<Exclude<SettingsSectionV2, "connected_apps" | "general" | "mcp">, ReactNode>>;
+  panels?: Partial<Record<Exclude<SettingsSectionV2, "connected_apps" | "general">, ReactNode>>;
   /** A task owned by the active Settings section, rendered under its breadcrumb. */
   subview?: Readonly<{ label: string; onBack(): void }>;
   themeId: ThemeId;
 }>) {
   const available = SECTION_ORDER.filter((section) =>
-    section === "connected_apps" || section === "general" || section === "mcp" || panels[section] !== undefined
+    section === "connected_apps" || section === "general" || panels[section] !== undefined
   );
   const [activeSection, setActiveSection] = useState<SettingsSectionV2>(
     available.includes(initialSection) ? initialSection : "general"
   );
   const [discardIntent, setDiscardIntent] = useState<SettingsIntentV2 | null>(null);
+  const discardRef = useDialogFocus<HTMLElement>({ active: discardIntent !== null, onClose: () => setDiscardIntent(null) });
   const sectionNavRef = useRef<HTMLElement | null>(null);
   const sectionRefs = useRef<Partial<Record<SettingsSectionV2, HTMLButtonElement | null>>>({});
   const subviewBackRef = useRef<HTMLButtonElement | null>(null);
@@ -170,7 +151,8 @@ export function SettingsV2({
   };
   const request = (intent: SettingsIntentV2) => {
     if (busy) return;
-    if (dirty && (activeSection === "mcp" || activeSection === "workspace_secrets" || activeSection === "defaults")) {
+    if (intent.kind === "section" && intent.section === activeSection) return;
+    if (dirty) {
       setDiscardIntent(intent);
       return;
     }
@@ -300,7 +282,7 @@ export function SettingsV2({
         </header>
         {busy || dirty ? (
           <p className="v2-settings-state" role="status">
-            {busy ? busyMessage : activeSection === "defaults" ? "Unsaved instructions" : activeSection === "workspace_secrets" ? "Unsaved Workspace secret" : "Unsaved MCP values"}
+            {busy ? busyMessage : "Unsaved account changes"}
           </p>
         ) : null}
         {noticeSlot ? <div className="v2-settings-notice">{noticeSlot}</div> : null}
@@ -354,14 +336,6 @@ export function SettingsV2({
                 {connectedAppsContent}
               </div>
             </section>
-          ) : activeSection === "mcp" ? (
-            <section className="v2-settings-section" aria-labelledby="v2-settings-mcp-heading">
-              {/* The owner renders the one status row and the server rows
-                  (UX audit 2026-09-02 A13): no second intro above them. */}
-              <div className="v2-settings-owner-slot" data-testid="settings-mcp-owner">
-                {mcpContent}
-              </div>
-            </section>
           ) : (
             <section
               className="v2-settings-section"
@@ -375,13 +349,14 @@ export function SettingsV2({
       </section>
       {discardIntent ? (
         <section
-          aria-label={activeSection === "defaults" ? "Unsaved instructions" : activeSection === "workspace_secrets" ? "Unsaved Workspace secret" : "Unsaved MCP changes"}
+          ref={discardRef}
+          aria-label="Unsaved account changes"
           aria-modal="true"
           className="v2-settings-confirm"
           role="alertdialog"
         >
           <h2>Discard unsaved changes?</h2>
-          <p>{activeSection === "defaults" ? "Your unsaved instructions will be lost." : activeSection === "workspace_secrets" ? "Your unsaved Workspace secret will be lost." : "Changes to your personal MCP connection will be lost."}</p>
+          <p>Your unsaved account changes will be lost.</p>
           <div>
             <UiV2Button onClick={() => setDiscardIntent(null)}>Keep editing</UiV2Button>
             <UiV2Button tone="destructive" onClick={confirmDiscard}>Discard changes</UiV2Button>
@@ -390,70 +365,5 @@ export function SettingsV2({
       ) : null}
     </div>,
     document.body
-  );
-}
-
-export function McpSettingsSummaryV2({
-  servers
-}: Readonly<{
-  servers: readonly Readonly<{
-    detail: string;
-    enabled: boolean;
-    id: string;
-    name: string;
-    ready: boolean;
-    tools: number;
-  }>[];
-}>) {
-  const enabled = servers.filter((server) => server.enabled);
-  const tools = enabled.reduce((total, server) => total + server.tools, 0);
-  return (
-    <div className="v2-settings-mcp">
-      <SettingsRowV2
-        description="Enabled servers join your private tool catalog; a chat uses them only in Auto or Load all mode."
-        title={`${enabled.length} of ${servers.length} servers enabled${tools ? ` · ${tools} tools` : ""}`}
-      >
-        <UiV2Button className="v2-settings-quiet-action">Refresh status</UiV2Button>
-      </SettingsRowV2>
-      <div className="v2-settings-server-list" aria-label="MCP servers" role="list">
-        {servers.map((server) => (
-          <article className="v2-settings-server" data-enabled={server.enabled || undefined} key={server.id} role="listitem">
-            <div className="v2-settings-server-head">
-              <UiV2Monogram className="v2-settings-server-mark" label={server.name} />
-              <div className="v2-settings-server-copy">
-                <h4>{server.name}</h4>
-                <p className="v2-settings-server-description">{server.detail}</p>
-                <p className="v2-settings-server-status">
-                  <span className="v2-settings-server-availability" data-resource-availability={server.enabled ? "enabled" : "disabled"}>
-                    {server.enabled ? "Enabled" : "Disabled"}
-                  </span>
-                  {server.enabled ? (
-                    <>
-                      <span aria-hidden="true"> · </span>
-                      <span className="v2-settings-server-readiness" data-tone={server.ready ? "ok" : "warn"}>
-                        <UiV2Icon name={server.ready ? "check" : "alert"} />
-                        {server.ready ? "Ready" : "Needs setup"}
-                      </span>
-                      {server.tools ? <><span aria-hidden="true"> · </span><span>{server.tools} tools</span></> : null}
-                    </>
-                  ) : null}
-                </p>
-              </div>
-              <div className="v2-settings-server-action">
-                {server.ready || !server.enabled
-                  ? <UiV2Switch checked={server.enabled} label={server.name} onChange={() => undefined} />
-                  : <UiV2Button tone="primary">Complete setup</UiV2Button>}
-              </div>
-            </div>
-          </article>
-        ))}
-      </div>
-      <details className="v2-settings-footnote">
-        <summary className="v2-focusable">How tools use data</summary>
-        <div className="v2-settings-disclosure-body">
-          <p>Auto starts with a small schema-free catalog and loads only matching tools when the model asks.</p>
-        </div>
-      </details>
-    </div>
   );
 }

@@ -187,10 +187,10 @@ describe("MCP settings store", () => {
     expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
   });
 
-  it("records and scrubs an OAuth callback outcome", () => {
+  it.each(["settings", "library"])("records and scrubs a %s OAuth callback outcome", (destination) => {
     markMcpOAuthAuthorizing("server-1");
     expect(isMcpOAuthAuthorizing("server-1")).toBe(true);
-    window.history.replaceState(null, "", "/?settings=mcp&oauth=connected&server=server-1&keep=yes");
+    window.history.replaceState(null, "", `/?${destination}=mcp&oauth=connected&server=server-1&keep=yes`);
     const outcome = consumeMcpOAuthReturn(new URL(window.location.href));
 
     expect(outcome).toEqual({ kind: "connected", serverId: "server-1" });
