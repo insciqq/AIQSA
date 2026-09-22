@@ -237,8 +237,6 @@ function consumerStatus(
       !response.capabilities.synthesisAvailable ||
     response.settings.decayEnabled && !response.capabilities.decayAvailable
   ) return "UNAVAILABLE";
-  if (response.settings.referenceChatHistory &&
-    response.historyIndexing.state === "INDEXING") return "PREPARING";
   return "ON";
 }
 

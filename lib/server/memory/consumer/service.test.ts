@@ -250,10 +250,43 @@ describe("Memory consumer service", () => {
     });
   });
 
+  it("keeps available Memory on while history indexing runs in the background", async () => {
+    const deps = dependencies();
+    const indexing = memorySettingsFixture({
+      historyIndexing: { state: "INDEXING" },
+      settings: {
+        learnAutomatically: true,
+        referenceChatHistory: true,
+        useMemoryFacts: true
+      }
+    });
+    deps.settingsService.get.mockResolvedValue(indexing);
+    deps.settingsService.patch.mockResolvedValue(indexing);
+    const service = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never,
+      readResetState: deps.readResetState,
+      refs: refs(),
+      settingsService: deps.settingsService as never
+    });
+
+    await expect(service.settings("user-1")).resolves.toMatchObject({ status: "ON" });
+    await expect(service.patchSettings("user-1", {
+      referenceChatHistory: true
+    })).resolves.toMatchObject({ status: "ON" });
+    deps.settingsService.get.mockResolvedValue(memorySettingsFixture({
+      historyIndexing: { state: "INDEXING" },
+      settings: { useMemoryFacts: false }
+    }));
+    await expect(service.settings("user-1")).resolves.toMatchObject({ status: "PAUSED" });
+  });
+
   it("projects unavailable System Model capabilities to a friendly unavailable status", async () => {
     const deps = dependencies();
     deps.settingsService.get.mockResolvedValue(memorySettingsFixture({
       capabilities: { administratorSetupRequired: true, retrievalAvailable: false },
+      historyIndexing: { state: "INDEXING" },
       settings: { useMemoryFacts: true }
     }));
     const service = createMemoryConsumerService({
@@ -276,14 +309,19 @@ describe("Memory consumer service", () => {
       "naturalLanguageActionsAvailable",
       "retrievalAvailable",
       "automaticLearningAvailable",
-      "pastChatIndexingAvailable"
+      "pastChatIndexingAvailable",
+      "synthesisAvailable",
+      "decayAvailable"
     ] as const) {
       const deps = dependencies();
       deps.settingsService.get.mockResolvedValue(memorySettingsFixture({
         capabilities: { [capability]: false },
+        historyIndexing: { state: "INDEXING" },
         settings: {
+          decayEnabled: true,
           learnAutomatically: true,
           referenceChatHistory: true,
+          synthesisEnabled: true,
           useMemoryFacts: true
         }
       }));
