@@ -264,9 +264,9 @@ describe("OpenAI Responses request builder", () => {
     });
   });
 
-  it("serializes GPT-5.6 Pro mode, max effort, and the current prompt-cache contract", () => {
+  it.each(["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("serializes %s Pro mode, max effort, and the current prompt-cache contract", (modelId) => {
     const runRequest = request({
-      modelId: "gpt-5.6-sol",
+      modelId,
       params: {
         maxOutputTokens: 128,
         reasoning: {
@@ -280,7 +280,7 @@ describe("OpenAI Responses request builder", () => {
     const body = buildOpenAIResponsesRequest(runRequest);
 
     expect(body).toMatchObject({
-      model: "gpt-5.6-sol",
+      model: modelId,
       prompt_cache_options: { ttl: "30m" },
       reasoning: {
         effort: "max",
@@ -290,6 +290,18 @@ describe("OpenAI Responses request builder", () => {
     });
     expect(body).not.toHaveProperty("prompt_cache_retention");
     expect(buildOpenAIResponsesRequestPreview(runRequest).body).toEqual(body);
+  });
+
+  it.each(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("omits temperature during reasoning for %s", (modelId) => {
+    const body = buildOpenAIResponsesRequest(request({ modelId, params: {
+      reasoning: { effort: "medium", mode: "standard" }, temperature: 0.3
+    } }));
+    expect(body).not.toHaveProperty("temperature");
+    if (modelId !== "gpt-6-astra") {
+      expect(buildOpenAIResponsesRequest(request({ modelId, params: {
+        reasoning: { effort: "none", mode: "standard" }, temperature: 0.3
+      } })).temperature).toBe(0.3);
+    }
   });
 
   it("forces only explicitly downgraded requests and preserves background streaming for tools", () => {

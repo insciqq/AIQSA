@@ -356,8 +356,11 @@ function deepSeekModel(input: Readonly<{
 function openRouterModel(
   source: ProviderModelTemplate,
   modelId: string,
-  prices: readonly [number, number] = [0, 0]
+  prices: readonly [number, number] = [0, 0],
+  options: Readonly<{ temperature?: boolean }> = {}
 ): ProviderModelTemplate {
+  const { temperature, ...routerParams } = openRouterParams;
+  const supportsTemperature = options.temperature !== false;
   return {
     ...source,
     provider: "openrouter",
@@ -371,7 +374,8 @@ function openRouterModel(
       nativeSearch: false
     },
     defaultParams: {
-      ...openRouterParams,
+      ...routerParams,
+      ...(supportsTemperature ? { temperature } : {}),
       maxTokens: source.parameterControls.maxOutputTokens.defaultValue,
       reasoning: {
         ...openRouterParams.reasoning,
@@ -383,7 +387,10 @@ function openRouterModel(
       maxOutputTokens: source.parameterControls.maxOutputTokens,
       reasoningEffort: source.parameterControls.reasoningEffort,
       stream: { defaultValue: true, supported: true },
-      temperature: source.parameterControls.temperature
+      temperature: {
+        ...source.parameterControls.temperature,
+        supported: supportsTemperature && source.parameterControls.temperature.supported
+      }
     })
   };
 }
@@ -478,10 +485,13 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     })
   },
   openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"),
+  openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"),
+  openAIReasoningModel("gpt-6-luna", "GPT-6 Luna"),
   openAIReasoningModel("gpt-5.6-sol", "GPT-5.6 Sol"),
   openAIReasoningModel("gpt-5.6-terra", "GPT-5.6 Terra"),
   openAIReasoningModel("gpt-5.6-luna", "GPT-5.6 Luna"),
   anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"),
+  anthropicClaude5Model("claude-opus-5-5", "Claude Opus 5.5"),
   anthropicClaude5Model("claude-opus-5", "Claude Opus 5"),
   anthropicClaude5Model("claude-sonnet-5", "Claude Sonnet 5"),
   {
@@ -579,6 +589,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     deepSeekModel({ displayName: "DeepSeek V4 Pro 0813", modelId: "deepseek-v4-pro" }),
     "deepseek/deepseek-v4-pro-0813"
   ),
+  openRouterModel(anthropicClaude5Model("claude-opus-5-5", "Claude Opus 5.5"), "anthropic/claude-opus-5.5", [4, 20]),
   openRouterModel(anthropicClaude5Model("claude-opus-5", "Claude Opus 5"), "anthropic/claude-opus-5", [5, 25]),
   openRouterModel(anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"), "anthropic/claude-fable-5.1", [10, 50]),
   openRouterModel(
@@ -586,6 +597,12 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     "google/gemini-3.8-flash"
   ),
   openRouterModel(openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"), "openai/gpt-6-astra", [10, 50]),
+  openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"), "openai/gpt-6-sol", [2, 10], { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol Pro"), "openai/gpt-6-sol-pro", [2, 10], { temperature: false }),
+  // Legacy integer-micro prices cannot represent Luna's sub-micro token rates;
+  // leave the estimate unavailable instead of rounding provider-reported cost.
+  openRouterModel(openAIReasoningModel("gpt-6-luna", "GPT-6 Luna"), "openai/gpt-6-luna", [0, 0], { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6-luna", "GPT-6 Luna Pro"), "openai/gpt-6-luna-pro", [0, 0], { temperature: false }),
   {
     provider: "openrouter",
     modelId: "anthropic/claude-opus-4.8",

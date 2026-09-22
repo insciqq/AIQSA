@@ -477,7 +477,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 8 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 9 }
       }
     });
     expect(result.outcome).toBe("ready");
@@ -914,7 +914,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-second-account",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 8 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 9 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
@@ -925,6 +925,8 @@ describe("provider Quick setup service", () => {
     const snapshot = await value.service.getSnapshot(actor);
     expect(snapshot.providers.find(({ provider }) => provider === "openai")).toMatchObject({
       candidateModels: [
+        { displayName: "GPT-6 Sol" },
+        { displayName: "GPT-6 Luna" },
         { displayName: "GPT-6 Astra" },
         { displayName: "GPT-5.6 Terra" },
         { displayName: "GPT-5.6 Luna" },

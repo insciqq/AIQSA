@@ -66,7 +66,7 @@ export type OpenAIResponsesRequestBody = {
   };
   store: boolean;
   stream: boolean;
-  temperature: number;
+  temperature?: number;
   tool_choice?: "auto" | "none" | "required";
   tools?: Record<string, unknown>[];
 };
@@ -276,8 +276,12 @@ function buildReasoning(params: OpenAIResponsesParams): OpenAIResponsesRequestBo
   };
 }
 
+function isGpt6Model(modelId: string): boolean {
+  return ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(modelId);
+}
+
 function usesPromptCacheOptions(modelId: string): boolean {
-  return modelId === "gpt-6-astra" || modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-");
+  return isGpt6Model(modelId) || modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-");
 }
 
 export function usesHostedOpenAIWebSearch(request: ProviderRunRequest): boolean {
@@ -332,7 +336,9 @@ function buildOpenAIResponsesBody(
       : { prompt_cache_retention: "24h" }),
     store: background ? true : params.store,
     stream,
-    temperature: params.temperature
+    ...(isGpt6Model(model) && params.reasoning.effort !== "none"
+      ? {}
+      : { temperature: params.temperature })
   };
   const reasoning = buildReasoning(params);
 
