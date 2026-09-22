@@ -86,10 +86,12 @@ describe("provider network response bounds", () => {
   });
 
   it("derives both stream timing guards from the response deadline", () => {
-    expect(providerStreamTimingLimits(800_000)).toEqual({
-      idleTimeoutMs: 800_000,
-      maxDurationMs: 800_000
-    });
+    for (const timeout of [800_000, 3_600_000, 86_400_000]) {
+      expect(resolveProviderStreamLimits(providerStreamTimingLimits(timeout))).toMatchObject({
+        idleTimeoutMs: timeout,
+        maxDurationMs: timeout
+      });
+    }
   });
 
   it("emits a typed configured timeout and clears its timer", async () => {

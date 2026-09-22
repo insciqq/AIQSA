@@ -16,12 +16,12 @@ const capabilities = {
 };
 
 describe("administrator provider configuration units", () => {
-  it("converts whole seconds to persisted milliseconds and back", () => {
+  it.each([5, 300, 900, 3600, 86_400])("round trips whole seconds, including long requests (%s)", (seconds) => {
     const connection = normalizeAdminProviderConnectionConfiguration({
       allowPrivateNetwork: false,
       apiRoot: "https://provider.example.test/v1",
       authenticationMode: "bearer",
-      responseTimeoutSeconds: 500
+      responseTimeoutSeconds: seconds
     });
     const model = normalizeAdminProviderModelConfiguration({
       adapterKind: "openai_responses_native",
@@ -29,14 +29,14 @@ describe("administrator provider configuration units", () => {
       capabilities,
       defaultParams: {},
       modelClass: "answer",
-      responseTimeoutSeconds: 800,
+      responseTimeoutSeconds: seconds,
       upstreamModelId: "model"
     });
 
-    expect(connection.responseTimeoutMs).toBe(500_000);
-    expect(model.responseTimeoutMs).toBe(800_000);
-    expect(adminProviderConnectionConfiguration(connection).responseTimeoutSeconds).toBe(500);
-    expect(adminProviderModelConfiguration(model).responseTimeoutSeconds).toBe(800);
+    expect(connection.responseTimeoutMs).toBe(seconds * 1_000);
+    expect(model.responseTimeoutMs).toBe(seconds * 1_000);
+    expect(adminProviderConnectionConfiguration(connection).responseTimeoutSeconds).toBe(seconds);
+    expect(adminProviderModelConfiguration(model).responseTimeoutSeconds).toBe(seconds);
   });
 
   it("requires current connection fields while preserving explicit model inheritance", () => {
@@ -57,7 +57,7 @@ describe("administrator provider configuration units", () => {
     })).toThrow(ProviderConfigurationError);
   });
 
-  it.each([4, 901, 5.5, "300", null, {}])(
+  it.each([4, 86_401, 5.5, "300", null, {}, NaN, Infinity])(
     "rejects invalid administrator timeout value %#",
     (responseTimeoutSeconds) => {
       expect(() => normalizeAdminProviderConnectionConfiguration({

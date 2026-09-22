@@ -19,6 +19,19 @@ import {
 const openRouter = fixtureConnection({ displayName: "OpenRouter", family: "openrouter", id: "conn-or" });
 
 describe("model sheet form", () => {
+  it("preserves long overrides and blank inheritance while rejecting invalid timeout text", () => {
+    const model = fixtureModel({ id: "timeout-model", connectionId: "conn-or", displayName: "Model" });
+    const form = modelFormFrom(model);
+    for (const value of ["3600", "86400", ""]) {
+      const result = modelFormBody({ ...form, responseTimeoutSeconds: value }, openRouter, model);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.body.configuration.responseTimeoutSeconds).toBe(value ? Number(value) : undefined);
+    }
+    for (const value of ["4", "86401", "5.5", "NaN", "Infinity"]) {
+      expect(modelFormBody({ ...form, responseTimeoutSeconds: value }, openRouter, model)).toMatchObject({ ok: false, field: "timeout" });
+    }
+  });
+
   it("recognizes only a display-name edit against the frozen form", () => {
     const baseline = blankModelForm(openRouter);
     const renamed = { ...baseline, displayName: "New label" };

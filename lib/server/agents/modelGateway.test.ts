@@ -28,6 +28,31 @@ function fixture(response: Response, nativeSearch = false) {
 }
 
 describe("Agent model gateway", () => {
+  it("lets a slow native response use its configured deadline without the default idle clamp", async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    try {
+      const response = new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.completed",
+            response: { output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })}\n\n`));
+          controller.close();
+        }, 900_001);
+      } }), { headers: { "content-type": "text/event-stream" } });
+      const f = fixture(response);
+      f.transport.snapshot.connection.responseTimeoutMs = 3_600_000;
+      const result = (await f.handle(request())).text();
+      const expected = expect(result).resolves.toContain("response.completed");
+      await vi.advanceTimersByTimeAsync(900_001);
+      await expected;
+      expect(timeout).toHaveBeenCalledWith(3_600_000);
+      expect(f.onFailure).not.toHaveBeenCalled();
+      expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "COMPLETE", expect.any(Object));
+      expect(f.store.closeProvider).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { timeout.mockRestore(); vi.useRealTimers(); }
+  });
+
   it("does not forward a tool proposal before its durable interrupt fence commits", async () => {
     const f = fixture(sse({ type: "response.output_item.added", item: { type: "function_call", name: "shell" } },
       { type: "response.completed", response: { output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }));

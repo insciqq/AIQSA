@@ -174,7 +174,7 @@ describe("provider connection configuration", () => {
       "provider_response_timeout_invalid"
     );
     expect(configured.responseTimeoutMs).toBe(500_000);
-    for (const responseTimeoutMs of [5_000, 900_000]) {
+    for (const responseTimeoutMs of [5_000, 900_000, 3_600_000, 86_400_000]) {
       expect(normalizeProviderConnectionConfiguration({
         allowPrivateNetwork: false,
         apiRoot: "https://api.example.test/v1",
@@ -184,7 +184,7 @@ describe("provider connection configuration", () => {
     }
   });
 
-  it.each([4_999, 900_001, 5_000.5, "300000", null, {}])(
+  it.each([4_999, 86_400_001, 5_000.5, "300000", null, {}])(
     "rejects invalid connection response deadline %#",
     (responseTimeoutMs) => {
       expectCode(
@@ -256,7 +256,7 @@ describe("provider model configuration", () => {
     expect(effectiveProviderResponseTimeoutMs(connection, overridden)).toBe(800_000);
   });
 
-  it.each([4_999, 900_001, 5_000.5, "300000", null, {}])(
+  it.each([4_999, 86_400_001, 5_000.5, "300000", null, {}])(
     "rejects invalid model response deadline %#",
     (responseTimeoutMs) => {
       expectCode(

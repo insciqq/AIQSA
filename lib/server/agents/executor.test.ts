@@ -31,7 +31,7 @@ function fixture(executeAgent: NonNullable<WorkspaceCoordinator["executeAgent"]>
   } as unknown as ProviderRunRequest;
   return { events, input: { request, signal, runId: "fixture", userId: "fixture",
     workspace: { executeAgent } as WorkspaceCoordinator,
-    transport: { snapshot: { providerFamily: "fake", model: { adapterKind: "fake", capabilities: {} } } } as unknown as AgentResponsesTransport,
+    transport: { snapshot: { providerFamily: "fake", connection: { responseTimeoutMs: 300_000 }, model: { adapterKind: "fake", capabilities: {} } } } as unknown as AgentResponsesTransport,
     onEvent: async (event: ModelRunSseEvent) => { events.push(event); }, onPersistedEvent: vi.fn(), onActivity: vi.fn(), onUsage: vi.fn()
   } };
 }
@@ -43,6 +43,25 @@ describe("Agent executor terminal behavior", () => {
     store.toolCall.mockResolvedValue("call");
     store.usage.mockResolvedValue([]);
     store.failure.mockResolvedValue(null);
+  });
+
+  it.each([
+    [300_000, undefined, 300_000],
+    [3_600_000, undefined, 3_600_000],
+    [3_600_000, 7_200_000, 7_200_000],
+    [3_600_000, 86_400_000, 86_400_000]
+  ] as const)("passes the frozen connection/model timeout to native execution (%s, %s)", async (connectionMs, modelMs, expectedMs) => {
+    const executeAgent = vi.fn<NonNullable<WorkspaceCoordinator["executeAgent"]>>(async () => undefined);
+    const f = fixture(executeAgent);
+    f.input.transport = { ...f.input.transport, snapshot: { ...f.input.transport.snapshot,
+      connection: { ...f.input.transport.snapshot.connection, responseTimeoutMs: connectionMs },
+      model: { ...f.input.transport.snapshot.model, adapterKind: "deepseek_responses_native", answerSelectable: true,
+        defaultParams: {}, modelClass: "answer", upstreamModelId: "synthetic", responseTimeoutMs: modelMs }
+    } };
+    await executeCodexTurn(f.input);
+    expect(executeAgent).toHaveBeenCalledWith(expect.objectContaining({
+      profile: expect.objectContaining({ responseTimeoutMs: expectedMs })
+    }));
   });
 
   it("continues sequentially with only new user input and acknowledges it after native turn start", async () => {

@@ -92,7 +92,7 @@ describe("custom provider model discovery handler", () => {
     });
   });
 
-  it.each([4, 5.5, 901, "300"])(
+  it.each([4, 5.5, 86_401, "300"])(
     "rejects invalid response timeout %# before provider I/O",
     async (responseTimeoutSeconds) => {
       const test = vi.fn();

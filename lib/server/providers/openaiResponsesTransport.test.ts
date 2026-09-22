@@ -35,6 +35,24 @@ function delayedResponse(input: {
 }
 
 describe("OpenAI Responses transport", () => {
+  it.each([false, true])("accepts a slow completed response beyond the old ceiling (streamed create=%s)", async streamed => {
+    vi.useFakeTimers();
+    try {
+      const terminal = { id: "synthetic", status: "completed", output: [] };
+      const response = delayedResponse({ delayMs: 900_001, text: streamed
+        ? `data: ${JSON.stringify({ type: "response.completed", response: terminal })}\n\n`
+        : JSON.stringify(terminal) });
+      if (streamed) response.headers.set("content-type", "text/event-stream");
+      const client = createFetchOpenAIResponsesClient({ apiKey: "synthetic-key", defaultTimeoutMs: 3_600_000,
+        fetchFn: async () => response, acceptStreamedCreate: streamed });
+      const result = client.create({ stream: false });
+      const expected = expect(result).resolves.toEqual(terminal);
+      await vi.advanceTimersByTimeAsync(900_001);
+      await expected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("assembles a compatible streamed create from completed items without changing or repeating the request", async () => {
     const item = { type: "message", id: "m1", role: "assistant", content: [{ type: "output_text", text: "OK" }] };
     const terminal = { id: "r1", status: "completed", output: [], usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 } };

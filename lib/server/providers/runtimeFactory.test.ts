@@ -196,7 +196,7 @@ describe("provider runtime factory", () => {
           secret: "secret",
           snapshot: {
             ...configured,
-            connection: { ...configured.connection, responseTimeoutMs: 5_000 }
+            connection: { ...configured.connection, responseTimeoutMs: 3_600_000 }
           }
         });
         const request: ProviderRunRequest = {
@@ -213,9 +213,13 @@ describe("provider runtime factory", () => {
         const timedOut = collect(runtime.adapter.stream(request));
         const timeoutExpectation = expect(timedOut).rejects.toMatchObject({
           code: "provider_request_timed_out",
-          timeoutMs: 5_000
+          timeoutMs: 3_600_000
         });
-        await vi.advanceTimersByTimeAsync(5_000);
+        let completed = false;
+        void timedOut.then(() => { completed = true; }, () => { completed = true; });
+        await vi.advanceTimersByTimeAsync(900_001);
+        expect(completed).toBe(false);
+        await vi.advanceTimersByTimeAsync(3_600_000 - 900_001);
         await timeoutExpectation;
         expect(vi.getTimerCount()).toBe(0);
 

@@ -1,6 +1,7 @@
 import { agentFailureCode, agentFailureMessage, type AgentFailureCode } from "./failures";
 import { transportFailureFacts } from "../providers/providerObservability";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
+import { providerStreamTimingLimits } from "../providers/network";
 import type { ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import { readBoundedRequestBody } from "../http/requestBody";
 import { extractOpenAIUsage } from "../providers/openaiResponsesResponse";
@@ -166,7 +167,7 @@ export function createAgentModelGateway(input: Readonly<{
         throw new Error("agent_provider_failed");
       }
       events = parseSseStream(response.body, { signal, maxBytes: 64 * 1024 * 1024,
-        maxEventBytes: 2 * 1024 * 1024, maxDurationMs: requestTimeoutMs });
+        maxEventBytes: 2 * 1024 * 1024, ...providerStreamTimingLimits(requestTimeoutMs) });
       const encoder = new TextEncoder();
       let terminal = false;
       let completed = false;

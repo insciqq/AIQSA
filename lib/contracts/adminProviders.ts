@@ -1,5 +1,6 @@
 import { decodeImageFailureDiagnostic, type ImageFailureDiagnostic, type ImageModelConfiguration } from "./imageGeneration";
 import type { ProviderReasoningRequestMapping } from "./providerReasoningRequestMapping";
+import { providerResponseTimeoutSeconds } from "./providerResponseTimeout";
 
 export type AdminProviderFamily =
   | "anthropic"
@@ -29,9 +30,9 @@ export type AdminProviderUnassignedPolicy = "require_assignment" | "use_default"
 export type AdminProviderCheckStatus = "available" | "unavailable";
 export type AdminProviderModelClass = "answer" | "embedding" | "reranker" | "decision" | "image";
 
-export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS = 300;
-export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS = 900;
-export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS = 5;
+export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS = providerResponseTimeoutSeconds.default;
+export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS = providerResponseTimeoutSeconds.maximum;
+export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS = providerResponseTimeoutSeconds.minimum;
 
 export type AdminProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;

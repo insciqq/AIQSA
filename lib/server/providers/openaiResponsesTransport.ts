@@ -3,6 +3,7 @@ import { providerResponseFailure } from "./responseFailure";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
+  providerStreamTimingLimits,
   readBoundedResponseText,
   withTimeoutSignal
 } from "./network";
@@ -72,10 +73,11 @@ async function parseOpenAIJsonResponse(
 
 /** Some compatible roots always stream, even for stream:false. Assemble only
  * provider-issued completed items, under explicit terminal proof, without a retry. */
-async function collectStreamedResponse(response: Response, signal: AbortSignal): Promise<OpenAIResponseObject> {
+async function collectStreamedResponse(response: Response, signal: AbortSignal, timeoutMs?: number): Promise<OpenAIResponseObject> {
   if (!response.body) throw new Error("openai_stream_body_missing");
   const items = new Map<number, OpenAIResponseObject>();
-  for await (const event of parseSseStream(response.body, { signal, maxBytes: 16 * 1024 * 1024, maxEventBytes: 16 * 1024 * 1024 })) {
+  for await (const event of parseSseStream(response.body, { signal, maxBytes: 16 * 1024 * 1024,
+    maxEventBytes: 16 * 1024 * 1024, ...providerStreamTimingLimits(timeoutMs) })) {
     if (event.data === "[DONE]") break;
     let value: unknown;
     try { value = JSON.parse(event.data); } catch { throw new Error("openai_response_invalid_json"); }
@@ -245,7 +247,7 @@ export function createFetchOpenAIResponsesClient(input: {
 
       try {
         if (input.acceptStreamedCreate && exchange.response.headers.get("content-type")?.includes("text/event-stream")) {
-          return await collectStreamedResponse(exchange.response, exchange.timeout.signal);
+          return await collectStreamedResponse(exchange.response, exchange.timeout.signal, options?.timeoutMs ?? input.defaultTimeoutMs);
         }
         return await parseOpenAIJsonResponse(exchange.response, exchange.timeout.signal);
       } finally {

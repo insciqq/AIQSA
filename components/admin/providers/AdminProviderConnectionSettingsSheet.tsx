@@ -245,7 +245,7 @@ function SettingsSheetBody({
             value={form.responseTimeoutSeconds}
           />
           <span className={helpText}>
-            How long one answer may take, from {ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS} to {ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS} seconds.
+            Maximum time per provider request: {ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS} to {ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS} seconds (24 hours maximum). Other task limits still apply.
           </span>
         </label>
         <label className="flex items-start gap-3 text-sm text-ink">

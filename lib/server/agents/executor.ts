@@ -5,6 +5,7 @@ import { sumTokenUsage } from "@/lib/domain/usage";
 import type { ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
 import type { ModelRunSseEvent } from "@/lib/domain/modelRunEvents";
 import type { ProviderRunRequest, ProviderRunResult } from "../providers/types";
+import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { supportsAgentNativeWebSearch, supportsAgentStandaloneWebSearch, type AgentResponsesTransport } from "../providers/agentResponses";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import type { RunUsageAttribution } from "../runs/runRepositoryContract";
@@ -76,6 +77,8 @@ export async function executeCodexTurn(input: Readonly<{
       gatewayOrigin: configuration.gatewayOrigin, modelId: input.request.modelId,
       contextWindowTokens: input.request.modelCapabilities.contextWindow ?? 128000,
       maxOutputTokens: configuration.maxOutputTokens,
+      responseTimeoutMs: effectiveProviderResponseTimeoutMs(input.transport.snapshot.connection,
+        input.transport.snapshot.model.adapterKind === "fake" ? null : input.transport.snapshot.model),
       nativeWebSearch: supportsAgentNativeWebSearch(input.transport.snapshot),
       standaloneWebSearch: supportsAgentStandaloneWebSearch(input.transport.snapshot),
       developerInstructions: prompts.developerInstructions,
