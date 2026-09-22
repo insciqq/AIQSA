@@ -9,6 +9,7 @@ import type {
 } from "@/components/app-shell/types";
 import { safeExternalHref } from "@/lib/domain/links";
 import { projectThreadSearchSources } from "@/lib/domain/searchSources";
+import { latestGeneratedArtifactsForAnswer } from "@/lib/domain/generatedArtifacts";
 
 function artifactTypeFromEvent(event: RunEventView): string | null {
   return event.type === "artifact" &&
@@ -124,10 +125,10 @@ export function summarizeThreadArtifacts(
     const image = decodeThreadGeneratedImage(artifactPayload(event));
     return image ? [[image.attachmentId, image] as const] : [];
   })).values()];
-  const generatedArtifacts = [...new Map(events.filter((event) => artifactTypeFromEvent(event) === "generated_artifact").flatMap((event) => {
+  const generatedArtifacts = latestGeneratedArtifactsForAnswer(events.filter((event) => artifactTypeFromEvent(event) === "generated_artifact").flatMap((event) => {
     const decoded = decodeThreadGeneratedArtifact(artifactPayload(event));
-    return decoded ? [[decoded.versionId, decoded] as const] : [];
-  })).values()];
+    return decoded ? [decoded] : [];
+  }));
   const reasoningText = events
     .filter((event) => artifactTypeFromEvent(event) === "reasoning")
     .map((event) => reasoningTextFromValue(artifactPayload(event)))

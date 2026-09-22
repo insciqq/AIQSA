@@ -11,7 +11,8 @@ function installFixture() {
   vi.stubGlobal("fetch", vi.fn(async (path: string) => path.endsWith("/content")
     ? new Response("<h1>Counter</h1>", { headers: { "content-type": "text/html" } })
     : Response.json({ artifact: { id: "artifact", title: "Counter", currentVersionId, sourceChatId: "chat", publications: [],
-      versions: [1, 2, 3].map(versionNumber => ({ id: `v${versionNumber}`, versionNumber, title: "Counter", kind: "game", entrypoint: "index.html" })) } })));
+      versions: Array.from({ length: Number(currentVersionId.slice(1)) }, (_, index) => ({ id: `v${index + 1}`,
+        versionNumber: index + 1, title: "Counter", kind: "game", entrypoint: "index.html" })) } })));
 }
 function Harness({ version, compact = false }: { version: number; compact?: boolean }) {
   const target = useArtifactPanelStore(state => state.open);
@@ -34,9 +35,14 @@ describe("chat artifact panel", () => {
     expect(screen.getByRole("button", { name: "Version v2" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Version v2" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /^v1/ }));
+    await screen.findByText("You’re viewing v1. The current version is v2.");
+    const preview = await screen.findByTitle("Artifact preview");
     currentVersionId = "v3";
     rerender(<Harness version={3} />);
-    await screen.findByRole("button", { name: "Version v1" });
+    await screen.findByText("You’re viewing v1. The current version is v3.");
+    expect(screen.getByTitle("Artifact preview")).toBe(preview);
+    fireEvent.click(screen.getByRole("button", { name: "Version v1" }));
+    expect(screen.getAllByRole("menuitem").map(item => item.textContent)).toEqual(["v3 · current", "v2", "v1"]);
     input.remove();
   });
   it("only handles desktop Escape within the panel and returns focus to its card", async () => {

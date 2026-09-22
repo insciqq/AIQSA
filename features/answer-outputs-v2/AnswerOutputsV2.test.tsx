@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
@@ -89,6 +89,72 @@ describe("answer outputs v2", () => {
     expect(screen.getByRole("menuitem", { name: "Open in new tab" })).toHaveAttribute("target", "_blank");
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit with AI" }));
     expect(onEditArtifact).toHaveBeenCalledWith(generated);
+  });
+
+  it("updates card actions without remounting the focused card or losing its open menu", async () => {
+    const older = { artifactId: "artifact", versionId: "v3", versionNumber: 3, title: "Notebook", kind: "html" as const, entrypoint: "index.html" };
+    const latest = { ...older, versionId: "v4", versionNumber: 4 };
+    const onOpenArtifact = vi.fn();
+    const onEditArtifact = vi.fn();
+    const output = (value: typeof older) => <AnswerOutputsV2
+      artifact={{ citations: [], sources: [], reasoningText: [], generatedArtifacts: [value] }}
+      onOpenArtifact={onOpenArtifact} onEditArtifact={onEditArtifact} />;
+    const { rerender } = render(output(older));
+    const card = screen.getByRole("button", { name: "Open artifact: Notebook" });
+    fireEvent.click(card);
+    expect(onOpenArtifact).toHaveBeenLastCalledWith(older, card);
+    const actions = screen.getByRole("button", { name: "Actions for artifact: Notebook" });
+    fireEvent.click(actions);
+    const download = screen.getByRole("menuitem", { name: "Download ZIP" });
+    download.focus();
+    rerender(output(latest));
+    expect(screen.getByRole("button", { name: "Open artifact: Notebook" })).toBe(card);
+    expect(screen.getByRole("menuitem", { name: "Download ZIP" })).toBe(download);
+    expect(download).toHaveFocus();
+    expect(download).toHaveAttribute("href", "/api/artifacts/artifact/versions/v4/content?download=zip");
+    expect(screen.getByRole("menuitem", { name: "Open in new tab" })).toHaveAttribute("href", "/artifacts/artifact/versions/v4");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit with AI" }));
+    expect(onEditArtifact).toHaveBeenLastCalledWith(latest);
+    fireEvent.click(card);
+    expect(onOpenArtifact).toHaveBeenLastCalledWith(latest, card);
+    await waitFor(() => expect(actions).not.toBeDisabled());
+
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ artifact: {
+      id: "artifact", title: "Notebook", currentVersionId: "v4", sourceChatId: "chat", publications: [],
+      versions: [older, latest].map(version => ({ ...version, id: version.versionId, createdAt: "2026-09-20T12:00:00.000Z" }))
+    } }));
+    try {
+      fireEvent.click(actions);
+      fireEvent.click(screen.getByRole("menuitem", { name: "Share…" }));
+      const share = await screen.findByRole("dialog", { name: "Share “Notebook”" });
+      await waitFor(() => expect(within(share).getByRole("button", { name: "Publish v4" })).toBeEnabled());
+      fireEvent.click(within(share).getByRole("button", { name: "Close" }));
+    } finally { fetcher.mockRestore(); }
+  });
+
+  it("coalesces ready drafts and never resurrects an older draft beside the saved card", () => {
+    const earlier = { artifactId: "A", versionId: "v3", versionNumber: 3, title: "Notebook", kind: "html" as const, entrypoint: "index.html" };
+    const latest = { ...earlier, versionId: "v4", versionNumber: 4 };
+    const separate = { ...earlier, artifactId: "B", versionId: "b1", versionNumber: 1 };
+    const drafts = [earlier, separate, latest, earlier].map((artifact, index) => ({
+      draftId: `ready-${index}`, status: "ready" as const, files: [], artifact
+    }));
+    const onOpenArtifact = vi.fn();
+    const props = { onOpen: vi.fn(), onOpenArtifact };
+    const { rerender } = render(<ArtifactGenerationCardsV2 {...props} drafts={drafts} />);
+    const cards = screen.getAllByRole("button", { name: "Open artifact: Notebook" });
+    expect(cards).toHaveLength(2);
+    fireEvent.click(cards[0]!);
+    expect(onOpenArtifact).toHaveBeenLastCalledWith(latest, cards[0]);
+    fireEvent.click(cards[1]!);
+    expect(onOpenArtifact).toHaveBeenLastCalledWith(separate, cards[1]);
+    const failed = { draftId: "failed-update", title: "Notebook", files: [], status: "failed" as const };
+    rerender(<ArtifactGenerationCardsV2 {...props} drafts={[...drafts, failed]} />);
+    expect(screen.getAllByRole("button", { name: "Open artifact: Notebook" })).toHaveLength(2);
+    expect(screen.getByRole("status")).toHaveTextContent("Artifact wasn’t created.");
+    rerender(<ArtifactGenerationCardsV2 {...props} drafts={[...drafts, failed]} savedArtifacts={[latest, separate]} />);
+    expect(screen.queryByRole("button", { name: "Open artifact: Notebook" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Artifact wasn’t created.");
   });
 
   it("shows safe Sources under the actions row, reauthorized Project evidence, and Thinking above", async () => {

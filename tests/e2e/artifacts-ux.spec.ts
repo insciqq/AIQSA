@@ -40,8 +40,8 @@ async function createFixture(page: Page): Promise<Fixture> {
   const artifact: ThreadGeneratedArtifact = { artifactId: version.artifactId, versionId: version.id,
     versionNumber: version.versionNumber, title, kind: "game", entrypoint: "index.html" };
   return { chatId, artifact, cleanup: async () => {
-    const artifactResponse = await page.request.delete(`/api/artifacts/${artifact.artifactId}`);
-    const chatCleanupResponse = await page.request.delete(`/api/chats/${chatId}`);
+    const artifactResponse = await page.request.delete(`/api/artifacts/${artifact.artifactId}`, { maxRetries: 2 });
+    const chatCleanupResponse = await page.request.delete(`/api/chats/${chatId}`, { maxRetries: 2 });
     expect([artifactResponse, chatCleanupResponse].filter(response => !response.ok() && response.status() !== 404)
       .map(response => response.status()), "Every owned artifact fixture is cleaned up").toEqual([]);
   } };
@@ -57,23 +57,32 @@ async function updateFixture(page: Page, fixture: Fixture, base: ThreadGenerated
   return { ...base, versionId: version.id, versionNumber: version.versionNumber };
 }
 
-async function installChat(page: Page, fixture: Fixture) {
+async function installChat(page: Page, fixture: Fixture, nextArtifact?: ThreadGeneratedArtifact) {
   const timestamp = "2026-09-20T12:00:00.000Z";
   const messages = [{ id: "artifact-question", role: "user", parentMessageId: null, text: "Build a workshop counter." },
-    { id: "artifact-answer", role: "assistant", parentMessageId: "artifact-question", text: "Open the counter to try it." }]
+    { id: "artifact-answer", role: "assistant", parentMessageId: "artifact-question", text: "Open the counter to try it." },
+    ...nextArtifact ? [
+      { id: "artifact-next-question", role: "user", parentMessageId: "artifact-answer", text: "Make another version." },
+      { id: "artifact-next-answer", role: "assistant", parentMessageId: "artifact-next-question", text: "The updated counter is ready." }
+    ] : []]
     .map(message => ({ id: message.id, role: message.role, parentMessageId: message.parentMessageId,
       createdAt: timestamp, errorMessage: null, status: "complete", content: { blocks: [{ type: "text", text: message.text }] },
-      modelId: message.role === "assistant" ? "gpt-5.5" : null, modelRunId: message.role === "assistant" ? "artifact-run" : null,
+      modelId: message.role === "assistant" ? "gpt-5.5" : null,
+      modelRunId: message.role !== "assistant" ? null : message.id === "artifact-next-answer" ? "artifact-fixture-run" : "artifact-run",
       provider: message.role === "assistant" ? "openai" : null,
-      artifactSummary: message.role === "assistant" ? { citations: [], sources: [], reasoningText: [], generatedArtifacts: [fixture.artifact] } : null }));
+      artifactSummary: message.role === "assistant" ? { citations: [], sources: [], reasoningText: [],
+        generatedArtifacts: [message.id === "artifact-next-answer" ? nextArtifact! : fixture.artifact] } : null }));
   await page.addInitScript(id => {
     if (window === window.top) localStorage.setItem("aiqsa.activeChatId", id);
   }, fixture.chatId);
-  await installMatrixCatalogFixture(page, { folders: [], chats: [{ id: fixture.chatId, title: "Artifact UX fixture", messages,
-    activeLeafMessageId: "artifact-answer", createdAt: timestamp, updatedAt: timestamp, defaultModelId: "gpt-5.5",
-    defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length, usageStats: null }] });
+  const chat = { id: fixture.chatId, title: "Artifact UX fixture", messages,
+    activeLeafMessageId: nextArtifact ? "artifact-next-answer" : "artifact-answer", createdAt: timestamp, updatedAt: timestamp, defaultModelId: "gpt-5.5",
+    defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length, usageStats: null,
+    contextStats: { approximateActiveBranchInputTokens: 0 } };
+  await installMatrixCatalogFixture(page, { folders: [], chats: [chat] });
   await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture() }));
   await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
+  return chat;
 }
 
 async function captureMatrix(page: Page, testInfo: TestInfo, surface: string, assertPageGeometry = false) {
@@ -231,7 +240,8 @@ test("chat editing keeps the draft and exact target, with a docked panel or comp
   } finally { await fixture.cleanup(); }
 });
 
-test("an open preview follows newly created versions while historical selection stays pinned", async ({ page }) => {
+test("one artifact card per answer survives updates, replay and reload while historical selection stays pinned", async ({ page }, testInfo) => {
+  test.setTimeout(150_000);
   const fixture = await createFixture(page);
   const title = fixture.artifact.title;
   try {
@@ -239,13 +249,17 @@ test("an open preview follows newly created versions while historical selection 
     await page.setViewportSize({ width: 1440, height: 900 });
     const stream = createGatedRunStreamFixture({ key: "artifact-versions", abortMessage: "Artifact fixture cancelled", notReadyError: "artifact_fixture_not_ready" });
     await stream.install(page, fixture.chatId);
+    let finished = false;
+    await page.route("**/api/model-runs/artifact-fixture-run", route => route.fulfill({
+      json: { version: 1, run: { id: "artifact-fixture-run", status: finished ? "complete" : "streaming" } }
+    }));
     await page.route(`**/api/chats/${fixture.chatId}/active-leaf`, route => route.fulfill({ json: { ok: true } }));
     await page.goto("/");
     await page.getByRole("button", { name: `Open artifact: ${title}`, exact: true }).click();
     const panel = page.locator("[data-artifact-panel]");
-    await expect(panel.getByRole("button", { name: "Version v1", exact: true })).toBeEnabled();
+    await expect(panel.getByRole("button", { name: "Version v1", exact: true })).toBeEnabled({ timeout: 30_000 });
     await panel.getByRole("button", { name: "Edit with AI", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Remove artifact edit" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Remove artifact edit" })).toBeVisible({ timeout: 30_000 });
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
     await composer.fill("Make another version");
     await composer.press("Enter");
@@ -254,21 +268,82 @@ test("an open preview follows newly created versions while historical selection 
     await expect(page.getByRole("button", { name: "Remove artifact edit" })).toHaveCount(0);
     await expect(page.getByTestId("composer-v2").getByRole("button", { name: "Stop answer", exact: true })).toBeEnabled();
     await stream.emit(page, "message_start", { assistantMessageId: "artifact-next-answer", userMessageId: "artifact-next-question" });
+    const emitSaved = async (artifact: ThreadGeneratedArtifact) => {
+      await stream.emit(page, "artifact_generation", { draftId: artifact.versionId, phase: "started" });
+      await stream.emit(page, "artifact_generation", { draftId: artifact.versionId, phase: "settled", status: "ready", artifact });
+      await stream.emit(page, "artifact", { artifactType: "generated_artifact", payload: artifact });
+    };
     const second = await updateFixture(page, fixture, fixture.artifact);
+    await composer.fill("Keep my next idea while versions change");
     await composer.focus();
-    await stream.emit(page, "artifact", { artifactType: "generated_artifact", payload: second });
+    await emitSaved(second);
     await expect(panel.getByRole("button", { name: "Version v2", exact: true })).toBeVisible();
     await expect(panel.getByRole("status").filter({ hasText: "Updated to v2" })).toHaveText("Updated to v2");
     await expect(composer).toBeFocused();
+    const cards = page.getByRole("button", { name: `Open artifact: ${title}`, exact: true });
+    await expect(cards).toHaveCount(2);
+    await expect(cards.last()).toContainText("v2");
     await panel.getByRole("button", { name: "Version v2", exact: true }).click();
     await page.getByRole("menuitem", { name: /^v1/ }).click();
     await expect(panel.getByRole("button", { name: "Version v1", exact: true })).toBeVisible();
     const third = await updateFixture(page, fixture, second);
+    await emitSaved(third);
     await stream.emit(page, "artifact", { artifactType: "generated_artifact", payload: third });
+    await stream.emit(page, "artifact", { artifactType: "generated_artifact", payload: second });
     await expect(panel.getByRole("button", { name: "Version v1", exact: true })).toBeVisible();
-    const stop = page.getByTestId("composer-v2").getByRole("button", { name: "Stop answer", exact: true });
-    await expect(stop).toBeEnabled();
-    await stop.click();
+    await expect(cards).toHaveCount(2);
+    await expect(cards.first()).toContainText("v1");
+    await expect(cards.last()).toContainText("v3");
+    await expect(composer).toHaveValue("Keep my next idea while versions change");
+    await panel.getByRole("button", { name: "Version v1", exact: true }).click();
+    await expect(page.getByRole("menuitem", { name: /^v[123]/ })).toHaveCount(3);
+    await page.getByRole("menuitem", { name: /^v2/ }).click();
+    await expect(page.frameLocator("iframe.v2-artifact-frame").getByText("Workshop · version 2", { exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: "Close artifact", exact: true }).click();
+
+    // Reload uses a persisted-message fixture; projection parity is covered by artifactSummary.test.
+    const chat = await installChat(page, fixture, third);
+    finished = true;
+    await stream.emit(page, "chat_update", { chat, messages: chat.messages });
+    await stream.emit(page, "done", { runId: "artifact-fixture-run", status: "complete" });
+    await stream.waitForRequestCount(page, 1);
+    await stream.close(page);
+    await expect(page.getByRole("button", { name: "Stop answer", exact: true })).toHaveCount(0);
+    await expect(cards).toHaveCount(2);
+    await expect(cards.last()).toContainText("v3");
+    await page.getByRole("button", { name: `Actions for artifact: ${title}`, exact: true }).last().click();
+    await page.getByRole("menuitem", { name: "Share…", exact: true }).click();
+    const share = page.getByRole("dialog", { name: `Share “${title}”` });
+    await expect(share.getByRole("button", { name: "Publish v3", exact: true })).toBeEnabled({ timeout: 30_000 });
+    await share.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(composer).toHaveValue("Keep my next idea while versions change");
+    await page.reload();
+    await expect(cards).toHaveCount(2);
+    await expect(cards.first()).toContainText("v1");
+    await expect(cards.last()).toContainText("v3");
+    await composer.fill("Keep my next idea while previews open");
+    await cards.last().click();
+    await expect(panel.getByRole("button", { name: "Version v3", exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: "Close artifact", exact: true }).click();
+    await expect(composer).toHaveValue("Keep my next idea while previews open");
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(value => {
+        document.documentElement.dataset.theme = value;
+        document.documentElement.dataset.colorScheme = value;
+      }, theme);
+      for (const size of sizes.filter(size => size.width !== 1280)) {
+        await page.setViewportSize(size);
+        await cards.last().scrollIntoViewIfNeeded();
+        await expectWithinViewport(page, cards.last());
+        await expectCenterUnobscured(cards.last());
+        await expectNoHorizontalOverflow(page);
+        await page.screenshot({ path: testInfo.outputPath(`artifact-single-card-${theme}-${size.width}x${size.height}.png`) });
+      }
+    }
+    const historyResponse = await page.request.get(`/api/artifacts/${fixture.artifact.artifactId}`);
+    expect(historyResponse.ok()).toBe(true);
+    expect((await historyResponse.json()).artifact.versions.map((version: { versionNumber: number }) => version.versionNumber).sort())
+      .toEqual([1, 2, 3]);
   } finally { await fixture.cleanup(); }
 });
 

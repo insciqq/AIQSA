@@ -9,6 +9,32 @@ import { summarizeThreadArtifacts } from "../../../components/app-shell/threadCo
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 
 describe("summarizeMessageRunArtifacts", () => {
+  it("keeps the newest successful version per answer in first-appearance order across live replay and reload", () => {
+    const receipt = (artifactId: string, versionNumber: number) => projectRunOutputArtifactEvent({
+      type: "artifact", data: { artifactType: "generated_artifact", payload: {
+        artifactId, versionId: `${artifactId}-v${versionNumber}`, versionNumber,
+        title: "Same title", kind: "html", entrypoint: "index.html"
+      } }
+    })!;
+    const events = [receipt("A", 3), receipt("B", 1), receipt("A", 4), receipt("A", 4), receipt("A", 3)];
+    const snapshot = structuredClone(events);
+    const project = (answerEvents: typeof events) => {
+      const live = summarizeThreadArtifacts(answerEvents)?.generatedArtifacts;
+      const reloaded = summarizeMessageRunArtifacts({
+        events: answerEvents.map(event => ({ eventType: event.type, payload: event.data })), searchRuns: []
+      })?.generatedArtifacts;
+      expect(reloaded).toEqual(live);
+      return live?.map(artifact => artifact.versionId);
+    };
+    expect(project(events.slice(0, 1))).toEqual(["A-v3"]);
+    expect(project(events.slice(0, 2))).toEqual(["A-v3", "B-v1"]);
+    for (const length of [3, 4, 5]) expect(project(events.slice(0, length))).toEqual(["A-v4", "B-v1"]);
+    expect(project([receipt("A", 2)])).toEqual(["A-v2"]);
+    expect(project([receipt("A", 5)])).toEqual(["A-v5"]);
+    expect(project(events)).toEqual(["A-v4", "B-v1"]);
+    expect(events).toEqual(snapshot);
+  });
+
   it("reloads a generated artifact receipt after durable projection", () => {
     const event = projectRunOutputArtifactEvent({ type: "artifact", data: {
       artifactType: "generated_artifact",

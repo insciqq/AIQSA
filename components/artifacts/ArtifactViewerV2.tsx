@@ -26,6 +26,8 @@ export type ArtifactViewerV2Props = Readonly<{
   onOpenSourceChat?(chatId: string): void | Promise<void>;
   onDetailChange?(detail: ArtifactDetail): void;
   updatedVersionNumber?: number | null;
+  /** Refresh history without changing an explicitly selected older preview. */
+  latestVersionId?: string;
 }>;
 
 function VersionMenu({ busy, detail, onChange, onMore, versionId }: {
@@ -81,7 +83,7 @@ export function ArtifactViewerV2(props: ArtifactViewerV2Props) {
   return <ArtifactViewer key={props.artifactId} {...props} />;
 }
 
-function ArtifactViewer({ artifactId, versionId, host, compact = false, onClose, onDetailChange, onEditRequest, onOpenSourceChat, onVersionChange, updatedVersionNumber }: ArtifactViewerV2Props) {
+function ArtifactViewer({ artifactId, versionId, host, compact = false, onClose, onDetailChange, onEditRequest, onOpenSourceChat, onVersionChange, updatedVersionNumber, latestVersionId }: ArtifactViewerV2Props) {
   const [detail, setDetail] = useState<ArtifactDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -108,7 +110,7 @@ function ArtifactViewer({ artifactId, versionId, host, compact = false, onClose,
       if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : "Could not load version history.");
     });
     return () => controller.abort();
-  }, [artifactId, versionId, reload]);
+  }, [artifactId, versionId, reload, latestVersionId]);
   useEffect(() => {
     if (host === "page" && detail) document.title = `${detail.title} · AIQSA`;
   }, [detail, host]);
