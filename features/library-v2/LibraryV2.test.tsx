@@ -252,6 +252,18 @@ describe("LibraryV2", () => {
 });
 
 describe("Library sub-views", () => {
+  it("leaves resource-owned editor and return focus in place", () => {
+    const tabs = [{ content: <input aria-label="Name" />, id: "instructions" as const, label: "Instructions" }];
+    const { rerender } = render(<LibraryV2 initialTab="instructions" onBack={vi.fn()} tabs={tabs} />);
+    const input = screen.getByLabelText("Name");
+    input.focus();
+    rerender(<LibraryV2 initialTab="instructions" onBack={vi.fn()} tabs={tabs}
+      subview={{ key: "instruction-editor-new", label: "New preset", backLabel: "Back to Instructions", focus: "resource", onBack: vi.fn() }} />);
+    expect(input).toHaveFocus();
+    rerender(<LibraryV2 initialTab="instructions" onBack={vi.fn()} tabs={tabs} />);
+    expect(input).toHaveFocus();
+  });
+
   it("shows the sub-view in the crumb, swaps Back to chat for its Back control, and focuses it", () => {
     const onBack = vi.fn();
     const exit = vi.fn();

@@ -3,10 +3,15 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSecretsPanel } from "./WorkspaceSecretsPanel";
 import { requestWorkspaceSecrets } from "./workspaceSecretsApi";
-import type { WorkspaceSecretSummary } from "@/lib/contracts/workspaceSecrets";
+import { WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_SECRET_MAX_COUNT, type WorkspaceSecretSummary } from "@/lib/contracts/workspaceSecrets";
 
 vi.mock("./workspaceSecretsApi", () => ({ requestWorkspaceSecrets: vi.fn() }));
 const request = vi.mocked(requestWorkspaceSecrets);
+function expectDirty(value: boolean) {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(value);
+}
 const saved: WorkspaceSecretSummary = { id: "10000000-0000-4000-8000-000000000001", versionId: "10000000-0000-4000-8000-000000000002",
   kind: "text", name: "Saved access", description: "Use for the fixture service", byteSize: 45,
   updatedAt: "2026-09-11T00:00:00Z", envNames: [], originalName: null, sshProtected: false };
@@ -21,46 +26,68 @@ afterEach(() => vi.unstubAllGlobals());
 describe("WorkspaceSecretsPanel", () => {
   beforeEach(() => request.mockReset());
 
+  it.each([
+    [WORKSPACE_SECRET_MAX_COUNT, 0, "Browser session"],
+    [0, WORKSPACE_BROWSER_SESSION_MAX_COUNT, "SSH key"],
+    [WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_COUNT, null]
+  ] as const)("keeps ordinary and browser-session capacity independent (%i, %i)", async (ordinary, sessions, initialType) => {
+    request.mockResolvedValueOnce([
+      ...Array.from({ length: ordinary }, (_, index) => ({ ...saved, id: `ordinary-${index}`, name: `Saved secret ${index}` })),
+      ...Array.from({ length: sessions }, (_, index) => ({ ...saved, id: `browser-${index}`, name: `Saved session ${index}`, kind: "browser_session" as const }))
+    ]);
+    render(<WorkspaceSecretsPanel />);
+    await screen.findByRole("heading", { name: ordinary ? "Saved secret 0" : "Saved session 0" });
+    const add = screen.getByRole("button", { name: "Add secret" });
+    if (initialType === null) {
+      expect(add).toBeDisabled();
+      return;
+    }
+    fireEvent.click(add);
+    expect(screen.getByRole("radio", { name: initialType })).toBeChecked();
+    expect(screen.getByRole("radio", { name: ordinary ? "Text" : "Browser session" })).toBeDisabled();
+    expectDirty(false);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("reports dirty only while a create draft differs from its opening state", async () => {
     request.mockResolvedValueOnce([]);
-    const onDirtyChange = vi.fn();
-    render(<WorkspaceSecretsPanel onDirtyChange={onDirtyChange} />);
+    render(<WorkspaceSecretsPanel />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
 
     fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
-    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    expectDirty(false);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    expectDirty(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
-    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "env" } });
-    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole("radio", { name: "Environment" }));
+    expectDirty(true);
     fireEvent.change(screen.getByLabelText("Variable name 1"), { target: { value: "API_TOKEN" } });
-    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "ssh_key" } });
-    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getByRole("radio", { name: "SSH key" }));
+    expectDirty(false);
     fireEvent.change(screen.getByLabelText("Private SSH key"), { target: { value: "synthetic key" } });
-    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expectDirty(true);
     fireEvent.change(screen.getByLabelText("Private SSH key"), { target: { value: "" } });
-    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expectDirty(false);
   });
 
   it("reports edit metadata and replacement changes and clears dirty when they are reverted", async () => {
     request.mockResolvedValueOnce([saved]);
-    const onDirtyChange = vi.fn();
-    render(<WorkspaceSecretsPanel onDirtyChange={onDirtyChange} />);
+    render(<WorkspaceSecretsPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit Saved access" }));
-    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    expectDirty(false);
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed access" } });
-    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expectDirty(true);
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: saved.name } });
-    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expectDirty(false);
 
     fireEvent.click(screen.getByLabelText("Replace saved value"));
-    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expectDirty(true);
     fireEvent.change(screen.getByLabelText("Secret text"), { target: { value: "replacement synthetic token" } });
     fireEvent.click(screen.getByLabelText("Replace saved value"));
-    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expectDirty(false);
   });
 
   it("shows browser origin metadata and imports original state bytes without showing saved cookies", async () => {
@@ -101,12 +128,11 @@ describe("WorkspaceSecretsPanel", () => {
 
   it("keeps exact env input after failure, blocks duplicate writes and preserves focus after saving", async () => {
     request.mockResolvedValueOnce([]);
-    const onDirtyChange = vi.fn();
-    render(<WorkspaceSecretsPanel onDirtyChange={onDirtyChange} />);
+    render(<WorkspaceSecretsPanel />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
     await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
-    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "env" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Environment" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Fixture API" } });
     fireEvent.change(screen.getByLabelText("Variable name 1"), { target: { value: "API_TOKEN" } });
     const value = "'\"$HOME`touch x`\nsecond line";
@@ -122,13 +148,13 @@ describe("WorkspaceSecretsPanel", () => {
     await act(async () => reject(new Error("An environment name is already used by another saved secret.")));
     expect(await screen.findByRole("alert")).toHaveTextContent("already used");
     expect(screen.getByLabelText("Variable value 1")).toHaveValue(value);
-    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expectDirty(true);
     request.mockResolvedValueOnce([{ ...saved, kind: "env", name: "Fixture API", envNames: ["API_TOKEN"] }]);
     fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
     await screen.findByRole("heading", { name: "Fixture API" });
     expect(request).toHaveBeenLastCalledWith({ action: "create", name: "Fixture API", description: "", value: { kind: "env", entries: [{ name: "API_TOKEN", value }] } });
     await waitFor(() => expect(screen.getByRole("heading", { name: "Fixture API" })).toHaveFocus());
-    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expectDirty(false);
     expect(screen.queryByText(value)).toBeNull();
   });
 
@@ -152,7 +178,9 @@ describe("WorkspaceSecretsPanel", () => {
     await screen.findByRole("alert");
     expect(screen.getByLabelText("Secret text")).toHaveValue("replacement synthetic token");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete Renamed access" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Renamed access" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     request.mockResolvedValueOnce([]);
     fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
     await screen.findByText("No saved Workspace secrets.");
@@ -168,7 +196,7 @@ describe("WorkspaceSecretsPanel", () => {
     expect(screen.getByLabelText("Private SSH key")).toBeVisible();
     expect(screen.getByLabelText("Or upload a private key")).toBeVisible();
     expect(screen.queryByLabelText(/^Host$/)).toBeNull();
-    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "file" } });
+    fireEvent.click(screen.getByRole("radio", { name: "File" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Original credentials" } });
     const bytes = Uint8Array.from([0, 255, 13, 10, 36]);
     const file = new File([bytes], "credentials.bin");
@@ -180,5 +208,74 @@ describe("WorkspaceSecretsPanel", () => {
     await screen.findByRole("heading", { name: "Original credentials" });
     expect(request).toHaveBeenLastCalledWith({ action: "create", name: "Original credentials", description: "",
       value: { kind: "file", originalName: "credentials.bin", base64: "AP8NCiQ=" } });
+  });
+
+  it("merges .env locally, retains pasted drafts on close and sends only explicit Save", async () => {
+    request.mockResolvedValueOnce([]);
+    render(<WorkspaceSecretsPanel />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Environment" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Fixture env" } });
+    fireEvent.change(screen.getByLabelText("Variable name 1"), { target: { value: "EXISTING" } });
+    fireEvent.change(screen.getByLabelText("Variable value 1"), { target: { value: "old" } });
+    fireEvent.click(screen.getByRole("button", { name: "Paste .env" }));
+    const text = 'EXISTING=replaced\nNEW="first\\nsecond"\ninvalid line';
+    fireEvent.change(screen.getByLabelText("Paste the contents of a .env file"), { target: { value: text } });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Add secret" }), { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Unsaved Workspace secret" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.getByLabelText("Paste the contents of a .env file")).toHaveValue(text);
+    fireEvent.click(screen.getByRole("button", { name: "Add variables" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Added 1, replaced 1, skipped 1.");
+    expect(screen.getByLabelText("Variable value 2")).toHaveValue("first\nsecond");
+    expect(request).toHaveBeenCalledTimes(1);
+    request.mockResolvedValueOnce([{ ...saved, kind: "env", name: "Fixture env", envNames: ["EXISTING", "NEW"] }]);
+    fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
+    await screen.findByRole("heading", { name: "Fixture env" });
+    expect(request).toHaveBeenLastCalledWith({ action: "create", name: "Fixture env", description: "", value: {
+      kind: "env", entries: [{ name: "EXISTING", value: "replaced" }, { name: "NEW", value: "first\nsecond" }]
+    } });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("blocks every sheet close during Save and keeps the draft after failure", async () => {
+    request.mockResolvedValueOnce([]);
+    render(<WorkspaceSecretsPanel />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Text" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Draft" } });
+    fireEvent.change(screen.getByLabelText("Secret text"), { target: { value: "synthetic" } });
+    let reject!: (error: Error) => void;
+    request.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail; }));
+    fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
+    for (const name of ["Cancel", "Close", "Dismiss"]) expect(screen.getByRole("button", { name })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Add secret" }), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Unsaved Workspace secret" })).toBeNull();
+    await act(async () => reject(new Error("Synthetic failure")));
+    expect(screen.getByLabelText("Secret text")).toHaveValue("synthetic");
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("refreshes conflicting metadata without replacing the draft or its text selection", async () => {
+    request.mockResolvedValueOnce([saved]);
+    render(<WorkspaceSecretsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Saved access" }));
+    fireEvent.click(screen.getByLabelText("Replace saved value"));
+    const text = screen.getByLabelText("Secret text") as HTMLTextAreaElement;
+    fireEvent.change(text, { target: { value: "unsaved replacement" } });
+    request.mockRejectedValueOnce(new Error("This secret changed in another window."));
+    fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
+    await screen.findByRole("alert");
+    request.mockResolvedValueOnce([{ ...saved, versionId: "10000000-0000-4000-8000-000000000003" }]);
+    text.focus(); text.setSelectionRange(2, 7);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(text).toHaveValue("unsaved replacement");
+    expect(text.selectionStart).toBe(2);
+    expect(text.selectionEnd).toBe(7);
+    await act(async () => new Promise<void>(resolve => window.requestAnimationFrame(() => resolve())));
+    expect(screen.getByLabelText("Name")).not.toHaveFocus();
   });
 });

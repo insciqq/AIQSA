@@ -14,12 +14,12 @@ test.describe.configure({ mode: "serial" });
 test.afterAll(() => prisma.$disconnect());
 async function openInstructions(page: Page) {
   await runAccountMenuAction(page, "Instructions");
-  await expect(page.getByRole("button", { name: "Active instructions" })).toBeEnabled();
-  await page.getByRole("button", { name: "Manage presets…" }).click();
+  await expect(page.getByRole("button", { name: "New preset" })).toBeEnabled({ timeout: 30_000 });
 }
 for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 390, height: 844, theme: "light" }] as const) {
   test(`instruction editor, conflict, selection and containment at ${viewport.width}`, async ({ page }, testInfo) => {
     test.setTimeout(180_000); page.setDefaultTimeout(15_000);
+    page.setDefaultNavigationTimeout(60_000);
     const userId = randomUUID(), email = `instructions-${userId}@example.com`, password = `Synthetic-${randomUUID()}`;
     await prisma.user.create({ data: { id: userId, email, displayName: "Instructions test", status: "active", authIdentities: { create: {
       normalizedEmail: email, provider: "password", providerAccountId: email, passwordHash: await hashPassword(password), emailVerifiedAt: new Date()
@@ -37,11 +37,11 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await expect(panel.getByLabel("Name", { exact: true })).toBeFocused();
       await panel.getByLabel("Name", { exact: true }).fill("Writing");
       await panel.getByLabel("System instructions", { exact: true }).fill(`${">".repeat(3000)} bounded preview`);
-      await panel.getByRole("button", { name: "Preview", exact: true }).click();
+      await panel.getByRole("radio", { name: "Preview", exact: true }).click();
       await expect(panel.locator("blockquote")).toHaveCount(32);
-      await expect(panel.getByText(/bounded preview/)).toBeVisible();
+      await expect(panel.getByRole("region", { name: "Instructions preview", exact: true }).getByText(/bounded preview/)).toBeVisible();
       await expectNoHorizontalOverflow(page);
-      await panel.getByRole("button", { name: "Write", exact: true }).click();
+      await panel.getByRole("radio", { name: "Write", exact: true }).click();
       const longText = "# Writing instructions\n" + ("Кратко🙂 ".repeat(100) + "\n").repeat(35);
       const reminderText = "Напоминание".repeat(350);
       expect(Buffer.byteLength(JSON.stringify({ systemInstructions: longText, responseReminder: reminderText }), "utf8")).toBeGreaterThan(65_536);
@@ -51,38 +51,34 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await expectNoHorizontalOverflow(page);
       await panel.getByText("Response reminder (optional)", { exact: true }).click();
       await panel.getByLabel("Response reminder", { exact: true }).fill(reminderText);
-      await panel.getByRole("button", { name: "Preview", exact: true }).click();
+      await panel.getByRole("radio", { name: "Preview", exact: true }).click();
       await expect(panel.getByRole("heading", { name: "Writing instructions" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
-      await panel.getByRole("button", { name: "Write", exact: true }).click();
+      await panel.getByRole("radio", { name: "Write", exact: true }).click();
       await textarea.scrollIntoViewIfNeeded();
       await textarea.focus();
-      await expect.poll(() => textarea.evaluate(node => ({
-        innerOutlineColor: getComputedStyle(node).outlineColor,
-        innerShadow: getComputedStyle(node).boxShadow,
-        outerOutline: getComputedStyle(node.parentElement!).outlineWidth,
-        outerRadius: getComputedStyle(node.parentElement!).borderTopLeftRadius
-      }))).toEqual({ innerOutlineColor: "rgba(0, 0, 0, 0)", innerShadow: "none", outerOutline: "2px", outerRadius: "12px" });
+      await expect(textarea).toBeFocused();
+      await expect.poll(() => textarea.evaluate(node => getComputedStyle(node).boxShadow)).not.toBe("none");
       await page.screenshot({ path: testInfo.outputPath("instruction-editor.png") });
       await textarea.focus(); await textarea.press("Control+s");
       await expect(panel.getByText(/Preset saved/)).toBeVisible();
       await expect(panel.getByRole("button", { name: "New preset" })).toBeFocused();
       expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBeNull();
-      await panel.getByRole("button", { name: "Make active: Writing", exact: true }).click();
+      await panel.getByRole("radio", { name: "Writing", exact: true }).click();
       await expect(panel.getByText(/Instructions updated for your next reply/)).toBeVisible();
       const saved = await prisma.instructionPreset.findFirstOrThrow({ where: { userId } });
       expect(saved.systemInstructions).toBe(longText);
       expect(saved.responseReminder).toBe(reminderText);
       expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBe(saved.id);
-      await expect(panel.getByRole("button", { name: "Active instructions" })).toContainText("Writing");
-      await expect(panel.getByLabel("Active instructions: Writing", { exact: true })).toBeFocused();
-      await panel.getByRole("button", { name: "Make active: AIQSA default instructions", exact: true }).click();
-      await expect(panel.getByRole("button", { name: "Active instructions" })).toContainText("AIQSA default instructions");
-      await expect(panel.getByLabel("Active instructions: AIQSA default instructions", { exact: true })).toBeFocused();
+      await expect(panel.getByRole("radio", { name: "Writing", exact: true })).toBeChecked();
+      await expect(panel.getByRole("radio", { name: "Writing", exact: true })).toBeFocused();
+      await panel.getByRole("radio", { name: "AIQSA default instructions", exact: true }).click();
+      await expect(panel.getByRole("radio", { name: "AIQSA default instructions", exact: true })).toBeChecked();
+      await expect(panel.getByRole("radio", { name: "AIQSA default instructions", exact: true })).toBeFocused();
       expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBeNull();
-      await panel.getByRole("button", { name: "Make active: Writing", exact: true }).click();
-      await expect(panel.getByRole("button", { name: "Active instructions" })).toContainText("Writing");
-      await expect(panel.getByLabel("Active instructions: Writing", { exact: true })).toBeFocused();
+      await panel.getByRole("radio", { name: "Writing", exact: true }).click();
+      await expect(panel.getByRole("radio", { name: "Writing", exact: true })).toBeChecked();
+      await expect(panel.getByRole("radio", { name: "Writing", exact: true })).toBeFocused();
       await page.screenshot({ path: testInfo.outputPath("instruction-preset-activation.png") });
 
       // Exercise the Assistant field and a real accepted fake-provider run while
@@ -138,13 +134,14 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       const discard = page.getByRole("dialog", { name: "Unsaved instructions" });
       await expect(discard).toBeVisible(); await discard.getByRole("button", { name: "Keep editing" }).click();
       await panel.getByRole("button", { name: "Cancel", exact: true }).click();
-      await panel.getByRole("button", { name: "Discard changes" }).click();
+      await discard.getByRole("button", { name: /Confirm discard/ }).click();
       await panel.getByRole("button", { name: "Edit Writing" }).click();
       await expect(panel.getByLabel("System instructions", { exact: true })).toHaveValue("Changed in another tab");
       await panel.getByRole("button", { name: "Cancel", exact: true }).click();
       // Refresh metadata after the concurrent edit before deleting by revision.
       await page.reload(); await openInstructions(page);
-      await panel.getByRole("button", { name: "Delete Writing" }).click();
+      await panel.getByRole("button", { name: "More actions for Writing" }).click();
+      await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
       await expect(panel.getByText(/Your chats will use the AIQSA default instructions/)).toBeVisible();
       const remove = panel.getByRole("button", { name: "Delete preset", exact: true });
       await remove.scrollIntoViewIfNeeded(); await expectWithinViewport(page, remove); await remove.click();

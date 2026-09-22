@@ -1,6 +1,6 @@
 "use client";
 
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import {
   AdminMcpOneTimeValues,
   mcpOneTimeRequest,
@@ -50,7 +50,7 @@ export function AdminMcpConfigurationsSheet({
   };
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={controller.state.busy}
       description="Restore puts a saved build back as it was. Rebuild replaces the current settings with that configuration, builds it again, checks it and applies the result."
       onClose={onClose}
@@ -101,6 +101,6 @@ export function AdminMcpConfigurationsSheet({
           </p>
         )}
       </div>
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }

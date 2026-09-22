@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import { ModelJsonDialog } from "./ModelJsonDialog";
 
 function harness(value = "{}") {
@@ -9,11 +9,11 @@ function harness(value = "{}") {
   const closeSheet = vi.fn();
   function Harness() {
     const [open, setOpen] = useState(false);
-    return <AdminSheet onClose={closeSheet} open testId="outer" title="Edit model">
+    return <UiV2Sheet onClose={closeSheet} open testId="outer" title="Edit model">
       <button onClick={() => setOpen(true)} type="button">Edit JSON</button>
       <input aria-label="Other model setting" defaultValue="Keep this" />
       {open ? <ModelJsonDialog example={'{ "maxOutputTokens": 1024 }'} modelLabel="Test model" onApply={(next) => { apply(next); setOpen(false); }} onClose={() => setOpen(false)} providerLabel="Test provider" value={value} /> : null}
-    </AdminSheet>;
+    </UiV2Sheet>;
   }
   render(<Harness />);
   const trigger = screen.getByRole("button", { name: "Edit JSON" });

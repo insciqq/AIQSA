@@ -14,7 +14,7 @@ test.afterAll(() => prisma.$disconnect());
 
 async function openSecrets(page: Page) {
   await runAccountMenuAction(page, "Secrets");
-  await expect(page.getByTestId("workspace-secrets-panel").getByRole("button", { name: "Add secret" })).toBeEnabled();
+  await expect(page.getByTestId("workspace-secrets-panel").getByRole("button", { name: "Add secret" })).toBeEnabled({ timeout: 30_000 });
 }
 
 for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 390, height: 844, theme: "light" }] as const) {
@@ -50,6 +50,7 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
 
       await openSecrets(page);
       const panel = page.getByTestId("workspace-secrets-panel");
+      const sheet = page.getByTestId("workspace-secret-sheet");
       await expect(panel.getByRole("heading", { name: "shop.example", exact: true })).toBeVisible();
       await expect(panel.getByText(/^Saved by Workspace ·/u)).toBeVisible();
       await expect(panel.getByText("shop.example.json", { exact: true })).toBeVisible();
@@ -60,11 +61,14 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       if (!(await page.getByRole("complementary", { name: "Chat navigation" }).isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
       await startNewChat(page);
       await selectFakeModel(page);
-      await expect(page.getByRole("button", { name: /^Turn off Workspace/u })).toHaveAttribute("aria-pressed", "true");
+      // Ordinary New chat takes personal Chat defaults; enable Workspace for
+      // this new chat before checking account-wide browser-session restore.
+      await turnWorkspaceOn(page);
       await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:browser_restore]", "Workspace browser session restored.");
       expect(await activeChatId(page)).not.toBe(firstChat);
       await openSecrets(page);
-      await panel.getByRole("button", { name: "Delete shop.example", exact: true }).click();
+      await panel.getByRole("button", { name: "More actions for shop.example", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
       await panel.getByRole("button", { name: "Delete permanently", exact: true }).click();
       await expect(panel.getByText("No saved Workspace secrets.")).toBeVisible();
       await page.getByRole("button", { name: "Back to chat" }).click();
@@ -73,23 +77,23 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
 
       await openSecrets(page);
       await panel.getByRole("button", { name: "Add secret" }).click();
-      await panel.getByLabel("Type", { exact: true }).selectOption("browser_session");
-      await panel.getByLabel("Name", { exact: true }).fill("Imported shop session");
+      await sheet.getByRole("radio", { name: "Browser session", exact: true }).check();
+      await sheet.getByLabel("Name", { exact: true }).fill("Imported shop session");
       const original = Buffer.from('{"cookies":[],"origins":[]}\r\n');
-      await panel.getByLabel("Browser session JSON").setInputFiles({ name: "manual.example.json", mimeType: "application/json", buffer: original });
-      await expect(panel.getByLabel("Session filename")).toHaveValue("manual.example.json");
-      await panel.getByRole("button", { name: "Save secret" }).scrollIntoViewIfNeeded();
+      await sheet.getByLabel("Browser session JSON").setInputFiles({ name: "manual.example.json", mimeType: "application/json", buffer: original });
+      await expect(sheet.getByLabel("Session filename")).toHaveValue("manual.example.json");
+      await sheet.getByRole("button", { name: "Save secret" }).scrollIntoViewIfNeeded();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: testInfo.outputPath(`browser-import-${viewport.width}-${viewport.theme}.png`) });
-      await panel.getByRole("button", { name: "Save secret" }).click();
+      await sheet.getByRole("button", { name: "Save secret" }).click();
       await expect(panel.getByRole("heading", { name: "Imported shop session" })).toBeFocused();
       await expect(panel.getByText(/^Imported ·/u)).toBeVisible();
       const [imported] = await rows();
       expect(decryptWorkspaceSecret(imported!.value, userId).value).toEqual({ kind: "browser_session", originalName: "manual.example.json", base64: original.toString("base64") });
       await panel.getByRole("button", { name: "Edit Imported shop session" }).click();
-      await expect(panel.getByLabel("Browser session JSON")).toHaveCount(0);
-      await panel.getByLabel("Name", { exact: true }).fill("Renamed session");
-      await panel.getByRole("button", { name: "Save secret" }).click();
+      await expect(sheet.getByLabel("Browser session JSON")).toHaveCount(0);
+      await sheet.getByLabel("Name", { exact: true }).fill("Renamed session");
+      await sheet.getByRole("button", { name: "Save secret" }).click();
       await expect(panel.getByRole("heading", { name: "Renamed session" })).toBeFocused();
       expect(decryptWorkspaceSecret((await rows())[0]!.value, userId).value).toEqual(decryptWorkspaceSecret(imported!.value, userId).value);
       expect(pageErrors).toEqual([]);

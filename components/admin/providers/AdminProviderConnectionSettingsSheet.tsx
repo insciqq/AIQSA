@@ -1,7 +1,7 @@
 "use client";
 
 import { inputClass } from "@/components/admin/adminPrimitives";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import { effectiveEndpoint, isCustomProvider } from "@/components/admin/providers/providerListView";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
@@ -124,7 +124,7 @@ function SettingsSheetBody({
   };
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={busy}
       description={live
         ? "Changes apply to new requests as soon as they are saved."
@@ -282,7 +282,7 @@ function SettingsSheetBody({
           Edits to the connection settings will be lost.
         </ConfirmationDialog>
       ) : null}
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }
 

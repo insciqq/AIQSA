@@ -1,16 +1,16 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { AdminSheet } from "./AdminSheet";
+import { UiV2Sheet } from "./SheetV2";
 
-describe("AdminSheet", () => {
+describe("UiV2Sheet", () => {
   it("renders a labelled modal dialog over an inert page, closes on Escape and scrim, and restores focus", async () => {
     const onClose = vi.fn();
     const view = render(
       <>
         <button type="button">Opener</button>
-        <AdminSheet onClose={onClose} open={false} testId="sheet" title="Add key">
+        <UiV2Sheet onClose={onClose} open={false} testId="sheet" title="Add key">
           <input aria-label="Label" />
-        </AdminSheet>
+        </UiV2Sheet>
       </>
     );
     const opener = screen.getByRole("button", { name: "Opener" });
@@ -21,7 +21,7 @@ describe("AdminSheet", () => {
     view.rerender(
       <>
         <button type="button">Opener</button>
-        <AdminSheet
+        <UiV2Sheet
           description="Runs a few small paid requests"
           footer={<button type="button">Test &amp; Save</button>}
           onClose={onClose}
@@ -30,7 +30,7 @@ describe("AdminSheet", () => {
           title="Add key"
         >
           <input aria-label="Label" />
-        </AdminSheet>
+        </UiV2Sheet>
       </>
     );
 
@@ -50,9 +50,9 @@ describe("AdminSheet", () => {
     view.rerender(
       <>
         <button type="button">Opener</button>
-        <AdminSheet onClose={onClose} open={false} testId="sheet" title="Add key">
+        <UiV2Sheet onClose={onClose} open={false} testId="sheet" title="Add key">
           <input aria-label="Label" />
-        </AdminSheet>
+        </UiV2Sheet>
       </>
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -64,9 +64,9 @@ describe("AdminSheet", () => {
   it("keeps the sheet open while closing is blocked", async () => {
     const onClose = vi.fn();
     render(
-      <AdminSheet closeBlocked onClose={onClose} open testId="sheet" title="Rotate key">
+      <UiV2Sheet closeBlocked onClose={onClose} open testId="sheet" title="Rotate key">
         <p>Saving…</p>
-      </AdminSheet>
+      </UiV2Sheet>
     );
     const dialog = await screen.findByRole("dialog", { name: "Rotate key" });
     fireEvent.keyDown(dialog, { key: "Escape" });

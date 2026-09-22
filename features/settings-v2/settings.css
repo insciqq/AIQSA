@@ -1507,11 +1507,6 @@
   }
 }
 
-.v2-instruction-editor:has(.v2-instruction-editor-content:focus-visible) {
-  outline: 2px solid var(--v2-color-accent);
-  outline-offset: 2px;
-}
-
 /* Touch: tabs, archive actions, switches and theme cards keep 44px targets
    (audit v3 C4). Declared
    last so it outranks the base rows at equal specificity. */

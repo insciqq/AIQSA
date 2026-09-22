@@ -1,33 +1,33 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { UiV2Button } from "@/components/ui-v2";
-import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
+import { UiV2Button, UiV2IconButton, UiV2MenuItem } from "@/components/ui-v2";
+import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
+import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
+import { MarkdownEditorV2, editorCharacterCount } from "@/components/ui-v2/MarkdownEditorV2";
+import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { decodeInstructionPresetDraft, INSTRUCTION_PRESET_MAX_COUNT, INSTRUCTION_PRESET_NAME_MAX_LENGTH,
   SYSTEM_INSTRUCTIONS_MAX_LENGTH, RESPONSE_REMINDER_MAX_LENGTH, instructionPresetErrorMessage,
   type InstructionPreset, type InstructionPresetDraft, type InstructionPresetState, type InstructionPresetSummary } from "@/lib/contracts/instructionPresets";
-import { SettingsRowV2 } from "./SettingsV2";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
-import { SettingsSelectV2 } from "./SettingsSelectV2";
+import type { LibrarySubviewV2 } from "@/features/library-v2/contracts";
 import { PlatformInstructionsPreview } from "./PlatformInstructionsPreview";
 import { InstructionPresetApiError, requestInstructionPreset, requestInstructionPresets } from "./instructionPresetsApi";
 
 const DEFAULT_LABEL = "AIQSA default instructions";
 const field = "w-full min-w-0 rounded-lg border border-trace-strong bg-answer-paper px-3 py-2 text-sm leading-6 text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
 const blank: InstructionPresetDraft = { name: "", systemInstructions: "", responseReminder: "" };
-const inertHref = () => "text" as const;
-const counter = (value: string, limit: number) => `${value.length.toLocaleString("en-US").replaceAll(",", " ")} / ${limit.toLocaleString("en-US").replaceAll(",", " ")}`;
 const values = (preset: InstructionPreset): InstructionPresetDraft => ({ name: preset.name, systemInstructions: preset.systemInstructions, responseReminder: preset.responseReminder });
 type Editor = { original: InstructionPreset | null; value: InstructionPresetDraft };
 
-export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Readonly<{
+export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange, onSubviewChange, onRequestExit }: Readonly<{
   onDirtyChange?(value: boolean): void;
   onBusyChange?(value: boolean): void;
+  onSubviewChange?(value: LibrarySubviewV2 | null): void;
+  onRequestExit?(proceed: () => void): void;
 }>) {
   const [state, setState] = useState<InstructionPresetState | null>(null);
-  const [open, setOpen] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
-  const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -36,20 +36,21 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
   const [deleting, setDeleting] = useState<InstructionPresetSummary | null>(null);
   const [discard, setDiscard] = useState(false);
   const [platformPreviewOpen, setPlatformPreviewOpen] = useState(false);
+  const [reminderOpen, setReminderOpen] = useState(false);
   const panelId = useId();
   const pending = useRef(false);
   const alive = useRef(false);
   const nameInput = useRef<HTMLInputElement>(null);
-  const textInput = useRef<HTMLTextAreaElement>(null);
-  const manageButton = useRef<HTMLButtonElement>(null);
   const newButton = useRef<HTMLButtonElement>(null);
   const viewButton = useRef<HTMLButtonElement>(null);
   const keepEditingButton = useRef<HTMLButtonElement>(null);
-  const activeBadge = useRef<HTMLSpanElement>(null);
-  const focusIntent = useRef<"name" | "new" | "active" | "manage" | "view" | "keep" | null>(null);
-  const closeAfterDiscard = useRef(false);
+  const rowButtons = useRef(new Map<string, HTMLButtonElement>());
+  const radios = useRef(new Map<string, HTMLInputElement>());
+  const returnTarget = useRef("new");
+  const focusIntent = useRef<string | null>(null);
   const dirty = editor !== null && JSON.stringify(editor.value) !== JSON.stringify(editor.original ? values(editor.original) : blank);
   const editorId = editor ? editor.original?.id ?? "new" : null;
+  const subviewLabel = platformPreviewOpen ? DEFAULT_LABEL : editor ? editor.value.name.trim() || "New preset" : null;
 
   useEffect(() => {
     alive.current = true;
@@ -63,15 +64,21 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   useEffect(() => {
     if (busy) return;
-    const target = focusIntent.current === "name" ? nameInput.current : focusIntent.current === "new" ? newButton.current
-      : focusIntent.current === "active" ? activeBadge.current : focusIntent.current === "manage" ? manageButton.current
-      : focusIntent.current === "view" ? viewButton.current : focusIntent.current === "keep" ? keepEditingButton.current : null;
-    if (target) { focusIntent.current = null; target.focus(); }
-  }, [busy, editorId, open, discard, platformPreviewOpen, deleting?.id, state?.activePresetId]);
-  useEffect(() => {
-    const input = textInput.current;
-    if (input) { input.style.height = "auto"; input.style.height = `${Math.min(Math.max(input.scrollHeight, 220), 440)}px`; }
-  }, [editor?.value.systemInstructions, preview]);
+    const intent = focusIntent.current;
+    const target = intent === "name" ? nameInput.current : intent === "new" ? newButton.current
+      : intent === "view" ? viewButton.current : intent === "keep" ? keepEditingButton.current
+      : intent?.startsWith("radio:") ? radios.current.get(intent.slice(6)) : intent ? rowButtons.current.get(intent) : null;
+    if (target) {
+      focusIntent.current = null;
+      target.focus({ preventScroll: true });
+      // The closing modal restores its opener in a microtask. The resource
+      // owns the destination after leaving the editor, including that case.
+      if (intent !== "name" && intent !== "keep" && !intent?.startsWith("radio:")) {
+        const frame = window.requestAnimationFrame(() => { if (target.isConnected) target.focus({ preventScroll: true }); });
+        return () => window.cancelAnimationFrame(frame);
+      }
+    }
+  }, [busy, editorId, discard, platformPreviewOpen, deleting?.id, state]);
 
   async function perform(action: () => Promise<void>) {
     if (pending.current) return;
@@ -83,44 +90,29 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
     } } finally { pending.current = false; if (alive.current) setBusy(false); }
   }
   function closeEditor() {
-    closeAfterDiscard.current = false;
-    focusIntent.current = "new";
-    setPreview(false);
+    focusIntent.current = returnTarget.current;
     setEditor(null); setLatest(null); setConflict(false); setDiscard(false); setError(null);
   }
-  function closePanel() {
-    closeAfterDiscard.current = false;
-    focusIntent.current = "manage";
-    setPlatformPreviewOpen(false);
-    setDeleting(null);
-    setOpen(false);
-    setEditor(null); setLatest(null); setConflict(false); setDiscard(false); setPreview(false);
-  }
-  function requestClosePanel() {
+  const requestCloseEditor = useEventCallback(() => {
     if (pending.current) return;
-    if (dirty) {
-      closeAfterDiscard.current = true;
-      setDiscard(true);
-      focusIntent.current = "keep";
-      return;
-    }
-    closePanel();
-  }
-  function togglePanel() {
-    if (pending.current) return;
-    if (open) requestClosePanel();
-    else {
-      closeAfterDiscard.current = false;
-      setDiscard(false);
-      setOpen(true);
-    }
-  }
-  function closePlatformPreview() {
-    focusIntent.current = "view";
-    setPlatformPreviewOpen(false);
-  }
+    if (platformPreviewOpen) { focusIntent.current = "view"; setPlatformPreviewOpen(false); return; }
+    if (onRequestExit) { onRequestExit(closeEditor); return; }
+    if (dirty) { focusIntent.current = "keep"; setDiscard(true); }
+    else closeEditor();
+  });
+  useEffect(() => {
+    onSubviewChange?.(subviewLabel === null ? null : {
+      key: platformPreviewOpen ? "instruction-platform-preview" : `instruction-editor-${editorId}`,
+      label: subviewLabel, backLabel: "Back to Instructions", busy, focus: "resource", onBack: requestCloseEditor
+    });
+  }, [busy, editorId, onSubviewChange, platformPreviewOpen, requestCloseEditor, subviewLabel]);
+  useEffect(() => () => onSubviewChange?.(null), [onSubviewChange]);
+
   function change(patch: Partial<InstructionPresetDraft>) { setEditor(current => current && { ...current, value: { ...current.value, ...patch } }); }
-  function start() { focusIntent.current = "name"; setEditor({ original: null, value: { ...blank } }); setPreview(false); setError(null); setNotice(null); }
+  function start() {
+    returnTarget.current = "new"; focusIntent.current = "name";
+    setEditor({ original: null, value: { ...blank } }); setReminderOpen(false); setError(null); setNotice(null); setConflict(false);
+  }
   async function edit(preset: InstructionPresetSummary, duplicate = false) {
     await perform(async () => {
       const full = await requestInstructionPreset(preset.id);
@@ -128,12 +120,12 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
       let name = full.name;
       if (duplicate) {
         let index = 1;
-        do { const suffix = index === 1 ? " copy" : ` copy ${index}`; name = full.name.slice(0, 80 - suffix.length) + suffix; index++; }
+        do { const suffix = index === 1 ? " copy" : ` copy ${index}`; name = full.name.slice(0, INSTRUCTION_PRESET_NAME_MAX_LENGTH - suffix.length) + suffix; index++; }
         while (state?.presets.some(row => row.name === name));
       }
-      focusIntent.current = "name";
+      returnTarget.current = preset.id; focusIntent.current = "name";
       setEditor({ original: duplicate ? null : full, value: { ...values(full), name } });
-      setPreview(false); setLatest(null); setConflict(false);
+      setReminderOpen(Boolean(full.responseReminder)); setLatest(null); setConflict(false);
     });
   }
   function submit(event?: FormEvent) {
@@ -149,106 +141,98 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
       setState(next); closeEditor(); setNotice("Preset saved. Select it to use it in your personal chats.");
     });
   }
-  function select(id: string | null, focusActive = false) {
-    if (!state || editor || state.activePresetId === id) return;
+  function select(id: string | null) {
+    if (!state || editor || pending.current || state.activePresetId === id) return;
+    focusIntent.current = `radio:${id ?? "default"}`;
     void perform(async () => {
       const next = await requestInstructionPresets({ action: "select", id, selectionVersion: state.selectionVersion });
       if (!alive.current) return;
-      if (focusActive) focusIntent.current = "active";
       setState(next); setNotice("Instructions updated for your next reply.");
     });
   }
   const atLimit = (state?.presets.length ?? 0) >= INSTRUCTION_PRESET_MAX_COUNT;
-  return <section className="v2-studio-settings-page" data-testid="settings-instructions">
-    <SectionHeading description="Built-in AIQSA rules always apply. The active preset adds your instructions on top of them in personal chats without an Assistant, from the next reply.">Instructions</SectionHeading>
-    <SettingsRowV2 title="Active instructions">
-      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-        <SettingsSelectV2 label="Active instructions" disabled={!state || busy || editor !== null} value={state?.activePresetId ?? ""}
-          options={[{ label: DEFAULT_LABEL, value: "" }, ...(state?.presets ?? []).map(row => ({ label: row.name, value: row.id }))]}
-          onChange={id => select(id || null)} />
-        <UiV2Button type="button" ref={manageButton} aria-controls={panelId} aria-expanded={open} disabled={busy} onClick={togglePanel}>Manage presets…</UiV2Button>
-      </div>
-    </SettingsRowV2>
-    <div className="px-4 sm:px-6">
-      {error ? <div className="my-3 text-sm text-critical" role="alert"><p>{error}</p>
-        {!editor ? <UiV2Button type="button" disabled={busy} onClick={() => void perform(async () => { const next = await requestInstructionPresets(); if (alive.current) setState(next); })}>Reload presets</UiV2Button> : null}
-      </div> : null}
-      {notice ? <p className="my-3 text-sm text-positive" role="status">{notice}</p> : null}
+  const messages = <>
+    {error ? <div className="my-3 text-sm text-critical" role="alert"><p>{error}</p>
+      {!editor ? <UiV2Button type="button" disabled={busy} onClick={() => void perform(async () => { const next = await requestInstructionPresets(); if (alive.current) setState(next); })}>Reload presets</UiV2Button> : null}
+    </div> : null}
+    {notice ? <p className="my-3 text-sm text-positive" role="status">{notice}</p> : null}
+  </>;
+  return <section className={`v2-studio-settings-page${editor ? " v2-instructions-editor-page" : ""}`} data-testid="settings-instructions">
+    {platformPreviewOpen ? <PlatformInstructionsPreview onClose={onSubviewChange ? undefined : requestCloseEditor} /> : editor ? <form className="v2-instructions-form" aria-label={editor.original ? "Edit instruction preset" : "New instruction preset"} onSubmit={submit}
+      onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }}>
+      <fieldset disabled={busy} className="v2-instructions-fields">
+        <label className="v2-instructions-name grid gap-1.5 text-sm font-medium text-ink">Name
+          <input ref={nameInput} className={field} maxLength={INSTRUCTION_PRESET_NAME_MAX_LENGTH} required value={editor.value.name} onChange={event => change({ name: event.target.value })} />
+        </label>
+        {messages}
+        <MarkdownEditorV2 key={editorId} label="System instructions" previewLabel="Instructions preview" maxLength={SYSTEM_INSTRUCTIONS_MAX_LENGTH}
+          disabled={busy} value={editor.value.systemInstructions} onChange={value => change({ systemInstructions: value })} />
+        <details className="v2-instructions-reminder" open={reminderOpen} onToggle={event => setReminderOpen(event.currentTarget.open)}>
+          <summary className="v2-focusable cursor-pointer text-sm font-medium text-ink">Response reminder (optional)</summary>
+          <p id={`${panelId}-reminder-help`} className="my-2 text-xs leading-5 text-ink-muted">Appended after your latest message, before the model responds. Example: Always answer in Spanish.</p>
+          <textarea aria-label="Response reminder" aria-describedby={`${panelId}-reminder-help ${panelId}-reminder-count`} className={field} rows={3} maxLength={RESPONSE_REMINDER_MAX_LENGTH}
+            value={editor.value.responseReminder} onChange={event => change({ responseReminder: event.target.value })} />
+          <p id={`${panelId}-reminder-count`} className="mt-1 text-right text-xs tabular-nums text-ink-muted">{editorCharacterCount(editor.value.responseReminder, RESPONSE_REMINDER_MAX_LENGTH)}</p>
+        </details>
+        {conflict ? <UiV2Button type="button" onClick={() => void perform(async () => {
+          if (!editor.original) return; const next = await requestInstructionPreset(editor.original.id);
+          if (alive.current) { setLatest(next); setNotice("Latest version loaded. Your unsaved text is still in the editor."); }
+        })}>Reload latest version</UiV2Button> : null}
+        {latest ? <details className="rounded-lg border border-trace-subtle p-3"><summary className="v2-focusable text-sm text-ink">Latest saved version: {latest.name}</summary>
+          <pre className="my-3 max-h-56 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-ink-secondary">{latest.systemInstructions}{latest.responseReminder ? `\n\nResponse reminder:\n${latest.responseReminder}` : ""}</pre>
+          <UiV2Button type="button" onClick={() => { setEditor({ original: latest, value: values(latest) }); setReminderOpen(Boolean(latest.responseReminder)); setLatest(null); setConflict(false); setError(null); }}>Replace draft with latest version</UiV2Button>
+        </details> : null}
+        {discard ? <div className="rounded-lg border border-trace-subtle p-3" role="alert"><p className="mb-2 text-sm text-ink">Discard your unsaved instructions?</p><div className="flex gap-2">
+          <UiV2Button type="button" onClick={closeEditor}>Discard changes</UiV2Button><UiV2Button type="button" ref={keepEditingButton} onClick={() => { setDiscard(false); focusIntent.current = "name"; }}>Keep editing</UiV2Button>
+        </div></div> : null}
+        <footer className="v2-instructions-footer">
+          <span>Ctrl / ⌘ S to save</span>
+          <UiV2Button type="button" onClick={requestCloseEditor}>Cancel</UiV2Button>
+          <UiV2Button type="submit" tone="primary" disabled={!editor.value.name.trim()}>{busy ? "Saving…" : "Save"}</UiV2Button>
+        </footer>
+      </fieldset>
+    </form> : <>
+      <SectionHeading description="Built-in AIQSA rules always apply. The active preset adds your instructions on top of them in personal chats without an Assistant, from the next reply."
+        action={<UiV2Button type="button" tone="primary" icon="plus" ref={newButton} disabled={!state || busy || atLimit}
+          aria-describedby={atLimit ? `${panelId}-limit` : undefined} onClick={start}>New preset</UiV2Button>}>Instructions</SectionHeading>
+      {messages}
+      {atLimit ? <p id={`${panelId}-limit`} className="my-3 text-sm text-ink-muted">{instructionPresetErrorMessage("instruction_preset_limit")}</p> : null}
       {!state && !error ? <p className="py-3 text-sm text-ink-muted" role="status">Loading instructions…</p> : null}
-    </div>
-    <div id={panelId} hidden={!open} className="mx-auto w-full min-w-0 max-w-3xl px-4 pb-6 sm:px-6">
-      <p className="mb-4 text-xs leading-5 text-ink-muted">Applies from the next reply, including existing and temporary personal chats. Assistants use their own instructions. Projects use Project instructions.</p>
-      {open && (platformPreviewOpen ? <PlatformInstructionsPreview onClose={closePlatformPreview} /> : editor ? <form aria-label={editor.original ? "Edit instruction preset" : "New instruction preset"} onSubmit={submit}
-        onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); submit(); } }}>
-        <fieldset disabled={busy} className="grid min-w-0 gap-4">
-          <label className="grid gap-1.5 text-sm font-medium text-ink">Name
-            <input ref={nameInput} className={field} maxLength={INSTRUCTION_PRESET_NAME_MAX_LENGTH} required value={editor.value.name} onChange={event => change({ name: event.target.value })} />
+      <div className="v2-instructions-list" role="radiogroup" aria-label="Active instructions">
+        {[{ id: null, name: DEFAULT_LABEL, firstLine: "Built-in AIQSA rules. Always available." }, ...(state?.presets ?? [])].map(row => <div className="v2-instructions-row" key={row.id ?? "default"}>
+          <label className="v2-instructions-choice">
+            <input type="radio" name={`${panelId}-active`} aria-label={row.name} aria-describedby={`${panelId}-${row.id ?? "default"}-description`}
+              ref={node => { const key = row.id ?? "default"; if (node) radios.current.set(key, node); else radios.current.delete(key); }}
+              disabled={!state || busy} checked={Boolean(state && state.activePresetId === row.id)} onChange={() => select(row.id)} />
+            <span className="v2-instructions-copy"><span className="v2-instructions-title"><strong>{row.name}</strong>
+              {state && state.activePresetId === row.id ? <span className="v2-instructions-active" aria-label={`Active instructions: ${row.name}`}>Active</span> : null}
+            </span><span id={`${panelId}-${row.id ?? "default"}-description`} className="v2-instructions-description">{row.firstLine || "No system instructions"}</span></span>
           </label>
-          <div className="v2-instruction-editor min-w-0 overflow-hidden rounded-xl border border-trace-strong bg-answer-paper">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-trace-subtle px-3 py-2">
-              <label htmlFor="preset-system-instructions" className="text-sm font-medium text-ink">System instructions</label>
-              <div role="group" aria-label="Editor mode" className="flex gap-1">
-                <UiV2Button type="button" aria-pressed={!preview} onClick={() => setPreview(false)}>Write</UiV2Button>
-                <UiV2Button type="button" aria-pressed={preview} onClick={() => setPreview(true)}>Preview</UiV2Button>
-              </div>
-            </div>
-            <p id="preset-system-help" className="px-3 pt-3 text-xs text-ink-muted">Set the role, rules, and response style.</p>
-            {preview ? <div role="region" aria-label="Instructions preview" tabIndex={0} className="v2-instruction-editor-content min-h-56 max-h-[28rem] overflow-auto break-words px-3 py-3 text-sm text-ink focus-visible:outline-none">
-              {editor.value.systemInstructions ? <MarkdownMessage content={editor.value.systemInstructions} resolveHref={inertHref} /> : <p className="text-ink-muted">Your instructions will appear here.</p>}
-            </div> : <textarea id="preset-system-instructions" ref={textInput} aria-describedby="preset-system-help preset-system-count" rows={8}
-              className="v2-instruction-editor-content block w-full min-w-0 resize-none overflow-y-auto bg-transparent px-3 py-3 text-sm leading-6 text-ink focus-visible:outline-none"
-              maxLength={SYSTEM_INSTRUCTIONS_MAX_LENGTH} value={editor.value.systemInstructions} onChange={event => change({ systemInstructions: event.target.value })} />}
-            <p id="preset-system-count" className="border-t border-trace-subtle px-3 py-2 text-right text-xs tabular-nums text-ink-muted">{counter(editor.value.systemInstructions, SYSTEM_INSTRUCTIONS_MAX_LENGTH)}</p>
-          </div>
-          <details className="rounded-lg border border-trace-subtle p-3">
-            <summary className="v2-focusable cursor-pointer text-sm font-medium text-ink">Response reminder (optional)</summary>
-            <p id="preset-reminder-help" className="my-2 text-xs leading-5 text-ink-muted">Appended after your latest message, before the model responds. Example: Always answer in Spanish.</p>
-            <textarea aria-label="Response reminder" aria-describedby="preset-reminder-help preset-reminder-count" className={field} rows={3} maxLength={RESPONSE_REMINDER_MAX_LENGTH}
-              value={editor.value.responseReminder} onChange={event => change({ responseReminder: event.target.value })} />
-            <p id="preset-reminder-count" className="mt-1 text-right text-xs tabular-nums text-ink-muted">{counter(editor.value.responseReminder, RESPONSE_REMINDER_MAX_LENGTH)}</p>
-          </details>
-          {conflict ? <UiV2Button type="button" onClick={() => void perform(async () => {
-            if (!editor.original) return; const next = await requestInstructionPreset(editor.original.id);
-            if (alive.current) { setLatest(next); setNotice("Latest version loaded. Your unsaved text is still in the editor."); }
-          })}>Reload latest version</UiV2Button> : null}
-          {latest ? <details className="rounded-lg border border-trace-subtle p-3"><summary className="v2-focusable text-sm text-ink">Latest saved version: {latest.name}</summary>
-            <pre className="my-3 max-h-56 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-ink-secondary">{latest.systemInstructions}{latest.responseReminder ? `\n\nResponse reminder:\n${latest.responseReminder}` : ""}</pre>
-            <UiV2Button type="button" onClick={() => { setEditor({ original: latest, value: values(latest) }); setLatest(null); setConflict(false); setError(null); }}>Replace draft with latest version</UiV2Button>
-          </details> : null}
-          {discard ? <div className="rounded-lg border border-trace-subtle p-3" role="alert"><p className="mb-2 text-sm text-ink">Discard your unsaved instructions?</p><div className="flex gap-2">
-            <UiV2Button type="button" onClick={() => {
-              if (closeAfterDiscard.current) closePanel();
-              else closeEditor();
-            }}>Discard changes</UiV2Button><UiV2Button type="button" ref={keepEditingButton} onClick={() => { closeAfterDiscard.current = false; setDiscard(false); focusIntent.current = "name"; }}>Keep editing</UiV2Button>
-          </div></div> : <div className="flex flex-wrap items-center gap-2">
-            <UiV2Button type="submit" disabled={!editor.value.name.trim()}>{busy ? "Saving…" : "Save"}</UiV2Button>
-            <UiV2Button type="button" onClick={() => { closeAfterDiscard.current = false; if (dirty) { focusIntent.current = "keep"; setDiscard(true); } else closeEditor(); }}>Cancel</UiV2Button>
-            <span className="ml-auto text-xs text-ink-muted">Ctrl / ⌘ S to save</span>
-          </div>}
-        </fieldset>
-      </form> : <>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-ink">Instruction presets</h3>
-          <div className="flex gap-2"><UiV2Button type="button" ref={newButton} disabled={!state || busy || atLimit} onClick={start}>New preset</UiV2Button>
-            <UiV2Button type="button" disabled={busy} onClick={requestClosePanel}>Done</UiV2Button></div>
-        </div>
-        <ul className="divide-y divide-trace-subtle rounded-xl border border-trace-subtle">
-          <li className="p-3"><div className="flex flex-wrap items-center gap-2"><strong className="text-sm font-medium text-ink">{DEFAULT_LABEL}</strong>{state && !state.activePresetId ? <span ref={activeBadge} tabIndex={-1} className="v2-focusable text-xs text-positive" aria-label={`Active instructions: ${DEFAULT_LABEL}`}>Active</span> : null}</div>
-            <p className="mt-1 text-xs text-ink-muted">Built-in AIQSA rules. Always available.</p>
-            <div className="mt-2 flex flex-wrap gap-1"><UiV2Button type="button" ref={viewButton} disabled={busy} onClick={() => setPlatformPreviewOpen(true)}>View instructions</UiV2Button>
-              {state?.activePresetId ? <UiV2Button type="button" disabled={busy} aria-label={`Make active: ${DEFAULT_LABEL}`} onClick={() => select(null, true)}>Make active</UiV2Button> : null}</div>
-          </li>
-          {state?.presets.map(row => <li key={row.id} className="min-w-0 p-3"><div className="flex flex-wrap items-center gap-2"><strong className="min-w-0 break-words text-sm font-medium text-ink">{row.name}</strong>{state.activePresetId === row.id ? <span ref={activeBadge} tabIndex={-1} className="v2-focusable text-xs text-positive" aria-label={`Active instructions: ${row.name}`}>Active</span> : null}</div>
-            <p className="mt-1 truncate text-xs text-ink-muted">{row.firstLine || "No system instructions"}</p>
-            {deleting?.id === row.id ? <div role="alert" className="mt-3"><p className="mb-2 text-sm text-ink">Delete “{row.name}”?{state.activePresetId === row.id ? " Your chats will use the AIQSA default instructions from the next reply." : " This preset will be removed."}</p><div className="flex gap-2">
-              <UiV2Button type="button" disabled={busy} onClick={() => void perform(async () => { const next = await requestInstructionPresets({ action: "delete", id: row.id, revision: row.revision }); if (alive.current) { focusIntent.current = "new"; setState(next); setDeleting(null); } })}>Delete preset</UiV2Button>
-              <UiV2Button type="button" disabled={busy} onClick={() => setDeleting(null)}>Keep preset</UiV2Button></div></div>
-              : <div className="mt-2 flex flex-wrap gap-1">
-                {state.activePresetId !== row.id ? <UiV2Button type="button" disabled={busy} aria-label={`Make active: ${row.name}`} onClick={() => select(row.id, true)}>Make active</UiV2Button> : null}
-                <UiV2Button type="button" disabled={busy} aria-label={`Edit ${row.name}`} onClick={() => void edit(row)}>Edit</UiV2Button><UiV2Button type="button" disabled={busy || atLimit} aria-label={`Duplicate ${row.name}`} onClick={() => void edit(row, true)}>Duplicate</UiV2Button><UiV2Button type="button" disabled={busy} aria-label={`Delete ${row.name}`} onClick={() => setDeleting(row)}>Delete</UiV2Button></div>}
-          </li>)}
-        </ul>
-        <p className="mt-2 text-xs text-ink-muted">{state?.presets.length ?? 0} / {INSTRUCTION_PRESET_MAX_COUNT} presets</p>
-      </>)}
-    </div>
+          {row.id === null ? <><UiV2Button type="button" ref={viewButton} className="v2-instructions-row-action" disabled={busy} onClick={() => { setNotice(null); setPlatformPreviewOpen(true); }}>View</UiV2Button><span className="v2-instructions-menu-spacer" aria-hidden="true" /></>
+            : <><UiV2Button type="button" className="v2-instructions-row-action" ref={node => { if (node) rowButtons.current.set(row.id, node); else rowButtons.current.delete(row.id); }}
+              disabled={busy} aria-label={`Edit ${row.name}`} onClick={() => void edit(row)}>Edit</UiV2Button>
+              <PresetMenu name={row.name} busy={busy} atLimit={atLimit} onDuplicate={() => void edit(row, true)} onDelete={() => setDeleting(row)} /></>}
+          {row.id !== null && deleting?.id === row.id ? <div role="alert" className="v2-instructions-delete"><p className="mb-2 text-sm text-ink">Delete “{row.name}”?{state?.activePresetId === row.id ? " Your chats will use the AIQSA default instructions from the next reply." : " This preset will be removed."}</p><div className="flex gap-2">
+            <UiV2Button type="button" disabled={busy} onClick={() => void perform(async () => { const next = await requestInstructionPresets({ action: "delete", id: row.id, revision: row.revision }); if (alive.current) { focusIntent.current = "new"; setState(next); setDeleting(null); } })}>Delete preset</UiV2Button>
+            <UiV2Button type="button" disabled={busy} onClick={() => { focusIntent.current = row.id; setDeleting(null); }}>Keep preset</UiV2Button></div></div> : null}
+        </div>)}
+      </div>
+      <p className="mt-3 text-xs text-ink-muted">{state?.presets.length ?? 0} of {INSTRUCTION_PRESET_MAX_COUNT} presets.</p>
+      <p className="mt-2 text-xs leading-5 text-ink-muted">Applies from the next reply, including existing and temporary personal chats. Assistants use their own instructions. Projects use Project instructions.</p>
+    </>}
   </section>;
+}
+
+function PresetMenu({ name, busy, atLimit, onDuplicate, onDelete }: Readonly<{
+  name: string; busy: boolean; atLimit: boolean; onDuplicate(): void; onDelete(): void;
+}>) {
+  const [open, setOpen] = useState(false);
+  const { triggerRef, menuRef, closeForAction } = useMenuDismissalV2({ open, onClose: () => setOpen(false) });
+  return <span className="v2-instructions-menu">
+    <UiV2IconButton ref={triggerRef} icon="more" label={`More actions for ${name}`} disabled={busy} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)} />
+    {open ? <UiV2ResponsiveMenu anchorRef={triggerRef} menuRef={menuRef} label={`Actions for ${name}`} onClose={() => setOpen(false)}>
+      <UiV2MenuItem disabled={atLimit} onClick={() => { closeForAction(); onDuplicate(); }}>Duplicate</UiV2MenuItem>
+      <UiV2MenuItem onClick={() => { closeForAction(); onDelete(); }}>Delete</UiV2MenuItem>
+    </UiV2ResponsiveMenu> : null}
+  </span>;
 }
