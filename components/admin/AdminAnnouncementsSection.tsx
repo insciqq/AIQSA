@@ -9,7 +9,7 @@ import { ANNOUNCEMENT_BODY_LIMIT, ANNOUNCEMENT_TITLE_LIMIT, decodeAnnouncementCo
 import { AnnouncementRequestError, discardAnnouncement, getAnnouncement, listAnnouncements, saveAnnouncement } from "@/components/announcements/api";
 import { announcementDate } from "@/components/announcements/AnnouncementsBell";
 import { useAdminSectionTopbar } from "./AdminShell";
-import { AdminSheet } from "./AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import type { AdminConfirmationConfig } from "./useAdminConfirmationController";
 
 const inputClass = "v2-focusable w-full min-w-0 rounded-control border border-control-boundary bg-answer-paper px-3 py-2 text-sm text-ink";
@@ -76,7 +76,7 @@ function AnnouncementEditor({ entry, onSaved, onBack }: Readonly<{
       } });
   }
   const valid = !!decodeAnnouncementContent({ title, body });
-  return <AdminSheet open width="wide" testId="announcement-editor" title={entry ? "Edit announcement" : "New announcement"}
+  return <UiV2Sheet open width="wide" testId="announcement-editor" title={entry ? "Edit announcement" : "New announcement"}
     description={entry?.published ? `Published ${announcementDate(entry.publishedAt)}. Edits do not notify readers again.` : entry?.publishedAt ? "Unpublished · Read history is preserved." : "Draft · Only administrators can see this message."}
     closeBlocked={busy} onClose={back} footer={<>
       <UiV2Button type="button" tone="primary" busy={busy} disabled={!valid} onClick={() => { void save(entry?.published ?? false); }}>{entry?.published ? "Save changes" : "Save draft"}</UiV2Button>
@@ -121,7 +121,7 @@ function AnnouncementEditor({ entry, onSaved, onBack }: Readonly<{
         requestConfirmation(null);
         void confirmation.onConfirm();
       }}>{confirmation.body}</ConfirmationDialog> : null}
-  </AdminSheet>;
+  </UiV2Sheet>;
 }
 
 export function AdminAnnouncementsSection({ resource, onSelectResource }: Readonly<{

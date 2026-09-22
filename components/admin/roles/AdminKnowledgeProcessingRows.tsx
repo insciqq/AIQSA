@@ -1,6 +1,6 @@
 "use client";
 
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import { AdminTopbarMenu } from "@/components/admin/AdminShell";
 import { AdminRolePicker } from "@/components/admin/roles/AdminRolePicker";
 import { AdminReasoningSelect } from "@/components/admin/roles/AdminReasoningSelect";
@@ -285,7 +285,7 @@ export function AdminKnowledgeProcessingRows({
         <span aria-hidden="true" className="hidden xl:block" />
       </div>
 
-      <AdminSheet
+      <UiV2Sheet
         closeBlocked={controller.busy}
         description="Restoring reprocesses every document with that configuration. You confirm before it starts."
         onClose={() => setEarlierOpen(false)}
@@ -328,7 +328,7 @@ export function AdminKnowledgeProcessingRows({
             ))}
           </ul>
         )}
-      </AdminSheet>
+      </UiV2Sheet>
     </>
   );
 }

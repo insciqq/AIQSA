@@ -1,7 +1,7 @@
 "use client";
 
 import { AdminGroupOptions, inputClass } from "@/components/admin/adminPrimitives";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import { normalizedRuleValue } from "@/components/admin/adminViewUtils";
 import type { AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import { fieldLabelClass, helpTextClass, sectionHeadingClass } from "@/components/admin/users/usersPrimitives";
@@ -72,7 +72,7 @@ function RulesSheetBody({
   };
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={busy}
       description="Automatically approve matching verified email addresses and assign these groups."
       footer={(
@@ -158,7 +158,7 @@ function RulesSheetBody({
           The new rule has not been added yet; what you typed will be lost.
         </ConfirmationDialog>
       ) : null}
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }
 

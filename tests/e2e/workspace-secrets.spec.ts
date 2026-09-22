@@ -45,66 +45,68 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       await loginWithPassword(page, { email, password });
       await openSecrets(page);
       const panel = page.getByTestId("workspace-secrets-panel");
+      const sheet = page.getByTestId("workspace-secret-sheet");
       await expect(panel.getByText("No saved Workspace secrets.")).toBeVisible();
       await panel.getByRole("button", { name: "Add secret" }).click();
+      await sheet.getByRole("button", { name: "Close", exact: true }).click();
       await page.getByRole("button", { name: "Back to chat" }).click();
       await expect(page.getByRole("dialog", { name: "Unsaved Workspace secret" })).toHaveCount(0);
       await expect(panel).toBeHidden();
       await openSecrets(page);
       const add = async (kind: string, name: string) => {
         await panel.getByRole("button", { name: "Add secret" }).click();
-        await expect(panel.getByLabel("Name", { exact: true })).toBeFocused();
-        await panel.getByLabel("Type", { exact: true }).selectOption(kind);
-        await panel.getByLabel("Name", { exact: true }).fill(name);
+        await expect(sheet.getByLabel("Name", { exact: true })).toBeFocused();
+        await sheet.getByRole("radio", { name: ({ ssh_key: "SSH key", env: "Environment", text: "Text", file: "File" } as Record<string, string>)[kind], exact: true }).check();
+        await sheet.getByLabel("Name", { exact: true }).fill(name);
       };
       const save = async (name: string) => {
-        await panel.getByRole("button", { name: "Save secret", exact: true }).click();
+        await sheet.getByRole("button", { name: "Save secret", exact: true }).click();
         await expect(panel.getByRole("heading", { name, exact: true })).toBeFocused();
       };
 
       await add("ssh_key", "Personal Git key");
-      await expect(panel.getByLabel("Host", { exact: true })).toHaveCount(0);
-      await panel.getByLabel("Private SSH key", { exact: true }).fill("invalid synthetic key");
-      await panel.getByRole("button", { name: "Save secret", exact: true }).click();
-      await expect(panel.getByRole("alert")).toContainText("valid private SSH key");
-      await expect(panel.getByLabel("Private SSH key", { exact: true })).toHaveValue("invalid synthetic key");
+      await expect(sheet.getByLabel("Host", { exact: true })).toHaveCount(0);
+      await sheet.getByLabel("Private SSH key", { exact: true }).fill("invalid synthetic key");
+      await sheet.getByRole("button", { name: "Save secret", exact: true }).click();
+      await expect(sheet.getByRole("alert")).toContainText("valid private SSH key");
+      await expect(sheet.getByLabel("Private SSH key", { exact: true })).toHaveValue("invalid synthetic key");
       const personal = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" }).toString();
-      await panel.getByLabel("Private SSH key", { exact: true }).fill(personal);
+      await sheet.getByLabel("Private SSH key", { exact: true }).fill(personal);
       await save("Personal Git key");
 
       await add("ssh_key", "Work Git key");
       const protectedKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem", cipher: "aes-256-cbc", passphrase: "synthetic key passphrase" }).toString();
-      await panel.getByLabel("Or upload a private key").setInputFiles({ name: "work-key.pem", mimeType: "application/octet-stream", buffer: Buffer.from(protectedKey) });
-      await expect(panel.getByLabel("Private SSH key", { exact: true })).toHaveValue(protectedKey);
-      await panel.getByLabel("Key passphrase (if encrypted)").fill("synthetic key passphrase");
+      await sheet.getByLabel("Or upload a private key").setInputFiles({ name: "work-key.pem", mimeType: "application/octet-stream", buffer: Buffer.from(protectedKey) });
+      await expect(sheet.getByLabel("Private SSH key", { exact: true })).toHaveValue(protectedKey);
+      await sheet.getByLabel("Key passphrase (if encrypted)").fill("synthetic key passphrase");
       await save("Work Git key");
 
       await add("env", "API and Basic Auth");
       const token = "synthetic '\"$HOME`command`\nПривет";
       for (const [index, name, value] of [[1, "SERVICE_TOKEN", token], [2, "BASIC_LOGIN", "synthetic-login"], [3, "BASIC_PASSWORD", "synthetic-password"]] as const) {
-        if (index > 1) await panel.getByRole("button", { name: "Add variable", exact: true }).click();
-        await panel.getByLabel(`Variable name ${index}`, { exact: true }).fill(name);
-        await panel.getByLabel(`Variable value ${index}`, { exact: true }).fill(value);
+        if (index > 1) await sheet.getByRole("button", { name: "Add variable", exact: true }).click();
+        await sheet.getByLabel(`Variable name ${index}`, { exact: true }).fill(name);
+        await sheet.getByLabel(`Variable value ${index}`, { exact: true }).fill(value);
       }
-      await page.getByRole("button", { name: "Back to chat" }).click();
+      await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
       const discard = page.getByRole("dialog", { name: "Unsaved Workspace secret" });
       await expect(discard).toBeVisible();
       await discard.getByRole("button", { name: "Keep editing" }).click();
-      await expect(panel.getByLabel("Variable value 1", { exact: true })).toHaveValue(token);
-      await panel.getByRole("button", { name: "Save secret" }).scrollIntoViewIfNeeded();
+      await expect(sheet.getByLabel("Variable value 1", { exact: true })).toHaveValue(token);
+      await sheet.getByRole("button", { name: "Save secret" }).scrollIntoViewIfNeeded();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: testInfo.outputPath(`secrets-env-${viewport.width}-${viewport.theme}.png`) });
       await save("API and Basic Auth");
 
       await add("text", "Website instructions");
       const text = "Synthetic password instructions\nUse only the test account.\n```literal```";
-      await panel.getByLabel("Secret text").fill(text);
+      await sheet.getByLabel("Secret text").fill(text);
       await save("Website instructions");
       await add("file", "Credentials file");
       const original = Buffer.from([0, 255, 13, 10, 96, 36, 92]);
-      await panel.getByLabel("Original file").setInputFiles({ name: ".credentials.bin", mimeType: "application/octet-stream", buffer: original });
-      await expect(panel.getByText(".credentials.bin", { exact: true })).toBeVisible();
-      await expect(panel.getByRole("button", { name: "Save secret" })).toBeEnabled();
+      await sheet.getByLabel("Original file").setInputFiles({ name: ".credentials.bin", mimeType: "application/octet-stream", buffer: original });
+      await expect(sheet.getByText(".credentials.bin", { exact: true })).toBeVisible();
+      await expect(sheet.getByRole("button", { name: "Save secret" })).toBeEnabled();
       await save("Credentials file");
 
       const before = await summaries();
@@ -116,21 +118,21 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       expect(values).toContainEqual({ kind: "text", text });
 
       await panel.getByRole("button", { name: "Edit Website instructions", exact: true }).click();
-      await expect(panel.getByLabel("Secret text")).toHaveCount(0);
-      await panel.getByLabel("Name", { exact: true }).fill("Renamed instructions");
+      await expect(sheet.getByLabel("Secret text")).toHaveCount(0);
+      await sheet.getByLabel("Name", { exact: true }).fill("Renamed instructions");
       const stale = before.find(({ kind }) => kind === "text")!;
       const parallel = await page.request.post("/api/me/workspace/secrets", { data: { action: "update", id: stale.id, expectedVersionId: stale.versionId,
         name: stale.name, description: "Changed in another window", value: { action: "preserve" } } });
       expect(parallel.ok()).toBe(true);
-      await panel.getByRole("button", { name: "Save secret", exact: true }).click();
-      await expect(panel.getByRole("alert")).toContainText("another window");
-      await expect(panel.getByLabel("Name", { exact: true })).toHaveValue("Renamed instructions");
-      await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+      await sheet.getByRole("button", { name: "Save secret", exact: true }).click();
+      await expect(sheet.getByRole("alert")).toContainText("another window");
+      await expect(sheet.getByLabel("Name", { exact: true })).toHaveValue("Renamed instructions");
+      await sheet.getByRole("button", { name: "Refresh", exact: true }).click();
       await save("Renamed instructions");
       expect(decryptWorkspaceSecret((await savedValues()).find(({ id }) => id === stale.id)!.value, userId).value).toEqual({ kind: "text", text });
       await panel.getByRole("button", { name: "Edit Renamed instructions", exact: true }).click();
-      await panel.getByLabel("Replace saved value").check();
-      await panel.getByLabel("Secret text").fill("synthetic replacement");
+      await sheet.getByLabel("Replace saved value").check();
+      await sheet.getByLabel("Secret text").fill("synthetic replacement");
       await save("Renamed instructions");
       await page.getByRole("button", { name: "Back to chat" }).click();
       await page.reload();
@@ -140,7 +142,8 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       await page.screenshot({ path: testInfo.outputPath(`secrets-saved-${viewport.width}-${viewport.theme}.png`) });
       await expectNoHorizontalOverflow(page);
       for (const secret of await summaries()) {
-        await panel.getByRole("button", { name: `Delete ${secret.name}`, exact: true }).click();
+        await panel.getByRole("button", { name: `More actions for ${secret.name}`, exact: true }).click();
+        await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
         await panel.getByRole("button", { name: "Delete permanently", exact: true }).click();
         await expect(panel.getByRole("heading", { name: secret.name, exact: true })).toHaveCount(0);
         await expect(panel.getByRole("button", { name: "Add secret" })).toBeFocused();

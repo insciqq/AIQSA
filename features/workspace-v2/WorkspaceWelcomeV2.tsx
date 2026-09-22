@@ -65,6 +65,7 @@ import type {
   KnowledgeSummaryV2,
   LibraryTabIdV2,
   LibraryTabV2,
+  LibrarySubviewV2,
   MemoryOverviewV2
 } from "@/features/library-v2/contracts";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -144,7 +145,8 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const [formDirty, setFormDirty] = useState(false);
   const [formBusy, setFormBusy] = useState(false);
   const [formKey, setFormKey] = useState(0);
-  const [formExit, setFormExit] = useState<(() => void) | null>(null);
+  const [formExit, setFormExit] = useState<{ proceed(): void; remount: boolean } | null>(null);
+  const [instructionsSubview, setInstructionsSubview] = useState<LibrarySubviewV2 | null>(null);
   useBeforeUnloadGuard(formDirty || formBusy);
   useBeforeUnloadGuard(memoryDraftDirty);
   const assistantDirty = Boolean(
@@ -168,15 +170,16 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const navigationBusy = Boolean(
     assistantView?.busy || assistantView?.editor?.saving || knowledgeView?.busy || memoryBusy || formBusy
   );
-  const requestNavigation = useEventCallback((proceed: () => void) => {
+  const requestNavigation = useEventCallback((proceed: () => void, remountForm: boolean = true) => {
     if (navigationBusy) return;
     if (activeTab === "knowledge" && knowledgeExit.dirty) knowledgeExit.requestExit(proceed);
     else if (activeTab === "assistants" && assistantDirty) {
       setAssistantExit(() => () => { assistantView?.editor?.onCancel(); proceed(); });
     } else if (activeTab === "memory" && memoryDraftDirty) setMemoryExit(() => proceed);
-    else if (formDirty) setFormExit(() => proceed);
+    else if (formDirty) setFormExit({ proceed, remount: remountForm });
     else proceed();
   });
+  const requestInstructionsClose = useEventCallback((proceed: () => void) => requestNavigation(proceed, false));
   const navigateToSection = (tab: LibraryTabIdV2) => {
     if (settings.studio) settings.studio.open(tab);
     else requestNavigation(() => setActiveTab(tab));
@@ -277,8 +280,8 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
   const tabs: LibraryTabV2[] = [
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
-    { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} /> },
-    { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} /> },
+    { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onSubviewChange={setInstructionsSubview} onRequestExit={requestInstructionsClose} /> },
+    { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy} /> },
     { id: "mcp", label: "MCP servers", content: <McpSettingsSection key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
     {
       content: (
@@ -501,7 +504,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           else if (intent.kind === "tab") settings.studio.open(intent.to, proceed);
           else settings.studio.exit(proceed);
         }}
-        subview={activeTab === "assistants" && assistantView?.task === "editor" && assistantView.editor
+        subview={activeTab === "instructions" ? instructionsSubview : activeTab === "assistants" && assistantView?.task === "editor" && assistantView.editor
           ? {
               backLabel: "Assistants",
               busy: assistantView.busy || assistantView.editor.saving,
@@ -533,14 +536,15 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
         portal label="changes"
         copy={{
           title: activeTab === "instructions" ? "Discard your unsaved instructions?" : "Discard unsaved changes?",
-          body: activeTab === "instructions" ? "Your unsaved instructions will be lost." : activeTab === "secrets" ? "Your unsaved Workspace secret will be lost." : "Changes to your personal MCP connection will be lost.",
-          dialogLabel: activeTab === "instructions" ? "Unsaved instructions" : activeTab === "secrets" ? "Unsaved Workspace secret" : "Unsaved MCP changes",
+          body: activeTab === "instructions" ? "Your unsaved instructions will be lost." : "Changes to your personal MCP connection will be lost.",
+          dialogLabel: activeTab === "instructions" ? "Unsaved instructions" : "Unsaved MCP changes",
           cancelLabel: "Keep editing", confirmLabel: "Discard changes"
         }}
         onCancel={() => setFormExit(null)}
         onConfirm={() => {
-          const proceed = formExit;
-          setFormExit(null); setFormDirty(false); setFormKey(value => value + 1);
+          const { proceed, remount } = formExit;
+          setFormExit(null); setFormDirty(false);
+          if (remount) setFormKey(value => value + 1);
           proceed();
         }}
       /> : null}

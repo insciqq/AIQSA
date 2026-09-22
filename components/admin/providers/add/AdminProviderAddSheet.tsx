@@ -22,7 +22,7 @@ import {
   reasoningForChoice,
   type AdminProviderReasoningChoice
 } from "@/components/admin/adminProviderReasoning";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import {
   ADD_PROVIDER_TILES,
   builtInRequest,
@@ -564,7 +564,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
   const fieldsLocked = busy || interrupted || Boolean(savedSetup);
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={busy}
       footer={(
         <>
@@ -680,7 +680,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
           The provider has not been added yet; what you typed will be lost.
         </ConfirmationDialog>
       ) : null}
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }
 

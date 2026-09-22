@@ -1,7 +1,7 @@
 "use client";
 
 import { AdminGroupOptions, inputClass } from "@/components/admin/adminPrimitives";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import type { AdminInvitesController } from "@/components/admin/useAdminInvitesController";
 import { inviteDeliveryLabel } from "@/components/admin/users/usersView";
 import { fieldLabelClass, helpTextClass } from "@/components/admin/users/usersPrimitives";
@@ -86,7 +86,7 @@ function InviteSheetBody({
   };
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={busy}
       description={created
         ? "The link works once and cannot be shown again after this sheet closes."
@@ -211,7 +211,7 @@ function InviteSheetBody({
           The invite has not been created yet; what you typed will be lost.
         </ConfirmationDialog>
       ) : null}
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }
 

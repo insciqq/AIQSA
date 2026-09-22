@@ -76,6 +76,8 @@ export type UiV2IconName =
   | "sun"
   | "slides"
   | "table"
+  | "terminal"
+  | "type"
   | "tool"
   | "trash"
   | "wand";
@@ -313,6 +315,12 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-table" viewBox="0 0 24 24">
           <rect x="3" y="4" width="18" height="16" rx="2" />
           <path d="M3 9h18M9 9v11M15 9v11M3 14h18" />
+        </symbol>
+        <symbol id="v2-icon-terminal" viewBox="0 0 24 24">
+          <path d="m4 5 6 6-6 6M13 19h7" />
+        </symbol>
+        <symbol id="v2-icon-type" viewBox="0 0 24 24">
+          <path d="M4 6V4h16v2M12 4v16M8 20h8" />
         </symbol>
         <symbol id="v2-icon-tool" viewBox="0 0 24 24">
           <path d="M14.5 6.5a4 4 0 0 0-5-5l2.2 2.2-3 3-2.2-2.2a4 4 0 0 0 5 5L19 17l-2 2-7.5-7.5" />

@@ -36,11 +36,12 @@ export type LibraryTabV2 = Readonly<{
  * A resource sub-view open inside the selected section (a Knowledge base,
  * the Sources catalog). The Library shows it in the crumb and replaces
  * "Back to chat" with the sub-view's own Back control; a `key` change moves
- * focus to that control.
+ * focus to that control unless the resource owns its editor/row focus.
  */
 export type LibrarySubviewV2 = Readonly<{
   backLabel: string;
   busy?: boolean;
+  focus?: "resource";
   key: string;
   label: string;
   onBack(): void;

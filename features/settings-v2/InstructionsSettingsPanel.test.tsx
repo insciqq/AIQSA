@@ -16,36 +16,35 @@ const platformPreview: InstructionPreview = {
 };
 async function manage() {
   render(<InstructionsSettingsPanel />);
-  await waitFor(() => expect(screen.getByRole("button", { name: "Active instructions" })).toBeEnabled());
-  fireEvent.click(screen.getByRole("button", { name: "Manage presets…" }));
+  await waitFor(() => expect(screen.getByRole("radio", { name: "Work" })).toBeEnabled());
 }
 beforeEach(() => { request.mockReset().mockResolvedValue(state); detail.mockReset().mockResolvedValue(preset); preview.mockReset().mockResolvedValue(platformPreview); });
 describe("instruction preset editor", () => {
   it("activates preset rows and the built-in default through the same versioned selection", async () => {
     await manage();
-    expect(screen.queryByRole("button", { name: "Make active: Work" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "Work" })).toBeChecked();
     request.mockResolvedValueOnce({ ...state, activePresetId: null, selectionVersion: 2 });
-    fireEvent.click(screen.getByRole("button", { name: "Make active: AIQSA default instructions" }));
-    await waitFor(() => expect(screen.getByLabelText("Active instructions: AIQSA default instructions")).toHaveFocus());
-    expect(screen.getByRole("button", { name: "Active instructions" })).toHaveTextContent("AIQSA default instructions");
+    fireEvent.click(screen.getByRole("radio", { name: "AIQSA default instructions" }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: "AIQSA default instructions" })).toHaveFocus());
+    expect(screen.getByRole("radio", { name: "AIQSA default instructions" })).toBeChecked();
     expect(request).toHaveBeenLastCalledWith({ action: "select", id: null, selectionVersion: 1 });
 
     request.mockResolvedValueOnce({ ...state, selectionVersion: 3 });
-    fireEvent.click(screen.getByRole("button", { name: "Make active: Work" }));
-    await waitFor(() => expect(screen.getByLabelText("Active instructions: Work")).toHaveFocus());
-    expect(screen.getByRole("button", { name: "Active instructions" })).toHaveTextContent("Work");
+    fireEvent.click(screen.getByRole("radio", { name: "Work" }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Work" })).toHaveFocus());
+    expect(screen.getByRole("radio", { name: "Work" })).toBeChecked();
     expect(request).toHaveBeenLastCalledWith({ action: "select", id: "preset", selectionVersion: 2 });
-    expect(screen.queryByRole("button", { name: "Make active: Work" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "Work" })).toBeChecked();
   });
 
   it("blocks duplicate activation while selection is pending", async () => {
     await manage();
     let resolve!: (value: typeof state) => void;
     request.mockImplementationOnce(() => new Promise(settle => { resolve = settle; }));
-    const activate = screen.getByRole("button", { name: "Make active: AIQSA default instructions" });
+    const activate = screen.getByRole("radio", { name: "AIQSA default instructions" });
     fireEvent.click(activate);
     expect(activate).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Active instructions" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Work" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Edit Work" })).toBeDisabled();
     fireEvent.click(activate);
     expect(request).toHaveBeenCalledTimes(2);
@@ -57,17 +56,17 @@ describe("instruction preset editor", () => {
     "preserves the active preset after a failed row selection and retries with reloaded authority: %s", async (failure) => {
       await manage();
       request.mockRejectedValueOnce(failure);
-      fireEvent.click(screen.getByRole("button", { name: "Make active: AIQSA default instructions" }));
+      fireEvent.click(screen.getByRole("radio", { name: "AIQSA default instructions" }));
       await screen.findByRole("alert");
       expect(screen.getByLabelText("Active instructions: Work")).toBeVisible();
       expect(screen.queryByLabelText("Active instructions: AIQSA default instructions")).toBeNull();
-      expect(screen.getByRole("button", { name: "Active instructions" })).toHaveTextContent("Work");
+      expect(screen.getByRole("radio", { name: "Work" })).toBeChecked();
       request.mockResolvedValueOnce({ ...state, selectionVersion: 5 });
       fireEvent.click(screen.getByRole("button", { name: "Reload presets" }));
       await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-      await waitFor(() => expect(screen.getByRole("button", { name: "Make active: AIQSA default instructions" })).toBeEnabled());
+      await waitFor(() => expect(screen.getByRole("radio", { name: "AIQSA default instructions" })).toBeEnabled());
       request.mockResolvedValueOnce({ ...state, activePresetId: null, selectionVersion: 6 });
-      fireEvent.click(screen.getByRole("button", { name: "Make active: AIQSA default instructions" }));
+      fireEvent.click(screen.getByRole("radio", { name: "AIQSA default instructions" }));
       await screen.findByLabelText("Active instructions: AIQSA default instructions");
       expect(request).toHaveBeenLastCalledWith({ action: "select", id: null, selectionVersion: 5 });
     }
@@ -93,7 +92,7 @@ describe("instruction preset editor", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Writing" } });
     const content = "# Style\nUse **short** replies. [external](https://example.com) <script>bad()</script>";
     fireEvent.change(screen.getByLabelText("System instructions"), { target: { value: content } });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Preview" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("radio", { name: "Preview" })); });
     expect(request).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("heading", { name: "Style" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "external" })).toBeNull();
@@ -105,80 +104,103 @@ describe("instruction preset editor", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "New preset" })).toHaveFocus());
   });
   it("confirms active deletion and explicitly selects the default", async () => {
-    await manage(); fireEvent.click(screen.getByRole("button", { name: "Delete Work" }));
+    await manage(); fireEvent.click(screen.getByRole("button", { name: "More actions for Work" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     expect(screen.getByText(/Your chats will use the AIQSA default instructions/)).toBeInTheDocument();
     expect(request).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Keep preset" }));
-    fireEvent.click(screen.getByRole("button", { name: "Active instructions" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "AIQSA default instructions" }));
+    fireEvent.click(screen.getByRole("radio", { name: "AIQSA default instructions" }));
     await waitFor(() => expect(request).toHaveBeenLastCalledWith({ action: "select", id: null, selectionVersion: 1 }));
   });
 
-  it("toggles the preset disclosure with stable aria state and restores trigger focus", async () => {
+  it("shows the list immediately and does not resubmit the active choice", async () => {
     await manage();
-    const trigger = screen.getByRole("button", { name: "Manage presets…" });
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
-    const panelId = trigger.getAttribute("aria-controls")!;
-    expect(document.getElementById(panelId)).toBeVisible();
-
-    screen.getByRole("button", { name: "Done" }).focus();
-    fireEvent.click(trigger);
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("heading", { name: "Instruction presets" })).toBeNull();
-    expect(trigger).toHaveFocus();
+    expect(screen.getByRole("radiogroup", { name: "Active instructions" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Manage presets…" })).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "Work" }));
     expect(request).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(trigger);
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
-    expect(trigger).toHaveAttribute("aria-controls", panelId);
-    expect(screen.getByRole("heading", { name: "Instruction presets" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    expect(trigger).toHaveFocus();
-    expect(document.getElementById(panelId)).not.toBeVisible();
   });
 
-  it("guards a dirty editor when the trigger requests close", async () => {
+  it("keeps a dirty editor until Cancel is explicitly confirmed and restores its row", async () => {
     await manage();
     fireEvent.click(screen.getByRole("button", { name: "Edit Work" }));
     const text = await screen.findByLabelText("System instructions");
     fireEvent.change(text, { target: { value: "Unsaved" } });
-
-    const trigger = screen.getByRole("button", { name: "Manage presets…" });
-    fireEvent.click(trigger);
-    expect(screen.getByText("Discard your unsaved instructions?")).toBeInTheDocument();
-    expect(screen.getByLabelText("System instructions")).toHaveValue("Unsaved");
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText("Discard your unsaved instructions?")).toBeVisible();
     expect(screen.getByRole("button", { name: "Keep editing" })).toHaveFocus();
-
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveFocus());
-    expect(screen.getByLabelText("System instructions")).toHaveValue("Unsaved");
-
-    fireEvent.click(trigger);
+    expect(screen.getByLabelText("Name")).toHaveFocus();
+    expect(text).toHaveValue("Unsaved");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
-    await waitFor(() => expect(trigger).toHaveAttribute("aria-expanded", "false"));
     expect(screen.queryByLabelText("System instructions")).toBeNull();
-    expect(trigger).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Edit Work" })).toHaveFocus();
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it("closes a clean editor without leaving an invisible draft", async () => {
+  it("closes a pristine editor immediately and opens its nonempty reminder", async () => {
     await manage();
     fireEvent.click(screen.getByRole("button", { name: "Edit Work" }));
     await screen.findByLabelText("System instructions");
-    const trigger = screen.getByRole("button", { name: "Manage presets…" });
-    fireEvent.click(trigger);
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-
-    fireEvent.click(trigger);
-    expect(screen.getByRole("heading", { name: "Instruction presets" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Response reminder")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByLabelText("System instructions")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit Work" })).toHaveFocus();
+  });
+
+  it("explains the count limit and prevents both creating and duplicating", async () => {
+    request.mockResolvedValueOnce({ ...state, presets: Array.from({ length: 20 }, (_, index) => ({ ...state.presets[0], id: index ? `preset-${index}` : "preset", name: index ? `Work ${index}` : "Work" })) });
+    await manage();
+    expect(screen.getByRole("button", { name: "New preset" })).toBeDisabled();
+    expect(screen.getByText("You can save up to 20 presets.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Work" }));
+    expect(screen.getByRole("menuitem", { name: "Duplicate" })).toBeDisabled();
+  });
+
+  it("duplicates into a draft without mutating the original or active selection", async () => {
+    await manage();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Work" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
+    expect(await screen.findByLabelText("Name")).toHaveValue("Work copy");
+    expect(screen.getByLabelText("System instructions")).toHaveValue(preset.systemInstructions);
+    expect(request).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Preset saved/);
+    expect(request).toHaveBeenLastCalledWith({ action: "create", value: { name: "Work copy", systemInstructions: preset.systemInstructions, responseReminder: preset.responseReminder } });
+    expect(screen.getByRole("button", { name: "Edit Work" })).toHaveFocus();
+  });
+
+  it("reports subview/busy state and delegates Cancel to the shared exit guard", async () => {
+    const onSubviewChange = vi.fn(), onRequestExit = vi.fn(), onBusyChange = vi.fn();
+    render(<InstructionsSettingsPanel onSubviewChange={onSubviewChange} onRequestExit={onRequestExit} onBusyChange={onBusyChange} />);
+    await screen.findByRole("radio", { name: "Work" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Work" }));
+    const name = await screen.findByLabelText("Name");
+    fireEvent.change(name, { target: { value: "Draft name" } });
+    expect(onSubviewChange).toHaveBeenLastCalledWith(expect.objectContaining({ backLabel: "Back to Instructions", label: "Draft name", focus: "resource", busy: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onRequestExit).toHaveBeenCalledTimes(1);
+    expect(name).toHaveValue("Draft name");
+    fireEvent.keyDown(name, { key: "s", ctrlKey: true, isComposing: true });
+    expect(request).toHaveBeenCalledTimes(1);
+    let settle!: (value: typeof state) => void;
+    request.mockImplementationOnce(() => new Promise(resolve => { settle = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    expect(onSubviewChange).toHaveBeenLastCalledWith(expect.objectContaining({ busy: true }));
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("form"), { key: "s", metaKey: true });
+    expect(request).toHaveBeenCalledTimes(2);
+    await act(async () => settle(state));
+    expect(onSubviewChange).toHaveBeenLastCalledWith(null);
   });
 
   it.each([null, "preset"])("loads the read-only platform preview without changing selection: %s", async activePresetId => {
     request.mockResolvedValueOnce({ ...state, activePresetId });
     await manage();
-    fireEvent.click(screen.getByRole("button", { name: "View instructions" }));
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
     expect(await screen.findByText(/June 7, 2026/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "AIQSA default instructions" })).toHaveFocus();
     expect(document.querySelector("time")).toHaveAttribute("datetime", platformPreview.generatedAt);
@@ -188,15 +210,15 @@ describe("instruction preset editor", () => {
     expect(request).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
     expect(screen.queryByRole("region", { name: "AIQSA default instructions preview" })).toBeNull();
-    expect(screen.getByRole("button", { name: "View instructions" })).toHaveFocus();
-    expect(screen.getByRole("button", { name: "Active instructions" })).toHaveTextContent(activePresetId ? "Work" : "AIQSA default instructions");
+    expect(screen.getByRole("button", { name: "View" })).toHaveFocus();
+    expect(screen.getByRole("radio", { name: activePresetId ? "Work" : "AIQSA default instructions" })).toBeChecked();
   });
 
   it("can close a loading preview and ignores its late response", async () => {
     await manage();
     let resolve!: (value: InstructionPreview) => void;
     preview.mockImplementationOnce(() => new Promise(settle => { resolve = settle; }));
-    fireEvent.click(screen.getByRole("button", { name: "View instructions" }));
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
     expect(screen.getByRole("status")).toHaveTextContent("Loading built-in instructions");
     fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
     expect(screen.queryByRole("region", { name: "AIQSA default instructions preview" })).toBeNull();
@@ -205,16 +227,16 @@ describe("instruction preset editor", () => {
     expect(screen.queryByText("late")).toBeNull();
   });
 
-  it("retries preview failure and can collapse the whole panel without changing presets", async () => {
+  it("retries preview failure and returns to the list without changing presets", async () => {
     await manage();
     preview.mockRejectedValueOnce(new Error("offline"));
-    fireEvent.click(screen.getByRole("button", { name: "View instructions" }));
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("built-in instructions are unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await screen.findByText(platformPreview.visibleAnswerContract);
     expect(preview).toHaveBeenCalledTimes(2);
-    fireEvent.click(screen.getByRole("button", { name: "Manage presets…" }));
-    expect(screen.getByRole("button", { name: "Manage presets…" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
+    expect(screen.getByRole("button", { name: "View" })).toHaveFocus();
     expect(screen.queryByRole("region", { name: "AIQSA default instructions preview" })).toBeNull();
     expect(request).toHaveBeenCalledTimes(1);
   });

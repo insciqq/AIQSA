@@ -10,7 +10,7 @@ type PreviewState =
   | { status: "error" }
   | { status: "ready"; data: InstructionPreview };
 
-export function PlatformInstructionsPreview({ onClose }: Readonly<{ onClose(): void }>) {
+export function PlatformInstructionsPreview({ onClose }: Readonly<{ onClose?(): void }>) {
   const [state, setState] = useState<PreviewState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -34,7 +34,7 @@ export function PlatformInstructionsPreview({ onClose }: Readonly<{ onClose(): v
         <h3 ref={heading} tabIndex={-1} className="v2-focusable text-sm font-semibold text-ink">AIQSA default instructions</h3>
         <p className="mt-1 text-xs text-ink-muted">Read-only · Platform instructions</p>
       </div>
-      <UiV2Button type="button" onClick={onClose}>Close preview</UiV2Button>
+      {onClose ? <UiV2Button type="button" onClick={onClose}>Close preview</UiV2Button> : null}
     </div>
     <p className="text-xs leading-5 text-ink-muted">Personal presets add to the system baseline. Assistants use their own system instructions and keep the shared visible answer contract. Tools, Skills, Memory and other context can add instructions for a reply; this preview shows only the platform rules below.</p>
     {state.status === "loading" ? <p className="py-4 text-sm text-ink-muted" role="status">Loading built-in instructions…</p> : null}

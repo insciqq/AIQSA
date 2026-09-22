@@ -1,8 +1,14 @@
 "use client";
 
 import { randomUUID } from "@/lib/browser/randomUUID";
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { UiV2Button } from "@/components/ui-v2";
+import { useEffect, useId, useRef, useState, type FormEvent, type TextareaHTMLAttributes } from "react";
+import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2MenuItem, type UiV2IconName } from "@/components/ui-v2";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
+import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
+import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
+import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
+import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
+import { mergeWorkspaceEnvPaste, WORKSPACE_ENV_ENTRY_LIMIT } from "./workspaceEnvPaste";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
 import {
@@ -14,6 +20,13 @@ import {
 import { requestWorkspaceSecrets } from "./workspaceSecretsApi";
 
 const labels: Record<WorkspaceSecretKind, string> = { ssh_key: "SSH key", env: "Environment variables", text: "Text", file: "File", browser_session: "Browser session" };
+const kinds: Record<WorkspaceSecretKind, { label: string; description: string; icon: UiV2IconName }> = {
+  ssh_key: { label: "SSH key", description: "Private key for git and ssh", icon: "terminal" },
+  env: { label: "Environment", description: "KEY=value pairs for programs", icon: "sliders" },
+  text: { label: "Text", description: "A token or note the model can read", icon: "type" },
+  file: { label: "File", description: "Any file, original bytes kept", icon: "file" },
+  browser_session: { label: "Browser session", description: "Playwright storage_state JSON", icon: "globe" }
+};
 const field = "w-full min-w-0 rounded-lg border border-trace bg-answer-paper px-3 py-2 text-sm text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
 type Draft = {
   original: WorkspaceSecretSummary | null;
@@ -62,10 +75,7 @@ function sameDraft(left: Draft, right: Draft | null) {
   }
 }
 
-export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<{
-  onBusyChange?(busy: boolean): void;
-  onDirtyChange?(dirty: boolean): void;
-}>) {
+export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?(busy: boolean): void }>) {
   const [secrets, setSecrets] = useState<readonly WorkspaceSecretSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -74,6 +84,12 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
   const [draft, setDraft] = useState<Draft | null>(null);
   const [initialDraft, setInitialDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [discarding, setDiscarding] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  const formElementId = useId();
+  const typeGroupId = useId();
   const active = useRef(false);
   const pending = useRef(false);
   const addButton = useRef<HTMLButtonElement>(null);
@@ -81,7 +97,8 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
   const headings = useRef(new Map<string, HTMLHeadingElement>());
   const restoreFocus = useRef<string | null>(null);
   const formId = draft ? draft.original?.id ?? "new" : null;
-  const dirty = draft !== null && !sameDraft(draft, initialDraft);
+  const dirty = draft !== null && (!sameDraft(draft, initialDraft) || pasteText.length > 0);
+  useBeforeUnloadGuard(dirty || busy);
 
   useEffect(() => {
     active.current = true;
@@ -92,24 +109,45 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
     return () => { active.current = false; controller.abort(); };
   }, []);
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
-  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
   useEffect(() => {
-    if (formId) nameInput.current?.focus();
-    else if (restoreFocus.current) {
-      (headings.current.get(restoreFocus.current) ?? addButton.current)?.focus();
-      restoreFocus.current = null;
-    }
+    const target = formId ? nameInput.current : null;
+    if (!target) return;
+    const frame = window.requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    return () => window.cancelAnimationFrame(frame);
+  }, [formId]);
+  useEffect(() => {
+    if (formId) return;
+    const target = restoreFocus.current ? headings.current.get(restoreFocus.current) ?? addButton.current : null;
+    if (!target) return;
+    restoreFocus.current = null;
+    // The shared sheet restores its opener first; successful save owns the row.
+    const frame = window.requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    return () => window.cancelAnimationFrame(frame);
   }, [formId, secrets]);
 
   function change(patch: Partial<Draft>) { setDraft((current) => current ? { ...current, ...patch } : current); }
   function open(original: WorkspaceSecretSummary | null) {
     const next = blankDraft(original);
     if (!original && secrets.filter((entry) => entry.kind !== "browser_session").length >= WORKSPACE_SECRET_MAX_COUNT) next.kind = "browser_session";
-    setInitialDraft(next); setError(null); setNotice(null); setDeleting(null); setDraft(next);
+    setInitialDraft(next); setError(null); setNotice(null); setDeleting(null); setDraft(next); setDiscarding(false); setPasteOpen(false); setPasteText(""); setPasteNotice(null);
   }
   function close() {
     restoreFocus.current = draft?.original?.id ?? "add";
-    setInitialDraft(null); setDraft(null); setError(null);
+    setInitialDraft(null); setDraft(null); setError(null); setDiscarding(false); setPasteText(""); setPasteOpen(false);
+  }
+
+  function requestClose() {
+    if (pending.current) return;
+    if (dirty) setDiscarding(true);
+    else close();
+  }
+  function pasteVariables() {
+    if (!draft || pending.current) return;
+    const result = mergeWorkspaceEnvPaste(pasteText, draft.entries);
+    if (result.tooLarge) { setPasteNotice("Paste up to 131 072 characters at a time."); return; }
+    change({ entries: result.entries.map((entry, index) => ({ ...entry, id: draft.entries[index]?.id ?? randomUUID() })) });
+    setPasteNotice(`Added ${result.added}, replaced ${result.replaced}, skipped ${result.skipped}.`);
+    setPasteText(""); setPasteOpen(false);
   }
 
   async function refresh() {
@@ -136,7 +174,7 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
       if (!active.current) return;
       restoreFocus.current = mutation.action === "delete" ? "add" : mutation.action === "update" ? mutation.id
         : rows.find(({ id }) => !secrets.some((old) => old.id === id))?.id ?? "add";
-      setInitialDraft(null); setSecrets(rows); setDraft(null); setDeleting(null);
+      setInitialDraft(null); setSecrets(rows); setDraft(null); setDeleting(null); setDiscarding(false); setPasteText(""); setPasteOpen(false);
       setNotice(mutation.action === "delete" ? "Secret deleted. Future requests will use the updated set." : "Secret saved. Available automatically in your personal Workspace requests.");
     } catch (failure) { if (active.current) setError(failure instanceof Error ? failure.message : workspaceSecretErrorMessage(null)); }
     finally { pending.current = false; if (active.current) setBusy(false); }
@@ -175,9 +213,13 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
 
   const browserCount = secrets.filter((entry) => entry.kind === "browser_session").length;
   const ordinaryCount = secrets.length - browserCount;
+  const kindAtLimit = (kind: WorkspaceSecretKind) => kind === "browser_session" ? browserCount >= WORKSPACE_BROWSER_SESSION_MAX_COUNT : ordinaryCount >= WORKSPACE_SECRET_MAX_COUNT;
+  const bothLimits = kindAtLimit("text") && kindAtLimit("browser_session");
   return <section className="v2-studio-settings-page" aria-label="Secrets" data-testid="workspace-secrets-panel">
     <SectionHeading description="Available to the model and programs inside your personal Workspace. Shared Projects never receive them."
-      action={<UiV2Button type="button" disabled={busy || loading} icon="regenerate" onClick={() => void refresh()}>Refresh</UiV2Button>}>Secrets</SectionHeading>
+      action={<><UiV2Button type="button" disabled={busy || loading} icon="regenerate" onClick={() => void refresh()}>Refresh</UiV2Button>
+        <UiV2Button type="button" tone="primary" disabled={busy || loading || bothLimits} icon="plus" onClick={() => open(null)} ref={addButton}>Add secret</UiV2Button></>}>Secrets</SectionHeading>
+    {bothLimits ? <p className="mt-3 text-xs text-ink-muted">{workspaceSecretErrorMessage("workspace_secret_limit")}</p> : null}
     <details className="v2-settings-footnote">
       <summary className="v2-focusable">How secrets work</summary>
       <div className="v2-settings-disclosure-body">
@@ -185,70 +227,122 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
         <p>Browser sessions are saved automatically after work in Workspace and contain sign-in cookies. Delete a session to remove that saved sign-in from your next Workspace request. You can also import a session after signing in manually.</p>
       </div>
     </details>
-    {error ? <p className="mt-4 break-words text-sm text-critical" role="alert">{error}</p> : null}
+    {error && !draft ? <p className="mt-4 break-words text-sm text-critical" role="alert">{error}</p> : null}
     {notice ? <p className="mt-4 text-sm text-positive" role="status">{notice}</p> : null}
     {loading ? <p className="mt-5 text-sm text-ink-muted" role="status">Loading Workspace secrets…</p> : null}
-    {draft ? <form className="mt-5 border-t border-trace-subtle pt-5" onSubmit={submit} aria-label={draft.original ? "Edit Workspace secret" : "Add Workspace secret"}>
-      <fieldset disabled={busy} className="flex min-w-0 flex-col gap-4">
-        <legend className="mb-4 text-sm font-semibold text-ink">{draft.original ? "Edit secret" : "Add secret"}</legend>
-        <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Type
-          <select aria-label="Type" className={field} disabled={Boolean(draft.original)} value={draft.kind} onChange={(event) => change({ kind: event.target.value as WorkspaceSecretKind })}>
-            {WORKSPACE_SECRET_KINDS.map((kind) => <option key={kind} value={kind} disabled={!draft.original && (kind === "browser_session" ? browserCount >= WORKSPACE_BROWSER_SESSION_MAX_COUNT : ordinaryCount >= WORKSPACE_SECRET_MAX_COUNT)}>{labels[kind]}</option>)}
-          </select>
-        </label>
-        <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Name
-          <input autoComplete="off" className={field} maxLength={120} ref={nameInput} required value={draft.name} onChange={(event) => change({ name: event.target.value })} />
-        </label>
-        <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Description (optional)
-          <textarea aria-label="Description (optional)" className={field} maxLength={2000} rows={2} value={draft.description} onChange={(event) => change({ description: event.target.value })} />
-        </label>
-        {draft.original ? <label className="flex min-h-touch items-center gap-2 text-sm text-ink-secondary">
-          <input type="checkbox" checked={draft.replace} onChange={(event) => change({ replace: event.target.checked })} />Replace saved value
-        </label> : null}
-        {!draft.replace ? <p className="text-xs text-ink-muted">The saved value is preserved and is never shown here.</p> : draft.kind === "ssh_key" ? <>
-          <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Private SSH key
-            <textarea aria-label="Private SSH key" autoComplete="off" spellCheck={false} className={`${field} font-mono`} rows={6} required value={draft.privateKey} onChange={(event) => change({ privateKey: event.target.value })} />
-          </label>
-          <label className="grid gap-1.5 text-xs text-ink-secondary">Or upload a private key<input className="w-full min-w-0 text-xs" type="file" onChange={(event) => void upload(event.target.files?.[0], true)} /></label>
-          <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Key passphrase (if encrypted)
-            <input autoComplete="new-password" className={field} type="password" value={draft.passphrase} onChange={(event) => change({ passphrase: event.target.value })} />
-          </label>
-          <p className="text-xs leading-5 text-ink-muted">A private key is enough; no public key or host mapping is needed. You can save several named keys and choose one by its path in SECRETS.md.</p>
-        </> : draft.kind === "env" ? <div className="flex flex-col gap-3">
-          <p className="text-xs leading-5 text-ink-muted">Values are kept exactly, including newlines. Up to 128 KiB across all environment groups. SSH_AUTH_SOCK, SSH_AGENT_PID and GIT_SSH_COMMAND are reserved.</p>
-          {draft.entries.map((entry, index) => <div className="grid min-w-0 gap-2 border-l-2 border-trace-subtle pl-3" key={entry.id}>
-            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Variable name {index + 1}<input autoComplete="off" spellCheck={false} className={`${field} font-mono`} required value={entry.name} onChange={(event) => change({ entries: draft.entries.map((row) => row.id === entry.id ? { ...row, name: event.target.value } : row) })} /></label>
-            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Variable value {index + 1}<textarea aria-label={`Variable value ${index + 1}`} autoComplete="off" spellCheck={false} className={`${field} font-mono`} rows={2} value={entry.value} onChange={(event) => change({ entries: draft.entries.map((row) => row.id === entry.id ? { ...row, value: event.target.value } : row) })} /></label>
-            {draft.entries.length > 1 ? <UiV2Button type="button" className="self-start" onClick={() => change({ entries: draft.entries.filter(({ id }) => id !== entry.id) })}>Remove variable {index + 1}</UiV2Button> : null}
-          </div>)}
-          <UiV2Button type="button" className="self-start" disabled={draft.entries.length >= 64} onClick={() => change({ entries: [...draft.entries, { id: randomUUID(), name: "", value: "" }] })}>Add variable</UiV2Button>
-        </div> : draft.kind === "text" ? <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Secret text
-          <textarea aria-label="Secret text" autoComplete="off" spellCheck={false} className={field} rows={6} required value={draft.text} onChange={(event) => change({ text: event.target.value })} />
-        </label> : <><label className="grid gap-1.5 text-xs font-medium text-ink-secondary">{draft.kind === "browser_session" ? "Browser session JSON" : "Original file"}
-          <input aria-label={draft.kind === "browser_session" ? "Browser session JSON" : "Original file"} accept={draft.kind === "browser_session" ? ".json,application/json" : undefined} className="w-full min-w-0 text-xs" type="file" onChange={(event) => void upload(event.target.files?.[0], false)} />
-          <span className="break-all text-xs text-ink-muted">{draft.fileName || "Up to 512 KiB; original bytes are preserved."}</span>
-        </label>{draft.kind === "browser_session" ? <>
-          <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Session filename<input className={field} required value={draft.fileName} onChange={(event) => change({ fileName: event.target.value })} /></label>
-          <p className="text-xs leading-5 text-ink-muted">Import a Playwright storage_state JSON file with cookies and origins. Use a filename such as shop.example.json so Workspace can find the right site. Up to 50 browser sessions, each up to 512 KiB.</p>
-        </> : null}</>}
-        <div className="flex flex-wrap gap-2"><UiV2Button tone="primary" type="submit">{busy ? "Saving…" : "Save secret"}</UiV2Button><UiV2Button type="button" onClick={close}>Cancel</UiV2Button></div>
-      </fieldset>
-    </form> : <>
-      <UiV2Button type="button" className="mt-5" disabled={busy || loading || ordinaryCount >= WORKSPACE_SECRET_MAX_COUNT && browserCount >= WORKSPACE_BROWSER_SESSION_MAX_COUNT} icon="plus" onClick={() => open(null)} ref={addButton}>Add secret</UiV2Button>
-      {!loading && !secrets.length && !error ? <p className="mt-5 text-sm text-ink-muted">No saved Workspace secrets.</p> : null}
-      <ul className="mt-4 divide-y divide-trace-subtle" aria-label="Saved Workspace secrets">
-        {secrets.map((secret) => <li className="flex flex-wrap items-start gap-3 py-4" key={secret.id}>
-          <div className="min-w-0 flex-1"><h4 className="break-words text-sm font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" tabIndex={-1} ref={(node) => { if (node) headings.current.set(secret.id, node); else headings.current.delete(secret.id); }}>{secret.name}</h4>
-            <p className="mt-1 text-xs text-ink-muted">{labels[secret.kind]} · <time dateTime={secret.updatedAt}>{new Date(secret.updatedAt).toLocaleString()}</time></p>
-            {secret.browserSession ? <p className="mt-1 text-xs text-ink-secondary">{secret.browserSession.autoSaved ? "Saved by Workspace" : "Imported"} · {formatAttachmentBytes(secret.byteSize)}</p> : null}
-            {secret.description ? <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-ink-secondary">{secret.description}</p> : null}
-            {secret.envNames.length ? <p className="mt-1 break-all font-mono text-xs text-ink-muted">{secret.envNames.join(", ")}</p> : null}
-            {secret.originalName ? <p className="mt-1 break-all text-xs text-ink-muted">{secret.originalName}</p> : null}
+    {!loading && !secrets.length && !error ? <p className="mt-5 text-sm text-ink-muted">No saved Workspace secrets.</p> : null}
+    <ul className="v2-secret-list" aria-label="Saved Workspace secrets">
+      {secrets.map(secret => <li className="v2-secret-row" key={secret.id}>
+        <span className="v2-secret-type-icon"><UiV2Icon name={kinds[secret.kind].icon} /></span>
+        <div className="min-w-0 flex-1"><h4 className="break-words text-sm font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" tabIndex={-1} ref={node => { if (node) headings.current.set(secret.id, node); else headings.current.delete(secret.id); }}>{secret.name}</h4>
+          <p className="mt-1 text-xs text-ink-muted">{labels[secret.kind]} · Updated <time dateTime={secret.updatedAt}>{new Date(secret.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</time></p>
+          {secret.browserSession ? <p className="mt-1 text-xs text-ink-secondary">{secret.browserSession.autoSaved ? "Saved by Workspace" : "Imported"} · {formatAttachmentBytes(secret.byteSize)}</p> : null}
+          {secret.description ? <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-ink-secondary">{secret.description}</p> : null}
+          {secret.envNames.length ? <p className="mt-1 break-all font-mono text-xs text-ink-muted">{secret.envNames.join(", ")}</p> : null}
+          {secret.originalName ? <p className="mt-1 break-all text-xs text-ink-muted">{secret.originalName}</p> : null}
+        </div>
+        {deleting === secret.id ? <div className="flex flex-wrap items-center gap-2 text-xs text-ink-secondary"><span>Delete this secret?</span><UiV2Button type="button" disabled={busy} tone="destructive" onClick={() => void mutate({ action: "delete", id: secret.id, expectedVersionId: secret.versionId })}>Delete permanently</UiV2Button><UiV2Button type="button" disabled={busy} onClick={() => setDeleting(null)}>Keep secret</UiV2Button></div>
+          : <div className="flex items-center gap-2"><UiV2Button type="button" disabled={busy} aria-label={`Edit ${secret.name}`} onClick={() => open(secret)}>Edit</UiV2Button><SecretMenu name={secret.name} busy={busy} onDelete={() => setDeleting(secret.id)} /></div>}
+      </li>)}
+    </ul>
+    {draft ? <UiV2Sheet open width="wide" testId="workspace-secret-sheet" title={draft.original ? "Edit secret" : "Add secret"}
+      description="Saved secrets join your next Workspace request automatically." closeBlocked={busy} onClose={requestClose}
+      footer={<><UiV2Button type="button" className="ml-auto" disabled={busy} onClick={requestClose}>Cancel</UiV2Button>
+        <UiV2Button tone="primary" type="submit" form={formElementId} disabled={busy || !draft.name.trim()}>{busy ? "Saving…" : "Save secret"}</UiV2Button></>}>
+      <form id={formElementId} onSubmit={submit} aria-label={draft.original ? "Edit Workspace secret" : "Add Workspace secret"}>
+        <fieldset disabled={busy} className="flex min-w-0 flex-col gap-5">
+          <fieldset className="min-w-0" disabled={Boolean(draft.original)}>
+            <legend className="mb-2 text-xs font-medium text-ink-secondary">Type</legend>
+            <div role="radiogroup" aria-label="Type" className="v2-secret-types">
+              {WORKSPACE_SECRET_KINDS.map(kind => <label key={kind} className="v2-secret-kind" data-selected={draft.kind === kind || undefined} data-disabled={Boolean(draft.original) || busy || kindAtLimit(kind) || undefined}>
+                <input type="radio" name={typeGroupId} aria-label={kinds[kind].label} checked={draft.kind === kind} disabled={!draft.original && kindAtLimit(kind)} onChange={() => change({ kind })} />
+                <span><UiV2Icon name={kinds[kind].icon} /><strong>{kinds[kind].label}</strong></span>
+                <small>{kinds[kind].description}</small>
+                {!draft.original && kindAtLimit(kind) ? <small>{kind === "browser_session" ? "50 browser sessions saved." : "32 secrets saved."}</small> : null}
+              </label>)}
+            </div>
+          </fieldset>
+          <div className="v2-secret-metadata">
+            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Name
+              <input autoComplete="off" className={field} maxLength={120} ref={nameInput} required value={draft.name} onChange={event => change({ name: event.target.value })} />
+            </label>
+            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Description (optional)
+              <GrowingSecretText aria-label="Description (optional)" className={field} maxLength={2000} value={draft.description} onChange={event => change({ description: event.target.value })} />
+            </label>
           </div>
-          {deleting === secret.id ? <div className="flex flex-wrap items-center gap-2 text-xs text-ink-secondary"><span>Delete this secret?</span><UiV2Button type="button" disabled={busy} tone="destructive" onClick={() => void mutate({ action: "delete", id: secret.id, expectedVersionId: secret.versionId })}>Delete permanently</UiV2Button><UiV2Button type="button" disabled={busy} onClick={() => setDeleting(null)}>Keep secret</UiV2Button></div>
-            : <div className="flex gap-2"><UiV2Button type="button" disabled={busy} aria-label={`Edit ${secret.name}`} onClick={() => open(secret)}>Edit</UiV2Button><UiV2Button type="button" disabled={busy} aria-label={`Delete ${secret.name}`} onClick={() => setDeleting(secret.id)}>Delete</UiV2Button></div>}
-        </li>)}
-      </ul>
-    </>}
+          {draft.original ? <label className="flex min-h-touch items-center gap-2 text-sm text-ink-secondary">
+            <input type="checkbox" checked={draft.replace} onChange={event => change({ replace: event.target.checked })} />Replace saved value
+          </label> : null}
+          {!draft.replace ? <p className="text-xs text-ink-muted">The saved value is preserved and is never shown here.</p> : draft.kind === "ssh_key" ? <>
+            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Private SSH key
+              <textarea aria-label="Private SSH key" autoComplete="off" spellCheck={false} className={`${field} font-mono`} rows={6} required value={draft.privateKey} onChange={event => change({ privateKey: event.target.value })} />
+            </label>
+            <label className="grid gap-1.5 text-xs text-ink-secondary">Or upload a private key<input className="w-full min-w-0 text-xs" type="file" onChange={event => void upload(event.target.files?.[0], true)} /></label>
+            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Key passphrase (if encrypted)
+              <input autoComplete="new-password" className={field} type="password" value={draft.passphrase} onChange={event => change({ passphrase: event.target.value })} />
+            </label>
+            <p className="text-xs leading-5 text-ink-muted">A private key is enough; no public key or host mapping is needed. You can save several named keys and choose one by its path in SECRETS.md.</p>
+          </> : draft.kind === "env" ? <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2"><h3 className="text-xs font-medium text-ink-secondary">Variables</h3><UiV2Button type="button" onClick={() => { setPasteOpen(true); setPasteNotice(null); }}>Paste .env</UiV2Button></div>
+            {pasteOpen ? <div className="rounded-lg border border-trace-subtle p-3">
+              <label className="grid gap-2 text-xs text-ink-secondary">Paste the contents of a .env file
+                <textarea autoFocus autoComplete="off" spellCheck={false} className={`${field} font-mono`} rows={6} value={pasteText} onChange={event => setPasteText(event.target.value)} />
+              </label>
+              <div className="mt-3 flex gap-2"><UiV2Button type="button" onClick={pasteVariables}>Add variables</UiV2Button><UiV2Button type="button" onClick={() => { setPasteText(""); setPasteOpen(false); setPasteNotice(null); }}>Cancel paste</UiV2Button></div>
+            </div> : null}
+            {pasteNotice ? <p role="status" className="text-xs text-ink-secondary">{pasteNotice}</p> : null}
+            <div className="v2-secret-env-head" aria-hidden="true"><span>Name</span><span>Value</span><span /></div>
+            {draft.entries.map((entry, index) => <div className="v2-secret-env-row" key={entry.id}>
+              <input aria-label={`Variable name ${index + 1}`} autoComplete="off" spellCheck={false} className={`${field} font-mono`} required value={entry.name}
+                onChange={event => change({ entries: draft.entries.map(row => row.id === entry.id ? { ...row, name: event.target.value } : row) })} />
+              <GrowingSecretText aria-label={`Variable value ${index + 1}`} autoComplete="off" spellCheck={false} className={`${field} font-mono`} expandOnFocus value={entry.value}
+                onChange={event => change({ entries: draft.entries.map(row => row.id === entry.id ? { ...row, value: event.target.value } : row) })} />
+              {draft.entries.length > 1 ? <UiV2IconButton icon="close" label={`Remove variable ${index + 1}`} onClick={() => change({ entries: draft.entries.filter(({ id }) => id !== entry.id) })} /> : <span />}
+            </div>)}
+            <UiV2Button type="button" className="self-start" icon="plus" disabled={draft.entries.length >= WORKSPACE_ENV_ENTRY_LIMIT} onClick={() => change({ entries: [...draft.entries, { id: randomUUID(), name: "", value: "" }] })}>Add variable</UiV2Button>
+            <p className="text-xs leading-5 text-ink-muted">Values are kept exactly, including newlines. {draft.entries.filter(entry => entry.name || entry.value).length} of {WORKSPACE_ENV_ENTRY_LIMIT} variables. Up to 128 KiB across all environment groups. SSH_AUTH_SOCK, SSH_AGENT_PID and GIT_SSH_COMMAND are reserved.</p>
+          </div> : draft.kind === "text" ? <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Secret text
+            <textarea aria-label="Secret text" autoComplete="off" spellCheck={false} className={field} rows={6} required value={draft.text} onChange={event => change({ text: event.target.value })} />
+          </label> : <><label className="grid gap-1.5 text-xs font-medium text-ink-secondary">{draft.kind === "browser_session" ? "Browser session JSON" : "Original file"}
+            <input aria-label={draft.kind === "browser_session" ? "Browser session JSON" : "Original file"} accept={draft.kind === "browser_session" ? ".json,application/json" : undefined} className="w-full min-w-0 text-xs" type="file" onChange={event => void upload(event.target.files?.[0], false)} />
+            <span className="break-all text-xs text-ink-muted">{draft.fileName || "Up to 512 KiB; original bytes are preserved."}</span>
+          </label>{draft.kind === "browser_session" ? <>
+            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Session filename<input className={field} required value={draft.fileName} onChange={event => change({ fileName: event.target.value })} /></label>
+            <p className="text-xs leading-5 text-ink-muted">Import a Playwright storage_state JSON file with cookies and origins. Use a filename such as shop.example.json so Workspace can find the right site. Up to 50 browser sessions, each up to 512 KiB.</p>
+          </> : null}</>}
+          {error ? <div role="alert" className="text-sm text-critical"><p>{error}</p>
+            <UiV2Button type="button" disabled={busy} onClick={() => void refresh()}>Refresh</UiV2Button>
+          </div> : null}
+        </fieldset>
+      </form>
+      {discarding ? <ConfirmationDialog cancelLabel="Keep editing" confirmLabel="Discard changes" dialogLabel="Unsaved Workspace secret" title="Discard unsaved changes?" testId="workspace-secret-discard" tone="warning"
+        onCancel={() => setDiscarding(false)} onConfirm={close}>Your unsaved Workspace secret will be lost.</ConfirmationDialog> : null}
+    </UiV2Sheet> : null}
   </section>;
+}
+
+function GrowingSecretText({ value, expandOnFocus = false, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string; expandOnFocus?: boolean }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.style.height = "auto";
+    const line = Number.parseFloat(getComputedStyle(node).lineHeight) || 20;
+    node.style.height = `${Math.min(Math.max(node.scrollHeight, expanded && expandOnFocus ? line * 3 + 16 : 0), line * 4 + 16)}px`;
+  }, [expandOnFocus, expanded, value]);
+  // Keep the expanded row after blur so the next pointer target cannot move
+  // between pointerdown and click (for example Add variable below the table).
+  return <textarea {...props} ref={ref} rows={1} value={value} onFocus={() => setExpanded(true)} />;
+}
+
+function SecretMenu({ name, busy, onDelete }: Readonly<{ name: string; busy: boolean; onDelete(): void }>) {
+  const [open, setOpen] = useState(false);
+  const { triggerRef, menuRef, closeForAction } = useMenuDismissalV2({ open, onClose: () => setOpen(false) });
+  return <>
+    <UiV2IconButton ref={triggerRef} icon="more" label={`More actions for ${name}`} disabled={busy} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)} />
+    {open ? <UiV2ResponsiveMenu anchorRef={triggerRef} menuRef={menuRef} label={`Actions for ${name}`} onClose={() => setOpen(false)}>
+      <UiV2MenuItem tone="destructive" onClick={() => { closeForAction(); onDelete(); }}>Delete</UiV2MenuItem>
+    </UiV2ResponsiveMenu> : null}
+  </>;
 }

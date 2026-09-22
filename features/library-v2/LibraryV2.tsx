@@ -93,7 +93,7 @@ export function LibraryV2({
   const tabListRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Partial<Record<LibraryTabIdV2, HTMLButtonElement | null>>>({});
   const backRef = useRef<HTMLButtonElement>(null);
-  const previousSubviewKey = useRef<string | null>(null);
+  const previousSubview = useRef<{ key: string; resourceFocus: boolean } | null>(null);
   const groups = libraryTabGroups.map(group => ({ ...group, tabs: group.tabs.flatMap(id => {
     const tab = tabs.find(candidate => candidate.id === id);
     return tab ? [tab] : [];
@@ -101,20 +101,21 @@ export function LibraryV2({
   const availableTabs = groups.flatMap(group => group.tabs.map(tab => tab.id));
   const selected = tabs.find((tab) => tab.id === activeTab) ?? tabs.find(tab => tab.id === "assistants") ?? groups[0]?.tabs[0];
   const subviewKey = subview?.key ?? null;
+  const resourceFocus = subview?.focus === "resource";
   const selectedId = selected?.id ?? null;
 
   // Entering a sub-view (or moving between two) focuses its Back control;
   // leaving it returns focus to the section tab so keyboard users stay in
-  // the Library rather than on the document body.
+  // the Library rather than on the document body. Editors may own both moves.
   useEffect(() => {
-    const previous = previousSubviewKey.current;
-    previousSubviewKey.current = subviewKey;
-    if (subviewKey && subviewKey !== previous) {
+    const previous = previousSubview.current;
+    previousSubview.current = subviewKey ? { key: subviewKey, resourceFocus } : null;
+    if (subviewKey && subviewKey !== previous?.key && !resourceFocus) {
       backRef.current?.focus({ preventScroll: true });
-    } else if (!subviewKey && previous && selectedId) {
+    } else if (!subviewKey && previous && !previous.resourceFocus && selectedId) {
       tabRefs.current[selectedId]?.focus({ preventScroll: true });
     }
-  }, [selectedId, subviewKey]);
+  }, [resourceFocus, selectedId, subviewKey]);
 
   // A deep-linked mobile section can start beyond the clipped edge of the
   // horizontal strip. Keep the selected tab in the unfaded viewport without
@@ -242,6 +243,7 @@ export function LibraryV2({
         aria-labelledby={`v2-library-tab-${selected.id}`}
         className="v2-library-panel"
         data-artifact-viewer={selected.id === "artifacts" && Boolean(subview) || undefined}
+        data-instructions-editor={selected.id === "instructions" && subviewKey?.startsWith("instruction-editor-") || undefined}
         data-library-tab={selected.id}
         id={`v2-library-panel-${selected.id}`}
         key={selected.id}

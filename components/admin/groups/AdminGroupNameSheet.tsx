@@ -2,7 +2,7 @@
 
 import { adminActionErrorMessage } from "@/components/admin/adminApi";
 import { inputClass } from "@/components/admin/adminPrimitives";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import type { AdminGroupActionTarget, AdminGroupsController } from "@/components/admin/useAdminGroupsController";
 import { fieldLabelClass, helpTextClass } from "@/components/admin/users/usersPrimitives";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
@@ -70,7 +70,7 @@ function SheetBody({
   };
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={busy}
       description={rename
         ? "Members keep their access; only the name changes."
@@ -138,7 +138,7 @@ function SheetBody({
           {rename ? "The group keeps its current name." : "The group has not been created yet; what you typed will be lost."}
         </ConfirmationDialog>
       ) : null}
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }
 

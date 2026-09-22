@@ -16,7 +16,7 @@ import {
   type AdminProviderReasoningChoice
 } from "@/components/admin/adminProviderReasoning";
 import { AdminSearchablePicker } from "@/components/admin/AdminSearchablePicker";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import { defaultCredentialOf, modelEditorCheck, modelRouteLabel, providerKeyFirstHelp, providerNeedsKeyForModels } from "@/components/admin/providers/models/modelListView";
 import {
   applyCatalogHint,
@@ -481,7 +481,7 @@ function SheetBody({
       ];
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={busy || jsonEditing || discarding}
       description={providerFamilyLabel(family)}
       footer={(
@@ -904,7 +904,7 @@ function SheetBody({
             : "Nothing has been saved yet."}
         </ConfirmationDialog>
       ) : null}
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }
 

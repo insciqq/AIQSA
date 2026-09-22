@@ -1,7 +1,7 @@
 "use client";
 
 import { inputClass } from "@/components/admin/adminPrimitives";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import {
   DEFAULT_SEARCH_DESCRIPTION,
   configurableModels,
@@ -368,7 +368,7 @@ function SheetBody({
   };
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={busy}
       description={creating
         ? "Users see one source; AIQSA applies it to every compatible chat model."
@@ -432,7 +432,7 @@ function SheetBody({
           {creating ? "The source has not been added yet." : "Edits to this source will be lost."}
         </ConfirmationDialog>
       ) : null}
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }
 

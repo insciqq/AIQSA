@@ -8,7 +8,7 @@ import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } fro
 
 const sizes = [{ width: 1440, height: 900 }, { width: 768, height: 1024 },
   { width: 1024, height: 768 }, { width: 390, height: 844 }, { width: 844, height: 390 }];
-const resources = ["Instructions", "Secrets", "MCP servers"] as const;
+const resources = ["Instructions", "MCP servers"] as const;
 type Resource = typeof resources[number];
 const server: UserMcpServer = {
   accountLabel: null, description: "Synthetic personal connection", enabled: true,
@@ -32,7 +32,6 @@ async function prepare(page: Page) {
   await page.route("**/api/me/instructions", route => route.fulfill({ json: {
     instructions: { activePresetId: null, selectionVersion: 1, presets: [] }
   } }));
-  await page.route("**/api/me/workspace/secrets", route => route.fulfill({ json: { secrets: [] } }));
   await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [server] } }));
   await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture({
     status: "ON", settings: { useMemoryFacts: true, learnAutomatically: true, referenceChatHistory: true }
@@ -53,13 +52,8 @@ async function openDraft(page: Page, resource: Resource) {
     return input;
   }
   if (resource === "Instructions") {
-    await library.getByRole("button", { name: "Manage presets…" }).click();
     await library.getByRole("button", { name: "New preset" }).click();
     await library.getByLabel("System instructions", { exact: true }).fill("Use precise examples.");
-  } else {
-    await library.getByRole("button", { name: "Add secret", exact: true }).click();
-    await library.getByLabel("Type", { exact: true }).selectOption("text");
-    await library.getByLabel("Secret text", { exact: true }).fill("Synthetic test value");
   }
   const input = library.getByLabel("Name", { exact: true });
   await input.fill(`Unsaved ${resource}`);
@@ -91,7 +85,7 @@ for (const width of [1440, 390]) {
         }
         const navigate = async () => {
           if (destination === "tab") await library.getByRole("tab", { name: "Files", exact: true }).click();
-          else if (destination === "back") await library.getByRole("button", { name: "Back to chat" }).click();
+          else if (destination === "back") await library.getByRole("button", { name: /Back to (?:chat|Instructions)/ }).click();
           else if (destination === "shortcut") await page.keyboard.press("Control+Shift+O");
           else {
             if (width === 390 && !await drawer.isVisible()) await page.getByRole("button", { name: "Open sidebar" }).click();
@@ -111,7 +105,10 @@ for (const width of [1440, 390]) {
         await confirm.getByRole("button", { name: /Confirm discard/ }).click();
         await expect(input).toHaveCount(0);
         if (destination === "tab") await expect(library.getByRole("tab", { name: "Files", exact: true })).toHaveAttribute("aria-selected", "true");
-        else await expect(library).toHaveCount(0);
+        else if (destination === "back" && resource === "Instructions") {
+          await expect(library.getByRole("button", { name: "New preset" })).toBeVisible();
+          await library.getByRole("button", { name: "Back to chat" }).click();
+        } else await expect(library).toHaveCount(0);
         await expectNoHorizontalOverflow(page);
       }
     }
@@ -124,7 +121,7 @@ test("pending migrated mutations block exits, then preserve the draft on failure
   await prepare(page);
   for (const resource of resources) {
     const input = await openDraft(page, resource);
-    const path = resource === "Instructions" ? "instructions" : resource === "Secrets" ? "workspace/secrets" : "mcp/studio-mcp";
+    const path = resource === "Instructions" ? "instructions" : "mcp/studio-mcp";
     let release!: () => void;
     let requested = false;
     const pending = new Promise<void>(resolve => { release = resolve; });
@@ -135,7 +132,7 @@ test("pending migrated mutations block exits, then preserve the draft on failure
       await route.fulfill({ status: 503, json: { error: "temporarily_unavailable" } });
     });
     const library = page.getByTestId("library-v2");
-    await library.getByRole("button", { name: resource === "Instructions" ? "Save" : resource === "Secrets" ? "Save secret" : "Save personal values", exact: true }).click();
+    await library.getByRole("button", { name: resource === "Instructions" ? "Save" : "Save personal values", exact: true }).click();
     await expect.poll(() => requested).toBe(true);
     for (const tab of await library.getByRole("tab").all()) await expect(tab).toBeDisabled();
     const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
@@ -146,7 +143,7 @@ test("pending migrated mutations block exits, then preserve the draft on failure
     release();
     await expect(library.getByRole("tab", { name: "Files", exact: true })).toBeEnabled();
     await expect(input).not.toHaveValue("");
-    await library.getByRole("button", { name: "Back to chat" }).click();
+    await library.getByRole("button", { name: /Back to (?:chat|Instructions)/ }).click();
     await page.getByTestId("discard-changes-confirmation").getByRole("button", { name: /Confirm discard/ }).click();
   }
 });

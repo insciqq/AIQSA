@@ -5,7 +5,7 @@ import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { useId, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-export type AdminSheetProps = Readonly<{
+export type UiV2SheetProps = Readonly<{
   children: ReactNode;
   /** Keeps Escape and the scrim from closing while a save is in flight. */
   closeBlocked?: boolean;
@@ -19,7 +19,7 @@ export type AdminSheetProps = Readonly<{
   width?: "narrow" | "wide";
 }>;
 
-function AdminSheetLayer({
+function UiV2SheetLayer({
   children,
   closeBlocked = false,
   description,
@@ -28,7 +28,7 @@ function AdminSheetLayer({
   testId,
   title,
   width = "narrow"
-}: Omit<AdminSheetProps, "open">) {
+}: Omit<UiV2SheetProps, "open">) {
   const titleId = useId();
   const descriptionId = useId();
   const { dialogRef, initialFocusRef, onDialogKeyDown, portalReady } = useModalLayerV2({ closeBlocked, onClose });
@@ -63,6 +63,7 @@ function AdminSheetLayer({
             ) : null}
           </div>
           <UiV2IconButton
+            className="shrink-0"
             disabled={closeBlocked}
             icon="close"
             label="Close"
@@ -83,13 +84,13 @@ function AdminSheetLayer({
 }
 
 /**
- * Right-hand editor sheet over the current Control Center page (PRD 3.1):
+ * Right-hand editor sheet over the current page:
  * one modal layer with a scrim, focus containment, Escape, inert background
  * and focus restoration. Mount it only while open so the modal layer never
  * inerts the page without a dialog to hand focus to.
  */
-export function AdminSheet(props: AdminSheetProps) {
+export function UiV2Sheet(props: UiV2SheetProps) {
   if (!props.open) return null;
   const { open: _open, ...layerProps } = props;
-  return <AdminSheetLayer {...layerProps} />;
+  return <UiV2SheetLayer {...layerProps} />;
 }

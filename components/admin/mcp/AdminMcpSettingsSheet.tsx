@@ -1,7 +1,7 @@
 "use client";
 
 import { inputClass } from "@/components/admin/adminPrimitives";
-import { AdminSheet } from "@/components/admin/AdminSheet";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import { AdminMcpDraftEditor } from "@/components/admin/mcp/AdminMcpDraftEditor";
 import { McpConfigurationEditor } from "@/components/admin/mcp/McpConfigurationEditor";
 import {
@@ -139,7 +139,7 @@ function SheetBody({
       : `${mode.kind === "edit" ? mode.server.name : ""} · changes apply to new chats once the check passes.`;
 
   return (
-    <AdminSheet
+    <UiV2Sheet
       closeBlocked={busy}
       description={description}
       footer={stage === "import" ? (
@@ -261,7 +261,7 @@ function SheetBody({
           Unsaved edits in this form will be lost.
         </ConfirmationDialog>
       ) : null}
-    </AdminSheet>
+    </UiV2Sheet>
   );
 }
 
