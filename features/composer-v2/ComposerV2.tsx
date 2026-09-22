@@ -274,7 +274,7 @@ export type ComposerV2Props = Readonly<{
   onStop?(runId: string): void;
   /** Keyboard contract: Enter sends (default), or inserts a newline while Ctrl/⌘+Enter sends. */
   sendWithEnter?: boolean;
-  /** @deprecated MCP availability is configured in Settings; runs use onSelectMcp. */
+  /** @deprecated MCP availability is configured in MCP servers; runs use onSelectMcp. */
   onToggleMcpServer?(serverId: string, enabled: boolean): void;
   onUploadFiles?(files: readonly File[]): Promise<void> | void;
   onReuseFile?(attachmentId: string, fileName: string): Promise<boolean>;

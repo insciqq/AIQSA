@@ -610,7 +610,7 @@ export function useRunControlsActions({
     void settingsMutationCoordinator.enqueue({ searchPlan: null });
   }
 
-  /* Settings › Chat defaults: personal defaults for new chats only; the open
+  /* Chat defaults: personal defaults for new chats only; the open
      chat's composer selection is left untouched. */
   function setDefaultSearchPlan(plan: SearchPlan) {
     const reconciled = reconcileSearchPlanSelection(

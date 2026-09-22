@@ -1099,7 +1099,7 @@
   font-size: 0.78125rem;
 }
 
-/* Settings › MCP & tools in the row anatomy (UX audit 2026-09-02 #12). */
+/* Personal MCP servers in the row anatomy (UX audit 2026-09-02 #12). */
 .v2-settings-mcp {
   display: grid;
   gap: 0;

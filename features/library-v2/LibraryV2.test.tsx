@@ -448,7 +448,7 @@ describe("Library resource panels", () => {
           name: "Release helper",
           owned: true,
           unavailable: {
-            action: { kind: "mcp-settings", label: "Fix in Settings…" },
+            action: { kind: "mcp-settings", label: "Fix in MCP servers…" },
             explanation: "GitHub is turned off or needs attention.",
             headline: "Needs the GitHub tools"
           }
@@ -463,7 +463,7 @@ describe("Library resource panels", () => {
     expect(screen.queryByText("GitHub is turned off or needs attention.")).not.toBeInTheDocument();
     fireEvent.click(why);
     expect(screen.getByText("GitHub is turned off or needs attention.")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Fix in Settings…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fix in MCP servers…" }));
     expect(onUnavailableAction).toHaveBeenCalledWith("assistant", "mcp-settings");
     expect(screen.getByRole("button", { name: "Use Release helper" })).toBeDisabled();
     expect(screen.queryByText("tools_access")).not.toBeInTheDocument();
