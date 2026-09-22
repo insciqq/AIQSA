@@ -13,6 +13,8 @@ import { createAgentRunStore } from "./store";
 import { agentPrompts } from "./prompt";
 import type { CodexManagedProfile } from "./codexProfile";
 import { createCodexActivityProjection } from "./activityProjection";
+import { createAgentBuiltinProgress } from "./builtinProgress";
+import type { RunOutputArtifactEvent } from "../runs/runOutputEvents";
 
 export async function executeCodexTurn(input: Readonly<{
   request: ProviderRunRequest;
@@ -22,6 +24,7 @@ export async function executeCodexTurn(input: Readonly<{
   transport: AgentResponsesTransport;
   workspace: WorkspaceCoordinator;
   onEvent(event: ModelRunSseEvent): Promise<void>;
+  onPersistedEvent(event: RunOutputArtifactEvent): Promise<void>;
   onActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>;
   onUsage(attributions: RunUsageAttribution[]): Promise<void>;
 }>): Promise<ProviderRunResult> {
@@ -33,12 +36,15 @@ export async function executeCodexTurn(input: Readonly<{
   const signal = AbortSignal.any([input.signal, controller.signal]);
   const fail = (code: string) => controller.abort(new Error(code));
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let progressTimer: ReturnType<typeof setInterval> | undefined;
   let renewing: Promise<void> | null = null;
   let completed = false;
   let callId: string | null = null;
   let finalText = "";
   let textPublished = false;
   const projectActivity = createCodexActivityProjection(input.runId, input.request);
+  const progress = input.request.artifactTool ? createAgentBuiltinProgress({ runId: input.runId, store,
+    onEvent: input.onEvent, onPersistedEvent: input.onPersistedEvent }) : null;
   const publishFinalText = async () => {
     if (!textPublished && finalText) {
       textPublished = true;
@@ -52,6 +58,12 @@ export async function executeCodexTurn(input: Readonly<{
       renewing ??= store.renew().then(onUsage).catch((error) => fail(agentFailureCode(error) ?? "agent_authority_expired")).finally(() => { renewing = null; });
     }, 10_000);
     heartbeat.unref();
+    if (progress) {
+      progressTimer = setInterval(() => {
+        void progress.refresh().catch(() => fail("agent_execution_interrupted"));
+      }, 250);
+      progressTimer.unref();
+    }
     const effort = input.request.reasoningEffort;
     const profile: CodexManagedProfile = {
       gatewayOrigin: configuration.gatewayOrigin, modelId: input.request.modelId,
@@ -62,6 +74,7 @@ export async function executeCodexTurn(input: Readonly<{
       developerInstructions: prompts.developerInstructions,
       mcpMode: configuration.mcpMode === "all" && !input.request.mcp?.tools.length ? "off" : configuration.mcpMode,
       aiqsaSearch: input.request.searchPlan.options.length > 0,
+      artifacts: input.request.artifactTool === true,
       mcpTimeoutSeconds: agentMcpEnvelopeTimeoutSeconds(input.request),
       ...(effort && ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
         ? { reasoningEffort: effort as CodexManagedProfile["reasoningEffort"] } : {})
@@ -85,6 +98,7 @@ export async function executeCodexTurn(input: Readonly<{
       }
     });
     signal.throwIfAborted();
+    await progress?.refresh();
     await store.settleTool(callId, "complete", { status: "complete" });
     completed = true;
     await publishFinalText();
@@ -94,6 +108,7 @@ export async function executeCodexTurn(input: Readonly<{
   } catch (error) {
     // Stop/error must still deliver the last completed message already received.
     // No abort check here: this publishes known text, never another external call.
+    await progress?.refresh().catch(() => undefined);
     await publishFinalText();
     const cause = agentFailureCode(signal.aborted ? signal.reason : error);
     if (cause) await store.fail(cause);
@@ -102,10 +117,13 @@ export async function executeCodexTurn(input: Readonly<{
     throw error;
   } finally {
     if (heartbeat) clearInterval(heartbeat);
+    if (progressTimer) clearInterval(progressTimer);
     controller.abort();
     await renewing;
     await store.revoke(completed);
     if (!completed) await store.drain();
+    await progress?.refresh().catch(() => undefined);
+    await progress?.stop(input.signal.aborted ? "cancelled" : "failed");
     if (!completed && callId) await store.settleTool(callId, "error", { status: "interrupted" });
     await onUsage();
   }

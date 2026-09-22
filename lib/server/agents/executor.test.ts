@@ -29,7 +29,7 @@ function fixture(executeAgent: NonNullable<WorkspaceCoordinator["executeAgent"]>
   return { events, input: { request, signal, runId: "fixture", userId: "fixture",
     workspace: { executeAgent } as WorkspaceCoordinator,
     transport: { snapshot: { providerFamily: "fake", model: { adapterKind: "fake", capabilities: {} } } } as unknown as AgentResponsesTransport,
-    onEvent: async (event: ModelRunSseEvent) => { events.push(event); }, onActivity: vi.fn(), onUsage: vi.fn()
+    onEvent: async (event: ModelRunSseEvent) => { events.push(event); }, onPersistedEvent: vi.fn(), onActivity: vi.fn(), onUsage: vi.fn()
   } };
 }
 

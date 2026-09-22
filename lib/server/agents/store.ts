@@ -13,6 +13,13 @@ import type { McpRunPlanResult } from "../mcp/runPlan";
 import { AGENT_GRANT_LEASE_MS, type NormalizedRunAgent } from "./config";
 import { AgentExecutionError, agentFailureCode, type AgentFailureCode } from "./failures";
 import { CODEX_PROVIDER_MAX_RETRIES } from "./codexProfile";
+import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
+import { AGENT_BUILTIN_TOOL_NAMES } from "./builtinTools";
+import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { snapshotToolLoopJson, toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
+import { runOutputArtifactEvents } from "../runs/runOutputEvents";
+import { appendRunOutputEvents } from "../runs/prismaRepositoryToolLoop";
+import { decodeArtifactGenerationEvent } from "@/lib/contracts/artifactGeneration";
 
 export function agentTokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -41,11 +48,31 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     if (binding.expiresAt && binding.expiresAt <= now) throw new AgentExecutionError("agent_time_limit");
     return binding;
   };
-  const locked = async <T>(action: (tx: Prisma.TransactionClient) => Promise<T>) => database.$transaction(async (tx) => {
+  const lock = async (tx: Prisma.TransactionClient) => {
     await lockRunSettlementScope(tx, runId);
+    await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "modelRunId" FROM "AgentRunBinding" WHERE "modelRunId" = ${runId} FOR UPDATE`;
+  };
+  const locked = async <T>(action: (tx: Prisma.TransactionClient) => Promise<T>) => database.$transaction(async (tx) => {
+    await lock(tx);
     return action(tx);
   });
+  const builtinResult = (call: { providerCallId: string; toolName: string; result: unknown }) =>
+    parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName },
+      snapshotToolLoopJson(call.result, toolLoopPersistenceLimits.resultBytes));
+  const settleBuiltinTool = async (tx: Prisma.TransactionClient, id: string, result: ToolExecutionResult) => {
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    if (!snapshot) throw new Error("agent_builtin_result_invalid");
+    const call = await tx.modelRunToolCall.findFirst({ where: { id, modelRunId: runId,
+      toolName: { in: [...AGENT_BUILTIN_TOOL_NAMES] } } });
+    if (!call || call.providerCallId !== result.callId || call.toolName !== result.name) throw new Error("agent_builtin_result_invalid");
+    if (call.state !== "pending") {
+      if (hashCanonicalMcpValue(call.result) !== hashCanonicalMcpValue(snapshot)) throw new Error("agent_builtin_result_conflict");
+      return;
+    }
+    await tx.modelRunToolCall.update({ where: { id }, data: { result: json(snapshot), state: result.status, completedAt: new Date() } });
+    await appendRunOutputEvents(tx, runId, runOutputArtifactEvents(result.artifacts ?? []));
+  };
 
   return {
     async failure() {
@@ -60,6 +87,54 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
       await database.agentRunBinding.updateMany({ where: { modelRunId: runId, failureCode: null }, data: { failureCode: code } });
     },
     assertActive: async () => { await assertActive(); },
+    async assertActiveInTransaction(tx: Prisma.TransactionClient) {
+      await lock(tx);
+      await assertActive(tx);
+    },
+    async claimBuiltinTool(call: ModelToolCall, argumentHash: string) {
+      if (!AGENT_BUILTIN_TOOL_NAMES.some(name => name === call.name)) throw new Error("agent_builtin_unavailable");
+      return locked(async tx => {
+        const current = await assertActive(tx);
+        const previous = await tx.modelRunToolCall.findUnique({ where: { modelRunId_roundIndex_providerCallId: {
+          modelRunId: runId, roundIndex: 0, providerCallId: call.id
+        } } });
+        if (previous) {
+          const args = previous.arguments as { argumentHash?: unknown };
+          if (previous.toolName !== call.name || args.argumentHash !== argumentHash) throw new Error("agent_builtin_delivery_conflict");
+          return { id: previous.id, claimed: false, result: builtinResult(previous) };
+        }
+        if (configuration.limitsEnabled && current.toolCalls >= configuration.maxToolCalls) throw new AgentExecutionError("agent_mcp_call_limit");
+        if (await tx.modelRunToolCall.count({ where: { modelRunId: runId, state: "pending", workspaceRunBindingId: null } }) >= 4) {
+          throw new Error("agent_mcp_busy");
+        }
+        const metadata = decodeArtifactGenerationEvent({ draftId: call.id, phase: "metadata", title: call.arguments.title, kind: call.arguments.kind });
+        const id = randomUUID();
+        await tx.modelRunToolCall.create({ data: { id, modelRunId: runId, providerCallId: call.id,
+          roundIndex: 0, ordinal: current.nextToolOrdinal, toolName: call.name,
+          arguments: json({ argumentHash, ...(metadata ? { metadata } : {}) }), startedAt: new Date() } });
+        await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: {
+          nextToolOrdinal: { increment: 1 }, toolCalls: { increment: 1 }
+        } });
+        return { id, claimed: true, result: null };
+      });
+    },
+    async builtinResult(id: string) {
+      const call = await database.modelRunToolCall.findFirst({ where: { id, modelRunId: runId,
+        toolName: { in: [...AGENT_BUILTIN_TOOL_NAMES] } } });
+      return call ? builtinResult(call) : null;
+    },
+    settleBuiltinToolInTransaction: settleBuiltinTool,
+    async settleBuiltinTool(id: string, result: ToolExecutionResult) {
+      await locked(async tx => { await assertActive(tx); await settleBuiltinTool(tx, id, result); });
+    },
+    async builtinProgress(afterOrdinal: number, pendingIds: readonly string[]) {
+      const calls = await database.modelRunToolCall.findMany({ where: { modelRunId: runId,
+        toolName: { in: [...AGENT_BUILTIN_TOOL_NAMES] }, OR: [{ ordinal: { gt: afterOrdinal } }, { id: { in: [...pendingIds] } }] },
+        orderBy: { ordinal: "asc" }, take: 16, select: { id: true, providerCallId: true, toolName: true,
+          ordinal: true, arguments: true, state: true, result: true } });
+      return calls.map(call => ({ id: call.id, callId: call.providerCallId, name: call.toolName,
+        ordinal: call.ordinal, arguments: call.arguments, pending: call.state === "pending", result: builtinResult(call) }));
+    },
     async arm(previousAssistantMessageId: string | null) {
       const token = randomBytes(32).toString("base64url");
       return locked(async (tx) => {

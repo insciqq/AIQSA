@@ -526,8 +526,7 @@ export function ComposerV2({
     ((selectedKnowledgeSelection && selectedKnowledgeSelection.mode !== "none") || selectedKnowledgeBaseIds.length > 0
       ? "Turn off Knowledge to use Agent." : null);
   const agentBlockReason = agent?.enabled ? agentReason : null;
-  const artifactReason = artifactUnavailableReason ?? (agent?.enabled ? "Not available in Agent mode"
-    : sharedProject ? "Not available in projects" : null);
+  const artifactReason = artifactUnavailableReason ?? (sharedProject ? "Not available in projects" : null);
   const artifactBlockReason = artifactCreate || artifactEdit ? artifactReason : null;
   const bootstrapReason = configError
     ? "Could not load available capabilities."

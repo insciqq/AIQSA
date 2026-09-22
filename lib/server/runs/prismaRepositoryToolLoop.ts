@@ -2,6 +2,7 @@ import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { isSkillToolName, LOAD_SKILL_TOOL_NAME } from "../tools/skill";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
+import { validArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { isModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { validAcceptedInstructions } from "../instructions/snapshot";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
@@ -537,6 +538,7 @@ const normalizedRequestKeys = new Set([
   "agent",
   "artifactTool",
   "artifactToolDescription",
+  "artifactResourcePolicy",
   "artifactIntent",
   "artifactFocus",
   "artifactReferences",
@@ -922,6 +924,7 @@ function decodeProviderDispatchRecoveryRequest(
     value.imagePlan !== undefined && !decodeAcceptedImageGenerationPlan(value.imagePlan) ||
     (value.artifactTool !== undefined && value.artifactTool !== true) ||
     (value.artifactToolDescription !== undefined && (value.artifactTool !== true || !nonBlank(value.artifactToolDescription, 16_384))) ||
+    (value.artifactResourcePolicy !== undefined && (value.artifactTool !== true || !validArtifactResourcePolicy(value.artifactResourcePolicy))) ||
     (value.artifactIntent !== undefined && (value.artifactTool !== true || value.artifactIntent !== "create" || value.artifactEdit !== undefined)) ||
     (value.artifactFocus !== undefined && (!decodeArtifactEdit(value.artifactFocus) || !Array.isArray(value.artifactReferences) ||
       !value.artifactReferences.some((reference) => isRecord(reference) && isRecord(value.artifactFocus) &&

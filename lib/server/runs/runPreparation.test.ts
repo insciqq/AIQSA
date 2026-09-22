@@ -967,6 +967,45 @@ describe("run preparation", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("admits Agent artifacts with MCP Off and invalidates continuation only for accepted capability/context changes", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+      let version = "version-one";
+      const artifacts = { validateEditTarget: async () => ({ ok: true }), contextForChat: async () => [{
+        artifact_id: "artifact-one", base_version_id: version, kind: "html", title: "Page", version_number: 1,
+        entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", text: "<p>Synthetic</p>" }]
+      }] } as unknown as NonNullable<RunPreparationDeps["artifacts"]>;
+      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
+        normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+      } })) };
+      const deps = { ...h.deps, artifacts, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
+      const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } });
+      const first = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
+      expect(first).toMatchObject({ artifactTool: true, agent: { mcpMode: "off" }, artifactReferences: [{ artifactId: "artifact-one", versionId: version }] });
+      expect(first.artifactResourcePolicy).toBeDefined();
+      const same = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
+      expect(same.agent!.compatibilityHash).toBe(first.agent!.compatibilityHash);
+      version = "version-two";
+      const next = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
+      expect(next.agent!.compatibilityHash).not.toBe(first.agent!.compatibilityHash);
+      const edited = preparedFrom(await prepareRun(deps, sendInput({ ...body, artifactEdit: { artifactId: "artifact-one", versionId: version } }))).normalizedRequest;
+      expect(edited.artifactEdit?.versionId).toBe(version);
+      expect(edited.agent!.compatibilityHash).not.toBe(next.agent!.compatibilityHash);
+      vi.stubEnv("AIQSA_ARTIFACT_EXTERNAL_RESOURCES", "off");
+      const restricted = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
+      expect(restricted.artifactResourcePolicy?.on).toBe(false);
+      expect(restricted.agent!.compatibilityHash).not.toBe(next.agent!.compatibilityHash);
+      expect(first.artifactResourcePolicy?.on).toBe(true);
+      await expect(prepareRun(deps, sendInput({ ...body, tools: "none", artifactIntent: "create" })))
+        .resolves.toMatchObject({ ok: false, code: "artifact_intent_unavailable" });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each([true, false])("freezes browser guidance only when Workspace is enabled: %s", async (enabled) => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {

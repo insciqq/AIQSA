@@ -16,7 +16,7 @@ describe("managed Codex invocation", () => {
     const config = renderCodexManagedProfile(profile);
     expect(config).toContain("stream_max_retries = 2\n");
     expect(config).toContain("request_max_retries = 0\n");
-    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(2);
+    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(3);
   });
   it("disables bundled Skills without overriding project or user discovery", () => {
     const config = renderCodexManagedProfile(profile);
@@ -44,6 +44,14 @@ describe("managed Codex invocation", () => {
     // Keys explicitly saved as Workspace secrets must survive Codex's normal
     // child-process environment filtering (in particular *_KEY names).
     expect(config).toContain('ignore_default_excludes = true');
+  });
+
+  it.each(["off", "auto", "all"] as const)("keeps artifacts available independently of MCP %s", mcpMode => {
+    const config = renderCodexManagedProfile({ ...profile, mcpMode, artifacts: true });
+    expect(config).toContain("[mcp_servers.aiqsa]");
+    if (mcpMode === "off") expect(config).toContain('enabled_tools = ["create_artifact","read_artifact"]');
+    if (mcpMode === "auto") expect(config).toContain('enabled_tools = ["find_tools","call_tool","create_artifact","read_artifact"]');
+    if (mcpMode === "all") expect(config).not.toContain("enabled_tools");
   });
 
   it("removes MCP entirely for Off and leaves the admitted list to the bridge for All", () => {

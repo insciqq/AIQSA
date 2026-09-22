@@ -1,5 +1,6 @@
 import { imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
 import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
+import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import type { AssistantIdentity } from "../../contracts/assistants";
@@ -1710,8 +1711,10 @@ export async function prepareRun(
 
   const imagePlan = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider })
     ? await deps.images?.resolve() ?? null : null;
-  const artifactToolAvailable = !project && resolvedChatMode.mode !== "TEMPORARY" && !agentEnabled && body?.tools !== "none" && Boolean(deps.artifacts) &&
-    modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  const artifactToolAvailable = !project && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
+    modelCapabilities.toolCalling === true && (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true);
+  const artifactResourcePolicy = artifactToolAvailable ? getArtifactResourcePolicy() : undefined;
+  const artifactToolDescription = artifactResourcePolicy ? describeArtifactTool(artifactResourcePolicy) : undefined;
   if (artifactIntent && (!artifactToolAvailable || artifactEdit)) return failure("artifact_intent_unavailable", 409, "Artifact creation is unavailable with this message configuration.");
   if (artifactEdit) {
     if (!artifactToolAvailable || !deps.artifacts) {
@@ -1789,10 +1792,10 @@ export async function prepareRun(
       chatId: chat.id,
       enabled: true,
       modelSupportsTools: modelCapabilities.toolCalling === true &&
-        toolBridge?.supportsToolCalling({
+        (agentEnabled || toolBridge?.supportsToolCalling({
           modelId: executionModelId,
           provider: executionProvider
-        }) === true,
+        }) === true),
       runId,
       ...(input.signal ? { signal: input.signal } : {}),
       userMessageId
@@ -1872,13 +1875,16 @@ export async function prepareRun(
           pinned: frozenSkills.manifest.pinned.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })),
           available: frozenSkills.manifest.available.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })) },
         search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
+        artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
+          references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
+          imageReferences } : null,
         mcpMode, mcp: mcpCatalog ?? mcpPlan ?? null
       })
     };
   }
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(agent ? { agent } : {}),
-    ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription: describeArtifactTool() } : {}),
+    ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription, artifactResourcePolicy } : {}),
     ...(artifactReferences?.length ? { artifactReferences } : {}),
     ...(artifactEdit ? { artifactEdit } : {}),
     ...(artifactIntent ? { artifactIntent } : {}),

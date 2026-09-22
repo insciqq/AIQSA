@@ -9,6 +9,23 @@ const url = "https://cdnjs.cloudflare.com/ajax/libs/example/1.2.3/a.js";
 const publicDns = async () => [{ address: "93.184.216.34", family: 4 as const }];
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 describe("artifact pinned fetch", () => {
+  it("intersects admitted hosts with live policy, including after DNS and redirects", async () => {
+    const acceptedPolicy = { on: true, libraryHosts: ["cdnjs.cloudflare.com"], imageHosts: [] };
+    let current = { ...acceptedPolicy, libraryHosts: ["cdnjs.cloudflare.com", "new.example"] };
+    const dispatch = vi.fn(async () => new Response("/* synthetic */", { headers: { "content-type": "text/javascript" } }));
+    const fetcher = createArtifactResourceFetcher({ dispatch, lookupHostname: publicDns, policy: () => current });
+    await expect(fetcher({ url: "https://new.example/a.js", kind: "script", acceptedPolicy })).rejects.toThrow("artifact_resource_host_not_allowed");
+    expect(dispatch).not.toHaveBeenCalled();
+    await expect(fetcher({ url, kind: "script", acceptedPolicy })).resolves.toMatchObject({ mimeType: "text/javascript" });
+    current = { ...current, on: false };
+    await expect(fetcher({ url, kind: "script", acceptedPolicy })).rejects.toThrow("artifact_resource_host_not_allowed");
+    expect(dispatch).toHaveBeenCalledOnce();
+    current = { ...current, on: true };
+    const redirect = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://new.example/a.js" } }));
+    await expect(createArtifactResourceFetcher({ dispatch: redirect, lookupHostname: publicDns, policy: () => current })({ url, kind: "script", acceptedPolicy }))
+      .rejects.toThrow("artifact_resource_host_not_allowed");
+    expect(redirect).toHaveBeenCalledOnce();
+  });
   it("pins public DNS, sends no credentials, and never dispatches disallowed redirects", async () => {
     const dispatch = vi.fn(async (request: McpPinnedHttpRequest) => {
       expect(request.address).toEqual({ address: "93.184.216.34", family: 4 });

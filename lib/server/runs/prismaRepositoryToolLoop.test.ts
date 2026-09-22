@@ -488,6 +488,7 @@ describe("provider dispatch recovery request loading", () => {
     const focus = { artifactId: "artifact-one", versionId: "version-one" };
     const snapshot = { ...normalizedRequest, toolMode: "auto", artifactTool: true,
       artifactToolDescription: "Frozen offline viewer and allowed resources", artifactIntent: "create",
+      artifactResourcePolicy: { on: true, libraryHosts: ["cdnjs.cloudflare.com"], imageHosts: [] },
       artifactReferences: [focus], artifactFocus: focus };
     let accepted: unknown = snapshot;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
@@ -497,6 +498,8 @@ describe("provider dispatch recovery request loading", () => {
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(snapshot);
     for (const patch of [{ artifactTool: undefined }, { artifactToolDescription: " " }, { artifactToolDescription: "x".repeat(16_385) },
       { artifactToolDescription: 7 }, { artifactIntent: "update" }, { artifactEdit: focus },
+      { artifactResourcePolicy: { on: true, libraryHosts: ["*.example.com"], imageHosts: [] } },
+      { artifactResourcePolicy: { on: true, libraryHosts: [], imageHosts: [], extra: true } },
       { artifactFocus: { ...focus, versionId: "other" } }, { artifactFocus: { ...focus, extra: true } }]) {
       accepted = { ...snapshot, ...patch };
       await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))

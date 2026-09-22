@@ -86,8 +86,8 @@ describe("Composer v2", () => {
     expect(onCreateArtifact).toHaveBeenCalledOnce();
     rerender(<ComposerV2 {...value} artifactCreate />);
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "Describe the page, slides, game or chart…");
-    rerender(<ComposerV2 {...value} artifactCreate artifactUnavailableReason="Not available in Agent mode" />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Not available in Agent mode");
+    rerender(<ComposerV2 {...value} artifactCreate artifactUnavailableReason="Not available in projects" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Not available in projects");
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
@@ -95,10 +95,27 @@ describe("Composer v2", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove artifact creation" }));
     expect(onRemoveArtifactCreate).toHaveBeenCalledOnce();
   });
-  it.each(["Not available in Agent mode", "Not available in projects", "Not available in temporary chats"])("explains unavailable creation: %s", reason => {
+  it.each(["Not available in projects", "Not available in temporary chats"])("explains unavailable creation: %s", reason => {
     render(<ComposerV2 {...props({ onCreateArtifact: vi.fn(), artifactUnavailableReason: reason })} />);
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(screen.getByRole("menuitem", { name: new RegExp(`Create artifact.*${reason}`) })).toBeDisabled();
+  });
+  it("lets Agent select artifact creation and send a create or edit intent", () => {
+    const onCreateArtifact = vi.fn(), onSend = vi.fn();
+    const value = props({ onCreateArtifact, onSend, selectedKnowledgeBaseIds: [], artifactUnavailableReason: null,
+      agent: { enabled: true, onToggle: vi.fn(), unavailableReason: null } });
+    const { rerender } = render(<ComposerV2 {...value} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const create = screen.getByRole("menuitem", { name: /Create artifact/ });
+    expect(create).toBeEnabled();
+    fireEvent.click(create);
+    expect(onCreateArtifact).toHaveBeenCalledOnce();
+    rerender(<ComposerV2 {...value} artifactCreate />);
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenCalledOnce();
+    rerender(<ComposerV2 {...value} artifactEdit={{ artifactId: "artifact", versionId: "version", title: "Page", versionNumber: 1 }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenCalledTimes(2);
   });
   it("shows a removable artifact edit without adding instruction text to the draft", () => {
     const onRemoveArtifactEdit = vi.fn();

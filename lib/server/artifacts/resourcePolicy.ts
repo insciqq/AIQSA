@@ -23,6 +23,21 @@ export type ArtifactResourcePolicy = Readonly<{
 }>;
 const DEFAULT_LIBRARY_HOSTS = ["cdnjs.cloudflare.com", "fonts.googleapis.com", "fonts.gstatic.com"];
 
+export function validArtifactResourcePolicy(value: unknown): value is ArtifactResourcePolicy {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const policy = value as Record<string, unknown>;
+  return Object.keys(policy).length === 3 && typeof policy.on === "boolean" &&
+    [policy.libraryHosts, policy.imageHosts].every(list => Array.isArray(list) && list.length <= 16 &&
+      list.every(host => typeof host === "string" && hosts(host, []).length === 1 && hosts(host, [])[0] === host));
+}
+
+/** Admission is a ceiling; live installation policy can only narrow it. */
+export function effectiveArtifactResourcePolicy(accepted: ArtifactResourcePolicy | undefined, current: ArtifactResourcePolicy): ArtifactResourcePolicy {
+  return accepted ? { on: accepted.on && current.on,
+    libraryHosts: accepted.libraryHosts.filter(host => current.libraryHosts.includes(host)),
+    imageHosts: accepted.imageHosts.filter(host => current.imageHosts.includes(host)) } : current;
+}
+
 function hosts(value: string | undefined, fallback: readonly string[]): readonly string[] {
   if (value === undefined) return [...fallback];
   if (!value.trim()) return [];

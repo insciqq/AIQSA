@@ -16,6 +16,7 @@ import type { KnowledgeFocusedRequestV1 } from "../knowledge/focusedRequest";
 import type { MemoryActionAnswerResult } from "./memoryActionAnswer";
 import type { KnowledgeAnswerPolicySnapshot } from "../knowledge/answerPolicy";
 import type { KnowledgeAnswerRoute } from "../knowledge/fullContext";
+import type { ArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 
 export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
@@ -118,6 +119,7 @@ export type NormalizedRunRequest = {
   artifactTool?: true;
   /** Exact private tool guidance from the resource policy at admission. */
   artifactToolDescription?: string;
+  artifactResourcePolicy?: ArtifactResourcePolicy;
   artifactIntent?: "create";
   artifactFocus?: import("../../contracts/artifacts").ArtifactReference;
   /** Exact owner-authorized edit bases whose source was supplied at admission. */

@@ -23,7 +23,7 @@ Catalog relevance defaults off, receiving only user text/authorized metadata. Co
 
 Workspace stages frozen bundles. New runs reset managed Skills; recovery preserves edits or restores pins/settled loads after recreation. Loads replace files after context acceptance. Agent discovers available Skills natively, receives pins as user instructions, and disables bundled Skills. Catalog/mode/profile changes invalidate continuation, excluding reads.
 
-Agent requires personal manual Workspace. Codex owns planning/tools/compaction/completion; AIQSA owns admission/authority/accounting/settlement without evaluator/context truncation. Resumes refresh paths/Skills/personal instructions at user authority. Knowledge/Memory/images remain unavailable. Query-only AIQSA Search survives external MCP Off alongside verified native search. MCP Auto discovers/dispatches; All is explicit.
+Agent requires personal manual Workspace. Codex owns planning/tools/compaction/completion; AIQSA owns admission/authority/accounting/settlement without evaluator/context truncation. Resumes refresh paths/Skills/personal instructions at user authority. Knowledge/Memory/images remain unavailable. Artifacts and query-only Search survive MCP Off alongside verified native search. Auto discovers/dispatches; All is explicit.
 
 Off removes Agent time/call/token/output caps, preserving accounting/leases/Stop/model constraints. Transient provider retries retain tool results, authority/budget checks and separate receipts. Persist first terminal cause before revocation; no executor/tool replay, deadline extension or paid summary. MCP exhaustion allows generation. Grants are independent of inbound OAuth. Executor loss terminates; client disconnect does not.
 
@@ -71,7 +71,7 @@ Provider-specific terminal proof is required for completion. Failure, truncation
 
 Client streams expose lifecycle, answer text, semantic activity, safe sources/outputs, errors and usage, never raw payloads, provider parameters, private evidence/identifiers or receipts. Projects share this safe projection; invalidation streams require canonical resync after expiry and close on access loss. Context estimates describe the current envelope, not cumulative billing.
 
-Artifact edits retain accepted versions without rebase. Settlement advances all chat bindings for future runs. Context/read tools stay bounded; authoring errors return private repair hints. [Frontend](FRONTEND.md) owns generation previews.
+Artifact edits never rebase; reads/hints stay bounded and private. Agent submits bundles without host-path authority. Context changes invalidate continuation. Atomic Agent settlement respects revocation and frozen resource ceilings. Previews: [Frontend](FRONTEND.md).
 
 Accounting uses provider-reported categories with exact stage/model attribution. Missing usage or price stays null; recovery enriches the same outcome without double counting. Shares use [Backend](BACKEND.md)'s positive snapshot schema. Gemini-grounded answer text survives ordinary settlement and sharing, while Suggestions, citations and structured artifacts stay private; discarded legacy answers cannot be reconstructed and unfinished legacy work must be fenced before removing replay-critical provenance.
 

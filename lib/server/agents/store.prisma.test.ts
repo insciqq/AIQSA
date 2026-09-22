@@ -10,6 +10,11 @@ import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { createOptionalDecisionRepository } from "../providerRuntime/optionalDecisionRepository";
 import { lockRunSettlementScope } from "../runs/prismaRepositoryShared";
+import { createArtifactService } from "../artifacts/service";
+import type { StorageAdapter, StoredObjectInput } from "../uploads/storage";
+import type { NormalizedRunRequest } from "../providers/types";
+import { createAgentBuiltinDispatcher } from "./builtinTools";
+import type { ModelToolCall } from "../tools/types";
 
 const configuration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
   compatibilityHash: "a".repeat(64), mcpMode: "auto" as const, maxModelCalls: 2 };
@@ -47,11 +52,119 @@ async function fixture(runConfiguration = configuration) {
     await prisma.modelRun.deleteMany({ where: { userId } });
     await prisma.workspaceSession.delete({ where: { id: session.id } });
     await prisma.user.delete({ where: { id: userId } });
+    await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { startsWith: `artifacts/${userId}/` } } });
   } };
+}
+
+const pageCall: ModelToolCall = { id: "page", name: "create_artifact", arguments: { intent: "create", kind: "html", title: "Page",
+  entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", text: "<p>PRIVATE_SYNTHETIC_SOURCE</p>" }] } };
+
+async function artifactFixture() {
+  const f = await fixture();
+  const run = await f.run(); await run.store.arm(null);
+  const objects = new Map<string, StoredObjectInput>();
+  let beforePut: (() => Promise<void>) | undefined;
+  const storage: StorageAdapter = {
+    async putObject(value) { await beforePut?.(); objects.set(value.storageKey, value); },
+    async getObject(key) { const value = objects.get(key); if (!value) throw new Error("missing_object"); return { ...value, body: Buffer.from(value.body) }; },
+    async deleteObject(key) { objects.delete(key); }
+  };
+  const artifacts = createArtifactService(prisma, storage);
+  const request = { chatId: run.chatId, artifactTool: true, artifactReferences: [], agent: configuration } as unknown as NormalizedRunRequest;
+  const dispatch = (accepted = request, selectedRun = run, service = artifacts, store = selectedRun.store) => createAgentBuiltinDispatcher({
+    request: accepted, runId: selectedRun.id, userId: f.userId, store, artifacts: service
+  });
+  return { ...f, accepted: run, request, artifacts, dispatch, objects, setBeforePut(value: typeof beforePut) { beforePut = value; } };
 }
 
 describe("durable Agent authority and accounting", () => {
   afterAll(() => prisma.$disconnect());
+
+  it("commits an Agent artifact, receipt and output once across concurrent gateway deliveries and a lost acknowledgement", async () => {
+    const f = await artifactFixture();
+    try {
+      const another = createAgentRunStore(prisma, { runId: f.accepted.id, userId: f.userId, configuration });
+      const lostAck = { ...f.artifacts, async execute(...args: Parameters<typeof f.artifacts.execute>) {
+        await f.artifacts.execute(...args); throw new Error("synthetic_lost_acknowledgement");
+      } };
+      const first = f.dispatch(f.request, f.accepted, lostAck);
+      const second = f.dispatch(f.request, f.accepted, f.artifacts, another);
+      const results = await Promise.all([first(pageCall, new AbortController().signal), second(pageCall, new AbortController().signal)]);
+      const success = results.find(result => result.status === "complete");
+      expect(success).toBeDefined();
+      expect(await second(pageCall, new AbortController().signal)).toEqual(success);
+      await expect(second({ ...pageCall, arguments: { ...pageCall.arguments, title: "Different" } }, new AbortController().signal))
+        .rejects.toThrow("agent_builtin_delivery_conflict");
+      const versions = await prisma.artifactVersion.findMany({ where: { sourceModelRunId: f.accepted.id } });
+      expect(versions).toHaveLength(1); expect(versions[0]!.status).toBe("READY");
+      const events = await prisma.modelRunEvent.findMany({ where: { modelRunId: f.accepted.id, eventType: "artifact" } });
+      expect(events).toHaveLength(1);
+      expect(events[0]!.payload).toMatchObject({ artifactType: "generated_artifact", payload: { versionId: versions[0]!.id } });
+      expect(JSON.stringify(events)).not.toContain("PRIVATE_SYNTHETIC_SOURCE");
+      const call = await prisma.modelRunToolCall.findFirstOrThrow({ where: { modelRunId: f.accepted.id, toolName: pageCall.name } });
+      expect(call.state).toBe("complete"); expect(JSON.stringify(call.arguments)).not.toContain("PRIVATE_SYNTHETIC_SOURCE");
+      expect(await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: f.accepted.id } })).toMatchObject({ toolCalls: 1 });
+      await prisma.agentRunBinding.update({ where: { modelRunId: f.accepted.id }, data: { leaseExpiresAt: new Date(0) } });
+      await interruptExpiredAgentRun(prisma, { runId: f.accepted.id, userId: f.userId, now: new Date() });
+      expect(await prisma.artifactVersion.count({ where: { sourceModelRunId: f.accepted.id, status: "READY" } })).toBe(1);
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: f.accepted.id, eventType: "artifact" } })).toBe(1);
+    } finally { await f.dispose(); }
+  });
+
+  it("reads the accepted Agent version on a later turn, edits once and rejects stale or unaccepted references", async () => {
+    const f = await artifactFixture();
+    try {
+      await f.dispatch()(pageCall, new AbortController().signal);
+      const version = await prisma.artifactVersion.findFirstOrThrow({ where: { sourceModelRunId: f.accepted.id } });
+      const next = await f.run(); await next.store.arm(null);
+      const request = { ...f.request, artifactReferences: [{ artifactId: version.artifactId, versionId: version.id }] };
+      const dispatch = f.dispatch(request, next);
+      const read = { id: "read", name: "read_artifact", arguments: { artifact_id: version.artifactId } };
+      const readResult = await dispatch(read, new AbortController().signal);
+      expect(readResult.status).toBe("complete"); expect(JSON.stringify(readResult.content)).toContain("PRIVATE_SYNTHETIC_SOURCE");
+      const edit = { id: "edit", name: "create_artifact", arguments: { intent: "update", base_version_id: version.id,
+        edits: [{ path: "index.html", old_string: "PRIVATE_SYNTHETIC_SOURCE", new_string: "Updated page" }] } };
+      expect((await dispatch(edit, new AbortController().signal)).status).toBe("complete");
+      expect(await prisma.artifactVersion.findMany({ where: { artifactId: version.artifactId }, orderBy: { versionNumber: "asc" } }))
+        .toMatchObject([{ versionNumber: 1, status: "READY" }, { versionNumber: 2, status: "READY", entrypoint: "index.html" }]);
+      expect(await dispatch({ ...edit, id: "stale-edit" }, new AbortController().signal)).toMatchObject({ status: "error",
+        content: [{ type: "json", value: { error: "artifact_version_conflict" } }] });
+      expect(await f.dispatch(f.request, next)({ ...read, id: "unaccepted-read" }, new AbortController().signal))
+        .toMatchObject({ status: "error", content: [{ type: "json", value: { error: "artifact_read_unavailable" } }] });
+      expect(await prisma.artifactVersion.count({ where: { artifactId: version.artifactId } })).toBe(2);
+    } finally { await f.dispose(); }
+  });
+
+  it.each(["revoke", "lease", "Stop", "signal"])("fences Agent artifact settlement after %s during object I/O", async cause => {
+    const f = await artifactFixture();
+    const controller = new AbortController();
+    try {
+      f.setBeforePut(async () => {
+        if (cause === "revoke") await f.accepted.store.revoke(false);
+        if (cause === "lease") await prisma.agentRunBinding.update({ where: { modelRunId: f.accepted.id }, data: { leaseExpiresAt: new Date(0) } });
+        if (cause === "Stop") await prisma.modelRun.update({ where: { id: f.accepted.id }, data: { status: "cancelled" } });
+        if (cause === "signal") controller.abort();
+      });
+      await expect(f.dispatch()(pageCall, controller.signal)).rejects.toThrow();
+      expect(await prisma.artifactVersion.count({ where: { sourceModelRunId: f.accepted.id, status: "READY" } })).toBe(0);
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: f.accepted.id, eventType: "artifact" } })).toBe(0);
+      expect(await prisma.artifactVersion.count({ where: { sourceModelRunId: f.accepted.id, status: "PENDING" } })).toBe(0);
+    } finally { await f.dispose(); }
+  });
+
+  it("rolls back READY and output when the Agent receipt transaction fails", async () => {
+    const f = await artifactFixture();
+    try {
+      const store = { ...f.accepted.store, async settleBuiltinToolInTransaction(...args: Parameters<typeof f.accepted.store.settleBuiltinToolInTransaction>) {
+        await f.accepted.store.settleBuiltinToolInTransaction(...args);
+        throw new Error("synthetic_receipt_failure");
+      } };
+      await expect(f.dispatch(f.request, f.accepted, f.artifacts, store)(pageCall, new AbortController().signal)).rejects.toThrow("synthetic_receipt_failure");
+      expect(await prisma.artifactVersion.count({ where: { sourceModelRunId: f.accepted.id, status: "READY" } })).toBe(0);
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: f.accepted.id, eventType: "artifact" } })).toBe(0);
+      expect(await prisma.modelRunToolCall.findFirstOrThrow({ where: { modelRunId: f.accepted.id, toolName: pageCall.name } })).toMatchObject({ state: "error" });
+    } finally { await f.dispose(); }
+  });
 
   it("bounds native provider reconnects across stores, retains unknown usage, and resets only after generation succeeds", async () => {
     const f = await fixture({ ...configuration, limitsEnabled: false, timeoutSeconds: null });
