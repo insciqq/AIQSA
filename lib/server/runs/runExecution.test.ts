@@ -1106,7 +1106,8 @@ function createRepository(options: RepositoryOptions = {}) {
           roundIndex: input.roundIndex,
           startedAt: null,
           state: "pending",
-          toolName: call.toolName
+          toolName: call.toolName,
+          workspaceBindingId: call.workspace ? input.runId : null
         };
         toolCalls.set(id, persisted);
         return persisted;
@@ -1413,7 +1414,122 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
   toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300
 };
 
+function followupFixture(repository: RunExecutionRepository) {
+  const entries: RunFollowup[] = [];
+  let closed = false;
+  const deliver = vi.fn(async (input: Parameters<NonNullable<RunExecutionRepository["followups"]>["deliver"]>[0]) => {
+    if (closed || input.revision !== entries.length) return false;
+    let first = true;
+    entries.forEach((entry, index) => {
+      if (entry.delivery !== "accepted") return;
+      entries[index] = { ...entry, delivery: "delivered", ...(first && input.precedingText ? { precedingText: input.precedingText } : {}) };
+      first = false;
+    });
+    return true;
+  });
+  repository.followups = {
+    accept: vi.fn(), beginKnowledge: vi.fn(async () => 0), deliver,
+    load: async () => ({ revision: entries.length, entries: entries.map(entry => ({ ...entry })) }),
+    close: async ({ revision }) => {
+      if (revision !== entries.length || entries.some(entry => entry.delivery !== "delivered")) return false;
+      closed = true;
+      return true;
+    }
+  };
+  return { entries, deliver, get closed() { return closed; }, accept(text: string) {
+    if (closed) throw new Error("fixture_followup_closed");
+    entries.push({ id: `clarification-${entries.length + 1}`, ordinal: entries.length + 1, text,
+      author: "Author", createdAt: new Date().toISOString(), delivery: "accepted" });
+    notifyRunFollowup("run-1", entries.length);
+  } };
+}
+
 describe("run execution", () => {
+  it.each([
+    ["tool", true], ["tool", false], ["generation", true], ["generation", false]
+  ] as const)("applies Workspace Follow-up during %s with streaming=%s without repeating settled work", async (timing, streaming) => {
+    const repository = createRepository();
+    const followups = followupFixture(repository.repository);
+    const enteredTool = deferred<void>(), releaseTool = deferred<void>(), enteredGeneration = deferred<void>();
+    const requests: ProviderRunRequest[] = [];
+    let marker = 0;
+    let toolSignal: AbortSignal | undefined;
+    const base = preparedData({ provider: "openai", modelId: "gpt-tool-model" });
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, workspace: completionWorkspace },
+      providerRequest: { ...base.providerRequest, workspace: completionWorkspace, forceNonStreaming: !streaming }
+    };
+    const workspace: NonNullable<RunExecutionInput["workspace"]> = {
+      accepts: ({ name }) => name === "workspace_fixture",
+      execute: vi.fn<NonNullable<RunExecutionInput["workspace"]>["execute"]>(async input => {
+        marker += 1;
+        toolSignal = input.signal;
+        expect(input.workspace).toEqual(completionWorkspace);
+        enteredTool.resolve();
+        if (timing === "tool") await releaseTool.promise;
+        expect(input.signal?.aborted).toBe(false);
+        return { callId: input.call.id, name: input.call.name, status: "complete", content: [{ type: "json", value: {
+          marker, values: [12, 8, 25], execSessionId: "existing-process", status: "running"
+        } }] };
+      }),
+      finalize: vi.fn(), recoverExports: vi.fn(),
+      handoff: vi.fn(async () => { expect(followups.closed).toBe(true); return { status: "ready" as const }; }),
+      settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })),
+      tools: async () => [{ capability: "workspace", name: "workspace_fixture", description: "Fixture", inputSchema: { type: "object" } }]
+    };
+    const adapter = createAdapter(async function* (request, options) {
+      requests.push(request);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ id: "marker", name: "workspace_fixture", arguments: {} }] });
+      if (timing === "generation" && requests.length === 2) {
+        if (streaming) yield { type: "token", data: { delta: "Previous draft" } };
+        enteredGeneration.resolve();
+        await new Promise<void>((_resolve, reject) => {
+          const abort = () => reject(new DOMException("Steered", "AbortError"));
+          if (options?.signal?.aborted) abort();
+          else options?.signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+      expect(request.workspace).toEqual(completionWorkspace);
+      const history = JSON.stringify(request.providerToolMessages);
+      expect(history).toContain("existing-process");
+      expect(history).toContain("12,8,25");
+      expect(history.indexOf("Use CSV with values below 20")).toBeLessThan(history.indexOf("Keep just count and total"));
+      expect(followups.entries.every(entry => entry.delivery === "delivered")).toBe(true);
+      return providerResult({ finalText: "count,total\n2,20" });
+    });
+    const text = createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }), workspace }).text();
+    const endedBeforeStep = text.then(() => {
+      throw new Error(`workspace_fixture_ended_before_step:${JSON.stringify(repository.failedRuns)}`);
+    });
+    const waitForStep = (step: Promise<void>) => Promise.race([step, endedBeforeStep]);
+    try {
+      await waitForStep(enteredTool.promise);
+      if (timing === "generation") await waitForStep(enteredGeneration.promise);
+      followups.accept("Use CSV with values below 20");
+      followups.accept("Keep just count and total");
+      expect(toolSignal?.aborted).toBe(false);
+      if (timing === "tool") {
+        expect(requests).toHaveLength(1);
+        expect(followups.entries.map(entry => entry.delivery)).toEqual(["accepted", "accepted"]);
+        releaseTool.resolve();
+      }
+      const events = parseSse(await text);
+      expect(repository.failedRuns).toEqual([]);
+      expect(workspace.execute).toHaveBeenCalledOnce();
+      expect(marker).toBe(1);
+      expect(requests).toHaveLength(timing === "generation" ? 3 : 2);
+      expect(repository.completeRuns[0]).toMatchObject({ followupRevision: 2, finalText: "count,total\n2,20",
+        usageAttributions: [{ operationCount: requests.length }] });
+      expect(followups.entries[0]?.precedingText ?? "").toBe(timing === "generation" && streaming ? "Previous draft" : "");
+      expect(workspace.handoff).toHaveBeenCalledOnce();
+      expect(events.some(event => event.type === "done" && event.data.status === "complete")).toBe(true);
+    } finally {
+      releaseTool.resolve();
+      activeRunControllerRegistry.abort("run-1");
+      await text;
+    }
+  });
+
   it.each(["cancelled", "completion_race", "unconfirmed"] as const)("settles interrupted background Follow-up with %s and accounts every call once", async mode => {
     const initial = chatUpdate();
     initial.messages = initial.messages.map(message => message.role === "assistant" ? {

@@ -371,6 +371,7 @@ const knowledgeBudgetPostDispatchCancellationFailure =
 type LockedToolLoopRun = {
   assistantMessageId: string | null;
   errorPayload: Prisma.JsonValue | null;
+  followupRevision: number;
   providerResponseId: string | null;
   status: ModelRunStatus;
   toolLoopState: Prisma.JsonValue | null;
@@ -387,6 +388,7 @@ async function lockToolLoopRun(
     SELECT
       "assistantMessageId",
       "errorPayload",
+      "followupRevision",
       "providerResponseId",
       "status",
       "toolLoopState"
@@ -1323,6 +1325,21 @@ export function createPrismaRunToolLoopOperations(
       if (!checkpoint || checkpoint.roundIndex !== call.roundIndex ||
         (checkpoint.phase !== "tools_pending" && checkpoint.phase !== "tools_running")) {
         return { kind: "not_found" as const };
+      }
+      // Acceptance and dispatch claims serialize on the same run. A new
+      // clarification cancels only an undispatched decision, never a running
+      // or crash-ambiguous external effect. Keep its truthful result in the
+      // batch so the next model step retains the original call/result pairing.
+      if (call.state === "pending" && run.followupRevision !== (input.followupRevision ?? 0)) {
+        call = await tx.modelRunToolCall.update({
+          where: { id: call.id },
+          include: toolLoopCallInclude,
+          data: { completedAt: new Date(), state: "error", result: json({
+            callId: call.providerCallId, name: call.toolName, status: "error",
+            content: [{ type: "text", text: "tool_call_superseded: Not dispatched because the user clarified the task. Reconsider this action with the follow-up." }]
+          }) }
+        });
+        return { call: persistedToolLoopCall(call), kind: "settled" as const };
       }
       const runningCheckpoint = toolLoopCheckpoint({
         ...checkpoint,

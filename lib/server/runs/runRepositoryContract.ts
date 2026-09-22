@@ -555,6 +555,8 @@ export type RunRepository = {
   cancelPendingToolLoopCalls(input: { runId: string; userId: string }): Promise<number>;
   claimToolLoopCall(input: {
     callId: string;
+    /** The clarification revision used by the provider that planned this call. */
+    followupRevision?: number;
     runId: string;
     userId: string;
   }): Promise<ClaimToolLoopCallResult>;

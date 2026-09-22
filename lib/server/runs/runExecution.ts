@@ -712,7 +712,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const reportedUsageAttributions: RunUsageAttribution[] = [];
       const usageAccountedToolCallIds = new Set<string>();
       let followupBaseRequest = input.prepared.providerRequest;
-      const followups = input.repository.followups && !normalizedRequest.workspace && !normalizedRequest.agent
+      const followups = input.repository.followups && !normalizedRequest.agent
         ? createRunFollowupExecution({
             runId, userId: input.userId, operations: input.repository.followups,
             bridge: input.toolBridge ?? providerToolBridges[normalizedRequest.provider as keyof typeof providerToolBridges],
@@ -2044,6 +2044,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               }
               const claim = await input.repository.claimToolLoopCall({
                 callId: persisted.id,
+                ...(followups ? { followupRevision: followups.revision } : {}),
                 runId,
                 userId: input.userId
               });
