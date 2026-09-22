@@ -12,11 +12,11 @@ import { takeUtf16SafePrefix } from "../../domain/utf16";
 export function admittedFollowupFields(input: PreparingRunAdmissionInput) {
   if (!input.followupAdmission) return {};
   const budget = input.followupAdmission.budgetTokens;
-  if (input.normalizedRequest.workspace?.enabled || input.normalizedRequest.agent || !Number.isSafeInteger(budget) ||
+  if (input.normalizedRequest.agent || !Number.isSafeInteger(budget) ||
     budget < 0 || budget > 8_192 || (input.normalizedRequest.followupContextReserveTokens ?? 0) < budget) {
     throw new ActiveLeafConflictError();
   }
-  return { followupMode: "chat", followupBudgetTokens: budget };
+  return { followupMode: input.normalizedRequest.workspace?.enabled ? "workspace" : "chat", followupBudgetTokens: budget };
 }
 
 export async function insertAdmittedRunFollowups(tx: Prisma.TransactionClient, input: PreparingRunAdmissionInput, runId: string) {

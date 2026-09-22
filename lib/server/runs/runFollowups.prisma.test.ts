@@ -11,6 +11,7 @@ import { createPrismaShareRepository } from "../shares/prismaRepository";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { createPrismaRunFollowupOperations, messageFollowupSelect } from "./prismaRepositoryFollowups";
 import { projectMessageFollowups } from "./runFollowups";
+import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import type { CreateRunInput, CreatedRun, ProjectRunAdmission } from "./runRepositoryContract";
 
 const repository = createPrismaRunRepository(prisma);
@@ -79,6 +80,16 @@ function completion(f: { chatId: string; userId: string }, run: CreatedRun, revi
     usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, completeness: "complete" as const } };
 }
 
+async function pendingToolBatch(userId: string, runId: string) {
+  expect(await repository.beginToolLoopProviderRound({ userId, runId, roundIndex: 1, providerContinuation: null })).toBe("started");
+  const batch = await repository.persistToolLoopCallBatch({ userId, runId, roundIndex: 1,
+    providerContinuation: null, calls: ["first", "second"].map((id, ordinal) => ({
+      arguments: {}, ordinal, providerCallId: id, toolName: "synthetic_effect"
+    })) });
+  if (batch.kind !== "persisted") throw new Error("followup_tool_fixture_failed");
+  return batch.calls;
+}
+
 describe("durable in-run Follow-up", () => {
   afterAll(() => prisma.$disconnect());
 
@@ -136,6 +147,57 @@ describe("durable in-run Follow-up", () => {
     await prisma.modelRun.update({ where: { id: run.runId }, data: { followupBudgetTokens: 1 } });
     expect(await followups.accept(input)).toEqual({ kind: "context_full" });
     expect(await prisma.runFollowup.count({ where: { modelRunId: run.runId } })).toBe(0);
+  }));
+
+  it("settles outdated pending decisions without dispatch even when the local notification is missed", async () => fixture(async f => {
+    const run = await f.create(), calls = await pendingToolBatch(f.userId, run.runId);
+    await followups.accept(submission(f, run));
+    for (const call of calls) {
+      const claim = await repository.claimToolLoopCall({ callId: call.id, runId: run.runId, userId: f.userId, followupRevision: 0 });
+      expect(claim).toMatchObject({ kind: "settled", call: { state: "error", startedAt: null } });
+      if (claim.kind !== "settled") throw new Error("expected_superseded_decision");
+      expect(parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, claim.call.result))
+        .toMatchObject({ status: "error", content: [{ type: "text", text: expect.stringContaining("Not dispatched") }] });
+    }
+    expect(await repository.advanceToolLoopCallBatch({ userId: f.userId, runId: run.runId, roundIndex: 1 })).toBe("advanced");
+    expect(await followups.load({ runId: run.runId, userId: f.userId })).toMatchObject({ entries: [{ delivery: "accepted" }] });
+    expect(await repository.completeRun(completion(f, run, 1))).toBe(false);
+  }));
+
+  it("keeps a dispatched effect ambiguous until settlement while skipping only the remaining old plan", async () => fixture(async f => {
+    const run = await f.create(), calls = await pendingToolBatch(f.userId, run.runId);
+    const first = { callId: calls[0]!.id, runId: run.runId, userId: f.userId, followupRevision: 0 };
+    expect(await repository.claimToolLoopCall(first)).toMatchObject({ kind: "claimed" });
+    await followups.accept(submission(f, run));
+    expect(await repository.claimToolLoopCall(first)).toMatchObject({ kind: "ambiguous", call: { state: "running" } });
+    const result = { callId: "first", name: "synthetic_effect", status: "complete", content: [{ type: "text", text: "marker count = 1" }] };
+    expect(await repository.settleToolLoopCall({ ...first, state: "complete", result })).toBe("settled");
+    expect(await repository.claimToolLoopCall(first)).toMatchObject({ kind: "settled", call: { state: "complete", result } });
+    expect(await repository.claimToolLoopCall({ ...first, callId: calls[1]!.id })).toMatchObject({
+      kind: "settled", call: { state: "error", startedAt: null }
+    });
+    expect(await repository.advanceToolLoopCallBatch({ userId: f.userId, runId: run.runId, roundIndex: 1 })).toBe("advanced");
+    expect(await repository.beginToolLoopProviderRound({ userId: f.userId, runId: run.runId, roundIndex: 2,
+      providerContinuation: null })).toBe("reused");
+    const next = await repository.persistToolLoopCallBatch({ userId: f.userId, runId: run.runId, roundIndex: 2,
+      providerContinuation: null, calls: [{ arguments: {}, ordinal: 0, providerCallId: "reconsidered", toolName: "synthetic_effect" }] });
+    if (next.kind !== "persisted") throw new Error("expected_reconsidered_batch");
+    expect(await repository.claimToolLoopCall({ ...first, callId: next.calls[0]!.id, followupRevision: 1 })).toMatchObject({ kind: "claimed" });
+  }));
+
+  it("serializes a clarification racing a dispatch claim without reclassifying an already started effect", async () => fixture(async f => {
+    const run = await f.create(), calls = await pendingToolBatch(f.userId, run.runId);
+    const request = { callId: calls[0]!.id, runId: run.runId, userId: f.userId, followupRevision: 0 };
+    const [accepted, claim] = await Promise.all([followups.accept(submission(f, run)), repository.claimToolLoopCall(request)]);
+    expect(accepted.kind).toBe("accepted");
+    expect(["claimed", "settled"]).toContain(claim.kind);
+    const repeated = await repository.claimToolLoopCall(request);
+    expect(repeated).toMatchObject(claim.kind === "claimed"
+      ? { kind: "ambiguous", call: { state: "running", startedAt: expect.any(String) } }
+      : { kind: "settled", call: { state: "error", startedAt: null } });
+    expect(await repository.claimToolLoopCall({ ...request, callId: calls[1]!.id })).toMatchObject({
+      kind: "settled", call: { state: "error", startedAt: null }
+    });
   }));
 
   it("orders two Project contributors and denies a member after role revocation", async () => fixture(async f => {

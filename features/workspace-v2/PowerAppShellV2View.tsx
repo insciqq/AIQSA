@@ -1145,7 +1145,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       .filter((block) => !artifact?.generatedImages?.some((image) => image.attachmentId === block.attachmentId));
     return (
       <>
-      <RunFollowupHistoryV2 entries={source.followups?.entries ?? []} />
+      <RunFollowupHistoryV2 entries={source.followups?.entries ?? []}
+        waitingForStep={toolActivity?.calls.some(call => call.status === "running") ||
+          workspaceActivity?.entries.some(entry => entry.phase === "requested" || entry.phase === "running")} />
       <RunAnswerV2
         actions={settled ? actions : undefined}
         actionsSlot={<>

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
+import { providerTemplateIds } from "@/lib/domain/providerTemplates";
 import { normalizeTokenUsage } from "@/lib/domain/usage";
 import {
   WORKSPACE_MCP_TOOL_ALLOWLIST, WORKSPACE_POLICY_ID,
@@ -16,12 +17,14 @@ import { prisma } from "@/lib/server/prisma";
 import { activateWorkspaceFollowupWithClient, admitPreparingRunWithClient } from "@/lib/server/runs/prismaRepositoryPreparation";
 import { createWorkspaceFollowupRepository } from "@/lib/server/runs/workspaceFollowupPersistence";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
+import { createPrismaRunFollowupOperations } from "@/lib/server/runs/prismaRepositoryFollowups";
+import { loadProviderAdmissionPlan } from "@/lib/server/providerRuntime/admission";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import type { PreparingRunAdmissionInput } from "@/lib/server/runs/runRepositoryContract";
 import { getWorkspaceConfig } from "./config";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
 import { createPrismaWorkspaceCoordinatorRepository, createWorkspaceCoordinator } from "./coordinator";
-import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
+import { acknowledgeWorkspaceCommandsStopped, createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import { reconcileWorkspaceAfterRestore, runWorkspaceMaintenance } from "./cleanup";
@@ -162,6 +165,48 @@ describe("Prisma Workspace operation admission", () => {
     }, where: { id: WORKSPACE_POLICY_ID } });
     else await prisma.workspacePolicy.deleteMany({ where: { id: WORKSPACE_POLICY_ID } });
     await prisma.$disconnect();
+  });
+
+  it("keeps dispatched commands fenced but excludes superseded decisions from quiescence and stop receipts", async () => {
+    const value = await fixture();
+    await prisma.workspaceSession.update({ where: { id: value.session.id }, data: { state: "STOPPED" } });
+    const request = await value.plan();
+    await prisma.accessGrant.create({ data: { userId: value.userId, providerConnectionId: providerTemplateIds.fakeConnection } });
+    const repository = createPrismaRunRepository(prisma);
+    const run = await repository.createRun({ ...request,
+      followupAdmission: { budgetTokens: 4_096 },
+      normalizedRequest: { ...request.normalizedRequest, followupContextReserveTokens: 4_096 },
+      providerAdmissionPlan: await loadProviderAdmissionPlan(prisma, { userId: value.userId,
+        providerConnectionId: providerTemplateIds.fakeConnection, providerModelId: providerTemplateIds.fakeModel,
+        searchPlan: { mode: "all_selected", optionIds: [] } })
+    });
+    const scope = { runId: run.runId, userId: value.userId };
+    const session = await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } });
+    expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).toMatchObject({ followupMode: "workspace" });
+    expect(await repository.beginToolLoopProviderRound({ ...scope, roundIndex: 1, providerContinuation: null })).toBe("started");
+    const batch = await repository.persistToolLoopCallBatch({ ...scope, roundIndex: 1, providerContinuation: null,
+      calls: ["first", "second"].map((providerCallId, ordinal) => ({ providerCallId, ordinal,
+        arguments: {}, toolName: namespacedWorkspaceToolName("sandbox_exec"), workspace: true as const })) });
+    if (batch.kind !== "persisted") throw new Error("workspace_tool_fixture_failed");
+    const first = { ...scope, callId: batch.calls[0]!.id, followupRevision: 0 };
+    expect(await repository.claimToolLoopCall(first)).toMatchObject({ kind: "claimed" });
+    expect(await createPrismaRunFollowupOperations(prisma).accept({ ...scope, chatId: value.chatId,
+      assistantMessageId: run.assistantMessageId, nonce: randomUUID(), text: "Use CSV" })).toMatchObject({ kind: "accepted" });
+    const skipped = await repository.claimToolLoopCall({ ...scope, callId: batch.calls[1]!.id, followupRevision: 0 });
+    expect(skipped).toMatchObject({ kind: "settled", call: { startedAt: null, state: "error" } });
+    if (skipped.kind !== "settled") throw new Error("expected_superseded_decision");
+    // Even identical result content cannot prove a claimed command never ran.
+    expect(await repository.settleToolLoopCall({ ...first, state: "error", result: skipped.call.result! })).toBe("settled");
+    const coordinator = createPrismaWorkspaceCoordinatorRepository(prisma);
+    expect(await coordinator.unregisteredCommands(scope)).toBe(1);
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } })).toEqual(session);
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "id" = ${value.session.id} FOR UPDATE`;
+      await acknowledgeWorkspaceCommandsStopped(tx, value.session.id);
+    });
+    expect(await prisma.workspaceExecution.findMany({ where: { modelRunId: run.runId }, select: { modelRunToolCallId: true, state: true } }))
+      .toEqual([{ modelRunToolCallId: first.callId, state: "LOST" }]);
+    expect(await coordinator.unregisteredCommands(scope)).toBe(0);
   });
 
   it("keeps a waiting successor durable without acquiring the predecessor's Workspace", async () => {

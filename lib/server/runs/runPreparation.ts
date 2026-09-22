@@ -2015,8 +2015,8 @@ export async function prepareRun(
   }
 
   const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
-  if (inheritedFollowups?.entries.length && (workspaceEnabled || agentEnabled)) {
-    return failure("followup_mode_unavailable", 409, "Regenerate this answer in Chat to preserve its follow-ups.");
+  if (inheritedFollowups?.entries.length && agentEnabled) {
+    return failure("followup_mode_unavailable", 409, "Turn Agent off to regenerate this answer with its follow-ups.");
   }
   const budgetAnsweringRequest = (plan: KnowledgeAnsweringPlan | undefined) => {
     const fullContext = plan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT;
@@ -2112,7 +2112,7 @@ export async function prepareRun(
   // Regeneration copies receipts atomically at admission. Only the new
   // executor appends them; the temporary request above budgets them once.
   if (inheritedFollowups?.entries.length) delete providerRequest.providerToolMessages;
-  const followupAdmission: RunFollowupAdmission | undefined = !workspaceEnabled && !agentEnabled ? {
+  const followupAdmission: RunFollowupAdmission | undefined = !agentEnabled ? {
     budgetTokens: Math.min(8_192, Math.floor(followupRequestHeadroom(providerBudget.request, toolBridge) / 2)),
     ...(inheritedFollowups ? { inherited: { messageId: inheritedFollowups.messageId, revision: inheritedFollowups.revision } } : {})
   } : undefined;

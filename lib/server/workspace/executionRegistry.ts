@@ -20,9 +20,12 @@ export function isWorkspaceSyncCleanupId(value: string): boolean {
 
 // An error or lost reply does not prove that dispatch never reached the guest.
 // The accepted tool-call ledger remains the backstop when no registry row exists.
+// Only an error settled before a dispatch claim (for example, a superseded
+// decision) proves no command ran. A tool result cannot clear startedAt.
 export const UNREGISTERED_WORKSPACE_COMMAND_FILTER = {
   toolName: { in: (["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const).map(namespacedWorkspaceToolName) },
-  workspaceExecution: { is: null }
+  workspaceExecution: { is: null },
+  OR: [{ state: { not: "error" } }, { startedAt: { not: null } }, { completedAt: null }]
 } satisfies Prisma.ModelRunToolCallWhereInput;
 
 /**
@@ -133,6 +136,7 @@ export async function acknowledgeWorkspaceCommandsStopped(tx: Prisma.Transaction
     JOIN "WorkspaceRunBinding" binding ON binding."modelRunId" = tc."workspaceRunBindingId"
     WHERE ${sessionId !== null ? Prisma.sql`binding."workspaceSessionId" = ${sessionId}` : Prisma.sql`TRUE`}
       AND tc."toolName" IN (${Prisma.join(UNREGISTERED_WORKSPACE_COMMAND_FILTER.toolName.in)})
+      AND (tc."state" != 'error' OR tc."startedAt" IS NOT NULL OR tc."completedAt" IS NULL)
       AND NOT EXISTS (SELECT 1 FROM "WorkspaceExecution" e WHERE e."modelRunToolCallId" = tc."id")
     ON CONFLICT ("modelRunToolCallId") DO NOTHING
   `);

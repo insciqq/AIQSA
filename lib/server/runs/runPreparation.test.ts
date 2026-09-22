@@ -1027,6 +1027,8 @@ describe("run preparation", () => {
     } })) };
     const prepared = preparedFrom(await prepareRun({ ...harness.deps, workspace }, sendInput(successBody({ workspace: { enabled } }))));
     const accepted = materializePreparedRunData(prepared);
+    expect(accepted.followupAdmission?.budgetTokens).toBeGreaterThan(0);
+    expect(accepted.normalizedRequest.followupContextReserveTokens).toBe(accepted.followupAdmission?.budgetTokens);
     if (enabled) {
       expect(workspace.prepare).toHaveBeenCalledOnce();
       expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_BROWSER_GUIDANCE);
