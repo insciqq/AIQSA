@@ -39,6 +39,7 @@ import {
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
 import { AgentExecutionOutput } from "../agents/executionOutput";
+import { CodexJsonlDecoder } from "../agents/codexProtocol";
 import { AGENT_GATEWAY_PORT, AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { AGENT_PROMPT_MAX_BYTES, INSTALL_CODEX_PROFILE } from "../agents/guest";
 import { CODEX_HOME_DIRECTORY, CODEX_RUN_TOKEN_ENV, codexExecArguments, renderCodexManagedProfile } from "../agents/codexProfile";
@@ -83,7 +84,9 @@ type McpConnection = Readonly<{
 }>;
 
 type LocalSession = {
-  agents?: Map<string, { modelRunId: string; handle: ExecHandle; output: AgentExecutionOutput; failed: boolean }>;
+  agents?: Map<string, { modelRunId: string; handle: ExecHandle; output: AgentExecutionOutput; failed: boolean;
+    decoder: CodexJsonlDecoder; interrupted: boolean; continuable: boolean; exited: boolean }>;
+  lastAgentExecId?: string;
   activeCalls: Map<string, Readonly<{ controller: AbortController; modelRunId: string }>>;
   execOwners: Map<string, string>;
   mcp?: McpConnection;
@@ -952,10 +955,17 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const session = await this.runningSession(input);
     session.agents ??= new Map();
     // Lost start replies must never dispatch a second agent or replay effects.
-    if (session.agents.has(input.runtimeExecSessionId) || session.agents.size > 0) {
+    const previous = input.previousExecSessionId ? session.agents.get(input.previousExecSessionId) : null;
+    if (session.agents.has(input.runtimeExecSessionId) || (input.previousExecSessionId
+      ? session.lastAgentExecId !== input.previousExecSessionId || !previous || previous.modelRunId !== input.modelRunId ||
+        previous.failed || !previous.continuable || !input.threadId || previous.decoder.nativeThreadId !== input.threadId
+      : session.lastAgentExecId !== undefined || session.agents.size > 0)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     input.signal?.throwIfAborted();
+    // Reserve before guest I/O; an ambiguous start cannot be retried even if
+    // execStreamWith never returned its handle to this process.
+    session.lastAgentExecId = input.runtimeExecSessionId;
     const prepared = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
       .args(["-I", "-c", INSTALL_CODEX_PROFILE]).timeout(10_000)
       .stdinBytes(Buffer.from(JSON.stringify({ config }))));
@@ -968,7 +978,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         .stdinBytes(Buffer.from(input.prompt));
       return input.timeoutSeconds === null ? command : command.timeout(input.timeoutSeconds * 1000);
     });
-    const execution = { modelRunId: input.modelRunId, handle, output: new AgentExecutionOutput(), failed: false };
+    const execution = { modelRunId: input.modelRunId, handle, output: new AgentExecutionOutput(), failed: false,
+      decoder: new CodexJsonlDecoder(), interrupted: false, continuable: false, exited: false };
     session.agents.set(input.runtimeExecSessionId, execution);
     session.execOwners.set(input.runtimeExecSessionId, input.modelRunId);
     // The receiver operation and durable registry retain cleanup ownership
@@ -979,10 +990,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         for (;;) {
           const event = await handle.recv();
           if (!event) break;
-          if (event.kind === "stdout") execution.output.stdout(event.data);
+          if (event.kind === "stdout") {
+            execution.decoder.push(event.data);
+            execution.output.stdout(event.data);
+          }
           if (event.kind === "stderr") execution.output.stderr(event.data);
           if (event.kind === "exited") exitCode = event.code;
         }
+        execution.exited = true;
+        try {
+          if (execution.interrupted) execution.decoder.finishInterrupted(exitCode);
+          else execution.decoder.finish(exitCode);
+          execution.continuable = execution.decoder.toolsSettled;
+        } catch { /* Polling retains the original protocol/exit failure. */ }
         execution.output.end(exitCode);
       } catch {
         execution.failed = true;
@@ -993,6 +1013,23 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       await handle.kill().catch(() => undefined);
       throw new WorkspaceRuntimeError("workspace_tool_cancelled");
     }
+  }
+
+  async interruptAgent(input: WorkspaceAgentIdentity): Promise<boolean> {
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const execution = session.agents?.get(input.runtimeExecSessionId);
+    if (!execution || execution.modelRunId !== input.modelRunId || session.lastAgentExecId !== input.runtimeExecSessionId || execution.failed) {
+      throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+    }
+    input.signal?.throwIfAborted();
+    if (execution.interrupted) return true;
+    if (execution.exited || !execution.decoder.canInterrupt) return false;
+    // The gateway has already frozen executable output under this segment's
+    // grant. This operation is deliberately fixed to SIGINT, never Stop.
+    execution.interrupted = true;
+    try { await execution.handle.signal(2); }
+    catch { execution.failed = true; throw new WorkspaceRuntimeError("workspace_runtime_unavailable"); }
+    return true;
   }
 
   async pollAgent(input: WorkspaceAgentIdentity & Readonly<{ cursor: number }>) {

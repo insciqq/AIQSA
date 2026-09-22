@@ -42,7 +42,7 @@ for (const viewport of [
         await expect(toggle).toBeInViewport();
         await expect(page.getByRole("button", { name: "Agent details", exact: true })).toHaveCount(0);
         await expect(toggle).toHaveAccessibleDescription(/Uses the selected model, Skills, MCP mode/);
-        await expect(page.getByRole("status").filter({ hasText: "Agent on" })).toContainText("Memory and image generation are unavailable.");
+        await expect(page.getByRole("status").filter({ hasText: "Agent on" })).toContainText("Memory and Knowledge are unavailable.");
         if (viewport.touch) {
           for (const control of [toggle]) {
             const box = await control.boundingBox();

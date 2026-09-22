@@ -93,6 +93,25 @@ async function pendingToolBatch(userId: string, runId: string) {
 describe("durable in-run Follow-up", () => {
   afterAll(() => prisma.$disconnect());
 
+  it("acknowledges a native delivered prefix while a newer clarification remains pending", async () => fixture(async f => {
+    const run = await f.create();
+    await prisma.modelRun.update({ where: { id: run.runId }, data: { followupMode: "agent" } });
+    await followups.accept(submission(f, run, randomUUID(), "Use CSV"));
+    await followups.accept(submission(f, run, randomUUID(), "Keep only positive values"));
+    const budget = (await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).followupBudgetTokens;
+    expect(await followups.deliver({ runId: run.runId, userId: f.userId, revision: 1, precedingText: "Partial result",
+      budgetTokens: 4096, confirmedThrough: true })).toBe(true);
+    expect(await followups.load({ runId: run.runId, userId: f.userId })).toMatchObject({ revision: 2, entries: [
+      { ordinal: 1, delivery: "delivered", precedingText: "Partial result" }, { ordinal: 2, delivery: "accepted" }
+    ] });
+    expect((await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).followupBudgetTokens).toBe(budget);
+    expect(await followups.close({ runId: run.runId, userId: f.userId, revision: 1 })).toBe(false);
+    expect(await followups.deliver({ runId: run.runId, userId: f.userId, revision: 2, precedingText: "", budgetTokens: budget,
+      confirmedThrough: true })).toBe(true);
+    expect(await followups.close({ runId: run.runId, userId: f.userId, revision: 2 })).toBe(true);
+    expect(await repository.completeRun(completion(f, run, 2))).toBe(true);
+  }));
+
   it("accepts PREPARING input and delivers one ordered batch without publishing an early answer", async () => fixture(async f => {
     const run = await repository.admitPreparingRun({ ...f.input, admissionKind: "NORMAL_SEND" });
     const accepted = await followups.accept(submission(f, run));

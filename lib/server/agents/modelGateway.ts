@@ -8,6 +8,7 @@ import { parseSseStream } from "../providers/sse";
 import { supportsAgentNativeWebSearch, type AgentResponsesTransport } from "../providers/agentResponses";
 import { AGENT_REQUEST_MAX_BYTES, type NormalizedRunAgent } from "./config";
 import type { createAgentRunStore } from "./store";
+import { setTimeout as sleep } from "node:timers/promises";
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -98,7 +99,8 @@ export function admittedAgentRequest(value: unknown, modelId: string, maxOutputT
 export function createAgentModelGateway(input: Readonly<{
   configuration: NormalizedRunAgent;
   transport: AgentResponsesTransport;
-  store: Pick<ReturnType<typeof createAgentRunStore>, "assertActive" | "reserveProvider" | "settleProvider" | "canRetryProvider">;
+  store: Pick<ReturnType<typeof createAgentRunStore>, "assertActive" | "reserveProvider" | "settleProvider" | "canRetryProvider"
+    | "closeProvider" | "releaseModelTools" | "expectedFollowupInterruption">;
   signal: AbortSignal;
   onFailure(code: string): Promise<void>;
   onUsage(): Promise<void>;
@@ -106,10 +108,20 @@ export function createAgentModelGateway(input: Readonly<{
   return async (request: Request): Promise<Response> => {
     const requestTimeoutMs = effectiveProviderResponseTimeoutMs(input.transport.snapshot.connection,
       input.transport.snapshot.model.adapterKind === "fake" ? null : input.transport.snapshot.model);
-    const signal = AbortSignal.any([input.signal, request.signal, AbortSignal.timeout(requestTimeoutMs)]);
+    const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
+    const parentSignal = AbortSignal.any([input.signal, request.signal, timeoutSignal]);
+    const transportController = new AbortController();
+    const signal = AbortSignal.any([parentSignal, transportController.signal]);
     let attemptId: string | null = null;
     let usage: ModelRunUsage | null = null;
     let settled = false;
+    let events: ReturnType<typeof parseSseStream> | null = null;
+    let closing: Promise<void> | null = null;
+    const closeTransport = () => closing ??= (async () => {
+      transportController.abort();
+      await events?.return(undefined);
+      if (attemptId) await input.store.closeProvider(attemptId);
+    })();
     const settle = async (state: "COMPLETE" | "ERROR" | "UNKNOWN") => {
       if (settled || !attemptId) return;
       await input.store.settleProvider(attemptId, state, usage);
@@ -117,8 +129,12 @@ export function createAgentModelGateway(input: Readonly<{
       await input.onUsage();
     };
     const failure = async (error: unknown) => {
+      // Only an owned cancellation is steering. A real EOF/provider error
+      // still fails even when an interrupt request happens concurrently.
+      if (!timeoutSignal.aborted && (parentSignal.aborted || error instanceof Error && error.message === "agent_followup_interrupt") &&
+        await input.store.expectedFollowupInterruption()) return "agent_provider_interrupted" as const;
       let code = modelFailureCode(error);
-      if (attemptId && settled && !signal.aborted && retryableProviderFailure(error)) {
+      if (attemptId && settled && !parentSignal.aborted && retryableProviderFailure(error)) {
         try {
           if (await input.store.canRetryProvider(attemptId)) return code;
         } catch (authorityError) {
@@ -139,6 +155,8 @@ export function createAgentModelGateway(input: Readonly<{
       }
       // Conservative pre-dispatch reservation; only actual provider usage is billed.
       attemptId = await input.store.reserveProvider(Buffer.byteLength(JSON.stringify(body)) + input.configuration.maxOutputTokens);
+      // Hosted tools can have effects before their first streamed event.
+      if (supportsAgentNativeWebSearch(input.transport.snapshot)) await input.store.releaseModelTools(attemptId);
       await input.store.assertActive();
       const response = await input.transport.request(body, signal);
       if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
@@ -147,15 +165,16 @@ export function createAgentModelGateway(input: Readonly<{
         if ([408, 429, 500, 502, 503, 504].includes(response.status)) throw new RetryableProviderError("agent_provider_failed");
         throw new Error("agent_provider_failed");
       }
-      const events = parseSseStream(response.body, { signal, maxBytes: 64 * 1024 * 1024,
+      events = parseSseStream(response.body, { signal, maxBytes: 64 * 1024 * 1024,
         maxEventBytes: 2 * 1024 * 1024, maxDurationMs: requestTimeoutMs });
       const encoder = new TextEncoder();
       let terminal = false;
       let completed = false;
+      let toolsReleased = false;
       const stream = new ReadableStream<Uint8Array>({
         async pull(controller) {
           try {
-            const next = await events.next();
+            const next = await events!.next();
             if (next.done) {
               if (!terminal) throw new RetryableProviderError("agent_provider_connection_lost");
               controller.close();
@@ -170,6 +189,16 @@ export function createAgentModelGateway(input: Readonly<{
             const payload: unknown = JSON.parse(event.data);
             if (!record(payload)) throw new Error("agent_provider_invalid");
             if (payload.type === "error") throw providerEventFailure(payload.error ?? payload);
+            // Codex may act on an item before response.completed. Commit this
+            // fence BEFORE forwarding any executable (or unknown) item.
+            const item = record(payload.item) ? payload.item : null;
+            const output = record(payload.response) && Array.isArray(payload.response.output) ? payload.response.output : [];
+            if (!toolsReleased && (item && !["message", "reasoning", "compaction"].includes(String(item.type)) ||
+              output.some(entry => !record(entry) || !["message", "reasoning", "compaction"].includes(String(entry.type))) ||
+              /(?:function_call|custom_tool_call|web_search_call)/u.test(String(payload.type)))) {
+              await input.store.releaseModelTools(attemptId!);
+              toolsReleased = true;
+            }
             if (["response.completed", "response.failed", "response.incomplete"].includes(String(payload.type))) {
               if (terminal || !record(payload.response)) throw new Error("agent_provider_invalid");
               terminal = true;
@@ -184,14 +213,20 @@ export function createAgentModelGateway(input: Readonly<{
             controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${event.data}\n\n`));
             if (completed) {
               controller.close();
-              await events.return(undefined).catch(() => undefined);
+              await closeTransport();
             }
           } catch (error) {
             // Codex can close immediately after the terminal receipt. Do not
             // let a pending stream read/cancel revoke a successfully settled turn.
             if (completed) return;
+            if (error instanceof Error && error.message === "agent_followup_interrupt" &&
+              await input.store.expectedFollowupInterruption()) {
+              // Keep the old native request parked until its owned SIGINT,
+              // instead of letting a fenced tool proposal become a failure.
+              await sleep(5_000, undefined, { signal }).catch(() => undefined);
+            }
             await settle("UNKNOWN").catch(() => undefined);
-            await events.return(undefined).catch(() => undefined);
+            await closeTransport().catch(() => undefined);
             // Codex owns reconnection and already-executed tool history. A
             // recoverable physical failure settles its receipt without
             // revoking the live executor; exhausted/permanent failures do.
@@ -200,16 +235,23 @@ export function createAgentModelGateway(input: Readonly<{
           }
         },
         async cancel() {
-          await events.return(undefined).catch(() => undefined);
+          await closeTransport().catch(() => undefined);
           if (!terminal) {
             await settle("UNKNOWN").catch(() => undefined);
-            await input.onFailure("agent_provider_interrupted").catch(() => undefined);
+            if (timeoutSignal.aborted || !(await input.store.expectedFollowupInterruption())) {
+              await input.onFailure("agent_provider_interrupted").catch(() => undefined);
+            }
           }
         }
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
     } catch (error) {
       await settle("UNKNOWN").catch(() => undefined);
+      if (error instanceof Error && error.message === "agent_followup_interrupt" &&
+        await input.store.expectedFollowupInterruption()) {
+        await sleep(5_000, undefined, { signal: parentSignal }).catch(() => undefined);
+      }
+      await closeTransport().catch(() => undefined);
       const code = await failure(error);
       return Response.json({ error: { code, message: agentFailureMessage(code) } }, { status: 502 });
     }

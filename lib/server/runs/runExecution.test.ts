@@ -102,6 +102,9 @@ import { chatTitleWork } from "@/tests/support/chatTitles";
 import { createChatTitleWorker } from "../chats/titleGenerationWorker";
 import { notifyRunFollowup } from "./runFollowupRegistry";
 import type { RunFollowup } from "../../contracts/runFollowups";
+import * as agentExecutor from "../agents/executor";
+import { agentLimits } from "../agents/config";
+import { DEFAULT_AGENT_POLICY } from "../../contracts/agentPolicy";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -1445,6 +1448,43 @@ function followupFixture(repository: RunExecutionRepository) {
 }
 
 describe("run execution", () => {
+  it("publishes Agent Follow-up availability before native output on the initial stream", async () => {
+    const initial = chatUpdate();
+    initial.messages = initial.messages.map(message => message.role === "assistant" ? {
+      ...message, status: "streaming", content: textMessageContent(""), followups: { available: true, entries: [] }
+    } : message);
+    const repository = createRepository({ chatUpdate: initial });
+    followupFixture(repository.repository);
+    const base = preparedData();
+    const agent = { ...agentLimits(DEFAULT_AGENT_POLICY, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
+      compatibilityHash: "a".repeat(64), mcpMode: "off" as const };
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, agent, workspace: completionWorkspace },
+      providerRequest: { ...base.providerRequest, agent, workspace: completionWorkspace }
+    };
+    const native = vi.spyOn(agentExecutor, "executeCodexTurn").mockImplementation(async input => {
+      expect(input.followups?.operations).toBe(repository.repository.followups);
+      await input.onEvent({ type: "token", data: { delta: "Native answer" } });
+      return { ...providerResult({ finalText: "Native answer" }), followupRevision: 0 };
+    });
+    try {
+      const events = parseSse(await createRunExecutionResponse({
+        ...executionInput({ adapter: createAdapter(vi.fn()), prepared, repository: repository.repository }),
+        agentResponses: {} as NonNullable<RunExecutionInput["agentResponses"]>,
+        workspace: { accepts: () => false, execute: vi.fn(), executeAgent: vi.fn(), finalize: vi.fn(),
+          recoverExports: vi.fn(), tools: async () => [], handoff: async () => ({ status: "ready" }),
+          settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) }
+      }).text());
+      expect(repository.failedRuns).toEqual([]);
+      expect(native).toHaveBeenCalledOnce();
+      const admissionIndex = events.findIndex(event => event.type === "chat_update");
+      expect(admissionIndex).toBeGreaterThan(events.findIndex(event => event.type === "message_start"));
+      expect(admissionIndex).toBeLessThan(events.findIndex(event => event.type === "token"));
+      expect(events[admissionIndex]).toMatchObject({ data: { messages: [expect.anything(),
+        { followups: { available: true, entries: [] } }] } });
+    } finally { native.mockRestore(); }
+  });
+
   it.each([
     ["tool", true], ["tool", false], ["generation", true], ["generation", false]
   ] as const)("applies Workspace Follow-up during %s with streaming=%s without repeating settled work", async (timing, streaming) => {

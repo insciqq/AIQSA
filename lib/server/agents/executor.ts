@@ -15,6 +15,8 @@ import type { CodexManagedProfile } from "./codexProfile";
 import { createCodexActivityProjection } from "./activityProjection";
 import { createAgentBuiltinProgress } from "./builtinProgress";
 import type { RunOutputArtifactEvent } from "../runs/runOutputEvents";
+import { followupTokenCost, type RunFollowupOperations } from "../runs/runFollowups";
+import { AGENT_PROMPT_MAX_BYTES } from "./guest";
 
 export async function executeCodexTurn(input: Readonly<{
   request: ProviderRunRequest;
@@ -27,7 +29,12 @@ export async function executeCodexTurn(input: Readonly<{
   onPersistedEvent(event: RunOutputArtifactEvent): Promise<void>;
   onActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>;
   onUsage(attributions: RunUsageAttribution[]): Promise<void>;
-}>): Promise<ProviderRunResult> {
+  followups?: Readonly<{
+    operations: RunFollowupOperations;
+    beforeDelivery(): Promise<string>;
+    onDelivery(revision: number): Promise<void>;
+  }>;
+}>): Promise<ProviderRunResult & { followupRevision: number }> {
   const configuration = input.request.agent;
   if (!configuration || !input.request.workspace || !input.workspace.executeAgent) throw new Error("agent_unavailable");
   const prompts = agentPrompts(input.request);
@@ -42,7 +49,7 @@ export async function executeCodexTurn(input: Readonly<{
   let callId: string | null = null;
   let finalText = "";
   let textPublished = false;
-  const projectActivity = createCodexActivityProjection(input.runId, input.request);
+  let followupRevision = 0;
   const progress = input.request.artifactTool || input.request.imagePlan ? createAgentBuiltinProgress({ runId: input.runId, store,
     onEvent: input.onEvent, onPersistedEvent: input.onPersistedEvent }) : null;
   const publishFinalText = async () => {
@@ -53,7 +60,7 @@ export async function executeCodexTurn(input: Readonly<{
   };
   const onUsage = async () => input.onUsage(await store.usage());
   try {
-    const grant = await store.arm(prompts.previousAssistantMessageId);
+    let grant = { ...await store.arm(prompts.previousAssistantMessageId), timeoutSeconds: configuration.timeoutSeconds };
     heartbeat = setInterval(() => {
       renewing ??= store.renew().then(onUsage).catch((error) => fail(agentFailureCode(error) ?? "agent_authority_expired")).finally(() => { renewing = null; });
     }, 10_000);
@@ -80,31 +87,71 @@ export async function executeCodexTurn(input: Readonly<{
       ...(effort && ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
         ? { reasoningEffort: effort as CodexManagedProfile["reasoningEffort"] } : {})
     };
-    callId = await store.toolCall(namespacedWorkspaceToolName("sandbox_exec_start"), { managedAgent: true }, true);
-    await input.workspace.executeAgent({
-      modelRunToolCallId: callId, onActivity: input.onActivity, profile,
-      prompt: prompts.prompt, resumePrompt: prompts.resumePrompt,
-      runId: input.runId, runToken: grant.token, signal, threadId: grant.threadId,
-      timeoutSeconds: configuration.timeoutSeconds, userId: input.userId, workspace: input.request.workspace,
-      async onEvent(event, text) {
-        if (event.type === "thread_started") {
-          signal.throwIfAborted();
-          await store.setThread(event.threadId);
+    let previousToolCallId: string | undefined;
+    let lastFollowupRead = 0;
+    for (;;) {
+      signal.throwIfAborted();
+      const batch = await input.followups?.operations.load({ runId: input.runId, userId: input.userId });
+      const additions = batch?.entries.filter(entry => entry.delivery === "accepted") ?? [];
+      const clarification = additions.length ? JSON.stringify(additions.map(entry => ({ role: "user", text: entry.text }))) : "";
+      const prompt = previousToolCallId ? clarification : [prompts.prompt, clarification].filter(Boolean).join("\n\n");
+      const resumePrompt = previousToolCallId ? clarification : [prompts.resumePrompt, clarification].filter(Boolean).join("\n\n");
+      if (previousToolCallId && !clarification || Buffer.byteLength(prompt) > AGENT_PROMPT_MAX_BYTES ||
+        Buffer.byteLength(resumePrompt) > AGENT_PROMPT_MAX_BYTES) throw new Error("agent_context_too_large");
+      callId = await store.toolCall(namespacedWorkspaceToolName("sandbox_exec_start"), { managedAgent: true }, true);
+      // Native item IDs restart at zero in every exec; retain earlier activity.
+      const projectActivity = createCodexActivityProjection(`${input.runId}\0${callId}`, input.request);
+      const outcome = await input.workspace.executeAgent({
+        modelRunToolCallId: callId, onActivity: input.onActivity, profile,
+        prompt, resumePrompt, previousToolCallId,
+        runId: input.runId, runToken: grant.token, signal, threadId: grant.threadId,
+        timeoutSeconds: grant.timeoutSeconds, userId: input.userId, workspace: input.request.workspace,
+        async shouldInterrupt() {
+          if (!batch || !input.followups || Date.now() - lastFollowupRead < 500) return false;
+          lastFollowupRead = Date.now();
+          const current = await input.followups.operations.load({ runId: input.runId, userId: input.userId });
+          if (!current || current.revision <= followupRevision) return false;
+          return store.claimFollowupInterrupt(grant.token);
+        },
+        async onEvent(event, text) {
+          if (event.type === "thread_started") {
+            signal.throwIfAborted();
+            await store.setThread(event.threadId);
+          }
+          if (event.type === "turn_started" && batch && additions.length && input.followups) {
+            // A signal is not a delivery receipt. Confirm only once native
+            // execution has accepted this segment's actual user prompt.
+            await publishFinalText();
+            const precedingText = await input.followups.beforeDelivery();
+            const delivered = await input.followups.operations.deliver({ runId: input.runId, userId: input.userId,
+              revision: batch.revision, precedingText, confirmedThrough: true,
+              budgetTokens: Math.max(0, (input.request.followupContextReserveTokens ?? 0) - batch.entries.reduce((sum, entry) => sum + followupTokenCost(entry.text), 0)) });
+            if (!delivered) throw new Error("followup_execution_closed");
+            followupRevision = batch.revision;
+            finalText = "";
+            textPublished = false;
+            await input.followups.onDelivery(followupRevision);
+          }
+          if (event.type === "message") {
+            finalText = text.text(event.text);
+          }
+          const entry = projectActivity(event, text);
+          if (entry) await input.onActivity(entry);
         }
-        if (event.type === "message") {
-          finalText = text.text(event.text);
-        }
-        const entry = projectActivity(event, text);
-        if (entry) await input.onActivity(entry);
-      }
-    });
-    signal.throwIfAborted();
-    await progress?.refresh();
-    await store.settleTool(callId, "complete", { status: "complete" });
+      });
+      signal.throwIfAborted();
+      await store.assertActive();
+      await progress?.refresh();
+      await store.settleTool(callId, "complete", { status: outcome === "interrupted" ? "followup_interrupted" : "complete" });
+      if (!batch || !input.followups || await input.followups.operations.close({ runId: input.runId, userId: input.userId, revision: followupRevision })) break;
+      grant = await store.continueAfterExit(grant.token, callId);
+      signal.throwIfAborted();
+      previousToolCallId = callId;
+    }
     completed = true;
     await publishFinalText();
     await onUsage();
-    return { finalText, usage: sumTokenUsage((await store.usage()).map((entry) => entry.usage)),
+    return { finalText, followupRevision, usage: sumTokenUsage((await store.usage()).map((entry) => entry.usage)),
       finalProviderResponsePreview: { engine: "codex", version: configuration.codexVersion } };
   } catch (error) {
     // Stop/error must still deliver the last completed message already received.

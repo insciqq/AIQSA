@@ -53,7 +53,7 @@ Account deletion drains owned Knowledge and Memory dependencies/staging before p
 
 Workspace idle stop preserves disk; expiry/reset/deletion first records exact-session cleanup. Continuation archives are private checksum-bound seeds, owned by the claim then destination chat. Fence capture/restore leases. Successful restore consumes the seed even after reset or disk loss; interrupted restore retries only after cleanup. Abandoned/failed/reset/deleted seeds enqueue reference-checked object cleanup. Missing disks visibly recreate canonical originals, never claim survival. External provider/tool retention, backups and sent data remain outside application-erasure claims.
 
-Agent threads live only on the Workspace disk outside exported `project/`, without independent retention, backup or continuation seed. Resume requires a compatible completed predecessor on the active branch in that surviving session; otherwise start from branch context. Stored identifiers/hashes grant no authority after disk loss or revocation.
+Agent threads live outside exported `project/` on Workspace disk, without independent retention/backup/continuation seeds. Ordinary resume requires a compatible completed active-branch predecessor in the surviving session; otherwise use branch context. Follow-up requires the live run's exact settled predecessor/runtime; loss prohibits recreation/replay. Stored identifiers/hashes grant no authority after disk loss/revocation.
 
 ## Backup And Restore
 

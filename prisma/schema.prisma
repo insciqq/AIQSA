@@ -4409,6 +4409,9 @@ model AgentRunBinding {
   toolCalls           Int                 @default(0)
   reservedTokens      BigInt              @default(0)
   providerInFlight    Boolean             @default(false)
+  generationAttemptId String?
+  generationToolsReleased Boolean         @default(true)
+  followupInterruptAt DateTime?
   nextToolOrdinal     Int                 @default(0)
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
@@ -4434,6 +4437,7 @@ model AgentProviderAttempt {
   usage              Json?
   createdAt          DateTime           @default(now())
   completedAt        DateTime?
+  transportClosedAt  DateTime?
   binding            AgentRunBinding    @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "AgentProviderAttempt_binding_fkey")
   providerBinding    ProviderRunBinding @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: NoAction, onUpdate: Restrict, map: "AgentProviderAttempt_providerBinding_fkey")
 

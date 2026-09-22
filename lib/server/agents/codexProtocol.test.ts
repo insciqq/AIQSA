@@ -10,6 +10,33 @@ const complete = { type: "turn.completed", usage: { input_tokens: 999, output_to
 const jsonl = (events: readonly unknown[]) => encoder.encode(events.map((event) => JSON.stringify(event)).join("\n") + "\n");
 
 describe("Codex exec JSONL transport", () => {
+  it("waits for a known command exit before allowing a native interruption", () => {
+    const decoder = new CodexJsonlDecoder();
+    decoder.push(jsonl(start));
+    expect(decoder.canInterrupt).toBe(true);
+    decoder.push(jsonl([{ type: "item.started", item: { id: "command", type: "command_execution", status: "in_progress" } }]));
+    expect(decoder.canInterrupt).toBe(false);
+    decoder.push(jsonl([{ type: "item.completed", item: { id: "command", type: "command_execution", status: "completed", exit_code: null } }]));
+    expect(decoder.canInterrupt).toBe(false);
+    decoder.push(jsonl([{ type: "item.completed", item: { id: "command", type: "command_execution", status: "completed", exit_code: 0 } }]));
+    expect(decoder.canInterrupt).toBe(true);
+    expect(decoder.finishInterrupted(1)).toEqual([]);
+    expect(() => decoder.push(jsonl(start))).toThrow("agent_protocol_invalid");
+  });
+
+  it.each([null, 137, 0])("never substitutes missing/unknown native completion with an interrupt receipt (exit=%s)", exit => {
+    const decoder = new CodexJsonlDecoder(); decoder.push(jsonl(start));
+    expect(() => decoder.finishInterrupted(exit)).toThrow("agent_protocol_incomplete");
+  });
+
+  it("rejects failed or unknown native tool activity in the interrupt path", () => {
+    const failed = new CodexJsonlDecoder(); failed.push(jsonl([...start, { type: "turn.failed" }]));
+    expect(() => failed.finishInterrupted(1)).toThrow("agent_protocol_incomplete");
+    const unknown = new CodexJsonlDecoder(); unknown.push(jsonl([...start,
+      { type: "item.completed", item: { id: "new_tool", type: "unrecognized_tool" } }]));
+    expect(unknown.canInterrupt).toBe(false);
+    expect(() => unknown.finishInterrupted(1)).toThrow("agent_protocol_incomplete");
+  });
   it.each(["isError", "is_error"])("marks a completed RPC with %s as a failed tool without exposing its result", (key) => {
     const decoder = new CodexJsonlDecoder();
     const events = decoder.push(jsonl([...start, { type: "item.completed", item: {

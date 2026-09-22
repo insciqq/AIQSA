@@ -26,7 +26,7 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
     if (!normalized?.agent || !validNormalizedAgent(configuration) ||
       hashCanonicalMcpValue(normalized.agent) !== hashCanonicalMcpValue(configuration)) throw new Error("denied");
     const userId = binding.workspaceRun.modelRun.userId;
-    const store = createAgentRunStore(prisma, { runId: binding.modelRunId, userId, configuration });
+    const store = createAgentRunStore(prisma, { runId: binding.modelRunId, userId, configuration, tokenHash: agentTokenHash(token) });
     await store.assertActive();
     const onFailure = async (code: string) => {
       await store.fail(agentFailureCode(code) ?? "agent_execution_interrupted");
@@ -45,11 +45,11 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
       if (!runtime.agentResponses || runtime.agentResponses.snapshot.model.upstreamModelId !== normalized.modelId) throw new Error("denied");
       const transport = runtime.agentResponses;
       const createGateway = path === "v1/alpha/search" ? createAgentSearchGateway : createAgentModelGateway;
-      return await withAgentLease(request, store.assertActive, (signal) =>
+      return await withAgentLease(request, store.assertLeaseActive, (signal) =>
         createGateway({ configuration, transport, store, signal, onFailure, onUsage })(request));
     }
     if (request.method === "POST" && path === "mcp") {
-      return await withAgentLease(request, store.assertActive, async (signal) => {
+      return await withAgentLease(request, store.assertLeaseActive, async (signal) => {
         const handler = await createAgentMcpGateway({ request: normalized, runId: binding.modelRunId, store, userId,
           signal, onFailure, onUsage });
         return handler(request);

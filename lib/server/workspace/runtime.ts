@@ -162,6 +162,7 @@ export interface WorkspaceRuntime {
   /** Private raw byte transport; never a model-visible Workspace MCP tool. */
   startAgent?(input: WorkspaceAgentStart): Promise<void>;
   pollAgent?(input: WorkspaceAgentIdentity & Readonly<{ cursor: number }>): Promise<AgentExecutionOutputPage>;
+  interruptAgent?(input: WorkspaceAgentIdentity): Promise<boolean>;
   claimSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   retireSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   health(signal?: AbortSignal): Promise<WorkspaceRuntimeHealth>;

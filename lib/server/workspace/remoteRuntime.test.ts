@@ -48,6 +48,31 @@ describe("remote Workspace runner protocol", () => {
     })));
   });
 
+  it("fences Agent interruption through the authenticated receiver operation", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const interruptAgent = vi.fn(async () => true);
+    Object.assign(local, { interruptAgent });
+    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "ws_" + "e".repeat(40);
+    const session = await remote.ensureSession({ sessionId, runtimeSandboxId: null, operation,
+      sandboxName: workspaceSandboxName(sessionId), imageRef: deterministicConfig.imageRef, cpus: 1, diskMiB: 1024, memoryMiB: 512, internetEnabled: false });
+    const identity = { sessionId, runtimeSandboxId: session.runtimeSandboxId, operation, modelRunId: "run",
+      runtimeExecSessionId: "agent-00000000-0000-4000-8000-000000000001" };
+    expect(await remote.interruptAgent(identity)).toBe(true);
+    expect(interruptAgent).toHaveBeenCalledWith(expect.objectContaining({ runtimeExecSessionId: identity.runtimeExecSessionId, modelRunId: "run" }));
+    await remote.claimSessionOperation({ ...identity, operation: { generation: 2, owner: "next" } });
+    await expect(remote.interruptAgent(identity)).rejects.toMatchObject({ code: "workspace_operation_stale" });
+    expect(interruptAgent).toHaveBeenCalledOnce();
+    const unauthorized = await fetch(new URL(`/v1/sessions/${sessionId}/agent/interrupt`, runnerUrl), {
+      method: "POST", body: JSON.stringify(identity)
+    });
+    expect(unauthorized.status).toBe(401); await unauthorized.arrayBuffer();
+    expect(interruptAgent).toHaveBeenCalledOnce();
+  });
+
   it("installs a 201-file Skill with one fenced streaming request and rejects invalid envelopes before dispatch", async () => {
     const local = new DeterministicWorkspaceRuntime(deterministicConfig);
     const install = vi.spyOn(local, "installSkillBundle");
