@@ -19,20 +19,20 @@ Continuation preserves composer controls and Workspace. After the new chat opens
 
 Upload integrity/ownership checks gate Send; slower PDF preparation does not. Successful admission immediately shows the committed message, clears its draft, and puts truthful preparation state with Stop/retry in the conversation. Counts describe accepted work, not elapsed time. Informational PDF notices do not require acknowledgement or disable Send.
 
-Server-confirmed final text releases Send while Workspace cleanup continues. Preparation belongs to the next accepted message; a finished answer must not appear to keep generating. Late events remain associated with their original answer and cannot overwrite the next request or draft. Branch and environment mutations still respect execution ownership.
+Server-confirmed final text releases Send during Workspace cleanup. Preparation belongs to the next accepted message; finished answers never appear to keep generating. Late events belong to their original answer and cannot overwrite the next request or draft. Branch/environment mutations respect execution ownership.
 
 An answer is a readable document: one process disclosure above the body, ordinary message actions below, Sources only when present, and generated downloads. Process details may show thinking, user-legible tool/server names, state, round, and duration. Past chats and Memory have independent bounded disclosures; their counts describe supplied context, not proven influence. Explicit Memory mutation feedback stays visible. Raw requests, tool payloads, retrieval scores, event histories, private identifiers, and per-answer usage are not hidden inspection surfaces.
 
 Workspace has a deliberate exception for useful execution activity: structured file/command cards may show relative paths and bounded command output. Runtime identities and unbounded output remain private. Generated files have authenticated settled downloads that survive sandbox loss; `sandbox:` links resolve only to an exact file from that answer's run. Pending/failed exports remain truthful and never promise exhausted retries. Refresh preserves ready downloads and ends when outputs settle, navigation changes, or authorization is lost.
 
-Artifact Code previews expose only bounded authored text, remaining inert until READY. Thumbnails never execute scripts. Runtime repair details enter editable drafts through private tab state, never URLs.
+Each answer shows each artifact's latest successful version once, in first-appearance order. Historical cards and explicit selections never follow global current versions. Code previews stay bounded and inert until READY; thumbnails never execute scripts. Runtime repairs enter drafts through private tab state, never URLs.
 
 Workspace is a persistent chat toggle projecting availability, session and read-only internet policy. Its chip and other controls wrap whole; no More menu or horizontal scrolling hides capabilities. Only enabled Workspace admits opaque uploads. Stop preserves files; branching/regeneration never rolls them back. Reset confirms filesystem loss while preserving messages, attachments and outputs. Download workspace is a separate action, not an LLM run. Saved-file reuse is explicit; matching names imply no version chain.
 When a continuation carries Workspace, the new chat projects the seed as pending (“files from the previous chat will be restored”), restored, skipped because the source disk is gone, or failed with a bounded reason. A failed or skipped copy opens with an empty Workspace and never claims that files survived; the private seed is never shown as an attachment or staged input.
 
 Agent is per-turn in personal chats, available mid-conversation with Workspace, administrator-enabled Internet and an eligible model. Explain restrictions; block incompatible sends without changing selections. Reuse chat activity/files; lifetime follows Workspace.
 
-Project surfaces use only current Project catalogs. Loss of access clears stale selection and synchronization; personal fallback data must never masquerade as Project data. Shared refresh preserves local edits and shows only durably projected activity, without claiming online presence. Internal links do not create public shares. Project chats never enter personal history/Memory surfaces.
+Project surfaces use current Project catalogs; access loss clears stale selection and synchronization without personal fallbacks. Shared refresh preserves local edits and shows only durable activity, never online presence. Internal links do not create public shares. Project chats never enter personal history/Memory.
 
 ## Management
 

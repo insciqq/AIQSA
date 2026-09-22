@@ -53,6 +53,7 @@ function SavedArtifactPanelV2({ target, compact, latest, onEdit }: Omit<Props, "
     setUpdatedVersionNumber(latest.versionNumber);
   }, [latest]);
   return <ArtifactViewerV2 artifactId={target.artifactId} versionId={target.versionId} compact={compact} host="chat"
+    latestVersionId={latest?.versionId}
     onClose={() => closeArtifactPanel()} onDetailChange={detailLoaded} updatedVersionNumber={updatedVersionNumber}
     onVersionChange={versionId => { setUpdatedVersionNumber(null); selectArtifactPanelVersion(versionId); }}
     onEditRequest={async (intent, error) => {

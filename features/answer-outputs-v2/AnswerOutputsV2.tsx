@@ -39,6 +39,7 @@ import type {
   ThreadSearchSource
 } from "@/lib/contracts/chats";
 import type { ThreadGeneratedFile, ThreadWorkspaceOutputStatus } from "@/lib/contracts/workspace";
+import { latestGeneratedArtifactsForAnswer } from "@/lib/domain/generatedArtifacts";
 import { workspaceOutputStatusCopyV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import {
   MEMORY_STATEMENT_MAX_LENGTH,
@@ -609,7 +610,8 @@ export function ArtifactGenerationCardsV2({ drafts, savedArtifacts = [], onOpen,
   onOpen(draftId: string, source: HTMLElement): void;
   onOpenArtifact(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
 }>) {
-  const ready = drafts.flatMap(draft => draft.artifact && !savedArtifacts.some(saved => saved.versionId === draft.artifact?.versionId) ? [draft.artifact] : []);
+  const ready = latestGeneratedArtifactsForAnswer(drafts.flatMap(draft => draft.artifact ? [draft.artifact] : []))
+    .filter(artifact => !savedArtifacts.some(saved => saved.artifactId === artifact.artifactId));
   const pending = drafts.filter(draft => draft.status !== "ready" && !(draft.status === "interrupted" && savedArtifacts.length > 0));
   return <>
     {ready.length ? <GeneratedArtifactsV2 artifacts={ready} onOpenArtifact={onOpenArtifact} /> : null}
@@ -644,7 +646,7 @@ function GeneratedArtifactsV2({ artifacts, onEditArtifact, onOpenArtifact }: Rea
   return (
     <section className="v2-generated-artifacts" aria-label="Artifacts">
       {error ? <p className="v2-generated-artifact-error" role="alert">{error}</p> : null}
-      <ul>{artifacts.map(artifact => <GeneratedArtifactCardV2 key={artifact.versionId} artifact={artifact}
+      <ul>{artifacts.map(artifact => <GeneratedArtifactCardV2 key={artifact.artifactId} artifact={artifact}
         editing={editing !== null} onEdit={onEditArtifact ? () => void edit(artifact) : undefined}
         onOpen={source => onOpenArtifact?.(artifact, source)} onShare={() => setSharing(artifact)} />)}</ul>
       {sharing ? <ArtifactShareDialog artifactId={sharing.artifactId} versionId={sharing.versionId} versionNumber={sharing.versionNumber} onClose={() => setSharing(null)} /> : null}

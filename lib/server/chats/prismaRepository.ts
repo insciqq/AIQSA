@@ -29,6 +29,7 @@ import {
 } from "../../contracts/workspace";
 import { foldWorkspaceActivityEntries } from "../workspace/activityProjection";
 import { projectThreadSearchSources } from "../../domain/searchSources";
+import { latestGeneratedArtifactsForAnswer } from "../../domain/generatedArtifacts";
 import { decodeAssistantIdentity } from "../../contracts/assistants";
 import {
   ARCHIVED_CHAT_CURSOR_MAX_LENGTH,
@@ -1256,13 +1257,12 @@ export function summarizeMessageRunArtifacts(
         }]
       : []
   );
-  const generatedArtifacts = [...new Map(run.events
+  const generatedArtifacts = latestGeneratedArtifactsForAnswer(run.events
     .filter((event) => artifactType(event.payload) === "generated_artifact")
-    .map((event) => {
+    .flatMap((event) => {
       const decoded = decodeThreadGeneratedArtifact(artifactInnerPayload(event.payload));
-      return decoded ? [decoded.versionId, decoded] as const : null;
-    })
-    .filter((entry): entry is readonly [string, NonNullable<typeof entry>[1]] => Boolean(entry))).values()];
+      return decoded ? [decoded] : [];
+    }));
 
   const knowledgeRuns = (run.knowledgeRuns ?? [])
     .filter((knowledgeRun) =>
