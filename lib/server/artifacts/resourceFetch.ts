@@ -3,7 +3,7 @@ import { mcpSafeFetch, networkAddressScope, type McpSafeFetchOptions } from "../
 import { validateGeneratedImage } from "../providers/imageGeneration";
 import { ArtifactToolError } from "./errors";
 import { ARTIFACT_RESOURCE_LIMITS, artifactResourceByteLimit, artifactResourceDenied, artifactResourceUrlSpelling,
-  getArtifactResourcePolicy, validateArtifactResourceUrl, type ArtifactResourceClass, type ArtifactResourcePolicy } from "./resourcePolicy";
+  effectiveArtifactResourcePolicy, getArtifactResourcePolicy, validateArtifactResourceUrl, type ArtifactResourceClass, type ArtifactResourcePolicy } from "./resourcePolicy";
 
 const MIME: Record<ArtifactResourceClass, readonly string[]> = {
   script: ["text/javascript", "application/javascript", "application/x-javascript", "text/ecmascript", "application/ecmascript"],
@@ -13,6 +13,7 @@ const MIME: Record<ArtifactResourceClass, readonly string[]> = {
 };
 export type ArtifactResourceRequest = Readonly<{
   url: string; kind: ArtifactResourceClass; path?: string; googleFontCss?: boolean; signal?: AbortSignal;
+  acceptedPolicy?: ArtifactResourcePolicy;
 }>;
 export type ArtifactDownloadedResource = Readonly<{ bytes: Buffer; mimeType: string; resolvedUrl: string }>;
 export type ArtifactResourceFetcher = (input: ArtifactResourceRequest) => Promise<ArtifactDownloadedResource>;
@@ -47,8 +48,8 @@ export function verifyArtifactIntegrity(bytes: Uint8Array, integrity: string | u
 export function createArtifactResourceFetcher(options: Pick<McpSafeFetchOptions, "dispatch" | "lookupHostname"> & {
   policy?: () => ArtifactResourcePolicy;
 } = {}): ArtifactResourceFetcher {
-  const policy = options.policy ?? getArtifactResourcePolicy;
   return async input => {
+    const policy = () => effectiveArtifactResourcePolicy(input.acceptedPolicy, (options.policy ?? getArtifactResourcePolicy)());
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), ARTIFACT_RESOURCE_LIMITS.resourceTimeoutMs);
     const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;

@@ -7,7 +7,7 @@ import { parseArtifactCss } from "./css";
 import { ArtifactToolError } from "./errors";
 import { assertArtifactSingleModule } from "./modulePolicy";
 import { artifactResourceText, createArtifactResourceFetcher, verifyArtifactIntegrity, type ArtifactResourceFetcher } from "./resourceFetch";
-import { ARTIFACT_RESOURCE_LIMITS, artifactResourceByteLimit, artifactResourceUrlSpelling, type ArtifactResourceClass } from "./resourcePolicy";
+import { ARTIFACT_RESOURCE_LIMITS, artifactResourceByteLimit, artifactResourceUrlSpelling, type ArtifactResourceClass, type ArtifactResourcePolicy } from "./resourcePolicy";
 
 export type ArtifactVendorMetadata = Readonly<{
   sourceUrl: string;
@@ -55,6 +55,7 @@ function collectReferences(operation: NormalizedArtifactOperation): ResourceRef[
 export async function vendorArtifactResources(operation: NormalizedArtifactOperation, options: {
   base?: ArtifactBundle;
   fetchResource?: ArtifactResourceFetcher;
+  acceptedPolicy?: ArtifactResourcePolicy;
   signal?: AbortSignal;
 } = {}): Promise<{ files: ArtifactBundleFile[]; assets: ArtifactBundleAsset[] }> {
   const references = collectReferences(operation);
@@ -75,7 +76,7 @@ export async function vendorArtifactResources(operation: NormalizedArtifactOpera
     else active++;
     try {
       if (signal.aborted) throw new ArtifactToolError("artifact_resource_unreachable", { path: reference.path, hint: "The resource download was cancelled or timed out." });
-      return await fetchResource({ ...reference, signal });
+      return await fetchResource({ ...reference, signal, acceptedPolicy: options.acceptedPolicy });
     } finally { const next = waiters.shift(); if (next) next(); else active--; }
   }
   async function load(reference: ResourceRef, depth = 0, parents: readonly string[] = []): Promise<ArtifactBundleFile> {

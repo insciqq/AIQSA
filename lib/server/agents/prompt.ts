@@ -51,6 +51,13 @@ export function agentPrompts(request: ProviderRunRequest) {
         "When asked to inspect private issues, documents or repositories, try the enabled MCP tools before concluding that a resource is inaccessible from a public web page. " +
         (request.agent.mcpMode === "auto" ? "Use find_tools to discover the relevant capabilities. " : "") +
         "A tool-discovery failure is not an authorization denial by the connected service. Report the actual diagnostic and which checks were not completed."
+      ] : []),
+      ...(request.artifactTool ? [
+        "Use create_artifact and read_artifact on the AIQSA MCP server for native private artifacts, even when external MCP is Off. " +
+        "You may author and test source in Workspace, then submit the complete bounded files[].text bundle (or exact accepted asset_ref images) to create_artifact. " +
+        "Workspace paths are not artifact file contents and do not authorize host file reads. " +
+        "Keep a copy in the current output directory when a source download is requested. " +
+        "An exported Workspace file alone does not create an AIQSA artifact. Use the accepted version for edits; never silently rebase."
       ] : [])
     ].filter(Boolean).join("\n\n")
   };

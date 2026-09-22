@@ -18,6 +18,7 @@ import { getMcpResponseWireLimits, getMcpRequestMaxBytes, mcpRequestSizeFailure 
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { createAgentRunStore } from "./store";
+import { agentBuiltinTools, createAgentBuiltinDispatcher } from "./builtinTools";
 
 type Authority = McpToolAuthority & Readonly<{ callId: string }>;
 
@@ -57,6 +58,8 @@ export async function createAgentMcpGateway(input: Readonly<{
   onUsage(): Promise<void>;
 }>) {
   const configuration = input.request.agent!;
+  const builtins = agentBuiltinTools(input.request);
+  const dispatchBuiltin = createAgentBuiltinDispatcher(input);
   const repository = createPrismaRunRepository(prisma);
   const search = createAgentAiqsaSearch({ plan: input.request.searchPlan, store: input.store, onUsage: input.onUsage,
     resolve: (option) => providerRuntimeResolver.resolve(input.runId, "search", `search:${option.optionId}`, { disableRequestRetries: true }),
@@ -133,7 +136,7 @@ export async function createAgentMcpGateway(input: Readonly<{
     }
   }
   return async (request: Request): Promise<Response> => {
-    if (configuration.mcpMode === "off" && !search) return new Response(null, { status: 404 });
+    if (configuration.mcpMode === "off" && !search && !builtins.length) return new Response(null, { status: 404 });
     let requestBodyRead = false;
     try {
       const signal = AbortSignal.any([input.signal, request.signal]);
@@ -194,6 +197,21 @@ export async function createAgentMcpGateway(input: Readonly<{
       };
       const handler = createMcpHandler(() => {
         const server = new McpServer({ name: "aiqsa-agent", version: "1.0.0" });
+        for (const tool of builtins) server.registerTool(tool.name, {
+          description: tool.description, inputSchema: frozenSchema(tool.inputSchema)
+        }, async args => {
+          try {
+            const result = await dispatchBuiltin({ id: deliveryId, name: tool.name, arguments: args as Record<string, unknown> }, signal);
+            return { content: result.content.map(part => ({ type: "text" as const,
+              text: part.type === "text" ? part.text : JSON.stringify(part.value) })),
+              ...(result.status === "error" ? { isError: true } : {}) };
+          } catch (error) {
+            const code = agentFailureCode(error);
+            if (code && code !== "agent_mcp_call_limit") await input.onFailure(code);
+            return textResult({ code: code ?? "agent_builtin_unavailable",
+              message: code ? agentFailureMessage(code) : "The built-in operation could not finish. Do not repeat an unconfirmed write with a new call ID." }, true);
+          }
+        });
         if (search) server.registerTool("aiqsa_search", { description: search.description, inputSchema: frozenSchema(search.schema) },
           (args) => execute("aiqsa_search", args, (authority) => search.execute(args as Record<string, unknown>, authority.callId, signal)));
         if (configuration.mcpMode === "auto") {

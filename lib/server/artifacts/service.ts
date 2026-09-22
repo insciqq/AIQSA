@@ -25,6 +25,18 @@ import { artifactDownloadName } from "./downloadName";
 import { artifactReadPage } from "./readPage";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
+import type { ArtifactResourcePolicy } from "./resourcePolicy";
+import { artifactToolResult } from "./toolResult";
+
+type ArtifactToolContext = Omit<ToolExecutionContext, "request"> & {
+  request: Pick<ToolExecutionContext["request"], "chatId" | "artifactReferences" | "imageReferences" | "artifactResourcePolicy">;
+};
+type ArtifactExecutionOptions = {
+  signal?: AbortSignal;
+  assertActive?: (tx: Prisma.TransactionClient) => Promise<void>;
+  /** Commit a gateway receipt and its output in the same transaction as READY. */
+  onResult?: (tx: Prisma.TransactionClient, result: ToolExecutionResult) => Promise<void>;
+};
 
 function json(value: unknown): Prisma.InputJsonValue { return value as Prisma.InputJsonValue; }
 const checksum = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -60,7 +72,9 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
   const objects = createArtifactObjects(db, storage);
   const publications = createArtifactPublications(db, objects);
   const inheritedAssetRef = (path: string) => `base:${checksum(Buffer.from(path))}`;
-  async function guardRun(tx: Prisma.TransactionClient, input: { sourceModelRunId?: string; ownerUserId: string }) {
+  async function guardRun(tx: Prisma.TransactionClient, input: { sourceModelRunId?: string; ownerUserId: string } & ArtifactExecutionOptions) {
+    input.signal?.throwIfAborted();
+    await input.assertActive?.(tx);
     if (!input.sourceModelRunId) return;
     const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "ModelRun"
       WHERE "id" = ${input.sourceModelRunId} AND "userId" = ${input.ownerUserId}
@@ -154,6 +168,9 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     sourceModelRunId?: string;
     sourceToolCallId?: string;
     allowedAssetRefs?: readonly string[];
+    resourcePolicy?: ArtifactResourcePolicy;
+    assertActive?: ArtifactExecutionOptions["assertActive"];
+    onReady?: (tx: Prisma.TransactionClient, version: NonNullable<Awaited<ReturnType<typeof getArtifactVersion>>>) => Promise<void>;
     signal?: AbortSignal;
   }) {
     if (input.sourceToolCallId) {
@@ -200,7 +217,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     });
     const vendors = await vendorArtifactResources(operation, {
       ...(baseBundle && baseVersionId ? { base: await objects.hydrate(input.ownerUserId, baseVersionId, baseBundle) } : {}),
-      fetchResource: options.fetchResource, signal: input.signal
+      fetchResource: options.fetchResource, signal: input.signal, acceptedPolicy: input.resourcePolicy
     });
     assets.push(...vendors.assets);
     const built = buildArtifactBundle(operation, assets, vendors.files);
@@ -274,6 +291,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
             });
           }
         }
+        await input.onReady?.(tx, publicVersion({ ...version, status: "READY", readyAt: new Date() }));
       });
     } catch (error) {
       await db.artifactVersion.updateMany({ where: { id: version.id, status: "PENDING" }, data: { failureCode: "artifact_bundle_write_failed", status: "FAILED" } }).catch(() => undefined);
@@ -580,25 +598,10 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
 
   function artifactResult(call: ModelToolCall, version: Awaited<ReturnType<typeof getArtifactVersion>>): ToolExecutionResult {
     if (!version) throw new Error("artifact_version_not_found");
-    const payload = {
-      artifact_id: version.artifactId,
-      version_id: version.id,
-      version_number: version.versionNumber,
-      kind: version.kind,
-      title: version.title,
-      entrypoint: version.entrypoint,
-      byte_size: version.manifest.files.reduce((sum, file) => sum + file.byteSize, 0)
-    };
-    return {
-      callId: call.id,
-      name: call.name,
-      status: "complete",
-      content: [{ type: "json", value: payload }],
-      artifacts: [{ type: "artifact", data: { artifactType: "generated_artifact", payload } }]
-    };
+    return artifactToolResult(call, version);
   }
 
-  async function restore(call: ModelToolCall, context: ToolExecutionContext): Promise<ToolExecutionResult | null> {
+  async function restore(call: ModelToolCall, context: ArtifactToolContext): Promise<ToolExecutionResult | null> {
     if (!context.persistedToolCallId || !context.userId) return null;
     if (call.name === READ_ARTIFACT_TOOL_NAME) return execute(call, context);
     const row = await db.artifactVersion.findFirst({
@@ -608,7 +611,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     return artifactResult(call, publicVersion(row));
   }
 
-  async function executeMutation(call: ModelToolCall, context: ToolExecutionContext, signal?: AbortSignal): Promise<ToolExecutionResult> {
+  async function executeMutation(call: ModelToolCall, context: ArtifactToolContext, options?: ArtifactExecutionOptions): Promise<ToolExecutionResult> {
     if (call.name !== ARTIFACT_TOOL_NAME || !context.runId || !context.userId || !context.persistedToolCallId) {
       throw new Error("artifact_tool_unavailable");
     }
@@ -650,15 +653,20 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       sourceModelRunId: context.runId,
       sourceToolCallId: context.persistedToolCallId,
       allowedAssetRefs: context.request.imageReferences?.map((reference) => reference.attachmentId) ?? [],
-      signal
+      resourcePolicy: context.request.artifactResourcePolicy,
+      signal: options?.signal,
+      assertActive: options?.assertActive,
+      ...(options?.onResult ? { onReady: (tx: Prisma.TransactionClient, ready: NonNullable<Awaited<ReturnType<typeof getArtifactVersion>>>) =>
+        options.onResult!(tx, artifactResult(call, ready)) } : {})
     });
     return artifactResult(call, version);
   }
 
-  async function execute(call: ModelToolCall, context: ToolExecutionContext, options?: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+  async function execute(call: ModelToolCall, context: ArtifactToolContext, options?: ArtifactExecutionOptions): Promise<ToolExecutionResult> {
     try {
+      options?.signal?.throwIfAborted();
       if (call.name === READ_ARTIFACT_TOOL_NAME) return await readArtifact(call, context);
-      return await executeMutation(call, context, options?.signal);
+      return await executeMutation(call, context, options);
     } catch (error) {
       const expected = artifactToolError(error);
       if (!expected) throw error;
@@ -668,7 +676,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     }
   }
 
-  async function readArtifact(call: ModelToolCall, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+  async function readArtifact(call: ModelToolCall, context: ArtifactToolContext): Promise<ToolExecutionResult> {
     const artifactId = call.arguments.artifact_id;
     const reference = context.request.artifactReferences?.find(reference => reference.artifactId === artifactId);
     if (!context.userId || !reference || !context.runId) throw new ArtifactToolError("artifact_read_unavailable", { hint: "Read only an artifact listed in this message's accepted artifact context." });

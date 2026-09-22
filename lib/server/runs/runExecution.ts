@@ -2750,6 +2750,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             request: providerRequest, runId, userId: input.userId, signal,
             transport: input.agentResponses, workspace: input.workspace,
             onEvent: applyProviderEvent, onActivity: onWorkspaceActivity,
+            async onPersistedEvent(event) {
+              // The gateway committed this output with the tool receipt.
+              // Forward it live without creating a second durable event.
+              emitTransient(controller, encoder, event);
+            },
             async onUsage(attributions) {
               reportedUsageAttributions.splice(0, reportedUsageAttributions.length, ...attributions);
               await persistReportedUsageForIncompleteRun();

@@ -5,6 +5,14 @@ import { agentPrompts } from "./prompt";
 import { withSelectedSkillContext } from "../skills/userContext";
 
 describe("Codex conversation delivery", () => {
+  it("explains explicit Workspace bundle submission only when artifacts were admitted", () => {
+    const request = { content: textMessageContent("Build a page"), attachments: [], prompt: { system: "baseline" } } as unknown as ProviderRunRequest;
+    expect(agentPrompts(request).developerInstructions).not.toContain("files[].text");
+    const prompt = agentPrompts({ ...request, artifactTool: true }).developerInstructions;
+    expect(prompt).toContain("files[].text");
+    expect(prompt).toContain("do not authorize host file reads");
+    expect(prompt).toContain("external MCP is Off");
+  });
   it("keeps pinned bundles at user authority and delegates available discovery to Codex on start and resume", () => {
     const messages = withSelectedSkillContext([
       { id: "earlier", role: "assistant", content: textMessageContent("Earlier answer") },

@@ -398,15 +398,16 @@ describe("message run actions", () => {
     expect(actions.session(actions.sourceSessionKey)).toMatchObject({ artifactCreate: { intent: "create" }, draft: "Create a page", pendingSend: null });
   });
 
-  it("blocks an existing creation chip before fetch when Agent becomes enabled", async () => {
-    const fetchMock = vi.fn();
+  it("sends an existing creation chip with Agent and retains the draft when admission rejects it", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: "agent_unavailable" }, { status: 409 }));
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({ attachments: [], draft: "Create a page" });
     useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { artifactCreate: { intent: "create" }, agentEnabled: true });
     await actions.submitComposer();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const request = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(request[1].body))).toMatchObject({ agentEnabled: true, artifactIntent: "create" });
     expect(actions.session(actions.sourceSessionKey)).toMatchObject({ artifactCreate: { intent: "create" }, draft: "Create a page", pendingSend: null });
-    expect(actions.setNotice).toHaveBeenCalledWith({ kind: "error", text: "Not available in Agent mode" });
   });
 
   it("consumes an admitted artifact edit before the answer arrives without releasing send or consuming the next intent", async () => {
