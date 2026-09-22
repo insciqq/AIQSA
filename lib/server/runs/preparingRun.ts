@@ -334,6 +334,14 @@ export function decodeMemoryPreparingSettingsSnapshot(
   return value as MemoryPreparingSettingsSnapshot;
 }
 
+/** A replaceable search projection does not change read-only control authority.
+ * All other admitted settings, including revisions and egress, remain exact. */
+export function memoryControlReuseSettingsHash(
+  settings: MemoryPreparingSettingsSnapshot
+): string {
+  return memoryPreparingHash({ ...settings, activeIndexGenerationId: null });
+}
+
 export function sameMemoryPreparingSettings(
   left: MemoryPreparingSettingsSnapshot,
   right: MemoryPreparingSettingsSnapshot,

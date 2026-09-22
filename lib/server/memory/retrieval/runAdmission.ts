@@ -48,7 +48,7 @@ import type {
   MemoryPreparingItemInput,
   MemoryPreparingSettingsSnapshot
 } from "../../runs/preparingRun";
-import { MemoryPreparingRunConflictError } from "../../runs/preparingRun";
+import { memoryControlReuseSettingsHash, MemoryPreparingRunConflictError } from "../../runs/preparingRun";
 import { normalizedRequestPersonalContextTokenLimit } from "../../runs/runContextBudget";
 import {
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
@@ -497,13 +497,13 @@ function memoryControlContext(
 /** Retry reuse is deliberately narrower than the provider input hash. The
  * prior opaque Memory refs are safe to retain only because NONE cannot
  * authorize an action; every other admitted setting must still be identical
- * apart from the Memory content revision that caused the retry. */
+ * apart from the content revision and replaceable search projection. Each
+ * retry still reads and validates the current projection before packing. */
 function memoryControlReuseScopeHash(
   input: MemoryRunRetrievalInput,
   currentUserMessage: string
 ): string {
   return memorySha256({
-    activeIndexGenerationId: input.expected.activeIndexGenerationId,
     assistantId: input.expected.assistantId,
     chatId: input.chatId,
     chatMemoryMode: input.expected.chatMemoryMode,
@@ -511,9 +511,9 @@ function memoryControlReuseScopeHash(
     folderId: input.expected.folderId,
     memoryGeneration: input.expected.memoryGeneration,
     modelRunId: input.modelRunId,
-    settings: input.expected.settings,
+    settingsHash: memoryControlReuseSettingsHash(input.expected.settings),
     userId: input.userId,
-    version: 1
+    version: 2
   });
 }
 

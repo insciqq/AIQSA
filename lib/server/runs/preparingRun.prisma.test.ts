@@ -45,7 +45,9 @@ import {
   MEMORY_CONTROL_VERSIONS,
   createMemoryReadOnlyControlReuseProof,
   memoryControlAcceptedOutputHash,
+  memoryControlInputHash,
   memoryControlIntentHash,
+  type MemoryControlService,
   type MemoryReadOnlyControlReuseProof
 } from "../memory/actions/controlRuntime";
 import {
@@ -69,6 +71,10 @@ import {
   MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION
 } from "../memory/retrieval/runUtilities";
 import { createPrismaLocalMemoryRetrievalRepository } from "../memory/retrieval/localRepository";
+import { createMemoryRunRetrievalService, type MemoryRunControlCache } from "../memory/retrieval/runAdmission";
+import { createPrismaMemoryRebuildRepository } from "../memory/rebuild/repository";
+import { createMemoryRebuildHandler } from "../memory/rebuild/handler";
+import { createPrismaMemoryCoordinatorRepository } from "../memory/coordinator/prismaRepository";
 import { touchFrozenMemoryPack } from "../memory/retrieval/decayTouch";
 import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT } from "../memory/retrieval/vector";
 import {
@@ -498,7 +504,10 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
     authority,
     async cleanup() {
       await prisma.usageEvent.deleteMany({ where: { userId } });
-      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
+      // Synthetic fact classification stays referenced until owner cleanup.
+      await prisma.memoryExecutionBinding.deleteMany({ where: {
+        userId, logicalRole: { not: "MEMORY_STATEMENT_CLASSIFY" }
+      } });
       await prisma.systemModelPolicy.update({
         data: {
           providerModelId: originalSystemPolicy.providerModelId,
@@ -534,6 +543,36 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
       await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
     }
   };
+}
+
+async function activatePreparingIndex(userId: string) {
+  const before = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+  const repository = createPrismaMemoryRebuildRepository(prisma);
+  const admitted = await repository.admit(userId, {
+    expectedMemoryRevision: before.memoryRevision, expectedSettingsRevision: before.settingsRevision,
+    operation: "REBUILD_SEARCH_INDEX", requestIdentity: { nonce: randomUUID() }
+  });
+  if (admitted.kind !== "ok") throw new Error(admitted.kind);
+  const now = new Date();
+  const claimToken = randomUUID();
+  const leaseExpiresAt = new Date(now.getTime() + 60_000);
+  const job = await prisma.memoryJob.update({ where: { id: admitted.jobId }, data: {
+    attemptCount: { increment: 1 }, leaseExpiresAt, leaseToken: claimToken, state: "CLAIMED", updatedAt: now
+  } });
+  const claim = { ...job, claimToken, leaseExpiresAt, recoveredLease: false };
+  const handler = createMemoryRebuildHandler(repository);
+  await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
+  const result = await handler.execute(claim, {
+    now: () => now, setStage: async () => undefined, signal: new AbortController().signal
+  });
+  await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+    acceptedResultHash: result.acceptedResultHash, apply: result.apply, claim, now, stage: result.stage ?? null
+  })).resolves.toBe(true);
+  const after = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+  expect(after).toMatchObject({ memoryGeneration: before.memoryGeneration, settingsRevision: before.settingsRevision });
+  expect(after.activeIndexGenerationId).not.toBe(before.activeIndexGenerationId);
+  expect(after.memoryRevision).toBeGreaterThan(before.memoryRevision);
+  return after;
 }
 
 async function saveExplicitFact(
@@ -1298,6 +1337,156 @@ describe("PREPARING run orchestration", () => {
       });
     }
   );
+
+  it.each([
+    { outcome: "USED", terminal: "finalize" },
+    { outcome: "EMPTY", terminal: "finalize" },
+    { outcome: "USED", terminal: "interrupted" },
+    { outcome: "USED", terminal: "forged-proof" }
+  ] as const)("reprepares after a real index activation: $outcome, $terminal", async ({ outcome, terminal }) => {
+    await withPreparingUser(async ({ userId }) => {
+      const fixture = await createPreparingEmbeddingAuthority(userId);
+      try {
+        // Qualify control, but keep this real rebuild and read lexical and provider-free.
+        await prisma.userMemorySettings.update({ where: { userId }, data: {
+          embeddingProviderModelId: null, referenceChatHistory: false
+        } });
+        const policy = await prisma.$transaction(async tx => resolveCurrentMemoryUtilityPolicy(tx, userId,
+          await tx.userMemorySettings.findUniqueOrThrow({ where: { userId } })));
+        await prisma.userMemorySettings.update({ where: { userId }, data: {
+          acceptedUtilityEgressFingerprint: policy.fingerprint
+        } });
+        const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+        const fact = outcome === "USED" ? await saveExplicitFact(userId, scope.id) : null;
+        if (fact) await classifyExplicitFact(userId, fact.versionId);
+        const firstIndex = await activatePreparingIndex(userId);
+        const chat = await prisma.chat.create({ data: { title: "Index activation during preparation", userId } });
+        const base = normalizedRequest(chat.id, "My preferred editor is Vim.");
+        const request: NormalizedRunRequest = { ...base, prompt: {
+          ...base.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+        } };
+        const repository = createPrismaRunRepository(prisma, { memoryExecutionAuthority: fixture.authority });
+        const admitted = await repository.admitPreparingRun({
+          admissionKind: "NORMAL_SEND", chatId: chat.id, content: request.content, expectedActiveLeafId: null,
+          modelId: request.modelId, normalizedRequest: request, provider: request.provider,
+          providerRequestPreview: {}, userId
+        });
+        const execution = createPrismaMemoryExecutionService(fixture.authority, prisma);
+        const control = { decide: vi.fn(async (input: Parameters<MemoryControlService["decide"]>[0]) => {
+          const inputHash = memoryControlInputHash(input.context);
+          const intent = { ...readOnlyRetryIntent, queryText: input.context.currentUserMessage };
+          const binding = await execution.admission.bind(userId, { inputHash, ordinal: 0,
+            owner: { retrievalAttemptId: input.attemptId, type: "RETRIEVAL_ATTEMPT" },
+            role: "MEMORY_CONTROL", versions: MEMORY_CONTROL_VERSIONS });
+          await execution.admission.start(userId, binding.id);
+          await execution.lifecycle.settle(userId, binding.id, {
+            acceptedOutputHash: memoryControlAcceptedOutputHash(inputHash, memoryControlIntentHash(intent)),
+            errorCode: null, providerResponseId: "index-cutover-control", state: "SUCCEEDED",
+            usage: { cachedInputTokens: 0, completeness: "COMPLETE", estimatedCostMicros: null,
+              inputTokens: 9, outputTokens: 4, reasoningTokens: 0, totalTokens: 13 }
+          });
+          return { bindingId: binding.id, intent, status: "READY" as const };
+        }) };
+        const local = { ...createPrismaLocalMemoryRetrievalRepository(prisma) };
+        const read = vi.spyOn(local, "snapshot");
+        const retrieval = createMemoryRunRetrievalService(local, { control, readUtilityPolicy: "CONTROL_RESOLVER_V1" });
+        const controlCache: MemoryRunControlCache = {};
+        const firstInput = {
+          attemptId: admitted.attemptId, chatId: chat.id, controlCache,
+          expected: { activeIndexGenerationId: admitted.settingsSnapshot.activeIndexGenerationId,
+            assistantId: null, chatMemoryMode: admitted.chatMemoryMode, folderId: admitted.folderId,
+            memoryGeneration: admitted.memoryGeneration, memoryRevision: admitted.memoryRevision,
+            settings: admitted.settingsSnapshot },
+          modelRunId: admitted.runId, normalizedRequest: request, now: new Date(), userId
+        };
+        const materialize = (result: Awaited<ReturnType<typeof retrieval.retrieve>>,
+          current: { memoryGeneration: number; memoryRevision: number }): NormalizedRunRequest => ({
+          ...request, ...(result.preparedContext ? { personalContext: {
+            approxTokens: result.preparedContext.approxTokens, itemCount: result.items?.length ?? 0,
+            memoryGeneration: current.memoryGeneration, memoryRevision: current.memoryRevision,
+            mode: "prefetched" as const, text: result.preparedContext.text
+          } } : {})
+        });
+        await repository.beginPreparingRunAttempt({ attemptId: admitted.attemptId,
+          now: new Date(), runId: admitted.runId, userId });
+        const first = await retrieval.retrieve(firstInput);
+        expect(first.outcome).toBe(outcome);
+        await repository.completePreparingRunAttempt({ attemptId: admitted.attemptId,
+          result: first, runId: admitted.runId, userId });
+        const current = await activatePreparingIndex(userId);
+        await expect(repository.finalizePreparingRun({ attemptId: admitted.attemptId,
+          normalizedRequest: materialize(first, admitted), providerRequestPreview: {}, runId: admitted.runId, userId
+        })).rejects.toMatchObject({ code: "memory_admission_settings_changed", retryable: true });
+        const retry = await repository.retryPreparingRunAttempt({ attemptId: admitted.attemptId,
+          now: new Date(), runId: admitted.runId, userId });
+        if (!retry) throw new Error("index_cutover_retry_missing");
+        await repository.beginPreparingRunAttempt({ attemptId: retry.attemptId,
+          now: new Date(), runId: admitted.runId, userId });
+        const result = await retrieval.retrieve({ ...firstInput, attemptId: retry.attemptId, now: new Date(),
+          expected: { ...firstInput.expected, activeIndexGenerationId: retry.settingsSnapshot.activeIndexGenerationId,
+            memoryGeneration: retry.memoryGeneration, memoryRevision: retry.memoryRevision, settings: retry.settingsSnapshot }
+        });
+        expect(result.outcome).toBe(outcome);
+        expect(result.budgetSnapshot).toMatchObject({ readOnlyControlReuse: { sourceAttemptId: admitted.attemptId } });
+        expect(result.items?.map(item => item.exactItemId)).toEqual(fact ? [fact.versionId] : []);
+        expect(read).toHaveBeenCalledTimes(2);
+        const snapshots = await Promise.all(read.mock.results.map(entry => entry.value));
+        expect(snapshots.map(entry => entry.activeGenerationId))
+          .toEqual([firstIndex.activeIndexGenerationId, current.activeIndexGenerationId]);
+        await repository.completePreparingRunAttempt({ attemptId: retry.attemptId,
+          result, runId: admitted.runId, userId });
+        const frozen = await prisma.memoryRetrievalAttempt.findUniqueOrThrow({ where: { id: retry.attemptId } });
+        expect(frozen).toMatchObject({ state: "READY", indexGenerationIdSnapshot: current.activeIndexGenerationId });
+        const freshRead = vi.fn();
+        const fresh = createPrismaRunRepository(prisma, { memoryExecutionAuthority: fixture.authority,
+          memoryRetrieval: { retrieve: freshRead } });
+        if (terminal === "interrupted") {
+          await expect(fresh.recoverPreparingRun({ now: new Date(), runId: admitted.runId, userId })).resolves.toBe("settled");
+          await expect(prisma.modelRunMemoryBinding.count({ where: { modelRunId: admitted.runId } })).resolves.toBe(0);
+        } else {
+          if (terminal === "forged-proof") {
+            const budget = frozen.budgetSnapshot as Record<string, unknown>;
+            await prisma.memoryRetrievalAttempt.update({ where: { id: retry.attemptId }, data: {
+              budgetSnapshot: { ...budget, readOnlyControlReuse: {
+                ...budget.readOnlyControlReuse as Record<string, unknown>, sourceBindingId: randomUUID()
+              } } as Prisma.InputJsonValue
+            } });
+          }
+          const finalize = () => fresh.finalizePreparingRun({ attemptId: retry.attemptId,
+            normalizedRequest: materialize(result, retry), providerRequestPreview: {}, runId: admitted.runId, userId });
+          if (terminal === "forged-proof") {
+            await expect(finalize()).rejects.toMatchObject({ code: "memory_attempt_execution_invalid" });
+            await expect(prisma.modelRunMemoryBinding.count({ where: { modelRunId: admitted.runId } })).resolves.toBe(0);
+          } else {
+            await expect(finalize()).resolves.toBe(true);
+            const binding = await prisma.modelRunMemoryBinding.findUniqueOrThrow({ where: { modelRunId: admitted.runId } });
+            expect(binding).toMatchObject({ outcome, degradationCode: null,
+              indexGenerationId: current.activeIndexGenerationId, retrievalAttemptId: retry.attemptId });
+            // Later projection replacement cannot change an accepted Phase B pack.
+            await activatePreparingIndex(userId);
+            await expect(fresh.recoverPreparingRun({ now: new Date(), runId: admitted.runId, userId })).resolves.toBe("finalized");
+            await expect(prisma.modelRunMemoryBinding.findUniqueOrThrow({ where: { id: binding.id } })).resolves.toEqual(binding);
+            const projected = await fresh.getChatUpdateForRun({ assistantMessageId: admitted.assistantMessageId,
+              chatId: chat.id, userId, userMessageId: admitted.userMessageId });
+            expect(projected?.messages.find(message => message.id === admitted.assistantMessageId)?.artifactSummary?.memoryStatus)
+              .toBeUndefined();
+          }
+        }
+        expect(freshRead).not.toHaveBeenCalled();
+        expect(control.decide).toHaveBeenCalledOnce();
+        const controls = await prisma.memoryExecutionBinding.findMany({
+          select: { id: true }, where: { userId, logicalRole: "MEMORY_CONTROL" }
+        });
+        expect(controls).toHaveLength(1);
+        await expect(prisma.usageEvent.count({ where: {
+          userId, memoryExecutionBindingId: controls[0]!.id
+        } })).resolves.toBe(1);
+        await expect(prisma.memoryOperationReceipt.count({ where: { userId, modelRunId: admitted.runId } })).resolves.toBe(0);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  });
 
   it("retries two consecutive revision drifts with one read-only control receipt", async () => {
     await withPreparingUser(async ({ userId }) => {

@@ -105,6 +105,7 @@ import {
   decodeMemoryPreparingBaseSnapshot,
   decodeMemoryPreparingSettingsSnapshot,
   dormantMemoryAttemptResult,
+  memoryControlReuseSettingsHash,
   memoryPreparingHash,
   memoryPreparingSettingsSnapshot,
   memoryPreparingTextHash,
@@ -2098,12 +2099,13 @@ export function sameMemoryReadOnlyControlRetryScope(
     source.folderIdSnapshot === current.folderIdSnapshot &&
     source.chatMemoryModeSnapshot === current.chatMemoryModeSnapshot &&
     source.memoryGenerationSnapshot === current.memoryGenerationSnapshot &&
-    source.indexGenerationIdSnapshot === current.indexGenerationIdSnapshot &&
     source.baseRequestHash === current.baseRequestHash &&
     source.preSendActiveLeafMessageId === current.preSendActiveLeafMessageId &&
     sourceSettings !== null &&
     currentSettings !== null &&
-    memoryPreparingHash(sourceSettings) === memoryPreparingHash(currentSettings) &&
+    source.indexGenerationIdSnapshot === sourceSettings.activeIndexGenerationId &&
+    current.indexGenerationIdSnapshot === currentSettings.activeIndexGenerationId &&
+    memoryControlReuseSettingsHash(sourceSettings) === memoryControlReuseSettingsHash(currentSettings) &&
     sourceLifecycle !== null &&
     currentLifecycle !== null &&
     memoryPreparingHash(sourceLifecycle) === memoryPreparingHash(currentLifecycle);
