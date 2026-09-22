@@ -62,7 +62,7 @@ const assistantCards: readonly AssistantSummaryV2[] = [
     name: "Release helper",
     owned: true,
     unavailable: {
-      action: { kind: "mcp-settings", label: "Fix in Settings…" },
+      action: { kind: "mcp-settings", label: "Fix in MCP servers…" },
       explanation: "GitHub is turned off or needs attention.",
       headline: "Needs the GitHub tools"
     }

@@ -100,7 +100,7 @@ function refreshVisibleSettings(): void {
   }
 }
 
-/** Share visible-tab polling between Settings and the personal chat MCP indicator. */
+/** Share visible-tab polling between MCP servers and the personal chat MCP indicator. */
 export function observeMcpSettings(): () => void {
   settingsObservers += 1;
   if (settingsObservers === 1) {

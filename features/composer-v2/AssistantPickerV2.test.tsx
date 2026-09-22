@@ -74,7 +74,7 @@ describe("Assistant picker v2", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Manage Assistants/u }));
     expect(manage).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: "Fix in Settings…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fix in MCP servers…" }));
     expect(repair).toHaveBeenCalledWith("assistant-unavailable", "mcp-settings");
     expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
   });

@@ -718,7 +718,7 @@ export function useWorkspaceActions({
         ? useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId)
             ?.defaultKnowledgePlan ?? null
         : null;
-      // Personal chat defaults (Settings › Chat defaults) start a new chat; a
+      // Personal Chat defaults start a new chat; a
       // folder default still wins for Knowledge. Admission re-checks both.
       const personalPlan = projectPlan
         ? null

@@ -221,8 +221,8 @@ describe("Assistant Library subviews", () => {
     render(<AssistantLibrary view={view({ editor: current, task: "editor" })} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Change", expanded: false }));
-    expect(screen.getByText("Off in Settings")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /Enable in Settings/ }));
+    expect(screen.getByText("Off in MCP servers")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Enable in MCP servers/ }));
     expect(current.onOpenMcpSettings).toHaveBeenCalledOnce();
     expect(screen.getByText("Remove MCP servers that need attention.")).toHaveAttribute("role", "alert");
   });

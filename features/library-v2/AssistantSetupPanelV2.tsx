@@ -276,7 +276,7 @@ export function AssistantSetupPanelV2({
                     {server.name}
                     <small>{server.enabled
                       ? mcpReadinessPresentation(server.readiness).label
-                      : "Off in Settings"}</small>
+                      : "Off in MCP servers"}</small>
                   </span>
                 </label>
               );
@@ -286,7 +286,7 @@ export function AssistantSetupPanelV2({
             <p className="v2-assistant-field-error" role="alert">{editor.fieldErrors.mcpServerIds}</p>
           ) : null}
           {options.mcpServers.some((server) => !server.enabled) ? (
-            <UiV2Button icon="settings" onClick={editor.onOpenMcpSettings}>Enable in Settings › MCP</UiV2Button>
+            <UiV2Button icon="settings" onClick={editor.onOpenMcpSettings}>Enable in MCP servers</UiV2Button>
           ) : null}
         </SetupRowV2>
 

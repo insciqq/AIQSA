@@ -24,7 +24,7 @@ describe("assistantUnavailabilityCopy", () => {
       },
       owned: true
     })).toEqual({
-      action: { kind: "mcp-settings", label: "Fix in Settings…" },
+      action: { kind: "mcp-settings", label: "Fix in MCP servers…" },
       explanation: "GitHub is turned off or needs attention.",
       headline: "Needs the GitHub tools"
     });

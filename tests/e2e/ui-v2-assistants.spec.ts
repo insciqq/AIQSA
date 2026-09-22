@@ -18,7 +18,7 @@ test("Assistant cards keep owner, shared, and repair actions honest", async ({ p
 
   const unavailable = page.getByTestId("assistant-card-release-helper");
   await expect(unavailable.getByRole("button", { name: "Use Release helper" })).toBeDisabled();
-  await expect(unavailable.getByRole("button", { name: "Fix in Settings…" })).toBeVisible();
+  await expect(unavailable.getByRole("button", { name: "Fix in MCP servers…" })).toBeVisible();
   await unavailable.getByRole("button", { name: "Why?" }).click();
   await expect(unavailable).toContainText("GitHub is turned off or needs attention.");
 

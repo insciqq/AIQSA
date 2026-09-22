@@ -81,13 +81,13 @@ export function assistantUnavailabilityCopy(
     if (mcpDependencies.length === 1) {
       const [dependency] = mcpDependencies;
       return {
-        action: { kind: "mcp-settings", label: "Fix in Settings…" },
+        action: { kind: "mcp-settings", label: "Fix in MCP servers…" },
         explanation: `${dependency!.name} is turned off or needs attention.`,
         headline: `Needs the ${dependency!.name} tools`
       };
     }
     return {
-      action: { kind: "mcp-settings", label: "Fix in Settings…" },
+      action: { kind: "mcp-settings", label: "Fix in MCP servers…" },
       explanation: "Some required MCP servers are turned off or need attention.",
       headline: `Needs ${mcpDependencies.length} MCP servers`
     };
