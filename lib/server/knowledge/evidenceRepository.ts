@@ -1,5 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { loadSettledKnowledgeEvidenceAnswerOperationsV1 } from "./evidenceDispatchRepository";
+import { effectiveFollowupQuestion } from "../../domain/runFollowupContext";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { decodeKnowledgeEvidenceAnswerSnapshot } from "./evidenceAnswerSnapshot";
 import { replayKnowledgeEvidenceAnswerV1 } from "./evidenceAnswerReplayV1";
 import { groundSettledKnowledgeEvidenceAnswerV1, type KnowledgeEvidenceAnswerOperationReceiptV1 } from "./evidenceAnswerGroundingV1";
@@ -1703,11 +1705,29 @@ async function loadKnowledgeAnswerBindingFingerprints(client: EvidenceClient, ru
 
 export async function groundKnowledgeEvidenceRunAnswerV1(
   client: EvidenceClient,
-  input: Readonly<{ runId: string; userId: string }>
+  input: Readonly<{ runId: string; userId: string; followupRevision?: number }>
 ): Promise<KnowledgeRunFinalizationEnvelope> {
   const authorization = await loadKnowledgeGroundingEvidencePackage(client, input);
   if (!authorization) throw Error("knowledge_evidence_receipt_invalid");
-  const dispatches = await loadSettledKnowledgeEvidenceAnswerOperationsV1(client, { modelRunId: input.runId });
+  const clarified = input.followupRevision ? await client.modelRun.findFirst({ where: { id: input.runId, userId: input.userId },
+    select: { followupRevision: true, followupKnowledgeRevision: true, followupKnowledgeOffset: true, normalizedRequest: true,
+      followups: { orderBy: { ordinal: "asc" }, select: { ordinal: true, text: true, deliveredAt: true } } } }) : null;
+  if (input.followupRevision && (!clarified || clarified.followupRevision !== input.followupRevision ||
+    clarified.followupKnowledgeRevision !== input.followupRevision || clarified.followups.some(entry => !entry.deliveredAt))) {
+    throw Error("knowledge_followup_question_conflict");
+  }
+  const dispatches = await loadSettledKnowledgeEvidenceAnswerOperationsV1(client, {
+    modelRunId: input.runId, ...(clarified ? { operationOffset: clarified.followupKnowledgeOffset } : {})
+  });
+  if (clarified) {
+    const accepted = clarified.normalizedRequest;
+    const snapshot = decodeKnowledgeEvidenceAnswerSnapshot(dispatches[0]?.attempt.acceptedRequest);
+    const question = snapshot ? JSON.parse(snapshot.userPrompt).request : null;
+    if (!record(accepted) || !record(accepted.content) || !Array.isArray(accepted.content.blocks) ||
+      question !== effectiveFollowupQuestion(textFromContentBlocks({ blocks: accepted.content.blocks }), clarified.followups)) {
+      throw Error("knowledge_followup_question_conflict");
+    }
+  }
   if (dispatches.some(dispatch => dispatch.retrievalSessionId !== authorization.evidence.sessionId)) throw Error("knowledge_evidence_dispatch_grounding_mismatch");
   // A provider receipt proves dispatch, but publication must also bind each
   // excerpt back to evidence authorized and delivered by this run.

@@ -386,6 +386,7 @@ export function useRunLifecycleActions({
     const { run } = outcome;
     useThreadStore.getState().updateMessages(chatId, (messages) => messages.map((message) => message.runId === run.id
       ? { ...message, ...(run.answerComplete ? { status: "complete" as const } : {}),
+          ...(run.followups ? { followups: run.followups } : {}),
           workspacePreparation: run.workspacePreparation,
           workspaceSettling: run.answerComplete && isActiveRunStatus(run.status) ? true : undefined }
       : message));

@@ -691,3 +691,17 @@ html[data-motion="off"] .v2-skeleton {
     transition: none;
   }
 }
+.v2-followup-history {
+  display: grid;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+  min-width: 0;
+}
+
+.v2-followup-label {
+  margin: 0.375rem 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

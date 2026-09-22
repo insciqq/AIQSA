@@ -1,4 +1,6 @@
 import { Prisma } from "@prisma/client";
+import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
+import { projectMessageFollowups } from "../runs/runFollowups";
 import {
   buildPublicShareSnapshot,
   projectPublicShareSnapshot
@@ -92,13 +94,17 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           };
         }
 
+        const history = await tx.message.findMany({ where: { chatId: chat.id, role: "assistant" },
+          select: { id: true, ...messageFollowupSelect } });
+        const followups = new Map(history.map(message => [message.id, projectMessageFollowups(message)]));
         const snapshot = buildPublicShareSnapshot({
           activeLeafMessageId: leaf,
           messages: chat.messages.map((message) => ({
             content: message.content,
             id: message.id,
             parentMessageId: message.parentMessageId,
-            role: message.role as "assistant" | "system" | "tool" | "user"
+            role: message.role as "assistant" | "system" | "tool" | "user",
+            ...(followups.get(message.id) ? { followups: followups.get(message.id)! } : {})
           })),
           title: chat.title
         });

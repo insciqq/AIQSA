@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
+import { projectMessageFollowups } from "../runs/runFollowups";
 import { Prisma, type MessageStatus, type ModelRunStatus } from "@prisma/client";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
@@ -295,10 +297,11 @@ export function createPrismaMessageBranchRepository(
           select: {
             assistantModelRuns: {
               orderBy: { createdAt: "desc" },
-              select: { id: true },
+              select: { id: true, ...runFollowupSelect, status: true, answerCompletedAt: true },
               take: 1
             },
             branchSourceModelRunId: true,
+            branchFollowups: true,
             content: true,
             errorMessage: true,
             id: true,
@@ -471,6 +474,7 @@ export function createPrismaMessageBranchRepository(
         for (const sourceMessage of path) {
           const parentMessageId = sourceMessage.parentMessageId ? idMap.get(sourceMessage.parentMessageId) ?? null : null;
           const clonedMessageId = randomUUID();
+          const followups = projectMessageFollowups(sourceMessage);
           const clonedAttachmentIds = new Map(
             (attachmentIdsByMessageId.get(sourceMessage.id) ?? []).map((attachmentId) => [
               attachmentId,
@@ -479,6 +483,7 @@ export function createPrismaMessageBranchRepository(
           );
           const cloned = await tx.message.create({
             data: {
+              ...(followups?.entries.length ? { branchFollowups: json({ ...followups, available: false }) } : {}),
               branchSourceModelRunId: sourceMessage.role === "assistant"
                 ? sourceMessage.assistantModelRuns[0]?.id ??
                   sourceMessage.branchSourceModelRunId

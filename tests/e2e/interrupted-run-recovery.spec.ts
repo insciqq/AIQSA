@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { providerTemplateIds } from "../../lib/domain/providerTemplates";
-import { chooseSearchStrategy, selectModel } from "./shell/composer";
+import { chooseSearchStrategy } from "./shell/composer";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
+import { selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
 
 test("a disconnected accepted answer can be stopped through the real cancellation endpoint", async ({ page, context }, testInfo) => {
   test.setTimeout(180_000);
@@ -34,10 +34,12 @@ test("a disconnected accepted answer can be stopped through the real cancellatio
     };
   });
   await signInWithLocalToken(page);
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
-  await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA");
+  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
+  await selectFakeModel(page);
   await expect(page.getByTestId("header-model-trigger")).toHaveText("Fake QSA");
-  await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
   await page.getByRole("textbox", { name: "Message" }).fill("Keep this answer running. " + "synthetic ".repeat(1000));
   await page.getByRole("button", { name: "Send message" }).click();
   const strip = page.getByTestId("run-connection-lost");

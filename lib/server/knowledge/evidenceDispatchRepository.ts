@@ -1704,14 +1704,17 @@ export async function loadSettledKnowledgeAnswerGroundingOperationsV21(
 
 export async function loadSettledKnowledgeEvidenceAnswerOperationsV1(
   client: Pick<Prisma.TransactionClient, "knowledgeProviderAttempt">,
-  input: Readonly<{ modelRunId: string }>
+  input: Readonly<{ modelRunId: string; operationOffset?: number }>
 ): Promise<readonly StoredKnowledgeEvidenceDispatch[]> {
   if (!safeString(input.modelRunId)) repositoryError("invalid_input");
+  const offset = input.operationOffset ?? 0;
+  if (!integer(offset, 0, 7)) repositoryError("invalid_input");
   const rows = await client.knowledgeProviderAttempt.findMany({ include: attemptInclude, orderBy: { ordinal: "asc" },
-    take: 257, where: { modelRunId: input.modelRunId } });
+    take: 257, where: { modelRunId: input.modelRunId, ...(offset ? { ordinal: { gt: offset } } : {}) } });
   const operations = rows.filter(row => answerOperationContractVersion(row.purpose as LegacyKnowledgeProviderAttemptPurpose) !== null);
   if (operations.length < 2 || operations.length > 8 || operations.some(row => !isKnowledgeEvidenceAnswerOperation(row.purpose))) repositoryError("stored_manifest_invalid");
-  const dispatches = operations.map(storedDispatch);
+  const dispatches = operations.map(storedDispatch).map(dispatch => offset
+    ? { ...dispatch, attempt: { ...dispatch.attempt, ordinal: dispatch.attempt.ordinal - offset } } : dispatch);
   if (dispatches.some((dispatch, index) => {
     const snapshot = decodeKnowledgeEvidenceAnswerSnapshot(dispatch.attempt.acceptedRequest);
     return !snapshot || dispatch.attempt.ordinal !== index + 1 || dispatch.attempt.providerBindingKey !== "answer" ||

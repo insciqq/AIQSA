@@ -1,4 +1,9 @@
 import { createArtifactGeneration } from "../artifacts/generation";
+import { createRunFollowupExecution, RunFollowupChanged } from "./runFollowupExecution";
+import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
+import { knowledgeLifecycleAfterFollowup } from "../knowledge/followupExecution";
+import { effectiveFollowupQuestion } from "../../domain/runFollowupContext";
+import { extractOpenAIUsage } from "../providers/openaiResponsesResponse";
 import { AgentExecutionError, agentFailureCode, agentFailureMessage } from "../agents/failures";
 import { knowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
@@ -215,6 +220,7 @@ export type RunExecutionRepository = Pick<
   | "publishRunAnswer"
   | "createSearchRun"
   | "failRun"
+  | "followups"
   | "getChatUpdateForRun"
   | "getRunControlForUser"
   | "groundKnowledgeAnswer"
@@ -368,6 +374,7 @@ function serializeChatUpdate(
       workspace: update.chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
     },
     messages: update.messages.map((message) => ({
+      ...(message.followups ? { followups: message.followups } : {}),
       artifactSummary: message.artifactSummary ?? null,
       assistantIdentity: message.assistantIdentity ?? null,
       ...(message.author !== undefined ? { author: message.author } : {}),
@@ -704,6 +711,43 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       let projectAccessValidatedAt = Number.NEGATIVE_INFINITY;
       const reportedUsageAttributions: RunUsageAttribution[] = [];
       const usageAccountedToolCallIds = new Set<string>();
+      let followupBaseRequest = input.prepared.providerRequest;
+      const followups = input.repository.followups && !normalizedRequest.workspace && !normalizedRequest.agent
+        ? createRunFollowupExecution({
+            runId, userId: input.userId, operations: input.repository.followups,
+            bridge: input.toolBridge ?? providerToolBridges[normalizedRequest.provider as keyof typeof providerToolBridges],
+            async beforeDelivery() { await tokenBuffer.flush(); return tokenBuffer.text; },
+            async onDelivery() {
+              tokenBuffer.resetLocal();
+              answerStartMarked = false;
+              persistedProviderResponseId = null;
+              emitTransient(controller, encoder, { type: "message_reset", data: { round: followups!.revision } });
+              const update = await input.repository.getChatUpdateForRun({
+                ...input.created, chatId: normalizedRequest.chatId, userId: input.userId
+              }).catch(() => null);
+              if (update) emitTransient(controller, encoder, { type: "chat_update", data: serializeChatUpdate(update) });
+            },
+            async onInterruptedUsage(usage, request, generation) {
+              let reported = usage;
+              if (!generation.completed && request.params.background === true && !request.forceNonStreaming) {
+                if (!generation.providerResponseId) throw new RunPipelineError("followup_generation_unconfirmed", "The previous background response could not be confirmed as stopped.");
+                let stopped = false;
+                try {
+                  const cancelled = await input.adapter.cancel?.(generation.providerResponseId);
+                  if (cancelled) reported = mergeTokenUsage(reported, extractOpenAIUsage(cancelled));
+                  stopped = ["cancelled", "completed", "failed", "incomplete"].includes(String(cancelled?.status));
+                } catch { /* A completion may have won the provider's cancellation race. */ }
+                if (!stopped && input.adapter.refresh) {
+                  const refreshed = await input.adapter.refresh(generation.providerResponseId);
+                  stopped = refreshed.terminal;
+                  if (refreshed.result) reported = mergeTokenUsage(reported, refreshed.result.usage);
+                }
+                if (!stopped) throw new RunPipelineError("followup_generation_unconfirmed", "The previous background response could not be confirmed as stopped.");
+              }
+              rememberReportedUsage(request.provider, request.modelId, reported);
+              await persistReportedUsageForIncompleteRun();
+            }
+          }) : null;
 
       async function assertProjectRunAccessCurrent(force = false): Promise<void> {
         const project = input.prepared.project;
@@ -876,6 +920,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           rememberReportedUsage(request.provider, request.modelId,
             normalizeTokenUsage({ ...(lastReportedUsage ?? {}), completeness: "partial" }));
           throw error;
+        } finally {
+          await providerStream.return(undefined as never).catch(() => undefined);
         }
       }
 
@@ -1329,10 +1375,20 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         operation: ProviderStructuredOutputRequest,
         executionOptions: KnowledgeAnswerOperationExecutionOptionsV8
       ): Promise<KnowledgeAnswerOperationExecutionV8> {
+        return followups
+          ? followups.operation(signal, operationSignal => dispatchKnowledgeStructuredOutput(operation, executionOptions, operationSignal))
+          : dispatchKnowledgeStructuredOutput(operation, executionOptions, signal);
+      }
+
+      async function dispatchKnowledgeStructuredOutput(
+        operation: ProviderStructuredOutputRequest,
+        executionOptions: KnowledgeAnswerOperationExecutionOptionsV8,
+        generationSignal: AbortSignal
+      ): Promise<KnowledgeAnswerOperationExecutionV8> {
         const dispatchRequest = providerNeutralKnowledgeRequest(operation);
         const operationTimeoutMs = normalizedRequest.knowledgeGenerationBudget?.timeoutMs ?? 120_000;
         const operationSignal = AbortSignal.any([
-          signal,
+          generationSignal,
           AbortSignal.timeout(operationTimeoutMs)
         ]);
         const receipt = input.memoryEgress && egressReceiptRequired
@@ -1420,7 +1476,20 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
       }
 
-      async function runAutomaticKnowledgeAnswer(inputRequest: Readonly<{
+      async function runAutomaticKnowledgeAnswer(inputRequest: Parameters<typeof executeAutomaticKnowledgeAnswer>[0]) {
+        for (;;) {
+          if (followups) await followups.prepare(followupBaseRequest);
+          try {
+            const result = await executeAutomaticKnowledgeAnswer(inputRequest);
+            if (!followups || await followups.close()) return result;
+          } catch (error) {
+            if (!(error instanceof RunFollowupChanged) || signal.aborted) throw error;
+          }
+          await persistReportedUsageForIncompleteRun();
+        }
+      }
+
+      async function executeAutomaticKnowledgeAnswer(inputRequest: Readonly<{
         dispatchDraft: KnowledgeEvidenceDispatchManifestDraft;
         evidenceBindings: readonly KnowledgeEvidenceDispatchBinding[] | null;
         routeInstruction?: string;
@@ -1444,7 +1513,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               : "Knowledge answer grounding is unavailable"
           );
         }
-        const requestText = textFromContentBlocks(normalizedRequest.content).trim();
+        const requestText = effectiveFollowupQuestion(textFromContentBlocks(normalizedRequest.content), followups?.entries ?? []);
         if (!requestText) {
           throw new RunPipelineError(
             "knowledge_answer_request_invalid",
@@ -1465,6 +1534,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             })
           : null;
         const workflowVersion = normalizedRequest.knowledgeAnswerWorkflowVersion;
+        const knowledgeOffset = followups && input.repository.followups
+          ? await input.repository.followups.beginKnowledge({ runId, userId: input.userId, revision: followups.revision }) : 0;
         const executionInput = {
           authorize: authorizeKnowledgeAnswerOperation,
           draft: inputRequest.dispatchDraft,
@@ -1481,7 +1552,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               source.sourceArtifactId
             ])
           ],
-          lifecycle: input.knowledgeProviderDispatch,
+          lifecycle: knowledgeLifecycleAfterFollowup(input.knowledgeProviderDispatch!, knowledgeOffset),
           modelRunId: runId,
           ...(workflowVersion === 2 || workflowVersion === 3 || workflowVersion === 4 ||
             workflowVersion === 5 || workflowVersion === 6 || workflowVersion === 7
@@ -1493,7 +1564,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           routeInstruction: inputRequest.routeInstruction ?? (fullContextPlan
             ? KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION
             : KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION),
-          shouldAbort: () => signal.aborted,
+          shouldAbort: (error: unknown) => signal.aborted || error instanceof RunFollowupChanged,
           transport: input.structuredOutputAdapter
             ? "native_strict"
             : "provider_neutral_json"
@@ -1509,7 +1580,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   authorize: authorizeKnowledgeAnswerOperation, executor: input.knowledgeExecutor,
                   memoryEgress: input.memoryEgress, repository: input.repository,
                   previousEvidence,
-                  request: input.prepared.providerRequest, result, runId, signal, userId: input.userId,
+                  request: { ...input.prepared.providerRequest, content: textMessageContent(requestText) }, result, runId, signal, userId: input.userId,
                   async onResult(toolResult) {
                     for (const attribution of knowledgeUsageAttributionsFromToolResult(toolResult)) {
                       rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
@@ -1613,10 +1684,28 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         emitTransient(controller, encoder, event);
       }
 
-      async function* streamAnswerProviderWithEgress(
+      function streamAnswerProviderWithEgress(
         request: ProviderRunRequest,
         dispatchSignal: AbortSignal = signal,
-        onToolArguments?: import("../providers/types").ProviderToolArgumentObserver
+        onToolArguments?: import("../providers/types").ProviderToolArgumentObserver,
+        closeOnFinal: boolean | (() => boolean) = !knowledgeCitationAnswer
+      ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        followupBaseRequest = request;
+        if (!followups) return streamAnswerProviderDispatch(request, dispatchSignal, onToolArguments);
+        const snapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
+        return followups.stream(request, {
+          signal: dispatchSignal, onToolArguments,
+          timeoutMs: effectiveProviderResponseTimeoutMs(snapshot.connection, snapshot.model.adapterKind === "fake" ? null : snapshot.model),
+          closeOnFinal,
+          adapter: { stream: (next, options) => streamAnswerProviderDispatch(next, options?.signal, options?.onToolArguments, options?.timeoutMs) }
+        });
+      }
+
+      async function* streamAnswerProviderDispatch(
+        request: ProviderRunRequest,
+        dispatchSignal: AbortSignal = signal,
+        onToolArguments?: import("../providers/types").ProviderToolArgumentObserver,
+        timeoutMs?: number
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
         lastSessionRequest = request;
         let preview: Record<string, unknown> | null = null;
@@ -1680,19 +1769,23 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             : null;
           await assertProjectRunAccessCurrent(true);
           await publishRequestContext(request);
-          const stream = input.adapter.stream(request, { signal: dispatchSignal, onToolArguments });
-          let next = await stream.next();
-          while (!next.done) {
-            yield next.value;
-            next = await stream.next();
+          const stream = input.adapter.stream(request, { signal: dispatchSignal, onToolArguments, ...(timeoutMs ? { timeoutMs } : {}) });
+          try {
+            let next = await stream.next();
+            while (!next.done) {
+              yield next.value;
+              next = await stream.next();
+            }
+            if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id))) {
+              throw new RunPipelineError(
+                "memory_egress_receipt_conflict",
+                "Provider dispatch evidence could not be completed."
+              );
+            }
+            return next.value;
+          } finally {
+            await stream.return(undefined as never).catch(() => undefined);
           }
-          if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id))) {
-            throw new RunPipelineError(
-              "memory_egress_receipt_conflict",
-              "Provider dispatch evidence could not be completed."
-            );
-          }
-          return next.value;
         } catch (error) {
           if (receipt) {
             await input.memoryEgress!.failDispatch(
@@ -1816,7 +1909,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             return streamAnswerProviderWithEgress(
               request,
               options?.signal ?? signal,
-              options?.onToolArguments
+              options?.onToolArguments,
+              () => !knowledgeCitationAnswer || knowledgeToolResults.size > 0 &&
+                toolLoopKnowledgeEvidenceDispatchDraft({
+                  exclusions: input.prepared.knowledgeAdmissionPlan?.exclusions,
+                  request,
+                  results: [...knowledgeToolResults.values()]
+                }) === null
             );
           }
         };
@@ -2696,6 +2795,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           },
           type: "message_start"
         });
+        if (followups) {
+          // Admission owns availability, including inherited clarification
+          // history. Publish it before the first external operation/token.
+          const update = await input.repository.getChatUpdateForRun({
+            ...input.created, chatId: normalizedRequest.chatId, userId: input.userId
+          });
+          if (update) emitTransient(controller, encoder, { type: "chat_update", data: serializeChatUpdate(update) });
+        }
         if (input.prepared.contextTruncation) {
           await emit(
             controller,
@@ -2720,6 +2827,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           input.images ? await input.images.withConversationPixels(input.prepared.providerRequest, input.userId, signal) : input.prepared.providerRequest
         );
         const providerRequest = preparedProviderRequest.request;
+        followupBaseRequest = providerRequest;
         lastSessionRequest = groundedKnowledgeAnswer ? { ...providerRequest, tools: [] } : providerRequest;
         assertPersonalContextEgressSafe(providerRequest);
         if (groundedKnowledgeAnswer) {
@@ -2843,6 +2951,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         } as const;
         executionStage = "completion";
         const finalization = await finalizeRunCompletion({
+          ...(followups ? { followupRevision: followups.revision } : {}),
           ...(normalizedRequest.workspace ? { afterAnswerPublished: async (answer: { finalText: string; usage: ModelRunUsage }) => {
             answerPublished = true;
             if (knowledgeCitationAnswer && answer.finalText) {
@@ -3062,6 +3171,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           });
         }
       } finally {
+        followups?.release();
         await artifactGeneration.stop(signal.aborted ? "cancelled" : "failed").catch(() => undefined);
         if (workspaceTurnTimer) clearTimeout(workspaceTurnTimer);
         if (input.prepared.project) notifyProjectEvent(input.prepared.project.projectId);

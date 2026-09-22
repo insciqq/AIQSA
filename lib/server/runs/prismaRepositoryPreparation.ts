@@ -3,6 +3,7 @@ import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { insertAcceptedMcpRoutingBindings } from "../mcp/decisionBinding";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
+import { admittedFollowupFields, insertAdmittedRunFollowups } from "./prismaRepositoryFollowups";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import {
@@ -1109,6 +1110,7 @@ export async function admitProjectRunWithClient(
       }
       const run = await tx.modelRun.create({
         data: {
+          ...admittedFollowupFields(input),
           assistantMessageId,
           ...(input.assistant
             ? { assistantId: input.assistant.assistantId, assistantIdentity: input.assistant.identity as unknown as Prisma.InputJsonValue }
@@ -1124,6 +1126,7 @@ export async function admitProjectRunWithClient(
           userMessageId
         }
       });
+      await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
         assistantMessageId,
         runId: run.id,
@@ -1588,6 +1591,7 @@ export async function admitPreparingRunWithClient(
 
       const run = await tx.modelRun.create({
         data: {
+          ...admittedFollowupFields(input),
           assistantMessageId,
           ...(input.assistant
             ? {
@@ -1605,7 +1609,7 @@ export async function admitPreparingRunWithClient(
           userMessageId
         }
       });
-
+      await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
         assistantMessageId,
         runId: run.id,

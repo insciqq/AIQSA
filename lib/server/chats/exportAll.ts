@@ -1,4 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
+import type { RunFollowupState } from "../../contracts/runFollowups";
+import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
+import { projectMessageFollowups } from "../runs/runFollowups";
 import {
   chatExportFileBaseName,
   chatExportMarkdown,
@@ -10,6 +13,7 @@ import { tarGzipStream, type TarEntry } from "./tarArchive";
 type ExportPrismaClient = Pick<PrismaClient, "chat" | "message">;
 
 type ExportMessageRow = {
+  followups?: RunFollowupState;
   content: unknown;
   id: string;
   modelId: string | null;
@@ -77,6 +81,7 @@ export async function* personalChatExportEntries(
   for (const chat of chats) {
     const rows = await db.message.findMany({
       select: {
+        ...messageFollowupSelect,
         content: true,
         id: true,
         modelId: true,
@@ -87,7 +92,10 @@ export async function* personalChatExportEntries(
       },
       where: { chatId: chat.id }
     });
-    const branch = activeBranch(rows, chat.activeLeafMessageId);
+    const branch = activeBranch(rows.map(row => {
+      const followups = projectMessageFollowups(row);
+      return { ...row, ...(followups ? { followups } : {}) };
+    }), chat.activeLeafMessageId);
     const base = uniqueBaseName(
       used,
       `${chat.archived ? "archived/" : ""}${chatExportFileBaseName(chat.title, chat.updatedAt)}`
@@ -102,6 +110,7 @@ export async function* personalChatExportEntries(
         archived: chat.archived,
         exportedAt: exportedAt.toISOString(),
         messages: branch.map((message) => ({
+          ...(message.followups?.entries.length ? { followups: message.followups.entries } : {}),
           content: chatExportText(message.content),
           modelId: message.modelId,
           provider: message.provider,

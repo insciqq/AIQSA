@@ -898,9 +898,9 @@ describe("Prisma-backed message branch repository", () => {
         });
         expect(detail?.defaultKnowledgePlan).toEqual(knowledgePlan);
         expect(detail?.usageStats).toMatchObject({
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
-          totalTokens: 0
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
+          totalTokens: null
         });
         await expect(prisma.modelRun.count({ where: { chatId: branched.id } })).resolves.toBe(0);
         const clonedAssistant = await prisma.message.findFirstOrThrow({

@@ -160,6 +160,7 @@ export type DurableRunControlRecord = Omit<RunControlRecord, "status"> & {
 };
 
 export type RunOutcomeRecord = Pick<DurableRunControlRecord, "id" | "status"> & {
+  followups?: import("../../contracts/runFollowups").RunFollowupState;
   answerComplete?: true;
   workspacePreparation?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
@@ -192,6 +193,7 @@ export type RunChatUpdateRecord = {
     workspace?: ChatWorkspaceState;
   };
   messages: {
+    followups?: ChatMessageWire["followups"];
     pdfPreparation?: readonly ChatPdfPreparationWire[];
     artifactSummary?: ThreadArtifactSummary | null;
     assistantIdentity?: ThreadAssistantIdentity | null;
@@ -329,6 +331,7 @@ export type PersistedRunUsageAttribution = RunUsageAttribution & {
 };
 
 export type RunCompletionInput = {
+  followupRevision?: number;
   assistantMessageId: string;
   chatId: string;
   estimatedCostMicros: number | null;
@@ -347,6 +350,7 @@ export type RunCompletionInput = {
 export type ProviderResponseIdPublication = "cancelled" | "published" | "terminal";
 
 export type CreateRunInput = {
+  followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: Readonly<{ admissionKey: string; predecessorRunId: string; snapshot: unknown }>;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
   deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
@@ -383,6 +387,7 @@ export type CreateRunInput = {
 };
 
 export type CreateRegenerationRunInput = {
+  followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: never;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
   deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
@@ -496,6 +501,7 @@ export type RunOwnedChatRecord = Readonly<{
 }>;
 
 export type RunRepository = {
+  followups?: import("./runFollowups").RunFollowupOperations;
   hasPendingWorkspacePreparation?(runId: string): Promise<boolean>;
   continueWorkspacePreparedRun?(input: Readonly<{
     admission: PreparingRunAdmissionInput;
@@ -588,6 +594,7 @@ export type RunRepository = {
     userId: string;
   }>): Promise<KnowledgeRunFinalizationEnvelope>;
   groundKnowledgeEvidenceAnswer?(input: Readonly<{
+    followupRevision?: number;
     runId: string;
     userId: string;
   }>): Promise<KnowledgeRunFinalizationEnvelope>;
@@ -638,6 +645,7 @@ export type RunRepository = {
     sourceMessageId: string,
     userId: string
   ): Promise<{
+    followups?: import("./runFollowups").RegenerationFollowups;
     artifactEdit?: unknown;
     artifactIntent?: unknown;
     assistantMessage: {

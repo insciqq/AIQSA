@@ -100,6 +100,8 @@ import {
 
 import { chatTitleWork } from "@/tests/support/chatTitles";
 import { createChatTitleWorker } from "../chats/titleGenerationWorker";
+import { notifyRunFollowup } from "./runFollowupRegistry";
+import type { RunFollowup } from "../../contracts/runFollowups";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -1412,6 +1414,72 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run execution", () => {
+  it.each(["cancelled", "completion_race", "unconfirmed"] as const)("settles interrupted background Follow-up with %s and accounts every call once", async mode => {
+    const initial = chatUpdate();
+    initial.messages = initial.messages.map(message => message.role === "assistant" ? {
+      ...message, status: "streaming", content: textMessageContent(""), followups: { available: true, entries: [] }
+    } : message);
+    const repository = createRepository({ chatUpdate: initial });
+    const entries: RunFollowup[] = [];
+    repository.repository.followups = {
+      accept: vi.fn(), beginKnowledge: vi.fn(async () => 0),
+      load: async () => ({ revision: entries.length, entries: entries.map(entry => ({ ...entry })) }),
+      deliver: async ({ revision, precedingText }) => {
+        if (revision !== entries.length) return false;
+        entries.forEach((entry, index) => { if (entry.delivery === "accepted") entries[index] = {
+          ...entry, delivery: "delivered", ...(precedingText ? { precedingText } : {})
+        }; });
+        return true;
+      },
+      close: async ({ revision }) => revision === entries.length
+    };
+    const base = preparedData({ provider: "openai", modelId: "gpt-test" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, params: { background: true } },
+      providerRequest: { ...base.providerRequest, params: { background: true } } };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        yield { type: "artifact", data: { artifactType: "summary", payload: { responseId: "previous-response" } } };
+        yield { type: "token", data: { delta: "Old partial" } };
+        yield { type: "usage", data: { inputTokens: 11, outputTokens: 2, totalTokens: 13, completeness: "partial" } };
+        entries.push({ id: "clarification", ordinal: 1, text: "Use a table", author: "Author", createdAt: new Date().toISOString(), delivery: "accepted" });
+        notifyRunFollowup("run-1", entries.length);
+        throw new DOMException("Generation interrupted", "AbortError");
+      }
+      yield { type: "token", data: { delta: "Updated answer" } };
+      return providerResult({ finalText: "Updated answer", usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10, completeness: "complete" } });
+    });
+    adapter.cancel = vi.fn(async () => {
+      if (mode !== "cancelled") throw new Error("provider_cancel_race");
+      return { status: "cancelled", usage: { input_tokens: 11, output_tokens: 2, total_tokens: 13 } };
+    });
+    adapter.refresh = vi.fn(async () => ({ events: [], terminal: mode === "completion_race", status: mode === "completion_race" ? "completed" : "in_progress",
+      ...(mode === "completion_race" ? { result: providerResult({ usage: { inputTokens: 11, outputTokens: 2, totalTokens: 13, completeness: "complete" } }) } : {}) }));
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text());
+    expect(adapter.cancel).toHaveBeenCalledWith("previous-response");
+    if (mode === "unconfirmed") {
+      expect(requests).toHaveLength(1);
+      expect(repository.completeRuns).toHaveLength(0);
+      expect(repository.failedRuns[0]?.error.code).toBe("followup_generation_unconfirmed");
+      expect(entries[0]?.delivery).toBe("accepted");
+      expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toMatchObject([{ operationCount: 1, usage: { inputTokens: 11, outputTokens: 2 } }]);
+    } else {
+      expect(repository.failedRuns).toEqual([]);
+      expect(requests).toHaveLength(2);
+      expect(requests[1]?.providerToolMessages).toEqual([{ role: "user", content: "Use a table" }]);
+      expect(entries[0]).toMatchObject({ precedingText: "Old partial", delivery: "delivered" });
+      expect(repository.completeRuns[0]).toMatchObject({ followupRevision: 1, finalText: "Updated answer",
+        usageAttributions: [{ operationCount: 2, usage: { inputTokens: 18, outputTokens: 5 } }] });
+      expect(events.some(event => event.type === "message_reset")).toBe(true);
+    }
+    const admissionIndex = events.findIndex(event => event.type === "chat_update");
+    expect(admissionIndex).toBeGreaterThan(events.findIndex(event => event.type === "message_start"));
+    expect(admissionIndex).toBeLessThan(events.findIndex(event => event.type === "token"));
+    expect(events[admissionIndex]).toMatchObject({ data: { messages: [expect.anything(),
+      { followups: { available: true, entries: [] } }] } });
+  });
+
   it.each([false, true])("projects pending and ready artifact states with argument streaming=%s", async streaming => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
     const artifactToolDescription = "Frozen artifact policy at admission";
@@ -3061,6 +3129,45 @@ describe("run execution", () => {
     expect(body).not.toContain("\"decision\":\"select_claims\"");
     expect(dispatch.order).toEqual(CURRENT_KNOWLEDGE_OPERATION_NAMES.flatMap(() =>
       ["prepare", "dispatch", "settle"]));
+  });
+
+  it.each([1, 7])("restarts Knowledge review for the clarified question with %s consumed operations", async consumed => {
+    const finalText = "Total cholesterol is 5.3 mmol/L [K1].";
+    const repository = createRepository({ groundingResult: structuralGroundingResult(finalText) });
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    const entries: RunFollowup[] = [];
+    repository.repository.followups = {
+      accept: vi.fn(),
+      load: async () => ({ revision: entries.length, entries }),
+      deliver: async () => { entries.forEach((entry, index) => { entries[index] = { ...entry, delivery: "delivered" }; }); return true; },
+      close: async ({ revision }) => revision === entries.length,
+      beginKnowledge: async ({ revision }) => revision ? consumed : 0
+    };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        entries.push({ id: "clarification", ordinal: 1, text: "Report cholesterol only.", author: "User",
+          createdAt: "2026-09-22T00:00:00.000Z", delivery: "accepted" });
+        notifyRunFollowup("run-1", 1);
+      }
+      return providerResult({ finalText: JSON.stringify(plannedCurrentKnowledgeOutput(
+        Math.max(1, requests.length - 1), "Total cholesterol is 5.3 mmol/L")) });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, knowledgeProviderDispatch: dispatch.lifecycle,
+      prepared: fullContextKnowledgePreparedData(), repository: repository.repository })).text();
+    expect(JSON.stringify(requests[0])).not.toContain("Report cholesterol only.");
+    expect(requests.slice(1).every(request => JSON.stringify(request).includes("Report cholesterol only."))).toBe(true);
+    expect(dispatch.markAmbiguous).toHaveBeenCalledOnce();
+    expect(dispatch.prepare.mock.calls.map(([call]) => call.ordinal)).toEqual(consumed === 1 ? [1, 2, 3, 4, 5, 6] : [1, 8]);
+    if (consumed === 1) {
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns[0]).toMatchObject({ followupRevision: 1, finalText });
+    } else {
+      expect(requests).toHaveLength(2);
+      expect(repository.completeRuns).toEqual([]);
+      expect(repository.failedRuns).toHaveLength(1);
+    }
   });
 
   it.each([

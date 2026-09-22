@@ -12,6 +12,23 @@ function message(id: string, role: "assistant" | "user", text: string): ContextB
 }
 
 describe("context budget", () => {
+  it("trims an old question and its clarifications as one turn", () => {
+    const messages = [message("original", "user", "x".repeat(200)),
+      { ...message("partial", "assistant", "p".repeat(200)), contextTurnId: "original" },
+      { ...message("clarification", "user", "c".repeat(200)), contextTurnId: "original" },
+      message("answer", "assistant", "a".repeat(200)), message("current", "user", "next")];
+    const result = applyContextBudget({ messages, contextWindow: 130, maxOutputTokens: 20 });
+    expect(result.ok && result.messages.map(item => item.id)).toEqual(["current"]);
+  });
+
+  it("cannot keep a current clarification by discarding its original question", () => {
+    const result = applyContextBudget({ contextWindow: 130, maxOutputTokens: 20, messages: [
+      message("original", "user", "x".repeat(800)),
+      { ...message("clarification", "user", "short clarification"), contextTurnId: "original" }
+    ] });
+    expect(result).toMatchObject({ ok: false, code: "context_too_large" });
+  });
+
   it("estimates multilingual and emoji input more conservatively than ASCII", () => {
     expect(estimateApproxTokens("a".repeat(8))).toBe(2);
     expect(estimateApproxTokens("я".repeat(8))).toBe(8);

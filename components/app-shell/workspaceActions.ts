@@ -1262,6 +1262,7 @@ export function useWorkspaceActions({
           defaultProvider: summary.defaultProvider,
           exportedAt: new Date().toISOString(),
           messages: visible.map((message) => ({
+            ...(message.followups?.entries.length ? { followups: message.followups.entries } : {}),
             content: message.content,
             modelId: message.modelId ?? null,
             provider: message.provider ?? null,

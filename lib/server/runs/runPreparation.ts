@@ -104,6 +104,8 @@ import {
   withAutomaticKnowledgeEvidence
 } from "../knowledge/automaticEvidence";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { requestWithRunFollowups } from "./runFollowupExecution";
+import { followupRequestHeadroom, followupTokenCost, type RunFollowupAdmission, type RegenerationFollowups } from "./runFollowups";
 import {
   getRunAttachmentLimits,
   type RunAttachmentLimits
@@ -238,6 +240,7 @@ export type SendRunPreparationSource = Readonly<{
 export type RegenerateRunPreparationSource = Readonly<{
   kind: "regenerate";
   source: Readonly<{
+    followups?: RegenerationFollowups;
     artifactEdit?: unknown;
     artifactIntent?: unknown;
     assistantMessage: Readonly<{
@@ -291,6 +294,7 @@ export type DeepReadonly<Value> = Value extends Primitive
 type PreparedRunDefaultsData = AcceptedRunDefaults;
 
 export type MaterializedPreparedRunData = {
+  followupAdmission?: RunFollowupAdmission;
   assistant?: { assistantId: string; definitionVersion: number; identity: AssistantIdentity };
   chatPdfAdmissions?: ChatPdfAttachmentAdmission[];
   /** Manual choices to re-admit an explicit Assistant PDF retry against current content. */
@@ -515,6 +519,7 @@ function mutablePreparedData<Value>(value: DeepReadonly<Value>): Value {
 
 export function materializePreparedRunData(prepared: PreparedRun): MaterializedPreparedRunData {
   return {
+    ...(prepared.followupAdmission ? { followupAdmission: mutablePreparedData<RunFollowupAdmission>(prepared.followupAdmission) } : {}),
     ...(prepared.chatPdfAdmissions
       ? { chatPdfAdmissions: mutablePreparedData<ChatPdfAttachmentAdmission[]>(prepared.chatPdfAdmissions) }
       : {}),
@@ -2009,6 +2014,10 @@ export async function prepareRun(
     });
   }
 
+  const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
+  if (inheritedFollowups?.entries.length && (workspaceEnabled || agentEnabled)) {
+    return failure("followup_mode_unavailable", 409, "Regenerate this answer in Chat to preserve its follow-ups.");
+  }
   const budgetAnsweringRequest = (plan: KnowledgeAnsweringPlan | undefined) => {
     const fullContext = plan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT;
     const requiresInitialKnowledgeCall = Boolean(
@@ -2037,7 +2046,7 @@ export async function prepareRun(
       : unbudgeted;
     const budget = applyProviderRequestContextBudget({
       ...(toolBridge ? { bridge: toolBridge } : {}),
-      request: withEvidence
+      request: requestWithRunFollowups(withEvidence, inheritedFollowups?.entries ?? [])
     });
     const retainedEvidence = fullContext && budget.ok
       ? budget.request.context?.messages.find((message) =>
@@ -2099,7 +2108,19 @@ export async function prepareRun(
     ...budgetedAnswer.normalized,
     context: providerBudget.request.context!
   };
-  const providerRequest: ProviderRunRequest = providerBudget.request;
+  const providerRequest: ProviderRunRequest = { ...providerBudget.request };
+  // Regeneration copies receipts atomically at admission. Only the new
+  // executor appends them; the temporary request above budgets them once.
+  if (inheritedFollowups?.entries.length) delete providerRequest.providerToolMessages;
+  const followupAdmission: RunFollowupAdmission | undefined = !workspaceEnabled && !agentEnabled ? {
+    budgetTokens: Math.min(8_192, Math.floor(followupRequestHeadroom(providerBudget.request, toolBridge) / 2)),
+    ...(inheritedFollowups ? { inherited: { messageId: inheritedFollowups.messageId, revision: inheritedFollowups.revision } } : {})
+  } : undefined;
+  if (followupAdmission) {
+    const reserve = followupAdmission.budgetTokens + (inheritedFollowups?.entries.reduce((sum, entry) => sum + followupTokenCost(entry.text), 0) ?? 0);
+    normalizedRequest.followupContextReserveTokens = reserve;
+    providerRequest.followupContextReserveTokens = reserve;
+  }
   if (agent) {
     try { agentPrompts(providerRequest); } catch { return failure("agent_context_too_large", 413); }
   }
@@ -2120,6 +2141,7 @@ export async function prepareRun(
       };
 
   const prepared = immutablePreparedData<MaterializedPreparedRunData>({
+    ...(followupAdmission ? { followupAdmission } : {}),
     ...(chatPdfAdmissions.length ? { chatPdfAdmissions, ...(assistantRun ? { manualSkillIds } : {}) } : {}),
     ...(assistantRun
       ? {

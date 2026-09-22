@@ -228,7 +228,7 @@ export function normalizedRequestPersonalContextTokenLimit(
     .filter((message) => message.purpose === undefined)
     .at(-1);
   const currentTokens = estimateApproxTokens(currentMessage?.content ?? request.content);
-  return Math.max(0, limits.budgetTokens - promptTokens - internalTokens - currentTokens);
+  return Math.max(0, limits.budgetTokens - promptTokens - internalTokens - currentTokens - (request.followupContextReserveTokens ?? 0));
 }
 
 function cumulativeTruncationSummary(
@@ -256,7 +256,7 @@ export function providerFacingSerializedTools(
 }
 
 function providerRequestFixedExtraTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
-  return estimateApproxTokens(providerFacingSerializedTools(request, bridge)) +
+  return (request.followupContextReserveTokens ?? 0) + estimateApproxTokens(providerFacingSerializedTools(request, bridge)) +
     estimateApproxTokens(request.providerToolMessages ?? []) +
     estimateApproxTokens(request.personalContext?.text ?? "") +
     (request.personalContext

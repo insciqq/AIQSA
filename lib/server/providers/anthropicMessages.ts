@@ -465,9 +465,16 @@ export function buildAnthropicMessagesRequest(
   const clientTools = (request.tools ?? []).map((tool) =>
     anthropicMessagesToolBridge.serializeTool(tool).tool);
   const hostedTools = anthropicMessagesToolBridge.serializeHostedTools?.(request) ?? [];
+  const hasClientToolContinuation = (request.providerToolMessages ?? []).some(value => {
+    const message = objectValue(value);
+    return !message || message.role !== "user" || !Array.isArray(message.content) || message.content.some(value => {
+      const block = objectValue(value);
+      return !block || block.type !== "text" || typeof block.text !== "string";
+    });
+  });
   if (
     hostedTools.length > 0 &&
-    (clientTools.length > 0 || (request.providerToolMessages?.length ?? 0) > 0)
+    (clientTools.length > 0 || hasClientToolContinuation)
   ) {
     throw new Error("anthropic_hosted_search_client_tools_unsupported");
   }

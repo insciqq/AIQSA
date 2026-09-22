@@ -75,6 +75,7 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
 
   return {
     flush,
+    get text(): string { return assistantText; },
     push(delta: string): Promise<void> {
       if (flushError) {
         return Promise.reject(flushError);

@@ -207,6 +207,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     ...(message.workspacePreparation ? { workspacePreparation: true as const } : {}),
     ...(message.workspaceSettling ? { workspaceSettling: true as const } : {}),
+    ...(message.followups ? { followups: message.followups } : {}),
     toolActivity: message.toolActivity ?? null,
     workspaceActivity: message.workspaceActivity ?? null
   };

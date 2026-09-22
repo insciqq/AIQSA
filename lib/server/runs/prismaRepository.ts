@@ -99,6 +99,9 @@ import { workspaceModelSupportsTools } from "../workspace/availability";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { createPrismaRunAnswerOperations, persistCompletedAnswerUsage } from "./prismaRepositoryAnswer";
+import { createPrismaRunFollowupOperations, runFollowupSelect, runFollowupsAllowCompletion } from "./prismaRepositoryFollowups";
+import { projectRunFollowups } from "./runFollowups";
+import { decodeRunFollowupState } from "../../contracts/runFollowups";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -115,6 +118,8 @@ type ConversationPathSelector =
   | { kind: "explicit"; leafMessageId: string };
 
 type ConversationPathRow = {
+  messageBranchFollowups?: unknown;
+  followups?: readonly { id: string; ordinal: number; text: string; delivered: boolean; precedingText: string | null }[];
   chatId: string;
   messageContent: Prisma.JsonValue | null;
   messageId: string | null;
@@ -135,6 +140,8 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
     if (
       row.messageRole === "assistant" &&
       row.messageStatus === "error" &&
+      !row.followups?.length &&
+      !decodeRunFollowupState(row.messageBranchFollowups)?.entries.length &&
       !contentHasImage(row.messageContent) &&
       (!isRecord(row.messageContent) || !textFromContentBlocks(row.messageContent).trim()) &&
       parent.messageId &&
@@ -147,6 +154,17 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
   }
 
   return rows.flatMap((row) => {
+    const followups = row.followups?.length ? row.followups
+      : (decodeRunFollowupState(row.messageBranchFollowups)?.entries ?? []).map(entry => ({
+        ...entry, delivered: entry.delivery === "delivered", precedingText: entry.precedingText ?? null
+      }));
+    const followupMessages: ProviderConversationMessage[] = row.messageRole === "assistant" && row.messageParentId
+      ? followups.flatMap(entry => [
+          ...(entry.precedingText ? [{ id: `${entry.id}-partial`, role: "assistant" as const,
+            content: textMessageContent(`Partial answer before follow-up:\n${entry.precedingText}`) }] : []),
+          { id: entry.id, contextTurnId: row.messageParentId!, role: "user" as const,
+            content: textMessageContent(`${entry.delivered ? "Follow-up" : "Follow-up not delivered to the previous answer"}:\n${entry.text}`) }
+        ]) : [];
     const cancelledWithText = row.messageRole === "assistant" &&
       row.messageStatus === "cancelled" &&
       isRecord(row.messageContent) &&
@@ -157,10 +175,11 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
       (row.messageRole !== "user" && row.messageRole !== "assistant") ||
       (row.messageStatus !== "complete" && row.messageStatus !== "streaming" && !cancelledWithText && !contentHasImage(row.messageContent))
     ) {
-      return [];
+      return followupMessages;
     }
 
     return [
+      ...followupMessages,
       {
         content: row.messageContent as { blocks: unknown[] },
         id: row.messageId,
@@ -264,6 +283,7 @@ export function createPrismaRunRepository(
           message."parentMessageId",
           message."role",
           message."status"::text AS "status",
+          message."branchFollowups",
           ARRAY[message."id"]::text[] AS "visitedIds",
           0 AS "depth"
         FROM "selected_chat" AS chat
@@ -280,6 +300,7 @@ export function createPrismaRunRepository(
           parent."parentMessageId",
           parent."role",
           parent."status"::text AS "status",
+          parent."branchFollowups",
           path."visitedIds" || parent."id",
           path."depth" + 1
         FROM "ancestor_path" AS path
@@ -294,9 +315,21 @@ export function createPrismaRunRepository(
         path."id" AS "messageId",
         path."parentMessageId" AS "messageParentId",
         path."role" AS "messageRole",
-        path."status" AS "messageStatus"
+        path."status" AS "messageStatus",
+        path."branchFollowups" AS "messageBranchFollowups",
+        COALESCE(clarifications.entries, '[]'::jsonb) AS "followups"
       FROM "selected_chat" AS chat
       LEFT JOIN "ancestor_path" AS path ON true
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(jsonb_build_object('id', f."id", 'ordinal', f."ordinal", 'text', f."text",
+          'delivered', f."deliveredAt" IS NOT NULL, 'precedingText', f."precedingText") ORDER BY f."ordinal") AS entries
+        FROM "RunFollowup" f
+        WHERE f."modelRunId" = (
+          SELECT r."id" FROM "ModelRun" r WHERE path."role" = 'assistant' AND
+            r."assistantMessageId" = path."id"
+          ORDER BY r."createdAt" DESC LIMIT 1
+        )
+      ) clarifications ON true
       ORDER BY path."depth" DESC NULLS LAST
     `).catch(retainRunPrismaCode);
 
@@ -427,6 +460,7 @@ export function createPrismaRunRepository(
 
   return {
     ...createPrismaRunAnswerOperations(prismaClient),
+    followups: createPrismaRunFollowupOperations(prismaClient),
     groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input).catch(retainRunPrismaCode),
     groundKnowledgeAnswerV5: (input) => groundKnowledgeRunAnswerV5(prismaClient, input).catch(retainRunPrismaCode),
     groundKnowledgeAnswerV21: (input) => groundKnowledgeRunAnswerV21(prismaClient, input).catch(retainRunPrismaCode),
@@ -659,6 +693,7 @@ export function createPrismaRunRepository(
         const [existingRun] = await tx.$queryRaw<
           Array<{
             answerCompletedAt: Date | null;
+            followupMode: string | null;
             assistantMessageId: string | null;
             chatId: string;
             projectId: string | null;
@@ -672,6 +707,7 @@ export function createPrismaRunRepository(
         >(Prisma.sql`
           SELECT
             run."answerCompletedAt",
+            run."followupMode",
             run."assistantMessageId",
             run."chatId",
             chat."projectId" AS "projectId",
@@ -690,6 +726,7 @@ export function createPrismaRunRepository(
         const activeCompletion = Boolean(
           existingRun && dispatchableModelRunStatuses.includes(existingRun.status)
         );
+        if (existingRun?.followupMode && !(await runFollowupsAllowCompletion(tx, input.runId, input.followupRevision))) return false;
         const recoveredCompletion = Boolean(
           existingRun &&
             existingRun.status === "error" &&
@@ -1242,6 +1279,7 @@ export function createPrismaRunRepository(
       const sourceRun = await prismaClient.modelRun.findFirst({
         orderBy: { createdAt: "desc" },
         select: {
+          ...runFollowupSelect, id: true, followupRevision: true, status: true, answerCompletedAt: true,
           normalizedRequest: true,
           providerRunBindings: {
             select: {
@@ -1257,11 +1295,15 @@ export function createPrismaRunRepository(
         }
       }).catch(retainRunPrismaCode);
       const answerBinding = sourceRun?.providerRunBindings[0];
+      const regenerationFollowups = sourceRun?.followups.length ? projectRunFollowups(sourceRun)
+        : decodeRunFollowupState(sourceMessage.branchFollowups);
       const normalizedRequest = sourceRun?.normalizedRequest;
       const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
         ? normalizedRequest.artifactEdit : undefined;
 
       return {
+        ...(regenerationFollowups?.entries.length ? { followups: { messageId: sourceMessage.id,
+          revision: regenerationFollowups.entries.length, entries: regenerationFollowups.entries } } : {}),
         ...(artifactEdit !== undefined ? { artifactEdit } : {}),
         ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
         assistantMessage: {
@@ -1310,6 +1352,7 @@ export function createPrismaRunRepository(
     getRunOutcomeForUser: async (runId, userId) => {
       const run = await prismaClient.modelRun.findFirst({
         select: {
+          ...runFollowupSelect,
           chatId: true,
           answerCompletedAt: true,
           workspaceWaitPending: true,
@@ -1334,6 +1377,7 @@ export function createPrismaRunRepository(
 
       return run
         ? {
+            ...(run.followupMode || run.followups?.length ? { followups: projectRunFollowups(run) } : {}),
             ...(run.answerCompletedAt ? { answerComplete: true as const } : {}),
             ...(run.workspaceWaitPending && run.status === "preparing" ? { workspacePreparation: true as const } : {}),
             ...(run.chatPdfAttachments?.length ? { pdfPreparation: run.chatPdfAttachments.map((row) =>
@@ -1341,7 +1385,7 @@ export function createPrismaRunRepository(
                 ? { phase: run.status === "error" ? "failed" : "cancelled",
                     retryable: run.status === "error" && run.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
             id: run.id,
-            status: run.status === "preparing" && (run.chatPdfPreparation || run.workspaceFollowup)
+            status: run.status === "preparing" && (run.followupMode || run.chatPdfPreparation || run.workspaceFollowup)
               ? "queued"
               : acceptedRunStatus(run.status)
           }
@@ -1385,6 +1429,8 @@ export function createPrismaRunRepository(
                   createdAt: "desc"
                 },
                 select: {
+                  ...runFollowupSelect,
+                  answerCompletedAt: true,
                   chatPdfPreparation: { select: { retryable: true, state: true } },
                   chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
                     completedPages: true, pageCount: true, retryable: true, route: true, state: true,
@@ -1543,6 +1589,7 @@ export function createPrismaRunRepository(
             const modelRun = message.assistantModelRuns[0];
 
             return {
+              ...(modelRun?.followupMode || modelRun?.followups?.length ? { followups: projectRunFollowups(modelRun) } : {}),
               artifactSummary: modelRun
                 ? summarizeMessageRunArtifacts(
                     modelRun,

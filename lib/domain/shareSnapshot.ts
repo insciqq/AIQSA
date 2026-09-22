@@ -1,7 +1,10 @@
 import { getVisibleMessagePath, type BranchMessage } from "./branching";
+import type { RunFollowupState } from "../contracts/runFollowups";
+import { followupHistoryTurns } from "./runFollowupContext";
 
 export type ShareSnapshotMessageInput = BranchMessage & {
   content: unknown;
+  followups?: RunFollowupState;
 };
 
 export type PublicShareSnapshot = {
@@ -113,6 +116,9 @@ export function buildPublicShareSnapshot(input: {
       }
 
       return [
+        ...followupHistoryTurns(message.followups?.entries ?? []).map(turn => ({
+          role: turn.role, content: { blocks: [textBlock(turn.text)] }
+        })),
         {
           content: sanitizeContent(message.content),
           role: message.role
