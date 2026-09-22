@@ -7,6 +7,7 @@ import { decodeInstructionPresetDraft, INSTRUCTION_PRESET_MAX_COUNT, INSTRUCTION
   SYSTEM_INSTRUCTIONS_MAX_LENGTH, RESPONSE_REMINDER_MAX_LENGTH, instructionPresetErrorMessage,
   type InstructionPreset, type InstructionPresetDraft, type InstructionPresetState, type InstructionPresetSummary } from "@/lib/contracts/instructionPresets";
 import { SettingsRowV2 } from "./SettingsV2";
+import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
 import { PlatformInstructionsPreview } from "./PlatformInstructionsPreview";
 import { InstructionPresetApiError, requestInstructionPreset, requestInstructionPresets } from "./instructionPresetsApi";
@@ -158,8 +159,9 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
     });
   }
   const atLimit = (state?.presets.length ?? 0) >= INSTRUCTION_PRESET_MAX_COUNT;
-  return <section data-testid="settings-instructions">
-    <SettingsRowV2 title="Instructions" description="Built-in AIQSA rules always apply. A preset adds your instructions on top of them, in every personal chat.">
+  return <section className="v2-studio-settings-page" data-testid="settings-instructions">
+    <SectionHeading description="Built-in AIQSA rules always apply. The active preset adds your instructions on top of them in personal chats without an Assistant, from the next reply.">Instructions</SectionHeading>
+    <SettingsRowV2 title="Active instructions">
       <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
         <SettingsSelectV2 label="Active instructions" disabled={!state || busy || editor !== null} value={state?.activePresetId ?? ""}
           options={[{ label: DEFAULT_LABEL, value: "" }, ...(state?.presets ?? []).map(row => ({ label: row.name, value: row.id }))]}

@@ -110,12 +110,12 @@
   margin-top: 1rem;
 }
 
-/* ===== Settings modal (PRD §4.9): 880×620, vertical tabs on the sidebar surface ===== */
+/* ===== Settings modal (PRD §4.9): 864×609, vertical tabs on the sidebar surface ===== */
 .v2-settings-dialog {
   display: grid;
-  width: min(55rem, 100%);
-  height: min(38.75rem, 100dvh - 2rem);
-  max-height: min(38.75rem, 100dvh - 2rem);
+  width: min(54rem, 100%);
+  height: min(38.0625rem, 100dvh - 2rem);
+  max-height: min(38.0625rem, 100dvh - 2rem);
   grid-template-columns: 13.5rem minmax(0, 1fr);
   grid-template-rows: var(--v2-header-height) auto auto minmax(0, 1fr);
   overflow: hidden;
@@ -961,35 +961,6 @@
   }
 }
 
-/* Chat defaults · segmented single choice (same anatomy as the theme segment). */
-.v2-settings-segment {
-  display: inline-flex;
-  padding: 0.1875rem;
-  border: 1px solid var(--v2-color-border);
-  border-radius: var(--v2-radius-s);
-  background: var(--v2-color-surface2);
-}
-
-.v2-settings-segment-option {
-  min-height: 1.75rem;
-  padding: 0 0.75rem;
-  border: 0;
-  border-radius: 0.375rem;
-  color: var(--v2-color-text2);
-  background: transparent;
-  font: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.v2-settings-segment-option[data-selected="true"] {
-  color: var(--v2-color-text);
-  background: var(--v2-color-surface);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
-}
-
 /* Account · text inputs and the inline password form. */
 .v2-settings-input {
   min-width: 13.75rem;
@@ -1038,10 +1009,6 @@
 }
 
 @media (max-width: 767px), (max-height: 36rem) {
-  .v2-settings-segment {
-    flex-wrap: wrap;
-  }
-
   .v2-settings-input {
     width: 100%;
     min-width: 0;

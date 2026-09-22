@@ -48,7 +48,6 @@ function memoryPanelProps(
     onEdit: vi.fn(),
     onForget: vi.fn(),
     onLoadMore: vi.fn(),
-    onOpenSettings: vi.fn(),
     onQueryChange: vi.fn(),
     onRetry: vi.fn(),
     onSave: vi.fn(),
@@ -509,13 +508,10 @@ describe("Library resource panels", () => {
     expect(memoryStatusElement(container)).toHaveTextContent(label);
   });
 
-  it("routes the Memory switches to Settings instead of duplicating them", () => {
-    const onOpenSettings = vi.fn();
-    render(<MemoryPanelV2 {...memoryPanelProps({ onOpenSettings })} />);
-
-    expect(screen.queryAllByRole("switch")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Memory settings" }));
-    expect(onOpenSettings).toHaveBeenCalledOnce();
+  it("keeps Memory controls beside its list without a Settings cross-link", () => {
+    render(<MemoryPanelV2 {...memoryPanelProps({ settingsContent: <p>Five Memory gates</p> })} />);
+    expect(screen.getByRole("complementary", { name: "How Memory works" })).toHaveTextContent("Five Memory gates");
+    expect(screen.queryByRole("button", { name: "Memory settings" })).toBeNull();
   });
 
   it("claims automatic learning only when it is enabled and ready", () => {

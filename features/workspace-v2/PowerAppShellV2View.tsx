@@ -30,7 +30,6 @@ import {
   MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
 import { ConnectedAppsSection } from "@/components/app-shell/ConnectedAppsSection";
-import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
 import { PermanentChatDeletionSurface } from "@/components/app-shell/PermanentChatDeletionSurface";
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
 import { ShareDialog } from "@/components/app-shell/ShareDialog";
@@ -119,11 +118,7 @@ import {
 } from "@/features/workspace-v2/runTransportPresentation";
 import { AccountSettingsRowsV2 } from "@/features/settings-v2/AccountSettingsRowsV2";
 import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
-import { InstructionsSettingsPanel } from "@/features/settings-v2/InstructionsSettingsPanel";
-import { ChatDefaultsRowsV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
 import { DataSettingsRowsV2 } from "@/features/settings-v2/DataSettingsRowsV2";
-import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
-import { WorkspaceSecretsPanel } from "@/features/settings-v2/WorkspaceSecretsPanel";
 import { SettingsSelectV2 } from "@/features/settings-v2/SettingsSelectV2";
 import { deleteAllPersonalChats } from "@/components/app-shell/accountApi";
 import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
@@ -379,6 +374,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   useEffect(() => {
     const url = new URL(window.location.href);
     if (!url.searchParams.has("library")) return;
+    // The account-scoped OAuth owner consumes the destination with its outcome.
+    if (url.searchParams.get("library") === "mcp" && url.searchParams.has("oauth")) return;
     const target = libraryTabGroups.flatMap(group => group.tabs).find(id => id === url.searchParams.get("library"));
     url.searchParams.delete("library");
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
@@ -389,15 +386,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
-  const [mcpBusy, setMcpBusy] = useState(false);
-  const [mcpDirty, setMcpDirty] = useState(false);
-  const [mcpKey, setMcpKey] = useState(0);
-  const [instructionsBusy, setInstructionsBusy] = useState(false);
-  const [instructionsDirty, setInstructionsDirty] = useState(false);
-  const [instructionsKey, setInstructionsKey] = useState(0);
-  const [secretsBusy, setSecretsBusy] = useState(false);
-  const [secretsDirty, setSecretsDirty] = useState(false);
-  const [secretsKey, setSecretsKey] = useState(0);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountDirty, setAccountDirty] = useState(false);
+  const [accountKey, setAccountKey] = useState(0);
   const [dataSubview, setDataSubview] = useState<null | "archived">(null);
   const [skillLibraryScope, setSkillLibraryScope] = useState<string | null>(null);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
@@ -1132,7 +1123,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const noticeSlot = settled && artifact?.memoryAction ? (
       <MemoryActionConfirmationV2
         action={artifact.memoryAction}
-        onOpenMemoryReset={settings.openMemorySettingsTab}
+        onOpenMemoryReset={settings.openMemory}
         onOpenMemorySettings={settings.openMemory}
       />
     ) : null;
@@ -1711,15 +1702,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
       {settings.settings.open ? (
         <SettingsV2
-          busy={mcpBusy || connectedAppsBusy || secretsBusy || instructionsBusy}
-          busyMessage={instructionsBusy ? "Updating instructions…" : secretsBusy ? "Updating Workspace secrets…" : connectedAppsBusy ? "Revoking app access…" : "Updating MCP…"}
+          busy={accountBusy || connectedAppsBusy}
+          busyMessage={connectedAppsBusy ? "Revoking app access…" : "Updating account…"}
           connectedAppsContent={(
             <ConnectedAppsSection
               accountId={session.accountId}
               onBusyChange={setConnectedAppsBusy}
             />
           )}
-          dirty={mcpDirty || secretsDirty || instructionsDirty}
+          dirty={accountDirty}
           generalSlot={(
             <>
               <AnswerSoundSettingsRowV2 composer={composer} />
@@ -1757,22 +1748,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             </>
           )}
           initialSection={settings.settings.section}
-          mcpContent={(
-            <McpSettingsSection
-              key={mcpKey}
-              onBusyChange={setMcpBusy}
-              onDirtyChange={setMcpDirty}
-            />
-          )}
           noticeSlot={settings.notice ? (
             <ShellNotice notice={settings.notice} onDismiss={settings.dismissNotice} />
           ) : null}
           obscured={permanentChatDeletionModalOpen}
           onSectionChange={() => setDataSubview(null)}
           panels={{
-            workspace_secrets: <WorkspaceSecretsPanel key={`${session.accountId}:${secretsKey}`} onBusyChange={setSecretsBusy} onDirtyChange={setSecretsDirty} />,
             account: (
               <SettingsAccountPanelV2
+                key={`${session.accountId}:${accountKey}`}
+                onBusyChange={setAccountBusy}
+                onDirtyChange={setAccountDirty}
                 accountEmail={session.accountEmail}
                 adminEntryVisible={session.adminEntryVisible}
               />
@@ -1797,17 +1783,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 <SettingsRowV2
                   description="Uploads stay bound to the messages where they were added."
                   title="Files"
-                >
-                  <UiV2Button
-                    icon="chevron-right"
-                    onClick={() => {
-                      settings.closeSettings();
-                      settings.openLibrary();
-                    }}
-                  >
-                    Open Library
-                  </UiV2Button>
-                </SettingsRowV2>
+                />
                 {projectContext ? null : (
                   <DataSettingsRowsV2
                     onDeleteAll={deleteAllPersonalChats}
@@ -1819,34 +1795,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 )}
               </>
             ),
-            defaults: (
-              <>
-                <SettingsDefaultModelRowV2 composer={composer} />
-                <InstructionsSettingsPanel key={`${session.accountId}:${instructionsKey}`} onBusyChange={setInstructionsBusy} onDirtyChange={setInstructionsDirty} />
-                {composer.chatDefaults ? (
-                  <ChatDefaultsRowsV2
-                    knowledgeBases={config?.knowledgeBases ?? []}
-                    knowledgePlan={composer.chatDefaults.knowledgePlan}
-                    mcpMode={composer.chatDefaults.mcpMode}
-                    skillsMode={composer.chatDefaults.skillsMode}
-                    onSkillsMode={composer.chatDefaults.setSkillsMode}
-                    searchPlan={composer.chatDefaults.searchPlan}
-                    searchStrategies={composer.catalog?.searchStrategies ?? []}
-                    onKnowledgePlan={composer.chatDefaults.setKnowledgePlan}
-                    onMcpMode={composer.chatDefaults.setMcpMode}
-                    onSearchPlan={composer.chatDefaults.setSearchPlan}
-                  />
-                ) : null}
-              </>
-            ),
-            memory: projectContext ? undefined : (
-              <MemorySettingsRowsV2
-                onOpenLibrary={() => {
-                  settings.closeSettings();
-                  settings.openMemory();
-                }}
-              />
-            )
           }}
           subview={dataSubview === "archived"
             ? { label: "Archived chats", onBack: closeDataSubview }
@@ -1858,12 +1806,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             settings.closeSettings();
           }}
           onDiscard={() => {
-            setMcpDirty(false);
-            setMcpKey((value) => value + 1);
-            setInstructionsDirty(false);
-            setInstructionsKey(value => value + 1);
-            setSecretsDirty(false);
-            setSecretsKey((value) => value + 1);
+            setAccountDirty(false);
+            setAccountKey(value => value + 1);
           }}
           onThemeChange={settings.updateTheme}
         />
@@ -1942,46 +1886,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 }
 
 
-/* Chat defaults › Default model: the personal default from the picker, or the
-   organization default; the catalog stays the server-filtered source. */
-function SettingsDefaultModelRowV2({ composer }: Readonly<{ composer: ShellComposerView }>) {
-  const catalog = composer.catalog;
-  const personal = catalog?.defaults.personalModelDefault ?? null;
-  const models = catalog?.models ?? [];
-  const value = personal ? `${personal.provider}:${personal.modelId}` : "";
-  return (
-    <SettingsRowV2
-      description="Used for new chats until you pick another model in the composer."
-      title="Default model"
-    >
-      <SettingsSelectV2
-        disabled={!catalog || models.length === 0}
-        label="Default model"
-        options={[
-          {
-            label: catalog?.defaults.organizationModelDefault ? "Organization default" : "Installation default",
-            value: ""
-          },
-          ...models.map((model) => ({
-            label: model.displayName,
-            sub: model.provider,
-            value: `${model.provider}:${model.modelId}`
-          }))
-        ]}
-        value={value}
-        onChange={(next) => {
-          if (!next) {
-            composer.useOrganizationModelDefault?.();
-            return;
-          }
-          const model = models.find((candidate) => `${candidate.provider}:${candidate.modelId}` === next);
-          if (model) composer.makeModelDefault?.(model);
-        }}
-      />
-    </SettingsRowV2>
-  );
-}
-
 function SettingsPendingDeletionRowV2() {
   const reviewRef = useRef<HTMLButtonElement>(null);
   const reference = usePermanentChatDeletionStore((state) => state.reference);
@@ -2009,13 +1913,19 @@ function SettingsPendingDeletionRowV2() {
 
 function SettingsAccountPanelV2({
   accountEmail,
-  adminEntryVisible
-}: Readonly<{ accountEmail: string | null; adminEntryVisible: boolean }>) {
+  adminEntryVisible,
+  onDirtyChange,
+  onBusyChange
+}: Readonly<{ accountEmail: string | null; adminEntryVisible: boolean;
+  onDirtyChange(dirty: boolean): void; onBusyChange(busy: boolean): void;
+}>) {
   const [signingOut, setSigningOut] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [signOutError, setSignOutError] = useState(false);
+  useEffect(() => { onBusyChange(saving || signingOut); return () => onBusyChange(false); }, [onBusyChange, saving, signingOut]);
   return (
     <>
-      <AccountSettingsRowsV2 accountEmail={accountEmail} adminEntryVisible={adminEntryVisible} />
+      <AccountSettingsRowsV2 accountEmail={accountEmail} adminEntryVisible={adminEntryVisible} onDirtyChange={onDirtyChange} onBusyChange={setSaving} />
       {adminEntryVisible ? (
         <SettingsRowV2
           description="Installation resources, providers, users and policies."
@@ -2034,6 +1944,7 @@ function SettingsAccountPanelV2({
       >
         <UiV2Button
           busy={signingOut}
+          disabled={saving}
           onClick={() => {
             setSigningOut(true);
             setSignOutError(false);

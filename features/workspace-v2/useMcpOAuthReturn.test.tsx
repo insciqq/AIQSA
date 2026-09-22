@@ -21,8 +21,8 @@ function useShellReturn(accountId: string, open: () => void) {
 }
 
 describe("MCP OAuth return lifecycle", () => {
-  it.each(["connected", "cancelled", "failed"] as const)("preserves the %s result through shell effect replay", async (kind) => {
-    window.history.replaceState(null, "", `/?settings=mcp&oauth=${kind}&server=server-1&keep=yes#anchor`);
+  it.each(["settings", "library"].flatMap(destination => ["connected", "cancelled", "failed"].map(kind => ({ destination, kind }))))("preserves $destination $kind through shell effect replay", async ({ destination, kind }) => {
+    window.history.replaceState(null, "", `/?${destination}=mcp&oauth=${kind}&server=server-1&keep=yes#anchor`);
     const open = vi.fn();
     const { rerender } = renderHook(({ accountId }) => useShellReturn(accountId, open), {
       initialProps: { accountId: "account-1" }, wrapper: StrictMode

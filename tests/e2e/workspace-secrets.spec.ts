@@ -6,6 +6,7 @@ import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { decryptWorkspaceSecret } from "../../lib/server/workspace/secrets/store";
 import type { WorkspaceSecretSummary } from "../../lib/contracts/workspaceSecrets";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
+import { runAccountMenuAction } from "./shell/page";
 import { loginWithPassword } from "./support/workspace";
 
 const prisma = new PrismaClient();
@@ -13,11 +14,7 @@ test.describe.configure({ mode: "serial" });
 test.afterAll(() => prisma.$disconnect());
 
 async function openSecrets(page: Page) {
-  const sidebar = page.getByRole("button", { name: "Open sidebar" });
-  if (!(await page.getByRole("button", { name: "Account menu" }).isVisible())) await sidebar.click();
-  await page.getByRole("button", { name: "Account menu" }).click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Workspace secrets" }).click();
+  await runAccountMenuAction(page, "Secrets");
   await expect(page.getByTestId("workspace-secrets-panel").getByRole("button", { name: "Add secret" })).toBeEnabled();
 }
 
@@ -50,8 +47,8 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       const panel = page.getByTestId("workspace-secrets-panel");
       await expect(panel.getByText("No saved Workspace secrets.")).toBeVisible();
       await panel.getByRole("button", { name: "Add secret" }).click();
-      await page.getByRole("button", { name: "Close settings" }).click();
-      await expect(page.getByRole("alertdialog", { name: "Unsaved Workspace secret" })).toHaveCount(0);
+      await page.getByRole("button", { name: "Back to chat" }).click();
+      await expect(page.getByRole("dialog", { name: "Unsaved Workspace secret" })).toHaveCount(0);
       await expect(panel).toBeHidden();
       await openSecrets(page);
       const add = async (kind: string, name: string) => {
@@ -89,8 +86,8 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
         await panel.getByLabel(`Variable name ${index}`, { exact: true }).fill(name);
         await panel.getByLabel(`Variable value ${index}`, { exact: true }).fill(value);
       }
-      await page.getByRole("button", { name: "Close settings" }).click();
-      const discard = page.getByRole("alertdialog", { name: "Unsaved Workspace secret" });
+      await page.getByRole("button", { name: "Back to chat" }).click();
+      const discard = page.getByRole("dialog", { name: "Unsaved Workspace secret" });
       await expect(discard).toBeVisible();
       await discard.getByRole("button", { name: "Keep editing" }).click();
       await expect(panel.getByLabel("Variable value 1", { exact: true })).toHaveValue(token);
@@ -135,7 +132,7 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       await panel.getByLabel("Replace saved value").check();
       await panel.getByLabel("Secret text").fill("synthetic replacement");
       await save("Renamed instructions");
-      await page.getByRole("button", { name: "Close settings" }).click();
+      await page.getByRole("button", { name: "Back to chat" }).click();
       await page.reload();
       await openSecrets(page);
       await expect(panel.getByRole("heading", { level: 4 })).toHaveCount(5);

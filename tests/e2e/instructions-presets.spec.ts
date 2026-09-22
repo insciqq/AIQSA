@@ -13,8 +13,7 @@ const prisma = new PrismaClient();
 test.describe.configure({ mode: "serial" });
 test.afterAll(() => prisma.$disconnect());
 async function openInstructions(page: Page) {
-  await runAccountMenuAction(page, "Settings");
-  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Chat defaults" }).click();
+  await runAccountMenuAction(page, "Instructions");
   await expect(page.getByRole("button", { name: "Active instructions" })).toBeEnabled();
   await page.getByRole("button", { name: "Manage presets…" }).click();
 }
@@ -135,8 +134,8 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await panel.getByRole("button", { name: "Save", exact: true }).click();
       await expect(panel.getByRole("alert")).toContainText("changed elsewhere");
       await expect(panel.getByLabel("System instructions", { exact: true })).toHaveValue("Unsaved local text");
-      await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "General", exact: true }).click();
-      const discard = page.getByRole("alertdialog", { name: "Unsaved instructions" });
+      await page.getByTestId("library-v2").getByRole("tab", { name: "Files", exact: true }).click();
+      const discard = page.getByRole("dialog", { name: "Unsaved instructions" });
       await expect(discard).toBeVisible(); await discard.getByRole("button", { name: "Keep editing" }).click();
       await panel.getByRole("button", { name: "Cancel", exact: true }).click();
       await panel.getByRole("button", { name: "Discard changes" }).click();

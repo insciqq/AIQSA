@@ -173,6 +173,8 @@ describe("MCP OAuth web handlers", () => {
     expect(response.status).toBe(303);
     const location = response.headers.get("location") ?? "";
     expect(location).toContain("oauth=connected");
+    expect(new URL(location).searchParams.get("library")).toBe("mcp");
+    expect(new URL(location).searchParams.has("settings")).toBe(false);
     expect(location).toContain(`server=${SERVER_ID}`);
     expect(location).not.toContain("secret-code");
     expect(location).not.toContain("fixture-code-verifier");

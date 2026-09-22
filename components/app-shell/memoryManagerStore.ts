@@ -41,6 +41,7 @@ type MemoryManagerStore = {
   provenanceFilter: MemoryManagerProvenanceFilter;
   queryApplied: string;
   queryInput: string;
+  resetPending: boolean;
   screen: MemoryManagerScreen;
   setDraft(patch: Partial<MemoryDraft>): void;
   setCategoryFilter(value: MemoryManagerCategoryFilter): void;
@@ -71,6 +72,7 @@ const initialState: Omit<
   provenanceFilter: "ALL",
   queryApplied: "",
   queryInput: "",
+  resetPending: false,
   screen: "list"
 };
 
@@ -140,7 +142,7 @@ export async function refreshMemoryList(
   options: Readonly<{ append?: boolean; appliedQuery?: string }> = {}
 ): Promise<void> {
   const current = useMemoryManagerStore.getState();
-  if (current.mutationState || holdsDraft(current.screen)) return;
+  if (current.resetPending || current.mutationState || holdsDraft(current.screen)) return;
   const generation = ++listRequestGeneration;
   const append = options.append === true;
   const queryApplied = options.appliedQuery ?? current.queryApplied;
@@ -193,6 +195,7 @@ export async function clearMemorySearch(): Promise<void> {
 }
 
 export function openMemoryDetail(memoryRef: string): void {
+  if (useMemoryManagerStore.getState().resetPending) return;
   const memory = useMemoryManagerStore.getState().memories.find(
     (item) => item.memoryRef === memoryRef
   ) ?? null;
@@ -220,6 +223,7 @@ export function showMemoryList(): void {
 }
 
 export function beginCreateMemory(): void {
+  if (useMemoryManagerStore.getState().resetPending) return;
   if (useMemoryManagerStore.getState().mutationOutcomeUnknown) return;
   retainDraftList();
   useMemoryManagerStore.setState({
@@ -234,6 +238,7 @@ export function beginCreateMemory(): void {
 }
 
 export function beginEditMemory(): void {
+  if (useMemoryManagerStore.getState().resetPending) return;
   const { activeMemory: memory, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
   if (mutationOutcomeUnknown || !memory || !memory.allowedActions.includes("EDIT")) return;
   retainDraftList();
@@ -247,6 +252,7 @@ export function beginEditMemory(): void {
 }
 
 export function requestForgetMemory(memoryRef: string): void {
+  if (useMemoryManagerStore.getState().resetPending) return;
   if (useMemoryManagerStore.getState().mutationOutcomeUnknown) return;
   const memory = useMemoryManagerStore.getState().memories.find(
     (item) => item.memoryRef === memoryRef
@@ -281,6 +287,7 @@ export function discardMemoryManagerDraft(): void {
 }
 
 export async function saveNewMemory(useMemoryFacts: boolean): Promise<void> {
+  if (useMemoryManagerStore.getState().resetPending) return;
   const { draft, mutationState, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
   if (mutationState || mutationOutcomeUnknown || !memoryDraftIsValid(draft)) return;
   const generation = lifecycleGeneration;
@@ -312,6 +319,7 @@ export async function saveNewMemory(useMemoryFacts: boolean): Promise<void> {
 }
 
 export async function saveMemoryChanges(): Promise<void> {
+  if (useMemoryManagerStore.getState().resetPending) return;
   const { activeMemory, draft, mutationState, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
   if (mutationState || mutationOutcomeUnknown || !activeMemory || !memoryDraftIsValid(draft) ||
     !activeMemory.allowedActions.includes("EDIT")) return;
@@ -351,6 +359,7 @@ export async function saveMemoryChanges(): Promise<void> {
 }
 
 export async function forgetCurrentMemory(): Promise<void> {
+  if (useMemoryManagerStore.getState().resetPending) return;
   const { activeMemory: memory, mutationState, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
   if (mutationState || mutationOutcomeUnknown || !memory || !memory.allowedActions.includes("FORGET")) return;
   const generation = lifecycleGeneration;
@@ -395,19 +404,15 @@ export async function openMemoryManager(accountId: string): Promise<void> {
   }
 }
 
-export function invalidateMemoryManagerData(accountId?: string): void {
+export function invalidateMemoryManagerData(accountId?: string | null, resetPending = false): void {
   const current = useMemoryManagerStore.getState();
-  if (accountId && current.accountId !== accountId) return;
+  if (accountId !== undefined && current.accountId !== accountId) return;
   lifecycleGeneration += 1;
   listRequestGeneration += 1;
   useMemoryManagerStore.setState({
-    activeMemory: null,
-    listError: null,
-    listLoadState: "idle",
-    memories: [],
-    mutationState: null,
-    nextCursor: null,
-    screen: "list"
+    ...initialState,
+    accountId: current.accountId,
+    resetPending
   });
 }
 

@@ -4,10 +4,7 @@ export type SettingsSection =
   | "account"
   | "connected_apps"
   | "data"
-  | "defaults"
-  | "general"
-  | "mcp"
-  | "memory";
+  | "general";
 
 export type SettingsDestinationSnapshot = {
   memoryOpen: boolean;
@@ -19,8 +16,6 @@ export type SettingsDestinationStore = SettingsDestinationSnapshot & {
   closeMemory(): void;
   closeSettings(): void;
   openMemoryLibrary(): void;
-  openMemoryTab(): void;
-  openMcpSettings(): void;
   openSettings(): void;
 };
 
@@ -40,12 +35,6 @@ export const useSettingsDestinationStore = create<SettingsDestinationStore>((set
   },
   openMemoryLibrary() {
     set({ memoryOpen: true, settingsOpen: false });
-  },
-  openMemoryTab() {
-    set({ settingsOpen: true, settingsSection: "memory" });
-  },
-  openMcpSettings() {
-    set({ settingsOpen: true, settingsSection: "mcp" });
   },
   openSettings() {
     set({ settingsOpen: true, settingsSection: "general" });

@@ -427,8 +427,6 @@ export function PowerAppShellV2({
   const memoryOpen = useSettingsDestinationStore((state) => state.memoryOpen);
   const closeMemoryLibrary = useSettingsDestinationStore((state) => state.closeMemory);
   const openMemoryLibrary = useSettingsDestinationStore((state) => state.openMemoryLibrary);
-  const openMemoryTab = useSettingsDestinationStore((state) => state.openMemoryTab);
-  const openMcpSettings = useSettingsDestinationStore((state) => state.openMcpSettings);
   const openGeneralSettings = useSettingsDestinationStore((state) => state.openSettings);
   const closeGeneralSettings = useSettingsDestinationStore((state) => state.closeSettings);
   const librarySnapshot = useAssistantLibraryStore();
@@ -480,8 +478,6 @@ export function PowerAppShellV2({
         : null;
     }
   });
-
-  useMcpOAuthReturn(accountId, openMcpSettings);
 
   useEffect(() => {
     let current = true;
@@ -909,7 +905,6 @@ export function PowerAppShellV2({
     await loadEarlierMessagesPage(sourceChatId);
   });
 
-
   const retryActiveChatDetail = useEventCallback(() => {
     const chat = chats.find((candidate) => candidate.id === activeChatId);
     if (chat) {
@@ -1160,7 +1155,7 @@ export function PowerAppShellV2({
     selectProjectChat
   ]);
   const studio = useStudioNavigation({
-    available: ["assistants", "skills", "knowledge", "memory", "files", "artifacts"],
+    available: ["assistants", "instructions", "skills", "knowledge", "memory", "files", "artifacts", "mcp", "secrets", "defaults"],
     onExit() {
       assistantLibraryActions.closeLibrary();
       knowledgeLibraryActions.closeLibrary();
@@ -1183,6 +1178,8 @@ export function PowerAppShellV2({
       }
     }
   });
+  function openMcpSettings() { studio.open("mcp"); }
+  useMcpOAuthReturn(accountId, useEventCallback(openMcpSettings));
   const openAssistantLibrary = () => studio.open("assistants");
   const openKnowledgeLibrary = () => studio.open("knowledge");
   const openKnowledgeLibrarySource = (sourceId: string) => {
@@ -1192,10 +1189,6 @@ export function PowerAppShellV2({
     // Personal Memory is never a Project capability, including stale callbacks.
     if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) return;
     studio.open("memory");
-  };
-  const openMemorySettingsTab = () => {
-    if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) return;
-    openMemoryTab();
   };
   const openSettingsDestination = () => openGeneralSettings();
   const [assistantPickerOpen, setAssistantPickerOpen] = useState(false);
@@ -2062,7 +2055,6 @@ export function PowerAppShellV2({
     openKnowledge: openKnowledgeLibrary,
     openLibrary: openAssistantLibrary,
     openMemory: openMemoryLibraryDestination,
-    openMemorySettingsTab,
     openMcp: openMcpSettings,
     settings: {
       open: settingsOpen,

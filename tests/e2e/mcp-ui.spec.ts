@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { UserMcpServer } from "../../lib/contracts/mcp";
+import { runAccountMenuAction } from "./shell/page";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken as signIn } from "./support/localAuth";
@@ -31,14 +32,16 @@ for (const profile of [
       await route.fulfill({ json: { app: { ...hub, revokedAt: "2026-09-12T00:01:00.000Z", state: "REVOKED" } } });
     });
     await signIn(page);
-    await page.goto("/?settings=mcp");
-    const settings = page.getByTestId("settings-v2");
+    await page.goto("/?library=mcp");
+    let settings = page.getByTestId("library-v2");
     await settings.getByText("Connect an external agent to MCP Hub", { exact: true }).click();
     await expect(settings.getByLabel("MCP Hub URL")).toHaveValue(canonical);
     await expectWithinViewport(page, settings.getByLabel("MCP Hub URL"));
     await expectTouchSafe(settings.getByRole("button", { name: "Copy URL" }));
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ path: testInfo.outputPath(`hub-connect-${profile.theme}.png`) });
+    await runAccountMenuAction(page, "Settings");
+    settings = page.getByTestId("settings-v2");
     await settings.getByRole("button", { name: "Connected apps", exact: true }).click();
     const revoke = settings.getByRole("button", { name: "Revoke Synthetic agent MCP Hub access" });
     await expectTouchSafe(revoke);
@@ -85,8 +88,8 @@ test("explains MCP health failures and timeouts and refreshes their status expli
   });
   await signIn(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/?settings=mcp");
-  const settings = page.getByTestId("settings-v2");
+  await page.goto("/?library=mcp");
+  const settings = page.getByTestId("library-v2");
   for (const failure of failures) {
     const row = settings.getByRole("article", { name: failure.name, exact: true });
     await expect(row.getByRole("status")).toContainText(failure.message);
@@ -114,14 +117,14 @@ for (const [kind, notice] of [
   ["cancelled", "Authorization was cancelled."],
   ["failed", "Authorization or automatic MCP enablement failed. Try connecting again."]
 ] as const) {
-  test(`preserves the ${kind} MCP return notice after opening Settings`, async ({ page }, testInfo) => {
+  test(`preserves the ${kind} MCP return notice after opening Studio`, async ({ page }, testInfo) => {
     await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
     await signIn(page);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`/?settings=mcp&oauth=${kind}&server=fixture-server`);
-    const settings = page.getByTestId("settings-v2");
+    await page.goto(`/?${kind === "cancelled" ? "settings" : "library"}=mcp&oauth=${kind}&server=fixture-server`);
+    const settings = page.getByTestId("library-v2");
     await expect(settings.getByText(notice, { exact: true })).toBeVisible();
-    await expect(page).not.toHaveURL(/oauth=|settings=mcp|server=fixture-server/u);
+    await expect(page).not.toHaveURL(/oauth=|library=mcp|settings=mcp|server=fixture-server/u);
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ path: testInfo.outputPath(`mcp-return-${kind}.png`) });
     await settings.getByRole("button", { name: "Dismiss", exact: true }).click();
@@ -341,8 +344,8 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(tools.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
   await tools.getByRole("menuitem", { name: /Manage enabled MCP servers/u }).click();
 
-  let settings = page.getByTestId("settings-v2");
-  await expect(settings.getByRole("heading", { level: 2, name: "MCP & tools" })).toBeVisible();
+  let settings = page.getByTestId("library-v2");
+  await expect(settings.getByRole("heading", { name: "MCP servers", exact: true })).toBeVisible();
   await expect(settings.getByText("Inactive", { exact: true })).toHaveCount(3);
   await settings.getByRole("button", { name: "Complete setup for Mem0" }).click();
   await expect(settings.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
@@ -360,11 +363,11 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await settings.getByRole("switch", { name: "Enable Todoist" }).click();
   await expect(settings.getByText("Checking", { exact: true })).toBeVisible();
 
-  await settings.getByRole("button", { name: "Close settings" }).click();
+  await settings.getByRole("button", { name: "Back to chat" }).click();
   await toolsTrigger.click();
   tools = page.getByRole("menu", { name: "MCP tools" });
   await tools.getByRole("menuitem", { name: /Manage enabled MCP servers/u }).click();
-  settings = page.getByTestId("settings-v2");
+  settings = page.getByTestId("library-v2");
   await expect(settings.getByText("Active", { exact: true })).toHaveCount(2);
   await expect(settings.getByRole("switch", { checked: true })).toHaveCount(2);
   await expect(settings.getByText("Inactive", { exact: true })).toHaveCount(1);
@@ -373,7 +376,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(settings.getByText("How tools use data").locator("xpath=..")).not.toHaveAttribute("open", "");
   expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
 
-  await settings.getByRole("button", { name: "Close settings" }).click();
+  await settings.getByRole("button", { name: "Back to chat" }).click();
   await toolsTrigger.click();
   tools = page.getByRole("menu", { name: "MCP tools" });
   const autoMode = tools.getByRole("menuitemradio", { name: /^Auto/u });
@@ -440,16 +443,16 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
         tools: [{ description: "Notion test tool", name: "notion_tool" }]
       }
     : server);
-  await page.goto("/?settings=mcp&oauth=connected&server=notion");
-  settings = page.getByTestId("settings-v2");
+  await page.goto("/?library=mcp&oauth=connected&server=notion");
+  settings = page.getByTestId("library-v2");
   await expect(settings.getByText("External account connected and MCP enabled.")).toBeVisible();
   await expect(settings.getByText("Team workspace")).toBeVisible();
-  await expect(page).not.toHaveURL(/oauth=|settings=mcp|server=notion/u);
+  await expect(page).not.toHaveURL(/oauth=|library=mcp|settings=mcp|server=notion/u);
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
   await expectTouchSafe(settings.getByRole("switch", { name: "Enable Mem0" }));
-  await expectTouchSafe(settings.getByRole("button", { name: "Close settings" }));
+  await expectTouchSafe(settings.getByRole("button", { name: "Back to chat" }));
 
   await page.setViewportSize({ height: 390, width: 844 });
   await expectWithinViewport(page, settings);
@@ -457,6 +460,6 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   const refreshStatus = settings.getByRole("button", { name: "Refresh status" });
   await refreshStatus.scrollIntoViewIfNeeded();
   await expect(refreshStatus).toBeInViewport();
-  await settings.getByRole("button", { name: "Close settings" }).click();
+  await settings.getByRole("button", { name: "Back to chat" }).click();
   await expect(toolsTrigger.locator('[data-signal="attention"]')).toHaveCount(0);
 });

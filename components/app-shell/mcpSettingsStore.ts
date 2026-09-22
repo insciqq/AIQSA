@@ -122,17 +122,18 @@ function oauthAuthorizingKey(serverId: string): string {
 
 export function markMcpOAuthAuthorizing(serverId: string): void {
   if (typeof window === "undefined") return;
-  window.sessionStorage.setItem(oauthAuthorizingKey(serverId), String(Date.now()));
+  try { window.sessionStorage.setItem(oauthAuthorizingKey(serverId), String(Date.now())); } catch { /* Optional browser state. */ }
 }
 
 export function clearMcpOAuthAuthorizing(serverId: string): void {
   if (typeof window === "undefined") return;
-  window.sessionStorage.removeItem(oauthAuthorizingKey(serverId));
+  try { window.sessionStorage.removeItem(oauthAuthorizingKey(serverId)); } catch { /* Optional browser state. */ }
 }
 
 export function isMcpOAuthAuthorizing(serverId: string): boolean {
   if (typeof window === "undefined") return false;
-  const startedAt = Number(window.sessionStorage.getItem(oauthAuthorizingKey(serverId)));
+  let startedAt: number;
+  try { startedAt = Number(window.sessionStorage.getItem(oauthAuthorizingKey(serverId))); } catch { return false; }
   if (!Number.isFinite(startedAt) || startedAt <= 0 || Date.now() - startedAt > oauthAuthorizingTtlMs) {
     clearMcpOAuthAuthorizing(serverId);
     return false;
@@ -188,16 +189,17 @@ export async function refreshMcpSettings(
 }
 
 export function consumeMcpOAuthReturn(url: URL): McpOAuthOutcome | null {
-  if (url.searchParams.get("settings") !== "mcp") return null;
+  if (url.searchParams.get("settings") !== "mcp" && url.searchParams.get("library") !== "mcp") return null;
   const raw = url.searchParams.get("oauth");
   const kind = raw === "connected" || raw === "cancelled" || raw === "failed" ? raw : null;
   const outcome = kind ? { kind, serverId: url.searchParams.get("server") } as const : null;
   if (outcome?.serverId) clearMcpOAuthAuthorizing(outcome.serverId);
   useMcpSettingsStore.getState().setOAuthOutcome(outcome);
   url.searchParams.delete("settings");
+  url.searchParams.delete("library");
   url.searchParams.delete("oauth");
   url.searchParams.delete("server");
-  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
   return outcome;
 }
 

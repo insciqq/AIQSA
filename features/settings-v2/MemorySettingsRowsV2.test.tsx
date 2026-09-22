@@ -1,12 +1,14 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
-import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
-import { resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
+import { openMemoryManager, useMemoryManagerStore } from "@/components/app-shell/memoryManagerStore";
+import { memoryConsumerItemFixture, memoryConsumerListFixture, memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
+import { resetMemoryManagerStoreForTest, resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
 import { MemorySettingsRowsV2 } from "./MemorySettingsRowsV2";
 
 const memoryApi = vi.hoisted(() => ({
   loadMemorySettings: vi.fn(),
+  listMemories: vi.fn(),
   patchMemorySettings: vi.fn(),
   resetPersonalMemory: vi.fn()
 }));
@@ -20,8 +22,11 @@ vi.mock("@/components/app-shell/memoryApi", async () => {
 
 describe("MemorySettingsRowsV2", () => {
   beforeEach(() => {
+    resetMemoryManagerStoreForTest();
     resetMemorySettingsStoreForTest();
     memoryApi.loadMemorySettings.mockReset();
+    memoryApi.loadMemorySettings.mockResolvedValue(memoryConsumerSettingsFixture());
+    memoryApi.listMemories.mockReset().mockResolvedValue(memoryConsumerListFixture([]));
     memoryApi.patchMemorySettings.mockReset();
     memoryApi.resetPersonalMemory.mockReset();
   });
@@ -29,6 +34,7 @@ describe("MemorySettingsRowsV2", () => {
   afterEach(() => {
     vi.useRealTimers();
     resetMemorySettingsStoreForTest();
+    resetMemoryManagerStoreForTest();
   });
 
   it.each([
@@ -53,7 +59,7 @@ describe("MemorySettingsRowsV2", () => {
       ...data,
       settings: { ...data.settings, [key]: true }
     });
-    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+    render(<MemorySettingsRowsV2 />);
 
     const control = screen.getByRole("switch", { name: `${label}: off` });
     expect(control).toBeEnabled();
@@ -74,8 +80,7 @@ describe("MemorySettingsRowsV2", () => {
       status: "PAUSED"
     });
     useMemorySettingsStore.setState({ data, loadState: "ready" });
-    const onOpenLibrary = vi.fn();
-    render(<MemorySettingsRowsV2 onOpenLibrary={onOpenLibrary} />);
+    render(<MemorySettingsRowsV2 />);
 
     expect(screen.getAllByRole("switch")).toHaveLength(5);
     expect(screen.getByRole("switch", { name: "Use memories in answers: off" })).toBeEnabled();
@@ -85,8 +90,7 @@ describe("MemorySettingsRowsV2", () => {
     expect(screen.getByRole("switch", { name: "Learn from what you use: off" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
     expect(screen.getByTestId("settings-memory-status")).toHaveTextContent("Memory is paused");
-    fireEvent.click(screen.getByRole("button", { name: "Open in Library" }));
-    expect(onOpenLibrary).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Open in Library" })).toBeNull();
   });
 
   it("shows a lost acknowledgement and reconciles by reading without repeating the mutation", async () => {
@@ -96,7 +100,7 @@ describe("MemorySettingsRowsV2", () => {
     // The server changed, but its acknowledgement did not reach the client.
     memoryApi.patchMemorySettings.mockRejectedValue(new TypeError("network error"));
     memoryApi.loadMemorySettings.mockResolvedValue(current);
-    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+    render(<MemorySettingsRowsV2 />);
     fireEvent.click(screen.getByRole("switch", { name: "Learn automatically: on" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
@@ -113,7 +117,7 @@ describe("MemorySettingsRowsV2", () => {
       data: memoryConsumerSettingsFixture({ resetState: "IN_PROGRESS" }),
       loadState: "ready"
     });
-    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+    render(<MemorySettingsRowsV2 />);
 
     expect(screen.getByRole("status")).toHaveTextContent(
       "Memory is off. Reset cleanup is continuing in the background."
@@ -128,9 +132,13 @@ describe("MemorySettingsRowsV2", () => {
       status: "ON"
     });
     useMemorySettingsStore.setState({ data, loadState: "ready" });
+    useMemoryManagerStore.setState({
+      memories: [memoryConsumerItemFixture()], queryInput: "old", queryApplied: "old",
+      screen: "create", draft: { statement: "Unsaved detail" }, draftDirty: true
+    });
     memoryApi.resetPersonalMemory.mockResolvedValue({ status: "COMPLETE" });
     memoryApi.loadMemorySettings.mockResolvedValue(memoryConsumerSettingsFixture());
-    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+    render(<MemorySettingsRowsV2 />);
 
     const trigger = screen.getByRole("button", { name: "Forget everything…" });
     fireEvent.click(trigger);
@@ -153,6 +161,11 @@ describe("MemorySettingsRowsV2", () => {
     expect(memoryApi.resetPersonalMemory).toHaveBeenCalledOnce();
     await waitFor(() => expect(confirmation).not.toBeInTheDocument());
     expect(screen.getByTestId("settings-memory-reset")).toHaveTextContent("Personal Memory was reset.");
+    await waitFor(() => expect(memoryApi.listMemories).toHaveBeenCalledOnce());
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      memories: [], queryInput: "", queryApplied: "", draft: { statement: "" },
+      draftDirty: false, resetPending: false, screen: "list"
+    });
   });
 
   it("settles background reset progress and re-enables controls without reopening Settings", async () => {
@@ -165,7 +178,7 @@ describe("MemorySettingsRowsV2", () => {
     memoryApi.loadMemorySettings
       .mockResolvedValueOnce(memoryConsumerSettingsFixture({ resetState: "IN_PROGRESS" }))
       .mockResolvedValue(memoryConsumerSettingsFixture({ resetState: "IDLE" }));
-    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+    render(<MemorySettingsRowsV2 />);
     fireEvent.click(screen.getByRole("button", { name: "Forget everything…" }));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Forget everything" }));
@@ -181,6 +194,8 @@ describe("MemorySettingsRowsV2", () => {
   });
 
   it("keeps reset open on failure and suppresses a duplicate in-flight request", async () => {
+    const retained = memoryConsumerItemFixture({ statement: "Still saved after an unconfirmed reset." });
+    memoryApi.listMemories.mockResolvedValue(memoryConsumerListFixture([retained]));
     useMemorySettingsStore.setState({
       data: memoryConsumerSettingsFixture({ status: "ON" }),
       loadState: "ready"
@@ -189,7 +204,7 @@ describe("MemorySettingsRowsV2", () => {
     memoryApi.resetPersonalMemory.mockImplementation(() => new Promise((_resolve, reject) => {
       rejectReset = reject;
     }));
-    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+    render(<MemorySettingsRowsV2 />);
 
     fireEvent.click(screen.getByRole("button", { name: "Forget everything…" }));
     const confirm = screen.getByRole("button", { name: "Forget everything" });
@@ -202,5 +217,30 @@ describe("MemorySettingsRowsV2", () => {
       "The reset could not be confirmed."
     );
     expect(screen.getByRole("alertdialog", { name: "Forget everything?" })).toBeVisible();
+    await waitFor(() => expect(useMemoryManagerStore.getState()).toMatchObject({
+      memories: [retained], resetPending: false, listLoadState: "ready"
+    }));
+  });
+
+  it("reconciles a background reset after reopening the Memory page", async () => {
+    vi.useFakeTimers();
+    useMemoryManagerStore.setState({ resetPending: true });
+    useMemorySettingsStore.setState({ data: memoryConsumerSettingsFixture(), loadState: "ready" });
+    render(<MemorySettingsRowsV2 />);
+    expect(screen.getByRole("button", { name: "Forget everything…" })).toBeDisabled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(useMemoryManagerStore.getState().resetPending).toBe(false);
+    expect(memoryApi.listMemories).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Forget everything…" })).toBeEnabled();
+  });
+
+  it("keeps background reset polling when the manager binds its account after mount", async () => {
+    vi.useFakeTimers();
+    useMemorySettingsStore.setState({ data: memoryConsumerSettingsFixture({ resetState: "IN_PROGRESS" }), loadState: "ready" });
+    render(<MemorySettingsRowsV2 />);
+    await act(async () => { await openMemoryManager("owner"); });
+    expect(useMemoryManagerStore.getState()).toMatchObject({ accountId: "owner", resetPending: true, memories: [] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(useMemoryManagerStore.getState()).toMatchObject({ accountId: "owner", resetPending: false, listLoadState: "ready" });
   });
 });

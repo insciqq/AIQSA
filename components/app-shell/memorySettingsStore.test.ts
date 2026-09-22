@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activateMemorySettings,
   refreshMemorySettings,
+  refreshMemorySettingsAfterReset,
   updateMemoryGate,
   useMemorySettingsStore
 } from "./memorySettingsStore";
@@ -96,6 +97,21 @@ describe("Memory settings store", () => {
 
     await expect(Promise.all([first, second])).resolves.toEqual([settings, settings]);
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("reads settings again after reset without reusing an earlier in-flight response", async () => {
+    const before = memoryConsumerSettingsFixture({ settings: { useMemoryFacts: true }, status: "ON" });
+    const after = memoryConsumerSettingsFixture();
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>(done => { resolve = done; }))
+      .mockResolvedValueOnce(json(after)));
+    const oldRead = refreshMemorySettings(true);
+    await refreshMemorySettingsAfterReset();
+    resolve(json(before));
+    await oldRead;
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: after, loadState: "ready", error: null });
   });
 
   it("does not let an older settings read overwrite an acknowledged toggle", async () => {

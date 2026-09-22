@@ -120,8 +120,7 @@ test("Skills preferences, Auto/Off, and Assistant delivery persist with usable r
     await chip.click();
     await expect(page.getByRole("menuitemradio", { name: /Assistant Skills/ })).toBeDisabled();
     await page.keyboard.press("Escape");
-    await runAccountMenuAction(page, "Settings");
-    await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Chat defaults", exact: true }).click();
+    await runAccountMenuAction(page, "Chat defaults");
     const defaults = page.getByRole("radiogroup", { name: "Skills default" });
     const settingsWrite = page.waitForResponse(response => response.request().method() === "PATCH" && new URL(response.url()).pathname === "/api/me/settings");
     await defaults.getByRole("radio", { name: "Off", exact: true }).click();

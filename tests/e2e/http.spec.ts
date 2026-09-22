@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "../../prisma/local-seed-auth";
+import { runAccountMenuAction } from "./shell/page";
 import { selectFakeModel, sendAndExpect, startNewChat } from "./support/workspace";
 
 // Resolve a non-localhost origin to the disposable stand without granting it
@@ -45,9 +46,7 @@ test("chat actions and Workspace secrets work on a real insecure HTTP origin", a
   await page.reload();
   await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Fake answer: HTTP follow-up");
 
-  await page.getByRole("button", { name: "Account menu" }).click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Workspace secrets" }).click();
+  await runAccountMenuAction(page, "Secrets");
   const secrets = page.getByTestId("workspace-secrets-panel");
   await secrets.getByRole("button", { name: "Add secret" }).click();
   await secrets.getByLabel("Type", { exact: true }).selectOption("env");

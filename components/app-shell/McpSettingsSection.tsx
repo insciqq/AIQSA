@@ -5,7 +5,8 @@ import {
   type UserMcpServer
 } from "@/lib/contracts/mcp";
 import { UiV2Button, UiV2Icon, UiV2Monogram, UiV2Switch } from "@/components/ui-v2";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { McpHubConnection } from "./McpHubConnection";
 import {
   disconnectUserMcpServer,
@@ -15,6 +16,7 @@ import {
 } from "./mcpSettingsApi";
 import {
   isMcpOAuthAuthorizing,
+  clearMcpOAuthAuthorizing,
   markMcpOAuthAuthorizing,
   observeMcpSettings,
   refreshMcpSettings,
@@ -167,34 +169,40 @@ function FieldEditor({
 
 function OAuthLink({
   authorizing,
+  disabled = false,
   href,
   label,
   onStart,
+  onCancel,
   tone = "ghost",
   ...props
 }: Readonly<{
   "aria-label"?: string;
   authorizing: boolean;
+  disabled?: boolean;
   href: string;
   label: string;
   onStart(): void;
+  onCancel(): void;
   tone?: "ghost" | "primary";
 }>) {
   return (
     <a
+      role="link"
       aria-busy={authorizing || undefined}
-      aria-disabled={authorizing || undefined}
+      aria-disabled={authorizing || disabled || undefined}
       aria-label={props["aria-label"]}
       className="v2-button v2-focusable"
       data-tone={tone}
-      href={href}
-      tabIndex={authorizing ? -1 : undefined}
+      href={disabled ? undefined : href}
+      tabIndex={authorizing || disabled ? -1 : undefined}
       onClick={(event) => {
-        if (authorizing) {
+        if (authorizing || disabled) {
           event.preventDefault();
           return;
         }
         onStart();
+        queueMicrotask(() => { if (event.defaultPrevented) onCancel(); });
       }}
     >
       {authorizing ? <Spinner /> : <UiV2Icon name="lock" />}
@@ -208,12 +216,14 @@ function ServerRow({
   enableIssue,
   onBusyChange,
   onEdit,
+  oauthBlockedReason,
   server
 }: Readonly<{
   edits: Readonly<Record<string, McpSlotValue | null>>;
   enableIssue: string | null;
   onBusyChange(busy: boolean): void;
   onEdit(slotKey: string, value: McpSlotValue | null | undefined): void;
+  oauthBlockedReason: string | null;
   server: UserMcpServer;
 }>) {
   const replaceServer = useMcpSettingsStore((state) => state.replaceServer);
@@ -221,6 +231,18 @@ function ServerRow({
   const [error, setError] = useState<string | null>(null);
   const [authorizing, setAuthorizing] = useState(() => isMcpOAuthAuthorizing(server.id));
   const hasEdits = Object.keys(edits).length > 0;
+  const cancelAuthorization = useCallback(() => {
+    clearMcpOAuthAuthorizing(server.id);
+    setAuthorizing(false);
+  }, [server.id]);
+  useEffect(() => {
+    if (!authorizing) return;
+    // A cancelled/failed document navigation leaves this owner alive. Restore
+    // its controls promptly; the storage TTL only covers abandoned documents.
+    const timer = window.setTimeout(cancelAuthorization, 2_000);
+    window.addEventListener("pageshow", cancelAuthorization);
+    return () => { window.clearTimeout(timer); window.removeEventListener("pageshow", cancelAuthorization); };
+  }, [authorizing, cancelAuthorization]);
   const connected = server.oauthState === "ready" || server.oauthState === "reauthorization_required";
   const needsOAuth = server.oauthAvailable && server.oauthState !== "ready";
   const missingPersonalField = server.fields.find((field) => field.source === "missing");
@@ -312,6 +334,8 @@ function ServerRow({
             <OAuthLink
               aria-label={`${server.oauthState === "reauthorization_required" ? "Reconnect" : "Connect"} ${server.name} to enable`}
               authorizing={authorizing}
+              disabled={busy !== null || Boolean(oauthBlockedReason)}
+              onCancel={cancelAuthorization}
               href={userMcpOAuthAction(server.id, server.oauthState === "reauthorization_required")}
               label={server.oauthState === "reauthorization_required" ? "Reconnect to enable" : "Connect to enable"}
               tone="primary"
@@ -344,12 +368,11 @@ function ServerRow({
             {!server.enabled && needsOAuth ? null : (
               <OAuthLink
                 authorizing={authorizing}
+                disabled={busy !== null || Boolean(oauthBlockedReason)}
+                onCancel={cancelAuthorization}
                 href={userMcpOAuthAction(server.id, connected)}
                 label={connected ? "Reconnect" : "Connect"}
-                onStart={() => {
-                  markMcpOAuthAuthorizing(server.id);
-                  setAuthorizing(true);
-                }}
+                onStart={startAuthorization}
               />
             )}
             {connected ? (
@@ -367,6 +390,8 @@ function ServerRow({
           </div>
         </section>
       ) : null}
+
+      {server.oauthAvailable && oauthBlockedReason ? <p className="v2-settings-field-note" role="status">{oauthBlockedReason}</p> : null}
 
       {server.fields.length ? (
         <section className="v2-settings-server-section v2-settings-server-fields" aria-label={`${server.name} personal configuration`}>
@@ -429,10 +454,12 @@ function ServerRow({
 
 export function McpSettingsSection({
   onBusyChange,
-  onDirtyChange
+  onDirtyChange,
+  onOpenDefaults
 }: {
   onBusyChange?(busy: boolean): void;
   onDirtyChange?(dirty: boolean): void;
+  onOpenDefaults?(): void;
 } = {}) {
   const error = useMcpSettingsStore((state) => state.error);
   const loadState = useMcpSettingsStore((state) => state.loadState);
@@ -453,10 +480,12 @@ export function McpSettingsSection({
 
   useEffect(() => {
     onDirtyChange?.(dirty);
+    return () => onDirtyChange?.(false);
   }, [dirty, onDirtyChange]);
 
   useEffect(() => {
     onBusyChange?.(busyServerIds.size > 0);
+    return () => onBusyChange?.(false);
   }, [busyServerIds, onBusyChange]);
 
   function setServerBusy(serverId: string, busy: boolean) {
@@ -469,42 +498,25 @@ export function McpSettingsSection({
   }
 
   function setServerEdit(serverId: string, slotKey: string, value: McpSlotValue | null | undefined) {
+    const field = servers.find(server => server.id === serverId)?.fields.find(field => field.slotKey === slotKey);
+    // Erasing a write-only replacement restores the untouched field. Removing
+    // the saved value remains the separate, explicit null mutation.
+    const nextValue = field?.sensitive && value === "" ? undefined : value;
     setEdits((current) => {
       const server = { ...(current[serverId] ?? {}) };
-      if (value === undefined) delete server[slotKey];
-      else server[slotKey] = value;
+      if (nextValue === undefined) delete server[slotKey];
+      else server[slotKey] = nextValue;
       return { ...current, [serverId]: server };
     });
   }
 
   return (
-    <section className="v2-settings-mcp" aria-labelledby="mcp-settings-heading">
-      <div className="v2-settings-row v2-settings-mcp-summary">
-        <div className="v2-settings-row-copy">
-          {/* The modal header already reads "MCP & tools": the heading stays
-              for the landmark name only. */}
-          <h3 className="v2-sr-only" id="mcp-settings-heading">MCP &amp; tools</h3>
-          <span className="v2-settings-row-title">
-            {servers.length
-              ? `${enabledCount} of ${servers.length} server${servers.length === 1 ? "" : "s"} enabled`
-              : "MCP servers"}
-            {enabledCount && enabledToolCount ? ` · ${toolCountLabel(enabledToolCount)}` : ""}
-          </span>
-          <span className="v2-settings-row-description">
-            Enabled servers join your private tool catalog for chats and authorized MCP Hub apps. A chat uses them in Auto or Load all mode. Policy, secrets, and the full inventory stay with the administrator.
-          </span>
-        </div>
-        <div className="v2-settings-row-control">
-          <UiV2Button
-            busy={loadState === "loading"}
-            className="v2-settings-quiet-action"
-            disabled={loadState === "loading"}
-            onClick={() => void refreshMcpSettings(true).catch(() => undefined)}
-          >
-            Refresh status
-          </UiV2Button>
-        </div>
-      </div>
+    <section className="v2-settings-mcp v2-studio-settings-page" aria-label="MCP servers">
+      <SectionHeading
+        description="Enabled servers join your private tool catalog for chats and authorized MCP Hub apps. A chat uses them in Auto or Load all mode. Policy, secrets, and the full inventory stay with the administrator."
+        action={<UiV2Button busy={loadState === "loading"} disabled={loadState === "loading"} onClick={() => void refreshMcpSettings(true).catch(() => undefined)}>Refresh status</UiV2Button>}
+      >MCP servers</SectionHeading>
+      {servers.length ? <p className="v2-settings-note">{enabledCount} of {servers.length} server{servers.length === 1 ? "" : "s"} enabled{enabledCount && enabledToolCount ? ` · ${toolCountLabel(enabledToolCount)}` : ""}</p> : null}
 
       {oauthOutcome ? (
         <div
@@ -552,6 +564,7 @@ export function McpSettingsSection({
               key={server.id}
               onBusyChange={(busy) => setServerBusy(server.id, busy)}
               onEdit={(slotKey, value) => setServerEdit(server.id, slotKey, value)}
+              oauthBlockedReason={dirty ? "Save or clear your personal values first" : busyServerIds.size ? "Wait for the current update to finish." : null}
               server={server}
             />
           ))}
@@ -575,6 +588,7 @@ export function McpSettingsSection({
           </p>
         </div>
       </details>
+      {onOpenDefaults ? <p className="v2-settings-note">New chats start in Auto mode: a small catalog first, matching tools on demand. <button className="v2-studio-inline-link v2-focusable" type="button" onClick={onOpenDefaults}>Change in Chat defaults</button></p> : null}
     </section>
   );
 }

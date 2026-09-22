@@ -21,12 +21,15 @@ async function login(page: Page, user: { email: string; password: string }) {
   await page.getByLabel("Password", { exact: true }).fill(user.password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByTestId("app-shell")).toBeVisible();
+  // The server shell precedes hydration; wait for the client composer before navigation.
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
 }
 
 async function openMemory(page: Page) {
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-v2");
-  await settings.getByRole("button", { name: "Memory", exact: true }).click();
+  await runAccountMenuAction(page, "Memory");
+  const settings = page.getByRole("complementary", { name: "How Memory works" });
+  const disclosure = settings.getByRole("button", { name: /^How Memory works/ });
+  if (await disclosure.isVisible()) await disclosure.click();
   return settings;
 }
 
