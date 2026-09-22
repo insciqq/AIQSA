@@ -30,6 +30,7 @@ export default async function Home() {
 
   const user = await prisma.user.findUnique({
     select: {
+      displayName: true,
       email: true,
       role: true,
       status: true
@@ -45,6 +46,7 @@ export default async function Home() {
 
   return (
     <PowerAppShellV2
+      accountDisplayName={user.displayName}
       accountEmail={user.email}
       accountId={session.userId}
       adminEntryVisible={user.role === "admin"}

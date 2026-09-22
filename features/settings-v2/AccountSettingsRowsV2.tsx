@@ -12,7 +12,7 @@ import {
   ACCOUNT_DISPLAY_NAME_MAX_LENGTH,
   type AccountProfileWire
 } from "@/lib/contracts/account";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SettingsRowV2 } from "./SettingsV2";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 
@@ -40,9 +40,11 @@ type PasswordFormState =
 export function AccountSettingsRowsV2({
   accountEmail,
   adminEntryVisible,
+  onDisplayNameChange,
   onDirtyChange,
   onBusyChange
 }: Readonly<{ accountEmail: string | null; adminEntryVisible: boolean;
+  onDisplayNameChange?(displayName: string): void;
   onDirtyChange?(dirty: boolean): void; onBusyChange?(busy: boolean): void;
 }>) {
   const [profile, setProfile] = useState<AccountProfileWire | null>(null);
@@ -53,14 +55,17 @@ export function AccountSettingsRowsV2({
   const [nameError, setNameError] = useState<string | null>(null);
   const [password, setPassword] = useState<PasswordFormState>({ kind: "closed" });
   const [passwordDirty, setPasswordDirty] = useState(false);
+  const active = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    active.current = true;
     void loadAccountProfile().then(
       (loaded) => {
         if (cancelled) return;
         setProfile(loaded);
         setNameDraft(loaded.displayName);
+        onDisplayNameChange?.(loaded.displayName);
       },
       (error) => {
         if (!cancelled) setProfileError(errorMessage(error));
@@ -68,8 +73,9 @@ export function AccountSettingsRowsV2({
     );
     return () => {
       cancelled = true;
+      active.current = false;
     };
-  }, []);
+  }, [onDisplayNameChange]);
 
   const email = profile?.email ?? accountEmail;
   const nameDirty = profile !== null && nameDraft.trim() !== profile.displayName;
@@ -85,12 +91,15 @@ export function AccountSettingsRowsV2({
     setNameError(null);
     void updateAccountDisplayName(nameDraft).then(
       (updated) => {
+        if (!active.current) return;
         setProfile(updated);
         setNameDraft(updated.displayName);
         setNameSaving(false);
         setNameSaved(true);
+        onDisplayNameChange?.(updated.displayName);
       },
       (error) => {
+        if (!active.current) return;
         setNameError(errorMessage(error));
         setNameSaving(false);
       }

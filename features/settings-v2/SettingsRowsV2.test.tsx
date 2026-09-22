@@ -164,6 +164,73 @@ describe("AccountSettingsRowsV2", () => {
     accountApi.changeAccountPassword.mockReset();
   });
 
+  it("publishes only server-confirmed display names, including normalized saves and empty profiles", async () => {
+    const profile = { displayName: "", email: "owner@example.test", hasPassword: false, role: "user" };
+    accountApi.loadAccountProfile.mockResolvedValue(profile);
+    let finish!: (value: typeof profile) => void;
+    accountApi.updateAccountDisplayName.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const onDisplayNameChange = vi.fn();
+    render(<AccountSettingsRowsV2 accountEmail={profile.email} adminEntryVisible={false}
+      onDisplayNameChange={onDisplayNameChange} />);
+    const name = screen.getByRole("textbox", { name: "Display name" });
+    await waitFor(() => expect(name).toBeEnabled());
+    expect(onDisplayNameChange.mock.calls).toEqual([[""]]);
+    fireEvent.change(name, { target: { value: "  Ada   Lovelace  " } });
+    fireEvent.keyDown(name, { key: "Enter" });
+    expect(onDisplayNameChange).toHaveBeenCalledTimes(1);
+    expect(name).toBeDisabled();
+    await act(async () => { finish({ ...profile, displayName: "Ada Lovelace" }); });
+    expect(onDisplayNameChange.mock.calls).toEqual([[""], ["Ada Lovelace"]]);
+    expect(name).toHaveValue("Ada Lovelace");
+    expect(screen.getByTestId("settings-account-identity")).toHaveTextContent("Ada Lovelace");
+  });
+
+  it("keeps the committed identity and editable draft after a rejected save", async () => {
+    accountApi.loadAccountProfile.mockResolvedValue({
+      displayName: "Ada Lovelace", email: "owner@example.test", hasPassword: false, role: "user"
+    });
+    accountApi.updateAccountDisplayName.mockRejectedValue(new Error("display_name_invalid"));
+    const onDisplayNameChange = vi.fn();
+    render(<AccountSettingsRowsV2 accountEmail="owner@example.test" adminEntryVisible={false}
+      onDisplayNameChange={onDisplayNameChange} />);
+    const name = screen.getByRole("textbox", { name: "Display name" });
+    await waitFor(() => expect(name).toHaveValue("Ada Lovelace"));
+    fireEvent.change(name, { target: { value: "   " } });
+    expect(onDisplayNameChange).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(name).toBeEnabled());
+    expect(screen.getByRole("alert")).toHaveTextContent("display_name_invalid");
+    expect(name).toHaveValue("   ");
+    expect(onDisplayNameChange.mock.calls).toEqual([["Ada Lovelace"]]);
+    expect(screen.getByTestId("settings-account-identity")).toHaveTextContent("Ada Lovelace");
+  });
+
+  it.each(["load", "save"])("does not publish a previous account's late %s after the keyed panel changes", async phase => {
+    const previous = { displayName: "Ada Lovelace", email: "ada@example.test", hasPassword: false, role: "user" };
+    const current = { ...previous, displayName: "Grace Hopper", email: "grace@example.test" };
+    let finish!: (value: typeof previous) => void;
+    const pending = new Promise<typeof previous>(resolve => { finish = resolve; });
+    accountApi.loadAccountProfile.mockResolvedValueOnce(phase === "load" ? pending : previous)
+      .mockResolvedValueOnce(current);
+    accountApi.updateAccountDisplayName.mockReturnValue(pending);
+    const onDisplayNameChange = vi.fn();
+    const { rerender } = render(<AccountSettingsRowsV2 key="previous" accountEmail={previous.email}
+      adminEntryVisible={false} onDisplayNameChange={onDisplayNameChange} />);
+    if (phase === "save") {
+      const name = screen.getByRole("textbox", { name: "Display name" });
+      await waitFor(() => expect(name).toHaveValue(previous.displayName));
+      fireEvent.change(name, { target: { value: "Late name" } });
+      fireEvent.keyDown(name, { key: "Enter" });
+    }
+    rerender(<AccountSettingsRowsV2 key="current" accountEmail={current.email}
+      adminEntryVisible={false} onDisplayNameChange={onDisplayNameChange} />);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Display name" })).toHaveValue(current.displayName));
+    onDisplayNameChange.mockClear();
+    await act(async () => { finish({ ...previous, displayName: "Late name" }); });
+    expect(onDisplayNameChange).not.toHaveBeenCalled();
+    expect(screen.getByTestId("settings-account-identity")).toHaveTextContent(current.displayName);
+  });
+
   it("hides the password row for external-provider-only accounts", async () => {
     accountApi.loadAccountProfile.mockResolvedValue({
       displayName: "Ada", email: "ada@example.com", hasPassword: false, role: "user"
