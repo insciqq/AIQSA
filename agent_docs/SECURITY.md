@@ -19,15 +19,17 @@ Exceptional operator-controlled Nginx error diagnostics may contain public-share
 
 ## Untrusted Files, Providers, And Content
 
-Authenticate before consuming uploads. Bound complete multipart envelopes, concurrency, bytes, parsing resources, and remote responses before parsing; framework forwarding limits must accommodate admitted envelopes without overriding lower route limits. Validate extension/MIME/content evidence and reject SVG. Public errors omit private object locations, filenames, integrity metadata, bytes/text, and adapter diagnostics.
+Authenticate uploads first. Bound multipart envelopes, concurrency, bytes, parsing resources and remote responses before parsing; forwarding limits accommodate admitted envelopes without overriding route limits. Validate extension/MIME/content evidence; reject SVG. Errors omit object locations, filenames, integrity metadata, content and adapter diagnostics.
+
+Attachment previews use server allowlists: fully decode raster inputs within byte/pixel/frame bounds; preserve originals, reencode thumbnails. Serve bounded UTF-8 as `text/plain`, with `nosniff` and sandbox CSP. HTML/SVG remain inert source.
 
 Browser multipart authority requires an explicitly configured endpoint for the same private bucket and is expiring/object-specific, never listing/read authority. Durable attempt fences reject stale streams/retries/cancellations. Cancellation aborts authority; server size/checksum/content settlement precedes Source/job creation. Without that endpoint, stream bounded objects through the app without buffering the file/batch.
 
-Parsers are private stateless siblings without data credentials or host ports; an external endpoint is a new operator trust boundary. Preflight archive expansion and document structure bounds. Formulas, OCR, tables, layout, and retrieved Source blocks remain inert evidence, never code/tool/network authority. Knowledge egress uses only bounded content at the exact disclosed destination after current authorization; it cannot widen admitted scope. Public shares strip private file/Knowledge evidence.
+Parsers are private, stateless, credential-free siblings without host ports; external endpoints require operator trust. Preflight archive expansion/document structure. Formulas, OCR, tables, layout and retrieved Source blocks remain inert evidence, never code/tool/network authority. Knowledge egress permits only bounded, currently authorized content at the exact disclosed destination, without scope expansion. Public shares strip private file/Knowledge evidence.
 
 Catalogs, JSON/SSE, URLs, and upstream bodies are untrusted. Discovery cannot grant capabilities. Enforce deadlines, pre-parse bounds, SSRF-safe DNS pinning, and redirect policy. Browser/durable Search output is safe normalized findings/citations; Gemini Suggestions require closed server/browser structural allowlists. Raw provider markup/CSS/query records and operation metadata are not grounding output.
 
-Markdown remains React text except reviewed local Shiki and KaTeX sinks. Code highlighting is bounded; math disables trust, rejects hostile HTML/link/resource commands, bounds macro/source work, and falls back to escaped text. Real-library hostile-input tests protect these exceptions.
+Markdown remains React text except reviewed local Shiki/KaTeX sinks. Bound highlighting and macro/source work; disable math trust, reject HTML/link/resource commands, escape failures. Real-library hostile-input tests protect exceptions.
 
 Artifact prompt injection can encode private context in URLs. Enforce opaque origins and viewer/parent CSP: no same-origin, popups/top navigation, nested frames or runtime network. Vendoring rechecks host/path policy and pinned DNS per redirect; hashes preserve bytes, not trust. Require exact iframe source/opaque origin; confirm every external link's full address. Browser state needs per-artifact/origin quotas, isolation and logout cleanup; exclude it from shared renders. Bound requests before bearer lookup; reauthorize owner/publication/membership around loading. Diagnostics grant no authority.
 

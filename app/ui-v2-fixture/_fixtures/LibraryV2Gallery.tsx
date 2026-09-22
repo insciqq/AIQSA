@@ -99,6 +99,7 @@ const files = [
     createdAt: "2026-09-01T09:00:00.000Z",
     id: "template",
     name: "prompt_template.md",
+    previewKind: "text",
     savedAt: "2026-09-12T09:00:00.000Z",
     status: "ready" as const
   },
@@ -110,6 +111,7 @@ const files = [
     createdAt: "2026-09-21T14:31:00.000Z",
     id: "sales",
     name: "sales_q3.csv",
+    previewKind: "text",
     savedAt: null,
     status: "ready" as const
   },
@@ -121,6 +123,7 @@ const files = [
     chatTitle: "Quarterly product brief",
     createdAt: "2026-09-21T14:02:00.000Z",
     name: "contract_scan.pdf",
+    previewKind: null,
     savedAt: null,
     status: "processing" as const
   }

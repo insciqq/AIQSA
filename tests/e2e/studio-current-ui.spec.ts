@@ -26,12 +26,12 @@ for (const theme of ["dark", "light"] as const) {
       nextCursor: null,
       files: [
         { id: "saved-file", fileName: "prompt_template.md", byteSize: 1200, createdAt: "2026-09-09T10:00:00Z",
-          savedAt: "2026-09-12T10:00:00Z", chatId: null, chatTitle: null, messageId: null, status: "ready" },
+          savedAt: "2026-09-12T10:00:00Z", chatId: null, chatTitle: null, messageId: null, status: "ready", previewKind: "text" },
         ...Array.from({ length: 6 }, (_, index) => ({
           id: `chat-file-${index}`, fileName: index < 2 ? "report.md" : `quarterly_research_supporting_document_${index}.pdf`,
           byteSize: 214000, createdAt: `2026-09-21T14:0${5 - index}:00Z`, savedAt: null,
           chatId: "brief-chat", chatTitle: "Quarterly product brief with supporting research and decisions",
-          messageId: `message-${index}`, status: index === 5 ? "processing" : "ready"
+          messageId: `message-${index}`, previewKind: index < 2 ? "text" : null, status: index === 5 ? "processing" : "ready"
         }))
       ]
     } }));

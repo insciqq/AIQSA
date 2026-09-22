@@ -4,9 +4,12 @@ import {
   type UserMcpConfigurationField,
   type UserMcpServer
 } from "@/lib/contracts/mcp";
-import { UiV2Button, UiV2Icon, UiV2Monogram, UiV2Switch } from "@/components/ui-v2";
-import { useCallback, useEffect, useState } from "react";
+import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2Monogram, UiV2Switch } from "@/components/ui-v2";
+import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
+import { DiscardChangesConfirmationDialog } from "./ConfirmationDialog";
+import { useBeforeUnloadGuard } from "./useBeforeUnloadGuard";
 import { McpHubConnection } from "./McpHubConnection";
 import {
   disconnectUserMcpServer,
@@ -25,6 +28,7 @@ import {
 import {
   mcpReadinessPresentation,
   mcpOperationalPresentation,
+  mcpSetupAttention,
   type McpReadinessPresentation
 } from "./mcpReadiness";
 
@@ -217,7 +221,8 @@ function ServerRow({
   onBusyChange,
   onEdit,
   oauthBlockedReason,
-  server
+  server,
+  visible
 }: Readonly<{
   edits: Readonly<Record<string, McpSlotValue | null>>;
   enableIssue: string | null;
@@ -225,10 +230,17 @@ function ServerRow({
   onEdit(slotKey: string, value: McpSlotValue | null | undefined): void;
   oauthBlockedReason: string | null;
   server: UserMcpServer;
+  visible: boolean;
 }>) {
   const replaceServer = useMcpSettingsStore((state) => state.replaceServer);
+  const refreshing = useMcpSettingsStore((state) => state.loadState === "loading");
+  const refreshError = useMcpSettingsStore((state) => state.error);
   const [busy, setBusy] = useState<"disconnect" | "save" | "toggle" | null>(null);
+  const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const openRef = useRef<HTMLButtonElement>(null);
   const [authorizing, setAuthorizing] = useState(() => isMcpOAuthAuthorizing(server.id));
   const hasEdits = Object.keys(edits).length > 0;
   const cancelAuthorization = useCallback(() => {
@@ -246,6 +258,8 @@ function ServerRow({
   const connected = server.oauthState === "ready" || server.oauthState === "reauthorization_required";
   const needsOAuth = server.oauthAvailable && server.oauthState !== "ready";
   const missingPersonalField = server.fields.find((field) => field.source === "missing");
+  const authorizationBlocked = oauthBlockedReason ?? (missingPersonalField
+    ? "Add and save the required personal values before connecting." : null);
   const readiness = mcpReadinessPresentation(server.readiness, server.runtimeErrorCode);
   const operational = mcpOperationalPresentation(server);
   // The catalog count is informational: tool names appear once the runtime
@@ -253,6 +267,8 @@ function ServerRow({
   const toolCount = server.tools.length || server.knownToolCount;
 
   async function run(kind: typeof busy, operation: () => Promise<void>) {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(kind);
     onBusyChange(true);
     setError(null);
@@ -261,6 +277,7 @@ function ServerRow({
     } catch (cause) {
       setError(errorText(cause, server));
     } finally {
+      busyRef.current = false;
       setBusy(null);
       onBusyChange(false);
     }
@@ -282,8 +299,37 @@ function ServerRow({
     });
   };
 
+  function close() {
+    setConfirmDiscard(false);
+    setOpen(false);
+    // Complete setup may disappear after saving. The chevron remains a stable
+    // return target, after the modal layer has restored the original opener.
+    requestAnimationFrame(() => openRef.current?.focus());
+  }
+
+  function requestClose() {
+    if (busyRef.current || authorizing) return;
+    if (hasEdits) setConfirmDiscard(true);
+    else close();
+  }
+
+  const status = (
+    <p aria-live="polite" className="v2-settings-server-status" role="status">
+      <span className="v2-settings-server-readiness" data-tone={readinessTone(operational.kind)}>
+        {operational.kind === "ready" ? <UiV2Icon name="check" />
+          : operational.kind === "progress" ? <Spinner /> : null}
+        {operational.label}
+      </span>
+      {toolCount > 0 ? <><span aria-hidden="true"> · </span><span>{toolCountLabel(toolCount)}</span></> : null}
+      {readiness.kind === "attention" || readiness.kind === "failed" ? <>
+        <span className="v2-settings-server-readiness v2-settings-server-attention" data-tone={readinessTone(readiness.kind)}>{readiness.label}</span>
+      </> : null}
+    </p>
+  );
+
   return (
-    <article
+    <>
+    {visible ? <article
       aria-labelledby={`mcp-server-${server.id}`}
       className="v2-settings-server"
       data-enabled={server.enabled || undefined}
@@ -294,30 +340,11 @@ function ServerRow({
         <div className="v2-settings-server-copy">
           <h4 id={`mcp-server-${server.id}`}>{server.name}</h4>
           {server.description ? <p className="v2-settings-server-description">{server.description}</p> : null}
-          <p aria-live="polite" className="v2-settings-server-status" role="status">
-            <span
-              className="v2-settings-server-readiness"
-              data-tone={readinessTone(operational.kind)}
-            >
-              {operational.kind === "ready" ? <UiV2Icon name="check" />
-                : operational.kind === "progress" ? <Spinner /> : null}
-              {operational.label}
-            </span>
-            {readiness.kind === "attention" || readiness.kind === "failed" ? (
-              <>
-                <span aria-hidden="true"> · </span>
-                <span className="v2-settings-server-readiness" data-tone={readinessTone(readiness.kind)}>
-                  {readiness.label}
-                </span>
-              </>
-            ) : null}
-            {toolCount > 0 ? <>
-              <span aria-hidden="true"> · </span>
-              <span>{toolCountLabel(toolCount)}</span>
-            </> : null}
-          </p>
         </div>
+        <div className="v2-settings-server-summary">{status}</div>
         <div className="v2-settings-server-action">
+          <UiV2IconButton icon="chevron-right" label={`Open ${server.name}`} ref={openRef}
+            onClick={() => setOpen(true)} />
           {!server.enabled && missingPersonalField ? (
             <UiV2Button
               aria-label={`Complete setup for ${server.name}`}
@@ -325,7 +352,8 @@ function ServerRow({
               tone="primary"
               onClick={() => {
                 setError("Add and save the required personal values before enabling this server.");
-                document.getElementById(`mcp-field-${server.id}-${missingPersonalField.slotKey}`)?.focus();
+                setOpen(true);
+                requestAnimationFrame(() => document.getElementById(`mcp-field-${server.id}-${missingPersonalField.slotKey}`)?.focus());
               }}
             >
               Complete setup
@@ -342,8 +370,6 @@ function ServerRow({
               onStart={startAuthorization}
             />
           ) : (
-            <div className="v2-settings-server-preference">
-              <span className="v2-settings-field-note">Enable connection</span>
               <UiV2Switch
                 aria-busy={busy === "toggle" || undefined}
                 checked={server.enabled}
@@ -351,52 +377,40 @@ function ServerRow({
                 label={`Enable ${server.name}`}
                 onChange={toggle}
               />
-            </div>
           )}
         </div>
       </div>
-
-      {server.oauthAvailable ? (
-        <section className="v2-settings-server-section" aria-label={`${server.name} authorization`}>
-          <div className="v2-settings-server-section-copy">
-            <span className="v2-settings-server-section-title">External account</span>
-            <span className="v2-settings-server-section-note">
-              {authorizing ? "Authorizing in your browser…" : server.accountLabel ?? "No external account connected"}
-            </span>
-          </div>
-          <div className="v2-settings-server-section-actions">
-            {!server.enabled && needsOAuth ? null : (
-              <OAuthLink
-                authorizing={authorizing}
-                disabled={busy !== null || Boolean(oauthBlockedReason)}
-                onCancel={cancelAuthorization}
-                href={userMcpOAuthAction(server.id, connected)}
-                label={connected ? "Reconnect" : "Connect"}
-                onStart={startAuthorization}
-              />
-            )}
-            {connected ? (
-              <UiV2Button
-                busy={busy === "disconnect"}
-                disabled={busy !== null || authorizing}
-                onClick={() => void run("disconnect", async () => {
-                  await disconnectUserMcpServer(server.id);
-                  await refreshMcpSettings(true);
-                })}
-              >
-                Disconnect
-              </UiV2Button>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-
-      {server.oauthAvailable && oauthBlockedReason ? <p className="v2-settings-field-note" role="status">{oauthBlockedReason}</p> : null}
-
+      {!open && error ? <p className="v2-settings-error" role="alert">{error}</p> : null}
+      {!open && authorizing ? <p className="v2-settings-field-note" role="status">Authorizing in your browser…</p> : null}
+      {!open && server.oauthAvailable && oauthBlockedReason ? <p className="v2-settings-field-note" role="status">{oauthBlockedReason}</p> : null}
+    </article> : null}
+    <UiV2Sheet open={open} title={server.name} testId="mcp-server-sheet" width="wide"
+      description={server.description ? <span className="v2-settings-server-full-description">{server.description}</span> : undefined}
+      closeBlocked={busy !== null || authorizing} onClose={requestClose}
+      footer={<>
+        <UiV2Button disabled={busy !== null || authorizing} onClick={requestClose}>Cancel</UiV2Button>
+        {server.fields.length ? <UiV2Button busy={busy === "save"} disabled={!hasEdits || busy !== null || authorizing}
+          tone="primary" onClick={() => void run("save", async () => {
+            replaceServer(await updateUserMcpServer(server.id, { values: edits }));
+            for (const slotKey of Object.keys(edits)) onEdit(slotKey, undefined);
+          })}>Save personal values</UiV2Button> : null}
+      </>}>
+      <div className="v2-settings-server-details">
+      <section className="v2-settings-server-section" aria-label={`${server.name} status`}>
+        <div className="v2-settings-server-section-copy">
+          <h3 className="v2-settings-server-section-title">Status</h3>
+          {status}
+          <span className="v2-settings-server-section-note">{server.enabled ? "Connection enabled" : "Connection disabled"}</span>
+        </div>
+        <UiV2Button busy={refreshing} disabled={refreshing || busy !== null}
+          onClick={() => void refreshMcpSettings(true).catch(() => undefined)}>Refresh status</UiV2Button>
+        {error ? <p className="v2-settings-error" role="alert">{error}</p> : null}
+        {refreshError ? <p className="v2-settings-field-note" role="status">Status could not be refreshed. Try again.</p> : null}
+      </section>
       {server.fields.length ? (
         <section className="v2-settings-server-section v2-settings-server-fields" aria-label={`${server.name} personal configuration`}>
           <div className="v2-settings-server-section-copy">
-            <span className="v2-settings-server-section-title">Personal configuration</span>
+            <h3 className="v2-settings-server-section-title">Personal values</h3>
             <span className="v2-settings-server-section-note">
               You can change only the fields your administrator made personal. Server endpoints and launch settings remain installation-owned.
             </span>
@@ -405,7 +419,7 @@ function ServerRow({
           <div className="v2-settings-field-list">
             {server.fields.map((field) => (
               <FieldEditor
-                disabled={busy !== null}
+                disabled={busy !== null || authorizing}
                 edits={edits}
                 field={field}
                 inputId={`mcp-field-${server.id}-${field.slotKey}`}
@@ -414,28 +428,32 @@ function ServerRow({
               />
             ))}
           </div>
+        </section>
+      ) : null}
+      {server.oauthAvailable ? (
+        <section className="v2-settings-server-section" aria-label={`${server.name} authorization`}>
+          <div className="v2-settings-server-section-copy">
+            <h3 className="v2-settings-server-section-title">Authorization</h3>
+            <span className="v2-settings-server-section-note">
+              {authorizing ? "Authorizing in your browser…" : server.accountLabel ?? "No external account connected"}
+            </span>
+            {authorizationBlocked ? <span className="v2-settings-field-note" role="status">{authorizationBlocked}</span> : null}
+          </div>
           <div className="v2-settings-server-section-actions">
-            <UiV2Button
-              busy={busy === "save"}
-              disabled={!hasEdits || busy !== null}
-              tone="primary"
-              onClick={() => void run("save", async () => {
-                replaceServer(await updateUserMcpServer(server.id, { values: edits }));
-                for (const slotKey of Object.keys(edits)) onEdit(slotKey, undefined);
-              })}
-            >
-              Save personal values
-            </UiV2Button>
+            <OAuthLink authorizing={authorizing} disabled={busy !== null || Boolean(authorizationBlocked)}
+              onCancel={cancelAuthorization} href={userMcpOAuthAction(server.id, connected)}
+              label={connected ? "Reconnect" : "Connect"} onStart={startAuthorization} />
+            {connected ? <UiV2Button busy={busy === "disconnect"} disabled={busy !== null || authorizing}
+              onClick={() => void run("disconnect", async () => {
+                await disconnectUserMcpServer(server.id);
+                await refreshMcpSettings(true);
+              })}>Disconnect</UiV2Button> : null}
           </div>
         </section>
       ) : null}
-
-      {server.tools.length ? (
-        <details className="v2-settings-disclosure">
-          <summary className="v2-focusable">
-            <UiV2Icon name="chevron-right" />
-            Tool names
-          </summary>
+      <section className="v2-settings-server-section v2-settings-server-fields" aria-label={`${server.name} tools`}>
+        <h3 className="v2-settings-server-section-title">Tools{toolCount > 0 ? ` · ${toolCount}` : ""}</h3>
+        {server.tools.length ? (
           <ul className="v2-settings-tool-list" aria-label={`${server.name} tools`}>
             {server.tools.map((tool) => (
               <li key={tool.name}>
@@ -444,21 +462,26 @@ function ServerRow({
               </li>
             ))}
           </ul>
-        </details>
-      ) : null}
-
-      {error ? <p className="v2-settings-error" role="alert">{error}</p> : null}
-    </article>
+        ) : <p className="v2-settings-server-section-note">Tool names appear after the server reports them.</p>}
+      </section>
+      </div>
+    </UiV2Sheet>
+    {confirmDiscard ? <DiscardChangesConfirmationDialog portal label="MCP personal values"
+      copy={{ title: "Discard unsaved changes?", body: "Changes to your personal MCP connection will be lost.",
+        dialogLabel: "Unsaved MCP changes", cancelLabel: "Keep editing", confirmLabel: "Discard changes" }}
+      onCancel={() => setConfirmDiscard(false)} onConfirm={() => {
+        for (const slotKey of Object.keys(edits)) onEdit(slotKey, undefined);
+        close();
+      }} /> : null}
+    </>
   );
 }
 
 export function McpSettingsSection({
   onBusyChange,
-  onDirtyChange,
   onOpenDefaults
 }: {
   onBusyChange?(busy: boolean): void;
-  onDirtyChange?(dirty: boolean): void;
   onOpenDefaults?(): void;
 } = {}) {
   const error = useMcpSettingsStore((state) => state.error);
@@ -467,6 +490,8 @@ export function McpSettingsSection({
   const servers = useMcpSettingsStore((state) => state.servers);
   const setOAuthOutcome = useMcpSettingsStore((state) => state.setOAuthOutcome);
   const [edits, setEdits] = useState<ServerEdits>({});
+  const [filter, setFilter] = useState<"all" | "enabled" | "setup">("all");
+  const [query, setQuery] = useState("");
   const [busyServerIds, setBusyServerIds] = useState<ReadonlySet<string>>(() => new Set());
   const enabledServers = servers.filter((server) => server.enabled);
   const enabledCount = enabledServers.length;
@@ -475,13 +500,16 @@ export function McpSettingsSection({
   const enabledToolCount = enabledServers
     .reduce((total, server) => total + (server.tools.length || server.knownToolCount), 0);
   const dirty = Object.values(edits).some((serverEdits) => Object.keys(serverEdits).length > 0);
+  const needsSetupCount = servers.filter(server => mcpSetupAttention(server)).length;
+  const activeFilter = filter === "setup" && !needsSetupCount ? "all" : filter;
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleIds = new Set(servers.filter(server =>
+    (activeFilter === "all" || (activeFilter === "enabled" ? server.enabled : mcpSetupAttention(server))) &&
+    (!normalizedQuery || [server.name, server.description ?? ""].some(value => value.toLowerCase().includes(normalizedQuery)))
+  ).map(server => server.id));
+  useBeforeUnloadGuard(dirty || busyServerIds.size > 0);
 
   useEffect(() => observeMcpSettings(), []);
-
-  useEffect(() => {
-    onDirtyChange?.(dirty);
-    return () => onDirtyChange?.(false);
-  }, [dirty, onDirtyChange]);
 
   useEffect(() => {
     onBusyChange?.(busyServerIds.size > 0);
@@ -554,6 +582,24 @@ export function McpSettingsSection({
           </span>
         </div>
       ) : (
+        <>
+        <div className="v2-settings-mcp-toolbar">
+          <div aria-label="Filter MCP servers" className="v2-resource-filters" role="group">
+            {(["all", "enabled", ...(needsSetupCount ? ["setup" as const] : [])] as const).map(candidate => (
+              <button aria-pressed={activeFilter === candidate} className="v2-resource-filter v2-focusable"
+                data-selected={activeFilter === candidate || undefined} key={candidate} type="button"
+                onClick={() => setFilter(candidate)}>
+                {candidate === "all" ? "All" : candidate === "enabled" ? "Enabled" : "Needs setup"}
+                {" "}<span>{candidate === "all" ? servers.length : candidate === "enabled" ? enabledCount : needsSetupCount}</span>
+              </button>
+            ))}
+          </div>
+          <label className="v2-resource-search">
+            <UiV2Icon name="search" />
+            <input aria-label="Search MCP servers" placeholder="Search servers…" type="search" value={query}
+              onChange={event => setQuery(event.currentTarget.value)} />
+          </label>
+        </div>
         <div className="v2-settings-server-list">
           {servers.map((server) => (
             <ServerRow
@@ -566,9 +612,12 @@ export function McpSettingsSection({
               onEdit={(slotKey, value) => setServerEdit(server.id, slotKey, value)}
               oauthBlockedReason={dirty ? "Save or clear your personal values first" : busyServerIds.size ? "Wait for the current update to finish." : null}
               server={server}
+              visible={visibleIds.has(server.id)}
             />
           ))}
         </div>
+        {!visibleIds.size ? <p className="v2-settings-mcp-state" role="status">No servers match your search or filter.</p> : null}
+        </>
       )}
 
       {error && servers.length > 0 ? (

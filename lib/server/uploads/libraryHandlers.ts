@@ -3,6 +3,7 @@ import type {
   AttachmentLibraryResponseWire
 } from "../../contracts/uploads";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import { attachmentPreviewKind } from "@/lib/domain/attachmentPreview";
 
 export type AttachmentLibraryRecord = Readonly<{
   byteSize: number;
@@ -12,6 +13,7 @@ export type AttachmentLibraryRecord = Readonly<{
   fileName: string;
   id: string;
   messageId: string | null;
+  mimeType: string;
   savedAt: Date | string | null;
   status: "failed" | "processing" | "ready";
 }>;
@@ -29,6 +31,7 @@ function serializeFile(record: AttachmentLibraryRecord): AttachmentLibraryItemWi
     fileName: record.fileName,
     id: record.id,
     messageId: record.messageId,
+    previewKind: attachmentPreviewKind(record),
     savedAt: record.savedAt ? new Date(record.savedAt).toISOString() : null,
     status: record.status
   };

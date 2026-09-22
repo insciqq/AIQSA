@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { highlightCodeBlock } from "@/components/chat/codeHighlighting";
-import { ArtifactCodeV2 } from "./ArtifactCodeV2";
+import { ArtifactCodeV2, SourceCode } from "./ArtifactCodeV2";
 
 vi.mock("@/components/chat/codeHighlighting", () => ({ highlightCodeBlock: vi.fn().mockResolvedValue(null) }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
@@ -37,5 +37,23 @@ describe("artifact source groups", () => {
     ] })));
     render(<ArtifactCodeV2 artifactId="artifact" versionId="version" />);
     expect(await screen.findByRole("alert")).toHaveTextContent("The code could not be read.");
+  });
+
+  it("shows large source as one escaped block without highlighting or per-line DOM expansion", () => {
+    const text = "<script>\n".repeat(50_000);
+    const { container } = render(<SourceCode file={{ path: "large.html", mimeType: "text/plain", text }} />);
+    expect(container.querySelector("code")?.textContent).toBe(text);
+    expect(container.querySelectorAll("code > *, script")).toHaveLength(0);
+    expect(highlightCodeBlock).not.toHaveBeenCalled();
+  });
+
+  it("does not show a late highlight result for a different source", async () => {
+    let resolve!: (result: Awaited<ReturnType<typeof highlightCodeBlock>>) => void;
+    vi.mocked(highlightCodeBlock).mockReturnValueOnce(new Promise(done => { resolve = done; }));
+    const { rerender, container } = render(<SourceCode file={{ path: "one.js", mimeType: "text/plain", text: "oldSource" }} />);
+    rerender(<SourceCode file={{ path: "two.js", mimeType: "text/plain", text: "newSource" }} />);
+    await act(async () => { resolve({ html: "<pre>oldSource</pre>", language: "js" }); });
+    expect(container).toHaveTextContent("newSource");
+    expect(container).not.toHaveTextContent("oldSource");
   });
 });

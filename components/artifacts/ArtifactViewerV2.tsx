@@ -178,7 +178,7 @@ function ArtifactViewer({ artifactId, versionId, host, compact = false, onClose,
       {loadError ? <div className="v2-artifact-empty" role="alert"><p>{loadError}</p><UiV2Button onClick={() => { setLoadError(null); refresh(); }} type="button">Retry</UiV2Button></div> : detail && !selected ? <div className="v2-artifact-empty" role="alert"><p>This version is unavailable.</p>{currentVersion ? <UiV2Button onClick={() => changeVersion(currentVersion.id)} type="button">Back to current</UiV2Button> : null}</div> : <>
         <section aria-labelledby={`${id}-preview-tab`} className="v2-artifact-tabpanel" hidden={tab !== "preview"} id={`${id}-preview`} role="tabpanel">
           <PrivateArtifactView key={versionId} artifactId={artifactId} versionId={versionId}
-            onEscape={() => { if (expanded) setExpanded(false); else if (host === "chat") onClose?.(); }}
+            onEscape={() => { if (expanded) setExpanded(false); else if (host === "chat" || host === "library") onClose?.(); }}
             onFix={error => void mutate(() => onEditRequest("runtime_error", error))} fixDisabled={!current || busy} />
         </section>
         <section aria-labelledby={`${id}-code-tab`} className="v2-artifact-tabpanel" hidden={tab !== "code"} id={`${id}-code`} role="tabpanel">

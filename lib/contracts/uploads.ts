@@ -1,3 +1,5 @@
+export type AttachmentPreviewKind = "image" | "text" | "pdf" | null;
+
 export const PDF_PROCESSING_MAX_PAGES = 500;
 export const ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS = 1_000_000;
 
@@ -36,6 +38,7 @@ export type AttachmentLibraryItemWire = Readonly<{
   fileName: string;
   id: string;
   messageId: string | null;
+  previewKind: AttachmentPreviewKind;
   savedAt: string | null;
   status: "failed" | "processing" | "ready";
 }>;
@@ -124,6 +127,8 @@ export function decodeAttachmentLibraryResponse(
       (file.savedAt !== null && (file.chatId !== null || file.messageId !== null || file.chatTitle !== null)) ||
       !boundedDisplayString(file.fileName, 512) ||
       !isNonNegativeSafeInteger(file.byteSize) ||
+      (file.previewKind !== null && file.previewKind !== "image" && file.previewKind !== "text" && file.previewKind !== "pdf") ||
+      (file.status !== "ready" && file.previewKind !== null) ||
       (file.status !== "failed" && file.status !== "processing" && file.status !== "ready") ||
       typeof file.createdAt !== "string" ||
       !Number.isFinite(Date.parse(file.createdAt))
@@ -138,6 +143,7 @@ export function decodeAttachmentLibraryResponse(
       fileName: file.fileName,
       id: file.id,
       messageId: file.messageId,
+      previewKind: file.previewKind,
       savedAt: file.savedAt === null ? null : new Date(file.savedAt).toISOString(),
       status: file.status
     };

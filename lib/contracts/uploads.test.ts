@@ -10,7 +10,7 @@ describe("upload wire decoders", () => {
   it("accepts a saved independent file without inventing source-chat navigation", () => {
     const file = {
       byteSize: 1024, chatId: null, chatTitle: null, createdAt: "2026-09-01T00:00:00.000Z",
-      fileName: "template.docx", id: "saved-file", messageId: null, savedAt: "2026-09-05T00:00:00.000Z", status: "ready"
+      fileName: "template.docx", id: "saved-file", messageId: null, previewKind: null, savedAt: "2026-09-05T00:00:00.000Z", status: "ready"
     };
     expect(decodeAttachmentLibraryResponse({ nextCursor: null, files: [file] })).toEqual({ nextCursor: null, files: [file] });
     expect(decodeAttachmentLibraryResponse({ nextCursor: null, files: [{ ...file, savedAt: null }] })).toBeNull();
@@ -28,7 +28,11 @@ describe("upload wire decoders", () => {
         id: "attachment-1",
         messageId: "message-1",
         savedAt: null,
-        privateStorageKey: "must-not-project",
+        previewKind: "text",
+        storageKey: "must-not-project",
+        mimeType: "text/plain",
+        kind: "document",
+        origin: "upload",
         status: "ready"
       }]
     })).toEqual({
@@ -42,6 +46,7 @@ describe("upload wire decoders", () => {
         id: "attachment-1",
         messageId: "message-1",
         savedAt: null,
+        previewKind: "text",
         status: "ready"
       }]
     });
@@ -56,9 +61,22 @@ describe("upload wire decoders", () => {
         id: "attachment-1",
         messageId: "message-1",
         savedAt: null,
+        previewKind: "text",
         status: "ready"
       }]
     })).toBeNull();
+  });
+
+  it("accepts only known preview kinds on ready library files", () => {
+    const file = { byteSize: 12, chatId: null, chatTitle: null, createdAt: "2026-09-01T00:00:00.000Z",
+      fileName: "note.txt", id: "saved-file", messageId: null, savedAt: "2026-09-05T00:00:00.000Z", status: "ready" };
+    for (const previewKind of [null, "text", "image", "pdf"]) {
+      expect(decodeAttachmentLibraryResponse({ nextCursor: null, files: [{ ...file, previewKind }] })?.files[0]?.previewKind).toBe(previewKind);
+    }
+    for (const previewKind of [undefined, "html", "svg", "unknown", 1, {}]) {
+      expect(decodeAttachmentLibraryResponse({ nextCursor: null, files: [{ ...file, previewKind }] })).toBeNull();
+    }
+    expect(decodeAttachmentLibraryResponse({ nextCursor: null, files: [{ ...file, previewKind: "text", status: "processing" }] })).toBeNull();
   });
 
   it("projects only bounded, internally consistent PDF processing evidence", () => {

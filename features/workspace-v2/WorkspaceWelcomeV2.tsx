@@ -136,6 +136,11 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     knowledgeView?.onBackToChat();
     settings.closeMemory();
   };
+  const closeArtifactPreview = () => {
+    setArtifactSubview(null);
+    artifactDetailRef.current = null;
+    void refreshArtifactLibrary(artifactArchived, true);
+  };
   const openArtifactChat = async (chatId: string) => {
     if (!await props.workspace.pane.actions.openChat?.(chatId)) throw new Error("This chat is no longer available.");
     closeLibrary();
@@ -258,6 +263,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     id: file.id,
     mutation: fileMutations[file.id],
     name: file.fileName,
+    previewKind: file.previewKind,
     savedAt: file.savedAt,
     status: file.status
   }));
@@ -282,7 +288,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
     { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onSubviewChange={setInstructionsSubview} onRequestExit={requestInstructionsClose} /> },
     { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy} /> },
-    { id: "mcp", label: "MCP servers", content: <McpSettingsSection key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
+    { id: "mcp", label: "MCP servers", content: <McpSettingsSection key={session.accountId} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
     {
       content: (
         assistantView && assistantView.task !== "list" ? (
@@ -373,6 +379,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     {
       content: artifactSubview ? <ArtifactViewerV2 artifactId={artifactSubview.id} versionId={artifactSubview.versionId}
         host="library" onVersionChange={versionId => setArtifactSubview(current => current ? { ...current, versionId } : null)}
+        onClose={closeArtifactPreview}
         onOpenSourceChat={openArtifactChat}
         onDetailChange={detail => { artifactDetailRef.current = detail; }}
         onEditRequest={async (intent, error) => {
@@ -519,7 +526,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
             }
           : activeTab === "artifacts" && artifactSubview ? {
               backLabel: "Back to artifacts", key: `artifact-${artifactSubview.id}`, label: artifactSubview.title,
-              onBack: () => { setArtifactSubview(null); artifactDetailRef.current = null; void refreshArtifactLibrary(artifactFilter === "archived", true); }
+              onBack: closeArtifactPreview
             } : null}
         tabs={tabs}
         onBack={() => { if (!settings.studio) closeLibrary(); }}
@@ -535,9 +542,9 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       {formExit ? <DiscardChangesConfirmationDialog
         portal label="changes"
         copy={{
-          title: activeTab === "instructions" ? "Discard your unsaved instructions?" : "Discard unsaved changes?",
-          body: activeTab === "instructions" ? "Your unsaved instructions will be lost." : "Changes to your personal MCP connection will be lost.",
-          dialogLabel: activeTab === "instructions" ? "Unsaved instructions" : "Unsaved MCP changes",
+          title: "Discard your unsaved instructions?",
+          body: "Your unsaved instructions will be lost.",
+          dialogLabel: "Unsaved instructions",
           cancelLabel: "Keep editing", confirmLabel: "Discard changes"
         }}
         onCancel={() => setFormExit(null)}

@@ -33,7 +33,7 @@ Authenticate before consuming uploads. Usability requires bounded type/content v
 
 Upload status follows the exact ingestion artifact created for that upload, independently of another ready artifact or later reindexing. Reused content is immediately terminal; historical unbound uploads resolve their exact version's earliest artifact deterministically.
 
-Workspace upload admission is chat-scoped and requires installation/runtime capability. An opaque file can enter execution only through a workspace-enabled admitted run. Original-object settlement permits sandbox staging independently of extraction readiness; the application verifies and streams originals and stores outputs before exposing attachments. Downloads reauthorize current personal or Project access. Storage authority never crosses into browser or guest contracts.
+Workspace upload admission is chat-scoped and requires installation/runtime capability. An opaque file can enter execution only through a workspace-enabled admitted run. Original-object settlement permits sandbox staging independently of extraction readiness; the application verifies and streams originals and stores outputs before exposing attachments. File reads reauthorize current personal or Project access. Storage authority never crosses into browser or guest contracts.
 
 Direct PDF execution may read a settled original before extraction completes, with bounded size/checksum validation. Local-extraction execution consumes ready text only. Original availability does not depend on extraction success.
 

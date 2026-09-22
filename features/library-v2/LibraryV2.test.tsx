@@ -752,6 +752,7 @@ describe("Library resource panels", () => {
           id: "upload",
           savedAt: null,
           name: "source.csv",
+          previewKind: "text",
           status: "ready"
         }]}
         onOpen={onOpen}
@@ -768,7 +769,7 @@ describe("Library resource panels", () => {
   it("searches loaded file names and chats without hiding pagination or claiming complete counts", () => {
     const onLoadMore = vi.fn();
     const source = { byteSize: 1200, canOpenChat: true, chatId: "chat", chatTitle: "Quarterly brief",
-      createdAt: "2026-09-21T14:31:00.000Z", id: "one", name: "report.md", savedAt: null, status: "ready" as const };
+      createdAt: "2026-09-21T14:31:00.000Z", id: "one", name: "report.md", savedAt: null, previewKind: "text" as const, status: "ready" as const };
     const files = [source, { ...source, id: "two", createdAt: "2026-09-21T14:02:00.000Z" },
       { ...source, id: "saved", chatId: null, chatTitle: null, canOpenChat: false, name: "template.md", savedAt: "2026-09-20T09:00:00.000Z" }];
     const { rerender } = render(<FilesPanelV2 files={files} complete={false} onLoadMore={onLoadMore} />);
@@ -794,7 +795,7 @@ describe("Library resource panels", () => {
     const onSave = vi.fn();
     const onUse = vi.fn();
     const source = { byteSize: 1200, canOpenChat: true, chatId: "chat", chatTitle: "Brief",
-      createdAt: "2026-09-21T14:31:00.000Z", id: "one", name: "report.md", savedAt: null, status: "ready" as const };
+      createdAt: "2026-09-21T14:31:00.000Z", id: "one", name: "report.md", savedAt: null, previewKind: "text" as const, status: "ready" as const };
     render(<FilesPanelV2 files={[source, { ...source, id: "two", name: "pending.txt", status: "processing" },
       { ...source, id: "three", name: "failed.txt", status: "failed", mutation: "error" }]}
       onSave={onSave} onUse={onUse} />);
@@ -821,7 +822,8 @@ describe("Library resource panels", () => {
           id: "upload",
           savedAt: null,
           name: "source.csv",
-          status: "failed"
+          status: "failed",
+          previewKind: null
         }]}
       />
     );

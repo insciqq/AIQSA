@@ -46,9 +46,10 @@ import type {
   LibraryTabV2,
   MemoryOverviewV2
 } from "./contracts";
-import { fileExtension, fileTypeLabel, groupLibraryFiles } from "./filePresentation";
+import { fileTypeLabel, groupLibraryFiles } from "./filePresentation";
 import { formatStudioDate, formatStudioTime } from "./studioDate";
 import { MemorySettingsCardV2 } from "./MemorySettingsCardV2";
+import { canPreviewFile, FilePreviewV2, FileTypeTileV2 } from "./FilePreviewV2";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
@@ -117,18 +118,25 @@ export function LibraryV2({
     }
   }, [resourceFocus, selectedId, subviewKey]);
 
-  // A deep-linked mobile section can start beyond the clipped edge of the
-  // horizontal strip. Keep the selected tab in the unfaded viewport without
+  // A deep-linked section can start beyond a narrow or short navigation area.
+  // Keep the selected tab in the unfaded viewport without
   // changing focus or introducing a second responsive state owner.
   useEffect(() => {
     if (!selectedId) return;
-    const frame = window.requestAnimationFrame(() => {
-      const tabList = tabListRef.current;
-      const tab = tabRefs.current[selectedId];
-      if (!tabList || !tab || tabList.scrollWidth <= tabList.clientWidth) return;
-      tab.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(frame);
+    let frame = 0;
+    const reveal = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const tabList = tabListRef.current;
+        const tab = tabRefs.current[selectedId];
+        if (!tabList || !tab || (tabList.scrollWidth <= tabList.clientWidth && tabList.scrollHeight <= tabList.clientHeight)) return;
+        tab.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      });
+    };
+    reveal();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reveal);
+    if (tabListRef.current) observer?.observe(tabListRef.current);
+    return () => { observer?.disconnect(); window.cancelAnimationFrame(frame); };
   }, [selectedId]);
 
   const commitTab = useEventCallback((next: LibraryTabIdV2, focusAfterCommit = false) => {
@@ -837,6 +845,23 @@ export function FilesPanelV2({
 }>) {
   const [filter, setFilter] = useState<"all" | "saved" | "recent">("all");
   const [query, setQuery] = useState("");
+  const [selection, setSelection] = useState<{ id: string; group: string } | null>(null);
+  const [compact, setCompact] = useState(true);
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const viewRefs = useRef(new Map<string, HTMLButtonElement>());
+  const lastSelectedId = useRef<string | null>(null);
+  useEffect(() => {
+    const node = layoutRef.current;
+    if (!node) return;
+    // The complete workspace to the right of the section column: list + dock.
+    const measure = () => setCompact(node.getBoundingClientRect().width < 1040);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
   const normalizedQuery = query.trim().toLowerCase();
   const counts = {
     all: files.length,
@@ -850,8 +875,27 @@ export function FilesPanelV2({
     visible: group.files.filter(file => !normalizedQuery ||
       [file.name, file.chatTitle ?? ""].some(value => value.toLowerCase().includes(normalizedQuery)))
   })).filter(group => group.visible.length);
+  const selectedGroup = groups.find(group => group.key === selection?.group);
+  const previewable = selectedGroup?.visible.filter(canPreviewFile) ?? [];
+  const selectedFile = previewable.find(file => file.id === selection?.id);
+  if (selection && !selectedFile) setSelection(null);
+  useEffect(() => {
+    const previousId = lastSelectedId.current;
+    lastSelectedId.current = selection?.id ?? null;
+    if (previousId && !selection) {
+      const frame = requestAnimationFrame(() => {
+        (viewRefs.current.get(previousId) ?? searchRef.current)?.focus({ preventScroll: true });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [selection]);
+  function closePreview() { setSelection(null); }
   return (
-    <div data-testid="library-files-panel">
+    <div className="v2-files-layout" data-testid="library-files-panel" ref={layoutRef}
+      data-preview-docked={selectedFile && !compact || undefined} onKeyDown={event => {
+        if (selectedFile && event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closePreview(); }
+      }}>
+    <div className="v2-files-list"><div className="v2-files-list-content">
       <SectionHeading description="Save files to use them in another chat. Files are private and visible only to you.">
         Files
       </SectionHeading>
@@ -868,7 +912,7 @@ export function FilesPanelV2({
         </div>
         <label className="v2-resource-search">
           <UiV2Icon name="search" />
-          <input aria-label="Search files" placeholder="Search files…" type="search" value={query}
+          <input aria-label="Search files" placeholder="Search files…" type="search" value={query} ref={searchRef}
             onChange={event => setQuery(event.currentTarget.value)} />
         </label>
       </div>
@@ -895,7 +939,9 @@ export function FilesPanelV2({
           </div>
           <ul className="v2-resource-list" aria-label={group.saved ? "Saved files" : `Files from ${latest.chatTitle ?? "chat"}`}>
             {group.visible.map(file => <FileRowV2 file={file} key={file.id} repeatedName={(names.get(file.name) ?? 0) > 1}
-              onOpen={onOpen} onSave={onSave} onRemove={onRemove} onUse={onUse} useDisabled={useDisabled} />)}
+              onOpen={onOpen} onSave={onSave} onRemove={onRemove} onUse={onUse} useDisabled={useDisabled}
+              selected={selectedFile?.id === file.id} onView={() => setSelection({ id: file.id, group: group.key })}
+              viewRef={node => { if (node) viewRefs.current.set(file.id, node); else viewRefs.current.delete(file.id); }} />)}
           </ul>
         </section>;
       }) : <p className="v2-resource-empty">{normalizedQuery ? `No loaded files match “${query.trim()}”.`
@@ -904,6 +950,10 @@ export function FilesPanelV2({
         {normalizedQuery && !complete ? <span>Searching {files.length} loaded files.</span> : null}
         <UiV2Button disabled={loadState === "loading"} onClick={onLoadMore}>Load more files</UiV2Button>
       </div> : null}
+    </div></div>
+    {selectedFile && selectedGroup ? <FilePreviewV2 compact={compact} file={selectedFile} group={previewable}
+      saved={selectedGroup.saved} onClose={closePreview} onSelect={id => setSelection({ id, group: selectedGroup.key })}
+      onOpen={onOpen} onUse={onUse} useDisabled={useDisabled} /> : null}
     </div>
   );
 }
@@ -915,7 +965,10 @@ function FileRowV2({
   onSave,
   onRemove,
   onUse,
-  useDisabled
+  useDisabled,
+  selected,
+  onView,
+  viewRef
 }: Readonly<{
   file: FileSummaryV2;
   repeatedName: boolean;
@@ -924,6 +977,9 @@ function FileRowV2({
   onRemove?(id: string): void;
   onUse?(id: string): void;
   useDisabled: boolean;
+  selected: boolean;
+  onView(): void;
+  viewRef(node: HTMLButtonElement | null): void;
 }>) {
   const [menuOpen, setMenuOpen] = useState(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({
@@ -931,8 +987,8 @@ function FileRowV2({
     open: menuOpen
   });
   return (
-    <li className="v2-resource-row v2-file-row">
-      <span className="v2-resource-row-icon v2-file-type" aria-hidden="true">{fileExtension(file.name).slice(0, 4).toUpperCase() || <UiV2Icon name="file" />}</span>
+    <li className="v2-resource-row v2-file-row" data-selected={selected || undefined}>
+      <FileTypeTileV2 file={file} thumbnail />
       <div className="v2-resource-row-main">
         <div className="v2-resource-row-title">
           <h3 title={file.name}>{file.name}</h3>
@@ -948,6 +1004,7 @@ function FileRowV2({
       </div>
       <span className="v2-file-row-actions">
       {onUse ? <UiV2Button disabled={useDisabled} onClick={() => onUse(file.id)}>Use in chat</UiV2Button> : null}
+      {canPreviewFile(file) ? <UiV2IconButton icon="eye" label={`View ${file.name}`} onClick={onView} ref={viewRef} /> : null}
       {file.status === "ready" ? <a aria-label={`Download ${file.name}`} className="v2-icon-button v2-focusable" download href={attachmentDownloadHref(file.id)} title={`Download ${file.name}`}><UiV2Icon name="download" /></a> : null}
       <span className="v2-file-actions-menu">
         <UiV2IconButton

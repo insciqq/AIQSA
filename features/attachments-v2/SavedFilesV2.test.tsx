@@ -6,7 +6,7 @@ import { SaveFileButtonV2 } from "./SaveFileButtonV2";
 
 const saved = {
   byteSize: 2048, chatId: null, chatTitle: null, createdAt: "2026-09-05T00:00:00.000Z",
-  fileName: "Application.docx", id: "saved-document", messageId: null,
+  fileName: "Application.docx", id: "saved-document", messageId: null, previewKind: null,
   savedAt: "2026-09-05T00:00:00.000Z", status: "ready"
 };
 
@@ -27,7 +27,7 @@ describe("saved file controls", () => {
 
   it("lets the user find and select a saved template without selecting a recent chat attachment", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ nextCursor: null, files: [saved, {
-      ...saved, chatId: "chat", chatTitle: "Source chat", id: "recent-file", messageId: "message", savedAt: null, fileName: "Recent.csv"
+      ...saved, chatId: "chat", chatTitle: "Source chat", id: "recent-file", messageId: "message", savedAt: null, fileName: "Recent.csv", previewKind: "text"
     }] })));
     const onUse = vi.fn(async () => true);
     render(<SavedFilePickerV2 onUse={onUse} />);

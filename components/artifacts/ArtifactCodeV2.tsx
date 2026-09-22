@@ -15,22 +15,25 @@ function sourceLanguage(file: SourceFile): string {
   return file.mimeType === "image/svg+xml" ? "html" : file.mimeType.split("/")[1] ?? "";
 }
 
-function SourceCode({ file }: { file: SourceFile }) {
+export function SourceCode({ file }: { file: SourceFile }) {
   const text = file.text ?? "";
   const largeVendor = file.group === "vendored" && Math.max(file.byteSize ?? 0, new TextEncoder().encode(text).byteLength) > MAX_VENDOR_HIGHLIGHT_BYTES;
-  const [highlighted, setHighlighted] = useState<string | null>(null);
+  const plain = largeVendor || text.length > MAX_HIGHLIGHT_CHARACTERS;
+  const language = sourceLanguage(file);
+  const [highlight, setHighlight] = useState<{ text: string; language: string; html: string } | null>(null);
+  const highlighted = highlight?.text === text && highlight.language === language ? highlight.html : null;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     let active = true;
-    if (!largeVendor && text.length <= MAX_HIGHLIGHT_CHARACTERS) {
-      void highlightCodeBlock(text, sourceLanguage(file)).then(result => {
-        if (active && result) setHighlighted(result.html);
-      });
+    if (!plain) {
+      void highlightCodeBlock(text, language).then(result => {
+        if (active && result) setHighlight({ text, language, html: result.html });
+      }).catch(() => undefined);
     }
     return () => { active = false; mounted.current = false; };
-  }, [file, largeVendor, text]);
+  }, [language, plain, text]);
 
   async function copy() {
     try {
@@ -47,7 +50,7 @@ function SourceCode({ file }: { file: SourceFile }) {
       <UiV2Button icon={copyState === "copied" ? "check" : "copy"} onClick={() => void copy()} type="button">{copyState === "copied" ? "Copied" : "Copy"}</UiV2Button>
     </div>
     <div aria-label={file.path} className="v2-artifact-code-scroll v2-focusable" tabIndex={0}>
-      {largeVendor ? <pre><code>{text}</code></pre> : highlighted ? <div className="v2-artifact-code-highlight" dangerouslySetInnerHTML={{ __html: highlighted }} /> :
+      {plain ? <pre><code>{text}</code></pre> : highlighted ? <div className="v2-artifact-code-highlight" dangerouslySetInnerHTML={{ __html: highlighted }} /> :
         <pre><code>{text.split("\n").map((line, index, lines) => <Fragment key={index}><span className="line">{line}</span>{index < lines.length - 1 ? "\n" : ""}</Fragment>)}</code></pre>}
     </div>
   </>;
