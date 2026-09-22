@@ -13,6 +13,38 @@ describe("public share proxy policy", () => {
   beforeEach(() => vi.mocked(publicArtifactRateLimit).mockReset().mockResolvedValue({ allowed: true, retryAfterSeconds: 0 }));
   afterEach(() => vi.unstubAllEnvs());
 
+  it("lets anonymous crawlers fetch robots.txt without exposing nested private paths", async () => {
+    const response = await proxy(new NextRequest("https://aiqsa.example/robots.txt"));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(response.headers.has("location")).toBe(false);
+    const nested = await proxy(new NextRequest("https://aiqsa.example/robots.txt/private"));
+    expect(new URL(nested.headers.get("location")!).pathname).toBe("/login");
+  });
+
+  it.each(["/s/example-token", "/a/example-token", "/api/public-shares/example-token", "/api/artifact-public/example-token", "/api/artifact-public/example-token/manifest"])(
+    "keeps privacy and the query on the canonical redirect for %s", async pathname => {
+      const response = await proxy(new NextRequest(`https://aiqsa.example${pathname}/?download=zip&version=2`));
+      expect(response.status).toBe(308);
+      expect(response.headers.get("location")).toBe(`https://aiqsa.example${pathname}?download=zip&version=2`);
+      expect(response.headers.get("X-Robots-Tag")).toBe(PUBLIC_SHARE_ROBOTS_POLICY);
+      expect(response.headers.get("Cache-Control")).toBe(PUBLIC_SHARE_CACHE_CONTROL);
+      expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    }
+  );
+
+  it.each(["/api/public-shares/example-token", "/api/artifact-public/example-token", "/api/artifact-public/example-token/manifest"])(
+    "retains public privacy headers when origin validation rejects %s", async pathname => {
+      const response = proxyWithEnv(new NextRequest(`https://aiqsa.example${pathname}`, {
+        method: "POST", headers: { origin: "https://foreign.invalid", "sec-fetch-site": "cross-site" }
+      }), { AIQSA_APP_BASE_URL: "https://aiqsa.example", NODE_ENV: "production" });
+      expect(response.status).toBe(403);
+      expect(response.headers.get("X-Robots-Tag")).toBe(PUBLIC_SHARE_ROBOTS_POLICY);
+      expect(response.headers.get("Cache-Control")).toBe(PUBLIC_SHARE_CACHE_CONTROL);
+      expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+      await expect(response.json()).resolves.toEqual({ error: "invalid_origin" });
+    }
+  );
+
   it.each(["development", "production"])("retains the content route sandbox despite proxy header precedence in %s", async mode => {
     vi.stubEnv("NODE_ENV", mode);
     vi.stubEnv("AIQSA_COOKIE_SECURE", "true");
@@ -81,6 +113,8 @@ describe("public share proxy policy", () => {
     expect(response.headers.get("Retry-After")).toBe("7");
     expect(response.headers.has("x-middleware-next")).toBe(false);
     expect(response.headers.get("Cache-Control")).toBe(PUBLIC_SHARE_CACHE_CONTROL);
+    expect(response.headers.get("X-Robots-Tag")).toBe(PUBLIC_SHARE_ROBOTS_POLICY);
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     await expect(response.json()).resolves.toEqual({ error: "rate_limit_exceeded" });
     vi.mocked(publicArtifactRateLimit).mockRejectedValueOnce(new Error("private database details"));
     const unavailable = await proxy(new NextRequest(`https://aiqsa.example${path}`));

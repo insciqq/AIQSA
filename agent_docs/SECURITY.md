@@ -5,7 +5,7 @@ Scope: Identity, secrets, untrusted content, runtime trust, exposure, and depend
 
 ## HTTP, Identity, And Secrets
 
-Private operations authenticate and reauthorize current ownership/entitlement. Browser mutations use shared same-origin/Sec-Fetch checks and bounded bodies. Session tokens are opaque, hashed in storage, and HttpOnly; cookie/HSTS policy follows the trusted base URL. Public shares require dynamic no-store/noindex/no-referrer responses on every outcome. Project streams use sessions, never URL tokens, and stop on membership loss; events contain only minimal invalidation identity, with safe current state authorized at delivery.
+Private operations authenticate and reauthorize ownership/entitlement. Mutations use same-origin/Sec-Fetch checks and bounded bodies. Session tokens are opaque, hashed, HttpOnly; cookie/HSTS follows the trusted base URL. Public shares always require dynamic no-store/noindex/no-referrer responses. Crawlers can fetch shares for noindex; never advertise bearer URLs. Project streams use sessions, never URL tokens, and stop on membership loss; events carry minimal invalidation identity, with current state authorized at delivery.
 
 Auth flows use enumeration-safe outcomes and transactional one-winner proofs. Password verification stays server-owned. Login OAuth binds provider/state/PKCE and trusted callback origins; a provider subject, not mutable email, owns later login. Provider login tokens/codes/verifiers/raw responses are neither persisted nor logged.
 
