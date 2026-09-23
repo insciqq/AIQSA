@@ -1054,7 +1054,11 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       selectChat: async (chatId) => {
         const chat = workspace?.chats.find((candidate) => candidate.id === chatId);
         if (!chat || !detail) return false;
-        const summary = projectChatSummaryFromApi(chat);
+        // Composer edits update the shared chat cache before the Project's
+        // navigation projection is refreshed.
+        const summary = useWorkspaceStore.getState().chats.find((candidate) =>
+          candidate.id === chatId && candidate.projectId === detail.id
+        ) ?? projectChatSummaryFromApi(chat);
         input.applyProjectDefaults(detail, summary);
         await input.activateChat(summary, { preserveControls: true });
         return true;

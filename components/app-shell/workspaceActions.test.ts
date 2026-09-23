@@ -452,6 +452,29 @@ describe("workspace actions", () => {
     expect(state.activeComposer().workspaceEnabled).toBe(false);
   });
 
+  it.each([null, "folder-1"])("restores current Search defaults for a new chat in %s", async (folderId) => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const catalog = useWorkspaceStore.getState().catalog!;
+    const selected = { mode: "model_choice" as const, optionIds: ["search-a", "search-b"] };
+    const off = { mode: "all_selected" as const, optionIds: [] };
+    useWorkspaceStore.setState({ catalog: {
+      ...catalog,
+      defaults: { ...catalog.defaults, searchPlan: selected },
+      searchStrategies: selected.optionIds.map(strategyId => ({ strategyId, kind: "web_search", displayName: strategyId }))
+    } });
+    await state.actions.activateChat({ ...state.chatA, defaultSearchPlan: off }, { resumeRuns: false });
+    expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith([], "all_selected", "system");
+
+    state.actions.activateBlankWorkspace(folderId);
+    expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith(selected.optionIds, "model_choice", "system");
+
+    await state.actions.activateChat({ ...state.chatB, defaultSearchPlan: selected }, { resumeRuns: false });
+    useWorkspaceStore.getState().setCatalog(current => current
+      ? { ...current, defaults: { ...current.defaults, searchPlan: off } } : current);
+    state.actions.activateBlankWorkspace(folderId);
+    expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith([], "all_selected", "system");
+  });
+
   afterEach(() => {
     resetComposerSessionStoreForTest();
     resetRunSurfaceStoreForTest();

@@ -17,6 +17,9 @@ export function createChatSearchPreferences(input: { session?: symbol; isCurrent
           });
           const saved = response.ok ? decodeChatSummaryResponse(await response.json()) : null;
           if (!saved || saved.id !== chatId) throw new Error("chat_search_save_failed");
+          if (input.isCurrent() && queues.get(chatId) === next) {
+            updateLocalChatSearch(chatId, plan, saved.updatedAt);
+          }
         } catch {
           if (input.isCurrent()) input.onError();
         }
@@ -27,6 +30,9 @@ export function createChatSearchPreferences(input: { session?: symbol; isCurrent
   };
 }
 
-export function updateLocalChatSearch(chatId: string, plan: SearchPlan) {
-  useWorkspaceStore.getState().setChats(chats => chats.map(chat => chat.id === chatId ? { ...chat, defaultSearchPlan: plan } : chat));
+export function updateLocalChatSearch(chatId: string, plan: SearchPlan, updatedAt?: string) {
+  useWorkspaceStore.getState().setChats(chats => chats.map(chat => {
+    if (chat.id !== chatId || updatedAt && Date.parse(chat.updatedAt) > Date.parse(updatedAt)) return chat;
+    return { ...chat, defaultSearchPlan: plan, ...(updatedAt ? { updatedAt } : {}) };
+  }));
 }

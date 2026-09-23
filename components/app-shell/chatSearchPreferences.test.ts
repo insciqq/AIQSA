@@ -1,14 +1,55 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createChatSearchPreferences } from "./chatSearchPreferences";
+import { createChatSearchPreferences, updateLocalChatSearch } from "./chatSearchPreferences";
+import { useWorkspaceStore } from "./workspaceStore";
+import { resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 
 const off = { mode: "all_selected" as const, optionIds: [] };
 const selected = { mode: "model_choice" as const, optionIds: ["source"] };
-const response = (id: string) => Response.json({ chat: {
+const chat = (id: string, updatedAt = "2026-09-23T00:00:00.000Z") => ({
   id, title: "Synthetic chat", activeLeafMessageId: null, createdAt: "2026-09-23T00:00:00.000Z",
-  updatedAt: "2026-09-23T00:00:00.000Z", defaultProvider: "fake", defaultModelId: "fake",
+  updatedAt, defaultProvider: "fake", defaultModelId: "fake",
   folderId: null, messageCount: 0, pinned: false
-} });
-afterEach(() => vi.unstubAllGlobals());
+});
+const response = (id: string, updatedAt?: string) => Response.json({ chat: chat(id, updatedAt) });
+afterEach(() => { vi.unstubAllGlobals(); resetWorkspaceStoreForTest(); });
+
+it("reconciles the latest save after a stale read without rolling back a queued choice", async () => {
+  let first!: (value: Response) => void, second!: (value: Response) => void;
+  const fetch = vi.fn().mockReturnValueOnce(new Promise<Response>(resolve => { first = resolve; }))
+    .mockReturnValueOnce(new Promise<Response>(resolve => { second = resolve; }));
+  vi.stubGlobal("fetch", fetch);
+  useWorkspaceStore.setState({ chats: [chat("a")] });
+  const writer = createChatSearchPreferences({ isCurrent: () => true, onError: vi.fn() });
+  updateLocalChatSearch("a", off);
+  const one = writer.save("a", off);
+  updateLocalChatSearch("a", selected);
+  const two = writer.save("a", selected);
+  first(response("a", "2026-09-23T00:00:01.000Z"));
+  await one;
+  expect(useWorkspaceStore.getState().chats[0]?.defaultSearchPlan).toEqual(selected);
+
+  useWorkspaceStore.setState({ chats: [{ ...chat("a"), defaultSearchPlan: off }] });
+  second(response("a", "2026-09-23T00:00:02.000Z"));
+  await two;
+  expect(useWorkspaceStore.getState().chats[0]).toMatchObject({
+    defaultSearchPlan: selected, updatedAt: "2026-09-23T00:00:02.000Z"
+  });
+});
+
+it.each(["newer revision", "expired session"])("ignores a save acknowledgement after a %s", async (reason) => {
+  const current = { ...chat("a", "2026-09-23T00:00:02.000Z"), defaultSearchPlan: selected };
+  useWorkspaceStore.setState({ chats: [current] });
+  let finish!: (value: Response) => void;
+  vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise<Response>(resolve => { finish = resolve; })));
+  let active = true;
+  const writer = createChatSearchPreferences({ isCurrent: () => active, onError: vi.fn() });
+  const saving = writer.save("a", off);
+  await Promise.resolve();
+  active = reason !== "expired session";
+  finish(response("a", reason === "expired session" ? "2026-09-23T00:00:03.000Z" : "2026-09-23T00:00:01.000Z"));
+  await saving;
+  expect(useWorkspaceStore.getState().chats[0]).toBe(current);
+});
 
 it("serializes rapid changes in one chat while another chat can save independently", async () => {
   let finish!: (value: Response) => void;

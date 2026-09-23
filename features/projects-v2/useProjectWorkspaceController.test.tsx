@@ -13,6 +13,7 @@ import {
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import { createChatSearchPreferences, updateLocalChatSearch } from "@/components/app-shell/chatSearchPreferences";
 import type {
   ProjectDetailWire,
   ProjectSummaryWire,
@@ -203,6 +204,40 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     resetComposerSessionStoreForTest();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("restores saved chat Search after switching Project chats without a workspace refresh", async () => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const original = { ...projectChat({ id: "chat-1", title: "Plan" }),
+      defaultSearchPlan: { mode: "all_selected" as const, optionIds: ["search-source"] } };
+    const other = projectChat({ id: "chat-2", title: "Other" });
+    const off = { mode: "all_selected" as const, optionIds: [] };
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [original, other], folders: [] });
+    const input = controllerInput();
+    const hook = renderHook(() => useProjectWorkspaceController(input));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await hook.result.current.actions.selectProject("project-1");
+    });
+    await act(async () => { await hook.result.current.actions.selectChat("chat-1"); });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      chat: { ...projectChatSummaryFromApi(original), defaultSearchPlan: off }
+    })));
+    const onError = vi.fn();
+    const writer = createChatSearchPreferences({ isCurrent: () => true, onError });
+    await act(async () => {
+      updateLocalChatSearch("chat-1", off);
+      await writer.save("chat-1", off);
+    });
+    expect(onError).not.toHaveBeenCalled();
+    await act(async () => { await hook.result.current.actions.selectChat("chat-2"); });
+    await act(async () => { await hook.result.current.actions.selectChat("chat-1"); });
+    expect(input.applyProjectDefaults).toHaveBeenLastCalledWith(projectDetail,
+      expect.objectContaining({ id: "chat-1", defaultSearchPlan: off }));
+    expect(input.activateChat).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "chat-1", defaultSearchPlan: off }), { preserveControls: true });
+    expect(apiMocks.loadProjectWorkspace).toHaveBeenCalledOnce();
+    hook.unmount();
   });
 
   it("refreshes settled Project attachments through its existing invalidation source", async () => {

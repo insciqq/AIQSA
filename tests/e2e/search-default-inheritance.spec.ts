@@ -13,8 +13,8 @@ import { runAccountMenuAction } from "./shell/page";
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
 
-test("organization inheritance, chat Search and personal defaults remain independent across reload and login", async ({ page }) => {
-  test.setTimeout(90_000);
+test("Search defaults and saved personal and Project choices survive navigation, reload and login", async ({ page }, testInfo) => {
+  test.setTimeout(150_000);
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
   const id = randomUUID();
   const user = { email: `search-inheritance-${id}@example.test`, password: `Synthetic-${randomUUID()}` };
@@ -23,6 +23,7 @@ test("organization inheritance, chat Search and personal defaults remain indepen
   const optionId = `search-inheritance-${id}`;
   const google = { mode: "all_selected", optionIds: [optionId] };
   const off = { mode: "all_selected", optionIds: [] };
+  let projectId: string | undefined;
   try {
     // Catalog-only fixture: no message or Search request is sent, and the
     // credential fixture has no external authority.
@@ -76,6 +77,8 @@ test("organization inheritance, chat Search and personal defaults remain indepen
     expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toBeNull();
     await page.reload();
     await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
+    await startNewChat(page);
+    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Google");
     await runAccountMenuAction(page, "Chat defaults");
     let settings = page.getByTestId("library-v2");
     await settings.getByLabel("Web search default").click();
@@ -96,7 +99,6 @@ test("organization inheritance, chat Search and personal defaults remain indepen
     await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: id }));
     await settings.getByRole("button", { name: "Back to chat" }).click();
     await startNewChat(page);
-    await page.reload();
     await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Google");
     expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "personal", searchPlan: google });
     await page.goto(`/?chat=${chatId}`);
@@ -106,11 +108,60 @@ test("organization inheritance, chat Search and personal defaults remain indepen
     await settings.getByLabel("Web search default").click();
     await settings.getByRole("button", { name: "Use organization Search default" }).click();
     await expect.poll(async () => (await catalog()).defaults.searchPreferenceSource).toBe("organization");
+
+    const projectResponse = await page.request.post("/api/projects", {
+      data: { name: `Search choices ${id}`, preferredModelId: model.id }
+    });
+    expect(projectResponse.status()).toBe(201);
+    const project = (await projectResponse.json()).project;
+    projectId = project.id;
+    const resource = await page.request.post(`/api/projects/${project.id}/resources`, {
+      data: { expectedPolicyRevision: project.policyRevision, resourceId: optionId, type: "search" }
+    });
+    expect(resource.status()).toBe(201);
+    const projectChats: string[] = [];
+    for (const title of ["Saved Project Search", "Other Project chat"]) {
+      const response = await page.request.post(`/api/projects/${project.id}/chats`, { data: { title } });
+      expect(response.status()).toBe(201);
+      projectChats.push((await response.json()).chat.id);
+    }
+    expect((await page.request.patch(`/api/chats/${projectChats[0]}`, {
+      data: { defaultSearchPlan: google }
+    })).ok()).toBe(true);
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
+    await page.getByRole("button", { name: "Projects", exact: true }).click();
+    const shared = page.locator('section[aria-label="Shared projects"]');
+    await expect(shared).toBeVisible();
+    await shared.locator(".v2-project-row").filter({ hasText: project.name }).click();
+    const savedChat = shared.locator(".v2-project-chat-row").filter({ hasText: "Saved Project Search" });
+    await savedChat.click();
+    const searchChip = page.getByRole("button", { name: /^Choose web search/ });
+    await expect(searchChip).toHaveAccessibleDescription("Search: Google");
+    await chooseSearchStrategy(page, "Off");
+    await expect.poll(async () => (await prisma.chat.findUniqueOrThrow({ where: { id: projectChats[0] } })).defaultSearchPlan).toEqual(off);
+    await shared.locator(".v2-project-chat-row").filter({ hasText: "Other Project chat" }).click();
+    await savedChat.click();
+    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
+    await chooseSearchStrategy(page, "Google");
+    await expect.poll(async () => (await prisma.chat.findUniqueOrThrow({ where: { id: projectChats[0] } })).defaultSearchPlan).toEqual(google);
+    await shared.locator(".v2-project-chat-row").filter({ hasText: "Other Project chat" }).click();
+    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
+    await savedChat.click();
+    await expect(searchChip).toHaveAccessibleDescription("Search: Google");
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await searchChip.click();
+      await expect(page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /Google Search/ })).toBeChecked();
+      await page.screenshot({ path: testInfo.outputPath(`saved-project-search-${viewport.width}.png`) });
+      await page.keyboard.press("Escape");
+    }
     await prisma.userGroup.deleteMany({ where: { userId: id } });
     const restricted = await catalog();
     expect(restricted.searchStrategies.some((entry: { strategyId: string }) => entry.strategyId === optionId)).toBe(false);
     expect(await prisma.modelRun.count({ where: { userId: id } })).toBe(0);
   } finally {
+    if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.user.deleteMany({ where: { id } });
     await prisma.searchPolicy.update({ where: { id: "installation" }, data: { defaultPlan: priorPolicy.defaultPlan as Prisma.InputJsonValue } });
     await prisma.searchStrategy.updateMany({ where: { strategyId: optionId }, data: { activeRevisionId: null } });
