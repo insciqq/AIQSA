@@ -310,6 +310,7 @@ export class WorkspaceRuntimeError extends Error {
   readonly code:
     | "workspace_agent_output_invalid"
     | "workspace_attachment_unavailable"
+    | "workspace_storage_full"
     | "workspace_secrets_prepare_failed"
     | "workspace_skills_prepare_failed"
     | "workspace_skill_bundle_invalid"

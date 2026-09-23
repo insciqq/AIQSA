@@ -1,5 +1,6 @@
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { attachmentPreviewKind } from "@/lib/domain/attachmentPreview";
+import { MAX_UPLOAD_MAX_BYTES } from "./validation";
 import { createPreviewThumbnail, validatePreviewImage } from "./previewImage";
 import {
   getStoredObjectStream,
@@ -116,6 +117,7 @@ export function createAttachmentDownloadHandler(input: Readonly<{
     try {
       const object = await getStoredObjectStream(input.storage, record.storageKey, {
         maxBytes: record.byteSize,
+        requireStreaming: record.byteSize > MAX_UPLOAD_MAX_BYTES,
         signal: request.signal
       });
       if (object.byteSize !== record.byteSize) {

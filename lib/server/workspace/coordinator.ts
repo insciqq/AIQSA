@@ -1311,24 +1311,31 @@ export function createWorkspaceCoordinator(input: Readonly<{
       operation: ownedOperation(binding), sessionId: binding.sessionId,
       signal
     }).catch(() => []);
-    const streams: WorkspaceAttachmentStream[] = [];
-    for (const entry of entries) {
-      const present = staged.some((candidate) =>
+    const missing = entries.filter(entry => !staged.some((candidate) =>
         candidate.attachmentId === entry.attachmentId &&
         candidate.byteSize === entry.byteSize &&
         candidate.checksum === entry.checksum &&
-        candidate.sandboxPath === entry.sandboxPath);
-      if (present) continue;
+        candidate.sandboxPath === entry.sandboxPath));
+    if (missing.reduce((sum, entry) => sum + entry.byteSize, 0) + 16 * 1024 * 1024 > input.config.diskMiB * 1024 * 1024) {
+      throw new WorkspaceRuntimeError("workspace_storage_full");
+    }
+    const streams: WorkspaceAttachmentStream[] = [];
+    const cancelStreams = async () => { await Promise.allSettled(streams.map(stream => stream.body.cancel())); };
+    for (const entry of missing) {
       let object;
       try {
         object = await getStoredObjectStream(input.storage, entry.storageKey, {
           maxBytes: entry.byteSize,
+          requireStreaming: true,
           signal
         });
       } catch {
+        await cancelStreams();
         throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
       }
       if (object.byteSize !== entry.byteSize) {
+        await object.body.cancel().catch(() => undefined);
+        await cancelStreams();
         throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
       }
       streams.push({
@@ -1393,7 +1400,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       runtimeSandboxId: binding.runtimeSandboxId,
       operation: ownedOperation(binding), sessionId: binding.sessionId,
       signal
-    });
+    }).finally(cancelStreams);
     inboxNamesByRun.set(
       binding.runId,
       new Map(entries.map((entry) => [entry.sandboxPath, entry.originalName]))

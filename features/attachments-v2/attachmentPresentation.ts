@@ -20,6 +20,8 @@ export type ComposerAttachmentItemV2 = Readonly<{
   id: string;
   kind?: ComposerAttachment["kind"];
   progress?: number | null;
+  statusLabel?: string;
+  upload?: boolean;
   rejection?: "too_large" | "unsupported_format" | "upload_failed";
   retryable?: boolean;
   status: "failed" | "processing" | "ready" | "rejected" | "uploading";
@@ -29,6 +31,13 @@ export type ComposerAttachmentItemV2 = Readonly<{
     message: string;
   }> | null;
 }>;
+
+export function uploadProgressBytes(sentBytes: number, byteSize: number): string {
+  const divisor = byteSize >= 1024 * 1024 ? 1024 * 1024 : byteSize >= 1024 ? 1024 : 1;
+  const unit = divisor === 1 ? "bytes" : divisor === 1024 ? "KiB" : "MiB";
+  const format = (value: number) => Number((value / divisor).toFixed(1));
+  return `${format(sentBytes)} / ${format(byteSize)} ${unit}`;
+}
 
 const processingFailureMessages: Readonly<Record<string, string>> = {
   animated_gif_not_supported: "Animated GIFs are not supported.",
@@ -91,6 +100,7 @@ export function attachmentItemsForV2(
       fileName: attachment.fileName,
       id: attachment.id,
       kind: attachment.kind,
+      ...(attachment.kind === "file" && status === "ready" ? { statusLabel: "Available in Workspace" } : {}),
       retryable: status === "failed" && attachmentRetryAvailable(attachment),
       status,
       ...(warning ? {
@@ -115,12 +125,14 @@ function firstBlockingItemReason(items: readonly ComposerAttachmentItemV2[]): st
     return `Wait for “${item.fileName}” to finish uploading.`;
   }
   if (item.status === "processing") {
+    if (item.upload) return `Wait for “${item.fileName}” to be verified.`;
     return `Wait for “${item.fileName}” to finish processing.`;
   }
   if (item.status === "rejected") {
     return `Remove the rejected file “${item.fileName}”.`;
   }
   if (item.status === "failed") {
+    if (item.upload) return item.retryable ? `Retry the upload or remove “${item.fileName}”.` : `Remove “${item.fileName}” and choose the file again.`;
     return `Retry processing or remove “${item.fileName}”.`;
   }
   return item.warning?.message ?? `Check the file “${item.fileName}”.`;
