@@ -1100,12 +1100,15 @@ describe("Workspace coordinator incremental staging", () => {
     await value.storage.putObject({ storageKey: image.storageKey, contentType: image.mimeType, body: bytes });
     vi.spyOn(value.repository, "attachments").mockResolvedValue([first, image]);
     vi.mocked(value.runtime.stageAttachments).mockClear();
+    let stagedBytes: ArrayBuffer | undefined;
+    vi.mocked(value.runtime.stageAttachments).mockImplementationOnce(async input => {
+      stagedBytes = await new Response(input.attachments.find(entry => entry.attachmentId === image.attachmentId)!.body).arrayBuffer();
+    });
     const path = await value.coordinator.imagePath!({ attachmentId: image.attachmentId, runId: value.runId,
       userId: "user_1", workspace: value.workspace });
     expect(path).toBe(workspaceAttachmentPath({ attachmentId: image.attachmentId, messageId: image.messageId, originalName: image.fileName }));
     const staged = vi.mocked(value.runtime.stageAttachments).mock.calls[0]![0];
-    const body = await new Response(staged.attachments.find(entry => entry.attachmentId === image.attachmentId)!.body).arrayBuffer();
-    expect(Buffer.from(body)).toEqual(bytes);
+    expect(Buffer.from(stagedBytes!)).toEqual(bytes);
     expect(staged).toMatchObject({ operation: { owner: `run:${value.runId}`, generation: 1 },
       inboxIndex: { attachments: [expect.anything(), expect.objectContaining({ source: "export", sandboxPath: path })] } });
     expect(value.runtime.ensureSession).toHaveBeenCalledOnce();

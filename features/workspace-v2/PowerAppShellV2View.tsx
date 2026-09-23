@@ -13,6 +13,7 @@ import { closeArtifactPanel, openArtifactPanel, useArtifactPanelStore } from "@/
 import { activateArtifactLibraryAccount } from "@/components/app-shell/artifactLibraryStore";
 import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
+import { cancelWorkspaceUpload, retryWorkspaceUpload, useWorkspaceUploadProgress } from "@/components/app-shell/workspaceUploadClient";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 
 import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
@@ -144,7 +145,7 @@ import {
   ProjectContextRailV2,
   ProjectSettingsDialogV2
 } from "@/features/projects-v2/ProjectWorkspaceSurfacesV2";
-import { attachmentItemsForV2 } from "@/features/attachments-v2/attachmentPresentation";
+import { attachmentItemsForV2, uploadProgressBytes } from "@/features/attachments-v2/attachmentPresentation";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
@@ -356,6 +357,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerArtifactEdit = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactEdit ?? null);
   const composerArtifactCreate = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactCreate ?? null);
   const followupSubmission = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.followupSubmission ?? null);
+  const uploadSourceKey = useComposerSessionStore(state => state.activeSessionKey);
+  const uploadProgress = useWorkspaceUploadProgress(state => state.items);
+  const pendingUploads = useMemo(() => uploadProgress.filter(item => item.sourceKey === uploadSourceKey), [uploadProgress, uploadSourceKey]);
   const skillsMode = useComposerControlStore(state => state.skillsMode);
   const liveWorkspaceRef = useRef<HTMLElement | null>(null);
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
@@ -780,7 +784,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     projectId: activeProject?.id ?? null, providerConnectionId: composer.currentModel.provider, providerModelId: composer.currentModel.modelId
   } : null);
   const attachmentItems = useMemo(
-    () => attachmentItemsForV2(
+    () => [...attachmentItemsForV2(
       composer.attachments,
       attachmentWarningsForModel(
         composer.attachments,
@@ -790,16 +794,24 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       composer.currentModel,
       composer.workspace.enabled,
       pdfRoutePreview
-    ),
-    [composer.attachments, composer.currentModel, composer.workspace.enabled, pdfRoutePreview]
+    ), ...pendingUploads.map(item => ({
+      id: item.id, fileName: item.fileName, byteSize: item.byteSize, blocksSend: true, upload: true,
+      status: item.state === "verifying" ? "processing" as const : item.state,
+      progress: item.sentBytes / item.byteSize * 100, retryable: item.retryable,
+      statusLabel: item.state === "verifying" ? "Verifying file…" : item.state === "failed" ? "Upload interrupted" : undefined,
+      detail: item.message ?? uploadProgressBytes(item.sentBytes, item.byteSize)
+    }))],
+    [composer.attachments, composer.currentModel, composer.workspace.enabled, pdfRoutePreview, pendingUploads]
   );
   const attachmentUsage = useMemo(
     () => calculateAttachmentLimitUsage(
-      composer.attachments,
+      [...composer.attachments, ...pendingUploads.map(item => ({
+        id: item.id, fileName: item.fileName, byteSize: item.byteSize, kind: "file" as const
+      }))],
       composer.currentModel,
       composer.catalog?.attachmentLimits
     ),
-    [composer.attachments, composer.catalog?.attachmentLimits, composer.currentModel]
+    [composer.attachments, composer.catalog?.attachmentLimits, composer.currentModel, pendingUploads]
   );
   // Picker footer summary ("Reasoning medium · Temp 1.0") from the controls
   // the current model actually supports.
@@ -887,9 +899,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onOpenSkillLibrary={openSkillLibrary}
       onOverrideKnowledgePlan={composer.knowledge.override}
       onRemoveAssistant={composer.assistant.remove}
-      onRemoveAttachment={composer.composerActions.removeAttachment}
+      onRemoveAttachment={id => { if (!cancelWorkspaceUpload(id)) composer.composerActions.removeAttachment(id); }}
       onRejectedFiles={(files) => composer.composerActions.rejectAttachments(files.map((file) => file.name))}
-      onRetryAttachment={composer.composerActions.retryAttachment}
+      onRetryAttachment={id => { if (!retryWorkspaceUpload(id)) composer.composerActions.retryAttachment?.(id); }}
       onRetryConfig={composer.retryCatalog}
       onSearchKnowledgeSources={composer.knowledge.searchSources}
       onSelectKnowledgeSelection={composer.knowledge.select}
@@ -923,6 +935,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       sharedProject={projectContext}
       agent={composer.agent ? { ...composer.agent, onToggle: composer.agent.setEnabled } : undefined}
       uploading={composer.uploading}
+      uploadLimitHint={composer.uploadLimitHint}
       workspace={{
         available: composer.workspace.available,
         busy: composer.workspace.busy,

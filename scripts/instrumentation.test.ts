@@ -6,13 +6,14 @@ const report = vi.hoisted(() => vi.fn());
 vi.mock("../lib/server/observability/http.cjs", () => ({ reportNextRequestError: report }));
 const startup = vi.hoisted(() => ({
   announce: vi.fn(), failed: vi.fn(), healthy: vi.fn(), hooks: vi.fn(),
-  recovery: vi.fn(), attachments: vi.fn(), knowledge: vi.fn(),
+  recovery: vi.fn(), attachments: vi.fn(), uploads: vi.fn(), knowledge: vi.fn(),
   activation: vi.fn(), mcp: vi.fn(), memory: vi.fn(), nativeRouting: vi.fn(), decisionModel: vi.fn()
 }));
 vi.mock("../lib/server/observability", () => ({ announceProcess: startup.announce, reportSubsystemFailure: startup.failed, reportSubsystemHealthy: startup.healthy }));
 vi.mock("../lib/server/observability/process.cjs", () => ({ installProcessFailureHooks: startup.hooks }));
 vi.mock("../lib/server/runs/defaultRecoveryScheduler", () => ({ startDefaultRunRecoveryScheduler: startup.recovery }));
 vi.mock("../lib/server/uploads/defaultProcessing", () => ({ getDefaultAttachmentProcessingCoordinator: startup.attachments }));
+vi.mock("../lib/server/uploads/defaultWorkspaceUploads", () => ({ getWorkspaceUploadService: startup.uploads }));
 vi.mock("../lib/server/knowledge/defaultIngestion", () => ({ getDefaultKnowledgeIngestionCoordinator: startup.knowledge }));
 vi.mock("../lib/server/mcp/defaultActivation", () => ({ getDefaultMcpActivationCoordinator: startup.activation }));
 vi.mock("../lib/server/mcp/defaultRuntime", () => ({ getDefaultMcpRuntimeCoordinator: startup.mcp }));
@@ -40,6 +41,7 @@ describe("optional subsystem startup", () => {
     startup.knowledge.mockImplementationOnce(() => { throw new Error("private-knowledge-canary"); });
     startup.mcp.mockImplementationOnce(() => { throw new Error("private-mcp-canary"); });
     await expect(register()).resolves.toBeUndefined();
+    expect(startup.uploads).toHaveBeenCalledOnce();
     expect(startup.nativeRouting).toHaveBeenCalledOnce();
     expect(startup.decisionModel).toHaveBeenCalledOnce();
     expect(startup.hooks).toHaveBeenCalledOnce();
@@ -53,6 +55,18 @@ describe("optional subsystem startup", () => {
     for (const subsystem of ["attachments", "knowledge", "mcp"]) {
       expect(startup.healthy).toHaveBeenCalledWith(subsystem, "startup");
     }
+    expect(JSON.stringify(startup.failed.mock.calls)).not.toContain("canary");
+  });
+
+  it("contains upload recovery failure without stopping document processing or other subsystems", async () => {
+    vi.stubEnv("NEXT_RUNTIME", "nodejs");
+    startup.uploads.mockImplementationOnce(() => { throw new Error("private-upload-canary"); });
+    await expect(register()).resolves.toBeUndefined();
+    expect(startup.attachments).toHaveBeenCalledOnce();
+    expect(startup.knowledge).toHaveBeenCalledOnce();
+    expect(startup.failed).toHaveBeenCalledWith({ subsystem: "attachments", stage: "startup", code: "workspace_upload_startup_failed", action: "degrade" });
+    await register();
+    expect(startup.uploads).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(startup.failed.mock.calls)).not.toContain("canary");
   });
 

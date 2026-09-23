@@ -36,6 +36,13 @@ export async function register(): Promise<void> {
       reportSubsystemFailure({ subsystem: "attachments", stage: "startup", code: "attachment_processing_startup_failed", action: "degrade" });
     }
     try {
+      const { getWorkspaceUploadService } = await import("./lib/server/uploads/defaultWorkspaceUploads");
+      getWorkspaceUploadService();
+    } catch {
+      // Durable original uploads recover independently of document processing.
+      reportSubsystemFailure({ subsystem: "attachments", stage: "startup", code: "workspace_upload_startup_failed", action: "degrade" });
+    }
+    try {
       const { getDefaultKnowledgeIngestionCoordinator } = await import(
         "./lib/server/knowledge/defaultIngestion"
       );

@@ -30,6 +30,8 @@ import {
 } from "@/lib/contracts/runs";
 import { decodeUploadAttachmentResponse, decodeUploadErrorResponse, type UploadedAttachmentWire } from "@/lib/contracts/uploads";
 import type { Dispatch, SetStateAction } from "react";
+import { fetchWorkspaceUploadConfig, uploadWorkspaceFile } from "./workspaceUploadClient";
+import { uploadFormatFor } from "@/lib/domain/uploadFormats";
 
 type MutableRef<T> = {
   current: T;
@@ -236,13 +238,21 @@ export function useRunLifecycleActions({
     const failures: Array<{ fileName: string; message: string }> = [];
 
     try {
+      const limits = workspaceEnabled ? await fetchWorkspaceUploadConfig() : null;
       for (const file of Array.from(files)) {
         try {
+          if (!useComposerSessionStore.getState().sessionsByKey[sourceSessionKey]?.pendingUploadGenerations.includes(generation)) break;
+          const projectId = projectIdFromComposerSessionKey(sourceSessionKey) ??
+            projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
+          if (limits && (file.size > limits.ordinaryMaxBytes || !uploadFormatFor(file.name, file.type, "attachment"))) {
+            if (file.size > limits.maxBytes) throw new Error(`File exceeds the ${Number((limits.maxBytes / 1024 / 1024).toFixed(1))} MiB upload limit.`);
+            const attachment = await uploadWorkspaceFile({ file, projectId, sourceKey: sourceSessionKey, generation });
+            if (attachment) useComposerSessionStore.getState().appendUploadedAttachment(sourceSessionKey, generation, attachment);
+            continue;
+          }
           const formData = new FormData();
           formData.append("file", file);
           if (workspaceEnabled) formData.append("scope", "workspace");
-          const projectId = projectIdFromComposerSessionKey(sourceSessionKey) ??
-            projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
           if (projectId) formData.append("projectId", projectId);
           const response = await shellFetch("/api/uploads", {
             body: formData,
@@ -271,6 +281,8 @@ export function useRunLifecycleActions({
           });
         }
       }
+    } catch {
+      failures.push({ fileName: "Files", message: "Upload settings are unavailable. Try again shortly." });
     } finally {
       const operationError = failures.length
         ? failures.length === 1

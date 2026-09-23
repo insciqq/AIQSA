@@ -93,7 +93,11 @@ function fixture() {
   const fs = {
     exists: vi.fn(async (path: string) => [...files.keys()].some((file) => file.startsWith(path))),
     read: vi.fn(async (path: string) => files.get(path)!),
+    write: vi.fn(async (path: string, bytes: string | Uint8Array) => {
+      files.set(path, typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes.slice());
+    }),
     remove: vi.fn(async (path: string) => { files.delete(path); }),
+    rename: vi.fn(async (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); }),
     writeStream: vi.fn(async (path: string) => ({
       write: vi.fn(async (bytes: Uint8Array) => { files.set(path, bytes.slice()); }),
       close: vi.fn(async () => {}),
@@ -166,6 +170,27 @@ describe("Microsandbox Workspace lifecycle", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await Promise.all(skillDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+  });
+
+  it.each(["valid", "corrupt", "short", "disk_full"])("publishes only verified originals and cleans temporary staging on %s", async outcome => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    value.sandbox.execWith.mockResolvedValueOnce({ success: true,
+      stdout: () => outcome === "disk_full" ? "16" : "1000000000",
+      stdoutBytes: () => Buffer.from(outcome === "disk_full" ? "16" : "1000000000") });
+    const sandboxPath = workspaceAttachmentPath({ attachmentId: "attachment_fixture", messageId: "message_fixture", originalName: "original.bin" });
+    value.files.set(sandboxPath, Buffer.from("old"));
+    const next = Buffer.from(outcome === "short" ? "ab" : "abc");
+    const pending = value.runtime.stageAttachments({ ...sessionInput,
+      attachments: [{ attachmentId: "attachment_fixture", byteSize: 3, checksum: outcome === "corrupt" ? "0".repeat(64) : createHash("sha256").update("abc").digest("hex"),
+        body: new ReadableStream({ start(controller) { controller.enqueue(next); controller.close(); } }),
+        kind: "file", messageId: "message_fixture", mimeType: "application/octet-stream", originalName: "original.bin", sandboxPath }],
+      manifests: [], inboxIndex: { attachments: [], manifests: [], version: 1 } });
+    if (outcome === "valid") await pending;
+    else await expect(pending).rejects.toMatchObject({ code: outcome === "disk_full" ? "workspace_storage_full" : "workspace_attachment_unavailable" });
+    expect(Buffer.from(value.files.get(sandboxPath)!).toString()).toBe(outcome === "valid" ? "abc" : "old");
+    expect([...value.files.keys()].some(path => path.includes("/.upload-"))).toBe(false);
+    if (outcome === "disk_full") expect(value.fs.writeStream).not.toHaveBeenCalled();
   });
 
   it.each([true, false, undefined])("qualifies Agent only when its gateway is configured: %s", async (agentGatewayEnabled) => {

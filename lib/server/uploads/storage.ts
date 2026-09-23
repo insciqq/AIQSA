@@ -12,10 +12,11 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, opendir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { readStreamWithAbort, nodeByteStream } from "../http/byteStream";
 import { beginStorageOperation, observeStorageOperation } from "./storageObservability";
 
 export type StoredObjectInput = {
@@ -26,6 +27,7 @@ export type StoredObjectInput = {
 
 export type StoredObjectReadOptions = {
   maxBytes?: number;
+  requireStreaming?: boolean;
   signal?: AbortSignal;
 };
 
@@ -245,6 +247,7 @@ export async function getStoredObjectStream(
   options: StoredObjectReadOptions = {}
 ): Promise<StoredObjectReadStream> {
   if (storage.getObjectStream) return storage.getObjectStream(storageKey, options);
+  if (options.requireStreaming) throw new Error("stored_object_streaming_unavailable");
   const object = await storage.getObject(storageKey, options);
   return {
     body: byteStream(object.body),
@@ -258,7 +261,19 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
   return {
     async deleteObject(storageKey) {
       return observeStorageOperation("delete", async () => {
-        await rm(join(root, storageKey), { force: true });
+        const path = join(root, storageKey);
+        await rm(path, { force: true });
+        // The object key is reserved durably before writes. A crashed atomic
+        // writer can leave a sibling temp file; reclaim only this key's files.
+        let directory;
+        try { directory = await opendir(dirname(path)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+        const prefix = `${basename(path)}.upload-`;
+        for await (const entry of directory) {
+          if (entry.isFile() && entry.name.startsWith(prefix) && /^[a-f0-9-]{36}$/u.test(entry.name.slice(prefix.length))) {
+            await rm(join(dirname(path), entry.name), { force: true });
+          }
+        }
       });
     },
     async getObject(storageKey, options) {
@@ -299,7 +314,7 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
         const metadata = await stat(path);
         throwIfAborted(signal);
         assertWithinLimit(metadata.size, maxBytes);
-        const source = Readable.toWeb(createReadStream(path, { signal })) as ReadableStream<Uint8Array>;
+        const source = nodeByteStream(createReadStream(path, { signal }));
         return {
           body: boundedExactWebStream(source, {
             byteSize: metadata.size,
@@ -450,10 +465,6 @@ async function streamToBuffer(
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let iterator: AsyncIterator<unknown> | undefined;
-  let rejectForAbort: ((reason: unknown) => void) | undefined;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    rejectForAbort = reject;
-  });
   let abortHandled = false;
   const onAbort = () => {
     if (abortHandled || !signal) {
@@ -464,7 +475,6 @@ async function streamToBuffer(
     const reason = abortReason(signal);
     cancelStoredObjectBody(stream, reason);
     cancelStoredObjectIterator(iterator);
-    rejectForAbort?.(reason);
   };
 
   signal?.addEventListener("abort", onAbort, { once: true });
@@ -473,39 +483,41 @@ async function streamToBuffer(
   }
 
   try {
-    iterator = stream[Symbol.asyncIterator]();
+    return await readStreamWithAbort(async () => {
+      iterator = stream[Symbol.asyncIterator]();
 
-    while (true) {
-      const next = signal ? await Promise.race([iterator.next(), aborted]) : await iterator.next();
-      throwIfAborted(signal);
+      while (true) {
+        const next = await iterator.next();
+        throwIfAborted(signal);
 
-      if (next.done) {
-        break;
-      }
-
-      const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as Uint8Array);
-      const remainingBytes = typeof maxBytes === "undefined" ? chunk.byteLength : maxBytes - totalBytes;
-
-      if (chunk.byteLength > remainingBytes) {
-        if (remainingBytes > 0) {
-          chunks.push(chunk.subarray(0, remainingBytes));
+        if (next.done) {
+          break;
         }
 
-        const error = new StoredObjectTooLargeError({
-          maxBytes: maxBytes as number,
-          observedBytes: (maxBytes as number) + 1
-        });
-        cancelStoredObjectBody(stream, error);
-        cancelStoredObjectIterator(iterator);
-        throw error;
+        const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as Uint8Array);
+        const remainingBytes = typeof maxBytes === "undefined" ? chunk.byteLength : maxBytes - totalBytes;
+
+        if (chunk.byteLength > remainingBytes) {
+          if (remainingBytes > 0) {
+            chunks.push(chunk.subarray(0, remainingBytes));
+          }
+
+          const error = new StoredObjectTooLargeError({
+            maxBytes: maxBytes as number,
+            observedBytes: (maxBytes as number) + 1
+          });
+          cancelStoredObjectBody(stream, error);
+          cancelStoredObjectIterator(iterator);
+          throw error;
+        }
+
+        totalBytes += chunk.byteLength;
+        chunks.push(chunk);
       }
 
-      totalBytes += chunk.byteLength;
-      chunks.push(chunk);
-    }
-
-    throwIfAborted(signal);
-    return Buffer.concat(chunks, totalBytes);
+      throwIfAborted(signal);
+      return Buffer.concat(chunks, totalBytes);
+    }, signal);
   } catch (error) {
     cancelStoredObjectIterator(iterator);
 
@@ -561,10 +573,6 @@ async function inspectStoredObjectStream(
   );
   let tail = Buffer.alloc(0);
   let iterator: AsyncIterator<unknown> | undefined;
-  let rejectForAbort: ((reason: unknown) => void) | undefined;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    rejectForAbort = reject;
-  });
   let abortHandled = false;
   const onAbort = () => {
     if (abortHandled || !signal) return;
@@ -572,61 +580,62 @@ async function inspectStoredObjectStream(
     const reason = abortReason(signal);
     cancelStoredObjectBody(stream, reason);
     cancelStoredObjectIterator(iterator);
-    rejectForAbort?.(reason);
   };
 
   signal?.addEventListener("abort", onAbort, { once: true });
   if (signal?.aborted) onAbort();
   try {
-    iterator = stream[Symbol.asyncIterator]();
-    while (true) {
-      const next = signal ? await Promise.race([iterator.next(), aborted]) : await iterator.next();
-      throwIfAborted(signal);
-      if (next.done) break;
-      const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as Uint8Array);
-      totalBytes += chunk.byteLength;
-      if (typeof normalized.maxBytes !== "undefined" && totalBytes > normalized.maxBytes) {
-        const error = new StoredObjectTooLargeError({
-          maxBytes: normalized.maxBytes,
-          observedBytes: totalBytes
-        });
-        cancelStoredObjectBody(stream, error);
-        cancelStoredObjectIterator(iterator);
-        throw error;
-      }
-      hash.update(chunk);
-      if (sampledBytes < normalized.sampleBytes) {
-        const accepted = chunk.subarray(
-          0,
-          Math.min(chunk.byteLength, normalized.sampleBytes - sampledBytes)
-        );
-        if (accepted.byteLength > 0) {
-          sampleChunks.push(accepted);
-          sampledBytes += accepted.byteLength;
+    return await readStreamWithAbort(async () => {
+      iterator = stream[Symbol.asyncIterator]();
+      while (true) {
+        const next = await iterator.next();
+        throwIfAborted(signal);
+        if (next.done) break;
+        const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as Uint8Array);
+        totalBytes += chunk.byteLength;
+        if (typeof normalized.maxBytes !== "undefined" && totalBytes > normalized.maxBytes) {
+          const error = new StoredObjectTooLargeError({
+            maxBytes: normalized.maxBytes,
+            observedBytes: totalBytes
+          });
+          cancelStoredObjectBody(stream, error);
+          cancelStoredObjectIterator(iterator);
+          throw error;
         }
-      }
-      if (normalized.needleBuffers.length > found.size) {
-        const searchable = tail.byteLength > 0 ? Buffer.concat([tail, chunk]) : chunk;
-        for (const needle of normalized.needleBuffers) {
-          if (!found.has(needle.value) && searchable.includes(needle.bytes)) {
-            found.add(needle.value);
+        hash.update(chunk);
+        if (sampledBytes < normalized.sampleBytes) {
+          const accepted = chunk.subarray(
+            0,
+            Math.min(chunk.byteLength, normalized.sampleBytes - sampledBytes)
+          );
+          if (accepted.byteLength > 0) {
+            sampleChunks.push(accepted);
+            sampledBytes += accepted.byteLength;
           }
         }
-        const retained = Math.max(0, maximumNeedleBytes - 1);
-        tail = retained === 0
-          ? Buffer.alloc(0)
-          : searchable.subarray(Math.max(0, searchable.byteLength - retained));
+        if (normalized.needleBuffers.length > found.size) {
+          const searchable = tail.byteLength > 0 ? Buffer.concat([tail, chunk]) : chunk;
+          for (const needle of normalized.needleBuffers) {
+            if (!found.has(needle.value) && searchable.includes(needle.bytes)) {
+              found.add(needle.value);
+            }
+          }
+          const retained = Math.max(0, maximumNeedleBytes - 1);
+          tail = retained === 0
+            ? Buffer.alloc(0)
+            : searchable.subarray(Math.max(0, searchable.byteLength - retained));
+        }
       }
-    }
-    throwIfAborted(signal);
-    return {
-      byteSize: totalBytes,
-      checksum: hash.digest("hex"),
-      contentType: options.contentType,
-      foundNeedles: [...found],
-      sample: Buffer.concat(sampleChunks, sampledBytes),
-      storageKey: options.storageKey
-    };
+      throwIfAborted(signal);
+      return {
+        byteSize: totalBytes,
+        checksum: hash.digest("hex"),
+        contentType: options.contentType,
+        foundNeedles: [...found],
+        sample: Buffer.concat(sampleChunks, sampledBytes),
+        storageKey: options.storageKey
+      };
+    }, signal);
   } catch (error) {
     cancelStoredObjectIterator(iterator);
     if (signal?.aborted) throw abortReason(signal);
@@ -690,14 +699,16 @@ function s3BodyToStream(body: unknown): CancellableStoredObjectBody {
 
 function s3BodyToWebStream(body: unknown): ReadableStream<Uint8Array> {
   if (body instanceof Uint8Array) return byteStream(body);
+  // The SDK's transformToWebStream also uses Node's default counting strategy.
+  if (body instanceof Readable) return nodeByteStream(body);
   if (typeof body === "object" && body !== null && "transformToWebStream" in body) {
     return (body as { transformToWebStream(): ReadableStream<Uint8Array> })
       .transformToWebStream();
   }
   if (typeof body === "object" && body !== null && Symbol.asyncIterator in body) {
-    return Readable.toWeb(
-      Readable.from(body as AsyncIterable<Uint8Array>)
-    ) as ReadableStream<Uint8Array>;
+    return nodeByteStream(Readable.from(body as AsyncIterable<Uint8Array>, {
+      objectMode: false, highWaterMark: 64 * 1024
+    }));
   }
   throw new Error("unsupported_stored_object_body");
 }
