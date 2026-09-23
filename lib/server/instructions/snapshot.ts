@@ -1,3 +1,5 @@
+import { PERSONAL_INSTRUCTIONS_MAX_LENGTH } from "../../contracts/instructionPresets";
+
 /** Instruction fields of private accepted requests. Historical requests omit
  * them; recovery never resolves mutable user settings as a fallback. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -11,7 +13,7 @@ function nonBlank(value: unknown, max: number) {
 }
 export function validAcceptedInstructions(value: Record<string, unknown>): boolean {
   if (!isRecord(value.prompt)) return false;
-  for (const [key, limit] of [["personalInstructions", 32_000], ["responseReminder", 4_000]] as const) {
+  for (const [key, limit] of [["personalInstructions", PERSONAL_INSTRUCTIONS_MAX_LENGTH], ["responseReminder", 4_000]] as const) {
     const text = value.prompt[key];
     if (text !== undefined && (typeof text !== "string" || text.length > limit || text.includes("\0"))) return false;
   }

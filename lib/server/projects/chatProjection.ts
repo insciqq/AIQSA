@@ -1,3 +1,4 @@
+import { decodeSearchPlan } from "../../domain/search";
 import { ModelRunStatus, Prisma } from "@prisma/client";
 import type { ProjectChatSummaryWire } from "@/lib/contracts/projects";
 import type {
@@ -35,6 +36,7 @@ export const projectChatSelect = {
   createdByDisplayName: true,
   createdByUserId: true,
   defaultKnowledgePlan: true,
+  defaultSearchPlan: true,
   defaultProviderModel: {
     select: {
       activeConfig: true,
@@ -84,6 +86,7 @@ export function projectChatWire(
     createdByDisplayName: chat.createdByDisplayName,
     createdByUserId: chat.createdByUserId,
     defaultKnowledgePlan: defaults.defaultKnowledgePlan,
+    defaultSearchPlan: (() => { const decoded = decodeSearchPlan(chat.defaultSearchPlan); return decoded.ok ? decoded.plan : null; })(),
     defaultModelId: defaults.defaultModelId,
     defaultProvider: defaults.defaultProvider,
     folderId: chat.projectFolderId,

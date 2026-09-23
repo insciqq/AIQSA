@@ -15,7 +15,7 @@ export const STANDARD_CHAT_BASELINE_TEMPLATE =
 
 export const STANDARD_CHAT_FALLBACK_TIME_ZONE = "UTC";
 
-/** The cross-cutting answer visibility rules included in every chat run. */
+/** Default answer rules. A personal instruction preset may replace these. */
 export const VISIBLE_ANSWER_CONTRACT =
   "Visible answer contract: answer the user directly in the chat message. Do not include debug sections such as Question, Search, Provider Parameters, Request Preview, Artifacts, Usage, or Errors, and do not expose provider, retrieval, tool, request, usage, or event internals. Include citations naturally only when they help the answer.";
 

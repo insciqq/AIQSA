@@ -13,6 +13,9 @@ describe("Studio Chat defaults", () => {
 
   it("retains an unavailable personal model and writes only an explicit new selection", () => {
     const catalog = structuredClone(composerGalleryConfig.catalog);
+    const provider = catalog.providers.find(item => item.id === catalog.models[0].provider)!;
+    provider.id = "00000000-0000-4000-8000-000000001104";
+    catalog.models[0].provider = provider.id;
     catalog.defaults.personalModelDefault = { provider: "missing-provider", modelId: "missing-model" };
     const makeModelDefault = vi.fn();
     const useOrganizationModelDefault = vi.fn();
@@ -22,7 +25,8 @@ describe("Studio Chat defaults", () => {
     expect(makeModelDefault).not.toHaveBeenCalled();
     expect(useOrganizationModelDefault).not.toHaveBeenCalled();
     fireEvent.click(picker);
-    fireEvent.click(screen.getByRole("menuitem", { name: `${catalog.models[0].displayName}${catalog.models[0].provider}` }));
+    expect(screen.getByRole("menu")).not.toHaveTextContent(provider.id);
+    fireEvent.click(screen.getByRole("menuitem", { name: `${catalog.models[0].displayName}${catalog.providers.find(provider => provider.id === catalog.models[0].provider)?.name}` }));
     expect(makeModelDefault).toHaveBeenCalledWith(catalog.models[0]);
   });
 

@@ -1,3 +1,4 @@
+import { decodeSearchPlan } from "../../domain/search";
 import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import { sumTokenUsage } from "../../domain/usage";
@@ -274,6 +275,7 @@ const chatSummarySelect = {
   },
   activeLeafMessageId: true,
   createdAt: true,
+  defaultSearchPlan: true,
   defaultKnowledgePlan: true,
   defaultProviderModel: {
     select: {
@@ -805,6 +807,7 @@ function serializeChatDetail(input: {
     defaultKnowledgePlan: projectDefaults
       ? projectDefaults.defaultKnowledgePlan
       : storedKnowledgeDefault(chat.defaultKnowledgePlan),
+    defaultSearchPlan: storedSearchPlan(chat.defaultSearchPlan),
     defaultModelId: projectDefaults
       ? projectDefaults.defaultModelId
       : chat.defaultProviderModel?.id ?? null,
@@ -867,6 +870,11 @@ function serializeAssistantIdentity(modelRun: {
   return decodeAssistantIdentity(modelRun?.assistantIdentity);
 }
 
+function storedSearchPlan(value: unknown) {
+  const decoded = decodeSearchPlan(value);
+  return decoded.ok ? decoded.plan : null;
+}
+
 function serializeChatSummary(
   chat: ChatSummaryRow,
   availability: WorkspaceAvailabilityService,
@@ -877,6 +885,7 @@ function serializeChatSummary(
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
+    defaultSearchPlan: storedSearchPlan(chat.defaultSearchPlan),
     defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.projectFolderId ?? chat.folderId,
@@ -2273,6 +2282,7 @@ export function createPrismaChatRepository(
       activeLeafMessageId,
       chatId,
       defaultKnowledgePlan,
+      defaultSearchPlan,
       folderId,
       pinned,
       title,
@@ -2355,6 +2365,7 @@ export function createPrismaChatRepository(
               ...(defaultKnowledgePlan !== undefined
                 ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
                 : {}),
+              ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
               ...(folderId !== undefined ? { projectFolderId: folderId } : {}),
               ...(pinned !== undefined ? { pinned } : {}),
               ...(title ? { title: title.trim().slice(0, 80), titleRevision: { increment: 1 } } : {}),
@@ -2447,7 +2458,7 @@ export function createPrismaChatRepository(
           });
         }
 
-        const hasMetadataUpdate = defaultKnowledgePlan !== undefined ||
+        const hasMetadataUpdate = defaultSearchPlan !== undefined || defaultKnowledgePlan !== undefined ||
           pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined;
         const updated = hasMetadataUpdate
           ? await tx.chat.update({
@@ -2455,6 +2466,7 @@ export function createPrismaChatRepository(
                 ...(defaultKnowledgePlan !== undefined
                   ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
                   : {}),
+                ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
                 ...(pinned !== undefined ? { pinned } : {}),
                 ...(title ? { title: title.trim().slice(0, 80), titleRevision: { increment: 1 } } : {}),
                 ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })

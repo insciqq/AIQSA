@@ -1,5 +1,8 @@
 "use client";
 
+import { useDisclosurePreference } from "@/components/app-shell/disclosurePreferences";
+import { ChatDragDropProvider, ChatRootDropTarget, useChatDraggable, useChatFolderDrop } from "@/features/navigation-v2/chatDragDrop";
+
 import {
   UiV2Button,
   UiV2Icon,
@@ -126,8 +129,9 @@ function ProjectChatRow({
   const closeMenu = () => setMenuOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   const title = chatTitleForDisplay(chat.title);
+  const drag = useChatDraggable(chat.id, !canMove || busy);
   return (
-    <div className="v2-project-chat-row-wrap" data-v2-tree-row="true">
+    <div className="v2-project-chat-row-wrap" data-v2-tree-row="true" {...drag}>
       <button
         aria-current={active ? "page" : undefined}
         aria-label={title}
@@ -277,7 +281,8 @@ function ProjectFolderRow({
   onNavigate,
   onRename,
   onSaveRename,
-  onSelectChat
+  onSelectChat,
+  projectId
 }: Readonly<{
   activeChatId: string | null;
   busy: boolean;
@@ -301,8 +306,10 @@ function ProjectFolderRow({
   onRename(folder: ProjectFolderWire): void;
   onSaveRename(): void;
   onSelectChat(chatId: string): Promise<boolean>;
+  projectId: string;
 }>) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useDisclosurePreference(`project-folder:${projectId}:${folder.id}`, true);
+  const drop = useChatFolderDrop(folder.id);
   const directChats = chats.filter((chat) => chat.folderId === folder.id);
   const directChatLabel = `${directChats.length} ${directChats.length === 1 ? "chat" : "chats"}`;
 
@@ -318,7 +325,7 @@ function ProjectFolderRow({
           onSubmit={onSaveRename}
         />
       ) : (
-        <div className="v2-project-folder-heading" data-v2-tree-row="true">
+        <div className="v2-project-folder-heading" data-v2-tree-row="true" {...drop}>
           <button
             aria-label={`${folder.name}, ${directChatLabel}`}
             aria-expanded={open}
@@ -590,7 +597,8 @@ function ProjectDrillIn({
   };
 
   return (
-    <>
+    <ChatDragDropProvider key={selected?.id} chats={chats} onMove={canManage && !controller.busy ? (chatId, folderId) => { void controller.actions.moveChat(chatId, folderId); } : undefined}>
+      <ChatRootDropTarget />
       <button
         className="v2-project-back v2-focusable"
         type="button"
@@ -663,6 +671,7 @@ function ProjectDrillIn({
                 folder={folder}
                 folderNames={folderNames}
                 folders={flatFolders}
+                projectId={selected?.id ?? ""}
                 key={folder.id}
                 onArchiveChat={(chatId) => void controller.actions.archiveChat(chatId, true)}
                 onCancelRename={cancelFolderForm}
@@ -765,7 +774,7 @@ function ProjectDrillIn({
             : "Project root"}. Nothing inside the folder is deleted.`}
         </ConfirmationDialog>
       ) : null}
-    </>
+    </ChatDragDropProvider>
   );
 }
 

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { UiV2Button } from "@/components/ui-v2";
 import type { InstructionPreview } from "@/lib/contracts/instructionPreview";
 import { requestInstructionPreview } from "./instructionPresetsApi";
+import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 
 type PreviewState =
   | { status: "loading" }
@@ -36,7 +37,7 @@ export function PlatformInstructionsPreview({ onClose }: Readonly<{ onClose?(): 
       </div>
       {onClose ? <UiV2Button type="button" onClick={onClose}>Close preview</UiV2Button> : null}
     </div>
-    <p className="text-xs leading-5 text-ink-muted">Personal presets add to the system baseline. Assistants use their own system instructions and keep the shared visible answer contract. Tools, Skills, Memory and other context can add instructions for a reply; this preview shows only the platform rules below.</p>
+    <p className="text-xs leading-5 text-ink-muted">Personal presets add to the system baseline and can customize the standard answer rules. Assistants use their own system instructions with standard answer rules. Tools, Skills, Memory and other context can add instructions for a reply; this preview shows the platform defaults.</p>
     {state.status === "loading" ? <p className="py-4 text-sm text-ink-muted" role="status">Loading built-in instructions…</p> : null}
     {state.status === "error" ? <div className="space-y-2 text-sm" role="alert">
       <p className="text-critical">The built-in instructions are unavailable. Try again.</p>
@@ -45,11 +46,12 @@ export function PlatformInstructionsPreview({ onClose }: Readonly<{ onClose?(): 
     {state.status === "ready" ? <>
       <div className="min-w-0 space-y-2">
         <h4 className="text-xs font-semibold text-ink-muted">System baseline</h4>
+        <code className="block whitespace-pre-wrap text-xs leading-5 text-ink-secondary">{STANDARD_CHAT_BASELINE_TEMPLATE}</code>
         <pre className="whitespace-pre-wrap rounded-lg border border-trace-subtle bg-answer-paper p-3 font-sans text-sm leading-6 text-ink [overflow-wrap:anywhere]">{state.data.baseline.renderedSystemPrompt}</pre>
         <p className="text-xs leading-5 text-ink-muted">Generated <time dateTime={state.data.generatedAt}>{new Date(state.data.generatedAt).toLocaleString()}</time>. Time zone used: {state.data.baseline.timeZone}{state.data.baseline.timeZoneSource === "utc_fallback" ? " (fallback)" : ""}. The next reply uses a fresh server time.</p>
       </div>
       <div className="min-w-0 space-y-2">
-        <h4 className="text-xs font-semibold text-ink-muted">Visible answer contract</h4>
+        <h4 className="text-xs font-semibold text-ink-muted">Standard answer rules</h4>
         <pre className="whitespace-pre-wrap rounded-lg border border-trace-subtle bg-answer-paper p-3 font-sans text-sm leading-6 text-ink [overflow-wrap:anywhere]">{state.data.visibleAnswerContract}</pre>
       </div>
     </> : null}

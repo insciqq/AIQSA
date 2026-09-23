@@ -1,10 +1,11 @@
+import { ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES } from "../../../contracts/adminProviderCustomSetup";
 import { imageModelConfiguration, initialImageModels } from "../../../domain/imageModels";
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { embeddingModelConfiguration, embeddingPresetsForFamily } from "../../../domain/embeddingModels";
 import { providerModelTemplateId } from "../../../domain/providerTemplates";
 import { rerankerModelConfiguration, rerankerPresetsForFamily } from "../../../domain/rerankerModels";
 import { jevModelConfiguration } from "../../../domain/decisionModels";
-import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
+import type { ProviderConnectionConfiguration, ProviderModelConfiguration } from "../../providers/providerConfiguration";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 
 export type SetupModel = Readonly<{
@@ -17,11 +18,27 @@ export type SetupModel = Readonly<{
 }>;
 
 /** Code-owned candidates only; availability and capabilities still need exact-key checks. */
-export function providerSetupModels(family: string, apiRoot?: string): readonly SetupModel[] {
-  if (family === "openai_compatible" && apiRoot?.endsWith("/backend-api/codex")) return [{
-    configuration: imageModelConfiguration("gpt-image-2", { profile: "codex_lb" }), displayName: "GPT Image 2",
-    modelId: "codex-lb:gpt-image-2", templateKey: "codex-lb:gpt-image-2", inputTokenPriceMicros: 0, outputTokenPriceMicros: 0
-  }];
+export function providerSetupModels(family: string, connection?: Pick<ProviderConnectionConfiguration, "apiRoot" | "responsesRequestIsolationDetected">): readonly SetupModel[] {
+  // Older connections predate the catalog marker; retain their explicit Codex endpoint identity.
+  const codexLb = connection?.responsesRequestIsolationDetected ?? connection?.apiRoot.endsWith("/backend-api/codex");
+  if (family === "openai_compatible" && codexLb) {
+    const answers: SetupModel[] = adminProviderQuickSetupPolicy("openai").candidates.map(candidate => {
+      const upstreamModelId = candidate.configuration.upstreamModelId;
+      return {
+        configuration: {
+          adapterKind: "openai_responses_compatible", answerSelectable: true, modelClass: "answer", upstreamModelId,
+          capabilities: { ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES, reasoning: true, contextWindow: 272_000, maxOutputTokens: 128_000 },
+          defaultParams: { reasoning: { effort: "medium" } }
+        },
+        displayName: candidate.displayName, modelId: `codex-lb:${upstreamModelId}`, templateKey: `codex-lb:${upstreamModelId}`,
+        inputTokenPriceMicros: 0, outputTokenPriceMicros: 0
+      };
+    });
+    return [...answers, {
+      configuration: imageModelConfiguration("gpt-image-2", { profile: "codex_lb" }), displayName: "GPT Image 2",
+      modelId: "codex-lb:gpt-image-2", templateKey: "codex-lb:gpt-image-2", inputTokenPriceMicros: 0, outputTokenPriceMicros: 0
+    }];
+  }
   if (!ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(family as AdminProviderQuickSetupProviderId)) return [];
   const answers = adminProviderQuickSetupPolicy(family as AdminProviderQuickSetupProviderId).candidates.map((candidate) => ({
     configuration: candidate.configuration,

@@ -11,7 +11,7 @@ import type { AdminProviderModelConfiguration } from "../../lib/contracts/adminP
 import { signInWithLocalToken } from "./support/localAuth";
 
 for (const retryFirst of [false, true]) {
-  test(`compatible catalog ${retryFirst ? "recovers through Retry" : "loads"} before Test & Save`, async ({ page }) => {
+  test(`compatible catalog ${retryFirst ? "recovers through Retry" : "loads"} before Test & Save`, async ({ page }, testInfo) => {
     const connectionId = "compatible-catalog-provider";
     const credentialId = "compatible-catalog-key";
     const existingModels = Array.from({ length: 4 }, (_, index) => {
@@ -119,6 +119,11 @@ for (const retryFirst of [false, true]) {
     await picker.getByRole("option", { name: "vendor/new-model Reported by the endpoint" }).click();
     await expect(sheet.getByLabel("Upstream model id", { exact: true })).toHaveValue("vendor/new-model");
     expect(mutations).toEqual([]);
+    await sheet.getByRole("button", { name: "Refresh models", exact: true }).click();
+    await expect.poll(() => discoveries).toBe(retryFirst ? 3 : 2);
+    await expect(sheet.getByRole("button", { name: "Refresh models", exact: true })).toBeEnabled();
+    await expect(sheet.getByLabel("Upstream model id", { exact: true })).toHaveValue("vendor/new-model");
+    await page.screenshot({ path: testInfo.outputPath("compatible-model-refresh.png") });
     await sheet.getByRole("button", { name: "Test & Save", exact: true }).click();
     await expect(sheet).toHaveCount(0);
     await expect(models.getByTestId("provider-model-added-model")).toBeVisible();

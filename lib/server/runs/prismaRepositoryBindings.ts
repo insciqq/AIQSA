@@ -72,30 +72,19 @@ export async function persistAcceptedRunDefaults(
     throw new Error("Run defaults user does not match run owner");
   }
 
-  const updatesSearchPreference = Object.prototype.hasOwnProperty.call(
-    defaults,
-    "searchPreferencePlan"
-  );
   const result = await applySettingsUpdateInTransaction(
     tx,
     userId,
     {
       defaultControlValues: {
         [modelControlKey(defaults)]: { ...defaults.controlDefaults }
-      },
-      ...(updatesSearchPreference
-        ? {
-            defaultSearchPlan: defaults.searchPreferencePlan ?? null
-          }
-        : {})
+      }
     },
     [
       {
         modelId: defaults.modelId,
         provider: defaults.provider,
-        searchStrategyIds: defaults.searchPreferencePlan?.optionIds.length
-          ? [...defaults.searchPreferencePlan.optionIds]
-          : []
+        searchStrategyIds: []
       }
     ]
   );

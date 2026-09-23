@@ -10,6 +10,7 @@ import {
   type RunPresentationV2
 } from "./runPresentation";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { DisclosurePreferencesProvider } from "@/components/app-shell/disclosurePreferences";
 
 function presentation(
   overrides: Partial<RunPresentationV2> = {}
@@ -443,7 +444,33 @@ describe("Run lifecycle v2", () => {
 });
 
 describe("Run lifecycle v2 Workspace timeline", () => {
-  it("labels the fold as Workspace work, hides raw sandbox steps, and keeps the failed card open", () => {
+  it("restores the user's disclosure choice after remount and keeps it through later failures", async () => {
+    localStorage.clear();
+    const answer = (failed = false) => <DisclosurePreferencesProvider accountId="workspace-reader">
+      <RunAnswerV2 processDisclosureId="saved-run" content="Done." presentation={presentation({ kind: "complete" })}
+        workspaceActivity={{ entries: [{ id: "command", kind: "command", phase: failed ? "failed" : "succeeded",
+          command: { preview: "npm test", exitCode: failed ? 1 : 0 } }] }} />
+    </DisclosurePreferencesProvider>;
+    const first = render(answer());
+    const fold = () => screen.getByTestId("tool-activity-disclosure");
+    expect(fold()).not.toHaveAttribute("open");
+    fireEvent.click(fold().querySelector("summary")!);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("aiqsa:disclosures:v1:workspace-reader")!)["workspace:saved-run"]).toBe(true));
+    first.unmount();
+    const second = render(answer());
+    expect(fold()).toHaveAttribute("open");
+    fireEvent.click(fold().querySelector("summary")!);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("aiqsa:disclosures:v1:workspace-reader")!)["workspace:saved-run"]).toBe(false));
+    second.rerender(answer(true));
+    expect(fold()).not.toHaveAttribute("open");
+    expect(fold().querySelector("summary")).toHaveTextContent("Needs attention");
+    second.unmount();
+    render(answer(true));
+    expect(fold()).not.toHaveAttribute("open");
+    localStorage.clear();
+  });
+
+  it("keeps failed Workspace activity folded with a visible status and expandable steps", () => {
     render(
       <RunAnswerV2
         content="Done."
@@ -464,8 +491,9 @@ describe("Run lifecycle v2 Workspace timeline", () => {
       />
     );
     const disclosure = screen.getByTestId("tool-activity-disclosure");
-    expect(disclosure).toHaveAttribute("open");
-    expect(screen.getByText("Worked in Workspace for 42s")).toBeVisible();
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(screen.getByText("Worked in Workspace for 42s · Needs attention")).toBeVisible();
+    fireEvent.click(disclosure.querySelector("summary")!);
     expect(screen.getByText("Read package.json")).toBeVisible();
     expect(screen.getByText("npm test failed")).toBeVisible();
     expect(screen.getByText("Searched Knowledge")).toBeVisible();
@@ -486,8 +514,8 @@ describe("Run lifecycle v2 Workspace timeline", () => {
       />
     );
     const disclosure = screen.getByTestId("tool-activity-disclosure");
-    expect(disclosure).toHaveAttribute("open");
+    expect(disclosure).not.toHaveAttribute("open");
     expect(disclosure).toHaveTextContent("Running npm test…");
-    expect(screen.getByText("Workspace ready")).toBeVisible();
+    expect(screen.getByText("Workspace ready")).not.toBeVisible();
   });
 });

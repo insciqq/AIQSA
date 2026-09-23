@@ -23,7 +23,7 @@ async function preset(userId: string) {
 }
 async function plan(userId: string): Promise<PreparingRunAdmissionInput> {
   const chat = await prisma.chat.create({ data: { userId, title: "Synthetic instruction run" } });
-  const { systemInstructions, responseReminder, ...instructionPreset } = await store.resolveForRun(userId);
+  const { systemInstructions, responseReminder, answerRules: _answerRules, ...instructionPreset } = await store.resolveForRun(userId);
   const content = { blocks: [{ type: "text", text: "Synthetic question" }] };
   return { admissionKind: "NORMAL_SEND", chatId: chat.id, userId, content, expectedActiveLeafId: null,
     modelId: "fake-qsa", provider: "fake", providerRequestPreview: {}, normalizedRequest: {
@@ -45,6 +45,17 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("persisted owner instructions", () => {
+  it("persists custom rules with the preset revision and resets to inherited rules", async () => {
+    const userId = await owner(), row = await preset(userId);
+    await store.mutate(userId, { action: "select", id: row.id, selectionVersion: 0 });
+    await store.mutate(userId, { action: "update", id: row.id, revision: 1, value: { ...draft, answerRules: "Use numbered paragraphs." } });
+    const accepted = await store.resolveForRun(userId);
+    expect(accepted).toMatchObject({ revision: 2, answerRules: "Use numbered paragraphs." });
+    expect(await store.get(userId, row.id)).toMatchObject({ answerRules: "Use numbered paragraphs." });
+    await store.mutate(userId, { action: "update", id: row.id, revision: 2, value: { ...draft, answerRules: null } });
+    expect(await store.resolveForRun(userId)).toMatchObject({ revision: 3, answerRules: null });
+    expect(accepted.answerRules).toBe("Use numbered paragraphs.");
+  });
   it("isolates details and active references by owner, including the database constraint", async () => {
     const a = await owner(), b = await owner(), row = await preset(a);
     expect(await store.get(b, row.id)).toBeNull(); expect((await store.list(b)).presets).toEqual([]);

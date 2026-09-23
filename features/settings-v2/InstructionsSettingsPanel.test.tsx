@@ -20,6 +20,32 @@ async function manage() {
 }
 beforeEach(() => { request.mockReset().mockResolvedValue(state); detail.mockReset().mockResolvedValue(preset); preview.mockReset().mockResolvedValue(platformPreview); });
 describe("instruction preset editor", () => {
+  it("shows shared rules, edits a private override and resets it without changing instruction text", async () => {
+    await manage();
+    expect(screen.getByText("AIQSA standard answer rules")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Work" }));
+    await screen.findByLabelText("System instructions");
+    fireEvent.click(screen.getByText("Answer rules · AIQSA standard"));
+    fireEvent.click(screen.getByRole("button", { name: "Customize answer rules" }));
+    const rules = screen.getByLabelText("Answer rules");
+    expect(rules).toHaveFocus();
+    expect((rules as HTMLTextAreaElement).value).toContain("Visible answer contract");
+    fireEvent.change(rules, { target: { value: "Write three numbered paragraphs." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Preset saved/);
+    expect(request).toHaveBeenLastCalledWith({ action: "update", id: "preset", revision: 1,
+      value: { name: "Work", systemInstructions: preset.systemInstructions, responseReminder: preset.responseReminder, answerRules: "Write three numbered paragraphs." } });
+    detail.mockResolvedValueOnce({ ...preset, revision: 2, answerRules: "Write three numbered paragraphs." });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Work" }));
+    await screen.findByLabelText("System instructions");
+    fireEvent.click(screen.getByText("Answer rules · Custom"));
+    fireEvent.click(screen.getByRole("button", { name: "Use standard answer rules" }));
+    expect(screen.getByRole("button", { name: "Customize answer rules" })).toHaveFocus();
+    expect(screen.getByLabelText("System instructions")).toHaveValue(preset.systemInstructions);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Preset saved/);
+    expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 2, value: expect.objectContaining({ answerRules: null }) }));
+  });
   it("activates preset rows and the built-in default through the same versioned selection", async () => {
     await manage();
     expect(screen.getByRole("radio", { name: "Work" })).toBeChecked();
@@ -98,7 +124,7 @@ describe("instruction preset editor", () => {
     expect(screen.queryByRole("link", { name: "external" })).toBeNull();
     fireEvent.keyDown(screen.getByRole("form", { name: "New instruction preset" }), { key: "s", ctrlKey: true });
     await screen.findByText(/Preset saved/);
-    expect(request).toHaveBeenLastCalledWith({ action: "create", value: { name: "Writing", systemInstructions: content, responseReminder: "" } });
+    expect(request).toHaveBeenLastCalledWith({ action: "create", value: { name: "Writing", systemInstructions: content, responseReminder: "", answerRules: null } });
     expect(request).toHaveBeenCalledTimes(2);
     expect(screen.getByLabelText("Active instructions: Work")).toBeVisible();
     await waitFor(() => expect(screen.getByRole("button", { name: "New preset" })).toHaveFocus());
@@ -168,7 +194,7 @@ describe("instruction preset editor", () => {
     expect(request).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText(/Preset saved/);
-    expect(request).toHaveBeenLastCalledWith({ action: "create", value: { name: "Work copy", systemInstructions: preset.systemInstructions, responseReminder: preset.responseReminder } });
+    expect(request).toHaveBeenLastCalledWith({ action: "create", value: { name: "Work copy", systemInstructions: preset.systemInstructions, responseReminder: preset.responseReminder, answerRules: null } });
     expect(screen.getByRole("button", { name: "Edit Work" })).toHaveFocus();
   });
 

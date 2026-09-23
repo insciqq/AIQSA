@@ -1311,6 +1311,7 @@ model InstructionPreset {
   name               String @db.VarChar(80)
   systemInstructions String
   responseReminder   String @default("")
+  answerRules        String?
   revision           Int @default(1)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
@@ -3049,6 +3050,7 @@ model Chat {
   activeLeafMessageId             String?
   defaultProviderModelId          String?
   defaultKnowledgePlan            Json?
+  defaultSearchPlan               Json?
   memoryMode                      MemoryChatMode       @default(NORMAL)
   memoryBranchGeneration          Int                  @default(0)
   memorySourceRevision            Int                  @default(0)

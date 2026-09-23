@@ -1,5 +1,8 @@
 "use client";
 
+import { useDisclosurePreference } from "@/components/app-shell/disclosurePreferences";
+import { ChatDragDropProvider, ChatRootDropTarget, useChatDraggable, useChatFolderDrop } from "./chatDragDrop";
+
 import {
   UiV2Icon,
   UiV2IconButton,
@@ -235,6 +238,7 @@ function ChatRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = () => setMenuOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
+  const drag = useChatDraggable(chat.id, disabled || editing);
   const rowState = chatStateFor?.(chat) ?? null;
   const memoryUsed = (rowState?.memoryMode ?? "NORMAL") !== "EXCLUDED";
   if (editing) {
@@ -268,6 +272,7 @@ function ChatRow({
   return (
     <div
       className="v2-chat-row-wrap"
+      {...drag}
       data-navigation-chat-id={chat.id}
       data-v2-tree-row="true"
     >
@@ -360,7 +365,8 @@ function FolderGroup({
 }) {
   // Top-level folders open; nested folders start collapsed so deep trees stay
   // scannable (UX audit F10).
-  const [open, setOpen] = useState(depth === 0);
+  const [open, setOpen] = useDisclosurePreference(`folder:${folder.id}`, depth === 0);
+  const drop = useChatFolderDrop(folder.id);
   const [menuOpen, setMenuOpen] = useState(false);
   const [subfolderOpen, setSubfolderOpen] = useState(false);
   const [subfolderName, setSubfolderName] = useState("");
@@ -371,7 +377,7 @@ function FolderGroup({
   const editing = props.editingFolderId === folder.id;
   return (
     <div className="v2-navigation-group" data-folder-id={folder.id} role="none">
-      <div className="v2-folder-row" data-v2-tree-row="true">
+      <div className="v2-folder-row" data-v2-tree-row="true" {...drop}>
         {editing ? (
           <form className="v2-folder-rename" onSubmit={(event) => {
             event.preventDefault();
@@ -673,6 +679,10 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   };
 
   return (
+    <ChatDragDropProvider chats={props.chats} onMove={props.onMove ? (chatId, folderId) => {
+      const chat = props.chats.find(item => item.id === chatId);
+      if (chat) props.onMove?.(chat, folderId);
+    } : undefined}>
     <aside
       className="v2-navigation"
       aria-label={projectColumn ? "Project navigation" : "Chat navigation"}
@@ -810,6 +820,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             : props.projectsSlot
           : null}
         {!projectColumn ? <>
+        <ChatRootDropTarget />
         <UiV2RovingTree className="v2-navigation-tree" label="Personal chats">
         {!props.ready && props.loading ? (
           <div className="v2-navigation-skeletons" aria-label="Loading chats">
@@ -1021,6 +1032,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         </div>
       ) : null}
     </aside>
+    </ChatDragDropProvider>
   );
 }
 

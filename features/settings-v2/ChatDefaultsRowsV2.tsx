@@ -8,6 +8,7 @@ import {
   type KnowledgeSelection
 } from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
+import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
 import type { SearchPlan } from "@/lib/domain/search";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
@@ -95,6 +96,8 @@ export function ChatDefaultsRowsV2({
   onOpenMcp,
   onOpenSkills,
   onSearchPlan,
+  onResetSearchPlan,
+  searchPreferenceSource,
   searchPlan,
   searchStrategies
 }: Readonly<{
@@ -108,15 +111,12 @@ export function ChatDefaultsRowsV2({
   onOpenMcp?(): void;
   onOpenSkills?(): void;
   onSearchPlan(plan: SearchPlan): void;
+  onResetSearchPlan?(): void;
+  searchPreferenceSource?: "organization" | "personal";
   searchPlan: SearchPlan;
   searchStrategies: readonly CatalogSearchStrategy[];
 }>) {
   const engines = searchStrategies.filter((strategy) => strategy.kind !== "none");
-  const searchValue = searchPlan.optionIds.find((id) => engines.some((engine) => engine.strategyId === id)) ?? "off";
-  const searchOptions = [
-    { label: "Off", value: "off" },
-    ...engines.map((engine) => ({ label: engine.displayName, value: engine.strategyId }))
-  ];
   const activeBases = knowledgeBases.filter((base) => !base.archived);
   const currentKnowledge = knowledgeValue(knowledgePlan);
   const orphanBaseId = currentKnowledge !== NO_KNOWLEDGE && currentKnowledge !== ALL_MY_KNOWLEDGE &&
@@ -126,16 +126,11 @@ export function ChatDefaultsRowsV2({
 
   return (
     <>
-      <SettingsRowV2 description="Search engine offered first in new chats." testId="settings-default-search" title="Web search">
-        <SettingsSelectV2
-          label="Web search default"
-          options={searchOptions}
-          value={searchValue}
-          onChange={(next) => onSearchPlan({
-            mode: "all_selected",
-            optionIds: next === "off" ? [] : [next]
-          })}
-        />
+      <SettingsRowV2 description="Choose up to three sources and how they work together." testId="settings-default-search" title="Web search">
+        <details className="v2-search-default-disclosure">
+          <summary aria-label="Web search default">{searchPreferenceSource === "organization" ? "Organization default · " : ""}{searchPlan.optionIds.length ? `${searchPlan.optionIds.length} ${searchPlan.optionIds.length === 1 ? "source" : "sources"} selected` : "Off"}</summary>
+          <SearchPlanPickerV2 options={engines} plan={searchPlan} onChange={onSearchPlan} onReset={onResetSearchPlan} scope="defaults" />
+        </details>
       </SettingsRowV2>
       <SettingsRowV2 description={<>How a new chat discovers tools from your enabled servers. {onOpenMcp ? <button className="v2-studio-inline-link v2-focusable" onClick={onOpenMcp} type="button">MCP servers</button> : null}</>} testId="settings-default-mcp" title="MCP tools">
         <SettingsSegmentV2

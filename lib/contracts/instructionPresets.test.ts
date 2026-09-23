@@ -20,4 +20,12 @@ describe("instruction preset wire contract", () => {
     }
     expect(decodeInstructionPresetState({ activePresetId: "missing", selectionVersion: 0, presets: [] })).toBeNull();
   });
+  it("preserves explicit custom rules and reset while rejecting oversized or malformed rules", () => {
+    for (const answerRules of [null, "", "Use headings."]) {
+      expect(decodeInstructionPresetDraft({ ...value, answerRules })).toMatchObject({ answerRules });
+    }
+    for (const answerRules of [undefined, 5, "\0", "x".repeat(4001)]) {
+      expect(decodeInstructionPresetDraft({ ...value, answerRules })).toBeNull();
+    }
+  });
 });

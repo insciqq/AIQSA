@@ -1,3 +1,4 @@
+import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
@@ -64,6 +65,7 @@ export type ChatMessageRecord = {
 };
 
 export type ChatSummaryRecord = {
+  defaultSearchPlan?: SearchPlan | null;
   titlePending?: boolean;
   hasContinuationSource?: boolean;
   activeLeafMessageId: string | null;
@@ -157,6 +159,7 @@ export type ChatRepository = {
     userId: string;
   }): Promise<FolderRecord | null>;
   updateChat(input: {
+    defaultSearchPlan?: SearchPlan | null;
     activeLeafMessageId?: string | null;
     chatId: string;
     defaultKnowledgePlan?: KnowledgePlan | null;
@@ -301,6 +304,7 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: iso(chat.createdAt),
     defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
+    ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),
     defaultModelId: chat.defaultModelId,
     defaultProvider: chat.defaultProvider,
     folderId: chat.folderId,
@@ -546,6 +550,10 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     if (bodyError) {
       return bodyError;
     }
+    const search = body?.defaultSearchPlan == null ? null : decodeSearchPlan(body.defaultSearchPlan);
+    if (search && !search.ok) {
+      return chatRouteErrorJson({ error: "search_plan_invalid" }, { status: 400 });
+    }
     const defaultKnowledgePlan = knowledgeDefaultValue(body);
     const workspaceEnabled = workspaceEnabledValue(body);
     if (!workspaceEnabled.ok) {
@@ -560,6 +568,7 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
         activeLeafMessageId: activeLeafValue(body),
         chatId: params.chatId,
         defaultKnowledgePlan: defaultKnowledgePlan.value,
+        ...(body && "defaultSearchPlan" in body ? { defaultSearchPlan: search?.ok ? search.plan : null } : {}),
         folderId: folderValue(body),
         pinned: pinnedValue(body),
         title: textValue(body?.title),

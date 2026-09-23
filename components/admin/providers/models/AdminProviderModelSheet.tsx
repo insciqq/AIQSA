@@ -605,6 +605,10 @@ function SheetBody({
                   selectedFallbackLabel={form.upstreamModelId || "Configured model"}
                   selectedId={form.upstreamModelId || null}
                 />
+                <UiV2Button disabled={!modelIdentity || busy || compatibleCatalog.status === "loading"} type="button"
+                  onClick={() => void discovery.compatibleModels.refresh(modelIdentity)}>
+                  {compatibleCatalog.status === "loading" ? "Refreshing models…" : "Refresh models"}
+                </UiV2Button>
                 <label className="block min-w-0">
                   <span className={fieldLabel}>Upstream model id</span>
                   <input

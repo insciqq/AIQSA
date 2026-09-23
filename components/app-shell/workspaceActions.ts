@@ -158,6 +158,7 @@ export function useWorkspaceActions({
       activeLeafMessageId: detail.activeLeafMessageId,
       createdAt: detail.createdAt,
       defaultKnowledgePlan: detail.defaultKnowledgePlan ?? null,
+      ...(detail.defaultSearchPlan ? { defaultSearchPlan: detail.defaultSearchPlan } : {}),
       defaultModelId: detail.defaultModelId,
       defaultProvider: detail.defaultProvider,
       folderId: detail.folderId,
@@ -547,7 +548,7 @@ export function useWorkspaceActions({
 
     setSelectedProvider(model?.provider ?? chat.defaultProvider, "system");
     setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
-    const searchPlan = resolvePreferredSearchPlan(
+    const searchPlan = chat.defaultSearchPlan ?? resolvePreferredSearchPlan(
       catalogOverride?.defaults.searchPlan,
       catalogOverride?.searchStrategies
     );
