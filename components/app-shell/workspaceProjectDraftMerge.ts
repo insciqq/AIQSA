@@ -57,12 +57,21 @@ export function mergeWorkspaceProjectDrafts(input: Readonly<{
   const chats = sortChatsByFavoriteThenUpdatedAt([
     ...outsideScope,
     ...pending,
-    ...incoming.map((chat) => ({
-      ...currentById.get(chat.id),
-      ...chat,
-      pendingPersonalDraft: undefined,
-      pendingProjectDraft: undefined
-    }))
+    ...incoming.map((chat) => {
+      const current = currentById.get(chat.id);
+      const revisionOrder = current && !current.pendingPersonalDraft && !current.pendingProjectDraft
+        ? Date.parse(current.updatedAt) - Date.parse(chat.updatedAt) : -1;
+      // A delayed read cannot undo an acknowledged mutation. Equal revisions
+      // retain optimistic Search edits while their save is still pending.
+      return {
+        ...current,
+        ...(revisionOrder > 0 && current ? current : chat),
+        ...(revisionOrder === 0 && current?.defaultSearchPlan
+          ? { defaultSearchPlan: current.defaultSearchPlan } : {}),
+        pendingPersonalDraft: undefined,
+        pendingProjectDraft: undefined
+      };
+    })
   ]);
 
   if (!input.incomingProjectChats) return { chats };

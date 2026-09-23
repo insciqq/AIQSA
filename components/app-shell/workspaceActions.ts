@@ -715,6 +715,8 @@ export function useWorkspaceActions({
       setSelectedProvider(defaultModel?.provider ?? "", "system");
       setSelectedModelId(defaultModel?.modelId ?? "", "system");
       applyModelControlDefaults(defaultModel, catalog?.defaults.controlValues);
+      const searchPlan = resolvePreferredSearchPlan(catalog?.defaults.searchPlan, catalog?.searchStrategies);
+      setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
       const projectPlan = folderId
         ? useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId)
             ?.defaultKnowledgePlan ?? null

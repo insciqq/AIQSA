@@ -38,6 +38,21 @@ function projectChat(input: Partial<ProjectChatSummaryWire> & Pick<ProjectChatSu
 }
 
 describe("Project draft workspace reconciliation", () => {
+  it.each(["2026-08-22T00:00:00.000Z", "2026-08-22T00:00:01.000Z"])(
+    "retains pending or acknowledged Search at %s against an older read", (updatedAt) => {
+      const current = summary({ id: "chat-1", projectId: "project-1", updatedAt,
+        defaultSearchPlan: { mode: "all_selected", optionIds: [] } });
+      const stale = summary({ id: current.id, projectId: "project-1",
+        defaultSearchPlan: { mode: "model_choice", optionIds: ["search-source"] } });
+      const merged = mergeWorkspaceProjectDrafts({ currentChats: [current], incomingChats: [stale], projectId: "project-1" });
+      expect(merged.chats[0]).toMatchObject({ defaultSearchPlan: current.defaultSearchPlan, updatedAt });
+
+      const newer = { ...stale, updatedAt: "2026-08-22T00:00:02.000Z" };
+      expect(mergeWorkspaceProjectDrafts({ currentChats: merged.chats, incomingChats: [newer], projectId: "project-1" }).chats[0])
+        .toMatchObject({ defaultSearchPlan: newer.defaultSearchPlan, updatedAt: newer.updatedAt });
+    }
+  );
+
   it("preserves a personal first-send reservation and promotes its persisted row", () => {
     const draft = summary({
       folderId: "folder-1",
