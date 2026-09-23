@@ -310,6 +310,7 @@ export type ComposerV2Props = Readonly<{
   sending?: boolean;
   stopping?: boolean;
   uploading?: boolean;
+  uploadLimitHint?: string;
   workspace?: Readonly<{
     available: boolean;
     busy: boolean;
@@ -497,6 +498,7 @@ export function ComposerV2({
   sending = false,
   stopping = false,
   uploading = false,
+  uploadLimitHint,
   workspace
 }: ComposerV2Props) {
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
@@ -1747,7 +1749,7 @@ export function ComposerV2({
                   <CapabilityRow
                     icon="attach"
                     disabled={attachmentSelectionDisabled}
-                    reason={attachmentSelectionDisabled ? "Unavailable" : "XLSX · DOCX · PDF · images"}
+                    reason={attachmentSelectionDisabled ? "Unavailable" : uploadLimitHint ?? "XLSX · DOCX · PDF · images"}
                     selectionRole="item"
                     onClick={() => {
                       fileInputRef.current?.click();

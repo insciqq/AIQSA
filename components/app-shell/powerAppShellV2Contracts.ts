@@ -297,6 +297,7 @@ export type ShellComposerView = {
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   reuseFile?(attachmentId: string, fileName: string): Promise<boolean>;
   uploading: boolean;
+  uploadLimitHint?: string;
   workspace: {
     archive(): Promise<ThreadGeneratedFile | null>;
     available: boolean;

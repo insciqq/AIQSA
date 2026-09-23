@@ -18,9 +18,9 @@ const body = { cpus: 1, diskMiB: 1024, memoryMiB: 512, imageRef: "fixture_image"
 function fixture(runtime: Partial<WorkspaceRuntime>) {
   const server = createWorkspaceRunnerServer({ runtime: runtime as WorkspaceRuntime, token });
   const handler = server.listeners("request")[0] as (request: IncomingMessage, response: ServerResponse) => Promise<void>;
-  return async (url: string, value?: unknown) => {
-    const request = Object.assign(Readable.from(value === undefined ? [] : [JSON.stringify(value)]), {
-      headers: { authorization: `Bearer ${token}` }, method: value === undefined ? "GET" : "POST", url
+  return async (url: string, value?: unknown, raw?: { body: Readable; headers: Record<string, string> }) => {
+    const request = Object.assign(raw?.body ?? Readable.from(value === undefined ? [] : [JSON.stringify(value)]), {
+      headers: { authorization: `Bearer ${token}`, ...raw?.headers }, method: value === undefined && !raw ? "GET" : "POST", url
     });
     const response = Object.assign(new EventEmitter(), { headersSent: false,
       setHeader: vi.fn(), writeHead: vi.fn(() => { response.headersSent = true; }), end: vi.fn(), destroy: vi.fn() });
@@ -38,6 +38,30 @@ function capture() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Workspace runner lifecycle diagnostics", () => {
+  it("does not read the original ahead while guest staging is stalled", async () => {
+    let produced = 0;
+    const stageAttachments = vi.fn(async (input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]) => {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(produced).toBeLessThanOrEqual(8);
+      await input.attachments[0]!.body.cancel();
+    });
+    const request = fixture({ stageAttachments, stopSession: vi.fn(async () => undefined),
+      ensureSession: vi.fn(async () => ({ runtimeSandboxId: "sandbox_fixture", sandboxName: body.sandboxName, state: "ready" as const })) });
+    await request("/v1/sessions/ensure", body);
+    const source = Readable.from((async function* () {
+      for (let i = 0; i < 128; i++) { produced += 1; yield Buffer.alloc(64 * 1024); }
+    })(), { objectMode: false, highWaterMark: 64 * 1024 });
+    const response = await request(`/v1/sessions/${sessionId}/stage`, undefined, { body: source, headers: {
+      "x-aiqsa-runtime-sandbox-id": "sandbox_fixture", "x-aiqsa-attachment-id": "attachment_fixture",
+      "x-aiqsa-message-id": "message_fixture", "x-aiqsa-file-name": Buffer.from("original.bin").toString("base64url"),
+      "x-aiqsa-file-kind": "file", "x-aiqsa-checksum": "a".repeat(64), "x-aiqsa-byte-size": String(128 * 64 * 1024),
+      "x-aiqsa-mime-type": "application/octet-stream", "x-aiqsa-workspace-operation": JSON.stringify(body.operation)
+    } });
+    expect(stageAttachments).toHaveBeenCalledOnce();
+    expect(response.writeHead).toHaveBeenCalledWith(204);
+    expect(source.destroyed).toBe(true);
+  });
+
   it("joins the authenticated tool request to its existing server run and call identities", async () => {
     let context: ReturnType<typeof getContext>;
     const callBoundTool = vi.fn(async () => {

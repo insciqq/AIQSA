@@ -41,6 +41,7 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
   const code = isRecord(value) && typeof value.error === "string" ? value.error : "";
   switch (code) {
     case "workspace_attachment_unavailable":
+    case "workspace_storage_full":
     case "workspace_secrets_prepare_failed":
     case "workspace_skills_prepare_failed":
     case "workspace_skill_bundle_invalid":

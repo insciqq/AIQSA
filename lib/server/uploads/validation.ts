@@ -63,12 +63,12 @@ function ascii(bytes: Buffer | Uint8Array, start = 0, end = bytes.byteLength): s
   return Buffer.from(bytes.subarray(start, end)).toString("ascii");
 }
 
-function textSample(bytes: Buffer | Uint8Array): string | null {
+function textSample(bytes: Buffer | Uint8Array, partial = false): string | null {
   if (bytes.byteLength === 0) return null;
   const sample = bytes.subarray(0, Math.min(bytes.byteLength, 64 * 1_024));
   if (sample.includes(0)) return null;
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(sample).replace(/^\uFEFF/u, "");
+    return new TextDecoder("utf-8", { fatal: true }).decode(sample, { stream: partial || bytes.byteLength > sample.byteLength }).replace(/^\uFEFF/u, "");
   } catch {
     return null;
   }
@@ -101,10 +101,11 @@ function inspectedZipEvidence(
 
 function matchesEvidence(
   evidence: UploadContentEvidence,
-  bytes: Buffer | Uint8Array
+  bytes: Buffer | Uint8Array,
+  partial = false
 ): boolean {
   const sample = evidence === "text" || evidence === "html" || evidence === "json" || evidence === "eml"
-    ? textSample(bytes)
+    ? textSample(bytes, partial)
     : null;
 
   switch (evidence) {
@@ -179,6 +180,7 @@ export function uploadInspectionMatchesFormat(
   inspection: Readonly<{
     foundNeedles: readonly string[];
     sample: Buffer | Uint8Array;
+    partial?: boolean;
   }>
 ): boolean {
   const found = new Set(inspection.foundNeedles);
@@ -224,7 +226,7 @@ export function uploadInspectionMatchesFormat(
     case "word_ooxml":
       return inspectedZipEvidence(sample, found, ["[Content_Types].xml", "word/"], ["ppt/", "xl/"]);
     default:
-      return matchesEvidence(format.contentEvidence, sample);
+      return matchesEvidence(format.contentEvidence, sample, inspection.partial);
   }
 }
 
@@ -285,7 +287,7 @@ export function validateUploadInspection(input: UploadInspectionInput): UploadVa
       ok: true
     };
   }
-  if (!format || !uploadInspectionMatchesFormat(format, input)) {
+  if (!format || !uploadInspectionMatchesFormat(format, { ...input, partial: input.byteSize > input.sample.byteLength })) {
     return { code: "unsupported_type", ok: false };
   }
   return { kind: format.kind, mimeType: format.canonicalMimeType, ok: true };
