@@ -1,6 +1,8 @@
 "use client";
 
 import { DisclosurePreferencesProvider } from "@/components/app-shell/disclosurePreferences";
+import { fetchWorkspaceUploadConfig } from "@/components/app-shell/workspaceUploadClient";
+import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads";
 import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPreferences";
 
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
@@ -338,6 +340,15 @@ export function PowerAppShellV2({
 }) {
   const catalog = useWorkspaceStore((state) => state.catalogAccountId === accountId ? state.catalog : null);
   const settingsSession = useMemo(() => Symbol(accountId), [accountId]);
+  const [uploadConfiguration, setUploadConfiguration] = useState<{ accountId: string; value: WorkspaceUploadConfigWire } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchWorkspaceUploadConfig(controller.signal).then(value => {
+      if (!controller.signal.aborted) setUploadConfiguration({ accountId, value });
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [accountId]);
+  const uploadLimits = uploadConfiguration?.accountId === accountId ? uploadConfiguration.value : null;
   const activeSettingsSessionRef = useRef<symbol | null>(null);
   useLayoutEffect(() => {
     activeSettingsSessionRef.current = settingsSession;
@@ -1767,11 +1778,24 @@ export function PowerAppShellV2({
 
   async function uploadComposerFiles(files: FileList | readonly File[]): Promise<void> {
     const selected = Array.from(files);
+    const sourceKey = useComposerSessionStore.getState().activeSessionKey;
+    let limits: WorkspaceUploadConfigWire;
+    try { limits = await fetchWorkspaceUploadConfig(); }
+    catch { setNotice({ kind: "error", text: "Upload settings are unavailable. Try again shortly." }); return; }
+    if (activeSettingsSessionRef.current !== settingsSession || useComposerSessionStore.getState().activeSessionKey !== sourceKey) return;
+    setUploadConfiguration({ accountId, value: limits });
     const ordinaryPolicy = attachmentPolicyForModel(effectiveCurrentModel);
-    const requiresWorkspace = partitionAttachmentSelection(selected, ordinaryPolicy).rejected.length > 0;
+    const workspaceFiles = selected.filter(file => file.size > limits.ordinaryMaxBytes ||
+      partitionAttachmentSelection([file], ordinaryPolicy).rejected.length > 0);
+    if (workspaceFiles.some(file => file.size > limits.maxBytes)) {
+      setNotice({ kind: "error", text: `Files must be no larger than ${Number((limits.maxBytes / 1024 / 1024).toFixed(1))} MiB.` });
+      return;
+    }
+    const requiresWorkspace = workspaceFiles.length > 0;
     if (requiresWorkspace && !workspaceEnabled) {
       if (!(await setWorkspaceEnabled(true, "file_selection"))) return;
     }
+    if (activeSettingsSessionRef.current !== settingsSession || useComposerSessionStore.getState().activeSessionKey !== sourceKey) return;
     await uploadFiles(selected);
   }
 
@@ -1999,6 +2023,9 @@ export function PowerAppShellV2({
     useOrganizationSearchDefault,
     useOrganizationModelDefault,
     uploadFiles: uploadComposerFiles,
+    uploadLimitHint: uploadLimits ? workspaceAvailable
+      ? `Up to ${Number((uploadLimits.maxBytes / 1024 / 1024).toFixed(1))} MiB with Workspace`
+      : `Up to ${Number((uploadLimits.ordinaryMaxBytes / 1024 / 1024).toFixed(1))} MiB per file` : undefined,
     reuseFile: projectContext ? undefined : reuseComposerFile,
     uploading,
     agent: {

@@ -11,7 +11,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { presign, s3Send } = vi.hoisted(() => ({ presign: vi.fn(), s3Send: vi.fn() }));
@@ -67,6 +67,22 @@ afterEach(async () => {
 });
 
 describe("content-free storage operation evidence", () => {
+  it("bounds S3 read-ahead in bytes while a download consumer is stalled", async () => {
+    let produced = 0;
+    const source = Readable.from((async function* () {
+      for (let i = 0; i < 128; i++) { produced += 1; yield Buffer.alloc(64 * 1024); }
+    })(), { objectMode: false, highWaterMark: 64 * 1024 });
+    const sdkConversion = vi.fn(() => Readable.toWeb(source));
+    Object.assign(source, { transformToWebStream: sdkConversion });
+    s3Send.mockResolvedValueOnce({ Body: source, ContentLength: 128 * 64 * 1024 });
+    const object = await createS3StorageAdapter(s3Env).getObjectStream!("owned/stalled");
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(produced).toBeLessThanOrEqual(8);
+    expect(sdkConversion).not.toHaveBeenCalled();
+    await object.body.cancel();
+    expect(source.destroyed).toBe(true);
+  });
+
   it("retains an SDK refusal and status without exposing its message, key or credentials", async () => {
     const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const failure = new S3ServiceException({ name: "AccessDenied", $fault: "client", $metadata: { httpStatusCode: 403 }, message: "private-storage-message-canary" });
@@ -86,7 +102,7 @@ describe("content-free storage operation evidence", () => {
       createS3StorageAdapter(s3Env).getObjectStream!("private-stream-key-canary"));
     const reader = stream.body.getReader();
     source.write(Buffer.from("data"));
-    expect((await reader.read()).value).toEqual(Buffer.from("data"));
+    expect(Buffer.from((await reader.read()).value!)).toEqual(Buffer.from("data"));
     let records = output.mock.calls.map(([line]) => JSON.parse(String(line)));
     expect(records.some((record) => record.stage === "read" && record.outcome === "completed")).toBe(false);
     runWithContext({ trace_id: "2".repeat(32) }, () => source.end());

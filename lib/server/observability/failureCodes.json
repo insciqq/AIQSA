@@ -806,6 +806,9 @@
   "workspace_session_lost",
   "workspace_session_lost_before_dispatch",
   "workspace_shell_syntax_requires_shell",
+  "workspace_storage_full",
   "workspace_tool_cancelled",
-  "workspace_tool_timeout"
+  "workspace_tool_timeout",
+  "workspace_upload_recovery_failed",
+  "workspace_upload_startup_failed"
 ]

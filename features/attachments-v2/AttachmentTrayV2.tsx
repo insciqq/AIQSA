@@ -47,6 +47,7 @@ function measuredThreeRowHeight(list: HTMLUListElement): number | null {
 }
 
 function itemStatus(item: ComposerAttachmentItemV2): string {
+  if (item.statusLabel) return item.statusLabel;
   if (item.status === "uploading") {
     const progress = typeof item.progress === "number" && Number.isFinite(item.progress)
       ? Math.max(0, Math.min(100, Math.round(item.progress)))
@@ -174,7 +175,7 @@ export function AttachmentTrayV2({
               {onRemove ? (
                 <UiV2IconButton
                   icon="close"
-                  label={`Remove ${item.fileName}`}
+                  label={item.upload ? `Cancel upload of ${item.fileName}` : `Remove ${item.fileName}`}
                   onClick={() => onRemove(item.id)}
                 />
               ) : null}

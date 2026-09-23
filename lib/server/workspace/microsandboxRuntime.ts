@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import { readStreamWithAbort } from "../http/byteStream";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -332,22 +333,22 @@ async function consumeGuestFile(
   let bytes = 0;
   let disposal: Promise<void> | undefined;
   const dispose = () => disposal ??= stream[Symbol.asyncDispose]().catch(() => undefined);
-  let rejectAbort!: (reason: unknown) => void;
-  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
-  const onAbort = () => { rejectAbort(signal!.reason); void dispose(); };
+  const onAbort = () => { void dispose(); };
   signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    signal?.throwIfAborted();
-    const iterator = stream[Symbol.asyncIterator]();
-    while (true) {
-      const next = signal ? await Promise.race([iterator.next(), aborted]) : await iterator.next();
+    await readStreamWithAbort(async () => {
       signal?.throwIfAborted();
-      if (next.done) break;
-      bytes += next.value.byteLength;
-      if (bytes > byteSize) throw new Error("guest_file_size_mismatch");
-      consume(next.value);
-    }
-    if (bytes !== byteSize) throw new Error("guest_file_size_mismatch");
+      const iterator = stream[Symbol.asyncIterator]();
+      while (true) {
+        const next = await iterator.next();
+        signal?.throwIfAborted();
+        if (next.done) break;
+        bytes += next.value.byteLength;
+        if (bytes > byteSize) throw new Error("guest_file_size_mismatch");
+        consume(next.value);
+      }
+      if (bytes !== byteSize) throw new Error("guest_file_size_mismatch");
+    }, signal);
   } finally {
     signal?.removeEventListener("abort", onAbort);
     await dispose();
@@ -827,6 +828,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const session = await this.runningSession(input);
     const fs = session.sandbox.fs();
     try {
+      if (input.attachments.length) {
+        input.signal?.throwIfAborted();
+        const capacity = await session.sandbox.execWith("/usr/bin/python3", builder => builder
+          .args(["-I", "-c", "import os; s=os.statvfs('/workspace'); print(s.f_bavail*s.f_frsize)"])
+          .timeout(10_000));
+        input.signal?.throwIfAborted();
+        const free = capacity.stdout().trim();
+        if (!capacity.success || !/^\d{1,16}$/u.test(free) || !Number.isSafeInteger(Number(free))) {
+          throw new Error("workspace_disk_check_failed");
+        }
+        const required = input.attachments.reduce((sum, attachment) => sum + attachment.byteSize, 0);
+        if (required + 16 * 1024 * 1024 > Number(free)) throw new WorkspaceRuntimeError("workspace_storage_full");
+      }
       if (input.outputDirectory) {
         const outputDirectory = input.outputDirectory;
         if (!outputDirectory.startsWith(`${WORKSPACE_ROOT}/output/`) ||
@@ -847,32 +861,37 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         }
         const made = await session.sandbox.exec("mkdir", ["-p", expectedDirectory]);
         if (!made.success) throw new Error("mkdir_failed");
-        const sink = await fs.writeStream(attachment.sandboxPath);
-        const reader = attachment.body.getReader();
-        const hash = createHash("sha256");
-        let bytes = 0;
+        const temporaryPath = `${expectedDirectory}/.upload-${randomUUID()}`;
         try {
-          while (true) {
-            if (input.signal?.aborted) throw input.signal.reason;
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            bytes += chunk.value.byteLength;
-            if (bytes > attachment.byteSize) throw new Error("attachment_size_mismatch");
-            hash.update(chunk.value);
-            await sink.write(chunk.value);
+          const sink = await fs.writeStream(temporaryPath);
+          const reader = attachment.body.getReader();
+          const hash = createHash("sha256");
+          let bytes = 0;
+          try {
+            while (true) {
+              input.signal?.throwIfAborted();
+              const chunk = await reader.read();
+              if (chunk.done) break;
+              bytes += chunk.value.byteLength;
+              if (bytes > attachment.byteSize) throw new Error("attachment_size_mismatch");
+              hash.update(chunk.value);
+              await sink.write(chunk.value);
+            }
+            await sink.close();
+          } finally {
+            await reader.cancel().catch(() => undefined);
+            reader.releaseLock();
+            await sink[Symbol.asyncDispose]().catch(() => undefined);
           }
-          await sink.close();
+          if (bytes !== attachment.byteSize || !HASH_PATTERN.test(attachment.checksum) || hash.digest("hex") !== attachment.checksum) {
+            throw new Error("attachment_checksum_mismatch");
+          }
+          input.signal?.throwIfAborted();
+          await fs.rename(temporaryPath, attachment.sandboxPath);
         } finally {
-          reader.releaseLock();
-          await sink[Symbol.asyncDispose]().catch(() => undefined);
-        }
-        if (
-          bytes !== attachment.byteSize ||
-          !HASH_PATTERN.test(attachment.checksum) ||
-          hash.digest("hex") !== attachment.checksum
-        ) {
-          await fs.remove(attachment.sandboxPath).catch(() => undefined);
-          throw new Error("attachment_checksum_mismatch");
+          // A short transfer, disk failure or cancellation never overwrites an
+          // already verified original and never leaves a partial final file.
+          await fs.remove(temporaryPath).catch(() => undefined);
         }
       }
       for (const manifest of input.manifests) {

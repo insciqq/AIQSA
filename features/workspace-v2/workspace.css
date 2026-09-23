@@ -991,7 +991,7 @@
   .v2-live-workspace .v2-conversation-orientation {
     align-content: start;
     gap: 1rem;
-    padding-top: max(4.5rem, calc(env(safe-area-inset-top) + 4.5rem));
+    padding-top: max(0.75rem, calc(env(safe-area-inset-top) + 0.75rem));
     padding-bottom: max(1rem, var(--v2-safe-area-bottom));
   }
 

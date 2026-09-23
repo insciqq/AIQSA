@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
-import { Readable } from "node:stream";
+import { nodeByteStream } from "../http/byteStream";
 import {
   decodeWorkspaceInboxIndexAttachments,
   WORKSPACE_INBOX_INDEX_VERSION,
@@ -131,7 +131,7 @@ function boolean(value: unknown): boolean {
 }
 
 function incomingBody(request: IncomingMessage): ReadableStream<Uint8Array> {
-  return Readable.toWeb(request) as unknown as ReadableStream<Uint8Array>;
+  return nodeByteStream(request);
 }
 
 async function pipeOutput(response: ServerResponse, pending: PendingOutput, signal: AbortSignal): Promise<void> {
