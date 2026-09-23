@@ -2,6 +2,7 @@
 .agents
 .codex
 DEV_SERVER.md
+AGENTS.override.md
 .aiqsa
 node_modules
 .next

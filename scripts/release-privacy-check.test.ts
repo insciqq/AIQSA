@@ -30,11 +30,11 @@ function fixture() {
     "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n" +
       "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n" +
       "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n" +
-      "/agent_docs/PRD/**\n/DEV_SERVER.md\n"
+      "/agent_docs/PRD/**\n/DEV_SERVER.md\n/AGENTS.override.md\n"
   );
   writeFileSync(
     path.join(root, ".dockerignore"),
-    "agent_docs\nDEV_SERVER.md\n**/AGENTS.md\n**/CLAUDE.md\n!.env.example\n"
+    "agent_docs\nDEV_SERVER.md\nAGENTS.override.md\n**/AGENTS.md\n**/CLAUDE.md\n!.env.example\n"
   );
   writeFileSync(path.join(root, "README.md"), "# Public source\n");
   git(root, "init", "-q");
@@ -112,31 +112,38 @@ describe("release privacy command", () => {
     );
   });
 
-  it("keeps local server instructions private even after forced staging or later deletion", () => {
+  it.each(["DEV_SERVER.md", "AGENTS.override.md"])("keeps %s private even after forced staging or later deletion", (relative) => {
     const root = fixture();
     const baseline = git(root, "rev-parse", "HEAD").stdout.trim();
-    writeFileSync(path.join(root, "DEV_SERVER.md"), "# Synthetic private server\n");
-    expect(git(root, "check-ignore", "DEV_SERVER.md").status).toBe(0);
+    writeFileSync(path.join(root, relative), "# Synthetic private instructions\n");
+    expect(git(root, "check-ignore", relative).status).toBe(0);
     expect(run(root, baseline).status).toBe(0);
 
-    git(root, "add", "-f", "DEV_SERVER.md");
-    expect(run(root, baseline).stderr).toContain("DEV_SERVER.md: public Git tracks a private task artifact");
-    commit(root, "unsafe server instructions");
-    expect(run(root, baseline).stderr).toContain("release tree contains private task artifact DEV_SERVER.md");
-    rmSync(path.join(root, "DEV_SERVER.md"));
-    commit(root, "remove unsafe server instructions");
-    expect(run(root, baseline).stderr).toContain("post-baseline history contains private task artifact DEV_SERVER.md");
+    git(root, "add", "-f", relative);
+    expect(run(root, baseline).stderr).toContain(`${relative}: public Git tracks a private task artifact`);
+    commit(root, "unsafe private instructions");
+    expect(run(root, baseline).stderr).toContain(`release tree contains private task artifact ${relative}`);
+    rmSync(path.join(root, relative));
+    commit(root, "remove unsafe private instructions");
+    expect(run(root, baseline).stderr).toContain(`post-baseline history contains private task artifact ${relative}`);
   });
 
-  it.each(["missing", "negated"])("rejects %s Docker protection for local server instructions", (mode) => {
+  it.each([
+    ["DEV_SERVER.md", "missing"],
+    ["DEV_SERVER.md", "negated"],
+    ["AGENTS.override.md", "missing"],
+    ["AGENTS.override.md", "negated"]
+  ])("rejects %s Docker protection when %s", (relative, mode) => {
     const root = fixture();
     const baseline = git(root, "rev-parse", "HEAD").stdout.trim();
     writeFileSync(path.join(root, ".dockerignore"),
-      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n" + (mode === "negated" ? "DEV_SERVER.md\n!DEV_SERVER.md\n" : ""));
+      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n" +
+      (relative === "DEV_SERVER.md" ? "AGENTS.override.md\n" : "DEV_SERVER.md\n") +
+      (mode === "negated" ? `${relative}\n!${relative}\n` : ""));
     const result = run(root, baseline);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(mode === "missing"
-      ? "missing agent-only exclusion DEV_SERVER.md"
-      : "later negation !DEV_SERVER.md may re-include protected DEV_SERVER.md");
+      ? `missing agent-only exclusion ${relative}`
+      : `later negation !${relative} may re-include protected ${relative}`);
   });
 });

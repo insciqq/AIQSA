@@ -1,7 +1,8 @@
-# Runtime-local agent mountpoints are ignored; repository instructions use AGENTS.md only.
+# Runtime-local agent configuration is private; shared instructions live in AGENTS.md.
 .codex
 .agents/
 /DEV_SERVER.md
+/AGENTS.override.md
 
 node_modules/
 .next/
