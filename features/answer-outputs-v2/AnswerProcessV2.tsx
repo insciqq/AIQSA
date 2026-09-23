@@ -1,6 +1,7 @@
 "use client";
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
+import { useDisclosurePreference } from "@/components/app-shell/disclosurePreferences";
 import { useState } from "react";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
@@ -64,6 +65,7 @@ function SkillPinV2({ skillId, pinned, onPin }: Readonly<{ skillId: string; pinn
 }
 
 export type AnswerProcessV2Props = Readonly<{
+  disclosureId?: string;
   /** Live status while the run works; it occupies the settled line's place. */
   liveLabel?: string | null;
   onPinSkill?(skillId: string): Promise<void>;
@@ -84,6 +86,7 @@ export type AnswerProcessV2Props = Readonly<{
  * under a factual label ("Worked for 8s · Past chats · 2"). A reached tool limit stays visible outside the fold.
  */
 export function AnswerProcessV2({
+  disclosureId,
   liveLabel = null,
   onPinSkill,
   pinnedSkillIds = [],
@@ -93,6 +96,7 @@ export function AnswerProcessV2({
   workDurationMs = null,
   workspaceActivity = null
 }: AnswerProcessV2Props) {
+  const [open, setOpen] = useDisclosurePreference(disclosureId ? `workspace:${disclosureId}` : null);
   const { memories, pastChats } = presentMemorySourcesV2(memorySources);
   const reasoning = reasoningTexts.map((text) => text.trim()).filter(Boolean).join("\n\n");
   // Workspace steps are rendered by the timeline; the generic list keeps only
@@ -100,6 +104,7 @@ export function AnswerProcessV2({
   const calls = (toolActivity?.calls ?? []).filter((call) => toolActivityOriginV2(call) !== "workspace");
   const timeline = workspaceActivity && workspaceActivity.entries.length > 0 ? workspaceActivity : null;
   const workspaceFailed = workspaceActivityHasFailureV2(timeline);
+  const workspaceOutcome = timeline?.entries.some(entry => entry.phase === "failed") ? "Needs attention" : "Stopped";
   const warning = toolActivity?.warning ? (
     <div className="v2-tool-budget-warning" data-kind={toolActivity.warning.kind} role="status">
       Tool {toolActivity.warning.kind === "calls" ? "call" : "round"} limit ({toolActivity.warning.limit}) stopped further tool use.
@@ -136,14 +141,15 @@ export function AnswerProcessV2({
         data-live={live || undefined}
         data-testid="tool-activity-disclosure"
         data-workspace={timeline ? "true" : undefined}
-        open={timeline && (live || workspaceFailed) ? true : undefined}
+        open={open}
+        onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }}
       >
         <summary className="v2-focusable">
           <span className="v2-answer-process-slot" aria-hidden="true">
             {live ? <span className="v2-answer-process-spinner v2-spinner" /> : <span className="v2-answer-process-chevron" />}
           </span>
           <span className={live ? "v2-run-shimmer v2-answer-process-label" : "v2-answer-process-label"}>
-            {live && liveLabel ? liveLabel : label}
+            {live && liveLabel ? liveLabel : workspaceFailed ? `${label} · ${workspaceOutcome}` : label}
           </span>
         </summary>
         <div className="v2-answer-process-body">

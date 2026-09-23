@@ -140,10 +140,14 @@ describe("initial setup per-model publication and retry", () => {
     const result = await f.custom.setup({ actor: { sessionId: "session", userId: "admin" },
       request: { ...request, catalogProof, modelIds: ["model-a", "model-b"] } });
     expect(result.outcome).toBe("partial");
-    expect(f.test.mock.calls.map(([value]) => value.model.upstreamModelId)).toEqual(["model-a", "model-b"]);
-    expect(f.connection().models.map((model) => model.activeConfig?.capabilities.nativeSearch)).toEqual([true, false]);
-    expect(f.connection().activeChecks.map((check) => check.status)).toEqual(["available", "available"]);
-    expect(f.connection().activeChecks[0]!.evidence?.hostedSearch?.verified).toBe(true);
+    expect(f.test.mock.calls.map(([value]) => value.model.upstreamModelId)).toEqual(["model-a", "model-b", "gpt-image-2"]);
+    expect(f.connection().models.filter(model => model.activeConfig?.modelClass === "answer")
+      .map((model) => model.activeConfig?.capabilities.nativeSearch)).toEqual([true, false]);
+    const checkFor = (upstreamModelId: string) => f.connection().activeChecks.find(check =>
+      check.providerModelId === f.connection().models.find(model => model.activeConfig?.upstreamModelId === upstreamModelId)?.id);
+    expect(checkFor("model-a")).toMatchObject({ status: "available", evidence: { hostedSearch: { verified: true } } });
+    expect(checkFor("model-b")?.status).toBe("available");
+    expect(checkFor("gpt-image-2")?.status).toBe("unavailable");
   });
 
   it("persists three usable models, preserves each limit, then retries only the fourth without recreating ids", async () => {

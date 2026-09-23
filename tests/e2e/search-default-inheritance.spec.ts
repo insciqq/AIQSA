@@ -8,11 +8,12 @@ import { builtInSearchDraft, normalizeSearchDraft, searchDraftHash } from "../..
 import { createTestProviderExecutionAuthority, deleteTestProviderExecutionAuthority } from "../support/providerExecutionAuthority";
 import { chooseSearchStrategy } from "./shell/composer";
 import { loginWithPassword, startNewChat } from "./support/workspace";
+import { runAccountMenuAction } from "./shell/page";
 
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
 
-test("first login inherits organization Search and a later personal Off survives login and provisioning", async ({ page }) => {
+test("organization inheritance, chat Search and personal defaults remain independent across reload and login", async ({ page }) => {
   test.setTimeout(90_000);
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
   const id = randomUUID();
@@ -66,7 +67,19 @@ test("first login inherits organization Search and a later personal Off survives
     await prisma.searchPolicy.update({ where: { id: "installation" }, data: { defaultPlan: google } });
     await page.reload();
     await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Google");
+    const created = await page.request.post("/api/chats", { data: { title: "Saved Search choices" } });
+    expect(created.ok()).toBe(true);
+    const chatId = (await created.json()).chat.id;
+    await page.goto(`/?chat=${chatId}`);
     await chooseSearchStrategy(page, "Off");
+    await expect.poll(async () => (await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).defaultSearchPlan).toEqual(off);
+    expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toBeNull();
+    await page.reload();
+    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
+    await runAccountMenuAction(page, "Chat defaults");
+    let settings = page.getByTestId("library-v2");
+    await settings.getByLabel("Web search default").click();
+    await settings.getByRole("button", { name: "Turn off search" }).click();
     await expect.poll(async () => (await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toEqual(off);
     await page.goto("about:blank");
     await page.request.post("/api/auth/logout", { data: {} });
@@ -75,12 +88,24 @@ test("first login inherits organization Search and a later personal Off survives
     await startNewChat(page);
     await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
     expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "personal", searchPlan: off });
-    await chooseSearchStrategy(page, "Google");
+    await runAccountMenuAction(page, "Chat defaults");
+    settings = page.getByTestId("library-v2");
+    await settings.getByLabel("Web search default").click();
+    await settings.getByRole("checkbox", { name: /Google Search/ }).check();
     await expect.poll(async () => (await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toEqual(google);
     await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: id }));
+    await settings.getByRole("button", { name: "Back to chat" }).click();
+    await startNewChat(page);
     await page.reload();
     await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Google");
     expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "personal", searchPlan: google });
+    await page.goto(`/?chat=${chatId}`);
+    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
+    await runAccountMenuAction(page, "Chat defaults");
+    settings = page.getByTestId("library-v2");
+    await settings.getByLabel("Web search default").click();
+    await settings.getByRole("button", { name: "Use organization Search default" }).click();
+    await expect.poll(async () => (await catalog()).defaults.searchPreferenceSource).toBe("organization");
     await prisma.userGroup.deleteMany({ where: { userId: id } });
     const restricted = await catalog();
     expect(restricted.searchStrategies.some((entry: { strategyId: string }) => entry.strategyId === optionId)).toBe(false);

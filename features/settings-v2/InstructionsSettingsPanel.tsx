@@ -4,7 +4,10 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { UiV2Button, UiV2IconButton, UiV2MenuItem } from "@/components/ui-v2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
-import { MarkdownEditorV2, editorCharacterCount } from "@/components/ui-v2/MarkdownEditorV2";
+import { editorCharacterCount } from "@/components/ui-v2/MarkdownEditorV2";
+import { InstructionTemplateEditor } from "./InstructionTemplateEditor";
+import { InstructionAnswerRules } from "./InstructionAnswerRules";
+import { VISIBLE_ANSWER_CONTRACT } from "@/lib/domain/promptTemplates";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { decodeInstructionPresetDraft, INSTRUCTION_PRESET_MAX_COUNT, INSTRUCTION_PRESET_NAME_MAX_LENGTH,
   SYSTEM_INSTRUCTIONS_MAX_LENGTH, RESPONSE_REMINDER_MAX_LENGTH, instructionPresetErrorMessage,
@@ -16,8 +19,8 @@ import { InstructionPresetApiError, requestInstructionPreset, requestInstruction
 
 const DEFAULT_LABEL = "AIQSA default instructions";
 const field = "w-full min-w-0 rounded-lg border border-trace-strong bg-answer-paper px-3 py-2 text-sm leading-6 text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
-const blank: InstructionPresetDraft = { name: "", systemInstructions: "", responseReminder: "" };
-const values = (preset: InstructionPreset): InstructionPresetDraft => ({ name: preset.name, systemInstructions: preset.systemInstructions, responseReminder: preset.responseReminder });
+const blank: InstructionPresetDraft = { name: "", systemInstructions: "", responseReminder: "", answerRules: null };
+const values = (preset: InstructionPreset): InstructionPresetDraft => ({ name: preset.name, systemInstructions: preset.systemInstructions, responseReminder: preset.responseReminder, answerRules: preset.answerRules ?? null });
 type Editor = { original: InstructionPreset | null; value: InstructionPresetDraft };
 
 export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange, onSubviewChange, onRequestExit }: Readonly<{
@@ -165,11 +168,12 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange, onSubvi
           <input ref={nameInput} className={field} maxLength={INSTRUCTION_PRESET_NAME_MAX_LENGTH} required value={editor.value.name} onChange={event => change({ name: event.target.value })} />
         </label>
         {messages}
-        <MarkdownEditorV2 key={editorId} label="System instructions" previewLabel="Instructions preview" maxLength={SYSTEM_INSTRUCTIONS_MAX_LENGTH}
+        <InstructionTemplateEditor key={editorId} label="System instructions" previewLabel="Instructions preview" maxLength={SYSTEM_INSTRUCTIONS_MAX_LENGTH}
           disabled={busy} value={editor.value.systemInstructions} onChange={value => change({ systemInstructions: value })} />
+        <InstructionAnswerRules value={editor.value.answerRules ?? null} disabled={busy} onChange={answerRules => change({ answerRules })} />
         <details className="v2-instructions-reminder" open={reminderOpen} onToggle={event => setReminderOpen(event.currentTarget.open)}>
           <summary className="v2-focusable cursor-pointer text-sm font-medium text-ink">Response reminder (optional)</summary>
-          <p id={`${panelId}-reminder-help`} className="my-2 text-xs leading-5 text-ink-muted">Appended after your latest message, before the model responds. Example: Always answer in Spanish.</p>
+          <p id={`${panelId}-reminder-help`} className="my-2 text-xs leading-5 text-ink-muted">Appended after your latest message, before the model responds. Example: Always answer in Spanish. You can use {"{local_date}"} and {"{local_time}"} here too.</p>
           <textarea aria-label="Response reminder" aria-describedby={`${panelId}-reminder-help ${panelId}-reminder-count`} className={field} rows={3} maxLength={RESPONSE_REMINDER_MAX_LENGTH}
             value={editor.value.responseReminder} onChange={event => change({ responseReminder: event.target.value })} />
           <p id={`${panelId}-reminder-count`} className="mt-1 text-right text-xs tabular-nums text-ink-muted">{editorCharacterCount(editor.value.responseReminder, RESPONSE_REMINDER_MAX_LENGTH)}</p>
@@ -179,7 +183,7 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange, onSubvi
           if (alive.current) { setLatest(next); setNotice("Latest version loaded. Your unsaved text is still in the editor."); }
         })}>Reload latest version</UiV2Button> : null}
         {latest ? <details className="rounded-lg border border-trace-subtle p-3"><summary className="v2-focusable text-sm text-ink">Latest saved version: {latest.name}</summary>
-          <pre className="my-3 max-h-56 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-ink-secondary">{latest.systemInstructions}{latest.responseReminder ? `\n\nResponse reminder:\n${latest.responseReminder}` : ""}</pre>
+          <pre className="my-3 max-h-56 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-ink-secondary">{latest.systemInstructions}{latest.answerRules != null ? `\n\nAnswer rules:\n${latest.answerRules}` : ""}{latest.responseReminder ? `\n\nResponse reminder:\n${latest.responseReminder}` : ""}</pre>
           <UiV2Button type="button" onClick={() => { setEditor({ original: latest, value: values(latest) }); setReminderOpen(Boolean(latest.responseReminder)); setLatest(null); setConflict(false); setError(null); }}>Replace draft with latest version</UiV2Button>
         </details> : null}
         {discard ? <div className="rounded-lg border border-trace-subtle p-3" role="alert"><p className="mb-2 text-sm text-ink">Discard your unsaved instructions?</p><div className="flex gap-2">
@@ -192,10 +196,15 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange, onSubvi
         </footer>
       </fieldset>
     </form> : <>
-      <SectionHeading description="Built-in AIQSA rules always apply. The active preset adds your instructions on top of them in personal chats without an Assistant, from the next reply."
+      <SectionHeading description="The active preset adds instructions to your personal chats without an Assistant, from the next reply. Each preset can also customize the standard answer rules."
         action={<UiV2Button type="button" tone="primary" icon="plus" ref={newButton} disabled={!state || busy || atLimit}
           aria-describedby={atLimit ? `${panelId}-limit` : undefined} onClick={start}>New preset</UiV2Button>}>Instructions</SectionHeading>
       {messages}
+      <details className="v2-instructions-reminder my-3">
+        <summary className="v2-focusable cursor-pointer text-sm font-medium text-ink">AIQSA standard answer rules</summary>
+        <p className="my-2 text-xs leading-5 text-ink-muted">Used in chats, Projects and Assistants. A personal preset can replace these rules for personal chats in its Answer rules section.</p>
+        <p className="whitespace-pre-wrap text-sm leading-6 text-ink-secondary">{VISIBLE_ANSWER_CONTRACT}</p>
+      </details>
       {atLimit ? <p id={`${panelId}-limit`} className="my-3 text-sm text-ink-muted">{instructionPresetErrorMessage("instruction_preset_limit")}</p> : null}
       {!state && !error ? <p className="py-3 text-sm text-ink-muted" role="status">Loading instructions…</p> : null}
       <div className="v2-instructions-list" role="radiogroup" aria-label="Active instructions">

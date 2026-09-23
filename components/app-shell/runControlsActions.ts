@@ -1,3 +1,4 @@
+import { createChatSearchPreferences, updateLocalChatSearch } from "./chatSearchPreferences";
 import { isAnswerSoundId, type AnswerSoundId } from "@/lib/contracts/answerSound";
 import {
   clampedNumber,
@@ -38,6 +39,8 @@ type MutableRef<T> = {
 };
 
 type RunControlsActionsInput = {
+  chatSearchSession?: symbol;
+  chatSearchPreferencesRef?: MutableRef<ReturnType<typeof createChatSearchPreferences> | null>;
   catalog: Catalog | null;
   currentModel: CatalogModel | undefined;
   allowPersonalPersistence?(): boolean;
@@ -53,6 +56,8 @@ type RunControlsActionsInput = {
 
 export function useRunControlsActions({
   allowPersonalPersistence,
+  chatSearchPreferencesRef,
+  chatSearchSession,
   isSettingsSessionCurrent,
   catalog,
   currentModel,
@@ -64,6 +69,13 @@ export function useRunControlsActions({
   setNotice,
   setSettingsNotice
 }: RunControlsActionsInput) {
+  const chatSearchPreferences = (chatSearchPreferencesRef?.current?.session === chatSearchSession ? chatSearchPreferencesRef?.current : null) ?? createChatSearchPreferences({
+    session: chatSearchSession,
+    isCurrent: () => isSettingsSessionCurrent?.() !== false,
+    onError: () => setNotice({ text: "Search choice could not be saved. Choose it again to retry.", kind: "error" })
+  });
+  if (chatSearchPreferencesRef) chatSearchPreferencesRef.current = chatSearchPreferences;
+
   function currentCatalogFromStore() {
     return resolveCatalog
       ? resolveCatalog()
@@ -589,25 +601,23 @@ export function useRunControlsActions({
       currentCatalogFromStore()?.searchStrategies ?? []
     );
     useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
-    void persistUserDefaults({
-      searchPlan: plan,
-      searchPreferenceSource: "personal"
-    });
+    const state = useWorkspaceStore.getState();
+    const chat = state.chats.find(item => item.id === state.activeChatId);
+    if (chat) {
+      updateLocalChatSearch(chat.id, plan);
+      if (!chat.pendingPersonalDraft && !chat.pendingProjectDraft) void chatSearchPreferences.save(chat.id, plan);
+    }
   }
 
   function useOrganizationSearchDefault() {
-    const currentCatalog = currentCatalogFromStore();
-    if (!currentCatalog) return;
-    const plan = currentCatalog.defaults.organizationSearchPlan ?? {
-      mode: "all_selected" as const,
-      optionIds: []
-    };
-    useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
-    updateLocalCatalogDefaults({
-      searchPlan: plan,
-      searchPreferenceSource: "organization"
-    });
-    void settingsMutationCoordinator.enqueue({ searchPlan: null });
+    const plan = currentCatalogFromStore()?.defaults.organizationSearchPlan ?? { mode: "all_selected" as const, optionIds: [] };
+    selectSearchPlan(plan.optionIds, plan.mode);
+  }
+
+  function resetDefaultSearchPlan() {
+    const plan = currentCatalogFromStore()?.defaults.organizationSearchPlan ?? { mode: "all_selected" as const, optionIds: [] };
+    updateLocalCatalogDefaults({ searchPlan: plan, searchPreferenceSource: "organization" });
+    void settingsMutationCoordinator.enqueue({ searchPlan: null }, { noticeScope: "settings" });
   }
 
   /* Chat defaults: personal defaults for new chats only; the open
@@ -778,6 +788,7 @@ export function useRunControlsActions({
     setDefaultMcpMode,
     setDefaultSkillsMode,
     setDefaultSearchPlan,
+    resetDefaultSearchPlan,
     setSendWithEnter,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,

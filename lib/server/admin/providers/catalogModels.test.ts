@@ -33,7 +33,18 @@ describe("installed provider catalog suggestions", () => {
     compatible.draftConfig = { ...compatible.draftConfig, apiRoot: "https://fixture.example.test/backend-api/codex" };
     expect(providerCatalogUpdates(compatible, []).available).toEqual([]);
     compatible.activeConfig = compatible.draftConfig;
-    expect(providerCatalogUpdates(compatible, []).available.map(({ id }) => id)).toEqual(["codex-lb:gpt-image-2"]);
+    expect(providerCatalogUpdates(compatible, []).available.map(({ id }) => id)).toContain("codex-lb:gpt-6-sol");
+    compatible.activeConfig = { ...compatible.activeConfig, apiRoot: "https://fixture.example.test/v1" };
+    expect(providerCatalogUpdates(compatible, []).available).toEqual([]);
+    compatible.activeConfig = { ...compatible.activeConfig, apiRoot: "https://fixture.example.test/v1", responsesRequestIsolationDetected: true };
+    const suggestions = providerCatalogUpdates(compatible, []).available;
+    expect(suggestions.map(({ id }) => id)).toContain("codex-lb:gpt-6-sol");
+    expect(suggestions.map(({ id }) => id)).toContain("codex-lb:gpt-image-2");
+    const skipped = providerCatalogUpdates(compatible, ["codex-lb:gpt-6-sol"]);
+    expect(skipped.skipped.map(({ id }) => id)).toEqual(["codex-lb:gpt-6-sol"]);
+    const manualCodex = fixtureModel({ id: "manual-codex", connectionId: compatible.id, displayName: "My Sol", enabled: false });
+    manualCodex.draftConfig.upstreamModelId = "gpt-6-sol";
+    expect(providerCatalogUpdates({ ...compatible, models: [manualCodex] }, []).available.map(({ id }) => id)).not.toContain("codex-lb:gpt-6-sol");
   });
 
   it("keeps skip specific to IDs and this connection; later candidates remain visible", () => {

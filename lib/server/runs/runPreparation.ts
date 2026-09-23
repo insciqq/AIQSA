@@ -20,6 +20,7 @@ import {
 import { decodeMcpRunSelection } from "../../contracts/mcp";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
 import { resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
+import { renderInstructionPreset } from "../../domain/instructionTemplates";
 import type { AssistantRunControls } from "../../contracts/assistants";
 import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
 import type {
@@ -810,8 +811,8 @@ function runControlDefaultsFromBody(
  * browser cannot replace the baseline or supply rendered date/time text;
  * client-sent prompt fields have no authority.
  */
-function standardChatPrompt(body: Readonly<Record<string, unknown>> | null): NormalizedRunRequest["prompt"] {
-  const baseline = resolveStandardChatBaseline({ timeZone: body?.timeZone });
+function standardChatPrompt(body: Readonly<Record<string, unknown>> | null, now: Date): NormalizedRunRequest["prompt"] {
+  const baseline = resolveStandardChatBaseline({ timeZone: body?.timeZone, now });
 
   return {
     baseline: {
@@ -1539,11 +1540,18 @@ export async function prepareRun(
   const executionAdapterKind = modelConfiguration.adapterKind;
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
-  const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body);
+  const instructionTime = new Date();
+  const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body, instructionTime);
   let personalInstructions: import("../instructions/store").PersonalInstructionSnapshot | undefined;
   if (!assistantRun && !project && deps.instructions) {
     try { personalInstructions = await deps.instructions.resolveForRun(input.userId); }
     catch { return failure("instruction_presets_unavailable", 409); }
+  }
+  const renderedInstructions = personalInstructions
+    ? renderInstructionPreset(personalInstructions, { now: instructionTime, timeZone: body?.timeZone })
+    : null;
+  if (personalInstructions && !renderedInstructions) {
+    return failure("instruction_preset_expansion_too_large", 400, "Your instructions exceed the text limit after date and time substitution. Shorten the preset and try again.");
   }
   // Project Memory (both the legacy folder field and the newer Project
   // Memory facts) is dormant for Personal Memory v1. Project instructions
@@ -1554,8 +1562,9 @@ export async function prepareRun(
     : normalizedPrompt;
   let prompt: NormalizedRunRequest["prompt"] = {
     ...scopedPrompt,
-    ...(personalInstructions ? { personalInstructions: personalInstructions.systemInstructions } : {}),
-    responseReminder: assistantRun?.responseReminder ?? personalInstructions?.responseReminder ?? "",
+    ...(renderedInstructions ? { personalInstructions: renderedInstructions.personalInstructions,
+      ...(renderedInstructions.overridesAnswerRules ? { developer: null } : {}) } : {}),
+    responseReminder: assistantRun?.responseReminder ?? renderedInstructions?.responseReminder ?? "",
     memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
   };
   const sendContext =

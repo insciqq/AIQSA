@@ -89,6 +89,12 @@ for (const width of [1440, 390]) {
     const target = chat("continued", "Conversation summary ready.");
     await page.addInitScript(() => localStorage.setItem("aiqsa.activeChatId", "source"));
     await installMatrixCatalogFixture(page, { chats: [source, target], folders: [] }, { catalog });
+    await page.route("**/api/chats/source", async route => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      source.defaultSearchPlan = route.request().postDataJSON().defaultSearchPlan;
+      target.defaultSearchPlan = source.defaultSearchPlan;
+      await route.fulfill({ json: { chat: source } });
+    });
     await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
     await page.route("**/api/me/chats/*/memory-mode", (route) => route.fulfill({ json: {
       allowedActions: ["EXCLUDE"], archived: false, mode: "NORMAL", temporaryRetentionDeadline: null
@@ -113,11 +119,13 @@ for (const width of [1440, 390]) {
     const composer = page.getByRole("textbox", { name: "Message" });
     await selectModel(page, chosen.provider, chosen.displayName);
     await chooseSearchStrategy(page, "Perplexity");
+    await page.getByRole("button", { name: /^Choose web search/ }).click();
+    await page.getByRole("dialog", { name: "Web search" }).getByLabel("When the model searches").selectOption("model_choice");
+    await page.keyboard.press("Escape");
     let parameters = await openRunSetup(page);
     await parameters.getByLabel("Temperature", { exact: true }).fill("0.4");
     await parameters.getByLabel("Max output tokens").fill("1700");
     await parameters.getByLabel("Reasoning effort").selectOption("high");
-    await parameters.getByLabel("Search orchestration").selectOption("model_choice");
     for (const label of [/^Streaming/, /^Background/]) {
       const toggle = parameters.getByRole("switch", { name: label });
       if (await toggle.getAttribute("aria-checked") !== "true") await toggle.click();
@@ -169,10 +177,12 @@ for (const width of [1440, 390]) {
     await expect(parameters.getByLabel("Temperature", { exact: true })).toHaveValue("0.4");
     await expect(parameters.getByLabel("Max output tokens")).toHaveValue("1700");
     await expect(parameters.getByLabel("Reasoning effort")).toHaveValue("high");
-    await expect(parameters.getByLabel("Search orchestration")).toHaveValue("model_choice");
     await expect(parameters.getByRole("switch", { name: /^Streaming/ })).toHaveAttribute("aria-checked", "true");
     await expect(parameters.getByRole("switch", { name: /^Background/ })).toHaveAttribute("aria-checked", "true");
     await closeRunSetup(page);
+    await page.getByRole("button", { name: /^Choose web search/ }).click();
+    await expect(page.getByRole("dialog", { name: "Web search" }).getByLabel("When the model searches")).toHaveValue("model_choice");
+    await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByRole("treeitem", { name: source.title, exact: true }).click();
     await expect(composer).toHaveValue("");

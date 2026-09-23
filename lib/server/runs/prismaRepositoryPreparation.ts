@@ -941,6 +941,7 @@ export async function admitProjectRunWithClient(
             createdByUserId: input.userId,
             defaultKnowledgePlan: json(project.defaults.knowledgePlan),
             defaultProviderModelId: project.defaults.providerModelId,
+            defaultSearchPlan: json(input.providerAdmissionPlan?.requestedSearchPlan ?? { mode: "all_selected", optionIds: [] }),
             id: input.chatId,
             memoryMode: "EXCLUDED",
             projectFolderId: firstProjectSend.folderId,
@@ -1453,7 +1454,7 @@ export async function admitPreparingRunWithClient(
         });
         if (chat._count.messages === 0 && input.defaults) {
           await tx.chat.update({
-            data: { defaultProviderModelId: input.defaults.modelId },
+            data: { defaultProviderModelId: input.defaults.modelId, defaultSearchPlan: json(input.defaults.searchPlan) },
             where: { id: input.chatId }
           });
         }

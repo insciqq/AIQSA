@@ -556,7 +556,7 @@ export function createAdminProviderService(input: Readonly<{
     const initialSetup = connection.activeVersion === 0;
     const setupPolicy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
       ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
-    const setupModels = initialSetup ? providerSetupModels(connection.family, connection.draftConfig.apiRoot) : [];
+    const setupModels = initialSetup ? providerSetupModels(connection.family, connection.draftConfig) : [];
     const modelClasses = [...new Set([
       ...connection.models.filter((model) => initialSetup || model.enabled)
         .map((model) => model.modelClass ?? model.draftConfig.modelClass),
@@ -969,9 +969,11 @@ export function createAdminProviderService(input: Readonly<{
       return running;
     }
     const initialModelIds = new Set(value.initialModelIds ?? []);
-    if (value.reason === "setup" && !value.modelIds && connection.enabled &&
+    // Compatible providers retain the administrator's selected models. New
+    // catalog suggestions enter only through the explicit Add & check action.
+    if (value.reason === "setup" && connection.family !== "openai_compatible" && !value.modelIds && connection.enabled &&
       connection.activeConfig && connection.defaultCredentialId === credential.id) {
-      const missing = providerSetupModels(connection.family, connection.activeConfig.apiRoot).filter((candidate) =>
+      const missing = providerSetupModels(connection.family, connection.activeConfig).filter((candidate) =>
         !connection!.models.some((model) => catalogModelPresent(model, candidate)));
       if (missing.length) {
         const outcome = await testCredentialCatalog({
@@ -1007,7 +1009,7 @@ export function createAdminProviderService(input: Readonly<{
       }
     }
     const setupDefaults = value.reason === "setup" && connection.activeConfig
-      ? providerSetupModels(connection.family, connection.activeConfig.apiRoot) : [];
+      ? providerSetupModels(connection.family, connection.activeConfig) : [];
     if (value.reason === "requested" || value.reason === "model" || setupDefaults.length) {
       const wanted = value.modelIds ? new Set(value.modelIds) : null;
       const drafts = connection.models.filter((model) => model.enabled && model.activeConfig === null &&
@@ -1145,7 +1147,7 @@ export function createAdminProviderService(input: Readonly<{
   function selectedCatalogModels(connection: AdminProviderConnection, modelIds: readonly string[]) {
     const ids = new Set(modelIds);
     const selected = connection.activeConfig
-      ? providerSetupModels(connection.family, connection.activeConfig.apiRoot).filter((model) => ids.has(model.modelId))
+      ? providerSetupModels(connection.family, connection.activeConfig).filter((model) => ids.has(model.modelId))
       : [];
     if (!ids.size || ids.size > 256 || ids.size !== modelIds.length || selected.length !== ids.size) {
       throw new AdminProviderServiceError("provider_catalog_selection_invalid");

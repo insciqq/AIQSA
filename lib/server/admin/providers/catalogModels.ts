@@ -19,7 +19,7 @@ export function providerCatalogUpdates(
 ): AdminProviderCatalogUpdates {
   if (!connection.activeConfig) return { available: [], skipped: [] };
   const skipped = new Set(skippedIds);
-  const missing = providerSetupModels(connection.family, connection.activeConfig.apiRoot)
+  const missing = providerSetupModels(connection.family, connection.activeConfig)
     .filter((candidate) => !connection.models.some((model) => catalogModelPresent(model, candidate)));
   return {
     available: missing.filter((candidate) => !skipped.has(candidate.modelId)).map(catalogModelProjection),

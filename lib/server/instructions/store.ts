@@ -17,6 +17,7 @@ export type InstructionPresetSelection = Readonly<{
 export type PersonalInstructionSnapshot = InstructionPresetSelection & Readonly<{
   systemInstructions: string;
   responseReminder: string;
+  answerRules?: string | null;
 }>;
 export interface InstructionPresetStore {
   list(userId: string): Promise<InstructionPresetState>;
@@ -38,7 +39,7 @@ async function resolveSnapshot(client: Pick<Prisma.TransactionClient, "userSetti
   const settings = await client.userSettings.findUnique({
     where: { userId },
     select: { activeInstructionPresetId: true, instructionSelectionVersion: true,
-      activeInstructionPreset: { select: { id: true, userId: true, revision: true, systemInstructions: true, responseReminder: true } } }
+      activeInstructionPreset: { select: { id: true, userId: true, revision: true, systemInstructions: true, responseReminder: true, answerRules: true } } }
   });
   const preset = settings?.activeInstructionPreset;
   if (settings?.activeInstructionPresetId && (!preset || preset.userId !== userId)) {
@@ -47,7 +48,8 @@ async function resolveSnapshot(client: Pick<Prisma.TransactionClient, "userSetti
   return {
     presetId: preset?.id ?? null, revision: preset?.revision ?? null,
     selectionVersion: settings?.instructionSelectionVersion ?? 0,
-    systemInstructions: preset?.systemInstructions ?? "", responseReminder: preset?.responseReminder ?? ""
+    systemInstructions: preset?.systemInstructions ?? "", responseReminder: preset?.responseReminder ?? "",
+    answerRules: preset?.answerRules ?? null
   };
 }
 
@@ -62,7 +64,7 @@ export async function assertInstructionPresetSelection(
 }
 
 const detailSelect = {
-  id: true, name: true, systemInstructions: true, responseReminder: true, revision: true, updatedAt: true
+  id: true, name: true, systemInstructions: true, responseReminder: true, answerRules: true, revision: true, updatedAt: true
 } as const;
 
 export function createInstructionPresetStore(prisma: PrismaClient): InstructionPresetStore {

@@ -28,6 +28,8 @@ import {
   type ComposerAttachmentItemV2
 } from "@/features/attachments-v2/attachmentPresentation";
 import type { AssistantSummary } from "@/lib/contracts/assistants";
+import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
+import type { SearchPlanMode } from "@/lib/domain/search";
 import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type {
@@ -271,6 +273,9 @@ export type ComposerV2Props = Readonly<{
   onSelectModel?(model: CatalogModel): void;
   onSelectMcp?(selection: McpRunSelection): void;
   onSelectSearchOptionIds?(optionIds: readonly string[]): void;
+  searchPlanMode?: SearchPlanMode;
+  onSelectSearchPlanMode?(mode: SearchPlanMode): void;
+  onResetSearchPlan?(): void;
   onSend?(): void;
   onFollowup?(runId: string): void;
   followupSending?: boolean;
@@ -362,7 +367,7 @@ function modelCapabilityLabels(model: CatalogModel): string[] {
 
 function focusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(
-    'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]'
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]'
   )).filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
 }
 
@@ -465,6 +470,9 @@ export function ComposerV2({
   onSelectMcp,
   onSelectModel,
   onSelectSearchOptionIds,
+  searchPlanMode = "all_selected",
+  onSelectSearchPlanMode,
+  onResetSearchPlan,
   onSend,
   onFollowup,
   followupSending = false,
@@ -712,7 +720,9 @@ export function ComposerV2({
         : layer === "knowledge"
           ? layerRef.current.querySelector<HTMLElement>("[data-v2-knowledge-search]") ??
             optionElements(layerRef.current)[0]
-          : optionElements(layerRef.current)[0];
+          : layer === "search"
+            ? focusableElements(layerRef.current)[0]
+            : optionElements(layerRef.current)[0];
       (target ?? layerRef.current).focus();
     });
     const dismiss = (event: PointerEvent) => {
@@ -727,10 +737,18 @@ export function ComposerV2({
       }
       closeLayer();
     };
+    const dismissSearchKey = (event: KeyboardEvent) => {
+      // Clearing Search can disable the focused button and move focus to the body.
+      if (layer !== "search" || event.defaultPrevented || event.key !== "Escape" || isImeCompositionEvent(event)) return;
+      event.preventDefault();
+      closeLayer();
+    };
     document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", dismissSearchKey);
     return () => {
       cancelled = true;
       document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", dismissSearchKey);
     };
   }, [layer]);
 
@@ -934,14 +952,6 @@ export function ComposerV2({
   // stays open so several can be combined in one visit. Only rows that hand
   // off to another surface (Assistant picker, file dialog, Skill Library,
   // MCP settings, Model parameters) close it.
-  function toggleSearch(option: CatalogSearchStrategy) {
-    if (!onSelectSearchOptionIds) return;
-    const next = selectedSearchSet.has(option.strategyId)
-      ? selectedSearchOptionIds.filter((id) => id !== option.strategyId)
-      : [...selectedSearchOptionIds, option.strategyId];
-    onSelectSearchOptionIds(next);
-  }
-
   function toggleKnowledge(base: ComposerConfigKnowledgeBase) {
     if (!onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds) return;
     if (!selectedKnowledgeSet.has(base.id) && explicitSelectionAtLimit) return;
@@ -1016,9 +1026,7 @@ export function ComposerV2({
       : knowledgeSelection.mode === "all_my_knowledge"
         ? "All"
         : knownSingleKnowledgeName ?? String(selectedKnowledgeResourceCount);
-  // An engine the current model cannot run leaves the chip inactive and the
-  // menu on Off (UX audit 2026-09-02 A6); the plan itself is dropped by the
-  // model change and rejected at send.
+  // Keep unavailable saved choices discoverable so the user can remove them.
   const activeSearchStrategies = concreteSearchOptions.filter((option) =>
     selectedSearchSet.has(option.strategyId) && compatibleSearchOptionIds.has(option.strategyId)
   );
@@ -1030,10 +1038,14 @@ export function ComposerV2({
         currentModel?.providerFamily ?? currentProvider?.family
       )
     : null;
-  const searchDescription = `Search: ${activeSearchStrategies.length ? activeSearchStrategies.map(option =>
-    searchEngineShortName(option, currentModel?.providerFamily ?? currentProvider?.family)).join(", ") : "Off"}${controlsLocked ? " · from Assistant" : ""}`;
+  const searchDescription = `Search: ${selectedSearchOptionIds.length ? selectedSearchOptionIds.map(id => {
+    const option = concreteSearchOptions.find(candidate => candidate.strategyId === id);
+    if (!option) return "Unavailable source";
+    const name = searchEngineShortName(option, currentModel?.providerFamily ?? currentProvider?.family);
+    return compatibleSearchOptionIds.has(id) ? name : `${name} (unavailable for this model)`;
+  }).join(", ") : "Off"}${controlsLocked ? " · from Assistant" : ""}`;
   const searchChipVisible = Boolean(config) && (
-    searchActive || (concreteSearchOptions.length > 0 && !controlsLocked)
+    selectedSearchOptionIds.length > 0 || (concreteSearchOptions.length > 0 && !controlsLocked)
   );
   const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
   // Transitional states (activating, on-demand idle) are not problems; only
@@ -1232,11 +1244,11 @@ export function ComposerV2({
                   data-quiet={searchActive ? undefined : ""} data-glyph="globe"
                   data-tooltip={searchDescription} data-tooltip-side="top"
                   disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
-                  aria-controls={`${layerId}-search`} aria-expanded={layer === "search"} aria-haspopup="menu"
+                  aria-controls={`${layerId}-search`} aria-expanded={layer === "search"} aria-haspopup="dialog"
                   aria-label={activeSearchEngineName ? `Choose web search: ${activeSearchEngineName}` : "Choose web search"}
                   aria-describedby={`${layerId}-search-description`}
                   onClick={event => openLayer("search", event.currentTarget)}>
-                  <CapabilityChipContent label="Search" icon="globe" count={activeSearchStrategies.length > 1 ? activeSearchStrategies.length : 0}
+                  <CapabilityChipContent label="Search" icon="globe" count={selectedSearchOptionIds.length > 1 ? selectedSearchOptionIds.length : 0}
                     description={searchDescription} descriptionId={`${layerId}-search-description`} />
                 </button>
               ) : null}
@@ -1307,7 +1319,7 @@ export function ComposerV2({
               data-kind={layer}
               data-placement={!externalAnchor && layerPlacement.below ? "below" : undefined}
               id={`${layerId}-${layer}`}
-              role={layer === "model" || layer === "files" ? "dialog" : "menu"}
+              role={layer === "model" || layer === "files" || layer === "search" ? "dialog" : "menu"}
               tabIndex={-1}
               aria-label={LAYER_LABELS[layer]}
               style={{
@@ -1361,47 +1373,20 @@ export function ComposerV2({
               ) : layer === "search" ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">Web search</p>
-                  <CapabilityRow
-                    selected={!searchActive}
+                  {controlsLocked ? <p className="v2-composer-layer-note">Managed by the Assistant</p> : null}
+                  <SearchPlanPickerV2
+                    options={concreteSearchOptions.map(option => ({ ...option,
+                      executionModes: currentModel?.searchOptionCompatibility?.[option.strategyId]?.executionModes ?? option.executionModes }))}
+                    plan={{ mode: searchPlanMode, optionIds: selectedSearchOptionIds }}
+                    availableIds={compatibleSearchOptionIds}
                     disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
-                    reason={controlsLocked ? "Managed by the Assistant" : "No web search this turn"}
-                    selectionRole="radio"
-                    onClick={() => {
-                      onSelectSearchOptionIds?.([]);
-                      closeLayer();
+                    onChange={plan => {
+                      if (plan.mode !== searchPlanMode) onSelectSearchPlanMode?.(plan.mode);
+                      else onSelectSearchOptionIds?.(plan.optionIds);
                     }}
-                  >
-                    Off
-                  </CapabilityRow>
-                  {concreteSearchOptions.length === 0 ? (
-                    <CapabilityRow disabled reason="Not configured by the administrator" selectionRole="radio">
-                      Search
-                    </CapabilityRow>
-                  ) : concreteSearchOptions.map((option) => {
-                    const compatible = compatibleSearchOptionIds.has(option.strategyId);
-                    const selected = compatible && selectedSearchSet.has(option.strategyId);
-                    const reason = controlsLocked
-                      ? "Managed by the Assistant"
-                      : !compatible
-                        ? `Not available for ${currentModel?.displayName ?? "this model"}`
-                        : option.description ?? null;
-                    return (
-                      <CapabilityRow
-                        key={option.strategyId}
-                        selected={selected}
-                        disabled={controlsLocked || activeRun || !onSelectSearchOptionIds || !compatible}
-                        reason={reason}
-                        selectionRole="radio"
-                        onClick={() => {
-                          onSelectSearchOptionIds?.([option.strategyId]);
-                          closeLayer();
-                        }}
-                      >
-                        {option.displayName}
-                      </CapabilityRow>
-                    );
-                  })}
-                  <p className="v2-composer-privacy-note">Applies to your next message.</p>
+                    onReset={onResetSearchPlan}
+                    scope="chat"
+                  />
                 </div>
               ) : layer === "files" ? (
                 <SavedFilePickerV2

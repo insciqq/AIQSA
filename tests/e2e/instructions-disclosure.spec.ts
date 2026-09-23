@@ -27,6 +27,8 @@ const viewports = [
 ] as const;
 
 for (const viewport of viewports) {
+  test.describe(viewport.name, () => {
+  test.use({ isMobile: !viewport.name.startsWith("desktop"), hasTouch: !viewport.name.startsWith("desktop") });
   test(`instruction list, editor and read-only preview: ${viewport.name}`, async ({ page }, testInfo) => {
     test.setTimeout(150_000);
     page.setDefaultTimeout(15_000);
@@ -75,11 +77,12 @@ for (const viewport of viewports) {
       await expect(panel.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
       await name.fill("My writing");
       await source.fill("# Writing style\n\nUse precise examples.\n\n- State the conclusion first.\n- Explain assumptions.\n\n[Inert link](https://example.com) ![Inert image](https://example.com/image.png)");
-      const editor = panel.locator(".v2-markdown-editor");
+      const editor = panel.locator(".v2-markdown-editor").first();
       const width = await editor.evaluate(node => node.getBoundingClientRect().width);
-      await expect(editor).toHaveAttribute("data-mode", width >= 880 ? "split" : "write");
+      await expect(editor).toHaveAttribute("data-mode", "write");
       if (viewport.width === 1440) {
-        expect((await source.boundingBox())!.height).toBeGreaterThanOrEqual(480);
+        // Preserve a substantial writing area alongside the variable controls and help.
+        expect((await source.boundingBox())!.height).toBeGreaterThanOrEqual(400);
         if (viewport.name === "desktop-light") {
           const content = library.locator(".v2-library-content");
           for (const boundary of [879, 880]) {
@@ -90,6 +93,20 @@ for (const viewport of viewports) {
           await content.evaluate(node => { (node as HTMLElement).style.removeProperty("width"); });
           await expect.poll(() => editor.evaluate(node => node.getBoundingClientRect().width)).toBe(width);
         }
+      }
+      await source.focus();
+      await source.press("ControlOrMeta+End");
+      await editor.getByRole("button", { name: "Insert date" }).click();
+      await editor.getByRole("button", { name: "Insert time" }).click();
+      await expect(source).toHaveValue(/\{local_date\}\{local_time\}$/u);
+      await expect.poll(() => source.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(1);
+      if (viewport.width === 1440) {
+        await editor.getByRole("radio", { name: "Split", exact: true }).click();
+        await expect(editor.getByText("Preview · Read-only", { exact: true })).toBeVisible();
+        await expect(editor.getByText("System instructions · Write here", { exact: true })).toBeVisible();
+        await expect(editor.locator(".v2-markdown-editor-preview")).not.toContainText("{local_date}");
+        await page.screenshot({ path: testInfo.outputPath(`${viewport.name}-split.png`) });
+        await editor.getByRole("radio", { name: "Write", exact: true }).click();
       }
       await page.screenshot({ path: testInfo.outputPath(`${viewport.name}-editor.png`) });
       await expectNoHorizontalOverflow(page);
@@ -117,6 +134,7 @@ for (const viewport of viewports) {
       await choice.press("Space");
       expect(await selection()).toEqual(customSelection);
       const saved = await prisma.instructionPreset.findFirstOrThrow({ where: { userId } });
+      expect(saved.systemInstructions).toContain("{local_date}{local_time}");
       const viewBounds = (await panel.getByRole("button", { name: "View", exact: true }).boundingBox())!;
       const editBounds = (await panel.getByRole("button", { name: "Edit My writing" }).boundingBox())!;
       expect(Math.abs(viewBounds.x - editBounds.x)).toBeLessThanOrEqual(1);
@@ -139,6 +157,20 @@ for (const viewport of viewports) {
       await back.click();
       await panel.getByRole("button", { name: "Edit My writing" }).click();
       await expect(name).toBeFocused();
+      await panel.locator("summary").filter({ hasText: "Answer rules · AIQSA standard" }).click();
+      await panel.getByRole("button", { name: "Customize answer rules" }).click();
+      const answerRules = panel.getByRole("textbox", { name: "Answer rules", exact: true });
+      await expect(answerRules).toBeFocused();
+      await answerRules.fill("Start each answer with a short conclusion. Date: {local_date}.");
+      await page.screenshot({ path: testInfo.outputPath(`${viewport.name}-answer-rules.png`) });
+      await expectNoHorizontalOverflow(page);
+      await panel.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(panel.getByRole("button", { name: "Edit My writing" })).toBeFocused();
+      expect((await prisma.instructionPreset.findUniqueOrThrow({ where: { id: saved.id } })).answerRules).toContain("Date: {local_date}");
+      await panel.getByRole("button", { name: "Edit My writing" }).click();
+      await panel.locator("summary").filter({ hasText: "Answer rules · Custom" }).click();
+      await panel.getByRole("button", { name: "Use standard answer rules" }).click();
+      await expect(panel.getByRole("button", { name: "Customize answer rules" })).toBeFocused();
       await source.fill("Discard this change");
       await back.click();
       await discard.getByRole("button", { name: /Confirm discard/ }).click();
@@ -163,5 +195,6 @@ for (const viewport of viewports) {
       await expect(library).toHaveCount(0);
       expect(pageErrors).toBe(0);
     } finally { await prisma.user.delete({ where: { id: userId } }); }
+  });
   });
 }
