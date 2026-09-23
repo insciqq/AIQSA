@@ -2392,10 +2392,7 @@ describe("Prisma-backed run repository", () => {
             temperature: "0.4"
           }
         },
-        defaultSearchPlan: {
-          mode: "model_choice",
-          optionIds: ["company-search", "secondary-search"]
-        },
+        defaultSearchPlan: null,
         defaultSearchStrategyId: "search-disabled"
       });
       expect(afterSendChat).toEqual({
@@ -2466,10 +2463,7 @@ describe("Prisma-backed run repository", () => {
             temperature: "0.4"
           }
         },
-        defaultSearchPlan: {
-          mode: "model_choice",
-          optionIds: ["company-search", "secondary-search"]
-        },
+        defaultSearchPlan: null,
         defaultSearchStrategyId: "search-disabled"
       });
       expect(afterRegenerationChat).toEqual({

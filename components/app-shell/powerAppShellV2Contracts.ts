@@ -232,6 +232,8 @@ export type ShellComposerView = {
     setMcpMode(mode: ChatDefaultMcpMode): void;
     setSkillsMode?(mode: "auto" | "off"): void;
     setSearchPlan(plan: SearchPlan): void;
+    resetSearchPlan?(): void;
+    searchPreferenceSource?: "organization" | "personal";
   };
   currentModel: CatalogModel | undefined;
   currentParameterControls: ModelParameterControls;

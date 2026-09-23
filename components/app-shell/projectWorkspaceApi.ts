@@ -75,6 +75,7 @@ export function projectChatSummaryFromApi(chat: ProjectChatSummaryWire): Workspa
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: chat.defaultKnowledgePlan,
+    defaultSearchPlan: chat.defaultSearchPlan,
     defaultModelId: chat.defaultModelId ?? "",
     defaultProvider: chat.defaultProvider ?? "",
     folderId: chat.folderId,

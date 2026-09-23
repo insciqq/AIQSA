@@ -107,9 +107,13 @@ describe("custom OpenAI-compatible provider setup service", () => {
   });
 
   it("checks a separate image candidate when adding a codex gateway", async () => {
+    const proofKey = "synthetic-proof-signing-key";
+    const catalogProof = createCustomSetupCatalogProof({ endpoint: "https://gateway.example.test/backend-api/codex", key: proofKey,
+      now: CHECKED_AT.valueOf(), responsesRequestIsolationDetected: true, secret: "exact-secret", userId: ACTOR.userId });
     const commit = vi.fn(async (_plan: AdminProviderCustomSetupCommitPlan) => ({ defaultChanged: false, status: "ready" as const }));
     const boundary = new Error("checks-started");
     const service = createAdminProviderCustomSetupService({
+      now: () => CHECKED_AT, proofKey: () => proofKey,
       encryptionKey: () => Buffer.alloc(32, 9), repository: { commit }, tester: { test: vi.fn() },
       finishInitialSetup: async ({ modelIds }) => {
         const models = commit.mock.calls[0]![0].models;
@@ -123,7 +127,7 @@ describe("custom OpenAI-compatible provider setup service", () => {
       }
     });
     await expect(service.setup({ actor: ACTOR, request: request({
-      protocol: "responses", apiRoot: "https://gateway.example.test/backend-api/codex"
+      protocol: "responses", catalogProof, apiRoot: "https://gateway.example.test/backend-api/codex"
     }) })).rejects.toBe(boundary);
   });
 

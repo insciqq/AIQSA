@@ -146,10 +146,6 @@ describe("Run setup v2", () => {
       "Current model: Gemini 3 Pro"
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Use organization Search default" }));
-    expect(screen.getByTestId("run-setup-defaults-feedback")).toHaveTextContent(
-      "Organization Search default applied."
-    );
   });
 
   it("closes the params sheet from scrim tap, the close control, and Escape", () => {

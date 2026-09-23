@@ -219,6 +219,13 @@ describe("chat wire mapping", () => {
     });
   });
 
+  it("retains a chat's explicit Search Off through summary and detail hydration", () => {
+    const defaultSearchPlan = { mode: "all_selected" as const, optionIds: [] };
+    const saved = { ...detail, defaultSearchPlan };
+    expect(chatSummaryFromApi(saved).defaultSearchPlan).toEqual(defaultSearchPlan);
+    expect(chatDetailFromApi(saved).defaultSearchPlan).toEqual(defaultSearchPlan);
+  });
+
   it("keeps the failure separate from answer text and retains the cancellation fallback", () => {
     expect(chatDetailFromApi(detail).messages).toEqual([
       expect.objectContaining({

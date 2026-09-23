@@ -1,5 +1,8 @@
 "use client";
 
+import { DisclosurePreferencesProvider } from "@/components/app-shell/disclosurePreferences";
+import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPreferences";
+
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
 
 import { removePermanentlyDeletedChat } from "@/components/app-shell/permanentChatDeletionReconciliation";
@@ -708,6 +711,7 @@ export function PowerAppShellV2({
     readingAnchorKey,
     resetKey: activeChatId ?? "blank"
   });
+  const chatSearchPreferencesRef = useRef<ReturnType<typeof createChatSearchPreferences> | null>(null);
   const {
     applyAssistantToComposer,
     applyModelControlDefaults,
@@ -728,6 +732,7 @@ export function PowerAppShellV2({
     setDefaultMcpMode,
     setDefaultSkillsMode,
     setDefaultSearchPlan,
+    resetDefaultSearchPlan,
     setSendWithEnter,
     setAnswerSoundEnabled,
     setAnswerSoundId,
@@ -736,6 +741,8 @@ export function PowerAppShellV2({
     useOrganizationModelDefault,
     useOrganizationSearchDefault
   } = useRunControlsActions({
+    chatSearchPreferencesRef,
+    chatSearchSession: settingsSession,
     allowPersonalPersistence: () => !projectRunContextRef.current,
     isSettingsSessionCurrent: () => activeSettingsSessionRef.current === settingsSession,
     catalog,
@@ -1044,9 +1051,10 @@ export function PowerAppShellV2({
     );
     setSelectedProvider(model?.provider ?? chat.defaultProvider, "system");
     setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
+    const searchPlan = chat.defaultSearchPlan ?? project.defaults.searchPlan;
     setSelectedSearchPlan(
-      project.defaults.searchPlan.optionIds,
-      project.defaults.searchPlan.mode,
+      searchPlan.optionIds,
+      searchPlan.mode,
       "system"
     );
     setSelectedKnowledgePlan(
@@ -1949,7 +1957,9 @@ export function PowerAppShellV2({
       setKnowledgePlan: setDefaultKnowledgePlan,
       setMcpMode: setDefaultMcpMode,
       setSkillsMode: setDefaultSkillsMode,
-      setSearchPlan: setDefaultSearchPlan
+      setSearchPlan: setDefaultSearchPlan,
+      resetSearchPlan: resetDefaultSearchPlan,
+      searchPreferenceSource: catalog.defaults.searchPreferenceSource
     },
     sendWithEnter: catalog?.defaults.sendWithEnter ?? true,
     setSendWithEnter,
@@ -2110,6 +2120,7 @@ export function PowerAppShellV2({
   } satisfies ShellOverlaysView;
 
   return (
+    <DisclosurePreferencesProvider accountId={accountId}>
     <KnowledgeCitationViewerProvider onOpenLibrarySource={openKnowledgeLibrarySource}>
       <PowerAppShellV2View
         branches={branchesView}
@@ -2121,5 +2132,6 @@ export function PowerAppShellV2({
         workspace={workspaceView}
       />
     </KnowledgeCitationViewerProvider>
+    </DisclosurePreferencesProvider>
   );
 }

@@ -25,6 +25,7 @@ export function ChatDefaultsPanelV2({ composer, onNavigate }: Readonly<{
       onSkillsMode={defaults.setSkillsMode} searchPlan={defaults.searchPlan}
       searchStrategies={composer.catalog?.searchStrategies ?? []}
       onKnowledgePlan={defaults.setKnowledgePlan} onMcpMode={defaults.setMcpMode} onSearchPlan={defaults.setSearchPlan}
+      onResetSearchPlan={defaults.resetSearchPlan} searchPreferenceSource={defaults.searchPreferenceSource}
       onOpenMcp={() => onNavigate("mcp")} onOpenSkills={() => onNavigate("skills")}
     /> : <p className="v2-settings-note" role="status">Defaults are unavailable until the model catalog loads.</p>}
   </section>;
@@ -54,7 +55,7 @@ function SettingsDefaultModelRowV2({ composer }: Readonly<{ composer: ChatDefaul
             ? [{ label: "Unavailable model", value }] : []),
           ...models.map((model) => ({
             label: model.displayName,
-            sub: model.provider,
+            sub: catalog?.providers.find(provider => provider.id === model.provider)?.name,
             value: `${model.provider}:${model.modelId}`
           }))
         ]}

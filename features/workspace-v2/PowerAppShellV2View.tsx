@@ -896,6 +896,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectMcp={(selection) => useComposerControlStore.getState().setMcpSelection(selection)}
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
+      searchPlanMode={composer.searchPlanMode}
+      onSelectSearchPlanMode={mode => composer.selectSearchPlan(composer.selectedSearchOptionIds, mode)}
+      onResetSearchPlan={composer.useOrganizationSearchDefault}
       onSend={() => void composer.submitComposer()}
       onFollowup={latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
         !activeProjectChat?.archived && (!projectContext || activeProject?.status === "ACTIVE" && activeProject.capabilities.mutateChats) && composer.submitFollowup
@@ -1149,6 +1152,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         waitingForStep={toolActivity?.calls.some(call => call.status === "running") ||
           workspaceActivity?.entries.some(entry => entry.phase === "requested" || entry.phase === "running")} />
       <RunAnswerV2
+        processDisclosureId={source.runId ?? source.id}
         actions={settled ? actions : undefined}
         actionsSlot={<>
               {settled ? <><SentAttachmentsV2 blocks={copiedAttachments} canSave={!projectContext && !temporarySession} />
@@ -1388,8 +1392,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           }}
           onMemoryMode={projectContext ? undefined : setNavigationMemoryMode}
           onMove={(chat, folderId) => {
-            const full = currentWorkspaceChat(chat.id);
-            if (full) void workspace.pane.actions.moveChat(full.id, folderId);
+            void workspace.pane.actions.moveChat(chat.id, folderId);
           }}
           onMoveFolder={(folder, folderId) => {
             const full = currentWorkspaceFolder(folder.id);

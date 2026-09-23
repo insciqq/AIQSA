@@ -928,6 +928,28 @@ describe("run preparation", () => {
     expect(result.normalizedRequest.prompt.responseReminder).toBe("");
   });
 
+  it("replaces default answer rules and freezes rendered macros without disclosing them in previews", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-07T23:34:00Z"));
+    try {
+      const h = createHarness();
+      const preset = { presetId: "preset", revision: 4, selectionVersion: 2, systemInstructions: "Date {local_date}.",
+        responseReminder: "Time {local_time}.", answerRules: "PRIVATE_RULE_{local_date}" };
+      const instructions = { resolveForRun: vi.fn(async () => ({ ...preset })) };
+      const result = materializePreparedRunData(preparedFrom(await prepareRun({ ...h.deps, instructions },
+        sendInput(successBody({ timeZone: "Europe/Moscow" })))));
+      expect(result.normalizedRequest.prompt).toMatchObject({ developer: null,
+        personalInstructions: "Date June 8, 2026.\n\nAnswer rules:\nPRIVATE_RULE_June 8, 2026",
+        responseReminder: "Time 02:34 AM GMT+3." });
+      expect(result.normalizedRequest.prompt.system).toContain("June 8, 2026");
+      expect(JSON.stringify(result.providerRequestPreview)).not.toContain("PRIVATE_RULE");
+      preset.answerRules = "Later edit";
+      vi.setSystemTime(new Date("2026-06-08T23:34:00Z"));
+      expect(result.normalizedRequest.prompt.personalInstructions).toContain("PRIVATE_RULE_June 8, 2026");
+      expect(result.normalizedRequest.prompt.personalInstructions).not.toContain("Later edit");
+    } finally { vi.useRealTimers(); }
+  });
+
   it("admits Search with Agent and freezes policy without making budgets part of thread compatibility", async () => {
     vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
     try {

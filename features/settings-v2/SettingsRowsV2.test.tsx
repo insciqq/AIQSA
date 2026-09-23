@@ -60,19 +60,14 @@ describe("ChatDefaultsRowsV2", () => {
         onSearchPlan={onSearchPlan}
       />
     );
-    const search = screen.getByRole("button", { name: "Web search default" });
-    expect(search).toHaveTextContent("Web search");
+    const search = screen.getByLabelText("Web search default");
+    expect(search).toHaveTextContent("1 source selected");
     fireEvent.click(search);
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-      "Off",
-      "Web search",
-      "Google"
-    ]);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Off" }));
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Turn off search" }));
     expect(onSearchPlan).toHaveBeenCalledWith({ mode: "all_selected", optionIds: [] });
-    fireEvent.click(search);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Google" }));
-    expect(onSearchPlan).toHaveBeenLastCalledWith({ mode: "all_selected", optionIds: ["google"] });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Google" }));
+    expect(onSearchPlan).toHaveBeenLastCalledWith({ mode: "all_selected", optionIds: ["next-search", "google"] });
 
     fireEvent.keyDown(within(screen.getByRole("radiogroup", { name: "MCP tools default" })).getByRole("radio", { name: "Auto" }), { key: "ArrowRight" });
     expect(onMcpMode).toHaveBeenCalledWith("load_all");
@@ -117,7 +112,7 @@ describe("ChatDefaultsRowsV2", () => {
     fireEvent.click(knowledge);
     expect(screen.getByRole("menuitem", { name: "Unavailable base" })).toHaveAttribute("aria-current", "true");
     fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge default" }), { key: "Escape" });
-    expect(screen.getByRole("button", { name: "Web search default" })).toHaveTextContent("Off");
+    expect(screen.getByLabelText("Web search default")).toHaveTextContent("Off");
     expect(
       within(screen.getByRole("radiogroup", { name: "MCP tools default" })).getByRole("radio", { name: "Off" })
     ).toHaveAttribute("aria-checked", "true");

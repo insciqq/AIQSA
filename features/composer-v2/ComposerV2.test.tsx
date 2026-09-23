@@ -328,7 +328,7 @@ describe("Composer v2", () => {
     const onSelectModel = vi.fn();
     render(<ComposerWithModelOpener onSelectModel={onSelectModel} />);
     const trigger = screen.getByRole("button", { name: "GPT-5.2" });
-    expect(screen.getByTestId("composer-v2").querySelector("[aria-haspopup='dialog']")).toBeNull();
+    expect(screen.getByTestId("composer-v2").querySelector("[aria-controls$='-model']")).toBeNull();
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     // The picker is portalled beside the external opener, not inside the composer.
@@ -444,13 +444,14 @@ describe("Composer v2", () => {
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
     menuClosed("Add");
 
-    // Search: one engine at a time; a choice closes the menu.
+    // Search: sources can be combined without closing the menu.
     fireEvent.click(screen.getByRole("button", { name: /^Choose web search/u }));
-    menuOpen("Web search");
-    expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toHaveAttribute("aria-checked", "false");
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /Research Search/ }));
-    expect(onSearch).toHaveBeenCalledWith(["research-search"]);
-    menuClosed("Web search");
+    expect(screen.getByRole("dialog", { name: "Web search" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Turn off search" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Research Search/ }));
+    expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);
+    expect(screen.getByRole("dialog", { name: "Web search" })).toBeVisible();
+    fireEvent.keyDown(screen.getByRole("checkbox", { name: /Research Search/ }), { key: "Escape" });
 
     // Knowledge: Off / All my Knowledge close; Base and document toggles keep
     // the picker open so several can be combined in one visit.
@@ -503,6 +504,27 @@ describe("Composer v2", () => {
     expect(screen.getByRole("button", { name: "Choose web search" }))
       .toHaveAccessibleDescription("Search: Off");
     expect(screen.queryByRole("button", { name: "Turn off Search" })).toBeNull();
+  });
+
+  it("keeps an unavailable saved Search source visible and removable", () => {
+    const onSearch = vi.fn();
+    render(<ComposerV2 {...props({ selectedSearchOptionIds: ["retired-source"], onSelectSearchOptionIds: onSearch })} />);
+    const trigger = screen.getByRole("button", { name: "Choose web search" });
+    expect(trigger).toHaveAccessibleDescription("Search: Unavailable source");
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Unavailable source/ }));
+    expect(onSearch).toHaveBeenCalledWith([]);
+  });
+
+  it("closes Search with Escape after clearing disables the focused control", async () => {
+    const { rerender } = render(<ComposerV2 {...props()} />);
+    const trigger = screen.getByRole("button", { name: /^Choose web search/u });
+    fireEvent.click(trigger);
+    screen.getByRole("button", { name: "Turn off search" }).focus();
+    rerender(<ComposerV2 {...props({ selectedSearchOptionIds: [] })} />);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Web search" })).toBeNull();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it("keeps every MCP mode visible, including Off with no enabled servers", () => {
@@ -576,9 +598,9 @@ describe("Composer v2", () => {
       "Assistant: Research editor"
     );
     expect(screen.getByRole("button", { name: /^Choose web search/u })).toBeDisabled();
-    const searchRows = screen.getAllByRole("menuitemradio", { name: /Web Search/ });
+    const searchRows = screen.getAllByRole("checkbox", { name: /Web Search/ });
     expect(searchRows[0]).toBeDisabled();
-    expect(screen.getAllByText("Managed by the Assistant").length).toBeGreaterThan(1);
+    expect(screen.getByText("Managed by the Assistant")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Remove assistant" }));
     expect(onRemoveAssistant).toHaveBeenCalledOnce();
     expect(onSelectSearch).not.toHaveBeenCalled();
@@ -850,7 +872,7 @@ describe("Composer v2", () => {
     render(<ComposerWithModelOpener config={leakyConfig} />);
 
     // The composer row carries no model trigger: the model lives in the header.
-    expect(screen.getByTestId("composer-v2").querySelector("[aria-haspopup='dialog']")).toBeNull();
+    expect(screen.getByTestId("composer-v2").querySelector("[aria-controls$='-model']")).toBeNull();
     const surface = screen.getByTestId("composer-v2").textContent ?? "";
     expect(surface).not.toContain("provider.invalid");
     expect(surface).not.toContain("ref 0N0FNN");

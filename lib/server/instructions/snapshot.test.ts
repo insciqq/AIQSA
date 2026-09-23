@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validAcceptedInstructions } from "./snapshot";
 import { decodeMemoryPreparingBaseSnapshot } from "../runs/preparingRun";
+import { PERSONAL_INSTRUCTIONS_MAX_LENGTH } from "../../contracts/instructionPresets";
 
 const accepted = { instructionPreset: { presetId: "preset", revision: 2, selectionVersion: 3 },
   prompt: { system: "baseline", developer: null, personalInstructions: "literal style", responseReminder: "literal reminder" } };
@@ -16,7 +17,7 @@ describe("accepted instruction snapshot validation", () => {
     { ...accepted, instructionPreset: { ...accepted.instructionPreset, revision: 0 } },
     { ...accepted, instructionPreset: { ...accepted.instructionPreset, presetId: null } },
     { ...accepted, prompt: { ...accepted.prompt, responseReminder: undefined } },
-    { ...accepted, prompt: { ...accepted.prompt, personalInstructions: "x".repeat(32001) } },
+    { ...accepted, prompt: { ...accepted.prompt, personalInstructions: "x".repeat(PERSONAL_INSTRUCTIONS_MAX_LENGTH + 1) } },
     { prompt: accepted.prompt }
   ])("rejects partial or oversized instruction evidence during preparation recovery", normalizedRequest => {
     expect(validAcceptedInstructions(normalizedRequest)).toBe(false);
