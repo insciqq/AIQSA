@@ -28,6 +28,8 @@ for (const viewport of [
   { width: 390, height: 844, theme: "light" },
   { width: 844, height: 390, theme: "dark" }
 ] as const) {
+  test.describe(`${viewport.width}px`, () => {
+  test.use({ isMobile: viewport.width !== 1440, hasTouch: viewport.width !== 1440 });
   test(`Workspace activity keeps its width and scrolls long history at ${viewport.width}px`, async ({ page, context }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
@@ -65,6 +67,8 @@ for (const viewport of [
     const disclosure = page.getByTestId("tool-activity-disclosure");
     const summary = disclosure.locator(":scope > summary");
     await expect(summary).toHaveText("Working in Workspace…");
+    await expect(disclosure).not.toHaveAttribute("open");
+    await summary.click();
     const initialWidth = await expectStackedTimeline(disclosure);
 
     for (const [index, preview] of ["pwd", "python -c \"from pathlib import Path; print(Path('project/report-with-a-long-file-name.txt').read_text())\""].entries()) {
@@ -130,5 +134,27 @@ for (const viewport of [
     await expect(dialog).toHaveCount(0);
     await expect(opener).toBeFocused();
     await expectNoHorizontalOverflow(page);
+
+    await installMatrixCatalogFixture(page, { folders: [], chats: [{
+      id: chatId, title: "Workspace activity layout", activeLeafMessageId: "workspace-layout-answer",
+      createdAt: timestamp, updatedAt: timestamp, defaultProvider: "openai", defaultModelId: "gpt-5.5",
+      folderId: null, pinned: false, messageCount: 1,
+      messages: [{ id: "workspace-layout-answer", role: "assistant", status: "complete", parentMessageId: null,
+        createdAt: timestamp, content: "The synthetic project check is complete.", errorMessage: null,
+        citationMessageId: null, modelId: "gpt-5.5", modelRunId: runId, provider: "openai",
+        workspaceActivity: { entries: [{ id: "failed-check", kind: "command", phase: "failed",
+          command: { preview: "npm test", exitCode: 1 } }] }
+      }]
+    }] });
+    await page.reload();
+    await expect(disclosure).toHaveAttribute("open");
+    await expect(summary).toContainText("Needs attention");
+    await summary.click();
+    await page.reload();
+    await expect(disclosure).not.toHaveAttribute("open");
+    await expect(summary).toContainText("Needs attention");
+    await page.locator(".v2-conversation-scroll").evaluate(node => node.scrollTo({ top: 0 }));
+    await page.screenshot({ path: testInfo.outputPath("workspace-reload-collapsed.png") });
+  });
   });
 }

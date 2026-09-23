@@ -19,7 +19,7 @@ import { loadExposedChatModelId } from "./chatCreationDefaults";
 import { loadProjectChatDefaultAuthority } from "../projects/chatDefaults";
 
 const sourceSelect = {
-  activeLeafMessageId: true, archived: true, defaultProviderModelId: true, defaultKnowledgePlan: true, folderId: true,
+  activeLeafMessageId: true, archived: true, defaultProviderModelId: true, defaultKnowledgePlan: true, defaultSearchPlan: true, folderId: true,
   id: true, memoryMode: true, permanentDeletionAt: true, projectFolderId: true, projectId: true,
   title: true, updatedAt: true, userId: true, workspaceEnabled: true
 } satisfies Prisma.ChatSelect;
@@ -345,6 +345,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           id: newChatId, title: `Continued: ${chat.title}`.slice(0, 120),
           defaultProviderModelId: operation.requestedProviderModelId ?? chat.defaultProviderModelId, memoryMode: chat.memoryMode,
           defaultKnowledgePlan: chat.defaultKnowledgePlan ?? Prisma.DbNull,
+          defaultSearchPlan: chat.defaultSearchPlan ?? Prisma.DbNull,
           workspaceEnabled: chat.workspaceEnabled,
           ...(chat.projectId ? {
             userId: null, projectId: chat.projectId, projectFolderId: chat.projectFolderId,

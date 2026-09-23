@@ -144,20 +144,6 @@ export function RunSetupV2({ composer, onClose }: Readonly<{
               </select>
             </label>
           ) : null}
-          <label>
-            <span>Search orchestration</span>
-            <select
-              aria-label="Search orchestration"
-              value={composer.searchPlanMode}
-              onChange={(event) => composer.selectSearchPlan(
-                composer.selectedSearchOptionIds,
-                event.target.value === "model_choice" ? "model_choice" : "all_selected"
-              )}
-            >
-              <option value="all_selected">All selected per search</option>
-              <option value="model_choice">Model chooses</option>
-            </select>
-          </label>
           <div className="v2-run-setup-switches">
             {controls.stream.supported ? (
               <RunSetupSwitchV2
@@ -190,12 +176,6 @@ export function RunSetupV2({ composer, onClose }: Readonly<{
                 Use organization model default
               </UiV2Button>
             ) : null}
-            <UiV2Button onClick={() => {
-              composer.useOrganizationSearchDefault();
-              setDefaultsFeedback("Organization Search default applied.");
-            }}>
-              Use organization Search default
-            </UiV2Button>
             {defaultsFeedback ? (
               <p
                 className="v2-run-setup-feedback"

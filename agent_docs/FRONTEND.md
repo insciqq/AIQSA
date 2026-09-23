@@ -6,7 +6,7 @@ Owns presentation and interaction rules. [Components](../components/AGENTS.md), 
 
 - Keep one conversation-first presentation and one owner for each resource. Server pages authorize and send least-data props; views consume decoded client-safe contracts. Do not mirror server authority or the same async resource in component-local state.
 - Key drafts, uploads, runs, and async work by their resource/chat/session. Capture the key at dispatch; abort or ignore stale results after navigation. Background refresh must preserve drafts, committed mutations, focus, selection, and scroll ownership. Malformed responses fail visibly instead of becoming guessed state.
-- Identity, entitlement, catalogs, branches, lifecycle, and persisted preferences are server truth. Overlays, focus, unsent drafts, and in-flight handles are browser state. Theme is a browser presentation preference, not account/chat content.
+- Identity, entitlement, catalogs, branches, lifecycle, and persisted preferences are server truth. Overlays, focus, drafts, and in-flight handles are browser state. Theme and bounded, account/resource-scoped disclosure choices are browser presentation preferences.
 - Loading failure is not an empty result. Pending, unavailable, disabled, revoked, degraded, cancelled, partial, and complete remain distinct. Elapsed time and animation never invent progress, readiness, evidence, cost, or completion.
 
 ## Conversation And Workspace
@@ -15,7 +15,7 @@ Chat/composer stay primary across layouts. Models belong in the header, tools ne
 
 The composer preserves one keyed draft and the user's explicit model, Assistant, tools, and run controls. Unavailable configuration never silently substitutes another target. MCP retry must not switch Auto to Load all without an explicit action. Editing a sent message uses its own inline draft, preserves sent attachments and the composer draft, and clearly creates a branch. Keyboard submission respects IME and multiline entry.
 
-Continuation preserves composer controls and Workspace. After the new chat opens, copy the source’s current unsent text and settled attachments only into its empty composer. Pending uploads/session work retain ownership. Focus input without scrolling the conversation. The server revalidates the selected model; an absent/unavailable selection retains the source default. Ordinary New chat uses personal Chat defaults.
+Continuation preserves controls/Workspace; copy drafts and settled attachments into its empty composer. Pending uploads/session work retain ownership. Focus without scrolling. Server model revalidation retains the source default for absent/unavailable selections. New chats use personal defaults; chat Search edits and sending never change them.
 
 Upload integrity/ownership checks gate Send; slower PDF preparation does not. Successful admission immediately shows the committed message, clears its draft, and puts truthful preparation state with Stop/retry in the conversation. Counts describe accepted work, not elapsed time. Informational PDF notices do not require acknowledgement or disable Send.
 

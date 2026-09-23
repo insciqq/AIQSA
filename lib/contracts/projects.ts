@@ -407,6 +407,7 @@ export type ProjectFolderWire = Readonly<{
 }>;
 
 export type ProjectChatSummaryWire = Readonly<{
+  defaultSearchPlan?: SearchPlan | null;
   hasContinuationSource?: boolean;
   activeRun: boolean;
   activeLeafMessageId: string | null;
@@ -746,6 +747,8 @@ export function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null
     ? undefined
     : decodeChatWorkspaceState(value.workspace);
   if (workspace === null) return null;
+  const search = value.defaultSearchPlan == null ? null : decodeSearchPlan(value.defaultSearchPlan);
+  if (search && !search.ok) return null;
   const knowledge = value.defaultKnowledgePlan === null
     ? { ok: true as const, plan: null }
     : decodeKnowledgePlan(value.defaultKnowledgePlan);
@@ -759,6 +762,7 @@ export function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null
     createdByDisplayName: value.createdByDisplayName,
     createdByUserId: value.createdByUserId,
     defaultKnowledgePlan: knowledge.plan,
+    ...(search?.ok ? { defaultSearchPlan: search.plan } : {}),
     defaultModelId: value.defaultModelId,
     defaultProvider: value.defaultProvider,
     folderId: value.folderId,

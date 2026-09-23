@@ -1,3 +1,4 @@
+import { decodeSearchPlan, type SearchPlan } from "./search";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
 import { decodeSessionContextStatus, type SessionContextStatus } from "./sessionStatus";
@@ -212,6 +213,7 @@ export type WorkspaceChatSummary = {
   activeLeafMessageId: string | null;
   createdAt: string;
   defaultModelId: string;
+  defaultSearchPlan?: SearchPlan | null;
   defaultKnowledgePlan?: KnowledgePlan | null;
   defaultProvider: string;
   folderId: string | null;
@@ -428,6 +430,7 @@ export type CreateChatRequestWire = {
 };
 
 export type UpdateChatRequestWire = {
+  defaultSearchPlan?: SearchPlan | null;
   activeLeafMessageId?: string | null;
   defaultKnowledgePlan?: KnowledgePlan | null;
   folderId?: string | null;
@@ -449,6 +452,7 @@ export type ChatRouteServerErrorCode =
   | "chat_not_found"
   | "chat_revision_stale"
   | "knowledge_plan_invalid"
+  | "search_plan_invalid"
   | "workspace_state_invalid"
   | "workspace_not_found";
 
@@ -1102,6 +1106,8 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     value.defaultProvider
   );
   const defaultKnowledgePlan = decodeKnowledgeDefault(value.defaultKnowledgePlan);
+  const search = value.defaultSearchPlan == null ? null : decodeSearchPlan(value.defaultSearchPlan);
+  if (search && !search.ok) return null;
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
   const projectId = value.projectId === undefined ? null : nullableId(value.projectId);
@@ -1133,6 +1139,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
     ...(value.titlePending === true ? { titlePending: true } : {}),
     defaultKnowledgePlan,
+    ...(search?.ok ? { defaultSearchPlan: search.plan } : {}),
     defaultModelId: defaultSelection.defaultModelId,
     defaultProvider: defaultSelection.defaultProvider,
     folderId,
@@ -1480,6 +1487,7 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "sourceRevision",
       "title",
       "updatedAt",
+      ...(Object.hasOwn(value, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
       ...(Object.hasOwn(value, "workspace") ? ["workspace"] : [])
     ])
   ) return null;
@@ -1548,6 +1556,7 @@ export function decodeArchivedChatDetailResponse(
     "updatedAt",
     "usageStats",
     ...(Object.hasOwn(value.chat, "hasContinuationSource") ? ["hasContinuationSource"] : []),
+    ...(Object.hasOwn(value.chat, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
     ...(Object.hasOwn(value.chat, "workspace") ? ["workspace"] : [])
   ])) return null;
   if (value.chat.projectId !== null) return null;

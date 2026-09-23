@@ -57,10 +57,12 @@ export async function reasoningOptionValues(page: Page): Promise<string[]> {
 }
 
 export async function chooseSearchStrategy(page: Page, label: string): Promise<void> {
-  // The Search chip owns its engine menu; choosing an engine closes it.
   await page.getByRole("button", { name: /^Choose web search/u }).click();
-  const search = page.getByRole("menu", { name: "Web search" });
-  await search.getByRole("menuitemradio", { name: new RegExp(/off/iu.test(label) ? "^Off" : label, "iu") }).click();
+  const search = page.getByRole("dialog", { name: "Web search" });
+  const off = search.getByRole("button", { name: "Turn off search" });
+  if (await off.isEnabled()) await off.click();
+  if (!/^off$/iu.test(label)) await search.getByRole("checkbox", { name: new RegExp(label, "iu") }).check();
+  await page.keyboard.press("Escape");
   await expect(search).toHaveCount(0);
 }
 

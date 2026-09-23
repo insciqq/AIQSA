@@ -32,3 +32,28 @@ describe("image setup candidates", () => {
     expect(providerSetupModels("openai").filter((model) => model.configuration.modelClass === "image")).toHaveLength(1);
   });
 });
+
+
+describe("codex-lb catalog candidates", () => {
+  it("recognizes existing Codex endpoints and uses the compatible Responses protocol without native background state", () => {
+    const endpoint = { apiRoot: "https://fixture.example.test/backend-api/codex" };
+    const candidates = providerSetupModels("openai_compatible", endpoint);
+    expect(providerSetupModels("openai_compatible", { ...endpoint, responsesRequestIsolationDetected: true })).toEqual(candidates);
+    expect(candidates.find(model => model.modelId === "codex-lb:gpt-6-sol")?.configuration).toMatchObject({
+      adapterKind: "openai_responses_compatible", modelClass: "answer", upstreamModelId: "gpt-6-sol"
+    });
+    for (const candidate of candidates.filter(model => model.configuration.modelClass === "answer")) {
+      expect(candidate.configuration.capabilities.nativeBackground).not.toBe(true);
+      expect(candidate.configuration.defaultParams).not.toHaveProperty("background");
+    }
+  });
+
+  it("requires a verified catalog marker on generic endpoints and respects a negative detection", () => {
+    const endpoint = { apiRoot: "https://fixture.example.test/v1" };
+    expect(providerSetupModels("openai_compatible", endpoint)).toEqual([]);
+    expect(providerSetupModels("openai_compatible", { ...endpoint, responsesRequestIsolationDetected: true }).length).toBeGreaterThan(0);
+    expect(providerSetupModels("openai_compatible", {
+      apiRoot: "https://fixture.example.test/backend-api/codex", responsesRequestIsolationDetected: false
+    })).toEqual([]);
+  });
+});

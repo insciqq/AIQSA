@@ -1,0 +1,3 @@
+[data-chat-drop-active] { outline: 2px solid var(--v2-color-accent); outline-offset: -2px; background: var(--v2-color-accent-dim); border-radius: 6px; }
+[data-chat-dragging] { opacity: 0.55; }
+.v2-chat-root-drop { margin: 8px; padding: 12px; border: 1px dashed var(--v2-color-border2); border-radius: 6px; color: var(--v2-color-text2); text-align: center; font-size: 12px; }

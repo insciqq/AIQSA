@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MarkdownEditorV2 } from "./MarkdownEditorV2";
@@ -19,7 +19,10 @@ describe("controlled Markdown editor", () => {
     expect(screen.getByRole("radio", { name: "Write" })).toBeChecked();
     expect(screen.queryByRole("radio", { name: "Split" })).toBeNull();
     act(() => { width = 880; resize(); });
-    expect(screen.getByRole("radio", { name: "Split" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Write" })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: "Split" }));
+    expect(screen.getByText("Preview · Read-only")).toBeVisible();
+    expect(screen.getByText("Source · Write here")).toBeVisible();
     const source = screen.getByLabelText("Source") as HTMLTextAreaElement;
     source.setSelectionRange(2, 6);
     source.scrollTop = 20;
@@ -38,6 +41,24 @@ describe("controlled Markdown editor", () => {
     expect(screen.getByRole("radio", { name: "Write" })).toHaveFocus();
     expect(screen.queryByRole("radio", { name: "Split" })).toBeNull();
     expect(source).toHaveValue("# Heading");
+  });
+
+  it("inserts a variable at the source selection and keeps the template separate from preview", async () => {
+    function Template() {
+      const [value, setValue] = useState("Today is selected.");
+      return <MarkdownEditorV2 label="Template" previewLabel="Example" value={value} onChange={setValue} maxLength={100}
+        variables={[{ label: "Date", value: "{local_date}" }]} previewText={value.replace("{local_date}", "June 7, 2026")} />;
+    }
+    render(<Template />);
+    const source = screen.getByLabelText("Template") as HTMLTextAreaElement;
+    source.setSelectionRange(9, 17);
+    fireEvent.click(screen.getByRole("button", { name: "Insert date" }));
+    expect(source).toHaveValue("Today is {local_date}.");
+    await waitFor(() => expect(source).toHaveFocus());
+    expect(source.selectionStart).toBe(21);
+    fireEvent.click(screen.getByRole("radio", { name: "Preview" }));
+    expect(screen.getByRole("region", { name: "Example" })).toHaveTextContent("Today is June 7, 2026.");
+    expect(source).toHaveValue("Today is {local_date}.");
   });
 
   it("renders deeply nested untrusted text without external links or image requests", () => {

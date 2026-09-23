@@ -308,13 +308,37 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
       inputValue.onProgress?.({ phase: "validating", completed: 0, total: null });
       const request = inputValue.request;
       let connection = connectionConfiguration(request);
+      let secret: string | null;
+      if (request.authenticationMode === "bearer") {
+        if (request.secret === undefined) {
+          throw new Error("provider_credential_secret_invalid");
+        }
+        secret = normalizeProviderCredentialSecret(request.secret).trim();
+      } else {
+        if (request.secret !== undefined) {
+          throw new Error("provider_custom_setup_authentication_invalid");
+        }
+        secret = null;
+      }
+
+      if (request.protocol === "responses" && input.proofKey && request.catalogProof) {
+        const proof = verifyCustomSetupCatalogProof({
+          endpoint: connection.apiRoot,
+          key: input.proofKey(),
+          now: now().valueOf(),
+          proof: request.catalogProof,
+          secret,
+          userId: inputValue.actor.userId
+        });
+        if (proof) connection = { ...connection, responsesRequestIsolationDetected: proof.detectedCodexLb };
+      }
       const upstreamModelIds = requestedModelIds(request);
       let modelConfigurations = upstreamModelIds.map((upstreamModelId) =>
         modelConfiguration(request, upstreamModelId)
       );
       if (input.finishInitialSetup && request.protocol === "responses" &&
         modelConfigurations.length < MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS) {
-        for (const candidate of providerSetupModels("openai_compatible", connection.apiRoot)) {
+        for (const candidate of providerSetupModels("openai_compatible", connection).filter(candidate => candidate.configuration.modelClass === "image")) {
           if (!upstreamModelIds.includes(candidate.configuration.upstreamModelId)) modelConfigurations.push(candidate.configuration);
         }
       }
@@ -330,19 +354,6 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         model.upstreamModelId.slice(0, MAX_DISPLAY_NAME_LENGTH)
       ));
 
-      let secret: string | null;
-      if (request.authenticationMode === "bearer") {
-        if (request.secret === undefined) {
-          throw new Error("provider_credential_secret_invalid");
-        }
-        secret = normalizeProviderCredentialSecret(request.secret).trim();
-      } else {
-        if (request.secret !== undefined) {
-          throw new Error("provider_custom_setup_authentication_invalid");
-        }
-        secret = null;
-      }
-
       const connectionId = idFactory();
       const providerModelIds = modelConfigurations.map(() => idFactory());
       const credentialId = idFactory();
@@ -356,17 +367,6 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         : undefined;
 
       const evidence: AdminProviderTestEvidence[] = [];
-      if (request.protocol === "responses" && input.proofKey && request.catalogProof) {
-        const proof = verifyCustomSetupCatalogProof({
-          endpoint: connection.apiRoot,
-          key: input.proofKey(),
-          now: now().valueOf(),
-          proof: request.catalogProof,
-          secret,
-          userId: inputValue.actor.userId
-        });
-        if (proof) connection = { ...connection, responsesRequestIsolationDetected: proof.detectedCodexLb };
-      }
       for (const [index, model] of modelConfigurations.entries()) {
         if (input.finishInitialSetup) { evidence.push(pendingInitialCapabilityEvidence(model)); continue; }
         inputValue.signal?.throwIfAborted();

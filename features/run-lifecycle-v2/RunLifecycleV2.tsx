@@ -190,6 +190,7 @@ export type RunAnswerV2Props = Readonly<{
   /** Quiet status lines between the body and the actions row. */
   actionsSlot?: ReactNode;
   anchorId?: string;
+  processDisclosureId?: string;
   /** Settled answer outputs: Sources chip + list and the process fold's memory rows. */
   artifact?: ThreadArtifactSummary | null;
   content: string;
@@ -222,6 +223,7 @@ export function RunAnswerV2({
   actions,
   actionsSlot,
   anchorId,
+  processDisclosureId,
   artifact = null,
   content,
   knowledgeReference,
@@ -262,6 +264,7 @@ export function RunAnswerV2({
     : null;
   const process = (
     <AnswerProcessV2
+      disclosureId={processDisclosureId ?? anchorId}
       liveLabel={liveLabel}
       onPinSkill={onPinSkill}
       pinnedSkillIds={pinnedSkillIds}

@@ -1,12 +1,17 @@
 export const INSTRUCTION_PRESET_NAME_MAX_LENGTH = 80;
 export const SYSTEM_INSTRUCTIONS_MAX_LENGTH = 32_000;
 export const RESPONSE_REMINDER_MAX_LENGTH = 4_000;
+export const ANSWER_RULES_MAX_LENGTH = 4_000;
+/** Accepted personal text includes the optional, separately edited answer rules. */
+export const PERSONAL_INSTRUCTIONS_MAX_LENGTH = SYSTEM_INSTRUCTIONS_MAX_LENGTH + ANSWER_RULES_MAX_LENGTH + 32;
 export const INSTRUCTION_PRESET_MAX_COUNT = 20;
 
 export type InstructionPresetDraft = {
   name: string;
   systemInstructions: string;
   responseReminder: string;
+  /** Missing/null inherits platform rules; a string replaces them for this preset. */
+  answerRules?: string | null;
 };
 export type InstructionPreset = InstructionPresetDraft & {
   id: string;
@@ -43,11 +48,13 @@ function keys(value: Record<string, unknown>, allowed: string[]): boolean {
   return Object.keys(value).length === allowed.length && Object.keys(value).every((key) => allowed.includes(key));
 }
 export function decodeInstructionPresetDraft(value: unknown): InstructionPresetDraft | null {
-  if (!record(value) || !keys(value, ["name", "systemInstructions", "responseReminder"]) ||
+  if (!record(value) || !keys(value, ["name", "systemInstructions", "responseReminder", ...("answerRules" in value ? ["answerRules"] : [])]) ||
     !text(value.name, INSTRUCTION_PRESET_NAME_MAX_LENGTH) || !value.name.trim() ||
     !text(value.systemInstructions, SYSTEM_INSTRUCTIONS_MAX_LENGTH) ||
-    !text(value.responseReminder, RESPONSE_REMINDER_MAX_LENGTH)) return null;
-  return { name: value.name.trim(), systemInstructions: value.systemInstructions, responseReminder: value.responseReminder };
+    !text(value.responseReminder, RESPONSE_REMINDER_MAX_LENGTH) ||
+    "answerRules" in value && value.answerRules !== null && !text(value.answerRules, ANSWER_RULES_MAX_LENGTH)) return null;
+  return { name: value.name.trim(), systemInstructions: value.systemInstructions, responseReminder: value.responseReminder,
+    ...("answerRules" in value ? { answerRules: value.answerRules as string | null } : {}) };
 }
 export function decodeInstructionPresetMutation(value: unknown): InstructionPresetMutation | null {
   if (!record(value)) return null;
@@ -66,9 +73,10 @@ export function decodeInstructionPresetMutation(value: unknown): InstructionPres
   return null;
 }
 export function decodeInstructionPreset(value: unknown): InstructionPreset | null {
-  if (!record(value) || !keys(value, ["id", "name", "systemInstructions", "responseReminder", "revision", "updatedAt"]) ||
+  if (!record(value) || !keys(value, ["id", "name", "systemInstructions", "responseReminder", "revision", "updatedAt", ...("answerRules" in value ? ["answerRules"] : [])]) ||
     !id(value.id) || !version(value.revision) || !text(value.updatedAt, 64) || !Number.isFinite(Date.parse(value.updatedAt))) return null;
-  const draft = decodeInstructionPresetDraft({ name: value.name, systemInstructions: value.systemInstructions, responseReminder: value.responseReminder });
+  const draft = decodeInstructionPresetDraft({ name: value.name, systemInstructions: value.systemInstructions, responseReminder: value.responseReminder,
+    ...("answerRules" in value ? { answerRules: value.answerRules } : {}) });
   return draft ? { ...draft, id: value.id, revision: value.revision, updatedAt: value.updatedAt } : null;
 }
 export function decodeInstructionPresetState(value: unknown): InstructionPresetState | null {

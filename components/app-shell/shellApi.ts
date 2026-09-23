@@ -220,6 +220,7 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
+    ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),
     defaultModelId: chat.defaultModelId ?? "",
     defaultProvider: chat.defaultProvider ?? "",
     folderId: chat.folderId,

@@ -1,3 +1,4 @@
+import { decodeSearchPlan } from "../../domain/search";
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
 import { interruptExpiredAgentRun } from "../agents/store";
 import { AttachmentLinkConflictError } from "./runRepositoryContract";
@@ -1406,6 +1407,7 @@ export function createPrismaRunRepository(
           },
           activeLeafMessageId: true,
           createdAt: true,
+          defaultSearchPlan: true,
           defaultKnowledgePlan: true,
           defaultProviderModel: {
             select: {
@@ -1568,6 +1570,7 @@ export function createPrismaRunRepository(
             contextStats,
             createdAt: chat.createdAt,
             defaultKnowledgePlan: knowledgeDefaultFromJson(chat.defaultKnowledgePlan),
+            defaultSearchPlan: (() => { const decoded = decodeSearchPlan(chat.defaultSearchPlan); return decoded.ok ? decoded.plan : null; })(),
             defaultModelId: chat.defaultProviderModel?.id ?? null,
             defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
             folderId: chat.projectFolderId ?? chat.folderId,
