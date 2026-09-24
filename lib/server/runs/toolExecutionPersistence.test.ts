@@ -25,6 +25,19 @@ import {
 const call = { id: "call-1", name: "search_engine_1" };
 
 describe("persisted tool execution result codec", () => {
+  it("preserves versioned recall identities while refusing incompatible or private descriptors", () => {
+    const observation = { version: 1 as const, handle: `tor1_${"a".repeat(32)}`, source: "mcp" as const,
+      encoding: "json-utf8-v1" as const, byteSize: 1024 * 1024, checksum: "b".repeat(64), sourceTruncated: false, maskable: true };
+    const result = { callId: call.id, name: call.name, status: "complete" as const,
+      content: [{ type: "text" as const, text: "Bounded preview of the retained original" }], observation };
+    const snapshot = snapshotToolExecutionResult(result, 8192);
+    expect(parsePersistedToolExecutionResult(call, snapshot)).toEqual(result);
+    for (const invalid of [{ ...observation, version: 2 }, { ...observation, storageKey: "private/object" },
+      { ...observation, source: "skill" }, { ...observation, checksum: "wrong" }]) {
+      expect(parsePersistedToolExecutionResult(call, { ...result, observation: invalid })).toBeNull();
+    }
+  });
+
   it("round-trips bounded search evidence and usage", () => {
     const result = {
       artifacts: [{

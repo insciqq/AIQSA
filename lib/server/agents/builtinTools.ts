@@ -14,9 +14,12 @@ import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
 import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage";
 import type { VisionAnalysisService } from "../vision/service";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { executeReadToolResult, READ_TOOL_RESULT_NAME, readToolResultTool } from "../tools/readToolResult";
+import { defaultToolObservations } from "../toolObservations/defaultService";
 
-export const AGENT_BUILTIN_TOOL_NAMES = [ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME, ANALYZE_IMAGE_TOOL_NAME, CHECKPOINT_OUTPUTS_TOOL_NAME] as const;
+export const AGENT_BUILTIN_TOOL_NAMES = [ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME, ANALYZE_IMAGE_TOOL_NAME, CHECKPOINT_OUTPUTS_TOOL_NAME, READ_TOOL_RESULT_NAME] as const;
 export const agentBuiltinTools = (request: NormalizedRunRequest) => [
+  ...(request.toolObservationVersion === 1 ? [readToolResultTool] : []),
   ...(request.artifactTool ? [artifactTool(request.artifactToolDescription), readArtifactTool()] : []),
   ...(request.workspace && request.workspaceCheckpoints ? [checkpointOutputsTool] : []),
   ...(request.imagePlan ? [imageGenerationTool(request.imagePlan)] : []),
@@ -38,6 +41,7 @@ export function createAgentBuiltinDispatcher(input: {
   vision?: Pick<VisionAnalysisService, "execute">;
   checkpoints?: Pick<ReturnType<typeof createWorkspaceCheckpoints>, "execute" | "restore">;
   workspace?: Pick<WorkspaceCoordinator, "imagePath">;
+  observations?: Pick<Awaited<ReturnType<typeof defaultToolObservations>>, "read">;
 }) {
   const admitted = new Set(agentBuiltinTools(input.request).map(tool => tool.name));
   const deliver = async (result: ToolExecutionResult, signal: AbortSignal): Promise<ToolExecutionResult> => {
@@ -64,13 +68,18 @@ export function createAgentBuiltinDispatcher(input: {
     signal.throwIfAborted();
     if (!admitted.has(call.name)) throw new Error("agent_builtin_unavailable");
     const claim = await input.store.claimBuiltinTool(call, hashCanonicalMcpValue(call.arguments));
-    if (claim.result) return deliver(claim.result, signal);
+    if (claim.result && call.name !== READ_TOOL_RESULT_NAME) return deliver(claim.result, signal);
     // An active or crash-ambiguous delivery cannot authorize a second write.
-    if (!claim.claimed && call.name !== CHECKPOINT_OUTPUTS_TOOL_NAME) return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
+    if (!claim.claimed && call.name !== CHECKPOINT_OUTPUTS_TOOL_NAME && call.name !== READ_TOOL_RESULT_NAME) return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
       error: "agent_builtin_in_progress", hint: "This delivery is still pending. Do not repeat a write with a new call ID."
     } }] };
     const context = { request: input.request, userId: input.userId, runId: input.runId, persistedToolCallId: claim.id };
     try {
+      if (call.name === READ_TOOL_RESULT_NAME) {
+        const result = await executeReadToolResult(input.observations ?? await defaultToolObservations(), call, context, signal);
+        await input.store.settleBuiltinTool(claim.id, result);
+        return result;
+      }
       if (call.name === CHECKPOINT_OUTPUTS_TOOL_NAME) {
         const checkpoints = input.checkpoints ?? await defaultWorkspaceCheckpoints();
         return await (claim.claimed ? checkpoints.execute(call, context, signal) : checkpoints.restore(call, context, signal));
@@ -109,7 +118,7 @@ export function createAgentBuiltinDispatcher(input: {
       // READY and its output were committed together. A lost acknowledgement
       // can only restore the exact receipt, never repeat artifact creation.
       const restored = await input.store.builtinResult(claim.id);
-      if (restored) return deliver(restored, signal);
+      if (restored && call.name !== READ_TOOL_RESULT_NAME) return deliver(restored, signal);
       const checkpointFailure = call.name === CHECKPOINT_OUTPUTS_TOOL_NAME ? executionFailure(error) : null;
       const code = checkpointFailure && checkpointFailure.code !== "tool_call_failed" ? checkpointFailure.code
         : call.name === IMAGE_GENERATION_TOOL_NAME && error instanceof Error && imageErrors.has(error.message) ? error.message : "agent_builtin_interrupted";

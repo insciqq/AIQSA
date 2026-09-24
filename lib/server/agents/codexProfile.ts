@@ -3,7 +3,7 @@ import { providerResponseTimeoutSeconds } from "@/lib/contracts/providerResponse
 
 export const CODEX_VERSION = "0.154.0";
 /** Bump when managed profile semantics change; accepted thread compatibility includes it. */
-export const CODEX_MANAGED_PROFILE_VERSION = 7;
+export const CODEX_MANAGED_PROFILE_VERSION = 8;
 export const CODEX_PROVIDER_MAX_RETRIES = 2;
 export const CODEX_HOME_DIRECTORY = "/workspace/.aiqsa/codex";
 export const CODEX_RUN_TOKEN_ENV = "AIQSA_AGENT_TOKEN";
@@ -29,6 +29,7 @@ export type CodexManagedProfile = Readonly<{
   imageInput?: boolean;
   visionAnalysis?: boolean;
   checkpoints?: boolean;
+  toolObservations?: boolean;
   mcpTimeoutSeconds: number;
 }>;
 
@@ -66,6 +67,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     (input.artifacts !== undefined && typeof input.artifacts !== "boolean") ||
     (input.imageInput !== undefined && typeof input.imageInput !== "boolean") ||
     (input.checkpoints !== undefined && typeof input.checkpoints !== "boolean") ||
+    (input.toolObservations !== undefined && typeof input.toolObservations !== "boolean") ||
     (input.visionAnalysis !== undefined && typeof input.visionAnalysis !== "boolean") ||
     (input.images !== undefined && typeof input.images !== "boolean") ||
     (input.nativeWebSearch !== undefined && typeof input.nativeWebSearch !== "boolean") ||
@@ -127,7 +129,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     "[feedback]",
     'enabled = false'
   ];
-  if (input.mcpMode !== "off" || input.aiqsaSearch || input.artifacts || input.images || input.visionAnalysis || input.checkpoints) {
+  if (input.mcpMode !== "off" || input.aiqsaSearch || input.artifacts || input.images || input.visionAnalysis || input.checkpoints || input.toolObservations) {
     lines.push("", "[mcp_servers.aiqsa]",
       `url = ${JSON.stringify(`${gateway}/mcp`)}`,
       `bearer_token_env_var = ${JSON.stringify(CODEX_RUN_TOKEN_ENV)}`,
@@ -136,7 +138,8 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
       `tool_timeout_sec = ${input.mcpTimeoutSeconds}`,
       ...(input.mcpMode !== "all" ? [`enabled_tools = ${JSON.stringify([
         ...(input.mcpMode === "auto" ? ["find_tools", "call_tool"] : []), ...(input.aiqsaSearch ? ["aiqsa_search"] : []),
-        ...(input.artifacts ? ["create_artifact", "read_artifact"] : []), ...(input.images ? ["generate_image"] : []), ...(input.visionAnalysis ? ["analyze_image"] : []), ...(input.checkpoints ? ["checkpoint_outputs"] : [])])}`] : [])
+        ...(input.artifacts ? ["create_artifact", "read_artifact"] : []), ...(input.images ? ["generate_image"] : []), ...(input.visionAnalysis ? ["analyze_image"] : []), ...(input.checkpoints ? ["checkpoint_outputs"] : []),
+        ...(input.toolObservations ? ["read_tool_result"] : [])])}`] : [])
     );
   }
   return lines.join("\n") + "\n";

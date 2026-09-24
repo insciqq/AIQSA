@@ -77,6 +77,7 @@ import type {
 import type { McpSemanticRouter } from "../mcp/router";
 import { mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
 import type {
@@ -1918,7 +1919,7 @@ export async function prepareRun(
           pinned: frozenSkills.manifest.pinned.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })),
           available: frozenSkills.manifest.available.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })) },
         search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
-        visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints,
+        visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints, toolObservationVersion: 1,
         images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
         artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
           references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
@@ -1928,6 +1929,9 @@ export async function prepareRun(
     };
   }
   const baseNormalizedRequest: NormalizedRunRequest = {
+    ...(agent || modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
+      modelId: executionModelId, provider: executionProvider
+    }) === true ? { toolObservationVersion: 1 as const } : {}),
     ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
     ...(agent ? { agent } : {}),
@@ -2019,6 +2023,7 @@ export async function prepareRun(
   const nonKnowledgeClientTools = [
     ...skillToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
+    ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
         ...(visionAnalysis ? [analyzeImageTool(visionAnalysis)] : []),

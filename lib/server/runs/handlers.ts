@@ -86,6 +86,7 @@ export type RunHandlerDeps = {
     kick(): void;
   }>;
   vision?: import("../vision/service").VisionAnalysisService;
+  observations?: import("../toolObservations/sourceAdapters").ToolObservationService;
   images?: import("../images/service").ImageGenerationService;
   artifacts?: import("../artifacts/service").ArtifactService;
   allowFakeProvider?: boolean;
@@ -261,6 +262,7 @@ function recoveryDeps(
     | "knowledgeProviderDispatch"
     | "artifacts"
     | "skillTools"
+    | "observations"
     | "vision"
     | "images"
     | "memoryEgress"
@@ -285,6 +287,7 @@ function recoveryDeps(
     ...(deps.vision ? { vision: deps.vision } : {}),
     ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
     ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
+    ...(deps.observations ? { observations: deps.observations } : {}),
     ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
     ...(deps.mcp ? { mcp: deps.mcp } : {}),
     ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -768,6 +771,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.vision ? { vision: deps.vision } : {}),
       ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
       ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
+      ...(deps.observations ? { observations: deps.observations } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -988,6 +992,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(deps.vision ? { vision: deps.vision } : {}),
       ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
       ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
+      ...(deps.observations ? { observations: deps.observations } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -1012,6 +1017,7 @@ export function createGetModelRunHandler(
     | "knowledgeProviderDispatch"
     | "artifacts"
     | "skillTools"
+    | "observations"
     | "vision"
     | "images"
     | "memoryEgress"

@@ -11,6 +11,7 @@ import { knowledgeEvidenceAnswerDraftPromptV2 } from "../knowledge/evidenceAnswe
 import { resolveKnowledgeGroundingExecutionPolicyV1 } from "../knowledge/groundingExecutionPolicy";
 import { knowledgeAnswerHash } from "../knowledge/answerGroundingV5";
 import { createHash } from "node:crypto";
+import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
@@ -5168,6 +5169,62 @@ describe("run recovery", () => {
       })
     ]));
     expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it.each([false, true])("recovers only a checksum-verified original after a crash before settlement; missing bytes=%s", async missing => {
+    const observations = memoryToolObservations();
+    const business = vi.fn(async () => ({ text: "x".repeat(320 * 1024), tail: "rare-tail-271828" }));
+    await observations.service().withReservation({ producer: { runId, userId, toolCallId: "stored-call-1" }, source: "mcp", maximumBytes: 1024 * 1024 },
+      async receipt => receipt.store({ original: await business(), outcome: "complete", sourceTruncated: false, maskable: true }));
+    if (missing) observations.storage.objects.clear();
+    const runtimeCall = vi.fn();
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    const deps = { ...harness.deps, observations: observations.service() };
+    const base = checkpointedRun({ calls: [persistedRecoveryCall("running")], phase: "tools_running" });
+    const installed = installCheckpointState(harness, { ...base,
+      normalizedRequest: { ...base.normalizedRequest, toolObservationVersion: 1 } });
+    await refreshProviderRunIfNeeded(deps, runId, userId);
+    expect(business).toHaveBeenCalledOnce();
+    expect(runtimeCall).not.toHaveBeenCalled();
+    if (missing) {
+      expect(requests).toHaveLength(0);
+      expect(harness.state.completed).toBeNull();
+      expect(harness.state.recoveredErrors[0]?.error.code).toBe("tool_call_outcome_unknown");
+    } else {
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(harness.state.completed).not.toBeNull();
+      expect(installed.calls()[0]).toMatchObject({ state: "complete", result: { observation: { source: "mcp" } } });
+      expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("read_tool_result");
+      expect(Buffer.byteLength(JSON.stringify(requests[0]?.providerToolMessages))).toBeLessThan(10 * 1024);
+    }
+  });
+
+  it.each(["pending", "running", "complete"] as const)("reauthorizes a %s reader after restart without replaying its old fragment", async state => {
+    const observations = memoryToolObservations();
+    const reference = await observations.service().withReservation({ producer: { runId, userId, toolCallId: "original-call" }, source: "workspace", maximumBytes: 2048 },
+      receipt => receipt.store({ original: { text: "OLD_PRIVATE_FRAGMENT" }, outcome: "complete", sourceTruncated: false, maskable: true }));
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const deps = { ...harness.deps, observations: observations.service() };
+    observations.revoke();
+    const read = vi.spyOn(deps.observations, "read");
+    const base = checkpointedRun({ calls: [{ ...persistedRecoveryCall(state), toolName: "read_tool_result", mcpBinding: null,
+      arguments: { handle: reference.observation.handle }, result: state === "complete" ? snapshotToolExecutionResult({
+        callId: "provider-call-1", name: "read_tool_result", status: "complete", content: [{ type: "text", text: "OLD_PRIVATE_FRAGMENT" }]
+      }, toolLoopPersistenceLimits.resultBytes) : null }], phase: "tools_running", providerToolMessages: [] });
+    const installed = installCheckpointState(harness, { ...base, normalizedRequest: { ...base.normalizedRequest,
+      mcp: undefined, toolMode: "none", toolObservationVersion: 1 } });
+    await refreshProviderRunIfNeeded(deps, runId, userId);
+    expect(read).toHaveBeenCalledOnce();
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).not.toBeNull();
+    expect(installed.calls()).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("tool_observation_unavailable");
+    expect(JSON.stringify(requests[0]?.providerToolMessages)).not.toContain("OLD_PRIVATE_FRAGMENT");
   });
 
   it("recovers a pending session-status call without MCP or external tool dispatch", async () => {

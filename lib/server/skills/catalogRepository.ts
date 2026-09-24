@@ -7,7 +7,7 @@ import type { SkillRunCatalogEntry, SkillRunMaterialization } from "./runMateria
 const metadata = { id: true, name: true, description: true, fileCount: true, hasExecutables: true } satisfies Prisma.SkillRevisionSelect;
 const files = { select: { path: true, byteSize: true, kind: true, executable: true }, orderBy: { path: "asc" as const } };
 
-export function createSkillCatalogRepository(db: PrismaClient) {
+export function createSkillCatalogRepository(db: PrismaClient | Prisma.TransactionClient) {
   return {
     async loadedBeforeForMessages(userId: string, chatId: string, messageIds: readonly string[]): Promise<string[]> {
       if (!messageIds.length) return [];

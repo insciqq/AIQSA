@@ -3,9 +3,12 @@ import { isMcpDiscoveryFailureMessage } from "@/lib/contracts/mcpDiscoveryFailur
 import { mcpRuntimeErrorCode, mcpRuntimeErrorMessage } from "@/lib/contracts/mcp";
 import { observedFailure } from "../providers/providerObservability";
 import { runSettlementFailure } from "./settlementFailure";
+import { observationFailure } from "../toolObservations/contract";
 
 /** The code is evidence; arbitrary exception prose is never tool guidance. */
 export function executionFailure(error: unknown): Readonly<{ code: string; message: string }> {
+  const observation = observationFailure(error);
+  if (observation) return observation;
   const settlement = runSettlementFailure(error);
   if (settlement) return settlement;
   const observed = observedFailure(error);

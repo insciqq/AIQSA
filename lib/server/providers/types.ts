@@ -237,6 +237,8 @@ export type NormalizedRunRequest = {
   searchPlan: NormalizedSearchPlan;
   /** Server-owned admission marker; old runs retain their accepted tool set. */
   sessionStatusTool?: true;
+  /** Frozen store/reader policy. Absent on accepted historical runs. */
+  toolObservationVersion?: 1;
   /** Exact installation tool-loop limits frozen when the run is accepted. */
   toolBudgets?: Readonly<{
     mcpAutoDiscoveryTimeoutSeconds?: number;

@@ -41,6 +41,15 @@ export const dispatchableModelRunStatuses: ModelRunStatus[] = [
   "in_progress"
 ];
 
+export function isRecoveredRunTerminalPayload(value: unknown): boolean {
+  return isRecord(value) && value.recoveryTerminal === true;
+}
+
+export function activeToolLoopRun(run: Readonly<{ status: ModelRunStatus; errorPayload: unknown }>): boolean {
+  return dispatchableModelRunStatuses.includes(run.status) ||
+    (run.status === "error" && !isRecoveredRunTerminalPayload(run.errorPayload));
+}
+
 export const activeModelRunStatuses: ModelRunStatus[] = [
   "preparing",
   ...dispatchableModelRunStatuses

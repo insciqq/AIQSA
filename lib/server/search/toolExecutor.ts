@@ -82,7 +82,7 @@ export type SearchPlanToolRouter = Readonly<{
   execute(
     call: ModelToolCall,
     request: unknown,
-    options?: { signal?: AbortSignal }
+    options?: { signal?: AbortSignal; retainOriginal?: true }
   ): Promise<ToolExecutionResult>;
   optionIdsForTool(name: string): readonly string[];
   tools: readonly RunTool[];
@@ -738,7 +738,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
       stage = "result";
       logEvent("tool_execution", { tool_kind: "search", stage: "result", outcome: "started" });
       let resultDegraded = false;
-      const result = fitDurableSearchToolResult({
+      const result = (options?.retainOriginal ? searchToolExecutionResult : fitDurableSearchToolResult)({
         call,
         executions,
         name: call.name,

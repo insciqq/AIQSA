@@ -1,4 +1,5 @@
 import * as workspaceCheckpoints from "../workspace/checkpoints";
+import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { workspaceCheckpointResult } from "../workspace/checkpointResult";
 import * as workspaceImageViewer from "../workspace/directImageView";
 import { prepareWorkspaceImages } from "../workspace/imageCapture";
@@ -5613,6 +5614,48 @@ describe("run execution", () => {
       state: revoked ? "error" : "complete"
     });
     expect(events.some((event) => event.type === "done")).toBe(true);
+  });
+
+  it.each([false, true])("recalls a large MCP original through the public reader, with duplicate representation=%s", async duplicate => {
+    const name = "mcp_synthetic_records";
+    const mcp: McpRunPlanSnapshot = { version: 1,
+      servers: [{ fingerprint: "a".repeat(64), revisionId: "synthetic-revision", serverId: "synthetic-server", serverName: "Records" }],
+      tools: [{ definitionHash: "b".repeat(64), description: "Read records", inputSchema: { type: "object" },
+        name: "records", namespacedName: name, originalName: "records", serverId: "synthetic-server", serverName: "Records" }] };
+    const original = { padding: "x".repeat(320 * 1024), tail: { marker: "rare-tail", count: 271828 } };
+    const callTool = vi.fn(async () => ({ isError: false, text: [JSON.stringify(original)],
+      structuredContent: duplicate ? original : null, unsupportedContentTypes: [] }));
+    const repository = createRepository();
+    const observations = memoryToolObservations();
+    const requests: ProviderRunRequest[] = [];
+    const base = preparedData({ mcp, modelId: "synthetic-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, toolObservationVersion: 1 as const },
+      providerRequest: { ...base.providerRequest, toolObservationVersion: 1 as const } };
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      expect(request.tools?.some(tool => tool.name === "read_tool_result")).toBe(true);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ id: "original", name, arguments: {} }] });
+      const transcript = JSON.stringify(request.providerToolMessages);
+      expect(Buffer.byteLength(transcript)).toBeLessThan(40 * 1024);
+      if (requests.length === 2) {
+        expect(transcript).not.toContain("rare-tail");
+        const handle = transcript.match(/tor1_[a-f0-9]{32}/u)?.[0];
+        expect(handle).toBeDefined();
+        return providerResult({ finalText: "", toolCalls: [{ id: "recall", name: "read_tool_result", arguments: { handle, query: "rare-tail" } }] });
+      }
+      expect(transcript).toContain("271828");
+      return providerResult({ finalText: "271828" });
+    });
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } }), observations: observations.service() }).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns[0]?.finalText).toBe("271828");
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(3);
+    expect([...repository.toolCalls.values()].map(call => call.state)).toEqual(["complete", "complete"]);
+    expect(Buffer.byteLength(JSON.stringify([...repository.toolCalls.values()]))).toBeLessThan(40 * 1024);
+    expect(observations.rows.size).toBe(1);
+    expect([...observations.rows.values()][0]).toMatchObject({ state: "READY", storageMode: "OBJECT", executionOutcome: "complete" });
   });
 
   it("publishes the reached budget and terminalizes a forbidden synthesis without losing text or work", async () => {

@@ -491,6 +491,11 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
                 WHERE pdf_artifact."storageKey" = job."storageKey"
                 UNION ALL SELECT 1 FROM "SkillRevisionFile" AS skill_file
                 WHERE skill_file."storageKey" = job."storageKey"
+                UNION ALL SELECT 1 FROM "ToolObservation" AS observation
+                WHERE observation."storageKey" = job."storageKey" AND (
+                  observation."state" = 'READY' OR
+                  (observation."state" = 'STORING' AND observation."leaseExpiresAt" > ${now})
+                )
                 UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
                 WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
                 UNION ALL SELECT 1 FROM "WorkspaceCapturedFile" AS captured_file
@@ -711,6 +716,11 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             WHERE pdf_artifact."storageKey" = job."storageKey"
             UNION ALL SELECT 1 FROM "SkillRevisionFile" AS skill_file
             WHERE skill_file."storageKey" = job."storageKey"
+            UNION ALL SELECT 1 FROM "ToolObservation" AS observation
+            WHERE observation."storageKey" = job."storageKey" AND (
+              observation."state" = 'READY' OR
+              (observation."state" = 'STORING' AND observation."leaseExpiresAt" > ${now})
+            )
             UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
             WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
             UNION ALL SELECT 1 FROM "WorkspaceCapturedFile" AS captured_file
