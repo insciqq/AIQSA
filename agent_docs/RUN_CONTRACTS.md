@@ -67,7 +67,7 @@ Workspace shares that loop. Admission freezes ready runtime/image, official cata
 
 Mid-run capture requires coherent bytes and current authority; unsupported coherence fails closed. Preserve the running executor and final-export quiescence. Shared image validation is model-independent; transformations retain source identity/geometry. Consumers own publication/provider delivery.
 
-Direct viewing requires verified main-model image input; filenames/tool prose cannot prove pixel delivery. Independently admitted System Vision receives only ordered selected images and a focused question, returning untrusted text. Absence never substitutes another role. Prefer admitted direct viewing without automatically paying both models.
+New Workspace runs use independently admitted System Vision regardless of answer model/provider. Native/direct viewing is disabled. Only ordered selected images and a focused question reach Vision; results remain untrusted. Unavailability never substitutes routes. Accepted runs retain frozen modality and recovery evidence.
 
 Exact image edits preserve pixels; generative edits synthesize requested changes. Source/reference/version provenance determines identity. Saving, visual inspection and application validation remain separate claims.
 
