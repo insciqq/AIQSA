@@ -6,7 +6,7 @@ import {
   type ThreadWorkspaceOutputStatus
 } from "@/lib/contracts/workspace";
 import { formatWorkDurationV2 } from "./runPresentation";
-import { isWorkspaceActivityActive, mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import { closeWorkspaceActivityEntries, isWorkspaceActivityActive, mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import { isExploredWorkspaceCommand } from "./workspaceCommandClassification";
 
 /**
@@ -38,9 +38,11 @@ function liveEntries(events: readonly RunEventView[]): ThreadWorkspaceActivityEn
  */
 export function presentWorkspaceActivityV2(
   events: readonly RunEventView[],
-  persisted: ThreadWorkspaceActivity | null = null
+  persisted: ThreadWorkspaceActivity | null = null,
+  terminal = false
 ): ThreadWorkspaceActivity | null {
-  return mergeWorkspaceActivity(persisted, { entries: liveEntries(events) });
+  const activity = mergeWorkspaceActivity(persisted, { entries: liveEntries(events) });
+  return activity ? { ...activity, entries: closeWorkspaceActivityEntries(activity.entries, terminal) } : null;
 }
 
 /** Consecutive successful existence/stat checks collapse into one "Checked N files" row. */
@@ -82,6 +84,8 @@ export function collapsedCommandV2(preview: string): string {
 function commandLabel(entry: ThreadWorkspaceActivityEntry): string {
   const command = collapsedCommandV2(entry.command?.preview ?? "command");
   if (entry.phase === "failed") return `${command} failed`;
+  if (entry.phase === "closed") return `${command} · exit not observed`;
+  if (entry.phase === "unknown") return `${command} · outcome unconfirmed`;
   return `${workspaceCommandVerbV2(entry)} ${command}${isWorkspaceActivityActive(entry) ? "…" : ""}`;
 }
 
@@ -114,7 +118,7 @@ function fileLabel(entry: ThreadWorkspaceActivityEntry): string {
       return running ? `Creating folder ${path}…` : failed ? `Could not create folder ${path}` : `Created folder ${path}`;
     default:
       if (running) return `Checking ${path}…`;
-      if (failed) return `Could not find ${path}`;
+      if (failed) return `Could not check ${path}`;
       return entry.count && entry.count > 1 ? `Checked ${plural(entry.count, "file")}` : `Checked ${path}`;
   }
 }
@@ -122,6 +126,12 @@ function fileLabel(entry: ThreadWorkspaceActivityEntry): string {
 /** The one human phrase for a row; server kinds never reach the reader. */
 export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): string {
   const running = entry.phase === "requested" || entry.phase === "running";
+  if (entry.kind === "execution_status") return entry.phase === "closed"
+    ? "Workspace execution ended" : "Workspace cleanup unconfirmed";
+  if (entry.kind !== "command" && entry.kind !== "plan" && (entry.phase === "closed" || entry.phase === "unknown")) {
+    const target = entry.file?.displayPath ?? entry.mcp?.toolName;
+    return `${target ?? "Workspace step"} · outcome unconfirmed`;
+  }
   switch (entry.kind) {
     case "workspace_start":
       if (running) return "Starting workspace…";
@@ -165,8 +175,11 @@ export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): s
   }
 }
 
-export function workspaceActivityHasFailureV2(activity: ThreadWorkspaceActivity | null): boolean {
-  return (activity?.entries ?? []).some((entry) => entry.phase === "failed" || entry.phase === "cancelled");
+export function workspaceActivityOutcomeV2(activity: ThreadWorkspaceActivity | null): string | null {
+  if (activity?.entries.some(entry => entry.kind === "execution_status" && entry.phase === "unknown")) return "Cleanup unconfirmed";
+  if (activity?.outputStatus?.state === "failed") return "File export failed";
+  if (activity?.entries.some(entry => entry.phase === "unknown")) return "Some outcomes unconfirmed";
+  return null;
 }
 
 export const WORKSPACE_RECREATED_NOTICE_V2 =

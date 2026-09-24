@@ -167,6 +167,10 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
             chatTitleModel: body.chatTitleProviderModelId ? { ...pick(body.chatTitleProviderModelId)!, available: true } : null,
             chatTitleReasoningEffort: body.chatTitleReasoningEffort as string | null
           } : {}),
+          ...(Object.hasOwn(body, "visionProviderModelId") ? {
+            visionModel: body.visionProviderModelId ? { ...pick(body.visionProviderModelId)!, available: true } : null,
+            visionReasoningEffort: body.visionReasoningEffort as string | null
+          } : {}),
           ...(Object.hasOwn(body, "chatPdfProviderModelId") ? {
             chatPdfModel: body.chatPdfProviderModelId ? { ...pick(body.chatPdfProviderModelId)!, available: true } : null,
             chatPdfReasoningEffort: body.chatPdfReasoningEffort as string | null
@@ -246,6 +250,54 @@ const patchesTo = (calls: Call[], url: string) => calls.filter((call) => call.ur
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AdminRolesSection", () => {
+  it.each([false, true])("checks image input then assigns only Vision without overwriting concurrent changes (%s)", async (concurrent) => {
+    const catalog = rolesCatalog();
+    const calls = server(catalog);
+    const original = globalThis.fetch;
+    if (concurrent) vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await original(input, init);
+      if (init?.method === "POST") {
+        const body = await response.json();
+        body.systemModelPolicy.policy.version += 1;
+        return Response.json(body);
+      }
+      return response;
+    }));
+    const { reportError } = renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Vision deployment" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Vision deployment" })).getByRole("button", { name: /Check .*GPT Luna/ }));
+    if (concurrent) {
+      await waitFor(() => expect(reportError).toHaveBeenCalledWith(expect.stringMatching(/changed elsewhere/)));
+      expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([]);
+      expect(screen.getByRole("dialog", { name: "Vision deployment" })).toBeVisible();
+    } else {
+      await waitFor(() => expect(screen.getByTestId("admin-role-vision-status")).toHaveTextContent("Model ready"));
+      expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+        { expectedVersion: 1, visionProviderModelId: "luna", visionReasoningEffort: null }
+      ]);
+      expect(calls.find((call) => call.method === "POST")?.body).toEqual({ providerModelId: "luna", role: "vision" });
+      expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Fallback not set");
+    }
+  });
+  it("allows clearing a verified Vision assignment without an image analysis consumer and preserves PDF", async () => {
+    const catalog = rolesCatalog();
+    catalog.visionAnalysisAvailable = false;
+    catalog.policy.visionModel = { ...luna, visionInput: "verified", available: true };
+    catalog.policy.visionReasoningEffort = "low";
+    catalog.policy.chatPdfModel = { ...luna, visionInput: "verified", available: true };
+    const calls = server(catalog);
+    renderSection();
+    const row = await screen.findByTestId("admin-role-vision");
+    expect(within(row).getByText(/image analysis tool is not available/)).toBeVisible();
+    expect(within(row).getByTestId("admin-role-vision-status")).toHaveTextContent("Model ready");
+    fireEvent.click(within(row).getByRole("button", { name: "Vision Model actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
+    await waitFor(() => expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+      { expectedVersion: 1, visionProviderModelId: null, visionReasoningEffort: null }
+    ]));
+    await waitFor(() => expect(within(row).getByTestId("admin-role-vision-status")).toHaveTextContent("Not assigned"));
+    expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Fallback ready");
+  });
   it("previews the qualified model and effort, applies only Memory and restores the previous choice with Undo", async () => {
     const catalog = rolesCatalog();
     catalog.memoryPolicy.recommendations = [{ id: "terra-low-memory-v1", modelName: "GPT Terra", displayName: "GPT Terra",

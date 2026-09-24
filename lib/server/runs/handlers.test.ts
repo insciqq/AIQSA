@@ -3084,10 +3084,11 @@ describe("model run route handlers", () => {
     expect(state.failed).toMatchObject({
       error: {
         code: "provider_stream_failed",
-        message: "provider exploded"
+        message: "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."
       },
       runId: "run-1"
     });
+    expect(JSON.stringify(liveEvents)).not.toContain("provider exploded");
   });
 
   it("does not refresh a safety-failed run after its provider response id was published", async () => {

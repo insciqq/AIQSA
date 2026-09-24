@@ -22,12 +22,18 @@ export function mergeWorkspaceActivityEntry(
     next.sequence === previous.sequence && previous.runOutcome !== undefined && next.runOutcome === undefined;
   const [older, newer] = nextIsOlder ? [next, previous] : [previous, next];
   const firstSequence = Math.min(older.firstSequence ?? older.sequence ?? Infinity, newer.firstSequence ?? newer.sequence ?? Infinity);
-  const base = {
+  const projected = {
     ...newer,
+    ...((newer.runOutcome !== undefined || newer.phase === "closed" || newer.phase === "unknown") &&
+      !isWorkspaceActivityActive(older) && !older.runOutcome && older.phase !== "unknown" &&
+      (older.phase !== "closed" || newer.phase === "unknown" || newer.runOutcome !== undefined)
+      ? { phase: older.phase, ...(older.runOutcome ? { runOutcome: older.runOutcome } : {}) } : {}),
     ...(Number.isFinite(firstSequence) ? { firstSequence } : {}),
     ...(newer.kind !== "plan" && isWorkspaceActivityActive(newer) && !isWorkspaceActivityActive(older)
       ? { phase: older.phase, ...(older.runOutcome ? { runOutcome: older.runOutcome } : {}) } : {})
   };
+  const { runOutcome: projectedOutcome, ...facts } = projected;
+  const base = { ...facts, ...(projectedOutcome === projected.phase ? { runOutcome: projectedOutcome } : {}) };
   const command = newer.command;
   if (!command) return base;
   // Select output by its source event, including inherited snapshots. Never
@@ -63,7 +69,7 @@ export function isWorkspaceActivityActive(entry: ThreadWorkspaceActivityEntry): 
   return entry.kind !== "elided" && (entry.phase === "requested" || entry.phase === "running");
 }
 
-const lifecycleKinds = new Set(["workspace_start", "workspace_recreated", "workspace_stopped", "attachments_prepare", "outputs_export"]);
+const lifecycleKinds = new Set(["execution_status", "workspace_start", "workspace_recreated", "workspace_stopped", "attachments_prepare", "outputs_export"]);
 
 function elision(entries: readonly ThreadWorkspaceActivityEntry[]): ThreadWorkspaceActivityEntry | undefined {
   return entries.filter((entry) => entry.kind === "elided").sort((left, right) =>
@@ -116,7 +122,7 @@ export function compactWorkspaceActivityEntries(
 function logicalRows(activity: ThreadWorkspaceActivity | null | undefined): ThreadWorkspaceActivityEntry[] {
   const byId = new Map<string, ThreadWorkspaceActivityEntry>();
   for (const entry of activity?.entries ?? []) byId.set(entry.id, mergeWorkspaceActivityEntry(byId.get(entry.id), entry));
-  return compactWorkspaceActivityEntries([...byId.values()]);
+  return compactWorkspaceActivityEntries(closeWorkspaceActivityEntries([...byId.values()]));
 }
 
 export function mergeWorkspaceActivity(
@@ -140,13 +146,47 @@ export function mergeWorkspaceActivity(
     if (marker && entry.sequence !== undefined && entry.sequence <= marker.throughSequence! && !retained.has(entry.id)) continue;
     byId.set(entry.id, mergeWorkspaceActivityEntry(byId.get(entry.id), entry));
   }
-  const outputStatus = next?.outputStatus ?? previous?.outputStatus;
+  const outputStatus = mergeWorkspaceOutputStatus(previous?.outputStatus, next?.outputStatus);
   if (!byId.size && !outputStatus && !marker) return null;
-  const entries = compactWorkspaceActivityEntries([...marker ? [marker] : [], ...byId.values()]);
+  const entries = compactWorkspaceActivityEntries(closeWorkspaceActivityEntries([...marker ? [marker] : [], ...byId.values()]));
   const truncated = previous?.truncated === true || next?.truncated === true || entries.some((entry) => entry.kind === "elided");
   return {
-    entries,
+    entries: closeWorkspaceActivityEntries(entries).map(entry => entry.kind === "outputs_export" && outputStatus
+      ? { ...entry, phase: outputStatus.state === "complete" ? "succeeded" : outputStatus.state === "failed" ? "failed" : "running" }
+      : entry),
     ...(outputStatus ? { outputStatus } : {}),
     ...(truncated ? { truncated: true } : {})
   };
+}
+
+/** Terminal presentation consumes an existing retirement receipt; it never invents exits. */
+export function closeWorkspaceActivityEntries(
+  entries: readonly ThreadWorkspaceActivityEntry[], terminal = false
+): ThreadWorkspaceActivityEntry[] {
+  const receipt = entries.find(entry => entry.kind === "execution_status");
+  if (!receipt && !terminal) return [...entries];
+  return entries.map(entry => {
+    if (entry.kind === "outputs_export" || entry.kind === "elided" ||
+      !(isWorkspaceActivityActive(entry) || entry.phase === "unknown" || entry.runOutcome !== undefined)) return entry;
+    const execution = !lifecycleKinds.has(entry.kind) && entry.kind !== "plan" && entry.kind !== "agent_note";
+    const { runOutcome: _runOutcome, ...facts } = entry;
+    return { ...facts, phase: receipt?.phase === "closed" && execution ? "closed" : "unknown" };
+  });
+}
+
+export function mergeWorkspaceOutputStatus(
+  previous: ThreadWorkspaceActivity["outputStatus"], next: ThreadWorkspaceActivity["outputStatus"]
+): ThreadWorkspaceActivity["outputStatus"] {
+  if (!previous) return next;
+  if (!next || previous.state === "complete") return previous;
+  if (next.state === "complete") return next;
+  if (previous.revision || next.revision) {
+    if (previous.revision !== next.revision) return (next.revision ?? "") > (previous.revision ?? "") ? next : previous;
+    // Lease expiry changes the read projection without rewriting the binding.
+    // Equal revisions therefore advance conservatively, never back to exporting.
+    const rank = { exporting: 0, retrying: 1, failed: 2 };
+    return rank[next.state] > rank[previous.state] ? next : previous;
+  }
+  // Legacy unversioned snapshots cannot erase a known terminal export failure.
+  return previous.state === "failed" ? previous : next;
 }

@@ -88,6 +88,7 @@ export type AdminSystemModelPolicyCatalog = {
   candidates: AdminSystemModelCandidate[];
   titleCandidates: AdminSystemModelCandidate[];
   documentCandidates: AdminSystemModelCandidate[];
+  visionAnalysisAvailable?: boolean;
   verificationCandidates: AdminSystemModelCandidate[];
   /** Every answer deployment that is not ready for the role, with the reason. */
   ineligible: Record<AdminSystemModelEligibilityRole, AdminSystemModelIneligibleCandidate[]>;
@@ -103,6 +104,8 @@ export type AdminSystemModelPolicyCatalog = {
     chatTitleReasoningEffort: string | null;
     chatPdfNativeModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatPdfNativeReasoningEffort?: string | null;
+    visionModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
+    visionReasoningEffort?: string | null;
     chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatPdfReasoningEffort: string | null;
     chatPdfProcessingMode?: ChatPdfProcessingMode;
@@ -237,6 +240,12 @@ export function decodeAdminSystemModelPolicyResponse(
     !catalog.rerankerCandidates.every(baseCandidate) ||
     !record(catalog.policy)) return null;
   const policy = catalog.policy;
+  if (catalog.visionAnalysisAvailable !== undefined && typeof catalog.visionAnalysisAvailable !== "boolean" ||
+    Object.hasOwn(policy, "visionModel") !== Object.hasOwn(policy, "visionReasoningEffort") ||
+    (policy.visionModel !== undefined && policy.visionModel !== null &&
+      (!record(policy.visionModel) || typeof policy.visionModel.available !== "boolean" || !candidate(policy.visionModel))) ||
+    (policy.visionReasoningEffort !== undefined && policy.visionReasoningEffort !== null && !boundedText(policy.visionReasoningEffort, 32)) ||
+    (!policy.visionModel && policy.visionReasoningEffort != null)) return null;
   if (catalog.decisionCandidates !== undefined && (!Array.isArray(catalog.decisionCandidates) || !catalog.decisionCandidates.every(baseCandidate)) ||
     policy.decisionModel !== undefined && policy.decisionModel !== null && (!record(policy.decisionModel) ||
       !baseCandidate(policy.decisionModel) || typeof policy.decisionModel.available !== "boolean") ||
@@ -308,6 +317,7 @@ export function decodeAdminSystemModelPolicyResponse(
       candidates: catalog.candidates,
       titleCandidates: catalog.titleCandidates,
       documentCandidates: catalog.documentCandidates,
+      ...(catalog.visionAnalysisAvailable === undefined ? {} : { visionAnalysisAvailable: catalog.visionAnalysisAvailable }),
       verificationCandidates: catalog.verificationCandidates,
       ineligible,
       rerankerCandidates: catalog.rerankerCandidates,
@@ -320,6 +330,10 @@ export function decodeAdminSystemModelPolicyResponse(
         imageParameters: (policy.imageParameters ?? {}) as ImageGenerationParameters,
         chatTitleModel: policy.chatTitleModel as AdminSystemModelPolicyCatalog["policy"]["chatTitleModel"],
         chatTitleReasoningEffort: policy.chatTitleReasoningEffort as string | null,
+        ...(Object.hasOwn(policy, "visionModel") ? {
+          visionModel: policy.visionModel as AdminSystemModelPolicyCatalog["policy"]["visionModel"],
+          visionReasoningEffort: policy.visionReasoningEffort as string | null
+        } : {}),
         chatPdfModel: policy.chatPdfModel as AdminSystemModelPolicyCatalog["policy"]["chatPdfModel"],
         chatPdfReasoningEffort: policy.chatPdfReasoningEffort as string | null,
         ...(Object.hasOwn(policy, "chatPdfNativeModel") ? {

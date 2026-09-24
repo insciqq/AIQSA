@@ -1,4 +1,4 @@
-import sharp from "sharp";
+import { validateStaticRaster } from "../uploads/staticRaster";
 import {
   IMAGE_MAX_BYTES, IMAGE_MAX_INPUT_BYTES, IMAGE_MAX_INPUTS, IMAGE_MAX_PIXELS, IMAGE_MAX_PROMPT_CHARACTERS,
   IMAGE_MIME_TYPES, normalizeImageGenerationParameters,
@@ -54,14 +54,9 @@ export async function validateGeneratedImage(bytes: Uint8Array, declaredMime?: u
 }> {
   if (!bytes.byteLength || bytes.byteLength > IMAGE_MAX_BYTES) throw new ImageGenerationError("image_response_too_large");
   try {
-    const decoder = sharp(bytes, { limitInputPixels: IMAGE_MAX_PIXELS, failOn: "warning" });
-    const metadata = await decoder.metadata();
-    const mimeType = `image/${metadata.format}`;
-    if (!IMAGE_MIME_TYPES.includes(mimeType as GeneratedImageMimeType) ||
-      declaredMime !== undefined && declaredMime !== mimeType || !metadata.width || !metadata.height ||
-      (metadata.pages ?? 1) !== 1 || metadata.width * metadata.height > IMAGE_MAX_PIXELS) throw new Error("invalid");
-    await decoder.stats();
-    return { mimeType: mimeType as GeneratedImageMimeType, width: metadata.width, height: metadata.height };
+    return await validateStaticRaster(bytes, {
+      maxBytes: IMAGE_MAX_BYTES, maxPixels: IMAGE_MAX_PIXELS, mimeTypes: IMAGE_MIME_TYPES
+    }, { declaredMime });
   } catch {
     throw new ImageGenerationError("image_response_invalid");
   }

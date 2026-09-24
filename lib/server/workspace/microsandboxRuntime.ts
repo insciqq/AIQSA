@@ -8,6 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { logEvent } from "../observability";
 import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
+import { workspaceMcpFailure } from "./operationFailure";
 import {
   Destination,
   Image,
@@ -52,6 +53,8 @@ import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
+import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
+import { SELECTED_FILE_CAPTURE_GUEST } from "./selectedFileGuest";
 import { PROJECT_ARCHIVE_MAX_ENTRIES, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceSkillRunState } from "./skillRunState";
 import { WORKSPACE_SKILL_GUEST_SCRIPT } from "./skillGuest";
@@ -165,18 +168,12 @@ function boundedBytes(value: Uint8Array, maximum: number): Readonly<{
   };
 }
 
-function boundedMcpResult(value: unknown, maximum: number): WorkspaceToolResult {
+function boundedMcpResult(value: unknown, maximum: number, tool: WorkspaceMcpToolName): WorkspaceToolResult {
   const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-  if (record.isError === true) {
-    // Official errors may include runtime identity/status or raw SDK details.
-    // They are never lifecycle evidence and never authorize a retry.
-    return {
-      content: [{ text: "The Workspace operation failed.", type: "text" }],
-      status: "error"
-    };
-  }
+  const failure = workspaceMcpFailure(value, maximum, tool);
+  if (failure) return failure;
   const content = Array.isArray(record.content) ? record.content : [];
   const chunks: Uint8Array[] = [];
   for (const item of content) {
@@ -323,6 +320,96 @@ function readStreamBody(
       }
     }
   }, { highWaterMark: 0 });
+}
+
+/** Keep guest read leases alive until the receiver has verified its private copy. */
+async function openSelectedFiles(sandbox: Sandbox, selection: WorkspaceFileSelection,
+  outputDirectory: string, config: WorkspaceConfig, signal: AbortSignal) {
+  const failed = () => new WorkspaceRuntimeError("workspace_output_export_failed");
+  const paths = selection.files.map(file => `${file.root === "output" ? outputDirectory : `${WORKSPACE_ROOT}/${file.root}`}/${file.relativePath}`);
+  const request = Buffer.from(JSON.stringify({ paths, fileMaxBytes: config.outputFileMaxBytes, totalMaxBytes: config.outputTotalMaxBytes }) + "\n");
+  if (request.byteLength > 65536) throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
+  signal.throwIfAborted();
+  const handle = await sandbox.execStreamWith("/usr/bin/python3", builder => builder
+    .args(["-I", "-u", "-c", SELECTED_FILE_CAPTURE_GUEST]).stdinPipe().timeout(30_000));
+  let sink: Awaited<ReturnType<ExecHandle["takeStdin"]>> = null;
+  let closed = false, exited = false, received = 0, pending = "";
+  let pid: number | undefined;
+  const abort = () => { void handle.kill().catch(() => undefined); };
+  signal.addEventListener("abort", abort, { once: true });
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    signal.removeEventListener("abort", abort);
+    await readStreamWithAbort(async () => {
+      if (!exited) await handle.kill().catch(() => undefined);
+      await sink?.[Symbol.asyncDispose]().catch(() => undefined);
+      await handle[Symbol.asyncDispose]().catch(() => undefined);
+    }, AbortSignal.timeout(2_000)).catch(() => undefined);
+  };
+  const reply = () => readStreamWithAbort(async (): Promise<Record<string, unknown>> => {
+    for (;;) {
+      const newline = pending.indexOf("\n");
+      if (newline >= 0) {
+        const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
+        let value: unknown;
+        try { value = JSON.parse(line); } catch { throw failed(); }
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw failed();
+        const record = value as Record<string, unknown>;
+        if (record.error === "limit") throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
+        if (record.error === "timeout") throw new WorkspaceRuntimeError("workspace_tool_timeout");
+        if (record.error === "source_busy") throw new WorkspaceRuntimeError("workspace_capture_source_busy");
+        if (record.error === "source_invalid") throw new WorkspaceRuntimeError("workspace_capture_source_invalid");
+        if (record.error === "unsupported") throw new WorkspaceRuntimeError("workspace_capture_unsupported");
+        if (record.error !== undefined) throw failed();
+        return record;
+      }
+      const event = await handle.recv();
+      if (!event || event.kind === "exited") throw failed();
+      if (event.kind === "started") pid = event.pid;
+      if (event.kind === "stderr") throw failed();
+      if (event.kind === "stdout") {
+        received += event.data.byteLength;
+        if (received > 64 * 1024) throw failed();
+        // The helper protocol is ASCII metadata, never file bytes or names.
+        pending += Buffer.from(event.data).toString("utf8");
+      }
+    }
+  }, signal);
+  try {
+    signal.throwIfAborted();
+    sink = await handle.takeStdin();
+    if (!sink) throw failed();
+    await readStreamWithAbort(() => sink!.write(request), signal);
+    const initial = await reply();
+    if (!Number.isSafeInteger(pid) || !pid || pid < 1 || initial.pid !== pid ||
+      !Array.isArray(initial.files) || initial.files.length !== selection.files.length) throw failed();
+    const descriptors = new Set<number>();
+    const outputs = initial.files.map((value: unknown, index): WorkspaceOutputStream => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw failed();
+      const file = value as Record<string, unknown>;
+      if (!Number.isSafeInteger(file.fd) || (file.fd as number) < 3 || (file.fd as number) > 1_048_576 || descriptors.has(file.fd as number)) throw failed();
+      descriptors.add(file.fd as number);
+      const source = selection.files[index]!;
+      const relativePath = `${source.root}/${source.relativePath}`;
+      return { byteSize: file.byteSize as number, checksum: file.checksum as string,
+        mimeType: mimeTypeForPath(source.relativePath), relativePath,
+        opaqueFileId: createHash("sha256").update(relativePath).digest("hex"),
+        body: readStreamBody(() => sandbox.fs().readStream(`/proc/${pid}/fd/${file.fd}`)) };
+    });
+    outputIdentities(outputs, config, true);
+    return { outputs, close, validate: async () => {
+      signal.throwIfAborted();
+      await readStreamWithAbort(() => sink!.write("finish\n"), signal);
+      if ((await reply()).complete !== true) throw failed();
+      const status = await readStreamWithAbort(() => handle.wait(), signal);
+      if (status.code !== 0) throw failed();
+      exited = true;
+    } };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
 
 async function consumeGuestFile(
@@ -1149,16 +1236,21 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         timeout: requestTimeoutMs
       });
       if (input.originalName === "sandbox_exec_start") {
+        const failure = workspaceMcpFailure(result, this.config.toolOutputMaxBytes, input.originalName);
+        if (failure) {
+          finishRequest({ outcome: "failed", code: failure.errorCode });
+          return failure;
+        }
         const id = execSessionIdFrom(result);
         if (!id) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         session.execOwners.set(id, input.modelRunId);
-        const normalized = { ...boundedMcpResult(result, this.config.toolOutputMaxBytes), execSessionId: id };
-        finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed" });
+        const normalized = { ...boundedMcpResult(result, this.config.toolOutputMaxBytes, input.originalName), execSessionId: id };
+        finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed", code: normalized.errorCode });
         return normalized;
       }
       // Closing an MCP observation cannot discharge descendant ownership.
-      const normalized = boundedMcpResult(result, this.config.toolOutputMaxBytes);
-      finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed" });
+      const normalized = boundedMcpResult(result, this.config.toolOutputMaxBytes, input.originalName);
+      finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed", code: normalized.errorCode });
       return normalized;
     } catch (error) {
       const timedOut = error instanceof McpError && error.code === ErrorCode.RequestTimeout;
@@ -1169,7 +1261,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       else logEvent("tool_execution", { tool_kind: "workspace", stage: "admission", outcome, ...facts });
       if (error instanceof WorkspaceRuntimeError) throw error;
       if (controller.signal.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
-      throw new WorkspaceRuntimeError("workspace_tool_timeout");
+      if (timedOut) throw new WorkspaceRuntimeError("workspace_tool_timeout");
+      if (error instanceof McpError && error.code === ErrorCode.InvalidParams) throw new WorkspaceRuntimeError("workspace_request_invalid");
+      throw new WorkspaceRuntimeError("workspace_tool_outcome_unknown");
     } finally {
       input.signal?.removeEventListener("abort", abort);
       controller.signal.removeEventListener("abort", onAbort);
@@ -1248,6 +1342,25 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+    const selection = selectedCaptureRequest(input, this.config.outputMaxFiles);
+    if (selection) {
+      const deadline = AbortSignal.timeout(30_000);
+      const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
+      let source: Awaited<ReturnType<typeof openSelectedFiles>> | undefined;
+      try {
+        return await this.outputCaptures().collect({ ...input, selection, signal }, async () => {
+          // Lookup never restarts the VM or reopens a mutable source path.
+          const session = await this.runningSession({ ...input, signal });
+          source = await openSelectedFiles(session.sandbox, selection, input.outputDirectory, this.config, signal);
+          return source.outputs;
+        }, () => source!.validate(), input.signal ?? null);
+      } catch (error) {
+        if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+        if (deadline.aborted) throw new WorkspaceRuntimeError("workspace_tool_timeout");
+        if (error instanceof WorkspaceRuntimeError) throw error;
+        throw new WorkspaceRuntimeError("workspace_output_export_failed");
+      } finally { await source?.close(); }
+    }
     if (input.capture) {
       await this.runningSession(input);
       return this.outputCaptures().collect(input, () => this.collectCurrentOutputs(input));

@@ -218,3 +218,10 @@ describe("shell labels", () => {
     );
   });
 });
+
+it("does not claim that timeout or cancellation proves command cleanup", () => {
+  expect(humanizeErrorCode("workspace_tool_timeout")).toContain("does not confirm that execution stopped");
+  expect(humanizeErrorCode("workspace_tool_cancelled")).toContain("does not confirm that execution stopped");
+  expect(humanizeErrorCode("workspace_execution_stopped")).toContain("exit outcome is unknown");
+  expect(humanizeErrorCode("workspace_execution_settlement_failed")).toContain("could not durably confirm cleanup");
+});

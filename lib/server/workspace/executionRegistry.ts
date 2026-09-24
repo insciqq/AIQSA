@@ -8,6 +8,8 @@ import type { WorkspaceOperation } from "./operationFence";
 import { workspaceOperationWhere } from "./sessionOperation";
 
 const SYNC_CLEANUP_PREFIX = "workspace-sync:";
+/** Stop proof says nothing about an unobserved command exit. No historical backfill. */
+export const WORKSPACE_EXECUTION_STOP_PROOF = "workspace_execution_stopped";
 
 /** Private obligation: the synchronous MCP handler exposes no process handle. */
 export function workspaceSyncCleanupId(modelRunToolCallId: string): string {
@@ -36,6 +38,8 @@ export const UNREGISTERED_WORKSPACE_COMMAND_FILTER = {
  * executions a terminal run still has to quiesce.
  */
 export type WorkspaceExecutionRecord = Readonly<{
+  /** Old LOST/error rows have no separate confirmed cleanup proof. */
+  stopConfirmed?: boolean;
   id: string;
   modelRunId: string;
   modelRunToolCallId: string;
@@ -85,6 +89,7 @@ export type WorkspaceExecutionRegistry = Readonly<{
 }>;
 
 const RECORD_SELECT = {
+  lastErrorCode: true,
   id: true,
   modelRunId: true,
   modelRunToolCallId: true,
@@ -94,6 +99,7 @@ const RECORD_SELECT = {
 } as const;
 
 function record(row: Readonly<{
+  lastErrorCode: string | null;
   id: string;
   modelRunId: string;
   modelRunToolCallId: string;
@@ -102,6 +108,7 @@ function record(row: Readonly<{
   workspaceSessionId: string;
 }>): WorkspaceExecutionRecord {
   return {
+    ...(row.state === "LOST" ? { stopConfirmed: row.lastErrorCode === WORKSPACE_EXECUTION_STOP_PROOF } : {}),
     id: row.id,
     modelRunId: row.modelRunId,
     modelRunToolCallId: row.modelRunToolCallId,
@@ -118,7 +125,7 @@ function isUniqueViolation(error: unknown): boolean {
 /** Caller holds the exact session lock after stop proof; null is reserved for an offline, disk-free installation restore. */
 export async function acknowledgeWorkspaceCommandsStopped(tx: Prisma.TransactionClient, sessionId: string | null): Promise<void> {
   await tx.workspaceExecution.updateMany({
-    data: { completedAt: new Date(), state: "LOST", lastErrorCode: "workspace_execution_cleanup_failed" },
+    data: { completedAt: new Date(), state: "LOST", lastErrorCode: WORKSPACE_EXECUTION_STOP_PROOF },
     where: { ...(sessionId !== null ? { workspaceSessionId: sessionId } : {}), state: { in: [...WORKSPACE_EXECUTION_OPEN_STATES] } }
   });
   // Record the stop proof for accepted dispatches whose reply/registration was
@@ -131,7 +138,7 @@ export async function acknowledgeWorkspaceCommandsStopped(tx: Prisma.Transaction
     )
     SELECT gen_random_uuid()::text, binding."workspaceSessionId", tc."modelRunId", tc."id",
       ${SYNC_CLEANUP_PREFIX} || encode(sha256(convert_to(tc."id", 'UTF8')), 'hex'),
-      'LOST'::"WorkspaceExecutionState", now(), now(), 'workspace_execution_cleanup_failed', now(), now()
+      'LOST'::"WorkspaceExecutionState", now(), now(), ${WORKSPACE_EXECUTION_STOP_PROOF}, now(), now()
     FROM "ModelRunToolCall" tc
     JOIN "WorkspaceRunBinding" binding ON binding."modelRunId" = tc."workspaceRunBindingId"
     WHERE ${sessionId !== null ? Prisma.sql`binding."workspaceSessionId" = ${sessionId}` : Prisma.sql`TRUE`}

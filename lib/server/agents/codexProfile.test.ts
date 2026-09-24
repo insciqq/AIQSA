@@ -12,11 +12,20 @@ const profile: CodexManagedProfile = {
 };
 
 describe("managed Codex invocation", () => {
+  it("exposes explicit checkpoints even with external MCP Off", () => {
+    expect(renderCodexManagedProfile({ ...profile, mcpMode: "off", checkpoints: true })).toContain('enabled_tools = ["checkpoint_outputs"]');
+  });
+  it("gates native image viewing independently of system analysis and external MCP", () => {
+    const text = renderCodexManagedProfile({ ...profile, mcpMode: "off", imageInput: false, visionAnalysis: true });
+    expect(text).toContain("[features]\nview_image = false");
+    expect(text).toContain('enabled_tools = ["analyze_image"]');
+    expect(renderCodexManagedProfile({ ...profile, imageInput: true })).toContain("view_image = true");
+  });
   it("allows two native reconnects without multiplying them through HTTP retries", () => {
     const config = renderCodexManagedProfile(profile);
     expect(config).toContain("stream_max_retries = 2\n");
     expect(config).toContain("request_max_retries = 0\n");
-    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(5);
+    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(7);
   });
   it.each([undefined, 5_000, 3_600_000, 86_400_000])("uses the admitted response budget for native idle reasoning: %s", (responseTimeoutMs) => {
     expect(renderCodexManagedProfile({ ...profile, responseTimeoutMs }))

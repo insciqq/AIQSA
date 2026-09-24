@@ -1,3 +1,9 @@
+import * as workspaceCheckpoints from "../workspace/checkpoints";
+import { workspaceCheckpointResult } from "../workspace/checkpointResult";
+import * as workspaceImageViewer from "../workspace/directImageView";
+import { prepareWorkspaceImages } from "../workspace/imageCapture";
+import sharp from "sharp";
+import { createHash } from "node:crypto";
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1448,6 +1454,81 @@ function followupFixture(repository: RunExecutionRepository) {
 }
 
 describe("run execution", () => {
+  it("keeps a checkpoint visible when the subsequent answer provider fails", async () => {
+    const view = { id: "checkpoint-1", description: "Intermediate design", createdAt: "2026-09-24T00:00:00.000Z" };
+    const execute = vi.fn(async (call: import("../tools/types").ModelToolCall) => workspaceCheckpointResult(call, view, "a".repeat(32), [{
+      attachmentId: "draft-attachment", byteSize: 20, fileName: "draft.psd", mimeType: "application/octet-stream",
+      relativePath: "project/draft.psd", checkpoint: view
+    }]));
+    const service = vi.spyOn(workspaceCheckpoints, "defaultWorkspaceCheckpoints").mockResolvedValue({ execute, restore: execute, recover: vi.fn() });
+    try {
+      const base = preparedData({ provider: "openai", modelId: "gpt-tool-model" });
+      const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, workspaceCheckpoints: true as const, workspace: completionWorkspace },
+        providerRequest: { ...base.providerRequest, workspaceCheckpoints: true as const, workspace: completionWorkspace } };
+      let rounds = 0;
+      let checkpointMessage = "";
+      const adapter = createAdapter(async function* (request) {
+        if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ id: "save", name: "checkpoint_outputs",
+          arguments: { files: ["project/draft.psd"], description: "Intermediate design" } }] });
+        checkpointMessage = JSON.stringify(request.providerToolMessages);
+        throw new Error("synthetic_provider_failure_after_checkpoint");
+      });
+      const repository = createRepository();
+      const events = await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+        workspace: { accepts: () => false, execute: vi.fn(), finalize: vi.fn(), recoverExports: vi.fn(), tools: async () => [],
+          handoff: async () => ({ status: "ready" }), settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) }
+      }).text();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(rounds).toBe(2);
+      expect(repository.completeRuns).toHaveLength(0);
+      expect(repository.failedRuns).toHaveLength(1);
+      expect(checkpointMessage).toContain("saved");
+      expect(events).toContain("workspace_checkpoint");
+      expect(events).toContain("draft-attachment");
+      expect(events).not.toContain("capture_id");
+    } finally { service.mockRestore(); }
+  });
+  it("delivers direct-view pixels only on the ephemeral provider copy and keeps safe activity", async () => {
+    const bytes = await sharp({ create: { width: 16, height: 12, channels: 3, background: "#f4932c" } }).png().toBuffer();
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const source = { captureId: "b".repeat(32), relativePath: "project/private-preview.png", byteSize: bytes.length, checksum,
+      assertAccess: async () => {}, open: async () => new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) };
+    const images = await prepareWorkspaceImages([{ source }]);
+    const descriptor = images[0]!.descriptor;
+    images[0]!.dispose();
+    const captures = { imageSource: async () => source, lookup: async () => ({}) } as unknown as
+      Parameters<typeof workspaceImageViewer.createWorkspaceImageViewer>[0];
+    const real = workspaceImageViewer.createWorkspaceImageViewer(captures);
+    const execute = vi.fn(async (call: import("../tools/types").ModelToolCall) => ({ callId: call.id, name: call.name, status: "complete" as const,
+      content: [{ type: "workspace_image" as const, value: { consumerKey: "private-call-key", descriptor } }] }));
+    const viewer = vi.spyOn(workspaceImageViewer, "defaultWorkspaceImageViewer").mockResolvedValue({ ...real, execute });
+    try {
+      const base = preparedData({ provider: "openai", modelId: "gpt-tool-model" });
+      const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, workspaceImageView: true as const, workspace: completionWorkspace },
+        providerRequest: { ...base.providerRequest, workspaceImageView: true as const, workspace: completionWorkspace } };
+      const requests: ProviderRunRequest[] = [];
+      const repository = createRepository();
+      const adapter = createAdapter(async function* (request) {
+        requests.push(request);
+        if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ id: "view", name: "view_workspace_image", arguments: { path: "/workspace/project/private-preview.png" } }] });
+        const output = request.providerToolMessages!.find((v: unknown) => (v as { type: string }).type === "function_call_output") as { output: Array<{ type: string; image_url: string }> };
+        expect(output.output[0]).toMatchObject({ type: "input_image", image_url: `data:image/png;base64,${bytes.toString("base64")}` });
+        return providerResult({ finalText: "The image is orange." });
+      });
+      const events = await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+        workspace: { accepts: () => false, execute: vi.fn(), finalize: vi.fn(), recoverExports: vi.fn(), tools: async () => [],
+          handoff: async () => ({ status: "ready" }), settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) }
+      }).text();
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns).toHaveLength(1);
+      expect(requests).toHaveLength(2);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(JSON.stringify([...repository.toolCalls.values()])).not.toContain("base64");
+      expect(JSON.stringify([...repository.toolCalls.values()])).toContain(descriptor.checksum);
+      expect(events).not.toMatch(/private-preview|private-call-key|base64/);
+    } finally { viewer.mockRestore(); }
+  });
+
   it("publishes Agent Follow-up availability before native output on the initial stream", async () => {
     const initial = chatUpdate();
     initial.messages = initial.messages.map(message => message.role === "assistant" ? {
@@ -2652,7 +2733,7 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([
       {
         assistantMessageId: "assistant-1",
-        error: { code: "provider_stream_failed", message: "openrouter_stream_truncated" },
+        error: { code: "provider_stream_failed", message: "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action." },
         runId: "run-1"
       }
     ]);
@@ -2752,7 +2833,7 @@ describe("run execution", () => {
     expect(events.at(-1)).toEqual({
       data: {
         code: "provider_request_timed_out",
-        message: "Provider response exceeded the configured 500-second timeout."
+        message: "The provider request timed out. Its outcome may be unknown."
       },
       type: "error"
     });
@@ -2761,7 +2842,7 @@ describe("run execution", () => {
       assistantMessageId: "assistant-1",
       error: {
         code: "provider_request_timed_out",
-        message: "Provider response exceeded the configured 500-second timeout."
+        message: "The provider request timed out. Its outcome may be unknown."
       },
       options: { recoveryTerminal: true },
       runId: "run-1"
@@ -2791,7 +2872,7 @@ describe("run execution", () => {
     expect(events.at(-1)).toEqual({
       data: {
         code: "provider_stream_failed",
-        message: "upstream connect error or disconnect/reset before headers: connection timeout"
+        message: "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."
       },
       type: "error"
     });
@@ -2800,7 +2881,7 @@ describe("run execution", () => {
       assistantMessageId: "assistant-1",
       error: {
         code: "provider_stream_failed",
-        message: "upstream connect error or disconnect/reset before headers: connection timeout"
+        message: "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."
       },
       runId: "run-1"
     }]);
@@ -5953,7 +6034,7 @@ describe("run execution", () => {
     expect(events.at(-1)).toMatchObject({
       data: {
         code: "provider_stream_failed",
-        message: "later_answer_round_failed"
+        message: "Provider round 2 failed."
       },
       type: "error"
     });
@@ -6134,4 +6215,43 @@ describe("run execution diagnostics", () => {
     expect(repository.failedRuns).toHaveLength(0);
     expect(repository.completeRuns).toHaveLength(0);
   });
+});
+
+it.each(["completeRun", "updateRunProviderResponseId"] as const)("keeps successful provider usage and classifies local %s failure without replay", async method => {
+  const repository = createRepository();
+  const dispatch = vi.fn();
+  vi.spyOn(repository.repository, method).mockRejectedValueOnce(new Error("PRIVATE Authorization Bearer signed-url"));
+  const adapter = createAdapter(async function* () {
+    dispatch();
+    if (method === "updateRunProviderResponseId") {
+      yield { type: "usage", data: usage() };
+      yield { data: { artifactType: "summary", payload: { responseId: "response-1" } }, type: "artifact" };
+    }
+    return providerResult();
+  });
+  const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text());
+  expect(dispatch).toHaveBeenCalledOnce();
+  expect(repository.failedRuns).toHaveLength(1);
+  expect(repository.failedRuns[0]?.error).toMatchObject({ code: method === "completeRun"
+    ? "run_completion_persistence_failed" : "run_result_publication_failed" });
+  expect(JSON.stringify(events)).not.toContain("PRIVATE");
+  expect(repository.recordedRunUsageEvents[0]?.usageAttributions[0]?.usage).toMatchObject({ inputTokens: usage().inputTokens, outputTokens: usage().outputTokens });
+});
+
+it("retains final-only provider usage if completing the local egress receipt throws", async () => {
+  const repository = createRepository();
+  const egress = createMemoryEgressRecorder();
+  vi.spyOn(egress.service, "completeDispatch").mockRejectedValueOnce(new Error("PRIVATE receipt database"));
+  const dispatch = vi.fn();
+  const adapter = createAdapter(async function* () { dispatch(); return providerResult(); });
+  const base = preparedData();
+  const personalContext = { approxTokens: 1, itemCount: 1, memoryGeneration: 1, memoryRevision: 1, mode: "prefetched" as const, text: `${PERSONAL_CONTEXT_HEADING}\nSynthetic context` };
+  const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, personalContext }, providerRequest: { ...base.providerRequest, personalContext } };
+  const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository, memoryEgress: egress.service })).text());
+  expect(dispatch).toHaveBeenCalledOnce();
+  expect(repository.failedRuns[0]?.error).toMatchObject({ code: "run_completion_persistence_failed" });
+  expect(repository.recordedRunUsageEvents[0]?.usageAttributions[0]?.usage).toMatchObject({ inputTokens: usage().inputTokens, outputTokens: usage().outputTokens });
+  expect(JSON.stringify(events)).not.toContain("PRIVATE");
+  expect(egress.completed).toEqual([]);
+  expect(egress.failed).toHaveLength(1);
 });

@@ -23,9 +23,13 @@ Claims and terminal writers require status/version/lease guards. Release databas
 
 Knowledge Source identity is independent of Base membership and equal checksums never merge Sources. Reprocessing preserves prior attempt lineage; replacement content becomes current only after guarded complete settlement, leaving the previous ready version available on failure. Normalized artifacts must suffice for reindexing without originals/parser services, and citations resolve exact stored versions/artifacts. Embedding reuse requires exact text hash and vector space/dimension and creates no provider usage. Memory cutover/rollback uses an immutable whole generation and fresh canonical eligibility/authority checks, never a partial pointer repair. Operational evidence stays bounded and content-free.
 
-Workspace originals/outputs remain downloadable after runtime loss. Only the exact current session owner can execute, export, or settle; lease expiry or cancellation alone does not prove receiver cleanup. Handover must reject stale requests at the guest boundary, including after restart; unproven cleanup leaves the session unavailable. Export captures an answer's owed bytes at its quiescent boundary and recovery reuses that capture without re-enumerating changed guest files or replaying the provider. Missing capture is failure, never an empty success. Bounded capture capacity may fail the affected export, never evict another answer or indefinitely prohibit chat.
+Workspace originals/outputs survive runtime loss. Execution/export/settlement require exact current session ownership. Expiry/cancellation cannot prove receiver cleanup; uncertainty blocks the session. Handover fences stale requests across restarts. Export captures quiescent bytes; recovery requires capture without guest enumeration/provider replay. Capacity may reject export, never evict another answer or indefinitely block chat.
 
-Published outputs require verified size/checksum and atomic relational settlement. Attempts use separate writable keys and retain cleanup obligations for unpublished/redundant objects; downloads do not claim pre-header digest verification. Completed exports never downgrade. Confirmed disk loss/reset/restore retires unfinished export/process obligations before recreation, preserving completed attachments. Reset affects runtime state, not messages or attachments.
+Outputs settle atomically after size/checksum verification. Isolated writes retain cleanup obligations. Downloads cannot claim pre-header digest verification; completed exports never downgrade. Disk loss/reset/restore retires unfinished obligations before recreation, preserving messages, completed attachments and verified retained captures.
+
+References/readers protect immutable selected-file captures. Checkpoints settle independently of run/final export; recovery publishes only their declared retained version under current access, without mutable-path reads or guest reexecution. Same-path versions retain distinct attachment identities; deletion/retention applies.
+
+System Vision claims unknown usage before dispatch; analysis/accounting settle once. Ambiguous attempts never rebill. Stop/access loss suppresses success, preserving usage independently of answer accounting. Recovery reuses settled analysis without pixels/provider I/O.
 
 Artifact deduplication stays owner-scoped; publication membership never owns or changes author bytes. Replaceable renderer caches preserve source identity/revocation. Cleanup reservations and references protect concurrent writes/reuse and deletion.
 
@@ -34,6 +38,8 @@ Artifact deduplication stays owner-scoped; publication membership never owns or 
 v0.2.0 starts supported persistent upgrades; earlier development databases need no bridge. Forward migrations preserve operator data, credentials and configuration, tolerating previous-release writers during Compose replacement. Destructive/incompatible upgrades require a separate operator procedure, never ordinary `pull`/`up`. Verification never resets operator data.
 
 `20260815000000_baseline` is the immutable first migration anchor, including custom PostgreSQL DDL that Prisma cannot reconstruct. Changes are append-only migrations. Persistent installations use `prisma migrate deploy`, never `prisma db push`.
+
+Upgrade adopts Vision from page-image configuration once; later edits/clears stay independent. Accepted PDF bindings remain immutable.
 
 Keep custom checks and deferred triggers for row, tenant/source, history, deletion, and concurrent-writer invariants that relations cannot express, especially with raw SQL workers and destructive handlers. Simplify them only through behavior-proven forward migrations.
 
@@ -53,7 +59,7 @@ Account deletion drains owned Knowledge and Memory dependencies/staging before p
 
 Workspace idle stop preserves disk; expiry/reset/deletion first records exact-session cleanup. Continuation archives are private checksum-bound seeds, owned by the claim then destination chat. Fence capture/restore leases. Successful restore consumes the seed even after reset or disk loss; interrupted restore retries only after cleanup. Abandoned/failed/reset/deleted seeds enqueue reference-checked object cleanup. Missing disks visibly recreate canonical originals, never claim survival. External provider/tool retention, backups and sent data remain outside application-erasure claims.
 
-Agent threads live outside exported `project/` on Workspace disk, without independent retention/backup/continuation seeds. Ordinary resume requires a compatible completed active-branch predecessor in the surviving session; otherwise use branch context. Follow-up requires the live run's exact settled predecessor/runtime; loss prohibits recreation/replay. Stored identifiers/hashes grant no authority after disk loss/revocation.
+Agent threads remain outside exported `project/`, without independent retention/backup/continuation seeds. Ordinary resume requires a compatible completed active-branch predecessor in the surviving session; otherwise use branch context. Follow-up requires the live run's exact settled predecessor/runtime; loss prohibits recreation/replay. Stored identifiers/hashes cannot override disk loss/revocation.
 
 ## Backup And Restore
 

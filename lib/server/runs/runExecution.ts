@@ -1,3 +1,11 @@
+import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
+import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { executionFailure } from "./executionFailure";
+import { RunSettlementError, isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
+import { isWorkspaceOperationFailureCode, workspaceOperationFailureMessage } from "@/lib/contracts/workspaceFailure";
+import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage";
+import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
+import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import { createArtifactGeneration } from "../artifacts/generation";
 import { createRunFollowupExecution, RunFollowupChanged } from "./runFollowupExecution";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
@@ -246,6 +254,7 @@ export type RunExecutionInput = Readonly<{
   skillTools?: import("../skills/toolService").SkillToolService;
   agentResponses?: AgentResponsesTransport;
   artifacts?: Pick<import("../artifacts/service").ArtifactService, "execute" | "restore">;
+  vision?: import("../vision/service").VisionAnalysisService;
   images?: import("../images/service").ImageGenerationService;
   adapter: ProviderAdapter;
   /** Names a personal chat after its first answer; absent on recovery paths. */
@@ -509,13 +518,14 @@ function toolExecutionErrorResult(
   const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
-  const message = error instanceof Error ? error.message : `${label} execution failed`;
+  const failure = executionFailure(error);
+  const message = failure.message;
 
   return {
     callId: call.id,
     content: [
       {
-        text: `${label} failed: ${message}`,
+        text: JSON.stringify({ ok: false, error: failure }),
         type: "text"
       }
     ],
@@ -727,7 +737,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         ? createRunFollowupExecution({
             runId, userId: input.userId, operations: input.repository.followups,
             bridge: input.toolBridge ?? providerToolBridges[normalizedRequest.provider as keyof typeof providerToolBridges],
-            async beforeDelivery() { await tokenBuffer.flush(); return tokenBuffer.text; },
+            async beforeDelivery() { await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); }); return tokenBuffer.text; },
             async onDelivery() {
               await publishFollowupDelivery(followups!.revision);
             },
@@ -833,7 +843,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           usageAccountedToolCallIds: [...usageAccountedToolCallIds],
           usageAttributions,
           userId: input.userId
-        });
+        }).catch(error => { throw new RunSettlementError("accounting", error); });
         if ((answerRoundUsage || usageAccountedToolCallIds.size > 0) && !recorded) {
           throw new RunPipelineError(
             "tool_loop_usage_checkpoint_conflict",
@@ -859,18 +869,18 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         if (effectiveEvent.type === "token") {
           if (includeTokenEvents && !answerStartMarked) {
             answerStartMarked = true;
-            await input.repository.markRunAnswerStarted({ at: new Date(), runId });
+            await input.repository.markRunAnswerStarted({ at: new Date(), runId }).catch(error => { throw new RunSettlementError("publication", error); });
           }
           if (!includeTokenEvents || knowledgeCitationAnswer) {
             return;
           }
 
-          await tokenBuffer.push(effectiveEvent.data.delta);
+          await tokenBuffer.push(effectiveEvent.data.delta).catch(error => { throw new RunSettlementError("publication", error); });
           emitTransient(controller, encoder, effectiveEvent);
           return;
         }
 
-        await tokenBuffer.flush();
+        await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
         const eventProviderResponseId = providerResponseIdFromEvent(effectiveEvent);
         if (eventProviderResponseId) await publishProviderResponseId(eventProviderResponseId);
 
@@ -879,12 +889,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             option.optionId === "gemini-google-search" && option.adapterKind === "answer_provider_hosted")
           ? projectRunOutputArtifactEvent(effectiveEvent)
           : effectiveEvent;
-        if (clientEvent) await emit(controller, encoder, input.repository, runId, clientEvent);
+        if (clientEvent) await emit(controller, encoder, input.repository, runId, clientEvent).catch(error => { throw new RunSettlementError("publication", error); });
       }
 
       async function publishProviderResponseId(providerResponseId: string): Promise<void> {
         if (providerResponseId === persistedProviderResponseId) return;
-        const publication = await input.repository.updateRunProviderResponseId(runId, providerResponseId);
+        const publication = await input.repository.updateRunProviderResponseId(runId, providerResponseId).catch(error => { throw new RunSettlementError("publication", error); });
         persistedProviderResponseId = providerResponseId;
         if (publication === "cancelled") {
           await input.adapter.cancel?.(providerResponseId).catch(() => undefined);
@@ -1773,14 +1783,20 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             : null;
           await assertProjectRunAccessCurrent(true);
           await publishRequestContext(request);
-          const stream = input.adapter.stream(request, { signal: dispatchSignal, onToolArguments, ...(timeoutMs ? { timeoutMs } : {}) });
+          const wireRequest = request.workspaceImageView
+            ? await (await defaultWorkspaceImageViewer()).materialize(request, runId, input.userId, dispatchSignal) : request;
+          const stream = input.adapter.stream(wireRequest, { signal: dispatchSignal, onToolArguments, ...(timeoutMs ? { timeoutMs } : {}) });
           try {
             let next = await stream.next();
             while (!next.done) {
               yield next.value;
               next = await stream.next();
             }
-            if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id))) {
+            // Preserve terminal provider usage even if the local receipt write
+            // fails before this generator can return its terminal result.
+            if (receipt) yield { type: "usage", data: next.value.usage };
+            if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id)
+              .catch(error => { throw new RunSettlementError("completion", error); }))) {
               throw new RunPipelineError(
                 "memory_egress_receipt_conflict",
                 "Provider dispatch evidence could not be completed."
@@ -1861,11 +1877,17 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
         const isMcpDiscoveryCall = (name: string) =>
           name === MCP_FIND_TOOLS_NAME && activeMcpDiscovery !== undefined;
+        const isCheckpointCall = (name: string) => normalizedRequest.workspaceCheckpoints === true && name === CHECKPOINT_OUTPUTS_TOOL_NAME;
+        const isVisionCall = (name: string) => Boolean(normalizedRequest.visionAnalysis) && name === ANALYZE_IMAGE_TOOL_NAME;
+        const isViewImageCall = (name: string) => normalizedRequest.workspaceImageView === true && name === VIEW_WORKSPACE_IMAGE;
         const isImageCall = (name: string) => clientToolsEnabled && Boolean(normalizedRequest.imagePlan) && name === IMAGE_GENERATION_TOOL_NAME;
         const isArtifactCall = (name: string) => clientToolsEnabled && normalizedRequest.artifactTool === true && (name === ARTIFACT_TOOL_NAME || name === READ_ARTIFACT_TOOL_NAME && Boolean(normalizedRequest.artifactReferences?.length));
         const isSkillCall = (name: string) => acceptsSkillTool(normalizedRequest, name);
         const tools: RunTool[] = [
           ...skillToolsForRequest(normalizedRequest),
+          ...(normalizedRequest.workspaceCheckpoints ? [checkpointOutputsTool] : []),
+          ...(normalizedRequest.visionAnalysis ? [analyzeImageTool(normalizedRequest.visionAnalysis)] : []),
+          ...(normalizedRequest.workspaceImageView ? [viewWorkspaceImageTool] : []),
           ...(clientToolsEnabled && normalizedRequest.imagePlan ? [imageGenerationTool(normalizedRequest.imagePlan)] : []),
           ...(clientToolsEnabled && normalizedRequest.artifactTool ? [artifactTool(normalizedRequest.artifactToolDescription), ...(normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
           ...(normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
@@ -2052,6 +2074,21 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 runId,
                 userId: input.userId
               });
+              if (claim.kind === "ambiguous" && isCheckpointCall(call.name)) {
+                const restored = await (await defaultWorkspaceCheckpoints()).restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId }, context.signal);
+                return { status: "complete", value: restored };
+              }
+              if (claim.kind === "ambiguous" && isVisionCall(call.name) && input.vision) {
+                const restored = await input.vision.restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId });
+                if (restored) {
+                  const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
+                  const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot, runId, state: restored.status, userId: input.userId });
+                  if (settled === "settled" || settled === "reused") {
+                    await input.memoryEgress?.settleRecoveredToolDispatch({ modelRunToolCallId: persisted.id, outcome: restored.status === "complete" ? "COMPLETED" : "FAILED", runId, userId: input.userId });
+                    return { status: "complete", value: restored };
+                  }
+                }
+              }
               if (claim.kind === "ambiguous" && isImageCall(call.name) && input.images) {
                 const restored = await input.images.restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId });
                 if (restored) {
@@ -2158,12 +2195,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !preflightResult && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name);
+                const externalCall = !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
                   }
-                  const destinationSnapshot = isImageCall(call.name)
+                  const destinationSnapshot = isVisionCall(call.name) && normalizedRequest.visionAnalysis?.available
+                    ? { kind: "vision_analysis", version: 1, authority: normalizedRequest.visionAnalysis.authority, snapshot: normalizedRequest.visionAnalysis.snapshot }
+                    : isImageCall(call.name)
                     ? { kind: "image", version: 1, authority: normalizedRequest.imagePlan!.authority, snapshot: normalizedRequest.imagePlan!.snapshot }
                     : isKnowledgeCall(call.name)
                     ? {
@@ -2200,7 +2239,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                           };
                         })();
                   let mcpFailure: McpDispatchFailureCode | null = null;
-                  const currentAuthorization = await (isImageCall(call.name)
+                  const currentAuthorization = await (isVisionCall(call.name)
+                      ? input.vision?.authorize(normalizedRequest.visionAnalysis!) ?? Promise.resolve(false)
+                      : isImageCall(call.name)
                       ? input.images?.authorize(normalizedRequest.imagePlan!) ?? Promise.resolve(false)
                       : isKnowledgeCall(call.name)
                       ? currentKnowledgeDispatchAllowed()
@@ -2271,6 +2312,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 } else if (isArtifactCall(call.name)) {
                   if (!input.artifacts) throw new Error("artifact_tool_unavailable");
                   result = await input.artifacts.execute(call, executionContext, { signal });
+                } else if (isCheckpointCall(call.name)) {
+                  result = await (await defaultWorkspaceCheckpoints()).execute(call, executionContext, context.signal);
+                } else if (isVisionCall(call.name)) {
+                  if (!input.vision) throw new Error("vision_model_unavailable");
+                  result = await input.vision.execute(call, executionContext, context.signal);
+                } else if (isViewImageCall(call.name)) {
+                  result = await (await defaultWorkspaceImageViewer()).execute(call, executionContext, context.signal);
                 } else if (isImageCall(call.name)) {
                   if (!input.images) throw new Error("image_tool_unavailable");
                   result = await input.images.execute(call, executionContext, signal);
@@ -2401,8 +2449,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   await input.memoryEgress!.failDispatch(
                     externalReceipt.id,
                     isKnowledgeCall(call.name) ? knowledgeSearchFailureCode(error) ?? "knowledge_retrieval_failed"
-                      : error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
-                      ? error.message
+                      : observedFailure(error).code !== "unknown"
+                      ? observedFailure(error).code
                       : "external_tool_dispatch_failed"
                   ).catch(() => undefined);
                 }
@@ -2488,7 +2536,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               await applyProviderEvent({ data: { delta: toolSignal.delta }, type: "token" });
               return;
             }
-            await tokenBuffer.flush();
+            await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
             const reset = await input.repository.resetToolLoopAssistantDraft({
               roundIndex: toolSignal.round,
               runId,
@@ -2526,7 +2574,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isSkillCall(call.name)) {
+                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -2618,7 +2666,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 mcpDiscoveryBatches.set(candidate.call.id, batch);
               }
             }
-            await tokenBuffer.flush();
+            await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
             if (hasMcpTools) {
               await emit(
                 controller,
@@ -2631,7 +2679,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             for (const call of calls) {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
               const registeredTool = tools.find((tool) => tool.name === call.name);
-              const builtInServer = isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
+              const builtInServer = isVisionCall(call.name) ? "System Vision" : isViewImageCall(call.name) || isCheckpointCall(call.name) ? "Workspace" : isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
                   ? "Knowledge"
@@ -2865,7 +2913,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             onEvent: applyProviderEvent, onActivity: onWorkspaceActivity,
             ...(input.repository.followups ? { followups: {
               operations: input.repository.followups,
-              async beforeDelivery() { await tokenBuffer.flush(); return tokenBuffer.text; },
+              async beforeDelivery() { await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); }); return tokenBuffer.text; },
               async onDelivery(revision: number) {
                 agentFollowupRevision = revision;
                 await publishFollowupDelivery(revision);
@@ -2936,7 +2984,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           usageAttributions: groupedUsageAttributions(reportedUsageAttributions)
         };
 
-        await tokenBuffer.flush();
+        await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
         throwIfAborted(signal);
         await assertProjectRunAccessCurrent(true);
         if (normalizedRequest.workspace && !input.workspace) {
@@ -3098,14 +3146,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           }).catch(() => undefined);
         }
         await settleWorkspace(workspaceTurnTimedOut ? "timed_out" : "failed");
-        let failure = workspaceTurnTimedOut
+        const failure = workspaceTurnTimedOut
           ? workspaceTurnController.signal.reason
           : error;
-        const originalStreamSafetyReport = providerStreamSafetyReport(error);
         try {
-          await tokenBuffer.flush();
+          await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
         } catch (flushError) {
-          if (!originalStreamSafetyReport && !(failure instanceof AgentExecutionError)) failure = flushError;
+          logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "failed",
+            code: "run_result_publication_failed", prisma_code: runDatabaseFailureCode(flushError) });
         }
 
         const deadlineExceeded = isProviderDeadlineExceededError(failure);
@@ -3124,14 +3172,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             : isRecord(failure) && isProviderStreamSafetyCode(failure.code)
               ? failure.code
               : null);
-        const failureCode = contractFailureCode ?? routingCode ??
+        const settlement = runSettlementFailure(failure);
+        const observedCode = observedFailure(failure).code;
+        const failureCode = settlement?.code ?? contractFailureCode ?? routingCode ??
           (knowledgeAnswerAttempted
             ? focusedKnowledgeFailureCode(failure)
             : pipelineError?.code ??
               (failure instanceof AgentExecutionError ? failure.code : null) ??
               (failure instanceof CodexProtocolError ? failure.code : null) ??
               (failure instanceof WorkspaceRuntimeError ? failure.code : null) ??
-              (deadlineExceeded ? "provider_request_timed_out" : "provider_stream_failed"));
+              (deadlineExceeded ? "provider_request_timed_out" : observedCode !== "unknown" ? observedCode : "provider_stream_failed"));
         const payload = safetyCode
           ? {
               code: safetyCode,
@@ -3142,12 +3192,15 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               message: `The request to answer model “${input.prepared.providerAdmissionPlan.answer.snapshot.modelDisplayName}” could not be routed. ${openRouterRoutingFailureMessage(routingCode)}`
             } : {
               code: failureCode,
-              message: knowledgeAnswerAttempted
+              message: settlement?.message ?? (knowledgeAnswerAttempted
                 ? safeKnowledgeFailureMessage(failureCode)
                 : normalizedRequest.agent
                   ? agentFailureCode(failureCode) ? agentFailureMessage(agentFailureCode(failureCode)!)
                     : "Agent could not complete this turn. Check the selected model and Workspace status before trying again."
-                : failure instanceof Error ? failure.message : "Provider stream failed"
+                : pipelineError?.message ?? (isWorkspaceOperationFailureCode(failureCode)
+                  ? workspaceOperationFailureMessage(failureCode)
+                  : deadlineExceeded ? "The provider request timed out. Its outcome may be unknown."
+                    : "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."))
             };
         if (streamSafetyReport) {
           const snapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
@@ -3164,7 +3217,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             runId,
             input.created.assistantMessageId,
             payload,
-            safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode ||
+            safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode || isRunPersistenceFailureCode(failureCode) ||
               isToolSynthesisFailure(failureCode) ||
               isMcpAutoDiscoveryFailureCode(failureCode) ||
               failureCode === "memory_answer_model_tools_retired"

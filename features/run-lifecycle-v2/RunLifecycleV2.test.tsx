@@ -463,14 +463,17 @@ describe("Run lifecycle v2 Workspace timeline", () => {
     await waitFor(() => expect(JSON.parse(localStorage.getItem("aiqsa:disclosures:v1:workspace-reader")!)["workspace:saved-run"]).toBe(false));
     second.rerender(answer(true));
     expect(fold()).not.toHaveAttribute("open");
-    expect(fold().querySelector("summary")).toHaveTextContent("Needs attention");
+    expect(fold().querySelector("summary")).toHaveTextContent("Worked in Workspace");
+    expect(fold().querySelector("summary")).not.toHaveTextContent("Needs attention");
     second.unmount();
     render(answer(true));
     expect(fold()).not.toHaveAttribute("open");
+    fireEvent.click(fold().querySelector("summary")!);
+    expect(screen.getByText("npm test failed")).toBeVisible();
     localStorage.clear();
   });
 
-  it("keeps failed Workspace activity folded with a visible status and expandable steps", () => {
+  it("keeps historical failed Workspace steps folded and available after successful completion", () => {
     render(
       <RunAnswerV2
         content="Done."
@@ -492,7 +495,8 @@ describe("Run lifecycle v2 Workspace timeline", () => {
     );
     const disclosure = screen.getByTestId("tool-activity-disclosure");
     expect(disclosure).not.toHaveAttribute("open");
-    expect(screen.getByText("Worked in Workspace for 42s · Needs attention")).toBeVisible();
+    expect(screen.getByText("Worked in Workspace for 42s")).toBeVisible();
+    expect(disclosure.querySelector("summary")).not.toHaveTextContent("Needs attention");
     fireEvent.click(disclosure.querySelector("summary")!);
     expect(screen.getByText("Read package.json")).toBeVisible();
     expect(screen.getByText("npm test failed")).toBeVisible();

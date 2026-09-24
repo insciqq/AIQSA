@@ -1,3 +1,4 @@
+import { parseWorkspaceImageEvidence } from "../workspace/directImageEvidence";
 import { decodeTokenUsage } from "../../domain/usage";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
@@ -16,6 +17,7 @@ import {
 } from "../knowledge/toolResult";
 
 const artifactTypes = new Set([
+  "workspace_checkpoint",
   "generated_artifact",
   "image",
   "citation",
@@ -115,6 +117,12 @@ export function parsePersistedToolExecutionResult(
     if (entry.type === "text" && typeof entry.text === "string" &&
       Object.keys(entry).every((key) => key === "text" || key === "type")) {
       content.push({ text: entry.text, type: "text" });
+      continue;
+    }
+    if (entry.type === "workspace_image" && Object.keys(entry).every(key => key === "type" || key === "value")) {
+      const evidence = parseWorkspaceImageEvidence(entry.value);
+      if (!evidence || call.name !== "view_workspace_image" || value.status !== "complete") return null;
+      content.push({ type: "workspace_image", value: evidence });
       continue;
     }
     if (entry.type === "json" && Object.hasOwn(entry, "value") &&

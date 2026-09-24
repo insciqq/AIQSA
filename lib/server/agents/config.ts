@@ -4,6 +4,8 @@ import { CODEX_VERSION } from "./codexProfile";
 /** Frozen per accepted turn; null means no Agent deadline. */
 export type NormalizedRunAgent = Readonly<{
   version: 2;
+  /** Missing on historical configurations means image input is denied. */
+  imageInput?: boolean;
   policyVersion: number;
   limitsEnabled: boolean;
   codexVersion: string;
@@ -39,7 +41,7 @@ export function validNormalizedAgent(value: unknown): value is NormalizedRunAgen
   const v = value as Record<string, unknown>;
   if (v.version !== 2 || v.codexVersion !== CODEX_VERSION || typeof v.compatibilityHash !== "string" ||
     !/^[a-f0-9]{64}$/u.test(v.compatibilityHash) || !["auto", "all", "off"].includes(String(v.mcpMode)) ||
-    Object.keys(v).length !== 12 || typeof v.gatewayOrigin !== "string" ||
+    (Object.keys(v).length !== (v.imageInput === undefined ? 12 : 13) || v.imageInput !== undefined && typeof v.imageInput !== "boolean") || typeof v.gatewayOrigin !== "string" ||
     (v.limitsEnabled === false && v.timeoutSeconds !== null) ||
     !Number.isSafeInteger(v.maxOutputTokens) || Number(v.maxOutputTokens) < 1) return false;
   try {

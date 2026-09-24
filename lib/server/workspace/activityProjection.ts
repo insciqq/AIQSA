@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { WorkspaceActivityText, clipWorkspaceActivityText, plainWorkspaceActivityText } from "./activityText";
-import { isWorkspaceActivityActive, mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import { closeWorkspaceActivityEntries, mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import {
   WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS,
   WORKSPACE_ACTIVITY_PATH_MAX_CHARS,
@@ -146,8 +146,8 @@ export function boundedOutputPreview(input: Readonly<{
   failed: boolean;
   stderr: string;
   stdout: string;
-}>): Readonly<{ stderrPreview: string; stdoutPreview: string; truncated: boolean }> {
-  const budget = WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES - 16;
+}>, maximumBytes = WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES): Readonly<{ stderrPreview: string; stdoutPreview: string; truncated: boolean }> {
+  const budget = Math.max(0, Math.min(WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES, maximumBytes) - 16);
   const stdout = cleanText(input.stdout);
   const stderr = cleanText(input.stderr);
   if (utf8Bytes(stdout) + utf8Bytes(stderr) <= budget) {
@@ -439,7 +439,7 @@ export function projectWorkspaceActivity(
 
 export type WorkspaceLifecycleKind = Extract<
   WorkspaceActivityKind,
-  "attachments_prepare" | "outputs_export" | "workspace_recreated" | "workspace_start" | "workspace_stopped"
+  "execution_status" | "attachments_prepare" | "outputs_export" | "workspace_recreated" | "workspace_start" | "workspace_stopped"
 >;
 
 export function workspaceLifecycleActivity(input: Readonly<{
@@ -474,11 +474,7 @@ export function workspaceActivityEvent(entry: ThreadWorkspaceActivityEntry): Mod
  */
 export function foldWorkspaceActivityEntries(
   entries: readonly ThreadWorkspaceActivityEntry[],
-  runTerminal: "cancelled" | "failed" | null
+  runTerminal: "complete" | "cancelled" | "failed" | null
 ): ThreadWorkspaceActivityEntry[] {
-  return (mergeWorkspaceActivity(null, { entries })?.entries ?? []).map((entry) =>
-    runTerminal && isWorkspaceActivityActive(entry)
-      ? { ...entry, phase: runTerminal, runOutcome: runTerminal }
-      : entry
-  );
+  return closeWorkspaceActivityEntries(mergeWorkspaceActivity(null, { entries })?.entries ?? [], runTerminal !== null);
 }

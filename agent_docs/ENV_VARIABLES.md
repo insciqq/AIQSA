@@ -5,7 +5,7 @@ Scope: Environment ownership, secret rotation, and Compose selection.
 
 ## Canonical Sources
 
-[Examples](../.env.example), [production](../compose.yaml)/[development Compose](../docker-compose.dev.yml), and subsystem parsers/tests own keys, defaults, validation and ceilings; update them together. [Configure](../scripts/configure.sh) creates secrets once, preserving existing `.env`. Prose owns operator/security contracts; malformed security settings fail closed. Infrastructure owns site provisioning.
+[Examples](../.env.example), [production](../compose.yaml)/[development Compose](../docker-compose.dev.yml), and parsers/tests own keys, defaults, validation and ceilings; update together. [Configure](../scripts/configure.sh) creates secrets once, preserving `.env`. Prose owns operator/security contracts; malformed security settings fail closed. Infrastructure owns provisioning.
 
 Mutable provider/Search credentials/configuration belong in encrypted database records. Administrator-owned Agent limits default Off, independent of Workspace networking. Environment supplies installation wiring and bounded policy/recovery inputs. Roles receive only consumed authority: parsers no data/provider credentials; runner only its internal token/runtime policy; maintenance database/runner access without object/provider credentials; restore review no provider credentials or ordinary execution.
 
@@ -17,7 +17,7 @@ Test auth/fakes/demo credentials/deterministic runtime require every disposable 
 
 Keep `.env` restricted and outside Git, images, logs, transcripts, and support bundles. Local development uses explicit disposable defaults or the ignored local profile. Production provisioning/rotation belongs to the infrastructure operator.
 
-Session/flow signing, `AIQSA_ENCRYPTION_KEY`, Memory fingerprint keyring, Memory OpenSearch routing key, and Workspace internal token have independent cryptographic purposes; never derive one from another. Back up required encryption/Memory keys separately from data.
+Session/flow signing, `AIQSA_ENCRYPTION_KEY`, Memory fingerprint/routing keys and Workspace token are cryptographically independent; never derive one from another. Back up encryption/Memory keys separately from data.
 
 Replacing `AIQSA_ENCRYPTION_KEY` without migration loses encrypted provider/SMTP/MCP/OAuth readability and changes ToolHive ownership markers: drain/clean exact owned workloads first. Fingerprint rotation is additive; missing historical versions block affected state, and backup preflight records required IDs without keys. Routing-key or ID rotation requires a full derived lexical rebuild before readiness; canonical PostgreSQL survives but mixed-key fallback is forbidden. Missing key history or destination authority never weakens suppression or selects another destination.
 
@@ -27,10 +27,12 @@ A browser-reachable S3 endpoint is an explicit optional boundary for the same pr
 
 ## Operations
 
-Each checkout owns its ignored `.env` and selected private Compose overrides. Preserve project identity, ports, installation keys, and existing resource bindings when synchronizing code.
+Each checkout owns ignored `.env` and private Compose overrides. Preserve project identity, ports, keys and resource bindings during synchronization.
 
-When `.env` defines `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, use ordinary `docker compose` from that checkout. Explicit `-f`, including package-script arguments, replaces that file selection; use it only for a deliberately selected topology. Changing `-p` does not isolate tests when overrides pin existing external volumes. Inspect selectors without printing private values and use separate disposable state for destructive checks. Stable volume names are not test isolation.
+`AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES` defaults to 8388608; explicit overrides win. Update the configuration source and recreate consumers: restarting retains old environment. This transport cap leaves separate persistence/context limits; bounded end-to-end retrieval belongs to observation storage.
 
-Memory lexical rollout/rollback/recovery procedures belong to infrastructure. PostgreSQL is the rollback default; shadow is observation only, while canary/primary retain canonical checks and bounded PostgreSQL fallback. Backend/percentage changes require app recreation; the projection worker is independent. The coordinator lease is a replay-safety window, not a provider timeout: an undersized lease can mark a healthy call outcome-unknown, while a longer one delays crash recovery.
+When `.env` defines `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, use that checkout's ordinary `docker compose`. Explicit `-f` (including package scripts) replaces this selection: reserve it for deliberately selected topologies. `-p` cannot isolate external volumes. Inspect selectors without private values; use disposable state for destructive checks. Stable volume names do not prove isolation.
 
-Never print resolved environment snapshots. Verification reports presence/validity booleans and stable issue codes only. See [Testing](TESTING.md) for disposable overrides and [Persistence](PERSISTENCE.md) for recovery.
+Memory lexical rollout/rollback/recovery belongs to infrastructure. PostgreSQL is the rollback default; shadow observes only. Canary/primary retain canonical checks and bounded PostgreSQL fallback. Backend/percentage changes require app recreation; projection workers are independent. The coordinator lease governs replay safety, not provider timeout: shorter leases can falsely mark healthy calls outcome-unknown; longer leases delay crash recovery.
+
+Never print resolved environments. Report presence/validity booleans and stable codes only. [Testing](TESTING.md) owns disposable overrides; [Persistence](PERSISTENCE.md) owns recovery.

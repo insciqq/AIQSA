@@ -28,6 +28,19 @@ function fixture(response: Response, nativeSearch = false) {
 }
 
 describe("Agent model gateway", () => {
+  it("rejects message and tool-output pixels before any text-only provider dispatch", async () => {
+    for (const item of [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,AQ==" }] },
+      { type: "function_call_output", call_id: "view", output: [{ type: "input_image", image_url: "data:image/png;base64,AQ==" }] }]) {
+      const value = { ...body, input: [item] };
+      expect(() => admittedAgentRequest(value, "fixture-model", 1024)).toThrow("agent_model_input_invalid");
+      expect(admittedAgentRequest(value, "fixture-model", 1024, false, true).input).toEqual([item]);
+      const f = fixture(sse());
+      const response = await f.handle(new Request("http://agent.invalid/v1/responses", { method: "POST", body: JSON.stringify(value) }));
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(f.transport.request).not.toHaveBeenCalled();
+      expect(f.store.reserveProvider).not.toHaveBeenCalled();
+    }
+  });
   it("lets a slow native response use its configured deadline without the default idle clamp", async () => {
     vi.useFakeTimers();
     const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);

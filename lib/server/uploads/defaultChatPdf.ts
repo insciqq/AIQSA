@@ -1,3 +1,4 @@
+import { visionAnalysisForStorage } from "../vision/defaultVision";
 import { imageGenerationForStorage } from "../images/defaultImages";
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
 import { defaultSkillTools } from "../skills/defaultSkillTools";
@@ -49,6 +50,7 @@ function createDefaultChatPdf() {
     },
     continueRun: createChatPdfRunContinuation({
       images: imageGenerationForStorage(storage),
+      vision: visionAnalysisForStorage(storage),
       artifacts: artifactServiceForStorage(storage),
       skillTools: defaultSkillTools,
       chatTitleGenerator: createPrismaChatTitleGenerator(),

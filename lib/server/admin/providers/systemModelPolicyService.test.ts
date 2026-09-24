@@ -99,6 +99,26 @@ function activeRerankerModel(overrides: Record<string, unknown> = {}) {
 }
 
 describe("administrator system model policy service", () => {
+  it("assigns and clears Vision alone, preserving PDF and utility roles", async () => {
+    const update = vi.fn();
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin" }) } };
+    const prisma = { $transaction: async (operation: (store: typeof tx) => Promise<void>) => operation(tx) } as unknown as PrismaClient;
+    const loadRole = vi.fn().mockResolvedValue({ verifiedVisionInput: true,
+      snapshot: { model: { capabilities: { reasoning: false } } } });
+    const service = createAdminSystemModelPolicyService(prisma, { loadRole });
+    for (const visionProviderModelId of ["vision", null]) {
+      await service.update({ expectedVersion: 3, userId: "admin", visionProviderModelId, visionReasoningEffort: null });
+      expect(update).toHaveBeenLastCalledWith({ where: { id: "installation" }, data: {
+        visionProviderModelId, visionReasoningEffort: null, updatedByUserId: "admin", version: { increment: 1 }
+      } });
+    }
+    expect(loadRole).toHaveBeenCalledExactlyOnceWith(tx, { providerModelId: "vision" });
+    loadRole.mockResolvedValue({ verifiedVisionInput: false });
+    await expect(service.update({ expectedVersion: 3, userId: "admin", visionProviderModelId: "text", visionReasoningEffort: null }))
+      .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    expect(update).toHaveBeenCalledTimes(2);
+  });
   it("projects usable OpenRouter reasoning controls when the stored capabilities omit the effort list", async () => {
     const target = activeModel({ activeConfig: { ...activeConfiguration, adapterKind: "openrouter_chat_completions",
       openRouterRouting: { mode: "automatic", providers: [] },

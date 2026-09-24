@@ -7,7 +7,7 @@ import { ensureBundledMicrosandboxRuntime } from '../lib/server/workspace/micros
 async function main() {
   if (process.env.AIQSA_AGENT_GATEWAY_PROBE_DISPOSABLE !== '1' || !process.env.MSB_HOME?.includes('agent-probe')) throw new Error('disposable_target_required');
   await ensureBundledMicrosandboxRuntime();
-  const image = process.env.AIQSA_AGENT_PROBE_IMAGE ?? 'aiqsa-workspace:0.1.27';
+  const image = process.env.AIQSA_AGENT_PROBE_IMAGE ?? 'aiqsa-workspace:0.1.28';
   await Image.load('/opt/aiqsa/workspace-image.oci.tar', { tag: image });
   const server = createServer((_request, response) => response.end('agent-route-ok'));
   const other = createServer((_request, response) => response.end('must-not-reach'));

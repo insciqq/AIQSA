@@ -1,3 +1,6 @@
+import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { defaultWorkspaceCheckpoints, type createWorkspaceCheckpoints } from "../workspace/checkpoints";
+import { executionFailure } from "../runs/executionFailure";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME, artifactTool, readArtifactTool } from "../tools/artifact";
@@ -8,12 +11,16 @@ import type { createAgentRunStore } from "./store";
 import { IMAGE_GENERATION_TOOL_NAME, imageGenerationTool } from "../tools/imageGeneration";
 import type { ImageGenerationService } from "../images/service";
 import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
+import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage";
+import type { VisionAnalysisService } from "../vision/service";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 
-export const AGENT_BUILTIN_TOOL_NAMES = [ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME] as const;
+export const AGENT_BUILTIN_TOOL_NAMES = [ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME, ANALYZE_IMAGE_TOOL_NAME, CHECKPOINT_OUTPUTS_TOOL_NAME] as const;
 export const agentBuiltinTools = (request: NormalizedRunRequest) => [
   ...(request.artifactTool ? [artifactTool(request.artifactToolDescription), readArtifactTool()] : []),
-  ...(request.imagePlan ? [imageGenerationTool(request.imagePlan)] : [])
+  ...(request.workspace && request.workspaceCheckpoints ? [checkpointOutputsTool] : []),
+  ...(request.imagePlan ? [imageGenerationTool(request.imagePlan)] : []),
+  ...(request.workspace && request.visionAnalysis ? [analyzeImageTool(request.visionAnalysis)] : [])
 ];
 
 const imageErrors = new Set(["image_input_invalid", "image_parameters_invalid", "image_reference_unavailable", "image_reference_invalid",
@@ -28,6 +35,8 @@ export function createAgentBuiltinDispatcher(input: {
   store: ReturnType<typeof createAgentRunStore>;
   artifacts?: Pick<ArtifactService, "execute">;
   images?: Pick<ImageGenerationService, "execute">;
+  vision?: Pick<VisionAnalysisService, "execute">;
+  checkpoints?: Pick<ReturnType<typeof createWorkspaceCheckpoints>, "execute" | "restore">;
   workspace?: Pick<WorkspaceCoordinator, "imagePath">;
 }) {
   const admitted = new Set(agentBuiltinTools(input.request).map(tool => tool.name));
@@ -57,11 +66,28 @@ export function createAgentBuiltinDispatcher(input: {
     const claim = await input.store.claimBuiltinTool(call, hashCanonicalMcpValue(call.arguments));
     if (claim.result) return deliver(claim.result, signal);
     // An active or crash-ambiguous delivery cannot authorize a second write.
-    if (!claim.claimed) return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
+    if (!claim.claimed && call.name !== CHECKPOINT_OUTPUTS_TOOL_NAME) return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
       error: "agent_builtin_in_progress", hint: "This delivery is still pending. Do not repeat a write with a new call ID."
     } }] };
     const context = { request: input.request, userId: input.userId, runId: input.runId, persistedToolCallId: claim.id };
     try {
+      if (call.name === CHECKPOINT_OUTPUTS_TOOL_NAME) {
+        const checkpoints = input.checkpoints ?? await defaultWorkspaceCheckpoints();
+        return await (claim.claimed ? checkpoints.execute(call, context, signal) : checkpoints.restore(call, context, signal));
+      }
+      if (call.name === ANALYZE_IMAGE_TOOL_NAME) {
+        const vision = input.vision ?? (await import("../vision/defaultVision")).visionAnalysisForStorage(
+          (await import("../uploads/storage")).createS3StorageAdapter());
+        const result = await vision.execute(call, { ...context, request: { ...context.request, attachments: [] } }, signal, {
+          beforeDispatch: () => input.store.startBuiltinVision(claim.id),
+          assertDispatch: input.store.assertActiveInTransaction,
+          beforeSettlement: input.store.lockBuiltinSettlement,
+          onResult: (tx, result) => input.store.settleBuiltinToolInTransaction(tx, claim.id, result)
+        });
+        // Capability and validation failures have no dispatch receipt but still settle their ordinary tool call.
+        await input.store.settleBuiltinTool(claim.id, result);
+        return result;
+      }
       if (call.name === IMAGE_GENERATION_TOOL_NAME) {
         const images = input.images ?? (await import("../images/defaultImages")).imageGenerationForStorage(
           (await import("../uploads/storage")).createS3StorageAdapter());
@@ -84,11 +110,13 @@ export function createAgentBuiltinDispatcher(input: {
       // can only restore the exact receipt, never repeat artifact creation.
       const restored = await input.store.builtinResult(claim.id);
       if (restored) return deliver(restored, signal);
-      const code = call.name === IMAGE_GENERATION_TOOL_NAME && error instanceof Error && imageErrors.has(error.message) ? error.message : "agent_builtin_interrupted";
+      const checkpointFailure = call.name === CHECKPOINT_OUTPUTS_TOOL_NAME ? executionFailure(error) : null;
+      const code = checkpointFailure && checkpointFailure.code !== "tool_call_failed" ? checkpointFailure.code
+        : call.name === IMAGE_GENERATION_TOOL_NAME && error instanceof Error && imageErrors.has(error.message) ? error.message : "agent_builtin_interrupted";
       const result: ToolExecutionResult = { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
-        error: code, hint: "The operation did not finish. No completed result is available for this delivery. Do not repeat an unconfirmed paid request."
+        error: code, hint: checkpointFailure?.message ?? "The operation did not finish. No completed result is available for this delivery. Do not repeat an unconfirmed paid request."
       } }] };
-      if (!signal.aborted) await input.store.settleBuiltinTool(claim.id, result);
+      if (!signal.aborted && (claim.claimed || call.name !== CHECKPOINT_OUTPUTS_TOOL_NAME)) await input.store.settleBuiltinTool(claim.id, result);
       if (code !== "agent_builtin_interrupted") return result;
       throw error;
     }

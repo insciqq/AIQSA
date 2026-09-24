@@ -53,6 +53,8 @@ export function updateAdminSystemModelPolicy(input: Readonly<{
   chatTitleReasoningEffort?: string | null;
   chatPdfNativeProviderModelId?: string | null;
   chatPdfNativeReasoningEffort?: string | null;
+  visionProviderModelId?: string | null;
+  visionReasoningEffort?: string | null;
   chatPdfProviderModelId?: string | null;
   chatPdfReasoningEffort?: string | null;
   chatPdfProcessingMode?: ChatPdfProcessingMode;

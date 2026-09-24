@@ -12,7 +12,8 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "SystemModelPolicy" AS policy
     JOIN "SemanticDecisionsPolicyFixture" AS original ON original.snapshot =
       (to_jsonb(policy) - 'decisionProviderModelId' - 'decisionConfiguredAt' - 'decisionFeaturesJson'
-        - 'decisionAdoptionVersion' - 'decisionAdoptionReason')
+        - 'decisionAdoptionVersion' - 'decisionAdoptionReason'
+        - 'visionProviderModelId' - 'visionReasoningEffort')
     WHERE policy.id = 'installation' AND "decisionProviderModelId" IS NULL
       AND "decisionConfiguredAt" IS NULL AND "decisionFeaturesJson" = '{}') THEN
     RAISE EXCEPTION 'optional_decisions_changed_existing_policy_or_enabled_unqualified_feature';

@@ -79,7 +79,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId", "decisionProviderModelId", "decisionFeatures",
-        "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort",
+        "visionProviderModelId", "visionReasoningEffort", "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort",
         "chatPdfProcessingMode", "chatPdfFallbackMethod", "chatPdfNativeProviderModelId", "chatPdfNativeReasoningEffort", "imageProviderModelId", "imageParameters"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
@@ -112,12 +112,13 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const decisionFeatures = hasDecisionFeaturesUpdate && record(value) ? decodeDecisionFeatureOverrides(value.decisionFeatures) : null;
       const hasImageUpdate = record(value) && Object.hasOwn(value, "imageProviderModelId");
       const hasTitleModelUpdate = record(value) && Object.hasOwn(value, "chatTitleProviderModelId");
+      const hasVisionUpdate = record(value) && Object.hasOwn(value, "visionProviderModelId");
       const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
       const hasPdfNativeUpdate = record(value) && Object.hasOwn(value, "chatPdfNativeProviderModelId");
       const hasPdfPolicyUpdate = record(value) && (Object.hasOwn(value, "chatPdfProcessingMode") || Object.hasOwn(value, "chatPdfFallbackMethod"));
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasDecisionModelUpdate && !hasDecisionFeaturesUpdate && !hasTitleModelUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasDecisionModelUpdate && !hasDecisionFeaturesUpdate && !hasTitleModelUpdate && !hasVisionUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
         hasDecisionModelUpdate && !textOrNull(value.decisionProviderModelId, 256) ||
         hasDecisionFeaturesUpdate && !decisionFeatures ||
         hasImageUpdate !== Object.hasOwn(value, "imageParameters") ||
@@ -125,6 +126,9 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         hasUtilityUpdate !== Object.hasOwn(value, "reasoningEffort") ||
         hasTitleModelUpdate !== Object.hasOwn(value, "chatTitleReasoningEffort") ||
         hasTitleModelUpdate && (!textOrNull(value.chatTitleProviderModelId, 256) || !textOrNull(value.chatTitleReasoningEffort, 32)) ||
+        hasVisionUpdate !== Object.hasOwn(value, "visionReasoningEffort") ||
+        hasVisionUpdate && (!textOrNull(value.visionProviderModelId, 256) || !textOrNull(value.visionReasoningEffort, 32)) ||
+        value.visionProviderModelId === null && value.visionReasoningEffort !== null ||
         hasPdfModelUpdate !== Object.hasOwn(value, "chatPdfReasoningEffort") ||
         hasPdfNativeUpdate !== Object.hasOwn(value, "chatPdfNativeReasoningEffort") ||
         hasPdfNativeUpdate && (!textOrNull(value.chatPdfNativeProviderModelId, 256) || !textOrNull(value.chatPdfNativeReasoningEffort, 32)) ||
@@ -147,6 +151,10 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
           ...(hasTitleModelUpdate ? {
             chatTitleProviderModelId: value.chatTitleProviderModelId as string | null,
             chatTitleReasoningEffort: value.chatTitleReasoningEffort as string | null
+          } : {}),
+          ...(hasVisionUpdate ? {
+            visionProviderModelId: value.visionProviderModelId as string | null,
+            visionReasoningEffort: value.visionReasoningEffort as string | null
           } : {}),
           ...(hasPdfModelUpdate ? {
             chatPdfProviderModelId: value.chatPdfProviderModelId as string | null,

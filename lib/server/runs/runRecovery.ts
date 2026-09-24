@@ -1,3 +1,10 @@
+import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
+import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { executionFailure } from "./executionFailure";
+import { RunSettlementError, runSettlementFailure } from "./settlementFailure";
+import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage";
+import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
+import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import { agentFailureMessage } from "../agents/failures";
 import { knowledgeAnswerInstructions, type KnowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -300,6 +307,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
 export type RunRecoveryDeps = Readonly<{
   skillTools?: import("../skills/toolService").SkillToolService;
   artifacts?: import("../artifacts/service").ArtifactService;
+  vision?: import("../vision/service").VisionAnalysisService;
   images?: import("../images/service").ImageGenerationService;
   getAttachmentLimits?: () => RunAttachmentLimits;
   knowledgeExecutor?: KnowledgeToolExecutor;
@@ -542,11 +550,11 @@ function toolExecutionErrorResult(
   const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
-  const rawMessage = error instanceof Error ? error.message : `${label} execution failed`;
-  const message = rawMessage.slice(0, 512);
+  const failure = executionFailure(error);
+  const message = failure.message;
   return {
     callId: call.id,
-    content: [{ text: `${label} failed: ${message}`, type: "text" }],
+    content: [{ text: JSON.stringify({ ok: false, error: failure }), type: "text" }],
     name: call.name,
     rawPreview: {
       finalProviderResponsePreview: { error: message },
@@ -1359,6 +1367,21 @@ async function executePersistedToolCallInContext(
     runId: context.run.id,
     userId: context.run.userId
   });
+  if (claim.kind === "ambiguous" && context.run.normalizedRequest.workspaceCheckpoints && call.name === CHECKPOINT_OUTPUTS_TOOL_NAME) {
+    const restored = await (await defaultWorkspaceCheckpoints()).restore(call, { persistedToolCallId: persisted.id, request: context.providerRequest, runId: context.run.id, userId: context.run.userId }, signal);
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: restored }, round: persisted.roundIndex };
+  }
+  if (claim.kind === "ambiguous" && context.run.normalizedRequest.visionAnalysis && call.name === ANALYZE_IMAGE_TOOL_NAME && context.deps.vision) {
+    const restored = await context.deps.vision.restore(call, { persistedToolCallId: persisted.id, request: context.providerRequest, runId: context.run.id, userId: context.run.userId });
+    if (restored) {
+      const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
+      const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot, runId: context.run.id, state: restored.status, userId: context.run.userId });
+      if (settled === "settled" || settled === "reused") {
+        await context.deps.memoryEgress?.settleRecoveredToolDispatch({ modelRunToolCallId: persisted.id, outcome: restored.status === "complete" ? "COMPLETED" : "FAILED", runId: context.run.id, userId: context.run.userId });
+        return { call, ordinal: persisted.ordinal, result: { status: "complete", value: restored }, round: persisted.roundIndex };
+      }
+    }
+  }
   if (claim.kind === "ambiguous" && context.run.normalizedRequest.imagePlan && call.name === IMAGE_GENERATION_TOOL_NAME && context.deps.images) {
     const restored = await context.deps.images.restore(call, { persistedToolCallId: persisted.id, request: context.providerRequest, runId: context.run.id, userId: context.run.userId });
     if (restored) {
@@ -1470,15 +1493,20 @@ async function executePersistedToolCallInContext(
         preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
       }
     }
+    const isCheckpointCall = context.run.normalizedRequest.workspaceCheckpoints === true && call.name === CHECKPOINT_OUTPUTS_TOOL_NAME;
+    const isVisionCall = Boolean(context.run.normalizedRequest.visionAnalysis) && call.name === ANALYZE_IMAGE_TOOL_NAME;
+    const isViewImageCall = context.run.normalizedRequest.workspaceImageView === true && call.name === VIEW_WORKSPACE_IMAGE;
     const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
-    const externalCall = !preflightResult && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name);
+    const externalCall = !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
       }
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
-      const destinationSnapshot = isImageCall
+      const destinationSnapshot = isVisionCall && context.run.normalizedRequest.visionAnalysis?.available
+          ? { kind: "vision_analysis", version: 1, authority: context.run.normalizedRequest.visionAnalysis.authority, snapshot: context.run.normalizedRequest.visionAnalysis.snapshot }
+          : isImageCall
           ? { kind: "image", version: 1, authority: context.run.normalizedRequest.imagePlan!.authority, snapshot: context.run.normalizedRequest.imagePlan!.snapshot }
           : isRecoveredKnowledgeCall(context, call.name)
           ? {
@@ -1513,7 +1541,9 @@ async function executePersistedToolCallInContext(
             };
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
       let mcpFailure: McpDispatchFailureCode | null = null;
-      const allowed = isImageCall
+      const allowed = isVisionCall
+          ? await context.deps.vision?.authorize(context.run.normalizedRequest.visionAnalysis!) ?? false
+          : isImageCall
           ? await context.deps.images?.authorize(context.run.normalizedRequest.imagePlan!) ?? false
           : isRecoveredKnowledgeCall(context, call.name)
           ? (await currentFocusedKnowledgeRecoveryAuthorization(context.deps, {
@@ -1583,6 +1613,13 @@ async function executePersistedToolCallInContext(
     } else if (isRecoveredArtifactCall(context, call.name)) {
       if (!context.deps.artifacts) throw new Error("artifact_tool_unavailable");
       result = await context.deps.artifacts.execute(call, executionContext, { signal });
+    } else if (isCheckpointCall) {
+      result = await (await defaultWorkspaceCheckpoints()).execute(call, executionContext, signal);
+    } else if (isVisionCall) {
+      if (!context.deps.vision) throw new Error("vision_model_unavailable");
+      result = await context.deps.vision.execute(call, executionContext, signal);
+    } else if (isViewImageCall) {
+      result = await (await defaultWorkspaceImageViewer()).execute(call, executionContext, signal);
     } else if (isImageCall) {
       if (!context.deps.images) throw new Error("image_tool_unavailable");
       result = await context.deps.images.execute(call, executionContext, signal);
@@ -1685,8 +1722,8 @@ async function executePersistedToolCallInContext(
       await context.deps.memoryEgress!.failDispatch(
         externalReceipt.id,
         isRecoveredKnowledgeCall(context, call.name) ? knowledgeSearchFailureCode(error) ?? "knowledge_retrieval_failed"
-          : error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
-          ? error.message
+          : observedFailureCode(error) !== "unknown"
+          ? observedFailureCode(error)
           : "external_tool_dispatch_failed"
       ).catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "fail"));
     }
@@ -1772,6 +1809,8 @@ async function executePersistedToolBatch(
     call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME &&
     !isSkillToolName(call.toolName) &&
     !isRecoveredArtifactCall(context, call.toolName) &&
+    !(context.run.normalizedRequest.workspaceCheckpoints && call.toolName === CHECKPOINT_OUTPUTS_TOOL_NAME) &&
+    !(context.run.normalizedRequest.visionAnalysis && context.deps.vision && call.toolName === ANALYZE_IMAGE_TOOL_NAME) &&
     !isRecoveredKnowledgeCall(context, call.toolName));
   if (ambiguous) {
     throw new ToolLoopRecoveryError(
@@ -2051,6 +2090,9 @@ async function recoverCheckpointedToolLoop(
       : [];
     const tools: RunTool[] = [
       ...skillToolsForRequest(run.normalizedRequest),
+      ...(run.normalizedRequest.workspaceCheckpoints ? [checkpointOutputsTool] : []),
+      ...(run.normalizedRequest.visionAnalysis ? [analyzeImageTool(run.normalizedRequest.visionAnalysis)] : []),
+      ...(run.normalizedRequest.workspaceImageView ? [viewWorkspaceImageTool] : []),
       ...(clientToolsEnabled && run.normalizedRequest.imagePlan ? [imageGenerationTool(run.normalizedRequest.imagePlan)] : []),
       ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool(run.normalizedRequest.artifactToolDescription), ...(run.normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
@@ -2202,13 +2244,17 @@ async function recoverCheckpointedToolLoop(
               userId: run.userId
             })
           : null;
-        const stream = adapter!.stream(request, { signal: dispatchSignal });
+        const wireRequest = request.workspaceImageView
+          ? await (await defaultWorkspaceImageViewer()).materialize(request, run.id, run.userId, dispatchSignal) : request;
+        const stream = adapter!.stream(wireRequest, { signal: dispatchSignal });
         let next = await stream.next();
         while (!next.done) {
           yield next.value;
           next = await stream.next();
         }
-        if (receipt && !(await deps.memoryEgress!.completeDispatch(receipt.id))) {
+        if (receipt) yield { type: "usage", data: next.value.usage };
+        if (receipt && !(await deps.memoryEgress!.completeDispatch(receipt.id)
+          .catch(error => { throw new RunSettlementError("completion", error); }))) {
           throw new ToolLoopRecoveryError(
             "memory_egress_receipt_conflict",
             "Provider dispatch evidence could not be completed."
@@ -2511,6 +2557,9 @@ async function recoverCheckpointedToolLoop(
           if (!route && !isRecoveredKnowledgeCall(context, call.name) &&
             searchExecutor?.accepts(call.name) !== true &&
             !isRecoveredMcpDiscoveryCall(context, call.name) &&
+            !(run.normalizedRequest.workspaceCheckpoints && call.name === CHECKPOINT_OUTPUTS_TOOL_NAME) &&
+            !(run.normalizedRequest.visionAnalysis && call.name === ANALYZE_IMAGE_TOOL_NAME) &&
+            !(run.normalizedRequest.workspaceImageView && call.name === VIEW_WORKSPACE_IMAGE) &&
             !(run.normalizedRequest.imagePlan && call.name === IMAGE_GENERATION_TOOL_NAME) &&
             !isRecoveredArtifactCall(context, call.name) &&
             !isRecoveredWorkspaceCall(context, call.name) &&
@@ -2991,13 +3040,11 @@ async function recoverCheckpointedToolLoop(
       return;
     }
     await settleRecoveredWorkspaceOnExit("failed");
-    let recoveryError = error;
-    const originalStreamSafetyReport = providerStreamSafetyReport(error);
+    const recoveryError = error;
     try {
       await tokenBuffer?.flush();
     } catch (flushError) {
       observeRecoveryWriteFailure(flushError, "progress");
-      if (!originalStreamSafetyReport) recoveryError = flushError;
     }
     const streamSafetyReport = providerStreamSafetyReport(recoveryError);
     const safetyCode = streamSafetyReport?.code ??
@@ -3007,7 +3054,9 @@ async function recoverCheckpointedToolLoop(
         : isRecord(recoveryError) && isProviderStreamSafetyCode(recoveryError.code)
           ? recoveryError.code
           : null);
-    const failure = recoveryError instanceof ToolLoopRecoveryError
+    const settlement = runSettlementFailure(recoveryError);
+    const failure = settlement ? new ToolLoopRecoveryError(settlement.code, settlement.message)
+      : recoveryError instanceof ToolLoopRecoveryError
       ? safetyCode && recoveryError.message !== providerStreamSafeMessage(safetyCode)
         ? new ToolLoopRecoveryError(
             safetyCode,
@@ -3026,8 +3075,8 @@ async function recoverCheckpointedToolLoop(
           : recoveryError instanceof WorkspaceRuntimeError
             ? new ToolLoopRecoveryError(recoveryError.code, recoveryError.message)
           : new ToolLoopRecoveryError(
-              "tool_loop_recovery_failed",
-              recoveryError instanceof Error ? recoveryError.message : "Tool-loop recovery failed."
+              observedFailureCode(recoveryError) !== "unknown" ? observedFailureCode(recoveryError) : "tool_loop_recovery_failed",
+              executionFailure(recoveryError).message
             );
     if (streamSafetyReport) {
       warnProviderStreamSafetyOnce(failure, {
@@ -3967,7 +4016,7 @@ async function refreshProviderRunOnceRegistered(
         code: error instanceof WorkspaceRuntimeError ? error.code : "workspace_output_export_failed",
         message: "The answer was saved, but Workspace could not finish preparing its files."
       }, { recoveryTerminal: true });
-      await deps.workspace.settle({ outcome: "failed", runId, userId });
+      await deps.workspace.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) });
       return;
     }
     if (handoff.status !== "ready") return;
@@ -4675,7 +4724,7 @@ async function refreshProviderRunOnceRegistered(
         ? focusedKnowledgeFailure("knowledge_answer_failed")
         : {
             code: "provider_refresh_failed",
-            message: error instanceof Error ? error.message : "Provider refresh failed"
+            message: "The provider response could not be refreshed. Its outcome remains unconfirmed; the request was not repeated."
           };
       await failRecoveredRun(deps.repository,
         runId,
@@ -4799,9 +4848,10 @@ async function refreshProviderRunOnceRegistered(
         }
       });
     } catch (error) {
-      if (!focusedRequest) throw error;
+      const settlement = runSettlementFailure(error);
+      if (!focusedRequest && !settlement) throw error;
       await settleRecoveredError(deps.repository, {
-        error: focusedAnswerFailure(error),
+        error: settlement ?? focusedAnswerFailure(error),
         outputEvents: runOutputArtifactEvents(refreshed.events),
         ...(refreshedProviderResponseId
           ? { providerResponseId: refreshedProviderResponseId }
@@ -4882,6 +4932,13 @@ export async function refreshProviderRunIfNeeded(
   }
 }
 
+function recoveredWorkspaceActivity(deps: RunRecoveryDeps, runId: string) {
+  return async (entry: ThreadWorkspaceActivityEntry) => {
+    const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+    if (event) await deps.repository.appendRunOutputEvent(runId, event);
+  };
+}
+
 async function recoverAgentIfNeeded(deps: RunRecoveryDeps, runId: string, userId: string, now = new Date()): Promise<boolean> {
   const agent = await deps.repository.interruptExpiredAgentRun?.({ runId, userId, now });
   if (!agent || agent.kind === "not_agent") return false;
@@ -4891,7 +4948,7 @@ async function recoverAgentIfNeeded(deps: RunRecoveryDeps, runId: string, userId
     error: { code: agent.failureCode, message: agentFailureMessage(agent.failureCode) },
     usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions(agent.usage))
   });
-  await deps.workspace?.settle({ outcome: "failed", runId, userId });
+  await deps.workspace?.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) });
   return true;
 }
 
@@ -4960,7 +5017,7 @@ export async function reconcileInstallationRuns(
         code: "run_orphaned",
         message: "Run stopped reporting progress and was marked failed."
       });
-      await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: run.userId })
+      await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: run.userId, onActivity: recoveredWorkspaceActivity(deps, run.id) })
         .catch((error: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
           code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" }));
     });
@@ -5047,7 +5104,7 @@ export async function reconcileStaleRuns(
         message: "Run stopped reporting progress and was marked failed."
       };
       await failRecoveredRun(deps.repository, run.id, run.assistantMessageId, payload);
-      await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: input.userId })
+      await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: input.userId, onActivity: recoveredWorkspaceActivity(deps, run.id) })
         .catch((error: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
           code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" }));
     });

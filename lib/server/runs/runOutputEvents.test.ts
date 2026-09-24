@@ -250,3 +250,19 @@ describe("durable run output events", () => {
     expect(runOutputArtifactEvents([privateKnowledgeArtifact])).toEqual([]);
   });
 });
+
+
+it("persists only an exact safe checkpoint publication and rejects private or mixed references", () => {
+  const checkpoint = { id: "checkpoint-1", description: "Saved layout", createdAt: "2026-09-24T09:00:00.000Z" };
+  const file = { attachmentId: "draft-1", byteSize: 9, fileName: "layout.psd", mimeType: "application/octet-stream", relativePath: "layout.psd", checkpoint };
+  const event = { type: "artifact", data: { artifactType: "workspace_checkpoint", payload: { checkpoint, files: [file] } } } as const;
+  expect(projectRunOutputArtifactEvent(event)).toEqual(event);
+  expect(isRunOutputArtifactEvent(event)).toBe(true);
+  for (const payload of [{ ...event.data.payload, captureId: "private" },
+    { checkpoint, files: [{ ...file, objectKey: "private" }] },
+    { checkpoint, files: [{ ...file, checkpoint: { ...checkpoint, id: "other" } }] }]) {
+    const invalid = { ...event, data: { ...event.data, payload } };
+    expect(projectRunOutputArtifactEvent(invalid)).toBeNull();
+    expect(isRunOutputArtifactEvent(invalid)).toBe(false);
+  }
+});

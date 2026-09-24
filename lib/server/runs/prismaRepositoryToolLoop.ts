@@ -1,3 +1,4 @@
+import { decodeAcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { isSkillToolName, LOAD_SKILL_TOOL_NAME } from "../tools/skill";
@@ -115,6 +116,23 @@ export async function appendRunOutputEvents(
   // Every caller holds the run row lock. Replayed tool results retain their
   // first committed update, rather than republishing old state as a new event.
   for (const event of events) {
+    if (event.type === "artifact" && event.data.artifactType === "workspace_checkpoint") {
+      const key = `checkpoint:${event.data.payload.checkpoint.id}`;
+      const buffered = updates.get(key);
+      const previous = buffered ?? await tx.modelRunEvent.findFirst({ select: { payload: true }, where: {
+        modelRunId: runId, eventType: "artifact", AND: [
+          { payload: { path: ["artifactType"], equals: "workspace_checkpoint" } },
+          { payload: { path: ["payload", "checkpoint", "id"], equals: event.data.payload.checkpoint.id } }
+        ]
+      } });
+      if (previous) {
+        const data = "data" in previous ? previous.data : previous.payload;
+        if (canonicalJson(data as ToolLoopJsonValue) !== canonicalJson(event.data as unknown as ToolLoopJsonValue)) throw new Error("workspace_checkpoint_replay_invalid");
+        published.push(event);
+        continue;
+      }
+      updates.set(key, event);
+    }
     if (event.type === "grounding_display") {
       if (lastGrounding && canonicalJson(lastGrounding as ToolLoopJsonValue) ===
         canonicalJson(event.data)) {
@@ -141,7 +159,7 @@ export async function appendRunOutputEvents(
           throw new Error("workspace_activity_replay_invalid");
         }
         const replay: RunOutputArtifactEvent = { type: "artifact", data: {
-          artifactType: "workspace_activity", payload: { ...event.data.payload, sequence: receipt.sequence }
+          artifactType: "workspace_activity", payload: { ...event.data.payload, updateId, sequence: receipt.sequence }
         } };
         published.push(replay);
         updates.set(updateId, replay);
@@ -556,6 +574,9 @@ const normalizedRequestKeys = new Set([
   "knowledgeGenerationBudget",
   "knowledgeEvidencePackingVersion",
   "knowledgeFocusedRequest",
+  "visionAnalysis",
+  "workspaceImageView",
+  "workspaceCheckpoints",
   "imagePlan",
   "imageReferences",
   "knowledgePlan",
@@ -927,6 +948,9 @@ function decodeProviderDispatchRecoveryRequest(
       value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 && value.knowledgeEvidencePackingVersion !== 4 && value.knowledgeEvidencePackingVersion !== 5 ||
     value.knowledgeSearchInstructionVersion !== undefined && value.knowledgeSearchInstructionVersion !== 2 && value.knowledgeSearchInstructionVersion !== 3 ||
     value.knowledgeQueryAnchorVersion !== undefined && value.knowledgeQueryAnchorVersion !== 2 ||
+    value.visionAnalysis !== undefined && (!value.workspace || !decodeAcceptedVisionAnalysisPlan(value.visionAnalysis)) ||
+    value.workspaceCheckpoints !== undefined && (value.workspaceCheckpoints !== true || !value.workspace) ||
+    value.workspaceImageView !== undefined && (value.workspaceImageView !== true || !value.workspace || value.agent !== undefined) ||
     value.imagePlan !== undefined && !decodeAcceptedImageGenerationPlan(value.imagePlan) ||
     (value.artifactTool !== undefined && value.artifactTool !== true) ||
     (value.artifactToolDescription !== undefined && (value.artifactTool !== true || !nonBlank(value.artifactToolDescription, 16_384))) ||
@@ -1944,7 +1968,7 @@ export function createPrismaRunToolLoopOperations(
 
         await tx.usageEvent.deleteMany({
           where: {
-            chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, knowledgeRelevance: false, optionalDecision: false,
+            chatPdfPreparation: false, imageGeneration: false, visionAnalysis: false, chatTitleGeneration: false, knowledgeRelevance: false, optionalDecision: false,
             modelRunId: input.runId
           }
         });
@@ -2114,7 +2138,7 @@ export function createPrismaRunToolLoopOperations(
         if (usageAttributions.length > 0) {
           await tx.usageEvent.deleteMany({
             where: {
-              chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, knowledgeRelevance: false, optionalDecision: false,
+              chatPdfPreparation: false, imageGeneration: false, visionAnalysis: false, chatTitleGeneration: false, knowledgeRelevance: false, optionalDecision: false,
               modelRunId: input.runId
             }
           });

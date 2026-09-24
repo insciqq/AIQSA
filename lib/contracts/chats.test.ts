@@ -734,3 +734,19 @@ describe("chat wire contracts", () => {
   });
 
 });
+
+
+it("reloads failed answers with same-name immutable checkpoints and retains separate final export", () => {
+  const files = Array.from({ length: 128 }, (_, index) => ({
+    attachmentId: `draft-${index}`, byteSize: 7, fileName: "result.psd", mimeType: "application/octet-stream", relativePath: "result.psd",
+    checkpoint: { id: `cp-${Math.floor(index / 8)}`, description: "Useful intermediate result", createdAt: "2026-09-24T09:00:00.000Z" }
+  }));
+  const final = { attachmentId: "final", byteSize: 7, fileName: "result.psd", mimeType: "application/octet-stream", relativePath: "result.psd" };
+  const decode = (generatedFiles: unknown[]) => decodeChatDetailResponse({ chat: detailChat({
+    messages: [{ ...message, status: "error", artifactSummary: { citations: [], reasoningText: [], sources: [], generatedFiles } }], usageStats
+  }) });
+  expect(decode([...files, final])?.messages[0]).toMatchObject({ status: "error", artifactSummary: { generatedFiles: [...files, final] } });
+  expect(decode([files[0], files[0]])).toBeNull();
+  expect(decode([final, { ...final, attachmentId: "another-final" }])).toBeNull();
+  expect(decode([...files, { ...files[0], attachmentId: "excess", checkpoint: { ...files[0]!.checkpoint, id: "cp-17" } }])).toBeNull();
+});

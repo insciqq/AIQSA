@@ -24,19 +24,25 @@ export function createWorkspaceExportHistoryRepository(client: PrismaClient = pr
             SELECT parent."id", parent."parentMessageId", parent."createdAt"
             FROM path child INNER JOIN "Message" parent ON parent."id" = child."parentMessageId"
             WHERE parent."chatId" = ${chatId}
+          ), visible_outputs AS (
+            SELECT o."workspaceRunBindingId" AS "runId", o."attachmentId", o."relativePath", NULL::jsonb AS checkpoint
+            FROM "WorkspaceRunOutput" o JOIN "WorkspaceRunBinding" b ON b."modelRunId" = o."workspaceRunBindingId" AND b."exportState" = 'COMPLETE'
+            UNION ALL
+            SELECT c."modelRunId", f."attachmentId", f."relativePath", jsonb_build_object('id', c."id", 'description', c."description",
+              'createdAt', to_char(c."createdAt", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+            FROM "WorkspaceCheckpointFile" f JOIN "WorkspaceOutputCheckpoint" c ON c."id" = f."checkpointId" AND c."state" = 'SETTLED'
           )
           SELECT path."id" AS "messageId", path."createdAt",
             jsonb_agg(jsonb_build_object(
               'attachmentId', attachment."id", 'byteSize', attachment."byteSize",
               'fileName', attachment."fileName", 'mimeType', attachment."mimeType",
               'relativePath', output."relativePath"
-            ) ORDER BY output."relativePath", attachment."id") AS files
+            ) || CASE WHEN output.checkpoint IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('checkpoint', output.checkpoint) END ORDER BY output."relativePath", attachment."id") AS files
           FROM path
           INNER JOIN "ModelRun" run ON run."assistantMessageId" = path."id" AND run."chatId" = ${chatId}
-          INNER JOIN "WorkspaceRunBinding" binding ON binding."modelRunId" = run."id" AND binding."exportState" = 'COMPLETE'
-          INNER JOIN "WorkspaceRunOutput" output ON output."workspaceRunBindingId" = binding."modelRunId"
+          INNER JOIN visible_outputs output ON output."runId" = run."id"
           INNER JOIN "Attachment" attachment ON attachment."id" = output."attachmentId"
-            AND attachment."chatId" = ${chatId} AND attachment."messageId" = path."id"
+            AND attachment."chatId" = ${chatId} AND attachment."messageId" = path."id" AND attachment."status" = 'ready'
           WHERE ${cursor === null ? Prisma.sql`true` : Prisma.sql`
             (path."createdAt", path."id") < (SELECT "createdAt", "id" FROM path WHERE "id" = ${cursor})
           `}

@@ -205,7 +205,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
         sessionId: session.id
       });
       if (!quiescence.proven) {
-        logEvent("job_attempt", { subsystem: "workspace", stage: "quiesce", outcome: "failed", code: "workspace_execution_cleanup_failed", action: "wait" });
+        logEvent("job_attempt", { subsystem: "workspace", stage: "quiesce", outcome: "failed", code: quiescence.failureCode ?? "workspace_execution_cleanup_failed", action: "wait" });
         continue;
       }
       }

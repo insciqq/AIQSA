@@ -18,6 +18,7 @@ import { createAgentBuiltinProgress } from "./builtinProgress";
 import type { RunOutputArtifactEvent } from "../runs/runOutputEvents";
 import { followupTokenCost, type RunFollowupOperations } from "../runs/runFollowups";
 import { AGENT_PROMPT_MAX_BYTES } from "./guest";
+import { restoreAgentMcpTools } from "./mcpResume";
 
 export async function executeCodexTurn(input: Readonly<{
   request: ProviderRunRequest;
@@ -66,6 +67,7 @@ export async function executeCodexTurn(input: Readonly<{
       renewing ??= store.renew().then(onUsage).catch((error) => fail(agentFailureCode(error) ?? "agent_authority_expired")).finally(() => { renewing = null; });
     }, 10_000);
     heartbeat.unref();
+    await restoreAgentMcpTools({ request: input.request, runId: input.runId, userId: input.userId, store, signal });
     if (progress) {
       progressTimer = setInterval(() => {
         void progress.refresh().catch(() => fail("agent_execution_interrupted"));
@@ -86,6 +88,9 @@ export async function executeCodexTurn(input: Readonly<{
       aiqsaSearch: input.request.searchPlan.options.length > 0,
       artifacts: input.request.artifactTool === true,
       images: Boolean(input.request.imagePlan),
+      imageInput: configuration.imageInput === true,
+      visionAnalysis: Boolean(input.request.visionAnalysis),
+      checkpoints: input.request.workspaceCheckpoints === true,
       mcpTimeoutSeconds: agentMcpEnvelopeTimeoutSeconds(input.request),
       ...(effort && ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
         ? { reasoningEffort: effort as CodexManagedProfile["reasoningEffort"] } : {})

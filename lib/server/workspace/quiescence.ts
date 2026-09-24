@@ -1,5 +1,6 @@
 import {
   WORKSPACE_EXECUTION_OPEN_STATES,
+  WORKSPACE_EXECUTION_STOP_PROOF,
   isWorkspaceSyncCleanupId,
   type WorkspaceExecutionRegistry
 } from "./executionRegistry";
@@ -16,6 +17,7 @@ export type WorkspaceQuiescence = Readonly<{
   /** Every targeted execution is provably gone (closed, or the VM was stopped). */
   proven: boolean;
   stoppedVm: boolean;
+  failureCode?: "workspace_execution_stop_failed" | "workspace_execution_settlement_failed";
 }>;
 
 /**
@@ -42,13 +44,15 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
     ...(input.modelRunId ? { modelRunId: input.modelRunId } : {})
   };
   let proven = input.unregisteredCommands === 0;
+  let fallbackCode = proven ? "workspace_execution_drain_limit" : "workspace_execution_unregistered";
   // Drain completed pages, then prove the query is empty. Cap work in a
   // single settlement; an overflow or a failed transition forces a VM stop.
   for (let page = 0; proven && page < 4; page += 1) {
     const open = await input.registry.listOpen(scope).catch((error: unknown) => { observeQuiescenceFailure(error); return null; });
-    if (!open) { proven = false; break; }
+    if (!open) { fallbackCode = "workspace_execution_registry_unavailable"; proven = false; break; }
     if (open.length === 0) return { proven: true, stoppedVm: false };
     if (open.some((execution) => isWorkspaceSyncCleanupId(execution.runtimeExecSessionId))) {
+      fallbackCode = "workspace_execution_sync_obligation";
       proven = false;
       break;
     }
@@ -72,13 +76,18 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
       if (!closed || !(await input.registry.transition({
         operation: input.operation,
         from: [...WORKSPACE_EXECUTION_OPEN_STATES], id: execution.id, to: "CLOSED"
-      }).catch((error: unknown) => { observeQuiescenceFailure(error); return false; }))) proven = false;
+      }).catch((error: unknown) => { observeQuiescenceFailure(error); return false; }))) {
+        fallbackCode = closed ? "workspace_execution_registry_unavailable" : "workspace_execution_termination_unknown";
+        proven = false;
+      }
     }
   }
   if (proven) {
     const remaining = await input.registry.listOpen(scope).catch((error: unknown) => { observeQuiescenceFailure(error); return null; });
     if (remaining?.length === 0) return { proven: true, stoppedVm: false };
+    if (remaining === null) fallbackCode = "workspace_execution_registry_unavailable";
   }
+  logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "quiesce", outcome: "degraded", code: fallbackCode, action: "stop" });
   try {
     await input.runtime.stopSession({
       operation: input.operation,
@@ -88,17 +97,22 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
     });
   } catch (error) {
     observeQuiescenceFailure(error);
-    return { proven: false, stoppedVm: false };
+    logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "shutdown", outcome: "failed", code: "workspace_execution_stop_failed", action: "wait" });
+    return { proven: false, stoppedVm: false, failureCode: "workspace_execution_stop_failed" };
   }
+  logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "shutdown", outcome: "completed", code: WORKSPACE_EXECUTION_STOP_PROOF, action: "none" });
   try {
     await input.registry.closeAll({
       operation: input.operation,
-      errorCode: "workspace_execution_cleanup_failed", sessionId: input.sessionId, to: "LOST"
+      errorCode: WORKSPACE_EXECUTION_STOP_PROOF, sessionId: input.sessionId, to: "LOST"
     });
     const remaining = await input.registry.listOpen({ sessionId: input.sessionId });
-    return { proven: remaining.length === 0, stoppedVm: true };
+    if (remaining.length !== 0) throw new Error("workspace_execution_settlement_failed");
+    logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "settle", outcome: "completed", code: WORKSPACE_EXECUTION_STOP_PROOF, action: "complete" });
+    return { proven: true, stoppedVm: true };
   } catch (error) {
     observeQuiescenceFailure(error);
-    return { proven: false, stoppedVm: true };
+    logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "settle", outcome: "failed", code: "workspace_execution_settlement_failed", action: "wait" });
+    return { proven: false, stoppedVm: true, failureCode: "workspace_execution_settlement_failed" };
   }
 }

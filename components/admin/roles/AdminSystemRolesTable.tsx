@@ -102,6 +102,7 @@ export function AdminSystemRolesTable({
     chatTitleProviderModelId: policy.chatTitleModel?.id ?? null,
     chatTitleReasoningEffort: policy.chatTitleReasoningEffort
   };
+  const visionUndo = { visionProviderModelId: policy.visionModel?.id ?? null, visionReasoningEffort: policy.visionReasoningEffort ?? null };
   const pdfMode = policy.chatPdfProcessingMode ?? "prefer_chat_model";
   const pdfFallback = policy.chatPdfFallbackMethod ?? "page_images";
   const pdfUsesNativeReader = pdfMode === "use_pdf_reader" || pdfMode === "prefer_chat_model" && pdfFallback === "pdf_reader";
@@ -284,6 +285,44 @@ export function AdminSystemRolesTable({
       </RoleRow>
 
       <RoleRow
+        title="Vision Model"
+        testId="admin-role-vision"
+        menu={[{
+          disabled: !policy.visionModel || busy,
+          label: "Clear assignment",
+          onSelect: () => void controller.assign({ visionProviderModelId: null, visionReasoningEffort: null }, visionUndo)
+        }]}
+        status={roleStatus(policy.visionModel ?? null)}
+        statusLabel={policy.visionModel ? policy.visionModel.available ? "Model ready" : "Model unavailable" : "Not assigned"}
+        description="System model for image analysis."
+      >
+        <AdminRolePicker
+          busy={busy}
+          checkingId={checkingId}
+          items={generativeRoleItems(catalog, "vision")}
+          label="Vision deployment"
+          onCheck={(id) => controller.checkAndAssign("vision", id)}
+          onSelect={(id) => void controller.assign({ visionProviderModelId: id, visionReasoningEffort: null }, visionUndo)}
+          roleName="Vision Model"
+          selectedId={policy.visionModel?.id ?? null}
+          selectedLabel={policy.visionModel ? label(policy.visionModel) : null}
+          testId="admin-vision-picker"
+        />
+        <p className="text-xs leading-5 text-ink-muted">
+          {catalog.visionAnalysisAvailable
+            ? "Image analysis is supported. An available Vision Model is required."
+            : "The image analysis tool is not available in this installation. Model verification only checks image input support."}
+        </p>
+        <ReasoningSelect
+          disabled={busy}
+          label="Vision reasoning"
+          model={policy.visionModel ?? null}
+          onChange={(effort) => void controller.assign({ visionProviderModelId: policy.visionModel?.id ?? null, visionReasoningEffort: effort }, visionUndo)}
+          value={policy.visionReasoningEffort ?? null}
+        />
+      </RoleRow>
+
+      <RoleRow
         title="PDF processing in chats"
         testId="admin-role-chat-pdf"
         menu={[{
@@ -334,7 +373,7 @@ export function AdminSystemRolesTable({
             checkingId={checkingId}
             items={generativeRoleItems(catalog, pdfUsesNativeReader ? "direct_pdf" : "vision")}
             label={`${pdfReaderName} deployment`}
-            onCheck={(id) => controller.checkAndAssign(pdfUsesNativeReader ? "direct_pdf" : "vision", id)}
+            onCheck={(id) => controller.checkAndAssign(pdfUsesNativeReader ? "direct_pdf" : "pdf_images", id)}
             onSelect={(id) => void controller.assign(pdfReaderSelection(id, null), pdfReaderUndo)}
             roleName={pdfReaderName}
             selectedId={pdfReader?.id ?? null}

@@ -597,3 +597,35 @@ describe("AnswerOutputsV2 Workspace output status", () => {
     expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("could not be prepared for download");
   });
 });
+
+
+it("offers immutable draft downloads before answer text and keeps them after failure alongside final exports", () => {
+  const checkpoint = { id: "cp-1", description: "Layout before risky export", createdAt: "2026-09-24T09:00:00.000Z" };
+  const file = { attachmentId: "draft-1", byteSize: 90, fileName: "layout.psd", mimeType: "application/octet-stream", relativePath: "layout.psd", checkpoint };
+  const second = { ...file, attachmentId: "draft-2", checkpoint: { ...checkpoint, id: "cp-2", description: "Revised layout" } };
+  const final = { attachmentId: "final", byteSize: 100, fileName: "layout.psd", mimeType: file.mimeType, relativePath: file.relativePath };
+  const summary = { citations: [], reasoningText: [], sources: [], generatedFiles: [file, second, final] };
+  const { rerender } = render(<RunAnswerV2 content="" artifact={null} presentation={{ kind: "streaming", runId: "run" }}
+    actionsSlot={<AnswerOutputsV2 live artifact={summary} />} />);
+  const downloads = () => screen.getAllByRole("link", { name: "Download" }).map(link => link.getAttribute("href"));
+  expect(downloads()).toEqual(["/api/attachments/draft-1/content", "/api/attachments/draft-2/content"]);
+  expect(screen.getByText("Layout before risky export")).toBeVisible();
+  expect(screen.getByText("Revised layout")).toBeVisible();
+  expect(screen.getAllByText(/Saved draft ·/)).toHaveLength(2);
+  expect(screen.queryByText(/Final export ·/)).not.toBeInTheDocument();
+  rerender(<AnswerOutputsV2 artifact={summary} workspaceOutputStatus={{ state: "failed", errorCode: "workspace_session_lost" }} />);
+  expect(downloads()).toEqual(["/api/attachments/draft-1/content", "/api/attachments/draft-2/content", "/api/attachments/final/content"]);
+  expect(screen.getAllByText("layout.psd")).toHaveLength(3);
+  expect(screen.getByText(/Final export ·/)).toBeVisible();
+  expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("could not be prepared");
+});
+
+it("keeps historical failed commands in the disclosure without a false aggregate warning", () => {
+  render(<AnswerProcessV2 workspaceActivity={{ outputStatus: { state: "complete" }, entries: [
+    { id: "failed-before-recovery", kind: "command", phase: "failed", command: { preview: "first-attempt", exitCode: 17 } },
+    { id: "execution", kind: "execution_status", phase: "closed" }
+  ] }} />);
+  expect(screen.getByText("Worked in Workspace")).toBeVisible();
+  expect(screen.queryByText(/Needs attention/u)).not.toBeInTheDocument();
+  expect(screen.getByText("first-attempt failed")).toBeInTheDocument();
+});

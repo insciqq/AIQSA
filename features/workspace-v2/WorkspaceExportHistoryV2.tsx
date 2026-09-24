@@ -33,11 +33,11 @@ export function WorkspaceExportHistoryV2({ branchKey, canSave, chatId, onClose, 
           <h2>Export history</h2>
           <UiV2IconButton icon="close" label="Close export history" ref={initialFocusRef} onClick={onClose} />
         </header>
-        <p>Completed file sets from this branch. Earlier downloads stay unchanged.</p>
+        <p>Saved drafts and final exports from this branch. Each download keeps its saved version.</p>
         {history.error ? <p role="alert">Export history could not be loaded. <UiV2Button onClick={history.refresh}>Retry</UiV2Button></p> : null}
         {useError ? <p role="alert">This file could not be attached. Try again from the chat.</p> : null}
         {history.busy && history.exports.length === 0 ? <p role="status">Loading exports…</p> : null}
-        {!history.busy && !history.error && history.exports.length === 0 ? <p>No completed exports yet.</p> : null}
+        {!history.busy && !history.error && history.exports.length === 0 ? <p>No saved drafts or final exports yet.</p> : null}
         <ol className="v2-export-history-entries" aria-label="Exports">
           {history.exports.map((entry) => (
             <li key={entry.messageId}>

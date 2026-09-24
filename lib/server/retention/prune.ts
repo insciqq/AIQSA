@@ -103,6 +103,7 @@ export type RetentionRepository = {
   }): Promise<InboundMcpOAuthPruneResult>;
   deleteModelRunEvents(ids: string[]): Promise<number>;
   findClaimableAttachmentDeletionJobIds(input: {
+    now?: Date;
     claimableBefore: Date;
     limit: number;
   }): Promise<string[]>;
@@ -492,6 +493,17 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
                 WHERE skill_file."storageKey" = job."storageKey"
                 UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
                 WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
+                UNION ALL SELECT 1 FROM "WorkspaceCapturedFile" AS captured_file
+                JOIN "WorkspaceSelectedCapture" AS capture ON capture."id" = captured_file."captureId"
+                WHERE captured_file."storageKey" = job."storageKey" AND (
+                  (captured_file."storageState" = 'STORING' AND captured_file."storageLeaseExpiresAt" > ${now})
+                  OR (captured_file."storageState" = 'READY' AND capture."state" = 'CAPTURED' AND EXISTS (
+                    SELECT 1 FROM "WorkspaceCaptureReference" reference
+                    WHERE reference."captureId" = capture."id" AND reference."releasedAt" IS NULL
+                  ))
+                  OR EXISTS (SELECT 1 FROM "WorkspaceCaptureReadLease" lease
+                    WHERE lease."captureId" = capture."id" AND lease."expiresAt" > ${now})
+                )
               )
               AND NOT EXISTS (
                 SELECT 1 FROM "KnowledgeDocumentVersion" AS version
@@ -687,7 +699,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
 
       return result.count;
     },
-    async findClaimableAttachmentDeletionJobIds({ claimableBefore, limit }) {
+    async findClaimableAttachmentDeletionJobIds({ claimableBefore, limit, now = new Date() }) {
       const rows = await prisma.$queryRaw<Array<{ id: string }>>`
         SELECT job."id"
         FROM "AttachmentDeletionJob" AS job
@@ -701,6 +713,17 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             WHERE skill_file."storageKey" = job."storageKey"
             UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
             WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
+            UNION ALL SELECT 1 FROM "WorkspaceCapturedFile" AS captured_file
+            JOIN "WorkspaceSelectedCapture" AS capture ON capture."id" = captured_file."captureId"
+            WHERE captured_file."storageKey" = job."storageKey" AND (
+              (captured_file."storageState" = 'STORING' AND captured_file."storageLeaseExpiresAt" > ${now})
+              OR (captured_file."storageState" = 'READY' AND capture."state" = 'CAPTURED' AND EXISTS (
+                SELECT 1 FROM "WorkspaceCaptureReference" reference
+                WHERE reference."captureId" = capture."id" AND reference."releasedAt" IS NULL
+              ))
+              OR EXISTS (SELECT 1 FROM "WorkspaceCaptureReadLease" lease
+                WHERE lease."captureId" = capture."id" AND lease."expiresAt" > ${now})
+            )
           )
           AND NOT EXISTS (
             SELECT 1 FROM "KnowledgeDocumentVersion" AS version
@@ -1576,7 +1599,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     options.repository.findPrunableAuthSessionIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findPrunableAuthFlowTokenIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findPrunableInboundMcpOAuth({ cutoff: authCutoff, limit: batchSize }),
-    options.repository.findClaimableAttachmentDeletionJobIds({ claimableBefore, limit: batchSize })
+    options.repository.findClaimableAttachmentDeletionJobIds({ now, claimableBefore, limit: batchSize })
   ]);
   const summary = emptySummary({
     authCutoff,
@@ -1638,6 +1661,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     now
   });
   const claimableDeletionJobIds = await options.repository.findClaimableAttachmentDeletionJobIds({
+    now,
     claimableBefore,
     limit: batchSize
   });

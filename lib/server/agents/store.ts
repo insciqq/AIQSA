@@ -20,7 +20,9 @@ import { snapshotToolLoopJson, toolLoopPersistenceLimits } from "../runs/toolLoo
 import { runOutputArtifactEvents } from "../runs/runOutputEvents";
 import { appendRunOutputEvents } from "../runs/prismaRepositoryToolLoop";
 import { decodeArtifactGenerationEvent } from "@/lib/contracts/artifactGeneration";
+import { ANALYZE_IMAGE_TOOL_NAME } from "../tools/analyzeImage";
 import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
+import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 
 export function agentTokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -108,6 +110,14 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
         await assertActive(tx);
         const changed = await tx.modelRunToolCall.updateMany({ where: { id, modelRunId: runId,
           toolName: IMAGE_GENERATION_TOOL_NAME, state: "pending" }, data: { state: "running" } });
+        if (changed.count !== 1) throw new Error("agent_builtin_in_progress");
+      });
+    },
+    async startBuiltinVision(id: string) {
+      await locked(async tx => {
+        await assertActive(tx);
+        const changed = await tx.modelRunToolCall.updateMany({ where: { id, modelRunId: runId,
+          toolName: ANALYZE_IMAGE_TOOL_NAME, state: "pending" }, data: { state: "running" } });
         if (changed.count !== 1) throw new Error("agent_builtin_in_progress");
       });
     },
@@ -423,6 +433,10 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     async admitMcpPlan(plan: Extract<McpRunPlanResult, { ok: true }>) {
       await locked(async (tx) => {
         await assertActive(tx);
+        const admitted = await tx.agentMcpTool.findMany({ where: { modelRunId: runId }, select: { toolId: true } });
+        if (new Set([...admitted.map(tool => tool.toolId), ...plan.snapshot.tools.map(tool => tool.namespacedName)]).size > MCP_RUN_PLAN_LIMITS.maxTools) {
+          throw new Error("mcp_plan_too_large");
+        }
         for (const tool of plan.snapshot.tools) {
           const route = resolveMcpRunTool(plan.snapshot, tool.namespacedName);
           if (!route) throw new Error("agent_mcp_binding_invalid");
@@ -445,6 +459,17 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
             runtimeGenerationFingerprint: binding.fingerprint }, update: {} });
         }
       });
+    },
+    async resumedMcpTools() {
+      const current = await assertActive();
+      if (configuration.mcpMode !== "auto" || !current.resumedFromRunId) return [];
+      // arm alone establishes this exact compatible active-branch predecessor.
+      // Its identifiers are candidates, never transferable execution authority.
+      return database.agentMcpTool.findMany({ where: { modelRunId: current.resumedFromRunId,
+        binding: { compatibilityHash: configuration.compatibilityHash, completedAt: { not: null },
+          workspaceRun: { modelRun: { userId, status: "complete" } } } },
+        orderBy: { toolId: "asc" }, take: MCP_RUN_PLAN_LIMITS.maxTools,
+        select: { toolId: true, version: true } });
     },
     mcpTools: () => database.agentMcpTool.findMany({ where: { modelRunId: runId }, select: { toolId: true, version: true } }),
     usage: () => loadAgentUsage(database, runId)

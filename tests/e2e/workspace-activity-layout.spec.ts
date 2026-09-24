@@ -24,7 +24,8 @@ async function expectStackedTimeline(disclosure: Locator): Promise<number> {
 
 for (const viewport of [
   { width: 1440, height: 900, theme: "dark" },
-  { width: 820, height: 1180, theme: "light" },
+  { width: 768, height: 1024, theme: "light" },
+  { width: 1024, height: 768, theme: "dark" },
   { width: 390, height: 844, theme: "light" },
   { width: 844, height: 390, theme: "dark" }
 ] as const) {
@@ -58,6 +59,7 @@ for (const viewport of [
     await stream.emit(page, "run_start", { provider: "openai", modelId: "gpt-5.5", runId, status: "streaming" });
     await stream.emit(page, "message_start", { assistantMessageId: "workspace-layout-answer", userMessageId: "workspace-layout-question" });
     await expect(page.getByTestId("run-status-line")).toBeVisible();
+    await composer.fill("Keep this draft while activity changes.");
 
     let sequence = 0;
     const emitActivity = (entry: ThreadWorkspaceActivityEntry) => stream.emit(page, "artifact", {
@@ -82,12 +84,31 @@ for (const viewport of [
       expect(Math.abs(await expectStackedTimeline(disclosure) - initialWidth)).toBeLessThanOrEqual(1);
     }
 
+    const failedEntry: ThreadWorkspaceActivityEntry = {
+      id: "failed-long-command", kind: "command", phase: "failed", command: {
+        preview: `python - <<'PY'\nprint('${"Synthetic Проверка 🧪 ".repeat(30)}')\nPY`,
+        exitCode: 1, stderrPreview: "Synthetic traceback\n".repeat(40), truncated: true
+      }
+    };
+    await emitActivity(failedEntry);
+    await emitActivity({ ...failedEntry, id: "stopped-long-command", phase: "cancelled" });
+    await expect(disclosure.locator(".v2-workspace-command[open]")).toHaveCount(0);
+    await expect(disclosure).toHaveAttribute("open");
+    await expect(composer).toHaveValue("Keep this draft while activity changes.");
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath("workspace-errors-collapsed.png") });
+
     const command = disclosure.locator(".v2-workspace-command").last();
     await command.locator(":scope > summary").focus();
     await page.keyboard.press("Enter");
-    await expect(command.getByText("Synthetic output", { exact: true })).toBeVisible();
+    await expect(command.getByText("Output truncated", { exact: true })).toBeVisible();
+    await emitActivity({ ...failedEntry, id: "stopped-long-command", phase: "cancelled", durationMs: 890 });
+    await expect(command).toHaveAttribute("open");
     expect(Math.abs(await expectStackedTimeline(disclosure) - initialWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath("workspace-live.png") });
+    await command.locator(":scope > summary").click();
+    await emitActivity({ ...failedEntry, id: "stopped-long-command", phase: "cancelled", durationMs: 900 });
+    await expect(command).not.toHaveAttribute("open");
     await stream.emit(page, "token", { delta: "The synthetic project check is complete." });
     await expect(page.locator('article[data-role="assistant"]')).toContainText("The synthetic project check is complete.");
     await expect(disclosure).not.toHaveAttribute("data-live");
@@ -104,7 +125,8 @@ for (const viewport of [
     const dialog = page.getByRole("dialog", { name: "Workspace activity", exact: true });
     const steps = dialog.getByRole("list", { name: "Activity steps" });
     const close = dialog.getByRole("button", { name: "Close", exact: true });
-    await expect(steps.getByRole("listitem")).toHaveCount(63);
+    await expect(steps.getByRole("listitem")).toHaveCount(65);
+    await expect(steps.locator(".v2-workspace-command[open]")).toHaveCount(0);
     await expect(close).toBeFocused();
     expect(await steps.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
     const [dialogBox, listBox] = await Promise.all([dialog.boundingBox(), steps.boundingBox()]);
@@ -133,7 +155,19 @@ for (const viewport of [
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(opener).toBeFocused();
+    await expect(composer).toHaveValue("Keep this draft while activity changes.");
     await expectNoHorizontalOverflow(page);
+
+    const unpolled: ThreadWorkspaceActivityEntry = { id: "unpolled", kind: "command", phase: "running",
+      command: { preview: "python prepare-result.py" } };
+    await emitActivity(unpolled);
+    await emitActivity({ id: "execution-proof", kind: "execution_status", phase: "closed" });
+    // A delayed start frame cannot revive a command after the owned retirement receipt.
+    await emitActivity(unpolled);
+    await expect(disclosure.getByText("python prepare-result.py · exit not observed", { exact: true })).toBeVisible();
+    await expect(disclosure.locator('.v2-workspace-command[data-phase="closed"] .v2-spinner')).toHaveCount(0);
+    await expect(summary).not.toContainText("Needs attention");
+    await page.screenshot({ path: testInfo.outputPath("workspace-terminal-live.png") });
 
     await installMatrixCatalogFixture(page, { folders: [], chats: [{
       id: chatId, title: "Workspace activity layout", activeLeafMessageId: "workspace-layout-answer",
@@ -142,19 +176,47 @@ for (const viewport of [
       messages: [{ id: "workspace-layout-answer", role: "assistant", status: "complete", parentMessageId: null,
         createdAt: timestamp, content: "The synthetic project check is complete.", errorMessage: null,
         citationMessageId: null, modelId: "gpt-5.5", modelRunId: runId, provider: "openai",
-        workspaceActivity: { entries: [{ id: "failed-check", kind: "command", phase: "failed",
-          command: { preview: "npm test", exitCode: 1 } }] }
+        workspaceActivity: { outputStatus: { state: "complete", revision: timestamp }, entries: [
+          { id: "failed-check", kind: "command", phase: "failed", command: { preview: "npm test", exitCode: 1 } },
+          unpolled, { id: "execution-proof", kind: "execution_status", phase: "closed" }
+        ] }
       }]
     }] });
     await page.reload();
     await expect(disclosure).toHaveAttribute("open");
-    await expect(summary).toContainText("Needs attention");
+    await expect(disclosure.locator(".v2-workspace-command[open]")).toHaveCount(0);
+    await expect(summary).not.toContainText("Needs attention");
+    await expect(disclosure.getByText("python prepare-result.py · exit not observed", { exact: true })).toBeVisible();
+    await expect(disclosure.getByText("npm test failed", { exact: true })).toBeVisible();
+    await expect(disclosure.locator(".v2-spinner")).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath("workspace-terminal-reloaded.png") });
     await summary.click();
     await page.reload();
     await expect(disclosure).not.toHaveAttribute("open");
-    await expect(summary).toContainText("Needs attention");
+    await expect(summary).not.toContainText("Needs attention");
     await page.locator(".v2-conversation-scroll").evaluate(node => node.scrollTo({ top: 0 }));
     await page.screenshot({ path: testInfo.outputPath("workspace-reload-collapsed.png") });
+
+    await installMatrixCatalogFixture(page, { folders: [], chats: [{
+      id: chatId, title: "Workspace cleanup outcome", activeLeafMessageId: "workspace-layout-answer",
+      createdAt: timestamp, updatedAt: timestamp, defaultProvider: "openai", defaultModelId: "gpt-5.5",
+      folderId: null, pinned: false, messageCount: 1,
+      messages: [{ id: "workspace-layout-answer", role: "assistant", status: "error", parentMessageId: null,
+        createdAt: timestamp, content: "The saved answer remains available.", errorMessage: "Workspace cleanup could not be confirmed.",
+        citationMessageId: null, modelId: "gpt-5.5", modelRunId: runId, provider: "openai",
+        workspaceActivity: { outputStatus: { state: "failed", revision: "2026-09-24T10:00:01.000Z" }, entries: [
+          unpolled, { id: "execution-proof", kind: "execution_status", phase: "unknown", errorCode: "workspace_execution_stop_failed" }
+        ] }
+      }]
+    }] });
+    await page.reload();
+    await expect(summary).toContainText("Cleanup unconfirmed");
+    await summary.click();
+    await expect(disclosure.getByText("python prepare-result.py · outcome unconfirmed", { exact: true })).toBeVisible();
+    await expect(disclosure.locator(".v2-spinner")).toHaveCount(0);
+    await expect(page.getByTestId("workspace-output-status")).toContainText("could not be prepared for download");
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath("workspace-cleanup-unconfirmed.png") });
   });
   });
 }

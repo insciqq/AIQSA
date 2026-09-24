@@ -28,3 +28,12 @@ describe("resolveWorkspaceOutputLink", () => {
     expect(resolveWorkspaceOutputLink({ generatedFiles: files, href: "file:///workspace/output/run-1/report.md", runId: "run-1" })).toBeNull();
   });
 });
+
+
+it("does not choose a checkpoint by a mutable path when distinct saved versions match", () => {
+  const checkpoint = { id: "checkpoint-1", description: "Draft", createdAt: "2026-09-24T09:00:00.000Z" };
+  const file = { ...files[0]!, checkpoint };
+  const resolve = (generatedFiles: typeof file[]) => resolveWorkspaceOutputLink({ generatedFiles, href: "sandbox:/workspace/output/run-1/report.md", runId: "run-1" });
+  expect(resolve([file, { ...file, attachmentId: "other-version", checkpoint: { ...checkpoint, id: "checkpoint-2" } }])).toEqual({ kind: "unresolved" });
+  expect(resolve([file, file])).toEqual({ kind: "download", file });
+});

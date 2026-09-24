@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { createPrismaWorkspaceExecutionRegistry, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
+import { createPrismaWorkspaceExecutionRegistry, workspaceSyncCleanupId, WORKSPACE_EXECUTION_STOP_PROOF, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
 import { quiesceWorkspaceExecutions } from "./quiescence";
 import type { WorkspaceRuntime } from "./runtime";
 
@@ -73,7 +73,38 @@ describe("Workspace terminal registry drain", () => {
     const value = fixture(1);
     vi.mocked(value.runtime.terminateExecutions).mockResolvedValue([{ outcome: "unknown", runtimeExecSessionId: "exec_0" }]);
     vi.mocked(value.registry.closeAll).mockRejectedValue(new Error("synthetic registry unavailable"));
-    await expect(quiesceWorkspaceExecutions(value.input)).resolves.toEqual({ proven: false, stoppedVm: true });
+    await expect(quiesceWorkspaceExecutions(value.input)).resolves.toEqual({ proven: false, stoppedVm: true, failureCode: "workspace_execution_settlement_failed" });
     expect(value.open()).toHaveLength(1);
+  });
+
+  it.each(["sync", "unknown", "terminate_failed"] as const)("keeps unknown process outcome separate from successful VM-stop cleanup (%s)", async kind => {
+    const value = fixture(1);
+    if (kind === "sync") Object.assign(value.rows[0]!, { runtimeExecSessionId: workspaceSyncCleanupId("call") });
+    else if (kind === "unknown") vi.mocked(value.runtime.terminateExecutions).mockResolvedValue([{ outcome: "unknown", runtimeExecSessionId: "exec_0" }]);
+    else vi.mocked(value.runtime.terminateExecutions).mockRejectedValue(new Error("PRIVATE_TERMINATE_CAUSE"));
+    await expect(quiesceWorkspaceExecutions(value.input)).resolves.toEqual({ proven: true, stoppedVm: true });
+    expect(value.runtime.stopSession).toHaveBeenCalledOnce();
+    expect(value.registry.closeAll).toHaveBeenCalledWith(expect.objectContaining({ to: "LOST", errorCode: WORKSPACE_EXECUTION_STOP_PROOF }));
+    expect(value.rows[0]!.state).toBe("LOST");
+    expect(value.rows[0]).not.toHaveProperty("exitCode");
+    if (kind === "sync") expect(value.runtime.terminateExecutions).not.toHaveBeenCalled();
+  });
+
+  it("does not write cleanup proof when the VM stop itself fails", async () => {
+    const value = fixture(1);
+    vi.mocked(value.runtime.terminateExecutions).mockRejectedValue(new Error("PRIVATE_TERMINATE"));
+    vi.mocked(value.runtime.stopSession).mockRejectedValue(new Error("PRIVATE_STOP"));
+    await expect(quiesceWorkspaceExecutions(value.input)).resolves.toEqual({ proven: false, stoppedVm: false, failureCode: "workspace_execution_stop_failed" });
+    expect(value.registry.closeAll).not.toHaveBeenCalled();
+    expect(value.open()).toHaveLength(1);
+  });
+
+  it.each([null, "workspace_execution_cleanup_failed", WORKSPACE_EXECUTION_STOP_PROOF])("reads historical LOST without inventing cleanup evidence (%s)", async lastErrorCode => {
+    const value = fixture(1);
+    const registry = createPrismaWorkspaceExecutionRegistry({ workspaceExecution: {
+      findUnique: async () => ({ ...value.rows[0], workspaceSessionId: "session_fixture", state: "LOST", lastErrorCode })
+    } } as unknown as PrismaClient);
+    await expect(registry.find({ runtimeExecSessionId: "exec_fixture", sessionId: "session_fixture" }))
+      .resolves.toMatchObject({ state: "LOST", stopConfirmed: lastErrorCode === WORKSPACE_EXECUTION_STOP_PROOF });
   });
 });

@@ -1,3 +1,4 @@
+import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "@/lib/contracts/workspaceFailure";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { CatalogModel } from "@/components/app-shell/types";
 
@@ -158,11 +159,8 @@ export function humanizeErrorCode(code: string): string {
     workspace_output_limit_exceeded: "Workspace generated files exceed the output limit. Remove files and try again",
     workspace_reset_conflict: "Stop the active response before resetting Workspace",
     workspace_runtime_incompatible: "Workspace runtime is incompatible with this installation. Ask an administrator to check it",
-    workspace_runtime_unavailable: "Workspace runtime is unavailable. Turn Workspace off or try again later",
     workspace_session_create_failed: "Workspace could not be created. Try again",
-    workspace_session_lost: "The previous Workspace was lost. A clean environment will be created from original attachments",
-    workspace_tool_cancelled: "The Workspace command was stopped",
-    workspace_tool_timeout: "The Workspace command exceeded its time limit and was stopped"
+    ...WORKSPACE_OPERATION_FAILURE_MESSAGES
   };
 
   return `${labels[raw] ?? raw.replace(/_/g, " ")} (${raw})`;

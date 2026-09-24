@@ -45,6 +45,7 @@ function textFromContent(content: ToolExecutionContent): string {
 }
 
 function toolResultText(result: ToolExecutionResult): string {
+  if (result.content.some(part => part.type === "workspace_image")) throw new Error("workspace_image_unavailable");
   return result.content.map(textFromContent).join("\n\n");
 }
 
@@ -172,7 +173,9 @@ export const openAIResponsesToolBridge: ProviderToolBridge = {
   appendToolResult(_request, result) {
     return {
       call_id: result.callId,
-      output: toolResultText(result),
+      output: result.content.some(part => part.type === "workspace_image")
+        ? result.content.map(part => part.type === "workspace_image" ? { type: "workspace_image", value: part.value }
+          : { type: "input_text", text: textFromContent(part) }) : toolResultText(result),
       type: "function_call_output"
     };
   },

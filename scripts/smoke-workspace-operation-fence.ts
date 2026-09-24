@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type AddressInfo } from "node:net";
 import { Sandbox, SandboxNotFoundError } from "microsandbox";
-import { workspaceSandboxName } from "@/lib/domain/workspace";
+import { workspaceSandboxName, workspaceRunOutputDirectory } from "@/lib/domain/workspace";
 import { getWorkspaceConfig } from "@/lib/server/workspace/config";
 import { MicrosandboxWorkspaceRuntime } from "@/lib/server/workspace/microsandboxRuntime";
 import { RemoteWorkspaceRuntime } from "@/lib/server/workspace/remoteRuntime";
@@ -30,6 +30,14 @@ const operation = (generation: number) => ({ generation, owner: `run:fence_fixtu
 const captureId = randomBytes(16).toString("hex");
 const outputDirectory = "/workspace/output/capture-fixture";
 const originals = ["original one", "original two"];
+const selectedId = randomBytes(16).toString("hex");
+const selectedRoot = workspaceRunOutputDirectory("fence_fixture_1");
+const selection = { producerOperation: operation(1), files: [
+  { root: "inbox" as const, relativePath: "messages/fixture-message/fixture-file--source.txt" },
+  { root: "output" as const, relativePath: "selected.txt" },
+  { root: "project" as const, relativePath: "preserved.txt" }
+] };
+const selectedOriginals = ["synthetic inbox bytes", "synthetic selected output", "synthetic preserved file"];
 
 async function stopReceiver(): Promise<void> {
   if (!child) return;
@@ -87,12 +95,34 @@ async function main(): Promise<void> {
     assert.equal(collision, false);
     runtimeSandboxId = (await ensure(remote, 1)).runtimeSandboxId;
     await call(remote, 1, "sandbox_fs_write", { path: "/workspace/project/preserved.txt", content: "synthetic preserved file" });
+    phase = "selected_capture_mid_run";
+    await call(remote, 1, "sandbox_shell", { command: `mkdir -p /workspace/inbox/messages/fixture-message ${selectedRoot}` });
+    await call(remote, 1, "sandbox_fs_write", { path: `/workspace/inbox/${selection.files[0]!.relativePath}`, content: selectedOriginals[0] });
+    await call(remote, 1, "sandbox_fs_write", { path: `${selectedRoot}/selected.txt`, content: selectedOriginals[1] });
+    const active = await call(remote, 1, "sandbox_exec_start", { command: "sleep 60", shell: true });
+    assert.ok(active.execSessionId);
+    const selected = { modelRunId: "fence_fixture_1", outputDirectory: selectedRoot, runtimeSandboxId, sessionId, selection };
+    const captured = await remote.collectOutputs({ ...selected, operation: operation(1), capture: { create: true, id: selectedId } });
+    assert.deepEqual(captured.map(file => file.relativePath), selection.files.map(file => `${file.root}/${file.relativePath}`));
+    for (let index = 0; index < captured.length; index++) {
+      const bytes = Buffer.from(await new Response(captured[index]!.body).arrayBuffer());
+      assert.equal(bytes.toString(), selectedOriginals[index]);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), captured[index]!.checksum);
+    }
+    await remote.releaseOutputs({ batchId: captured[0]!.batchId!, operation: operation(1), runtimeSandboxId, sessionId });
+    assert.equal(data(await call(remote, 1, "sandbox_exec_poll", { execSessionId: active.execSessionId })).done, false);
     phase = "output_capture";
     assert.equal((await call(remote, 1, "sandbox_shell", { command: `mkdir -p ${outputDirectory}` })).status, "complete");
     for (let index = 0; index < originals.length; index += 1) {
       assert.equal((await call(remote, 1, "sandbox_fs_write", { path: `${outputDirectory}/${index}.txt`, content: originals[index]! })).status, "complete");
     }
     const capture = { modelRunId: "fence_fixture_1", outputDirectory, runtimeSandboxId, sessionId };
+    // Registered process uncertainty still requires the existing VM-stop boundary.
+    await assert.rejects(() => remote.collectOutputs({ ...capture, operation: operation(1) }),
+      (error: unknown) => error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed");
+    await remote.stopSession({ operation: operation(1), runtimeSandboxId, sessionId });
+    assert.equal((await Sandbox.get(sandboxName)).status, "stopped");
+    assert.equal((await ensure(remote, 1)).runtimeSandboxId, runtimeSandboxId);
     const firstOutputs = await remote.collectOutputs({ ...capture, operation: operation(1), capture: { create: true, id: captureId } });
     assert.equal(firstOutputs.length, 2);
     assert.equal(await new Response(firstOutputs[0]!.body).text(), originals[0]);
@@ -102,6 +132,7 @@ async function main(): Promise<void> {
     assert.equal((await ensure(remote, 2)).runtimeSandboxId, runtimeSandboxId);
     await call(remote, 2, "sandbox_fs_write", { path: `${outputDirectory}/0.txt`, content: "replaced one" });
     await call(remote, 2, "sandbox_shell", { command: `mv ${outputDirectory}/1.txt ${outputDirectory}/renamed.txt && printf extra > ${outputDirectory}/extra.txt` });
+    await call(remote, 2, "sandbox_fs_write", { path: "/workspace/project/preserved.txt", content: "changed selected source" });
     phase = "receiver_restart";
     await stopReceiver();
     remote = await startReceiver();
@@ -116,7 +147,8 @@ async function main(): Promise<void> {
       () => remote.removeSession(old),
       () => ensure(remote, 1),
       () => remote.retireSessionOperation(old),
-      () => remote.releaseOutputCapture({ ...old, captureId, modelRunId: "fence_fixture_1" })
+      () => remote.releaseOutputCapture({ ...old, captureId, modelRunId: "fence_fixture_1" }),
+      () => remote.collectOutputs({ ...selected, ...old, capture: { id: randomBytes(16).toString("hex"), create: true } })
     ];
     phase = "delayed_requests";
     for (const request of delayed) {
@@ -127,7 +159,7 @@ async function main(): Promise<void> {
     assert.equal(same.id, runtimeSandboxId);
     assert.equal(same.status, "running");
     assert.equal(data(await call(remote, 2, "sandbox_fs_exists", { path: "/workspace/project/stale.txt" })).exists, false);
-    assert.equal(data(await call(remote, 2, "sandbox_fs_read", { path: "/workspace/project/preserved.txt", encoding: "utf8" })).content, "synthetic preserved file");
+    assert.equal(data(await call(remote, 2, "sandbox_fs_read", { path: "/workspace/project/preserved.txt", encoding: "utf8" })).content, "changed selected source");
     await call(remote, 2, "sandbox_fs_write", { path: "/workspace/project/current.txt", content: "current owner" });
     assert.equal(data(await call(remote, 2, "sandbox_fs_read", { path: "/workspace/project/current.txt", encoding: "utf8" })).content, "current owner");
     phase = "captured_outputs_after_restart";
@@ -141,6 +173,16 @@ async function main(): Promise<void> {
     await remote.releaseOutputCapture({ ...capture, operation: operation(2), captureId });
     await assert.rejects(() => remote.collectOutputs({ ...capture, operation: operation(2), capture: { create: false, id: captureId } }),
       (error: unknown) => error instanceof WorkspaceRuntimeError && error.code === "workspace_output_export_failed");
+    phase = "selected_capture_after_restart";
+    const selectedReplay = await remote.collectOutputs({ ...selected, operation: operation(2), capture: { id: selectedId, create: false } });
+    // A released capture protects already-admitted HTTP bodies until consumed.
+    await remote.releaseOutputCapture({ ...selected, operation: operation(2), captureId: selectedId });
+    for (let index = 0; index < selectedReplay.length; index++) {
+      assert.equal(await new Response(selectedReplay[index]!.body).text(), selectedOriginals[index]);
+    }
+    await remote.releaseOutputs({ batchId: selectedReplay[0]!.batchId!, operation: operation(2), runtimeSandboxId, sessionId });
+    await assert.rejects(() => remote.collectOutputs({ ...selected, operation: operation(2),
+      selection: { ...selection, producerOperation: operation(2) }, capture: { id: selectedId, create: true } }));
     phase = "retirement";
     await remote.retireSessionOperation({ operation: operation(2), runtimeSandboxId, sessionId });
     assert.equal((await Sandbox.get(sandboxName)).status, "stopped");
@@ -155,7 +197,8 @@ async function main(): Promise<void> {
     }
   }
   process.stdout.write(`${JSON.stringify({ status: "passed", staleRequestsRejected: rejected, receiverProcessRestart: true,
-    capturedOutputsSurvived: 2, partialExportRecovered: true, laterTurnMutationIsolated: true, captureCleanup: true,
+    selectedCaptureSurvivedRestart: 3, selectedCapturePreservedExecutor: true, finalExportRequiresQuiescence: true,
+    releasedCaptureReadersPreserved: true, selectedCaptureTombstone: true, capturedOutputsSurvived: 2, partialExportRecovered: true, laterTurnMutationIsolated: true, captureCleanup: true,
     currentOwnerWritable: true, sameDisk: true, staleFileAbsent: true, retirementStoppedVm: true, cleanup: true, guestMemoryMiB: 1024, concurrentGuests: 1 })}\n`);
 }
 

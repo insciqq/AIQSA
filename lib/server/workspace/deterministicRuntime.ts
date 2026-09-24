@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { workspaceOperationFailureResult } from "./operationFailure";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,7 @@ import {
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
+import { selectedCaptureRequest } from "./outputManifest";
 import { WorkspaceSkillRunState } from "./skillRunState";
 import { parseSkillArchive, readSkillArchive, skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
@@ -351,9 +353,8 @@ function faultedBody(value: Uint8Array): ReadableStream<Uint8Array> {
 }
 
 function toolResult(data: unknown, status: "complete" | "error" = "complete"): WorkspaceToolResult {
-  const text = JSON.stringify(status === "complete"
-    ? { data, ok: true }
-    : { error: { code: "operation_failed", message: "Deterministic operation failed." }, ok: false });
+  if (status === "error") return workspaceOperationFailureResult("workspace_operation_failed");
+  const text = JSON.stringify({ data, ok: true });
   return {
     content: [{ text, type: "text" }],
     originalByteCount: bytes(text).byteLength,
@@ -370,13 +371,13 @@ function safePath(value: unknown): string {
     /[\u0000-\u001f\u007f]/u.test(value) ||
     value.split("/").some((segment) => segment === "..")
   ) {
-    throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    throw new WorkspaceRuntimeError("workspace_request_invalid");
   }
   return value.replace(/\/{2,}/gu, "/").replace(/\/$/u, "");
 }
 
 function stringArgument(value: unknown): string {
-  if (typeof value !== "string") throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+  if (typeof value !== "string") throw new WorkspaceRuntimeError("workspace_request_invalid");
   return value;
 }
 
@@ -749,7 +750,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       case "sandbox_fs_read": {
         const path = safePath(args.path);
         const content = session.files.get(path);
-        if (!content) return toolResult(null, "error");
+        if (!content) return workspaceOperationFailureResult("workspace_path_not_found");
         return toolResult({
           content: args.encoding === "base64"
             ? Buffer.from(content).toString("base64")
@@ -795,7 +796,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         const from = safePath(args.from);
         const to = safePath(args.to);
         const content = session.files.get(from);
-        if (!content) return toolResult(null, "error");
+        if (!content) return workspaceOperationFailureResult("workspace_path_not_found");
         session.files.set(to, content.slice());
         return toolResult({ copied: true, from: { path: from }, to: { path: to } });
       }
@@ -803,7 +804,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         const from = safePath(args.from);
         const to = safePath(args.to);
         const content = session.files.get(from);
-        if (!content) return toolResult(null, "error");
+        if (!content) return workspaceOperationFailureResult("workspace_path_not_found");
         session.files.delete(from);
         session.files.set(to, content);
         return toolResult({ from, renamed: true, to });
@@ -820,7 +821,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       case "sandbox_fs_stat": {
         const path = safePath(args.path);
         const content = session.files.get(path);
-        if (!content && !session.directories.has(path)) return toolResult(null, "error");
+        if (!content && !session.directories.has(path)) return workspaceOperationFailureResult("workspace_path_not_found");
         return toolResult({
           kind: content ? "file" : "directory",
           mode: content ? session.fileModes.get(path) ?? 0o644 : 0o755,
@@ -916,6 +917,23 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+    const selection = selectedCaptureRequest(input, this.config.outputMaxFiles);
+    if (selection) return this.outputCaptures().collect(input, async () => {
+      const session = this.session(input.sessionId, input.runtimeSandboxId);
+      // One synchronous snapshot of the deterministic fixture; live coherence
+      // is qualified separately against the actual guest filesystem.
+      return selection.files.map((file) => {
+        const prefix = file.root === "output" ? input.outputDirectory : `${WORKSPACE_ROOT}/${file.root}`;
+        const content = session.files.get(`${prefix}/${file.relativePath}`)?.slice();
+        if (!content) throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        const relativePath = `${file.root}/${file.relativePath}`;
+        return { body: new ReadableStream<Uint8Array>({ pull(controller) {
+          if (content.byteLength) controller.enqueue(content);
+          controller.close();
+        } }, { highWaterMark: 0 }), byteSize: content.byteLength,
+          checksum: hash(content), mimeType: mimeTypeForPath(file.relativePath), relativePath, opaqueFileId: hash(bytes(relativePath)) };
+      });
+    });
     if (input.capture) {
       const session = this.session(input.sessionId, input.runtimeSandboxId);
       // These opt-in faults model lost transport after capture. Failure to

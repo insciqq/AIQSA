@@ -11,6 +11,7 @@ import { AgentExecutionError } from "./failures";
 import { executeCodexTurn } from "./executor";
 import type { RunFollowupOperations } from "../runs/runFollowups";
 import type { RunFollowup } from "@/lib/contracts/runFollowups";
+import { restoreAgentMcpTools } from "./mcpResume";
 
 const store = vi.hoisted(() => ({
   arm: vi.fn(), renew: vi.fn(), toolCall: vi.fn(), settleTool: vi.fn(), failure: vi.fn(),
@@ -19,6 +20,7 @@ const store = vi.hoisted(() => ({
 }));
 vi.mock("../prisma", () => ({ prisma: {} }));
 vi.mock("./store", () => ({ createAgentRunStore: () => store }));
+vi.mock("./mcpResume", () => ({ restoreAgentMcpTools: vi.fn(async () => new Map()) }));
 vi.mock("./prompt", () => ({ agentPrompts: () => ({ previousAssistantMessageId: null,
   developerInstructions: "fixture", prompt: "fixture", resumePrompt: "fixture" }) }));
 
@@ -43,6 +45,21 @@ describe("Agent executor terminal behavior", () => {
     store.toolCall.mockResolvedValue("call");
     store.usage.mockResolvedValue([]);
     store.failure.mockResolvedValue(null);
+    vi.mocked(restoreAgentMcpTools).mockResolvedValue(new Map());
+  });
+
+  it("finishes fresh MCP admission before starting even a turn with no MCP calls", async () => {
+    let finish!: (value: Map<string, never>) => void;
+    vi.mocked(restoreAgentMcpTools).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const executeAgent = vi.fn<NonNullable<WorkspaceCoordinator["executeAgent"]>>(async () => undefined);
+    const f = fixture(executeAgent);
+    f.input.request = { ...f.input.request, agent: { ...f.input.request.agent!, mcpMode: "auto" } };
+    const running = executeCodexTurn(f.input);
+    await vi.waitFor(() => expect(restoreAgentMcpTools).toHaveBeenCalledOnce());
+    expect(executeAgent).not.toHaveBeenCalled();
+    finish(new Map<string, never>());
+    await running;
+    expect(executeAgent).toHaveBeenCalledOnce();
   });
 
   it.each([

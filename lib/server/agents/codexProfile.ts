@@ -3,7 +3,7 @@ import { providerResponseTimeoutSeconds } from "@/lib/contracts/providerResponse
 
 export const CODEX_VERSION = "0.154.0";
 /** Bump when managed profile semantics change; accepted thread compatibility includes it. */
-export const CODEX_MANAGED_PROFILE_VERSION = 5;
+export const CODEX_MANAGED_PROFILE_VERSION = 7;
 export const CODEX_PROVIDER_MAX_RETRIES = 2;
 export const CODEX_HOME_DIRECTORY = "/workspace/.aiqsa/codex";
 export const CODEX_RUN_TOKEN_ENV = "AIQSA_AGENT_TOKEN";
@@ -26,6 +26,9 @@ export type CodexManagedProfile = Readonly<{
   aiqsaSearch?: boolean;
   artifacts?: boolean;
   images?: boolean;
+  imageInput?: boolean;
+  visionAnalysis?: boolean;
+  checkpoints?: boolean;
   mcpTimeoutSeconds: number;
 }>;
 
@@ -61,6 +64,9 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     (input.standaloneWebSearch !== undefined && typeof input.standaloneWebSearch !== "boolean") ||
     (input.aiqsaSearch !== undefined && typeof input.aiqsaSearch !== "boolean") ||
     (input.artifacts !== undefined && typeof input.artifacts !== "boolean") ||
+    (input.imageInput !== undefined && typeof input.imageInput !== "boolean") ||
+    (input.checkpoints !== undefined && typeof input.checkpoints !== "boolean") ||
+    (input.visionAnalysis !== undefined && typeof input.visionAnalysis !== "boolean") ||
     (input.images !== undefined && typeof input.images !== "boolean") ||
     (input.nativeWebSearch !== undefined && typeof input.nativeWebSearch !== "boolean") ||
     !Number.isSafeInteger(input.mcpTimeoutSeconds) || input.mcpTimeoutSeconds < 1 ||
@@ -103,6 +109,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     'ignore_default_excludes = true',
     "",
     "[features]",
+    `view_image = ${input.imageInput === true}`,
     `standalone_web_search = ${input.standaloneWebSearch === true}`,
     'apps = false',
     'hooks = false',
@@ -120,7 +127,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     "[feedback]",
     'enabled = false'
   ];
-  if (input.mcpMode !== "off" || input.aiqsaSearch || input.artifacts || input.images) {
+  if (input.mcpMode !== "off" || input.aiqsaSearch || input.artifacts || input.images || input.visionAnalysis || input.checkpoints) {
     lines.push("", "[mcp_servers.aiqsa]",
       `url = ${JSON.stringify(`${gateway}/mcp`)}`,
       `bearer_token_env_var = ${JSON.stringify(CODEX_RUN_TOKEN_ENV)}`,
@@ -129,7 +136,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
       `tool_timeout_sec = ${input.mcpTimeoutSeconds}`,
       ...(input.mcpMode !== "all" ? [`enabled_tools = ${JSON.stringify([
         ...(input.mcpMode === "auto" ? ["find_tools", "call_tool"] : []), ...(input.aiqsaSearch ? ["aiqsa_search"] : []),
-        ...(input.artifacts ? ["create_artifact", "read_artifact"] : []), ...(input.images ? ["generate_image"] : [])])}`] : [])
+        ...(input.artifacts ? ["create_artifact", "read_artifact"] : []), ...(input.images ? ["generate_image"] : []), ...(input.visionAnalysis ? ["analyze_image"] : []), ...(input.checkpoints ? ["checkpoint_outputs"] : [])])}`] : [])
     );
   }
   return lines.join("\n") + "\n";

@@ -56,6 +56,7 @@ export function deploymentLabeller(
         ...(catalog.memoryPolicy.model ? [catalog.memoryPolicy.model] : []),
         ...(catalog.policy.chatTitleModel ? [catalog.policy.chatTitleModel] : []),
         ...(catalog.policy.chatPdfNativeModel ? [catalog.policy.chatPdfNativeModel] : []),
+        ...(catalog.policy.visionModel ? [catalog.policy.visionModel] : []),
         ...(catalog.policy.chatPdfModel ? [catalog.policy.chatPdfModel] : []),
         ...(catalog.policy.rerankerModel ? [catalog.policy.rerankerModel] : []),
         ...(catalog.policy.decisionModel ? [catalog.policy.decisionModel] : []),

@@ -327,6 +327,7 @@ export function deriveProviderUsage(
   add(sources.systemModelPolicy?.memoryPolicy.model?.connectionId, "Memory");
   add(roles?.chatTitleModel?.connectionId, "Chat titles");
   add(roles?.chatPdfModel?.connectionId, "Chat PDF");
+  add(roles?.visionModel?.connectionId, "Vision Model");
   add(roles?.rerankerModel?.connectionId, "Reranker");
   add(roles?.imageModel?.connectionId, "Image generation");
   for (const entry of roles?.rerankerRoute?.entries ?? []) add(entry.connectionId, "Reranker");

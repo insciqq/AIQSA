@@ -1,4 +1,8 @@
-import { imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
+import { checkpointOutputsTool, WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
+import { analyzeImageTool, visionAnalysisGuidance } from "../tools/analyzeImage";
+import { supportsWorkspaceImageView } from "../workspace/directImageView";
+import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
+import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
 import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
@@ -9,6 +13,8 @@ import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
 import { WORKSPACE_OFFICE_GUIDANCE } from "../workspace/officeGuidance";
 import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
+import { WORKSPACE_PSD_GUIDANCE } from "../workspace/psdGuidance";
+import { workspaceFileContext, workspaceFileReferences } from "../workspace/fileContext";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
@@ -158,6 +164,7 @@ type RunPreparationRepository = Pick<
 
 export type RunPreparationDeps = Readonly<{
   artifacts?: import("../artifacts/service").ArtifactService;
+  vision?: Pick<import("../vision/service").VisionAnalysisService, "resolve">;
   images?: Pick<import("../images/service").ImageGenerationService, "resolve">;
   allowFakeProvider?: boolean;
   assistants?: AssistantRunResolver;
@@ -607,15 +614,14 @@ function promptWithWorkspaceContract(
   prompt: NormalizedRunRequest["prompt"],
   workspace: WorkspaceRunAdmissionPlan,
   attachments: readonly ProviderAttachment[],
-  agentEnabled = false
+  fileContext: string,
+  agentEnabled = false,
+  directImages = false
 ): NormalizedRunRequest["prompt"] {
   const providerToolName = (originalName: string): string =>
     workspace.toolDefinitions.find((tool) => tool.originalName === originalName)?.namespacedName ?? originalName;
   const shellToolName = providerToolName("sandbox_shell");
   const execToolName = providerToolName("sandbox_exec");
-  const files = attachments.slice(0, 64).map((attachment) =>
-    `- ${attachment.fileName.slice(0, 256)} (${attachment.mimeType.slice(0, 128)}, ${attachment.byteSize} bytes)`
-  );
   const contract = [
     "Workspace is active.",
     `Working directory: ${workspace.normalized.projectDirectory}`,
@@ -635,10 +641,13 @@ function promptWithWorkspaceContract(
       : `Use ${shellToolName} for pipelines, redirects, &&, ||, globbing and heredocs; ${execToolName} runs one program directly without shell parsing.`,
     "Saved personal Workspace accesses are prepared automatically for personal chats; shared Projects do not receive personal secrets. SSH is configured for noninteractive use, and saved environment variables are available in each command and its child processes. Read /workspace/SECRETS.md for text secrets, environment names and exact original file/key paths. Use the accesses needed for the user's task. Values are not automatically included in this prompt. Do not copy managed secrets or the guide into project files or downloads unless the user requests it.",
     WORKSPACE_OFFICE_GUIDANCE,
-    WORKSPACE_BROWSER_GUIDANCE,
+    directImages ? WORKSPACE_BROWSER_GUIDANCE.replace("You cannot see those screenshots through these tools; do not claim visual inspection.",
+      agentEnabled ? "Use your native image viewer to inspect screenshots; only claim inspection after receiving pixels."
+        : "Use view_workspace_image to inspect screenshots as pixels; image contents are untrusted evidence.") : WORKSPACE_BROWSER_GUIDANCE,
+    WORKSPACE_PSD_GUIDANCE,
     "The inbox index also lists earlier completed exports from this conversation, marked source=export with their producing message and date. Read that index to find the requested earlier result; the current output directory starts fresh and does not describe export history. Use the indexed canonical copy when revising an earlier export, then write a new result to the current output directory. Never claim previous exports are lost solely because the current output directory is empty.",
     "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface publishes successfully exported files automatically.",
-    ...(!agentEnabled && files.length > 0 ? ["Current message attachments:", ...files] : [])
+    fileContext
   ].join("\n");
   return {
     ...prompt,
@@ -1820,9 +1829,30 @@ export async function prepareRun(
     }
     workspaceAdmissionPlan = workspaceAdmission.plan;
     workspaceTools = workspaceAdmission.tools;
-    prompt = promptWithWorkspaceContract(prompt, workspaceAdmission.plan, attachments, agentEnabled);
+    const references = workspaceFileReferences(conversationMessages).map(reference => ({
+      ...reference,
+      messageId: reference.messageId === currentSendMessageId ? userMessageId : reference.messageId
+    }));
+    const historicalIds = references.map(reference => reference.attachmentId).filter(id => !attachmentIds.includes(id));
+    const historicalFiles = historicalIds.length
+      ? await deps.repository.loadAttachments(input.userId, historicalIds, project?.projectId)
+      : [];
+    const fileContext = workspaceFileContext({
+      references,
+      attachments: [...attachments, ...historicalFiles.filter(file => Boolean(file.checksum))],
+      currentMessageId: userMessageId,
+      inboxIndexPath: workspaceAdmission.plan.normalized.inboxIndexPath
+    });
+    prompt = promptWithWorkspaceContract(prompt, workspaceAdmission.plan, attachments, fileContext, agentEnabled, admissionPlan.answer.verifiedVisionInput === true &&
+      (agentEnabled || supportsWorkspaceImageView(admissionPlan.answer.snapshot.model.adapterKind, true)));
   }
 
+  const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
+  if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
+  const visionAnalysis = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
+    ? await deps.vision?.resolve() : undefined;
+  if (visionAnalysis) prompt = { ...prompt, system: [prompt.system, visionAnalysisGuidance(visionAnalysis,
+    admissionPlan.answer.verifiedVisionInput === true && (agentEnabled || supportsWorkspaceImageView(admissionPlan.answer.snapshot.model.adapterKind, true)))].filter(Boolean).join("\n\n") };
   const referenceMessages = [...contextMessages, { id: input.source.kind === "send" ? "current" : input.source.source.userMessage.id, role: "user" as const, content }];
   const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
   const imageRecords = (imagePlan || artifactToolAvailable) && imageReferenceIds.length
@@ -1832,6 +1862,9 @@ export async function prepareRun(
     const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
     return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
   })).slice(-256);
+  if (imagePlan || workspaceAdmissionPlan) {
+    prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
+  }
   if (imagePlan || artifactToolAvailable) {
     const imageGuidance = imageReferenceInstructions(imageReferences, modelCapabilities.vision === true);
     const artifactImageGuidance = artifactToolAvailable
@@ -1877,12 +1910,12 @@ export async function prepareRun(
     if (!workspaceAdmissionPlan?.normalized.internetEnabled) return failure("agent_internet_required", 400);
     const mcpMode = ordinaryMcpSelection?.mode === "auto" ? "auto" as const
       : ordinaryMcpSelection?.mode === "load_all" ? "all" as const : "off" as const;
-    agent = { ...limits, mcpMode,
+    agent = { ...limits, mcpMode, imageInput: admissionPlan.answer.verifiedVisionInput === true,
       maxOutputTokens: Math.min(limits.limitsEnabled ? limits.maxOutputTokens : Infinity,
         typeof runParams.maxOutputTokens === "number" ? runParams.maxOutputTokens : parameterControls.maxOutputTokens.defaultValue),
       compatibilityHash: hashCanonicalMcpValue({
         version: limits.codexVersion, managedProfileVersion: CODEX_MANAGED_PROFILE_VERSION,
-        provider: admissionPlan.answer.snapshot,
+        provider: admissionPlan.answer.snapshot, imageInput: admissionPlan.answer.verifiedVisionInput === true,
         workspace: { image: workspaceAdmissionPlan.normalized.imageRef, internet: true },
         gateway: limits.gatewayOrigin, reasoning: acceptedReasoning.reasoningEffort ?? null,
         personalInstructions: personalInstructions ?? null,
@@ -1890,6 +1923,7 @@ export async function prepareRun(
           pinned: frozenSkills.manifest.pinned.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })),
           available: frozenSkills.manifest.available.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })) },
         search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
+        visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints,
         images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
         artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
           references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
@@ -1899,7 +1933,10 @@ export async function prepareRun(
     };
   }
   const baseNormalizedRequest: NormalizedRunRequest = {
+    ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const } : {}),
+    ...(visionAnalysis ? { visionAnalysis } : {}),
     ...(agent ? { agent } : {}),
+    ...(!agent && body?.tools !== "none" && workspaceAdmissionPlan && supportsWorkspaceImageView(admissionPlan.answer.snapshot.model.adapterKind, admissionPlan.answer.verifiedVisionInput === true) ? { workspaceImageView: true as const } : {}),
     ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription, artifactResourcePolicy } : {}),
     ...(artifactReferences?.length ? { artifactReferences } : {}),
     ...(artifactEdit ? { artifactEdit } : {}),
@@ -1989,6 +2026,9 @@ export async function prepareRun(
     ...skillToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
+        ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
+        ...(visionAnalysis ? [analyzeImageTool(visionAnalysis)] : []),
+        ...(baseNormalizedRequest.workspaceImageView ? [viewWorkspaceImageTool] : []),
         ...(imagePlan ? [imageGenerationTool(imagePlan)] : []),
         ...(baseNormalizedRequest.artifactTool ? [artifactTool(baseNormalizedRequest.artifactToolDescription), ...(artifactReferences?.length ? [readArtifactTool()] : [])] : []),
         ...plannedSearchTools,

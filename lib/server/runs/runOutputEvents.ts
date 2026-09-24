@@ -2,6 +2,8 @@ import { decodeGroundingDisplay, type GroundingDisplay } from "../../domain/grou
 import { validateGeminiSearchSuggestionsHtml } from "../providers/geminiInteractionsGrounding";
 import { decodeThreadSearchSource, type ThreadSearchSource } from "../../contracts/searchSources";
 import {
+  decodeThreadWorkspaceCheckpointOutput,
+  type ThreadWorkspaceCheckpointOutput,
   decodeThreadWorkspaceActivityEntry,
   type ThreadWorkspaceActivityEntry
 } from "../../contracts/workspace";
@@ -38,6 +40,7 @@ type RunOutputGeneratedArtifact = {
 };
 
 export type RunOutputArtifactEvent =
+  | { type: "artifact"; data: { artifactType: "workspace_checkpoint"; payload: ThreadWorkspaceCheckpointOutput } }
   | { type: "artifact"; data: { artifactType: "generated_artifact"; payload: RunOutputGeneratedArtifact } }
   | { type: "artifact"; data: { artifactType: "image"; payload: ThreadGeneratedImage } }
   | { type: "artifact"; data: { artifactType: "context_status"; payload: SessionContextStatus } }
@@ -254,6 +257,11 @@ export function projectRunOutputArtifactEvent(
       : null;
   }
 
+  if (event.data.artifactType === "workspace_checkpoint") {
+    const payload = decodeThreadWorkspaceCheckpointOutput(event.data.payload);
+    return payload ? { type: "artifact", data: { artifactType: "workspace_checkpoint", payload } } : null;
+  }
+
   if (event.data.artifactType === "workspace_activity") {
     // Already a client-safe projection; the exact decoder is the only gate.
     const entry = decodeThreadWorkspaceActivityEntry(event.data.payload);
@@ -312,6 +320,9 @@ export function isRunOutputArtifactEvent(
       event.data.payload.text.length > 0 &&
       event.data.payload.text.length <= reasoningTextLimit &&
       event.data.payload.text.trim() === event.data.payload.text;
+  }
+  if (event.data.artifactType === "workspace_checkpoint") {
+    return decodeThreadWorkspaceCheckpointOutput(event.data.payload) !== null;
   }
   if (event.data.artifactType === "workspace_activity") {
     return isExactWorkspaceActivity(event.data.payload);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   attachmentBlocksFromThreadContent,
   summarizeThreadArtifacts,
+  mergeLiveThreadArtifacts,
   textFromPersistedContent,
   textFromThreadContent
 } from "./threadContent";
@@ -166,4 +167,20 @@ describe("thread content", () => {
       { attachmentId: "file-2", label: "File attachment", type: "file" }
     ]);
   });
+});
+
+
+it("keeps exact checkpoint downloads through round reset and failure without merging equal names", () => {
+  const checkpoint = { id: "cp-1", description: "First version", createdAt: "2026-09-24T09:00:00.000Z" };
+  const file = { attachmentId: "draft-1", byteSize: 7, fileName: "result.psd", mimeType: "application/octet-stream", relativePath: "result.psd", checkpoint };
+  const second = { ...file, attachmentId: "draft-2", checkpoint: { ...checkpoint, id: "cp-2", description: "Second version" } };
+  const event = (f: typeof file) => ({ type: "artifact", data: { artifactType: "workspace_checkpoint", payload: { checkpoint: f.checkpoint, files: [f] } } });
+  const summary = summarizeThreadArtifacts([event(file), { type: "message_reset", data: { round: 2 } }, event(second), event(file),
+    event({ ...file, fileName: "replacement.psd" }), { type: "error", data: { code: "provider_request_timed_out" } }]);
+  expect(summary?.generatedFiles).toEqual([file, second]);
+  expect(summarizeThreadArtifacts([{ ...event(file), data: { artifactType: "workspace_checkpoint", payload: { checkpoint, files: [{ ...file, checkpoint: null }] } } }])).toBeNull();
+  const saved = { citations: [], reasoningText: [], sources: [], generatedFiles: [file] };
+  expect(mergeLiveThreadArtifacts(saved, summary)?.generatedFiles).toEqual([file, second]);
+  expect(mergeLiveThreadArtifacts(saved, { citations: [], reasoningText: ["Still working"], sources: [] })?.generatedFiles).toEqual([file]);
+  expect(mergeLiveThreadArtifacts(saved, null)).toEqual(saved);
 });

@@ -338,6 +338,9 @@ describe("list copy", () => {
       shown: ["Default chat", "System model", "Chat PDF"]
     });
     expect(deriveProviderUsage([openai], { knowledge: null, modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
+    systemModelPolicy.policy.visionModel = { ...candidate, available: false };
+    expect(deriveProviderUsage([openai, openrouter], { knowledge, modelPolicy, search, systemModelPolicy }).get("conn-openai"))
+      .toContain("Vision Model");
 
     expect(providerSubtitle(openai, usage)).toBe("Default chat provider · 1 Search source");
     expect(providerSubtitle(openai, new Map([[openai.id, ["Default chat", "Memory"]]]))).toBe("Default chat provider");

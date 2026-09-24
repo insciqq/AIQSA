@@ -11,7 +11,7 @@ import { createReadStream, openSync, closeSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const [rootfsValue, outputValue, reference = "aiqsa-workspace:0.1.27", architecture = "amd64"] =
+const [rootfsValue, outputValue, reference = "aiqsa-workspace:0.1.28", architecture = "amd64"] =
   process.argv.slice(2);
 if (!rootfsValue || !outputValue || !["amd64", "arm64"].includes(architecture)) {
   throw new Error("usage: build-workspace-oci.mjs <rootfs> <output.tar> [reference] [amd64|arm64]");

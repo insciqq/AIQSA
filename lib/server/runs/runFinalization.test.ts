@@ -16,7 +16,7 @@ const rawUsage: ModelRunUsage = {
   reasoningTokens: 2
 };
 
-function completionInput(repository: Pick<RunRepository, "completeRun" | "loadModelPricing">) {
+function completionInput(repository: Pick<RunRepository, "completeRun" | "loadModelPricing" | "publishRunAnswer">) {
   return {
     repository,
     result: {
@@ -95,6 +95,24 @@ describe("run finalization", () => {
       ...contracts, reviewVersion: contracts.reviewVersion === 1 ? 2 : 1
     } as typeof contracts })).rejects.toThrow("knowledge_answer_finalization_snapshot_invalid");
     expect(completeRun).toHaveBeenCalledOnce();
+  });
+
+  it.each(["publication", "completion", "accounting"] as const)("attributes %s persistence failures without changing reported usage", async stage => {
+    const privateError = new Error("PRIVATE header token signed-url");
+    const completeRun = vi.fn(async () => { if (stage === "completion") throw privateError; return true; });
+    const publishRunAnswer = vi.fn(async () => { if (stage === "publication") throw privateError; return true; });
+    const loadModelPricing = vi.fn(async () => { if (stage === "accounting") throw privateError; return null; });
+    const afterAnswerPublished = vi.fn(async () => undefined);
+    const result = finalizeRunCompletion({ ...completionInput({ completeRun, publishRunAnswer, loadModelPricing }),
+      afterAnswerPublished });
+    await expect(result).rejects.toMatchObject({ code: stage === "publication" ? "run_result_publication_failed"
+      : stage === "accounting" ? "run_usage_persistence_failed" : "run_completion_persistence_failed", stage });
+    await expect(result).rejects.not.toThrow("PRIVATE");
+    if (stage === "completion") {
+      expect(publishRunAnswer).toHaveBeenCalledOnce();
+      expect(afterAnswerPublished).toHaveBeenCalledOnce();
+      expect(completeRun.mock.calls[0]).toEqual([expect.objectContaining({ usage: expect.objectContaining(rawUsage) })]);
+    } else expect(completeRun).not.toHaveBeenCalled();
   });
 
   it("normalizes usage and records null cost when pricing is unavailable", async () => {

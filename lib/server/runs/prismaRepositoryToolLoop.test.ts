@@ -117,7 +117,7 @@ describe("Workspace activity publication", () => {
     expect(summarizeMessageRunWorkspaceActivity({ events: rows, status: "streaming" })).toEqual(stored);
     const stopped = summarizeMessageRunWorkspaceActivity({ events: rows, status: "cancelled" })!;
     expect(stopped.entries[0]?.phase).toBe("requested");
-    expect(stopped.entries[1]).toMatchObject({ phase: "cancelled", runOutcome: "cancelled" });
+    expect(stopped.entries[1]).toMatchObject({ phase: "unknown" });
   });
 
   it("rejects replacement text using a previously committed update identity", async () => {
@@ -1236,3 +1236,23 @@ function pendingCallsWithOneTimestamp(calls: ToolCallRow[], count: number): Tool
     state: "cancelled"
   }));
 }
+
+it("persists and replays a retirement receipt through the bounded snapshot without fabricating tool outcomes", async () => {
+  const { tx, rows } = activityStore();
+  const events: RunOutputArtifactEvent[] = [
+    { type: "artifact", data: { artifactType: "workspace_activity", payload: {
+      id: "unpolled", kind: "command", phase: "running", command: { preview: "bounded background work" }
+    } } },
+    { type: "artifact", data: { artifactType: "workspace_activity", payload: {
+      id: "receipt", kind: "execution_status", phase: "closed"
+    } } }
+  ];
+  const first = await appendRunOutputEvents(tx, "run", events);
+  const second = await appendRunOutputEvents(tx, "run", [events[1]!]);
+  expect(second).toEqual([first[1]]);
+  const stored = workspaceActivitySnapshot(rows.find(row => row.sequence === -1)?.payload)!;
+  expect(stored.entries[0]).toMatchObject({ phase: "closed" });
+  expect(stored.entries[0]?.command?.exitCode).toBeUndefined();
+  expect(summarizeMessageRunWorkspaceActivity({ events: rows, status: "complete" })).toEqual(stored);
+  expect(rows.filter(row => row.eventType === WORKSPACE_ACTIVITY_RECEIPT)).toHaveLength(2);
+});

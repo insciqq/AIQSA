@@ -23,6 +23,7 @@ import { createPrismaImageGenerationService } from "../images/service";
 import { encryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import { createPrismaWorkspaceCoordinatorRepository, type WorkspaceExecutionBinding } from "../workspace/coordinator";
 import { readSkillZip } from "../skills/zipReader";
+import type { McpRunPlanResult } from "../mcp/runPlan";
 
 const configuration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
   compatibilityHash: "a".repeat(64), mcpMode: "auto" as const, maxModelCalls: 2 };
@@ -32,7 +33,7 @@ async function fixture(runConfiguration = configuration) {
   await prisma.user.create({ data: { id: userId, displayName: "Agent store fixture", status: "active" } });
   const chat = await prisma.chat.create({ data: { userId, title: "Agent fixture" } });
   const session = await prisma.workspaceSession.create({ data: { chatId: chat.id, sandboxName: `agent-${randomUUID()}`,
-    imageRef: "aiqsa-workspace:0.1.27", internetEnabled: true, policyRevision: 1,
+    imageRef: "aiqsa-workspace:0.1.28", internetEnabled: true, policyRevision: 1,
     runtimeSandboxId: "fixture-runtime", state: "RUNNING", expiresAt: new Date(Date.now() + 600000) } });
   async function run() {
     await prisma.modelRun.updateMany({ where: { chatId: chat.id, status: "in_progress" }, data: { status: "error" } });
@@ -702,6 +703,46 @@ describe("durable Agent authority and accounting", () => {
       expect((await (await f.run()).store.arm(randomUUID())).threadId).toBeUndefined();
       await prisma.workspaceSession.update({ where: { id: f.session.id }, data: { runtimeSandboxId: null } });
       expect((await (await f.run()).store.arm(first.assistantMessageId)).threadId).toBeUndefined();
+    } finally { await f.dispose(); }
+  });
+
+  it("persists bounded resume candidates across an idle successor without copying authority or changing history", async () => {
+    const f = await fixture();
+    const plan: Extract<McpRunPlanResult, { ok: true }> = { ok: true, bindings: [], snapshot: { version: 1,
+      servers: [{ serverId: "synthetic", serverName: "Synthetic", revisionId: "revision", fingerprint: "configuration" }],
+      tools: ["delta", "epsilon"].map(name => ({ name, originalName: name, namespacedName: `arbitrary_${name}`,
+        serverId: "synthetic", serverName: "Synthetic", description: null, definitionHash: "a".repeat(64), inputSchema: { type: "object" } })) } };
+    try {
+      const first = await f.run();
+      const firstGrant = await first.store.arm(null);
+      await first.store.admitMcpPlan(plan);
+      const firstRows = await prisma.agentMcpTool.findMany({ where: { modelRunId: first.id }, orderBy: { toolId: "asc" } });
+      const threadId = randomUUID();
+      await first.store.setThread(threadId);
+      await first.store.revoke(true);
+      await prisma.modelRun.update({ where: { id: first.id }, data: { status: "complete" } });
+      const second = await f.run();
+      const secondGrant = await second.store.arm(first.assistantMessageId);
+      expect(secondGrant.token).not.toBe(firstGrant.token);
+      expect(await second.store.mcpTools()).toEqual([]);
+      const candidates = await second.store.resumedMcpTools();
+      expect(candidates).toEqual(firstRows.map(({ toolId, version }) => ({ toolId, version })));
+      // Restoration must explicitly re-admit the checked current plan; two
+      // handlers can race without duplicate grants or any tool dispatch.
+      await Promise.all([second.store.admitMcpPlan(plan), second.store.admitMcpPlan(plan)]);
+      expect(await prisma.agentMcpTool.count({ where: { modelRunId: second.id } })).toBe(2);
+      expect(await prisma.modelRunToolCall.count({ where: { modelRunId: second.id } })).toBe(0);
+      await second.store.setThread(threadId);
+      await second.store.revoke(true);
+      await prisma.modelRun.update({ where: { id: second.id }, data: { status: "complete" } });
+      const third = await f.run(); await third.store.arm(second.assistantMessageId);
+      const replacementWorker = createAgentRunStore(prisma, { runId: third.id, userId: f.userId, configuration });
+      expect(await replacementWorker.resumedMcpTools()).toEqual(candidates);
+      await third.store.revoke(false);
+      await expect(replacementWorker.admitMcpPlan(plan)).rejects.toThrow("agent_authority_expired");
+      expect(await prisma.agentMcpTool.findMany({ where: { modelRunId: first.id }, orderBy: { toolId: "asc" } })).toEqual(firstRows);
+      const branch = await f.run(); await branch.store.arm(randomUUID());
+      expect(await branch.store.resumedMcpTools()).toEqual([]);
     } finally { await f.dispose(); }
   });
 

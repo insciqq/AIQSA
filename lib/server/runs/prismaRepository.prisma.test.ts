@@ -1823,7 +1823,7 @@ describe("Prisma-backed run repository", () => {
           status: "complete"
         }
       });
-      const ignoredStatus = await prisma.message.create({
+      const partialError = await prisma.message.create({
         data: {
           chatId: chat.id,
           content: textMessageContent("Failed answer"),
@@ -1836,7 +1836,7 @@ describe("Prisma-backed run repository", () => {
         data: {
           chatId: chat.id,
           content: textMessageContent("Active leaf"),
-          parentMessageId: ignoredStatus.id,
+          parentMessageId: partialError.id,
           role: "assistant",
           status: "streaming"
         }
@@ -1871,12 +1871,14 @@ describe("Prisma-backed run repository", () => {
 
       await expect(repository.loadConversationContext(chat.id, userId)).resolves.toMatchObject([
         { id: root.id, role: "user" },
+        { id: partialError.id, role: "assistant" },
         { id: activeLeaf.id, role: "assistant" }
       ]);
       await expect(
         repository.loadConversationContextForExpectedLeaf(chat.id, userId, activeLeaf.id)
       ).resolves.toMatchObject([
         { id: root.id, role: "user" },
+        { id: partialError.id, role: "assistant" },
         { id: activeLeaf.id, role: "assistant" }
       ]);
       await expect(
@@ -1889,6 +1891,31 @@ describe("Prisma-backed run repository", () => {
         { id: sibling.id, role: "assistant" },
         { id: siblingLeaf.id, role: "user" }
       ]);
+    });
+  });
+
+  it("retains unanswered conditions on continuation without rewriting accepted snapshots", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Width 1024; keep the blue layer");
+      const accepted = await prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId },
+        select: { normalizedRequest: true, userMessageId: true } });
+      await repository.failRun(created.runId, created.assistantMessageId,
+        { code: "provider_failed", message: "Synthetic empty failure" }, { recoveryTerminal: true });
+      const followup = await prisma.message.create({ data: { chatId: created.chatId, role: "user", status: "complete",
+        parentMessageId: created.assistantMessageId, content: textMessageContent("Continue") } });
+      await prisma.chat.update({ where: { id: created.chatId }, data: { activeLeafMessageId: followup.id } });
+      const expected = [
+        { id: accepted.userMessageId, role: "user", content: textMessageContent("Width 1024; keep the blue layer") },
+        { id: followup.id, role: "user", content: textMessageContent("Continue") }
+      ];
+      await expect(repository.loadConversationContext(created.chatId, userId)).resolves.toEqual(expected);
+      await expect(repository.loadConversationContextForExpectedLeaf(created.chatId, userId, followup.id)).resolves.toEqual(expected);
+      await expect(repository.loadConversationContextForLeaf(created.chatId, userId, accepted.userMessageId)).resolves.toEqual(expected.slice(0, 1));
+      await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId }, select: { normalizedRequest: true, userMessageId: true } }))
+        .resolves.toEqual(accepted);
+      await expect(prisma.message.findUniqueOrThrow({ where: { id: created.assistantMessageId }, select: { status: true } }))
+        .resolves.toEqual({ status: "error" });
     });
   });
 

@@ -35,6 +35,18 @@ const response = {
 };
 
 describe("administrator system model policy contract", () => {
+  it("keeps deployment availability separate from consumer support and rejects malformed Vision pairs", () => {
+    const candidate = { ...response.systemModelPolicy.candidates[0], visionInput: "verified", available: false };
+    const decode = (patch: object, available: unknown = false) => decodeAdminSystemModelPolicyResponse({
+      systemModelPolicy: { ...response.systemModelPolicy, visionAnalysisAvailable: available,
+        policy: { ...response.systemModelPolicy.policy, ...patch } }
+    });
+    expect(decode({ visionModel: candidate, visionReasoningEffort: "low" })?.systemModelPolicy)
+      .toMatchObject({ visionAnalysisAvailable: false, policy: { visionModel: { available: false } } });
+    for (const patch of [{ visionModel: null }, { visionModel: null, visionReasoningEffort: "low" },
+      { visionModel: { ...candidate, available: "yes" }, visionReasoningEffort: null }]) expect(decode(patch)).toBeNull();
+    expect(decode({ visionModel: null, visionReasoningEffort: null }, "true")).toBeNull();
+  });
   it("rejects forged or malformed recommendation readiness and qualification evidence", () => {
     const entry = { id: "terra-low", modelName: "Terra", displayName: "My model", providerModelId: "model-1", connectionId: "connection-1",
       reasoningEffort: "low", unavailableReason: null, evidence: { revision: "test", passedCases: 5, totalCases: 5, latencyP50Ms: 3000, latencyP95Ms: 14000 } };

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { currentSearchToolFixture } from "@/tests/support/tools";
+import { checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import {
   buildOpenAIResponsesRequest,
   buildOpenAIResponsesRequestPreview,
@@ -98,6 +100,19 @@ function latestInputMessage(body: ReturnType<typeof buildOpenAIResponsesRequest>
 }
 
 describe("OpenAI Responses request builder", () => {
+  it("keeps capture identity and image transformations optional on the Responses wire", () => {
+    const body = buildOpenAIResponsesRequest(request({
+      searchPlan: { mode: "all_selected", options: [] },
+      tools: [checkpointOutputsTool, viewWorkspaceImageTool]
+    }));
+    // Responses can normalize omitted strictness into an all-required schema.
+    // A new checkpoint has no capture ID; a full image needs no crop/resize.
+    expect(body.tools).toMatchObject([
+      { name: "checkpoint_outputs", strict: false, parameters: { required: ["files", "description"] } },
+      { name: "view_workspace_image", strict: false, parameters: { required: ["path"] } }
+    ]);
+  });
+
   it("serializes required custom-tool choice", () => {
     const body = buildOpenAIResponsesRequest(request({
       searchPlan: { mode: "all_selected", options: [] },

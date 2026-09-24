@@ -1,3 +1,4 @@
+import { visionAnalysisForStorage } from "@/lib/server/vision/defaultVision";
 import { agentPolicyRepository } from "@/lib/server/agents/defaultPolicy";
 import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
 import { artifactServiceForStorage } from "@/lib/server/artifacts/defaultArtifacts";
@@ -40,6 +41,7 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createRegenerateModelRunH
   knowledgeExecutor: knowledgeToolExecutor,
   knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
   images: imageGenerationForStorage(storage),
+  vision: visionAnalysisForStorage(storage),
   artifacts: artifactServiceForStorage(storage),
   memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,

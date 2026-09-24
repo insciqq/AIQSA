@@ -23,6 +23,7 @@ import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memo
 import { listMemoryModelRecommendations, memoryRecommendationMatches } from "../../memory/modelRecommendations";
 import { systemModelRoleEligible } from "../../providerRuntime/systemModelCapabilities";
 import { createChatTitleModelRoleResolver } from "../../providerRuntime/chatTitleModelRole";
+import { createVisionModelRoleResolver } from "../../providerRuntime/visionModelRole";
 import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
 import { pdfInputVerificationStatus, supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 import { hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
@@ -284,6 +285,7 @@ export function createAdminSystemModelPolicyService(
     refreshActive?: ActiveRefresh;
     resolveRerankerRole?: ReturnType<typeof createRerankerModelRoleResolver>["resolve"];
     resolveChatTitleRole?: ReturnType<typeof createChatTitleModelRoleResolver>["resolve"];
+    resolveVisionRole?: ReturnType<typeof createVisionModelRoleResolver>["resolve"];
     resolveChatPdfRole?: ReturnType<typeof createChatPdfModelRoleResolver>["resolve"];
     resolveRole?: ReturnType<typeof createSystemModelRoleResolver>["resolve"];
     resolveMemoryRole?: ReturnType<typeof createMemoryUtilityModelRoleResolver>["resolve"];
@@ -296,6 +298,7 @@ export function createAdminSystemModelPolicyService(
     createMemoryUtilityModelRoleResolver(prisma, { loadRole }).resolve;
   const resolveChatTitleRole = dependencies.resolveChatTitleRole ??
     createChatTitleModelRoleResolver(prisma, loadRole).resolve;
+  const resolveVisionRole = dependencies.resolveVisionRole ?? createVisionModelRoleResolver(prisma, loadRole).resolve;
   const resolveChatPdfRole = dependencies.resolveChatPdfRole ??
     createChatPdfModelRoleResolver(prisma, loadRole).resolve;
   const loadRerankerRole = dependencies.loadRerankerRole ??
@@ -310,7 +313,7 @@ export function createAdminSystemModelPolicyService(
   const service = {
     async list(): Promise<AdminSystemModelPolicyCatalog> {
       const rerankerResolution = await resolveRerankerRole();
-      const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution, chatPdfNativeResolution] =
+      const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution, chatPdfNativeResolution, visionResolution] =
         await Promise.all([
         prisma.systemModelPolicy.findUnique({
           include: {
@@ -336,6 +339,27 @@ export function createAdminSystemModelPolicyService(
               }
             },
             chatTitleProviderModel: {
+              include: {
+                activeCredentialChecks: {
+                  select: {
+                    connectionVersion: true,
+                    credentialId: true,
+                    credentialVersionId: true,
+                    evidence: true,
+                    modelVersion: true,
+                    status: true
+                  }
+                },
+                connection: {
+                  include: {
+                    defaultCredential: {
+                      include: { activeVersion: { select: { id: true, revokedAt: true } } }
+                    }
+                  }
+                }
+              }
+            },
+            visionProviderModel: {
               include: {
                 activeCredentialChecks: {
                   select: {
@@ -444,7 +468,8 @@ export function createAdminSystemModelPolicyService(
         resolveRole(),
         resolveChatPdfRole(),
         resolveChatTitleRole(),
-        resolveChatPdfRole("pdf_reader")
+        resolveChatPdfRole("pdf_reader"),
+        resolveVisionRole()
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
       const decisionRows = await prisma.providerModel.findMany({ where: { modelClass: "decision" },
@@ -555,6 +580,7 @@ export function createAdminSystemModelPolicyService(
         candidates: deployments.filter((model) => model.structuredOutput === "verified" &&
           model.forcedToolCall === "verified"),
         titleCandidates: deployments.filter((model) => model.structuredOutput === "verified"),
+        visionAnalysisAvailable: true,
         documentCandidates: deployments.filter((model) => model.pdfInput === "verified" || model.visionInput === "verified"),
         verificationCandidates: deployments,
         ineligible,
@@ -574,6 +600,12 @@ export function createAdminSystemModelPolicyService(
             ...serializeSystemModel(policy.chatTitleProviderModel as SystemModelRow),
             available: chatTitleResolution.ok && chatTitleResolution.providerModelId === policy.chatTitleProviderModelId &&
               chatTitleResolution.policyVersion === policy.version
+          } : null,
+          visionReasoningEffort: policy.visionReasoningEffort ?? null,
+          visionModel: policy.visionProviderModel ? {
+            ...serializeSystemModel(policy.visionProviderModel as SystemModelRow),
+            available: visionResolution.ok && visionResolution.providerModelId === policy.visionProviderModelId &&
+              visionResolution.policyVersion === policy.version
           } : null,
           chatPdfReasoningEffort: policy.chatPdfReasoningEffort ?? null,
           chatPdfProcessingMode: (policy.chatPdfProcessingMode ?? "PREFER_CHAT_MODEL").toLowerCase() as "prefer_chat_model" | "use_pdf_reader" | "read_page_images",
@@ -771,6 +803,8 @@ export function createAdminSystemModelPolicyService(
       chatTitleBootstrap?: true;
       chatPdfNativeProviderModelId?: string | null;
       chatPdfNativeReasoningEffort?: string | null;
+      visionProviderModelId?: string | null;
+      visionReasoningEffort?: string | null;
       chatPdfProviderModelId?: string | null;
       chatPdfReasoningEffort?: string | null;
       chatPdfProcessingMode?: "prefer_chat_model" | "use_pdf_reader" | "read_page_images";
@@ -804,6 +838,10 @@ export function createAdminSystemModelPolicyService(
       if (hasTitleUpdate !== (input.chatTitleReasoningEffort !== undefined)) {
         throw new Error("system_model_policy_update_invalid");
       }
+      const hasVisionUpdate = input.visionProviderModelId !== undefined;
+      if (hasVisionUpdate !== (input.visionReasoningEffort !== undefined)) {
+        throw new Error("system_model_policy_update_invalid");
+      }
       const hasPdfUpdate = input.chatPdfProviderModelId !== undefined;
       if (hasPdfUpdate !== (input.chatPdfReasoningEffort !== undefined)) {
         throw new Error("system_model_policy_update_invalid");
@@ -820,7 +858,7 @@ export function createAdminSystemModelPolicyService(
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasTitleUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined) {
+        !hasUtilityUpdate && !hasTitleUpdate && !hasVisionUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined) {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
@@ -897,6 +935,21 @@ export function createAdminSystemModelPolicyService(
               if (input.chatTitleReasoningEffort !== null && input.chatTitleReasoningEffort !== undefined &&
                 !supportsReasoningEffort(role, input.chatTitleReasoningEffort)) {
                 throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
+              }
+            } catch (error) {
+              if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              throw error;
+            }
+          }
+          if (input.visionProviderModelId === null && input.visionReasoningEffort !== null) {
+            throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
+          }
+          if (input.visionProviderModelId) {
+            try {
+              const role = await loadRole(tx, { providerModelId: input.visionProviderModelId });
+              if (!systemModelRoleEligible(role, "vision") || input.visionReasoningEffort &&
+                !supportsReasoningEffort(role, input.visionReasoningEffort)) {
+                throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
               }
             } catch (error) {
               if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
@@ -988,6 +1041,10 @@ export function createAdminSystemModelPolicyService(
                 chatTitleProviderModelId: input.chatTitleProviderModelId,
                 chatTitleReasoningEffort: input.chatTitleReasoningEffort,
                 chatTitleConfiguredAt: new Date()
+              } : {}),
+              ...(hasVisionUpdate ? {
+                visionProviderModelId: input.visionProviderModelId,
+                visionReasoningEffort: input.visionReasoningEffort
               } : {}),
               ...(hasPdfUpdate ? {
                 chatPdfProviderModelId: input.chatPdfProviderModelId,

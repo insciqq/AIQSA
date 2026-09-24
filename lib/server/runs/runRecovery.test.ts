@@ -1,3 +1,6 @@
+import * as workspaceImageViewer from "../workspace/directImageView";
+import { prepareWorkspaceImages, WorkspaceImageError } from "../workspace/imageCapture";
+import sharp from "sharp";
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
@@ -1697,7 +1700,7 @@ describe("run recovery", () => {
         code: "workspace_output_export_failed",
         message: "The answer was saved, but Workspace could not finish preparing its files."
       } })]);
-      expect(workspace.settle).toHaveBeenCalledWith({ outcome: "failed", runId, userId });
+      expect(workspace.settle).toHaveBeenCalledWith({ outcome: "failed", runId, userId, onActivity: expect.any(Function) });
       expect(harness.state.run.status).toBe("error");
     } else expect(harness.state.failed).toEqual([]);
   });
@@ -2104,6 +2107,24 @@ describe("run recovery", () => {
     expect(harness.state.events.map(({ event, sequence }) => ({ sequence, type: event.type }))).toEqual([
       { sequence: 0, type: "artifact" }
     ]);
+  });
+
+  it("settles a storage failure after provider refresh with original usage and without provider replay", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({ events: [providerEvent],
+      providerResponseId: "response-new", result: providerResult, status: "completed", terminal: true }));
+    const adapter = providerWithRefresh(refresh);
+    const stream = vi.spyOn(adapter, "stream");
+    const harness = createHarness({ controls: [control({ status: "error" })], providers: { openai: adapter } });
+    vi.spyOn(harness.repository, "completeRun").mockRejectedValueOnce(new Error("PRIVATE token header"));
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.failed).toMatchObject([{ error: { code: "run_completion_persistence_failed" } }]);
+    expect(harness.state.recoveredErrors[0]?.usageAttributions).toMatchObject([
+      { usage: { inputTokens: 2, outputTokens: 3 } }
+    ]);
+    expect(JSON.stringify(harness.state.failed)).not.toContain("PRIVATE");
+    expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
   });
 
   it("settles a recovered non-tool Knowledge attempt from its durable refresh handle", async () => {
@@ -4750,7 +4771,7 @@ describe("run recovery", () => {
         assistantMessageId: "assistant-1",
         error: {
           code: "provider_refresh_failed",
-          message: "provider unavailable"
+          message: "The provider response could not be refreshed. Its outcome remains unconfirmed; the request was not repeated."
         },
         runId
       }
@@ -8253,5 +8274,106 @@ describe("run recovery", () => {
         }
       })
     ]);
+  });
+});
+
+
+describe("Workspace image recovery", () => {
+  it.each(["complete", "error"] as const)("settles a running Vision call from its %s receipt without repeating analysis", async status => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call = { ...persistedRecoveryCall("running"), mcpBinding: null, toolName: "analyze_image",
+      arguments: { images: [{ path: "/workspace/project/frame.png" }], question: "What is visible?" } };
+    const plan: NonNullable<NormalizedRunRequest["visionAnalysis"]> = { version: 1, available: true, policyVersion: 1,
+      reasoningEffort: null, verifiedVisionInput: true,
+      authority: { connectionId: "vision", connectionVersion: 1, providerModelId: "vision", modelVersion: 1,
+        credentialId: "key", credentialVersionId: "key-v1" },
+      snapshot: { version: 1, connectionId: "vision", connectionDisplayName: "Vision", providerModelId: "vision",
+        modelDisplayName: "Vision", credentialId: "key", credentialVersionId: "key-v1", providerFamily: "openai_compatible",
+        connection: { apiRoot: "https://vision.example.test/v1", allowPrivateNetwork: false, authenticationMode: "bearer", responseTimeoutMs: 60000 },
+        model: { adapterKind: "openai_responses_compatible", modelClass: "answer", upstreamModelId: "visual-model",
+          answerSelectable: true, defaultParams: {}, capabilities: { nativePdfInput: false, nativeSearch: false,
+            pdf: false, reasoning: false, streaming: true, vision: true } } } };
+    const initial = checkpointedRun({ phase: "tools_running", calls: [call], providerToolMessages: [{
+      type: "function_call", name: call.toolName, call_id: call.providerCallId, arguments: JSON.stringify(call.arguments)
+    }] });
+    const checkpointState = installCheckpointState(harness, { ...initial, normalizedRequest: {
+      ...initial.normalizedRequest, mcp: undefined, visionAnalysis: plan, workspace: completionWorkspace
+    } });
+    const result: ToolExecutionResult = { callId: call.providerCallId, name: call.toolName, status,
+      content: [{ type: "json", value: status === "complete"
+        ? { analysis: "PRIVATE_VISION_RECEIPT", provenance: "System Vision Model" }
+        : { error: "vision_analysis_outcome_unknown", provider_outcome: "unknown" } }] };
+    const restore = vi.fn(async () => result), execute = vi.fn();
+    const workspace: NonNullable<RunRecoveryDeps["workspace"]> = { accepts: () => false, execute: vi.fn(), finalize: vi.fn(),
+      recoverExports: vi.fn(), handoff: async () => ({ status: "ready" }), tools: async () => [],
+      settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) };
+    await refreshProviderRunIfNeeded({ ...harness.deps, workspace,
+      vision: { restore, execute } as unknown as NonNullable<RunRecoveryDeps["vision"]> }, runId, userId);
+    expect(restore).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: call.toolName }),
+      expect.objectContaining({ persistedToolCallId: call.id, runId, userId,
+        request: expect.objectContaining({ visionAnalysis: plan }) }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(checkpointState.calls()[0]).toMatchObject({ state: status, result });
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).not.toBeNull();
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain(status === "complete"
+      ? "PRIVATE_VISION_RECEIPT" : "vision_analysis_outcome_unknown");
+    expect(JSON.stringify(harness.state.events)).not.toContain("PRIVATE_VISION_RECEIPT");
+  });
+
+  it("reloads settled immutable image evidence without repeating capture and rejects revoked access before dispatch", async () => {
+    const bytes = await sharp({ create: { width: 12, height: 8, channels: 3, background: "#28bc70" } }).png().toBuffer();
+    let revoked = false;
+    const assertAccess = async () => { if (revoked) throw new WorkspaceImageError("workspace_image_unavailable"); };
+    const source = { captureId: "c".repeat(32), relativePath: "project/private-recovery.png", byteSize: bytes.length,
+      checksum: createHash("sha256").update(bytes).digest("hex"), assertAccess,
+      open: async () => new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } }) };
+    const images = await prepareWorkspaceImages([{ source }]);
+    const descriptor = images[0]!.descriptor;
+    images[0]!.dispose();
+    const real = workspaceImageViewer.createWorkspaceImageViewer({ imageSource: async () => { await assertAccess(); return source; },
+      lookup: assertAccess } as unknown as Parameters<typeof workspaceImageViewer.createWorkspaceImageViewer>[0]);
+    const execute = vi.fn();
+    const viewer = vi.spyOn(workspaceImageViewer, "defaultWorkspaceImageViewer").mockResolvedValue({ ...real, execute });
+    try {
+      for (const accessRevoked of [false, true]) {
+        revoked = accessRevoked;
+        const stream = vi.fn<ProviderAdapter["stream"]>(async function* (request) {
+          expect(JSON.stringify(request.providerToolMessages)).toContain(`data:image/png;base64,${bytes.toString("base64")}`);
+          return providerResult;
+        });
+        const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+        const call = { ...persistedRecoveryCall("complete"), mcpBinding: null, toolName: "view_workspace_image",
+          arguments: { path: "/workspace/project/private-recovery.png" } };
+        const stored = snapshotToolExecutionResult({ callId: call.providerCallId, name: call.toolName, status: "complete",
+          content: [{ type: "workspace_image", value: { consumerKey: call.id, descriptor } }] }, 32768)!;
+        const initial = checkpointedRun({ phase: "tools_pending", calls: [{ ...call, result: stored }], providerToolMessages: [{
+          type: "function_call", name: call.toolName, call_id: call.providerCallId, arguments: JSON.stringify(call.arguments)
+        }] });
+        const checkpointState = installCheckpointState(harness, { ...initial, normalizedRequest: { ...initial.normalizedRequest,
+          mcp: undefined, workspaceImageView: true, workspace: completionWorkspace } });
+        const workspace: NonNullable<RunRecoveryDeps["workspace"]> = { accepts: () => false, execute: vi.fn(), finalize: vi.fn(),
+          recoverExports: vi.fn(), handoff: async () => ({ status: "ready" }), tools: async () => [],
+          settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) };
+        await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+        expect(execute).not.toHaveBeenCalled();
+        expect(stream).toHaveBeenCalledTimes(accessRevoked ? 0 : 1);
+        if (!accessRevoked) {
+          expect(harness.state.recoveredErrors).toEqual([]);
+          expect(harness.state.completed).not.toBeNull();
+        } else {
+          expect(harness.state.completed).toBeNull();
+          expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+            error: expect.objectContaining({ code: "workspace_image_unavailable" })
+          })]);
+        }
+        expect(JSON.stringify(checkpointState.calls())).not.toContain("base64");
+        expect(JSON.stringify(checkpointState.checkpoint())).not.toContain("base64");
+        expect(JSON.stringify(harness.state.events)).not.toMatch(/base64|private-recovery/);
+      }
+    } finally { viewer.mockRestore(); }
   });
 });

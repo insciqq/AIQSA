@@ -16,7 +16,7 @@ import {
   type WorkspaceRuntime
 } from "./runtime";
 import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperation } from "./operationFence";
-import { parseOutputCaptureRequest } from "./outputManifest";
+import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
@@ -531,7 +531,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const body = await readJson(request);
         const operation = parseWorkspaceOperation(body.operation);
         if (body.purpose === "browser_sessions") {
-          if (body.capture !== undefined || body.outputDirectory !== undefined) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+          if (body.capture !== undefined || body.outputDirectory !== undefined || body.selection !== undefined) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
           const collection = await execute(operation, (signal) => input.runtime.collectBrowserSessions({
             modelRunId: requiredString(body.modelRunId, 128), runtimeSandboxId: requiredString(body.runtimeSandboxId, 256), sessionId, signal
           }));
@@ -540,12 +540,19 @@ export function createWorkspaceRunnerServer(input: Readonly<{
             outputs: collection.files.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId })) });
           return;
         }
-        if (body.purpose !== undefined) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        if (body.purpose !== undefined && body.purpose !== "selected_files") throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        if (body.purpose !== "selected_files" && body.selection !== undefined) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         const capture = body.capture === undefined ? undefined : parseOutputCaptureRequest(body.capture);
+        const modelRunId = requiredString(body.modelRunId, 128);
+        const outputDirectory = requiredString(body.outputDirectory, 255);
+        const selection = body.purpose === "selected_files"
+          ? selectedCaptureRequest({ capture, operation, modelRunId, outputDirectory,
+            selection: parseWorkspaceFileSelection(body.selection) }) : undefined;
         const outputs = await execute(operation, (signal) => input.runtime.collectOutputs({
           ...(capture ? { capture } : {}),
-          modelRunId: requiredString(body.modelRunId, 128),
-          outputDirectory: requiredString(body.outputDirectory, 255),
+          ...(selection ? { selection } : {}), operation,
+          modelRunId,
+          outputDirectory,
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
           sessionId, signal
         }));
@@ -553,6 +560,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         sendJson(response, 200, {
           batchId,
           ...(capture ? { captureId: capture.id } : {}),
+          ...(selection ? { selection } : {}),
           outputs: outputs.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId }))
         });
         return;

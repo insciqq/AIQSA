@@ -6,6 +6,7 @@ import type {
   ThreadWorkspaceActivity,
   ThreadWorkspaceActivityEntry
 } from "@/lib/contracts/workspace";
+import { isWorkspaceOperationFailureCode, workspaceOperationFailureMessage } from "@/lib/contracts/workspaceFailure";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
@@ -28,7 +29,7 @@ function compactEntries(entries: readonly ThreadWorkspaceActivityEntry[]): { vis
 
 type Phase = ThreadWorkspaceActivityEntry["phase"];
 
-function markStatus(phase: Phase): "cancelled" | "complete" | "error" | "running" {
+function markStatus(phase: Phase): "cancelled" | "complete" | "error" | "running" | "unknown" {
   switch (phase) {
     case "succeeded":
       return "complete";
@@ -36,6 +37,9 @@ function markStatus(phase: Phase): "cancelled" | "complete" | "error" | "running
       return "error";
     case "cancelled":
       return "cancelled";
+    case "closed":
+    case "unknown":
+      return "unknown";
     default:
       return "running";
   }
@@ -88,23 +92,31 @@ function OutputBlockV2({ label, text }: { label: string; text: string }) {
   );
 }
 
+function failureCopy(entry: ThreadWorkspaceActivityEntry): string | null {
+  return (entry.phase === "failed" || entry.phase === "cancelled" || entry.kind === "execution_status" && entry.phase === "unknown") && isWorkspaceOperationFailureCode(entry.errorCode)
+    ? workspaceOperationFailureMessage(entry.errorCode)
+    : null;
+}
+
 function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
   const command = entry.command;
   const failed = entry.phase === "failed" || entry.phase === "cancelled";
   const duration = workspaceDurationV2(entry.durationMs);
   const label = workspaceActivityLabelV2(entry);
+  const failure = failureCopy(entry);
   if (!command) return null;
   const streams = failed
     ? [["stderr", command.stderrPreview], ["stdout", command.stdoutPreview]] as const
     : [["stdout", command.stdoutPreview], ["stderr", command.stderrPreview]] as const;
   return (
-    <details className="v2-workspace-command" data-phase={entry.phase} open={failed || undefined}>
+    <details className="v2-workspace-command" data-phase={entry.phase}>
       <summary className="v2-focusable">
         <ActivityMarkV2 phase={entry.phase} />
         <span className="v2-workspace-row-label">{label}</span>
         {duration ? <span className="v2-workspace-row-meta">{duration}</span> : null}
       </summary>
       <div className="v2-workspace-command-body">
+        {failure ? <p className="v2-workspace-row-note" role="note">{failure}</p> : null}
         <div className="v2-workspace-command-line">
           <span className="v2-workspace-output-label">Command</span>
           <code className="v2-workspace-command-text">$ {command.preview}</code>
@@ -130,12 +142,14 @@ function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
 
 function PlainRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
   const duration = workspaceDurationV2(entry.durationMs);
+  const failure = failureCopy(entry);
   return (
     <div className="v2-workspace-row">
-      <ActivityMarkV2 phase={entry.phase} />
+      <ActivityMarkV2 phase={entry.kind === "elided" ? "unknown" : entry.phase} />
       <span className="v2-workspace-row-copy">
         <span className="v2-workspace-row-label">{workspaceActivityLabelV2(entry)}</span>
         {duration ? <span className="v2-workspace-row-meta">{duration}</span> : null}
+        {failure ? <span className="v2-workspace-row-note" role="note">{failure}</span> : null}
         {entry.kind === "workspace_recreated" ? (
           <span className="v2-workspace-row-note" role="note">{WORKSPACE_RECREATED_NOTICE_V2}</span>
         ) : null}
@@ -174,8 +188,8 @@ function WorkspaceActivityOverlay({ activity, rows, onClose }: Readonly<{
 
 /**
  * Chronological Workspace feed: lifecycle rows, file operations, and command
- * cards that open into a terminal-style excerpt. Failed commands open on their
- * own; successful ones stay compact. Every label is client copy.
+ * cards that open into a terminal-style excerpt only on user action.
+ * Native disclosure state survives updates to the same keyed row.
  */
 export function WorkspaceActivityTimelineV2({ activity }: WorkspaceActivityTimelineV2Props) {
   const rows = aggregateWorkspaceActivityV2(activity.entries);

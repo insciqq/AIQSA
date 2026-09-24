@@ -3,6 +3,7 @@ import type { McpRunPlanSnapshot, McpRunPlanTool } from "./runPlan";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { logEvent } from "../observability";
 import { beginMcpToolStage, mcpToolFailure, observeMcpAbort } from "./toolObservability";
+import { normalizeMcpResultForModel } from "./resultNormalization";
 
 export type McpRunToolRoute = Readonly<{
   fingerprint: string;
@@ -102,6 +103,7 @@ export function mcpToolExecutionResult(
   call: ModelToolCall,
   result: AiqsaMcpToolCallResult
 ): ToolExecutionResult {
+  result = normalizeMcpResultForModel(result);
   const content: ToolExecutionResult["content"] = [
     ...result.text.map((text) => ({ text, type: "text" as const })),
     ...(result.structuredContent ? [{ type: "json" as const, value: result.structuredContent }] : [])

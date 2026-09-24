@@ -48,6 +48,55 @@ describe("remote Workspace runner protocol", () => {
     })));
   });
 
+  it("captures exact mid-run files through the receiver without stopping execution, then replays immutable bytes", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "selected_capture_fixture";
+    const session = await remote.ensureSession({ sessionId, runtimeSandboxId: null, operation,
+      sandboxName: workspaceSandboxName(sessionId), imageRef: deterministicConfig.imageRef, cpus: 1,
+      diskMiB: 1024, memoryMiB: 512, internetEnabled: false });
+    const identity = { sessionId, runtimeSandboxId: session.runtimeSandboxId, modelRunId: "run_selected", operation };
+    const nextOperation = { generation: 2, owner: "run:recovery" };
+    let cleanupOperation = operation;
+    try {
+      for (const [index, path] of ["/workspace/project/report.txt", "/workspace/output/run_selected/report.txt",
+        "/workspace/inbox/messages/msg/attachment--report.txt", "/workspace/project/unselected.txt"].entries()) {
+        await remote.callBoundTool({ ...identity, modelRunToolCallId: `write_${index}`, originalName: "sandbox_fs_write",
+          arguments: { path, content: index === 0 ? "" : `synthetic-${index}` } });
+      }
+      const started = await remote.callBoundTool({ ...identity, modelRunToolCallId: "start", originalName: "sandbox_exec_start",
+        arguments: { command: "sleep 30" } });
+      const request = { ...identity, capture: { create: true, id: "e".repeat(32) }, outputDirectory: "/workspace/output/run_selected",
+        selection: { producerOperation: operation, files: [
+          { root: "project" as const, relativePath: "report.txt" }, { root: "output" as const, relativePath: "report.txt" },
+          { root: "inbox" as const, relativePath: "messages/msg/attachment--report.txt" }
+        ] } };
+      const outputs = await remote.collectOutputs(request);
+      expect(outputs.map(file => file.relativePath)).toEqual([
+        "inbox/messages/msg/attachment--report.txt", "output/report.txt", "project/report.txt"
+      ]);
+      expect(await Promise.all(outputs.map(file => new Response(file.body).text()))).toEqual(["synthetic-2", "synthetic-1", ""]);
+      const polled = await remote.callBoundTool({ ...identity, modelRunToolCallId: "poll", originalName: "sandbox_exec_poll",
+        arguments: { execSessionId: started.execSessionId, limit: 1 } });
+      expect(JSON.parse(polled.content[0]!.text!).data.done).toBe(false);
+      await remote.callBoundTool({ ...identity, modelRunToolCallId: "replace", originalName: "sandbox_fs_write",
+        arguments: { path: "/workspace/project/report.txt", content: "replacement" } });
+      const replay = await remote.collectOutputs({ ...request, capture: { ...request.capture, create: false } });
+      expect(await Promise.all(replay.map(file => new Response(file.body).text()))).toEqual(["synthetic-2", "synthetic-1", ""]);
+
+      await remote.claimSessionOperation({ ...identity, operation: nextOperation }); cleanupOperation = nextOperation;
+      await expect(remote.collectOutputs({ ...request, capture: { ...request.capture, create: false } })).rejects.toMatchObject({ code: "workspace_operation_stale" });
+      const recovered = await remote.collectOutputs({ ...request, operation: nextOperation, capture: { ...request.capture, create: false } });
+      expect(await Promise.all(recovered.map(file => new Response(file.body).text()))).toEqual(["synthetic-2", "synthetic-1", ""]);
+      await expect(remote.collectOutputs({ ...request, operation: nextOperation })).rejects.toMatchObject({ code: "workspace_operation_stale" });
+      await remote.releaseOutputCapture({ ...identity, operation: nextOperation, captureId: request.capture.id });
+      await expect(remote.collectOutputs({ ...request, operation: nextOperation, capture: { ...request.capture, create: false } })).rejects.toMatchObject({ code: "workspace_output_export_failed" });
+    } finally { await remote.removeSession({ ...identity, operation: cleanupOperation }); }
+  });
+
   it("fences Agent interruption through the authenticated receiver operation", async () => {
     const local = new DeterministicWorkspaceRuntime(deterministicConfig);
     const interruptAgent = vi.fn(async () => true);

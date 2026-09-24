@@ -130,6 +130,10 @@ export type NormalizedRunRequest = {
   artifactEdit?: import("../../contracts/artifacts").ArtifactEdit;
   /** Owner selection fenced at initial acceptance; texts live in prompt. */
   instructionPreset?: Readonly<{ presetId: string | null; revision: number | null; selectionVersion: number }>;
+  /** Verified image-input and supported Responses tool-output route, frozen at admission. */
+  workspaceImageView?: true;
+  workspaceCheckpoints?: true;
+  visionAnalysis?: import("../providerRuntime/visionAnalysis").AcceptedVisionAnalysisPlan;
   imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;
   imageReferences?: import("../../contracts/imageGeneration").ConversationImageReference[];
   attachmentIds: string[];

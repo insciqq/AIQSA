@@ -1,0 +1,3 @@
+/** Shared Chat/Agent guidance; the guest owns parsing, never the application. */
+export const WORKSPACE_PSD_GUIDANCE =
+  "PSD: Python psd-tools is preinstalled for layer/group inspection, raster PNG extraction and simple layered PSD save/reopen. Select layers by verified tree path, not name alone; preserve canvas coordinates, masks and transparency. Label cached previews separately from recomposed images. Advanced Photoshop features may need optional dependencies or remain unsupported; do not promise lossless round-trips. Bound decoded size and allocation with PSDImage.open(max_alloc_bytes=...), keep Pillow safety checks, and do not follow external smart-object files or network references implicitly.";

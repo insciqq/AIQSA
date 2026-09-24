@@ -313,3 +313,117 @@ test("Documents reasoning keeps the draft, confirmation and saved revision acros
   await expect(reasoning).toHaveValue("");
   expect(mutations.at(-1)).toMatchObject({ action: "rollback_profile", revisionId: initial.id });
 });
+
+for (const viewport of [
+  { width: 1440, height: 900, theme: "dark" },
+  { width: 768, height: 1024, theme: "light" },
+  { width: 1024, height: 768, theme: "dark" },
+  { width: 390, height: 844, theme: "light" },
+  { width: 844, height: 390, theme: "dark" }
+] as const) {
+  test.describe(`${viewport.width}px Vision`, () => {
+  test.use({ isMobile: viewport.width !== 1440, hasTouch: viewport.width !== 1440 });
+  test(`Vision role keeps assignment independent of consumer readiness at ${viewport.width}px`, async ({ page, context }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
+    const model = { connectionDisplayName: "Synthetic vision provider", connectionId: "vision-provider", id: "vision-model",
+      displayName: "Independent image reader", defaultReasoningEffort: "low", reasoningEfforts: ["low", "high"],
+      forcedToolCall: "unsupported" as const, structuredOutput: "unsupported" as const, visionInput: "not_verified" as const };
+    let roles: AdminSystemModelPolicyCatalog = {
+      memoryPolicy: { model: null, reasoningEffort: null, version: 1, assignmentSource: "unassigned" },
+      candidates: [], titleCandidates: [], documentCandidates: [], verificationCandidates: [model], visionAnalysisAvailable: false,
+      ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [{ ...model, reason: "not_checked", requirement: "vision" }] },
+      rerankerCandidates: [], policy: { chatTitleModel: null, chatTitleReasoningEffort: null,
+        chatPdfModel: { ...model, visionInput: "verified", available: true }, chatPdfReasoningEffort: "low",
+        visionModel: null, visionReasoningEffort: null, reasoningEffort: null, rerankerModel: null,
+        systemModel: null, updatedAt: "2026-09-24T00:00:00.000Z", updatedBy: null, version: 1 }
+    };
+    const defaults: AdminModelPolicyCatalog = { candidates: [], policy: { defaultModel: null, reasoningEffort: null,
+      maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8, mcpAutoDiscoveryTimeoutSeconds: 20,
+      mcpAutoDiscoveryMaxOutputTokens: 8192, updatedAt: "2026-09-24T00:00:00.000Z", updatedBy: null, version: 1 } };
+    let checks = 0;
+    const mutations: Record<string, unknown>[] = [];
+    await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
+    await page.route("**/api/admin/release", (route) => route.fulfill({ json: { state: "unavailable" } }));
+    await page.route("**/api/admin/memory", (route) => route.fulfill({ json: memoryResponse() }));
+    await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: knowledgeSettings() } }));
+    await page.route("**/api/admin/providers/model-policy", (route) => route.fulfill({ json: { modelPolicy: defaults } }));
+    await page.route("**/api/admin/providers/system-model-policy", async (route) => {
+      if (route.request().method() === "POST") {
+        expect(route.request().postDataJSON()).toEqual({ providerModelId: model.id, role: "vision" });
+        if (++checks === 1) {
+          await route.fulfill({ status: 422, json: { error: "system_model_policy_verification_failed" } });
+          return;
+        }
+        // A successful check races another administrator's unrelated role save.
+        roles = { ...roles, documentCandidates: [{ ...model, visionInput: "verified" }],
+          ineligible: { ...roles.ineligible, vision: [] }, policy: { ...roles.policy, version: roles.policy.version + 1 } };
+      }
+      if (route.request().method() === "PATCH") {
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        expect(Object.keys(body).sort()).toEqual(["expectedVersion", "visionProviderModelId", "visionReasoningEffort"]);
+        expect(body.expectedVersion).toBe(roles.policy.version);
+        mutations.push(body);
+        roles = { ...roles, policy: { ...roles.policy, version: roles.policy.version + 1,
+          visionModel: body.visionProviderModelId ? { ...model, visionInput: "verified", available: true } : null,
+          visionReasoningEffort: body.visionReasoningEffort as string | null } };
+      }
+      await route.fulfill({ json: { systemModelPolicy: roles } });
+    });
+    await signInWithLocalToken(page);
+    await page.goto("/admin?section=roles&resource=vision");
+    const row = page.getByTestId("admin-role-vision");
+    const picker = row.getByRole("button", { name: "Vision deployment" });
+    await expect(row.getByTestId("admin-role-vision-status")).toHaveText("Not assigned");
+    await expect(row).toContainText("The image analysis tool is not available");
+    await picker.click();
+    const dialog = page.getByRole("dialog", { name: "Vision deployment" });
+    await dialog.getByRole("button", { name: /Check .*Independent image reader/ }).click();
+    await expect(page.getByText(/Role verification failed/)).toBeVisible();
+    await expect(dialog).toBeVisible();
+    expect(mutations).toEqual([]);
+    if (viewport.width === 1440) await page.screenshot({ path: testInfo.outputPath("vision-check-failed.png") });
+    await dialog.getByRole("button", { name: /Check .*Independent image reader/ }).click();
+    await expect(page.getByText(/role assignments changed elsewhere/)).toBeVisible();
+    await expect(dialog).toBeVisible();
+    expect(mutations).toEqual([]);
+    if (viewport.width === 1440) await page.screenshot({ path: testInfo.outputPath("vision-conflict-preserved.png") });
+    await dialog.getByRole("option", { name: /Independent image reader/ }).click();
+    await expect(row.getByTestId("admin-role-vision-status")).toHaveText("Model ready");
+    await row.getByRole("combobox", { name: "Vision reasoning" }).selectOption("high");
+    await expect(row.getByRole("combobox", { name: "Vision reasoning" })).toBeEnabled();
+    await page.reload();
+    await expect(picker).toContainText("Independent image reader");
+    await expect(row.getByRole("combobox", { name: "Vision reasoning" })).toHaveValue("high");
+    await expect(row).toContainText("The image analysis tool is not available");
+    await picker.scrollIntoViewIfNeeded();
+    await expectWithinViewport(page, picker);
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath(`vision-ready-${viewport.width}x${viewport.height}-${viewport.theme}.png`) });
+    roles = { ...roles, visionAnalysisAvailable: true };
+    await page.reload();
+    await expect(row).toContainText("Image analysis is supported. An available Vision Model is required.");
+    await expect(row).not.toContainText("The image analysis tool is not available");
+    await picker.scrollIntoViewIfNeeded();
+    await expectWithinViewport(page, picker);
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath(`vision-consumer-ready-${viewport.width}x${viewport.height}-${viewport.theme}.png`) });
+    // An assigned deployment can later become unavailable; it remains clearable.
+    roles = { ...roles, policy: { ...roles.policy, visionModel: { ...roles.policy.visionModel!, available: false } } };
+    await page.reload();
+    await expect(row.getByTestId("admin-role-vision-status")).toHaveText("Model unavailable");
+    await row.getByRole("button", { name: "Vision Model actions" }).click();
+    await page.getByRole("menuitem", { name: "Clear assignment" }).click();
+    await expect(row.getByTestId("admin-role-vision-status")).toHaveText("Not assigned");
+    expect(roles.policy.chatPdfModel?.id).toBe(model.id);
+    expect(roles.policy.chatPdfReasoningEffort).toBe("low");
+    await page.reload();
+    await expect(row.getByTestId("admin-role-vision-status")).toHaveText("Not assigned");
+    await expectNoHorizontalOverflow(page);
+    if (viewport.width === 1440) {
+      await picker.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("vision-cleared.png") });
+    }
+  });
+  });
+}

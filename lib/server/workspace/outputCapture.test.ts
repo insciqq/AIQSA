@@ -25,6 +25,74 @@ async function fixture() {
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe("Workspace private output capture", () => {
+  it("binds selected sources and their producer while allowing a newly fenced recovery reader", async () => {
+    const { store, root } = await fixture();
+    const operation = { owner: "run:producer", generation: 1 };
+    const selection = { files: [{ root: "project" as const, relativePath: "report.txt" }], producerOperation: operation };
+    const request = { ...input, operation, selection };
+    const current = vi.fn(async () => [output("original", "project/report.txt")]);
+    const validate = vi.fn(async () => undefined);
+    const first = await store.collect(request, current, validate);
+    await first[0]!.body.cancel();
+    expect(validate).toHaveBeenCalledOnce();
+    const lookup = { ...request, operation: { owner: "run:recovery", generation: 2 }, capture: { ...input.capture, create: false } };
+    const recovered = await new WorkspaceOutputCaptureStore(root, config).collect(lookup, current, validate);
+    expect(await new Response(recovered[0]!.body).text()).toBe("original");
+    expect(current).toHaveBeenCalledOnce();
+    expect(validate).toHaveBeenCalledOnce();
+    await expect(store.collect({ ...lookup, selection: { ...selection, files: [{ root: "output", relativePath: "report.txt" }] } }, current)).rejects.toThrow();
+    await expect(store.collect({ ...lookup, selection: { ...selection, producerOperation: lookup.operation } }, current)).rejects.toThrow();
+    await expect(store.collect({ ...input, capture: lookup.capture }, current)).rejects.toThrow();
+    expect(current).toHaveBeenCalledOnce();
+  });
+
+  it("never seals selected files after a broken read lease, including complete bytes", async () => {
+    const { store } = await fixture();
+    const operation = { owner: "run:producer", generation: 1 };
+    const request = { ...input, operation, selection: {
+      files: [{ root: "project" as const, relativePath: "empty.txt" }], producerOperation: operation
+    } };
+    const current = vi.fn(async () => [output("", "project/empty.txt")]);
+    await expect(store.collect(request, current, async () => { throw new Error("lease_broken"); })).rejects.toThrow();
+    await expect(store.collect({ ...request, capture: { ...request.capture, create: false } }, current)).rejects.toThrow();
+    expect(current).toHaveBeenCalledOnce();
+    const successful = await store.collect({ ...request, capture: { create: true, id: "b".repeat(32) } }, current);
+    expect(successful[0]!.byteSize).toBe(0);
+    expect(await new Response(successful[0]!.body).text()).toBe("");
+  });
+
+  it("rejects a selected capture containing missing or additional files", async () => {
+    const { store } = await fixture();
+    const operation = { owner: "run:producer", generation: 1 };
+    const request = { ...input, operation, selection: {
+      files: [{ root: "project" as const, relativePath: "report.txt" }], producerOperation: operation
+    } };
+    await expect(store.collect(request, async () => [])).rejects.toThrow();
+    await expect(store.collect({ ...request, capture: { create: true, id: "b".repeat(32) } }, async () => [
+      output("one", "project/report.txt"), output("two", "project/unrequested.txt")
+    ])).rejects.toThrow();
+  });
+
+  it("pins listed selected bytes across release and keeps a durable no-recapture tombstone", async () => {
+    const { store, root } = await fixture();
+    const operation = { owner: "run:producer", generation: 1 };
+    const request = { ...input, operation, selection: {
+      files: [{ root: "project" as const, relativePath: "report.txt" }], producerOperation: operation
+    } };
+    const current = vi.fn(async () => [output("original", "project/report.txt")]);
+    const first = await store.collect(request, current);
+    const second = await store.collect({ ...request, capture: { ...request.capture, create: false } }, current);
+    await store.release({ ...input, captureId: request.capture.id });
+    expect(await new Response(first[0]!.body).text()).toBe("original");
+    expect(await new Response(second[0]!.body).text()).toBe("original");
+    const session = (await readdir(root))[0]!;
+    const capture = (await readdir(join(root, session)))[0]!;
+    expect(await readdir(join(root, session, capture))).toEqual(["manifest.json"]);
+    await expect(new WorkspaceOutputCaptureStore(root, config).collect(request, current)).rejects.toThrow();
+    expect(current).toHaveBeenCalledOnce();
+    await store.release({ ...input, captureId: request.capture.id });
+  });
+
   it.each(["delete", "replace", "rename", "extra"])("reads original bytes across a receiver restart and later guest %s", async (change) => {
     const { store, root } = await fixture();
     const guest = new Map([["report.txt", "original"]]);

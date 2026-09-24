@@ -4,6 +4,13 @@ import { agentLimits, validNormalizedAgent } from "./config";
 
 const env = { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid", AIQSA_AGENT_MAX_MODEL_CALLS: "1" };
 describe("Agent installation policy snapshots", () => {
+  it("validates the frozen image capability independently of declared model hints", () => {
+    const config = { ...agentLimits(DEFAULT_AGENT_POLICY, env), compatibilityHash: "a".repeat(64), mcpMode: "off" };
+    expect(validNormalizedAgent({ ...config, imageInput: false })).toBe(true);
+    expect(validNormalizedAgent({ ...config, imageInput: true })).toBe(true);
+    expect(validNormalizedAgent({ ...config, imageInput: "true" })).toBe(false);
+    expect(validNormalizedAgent({ ...config, imageInput: true, other: true })).toBe(false);
+  });
   it("starts with enforcement off and ignores former environment budgets", () => {
     const config = agentLimits(DEFAULT_AGENT_POLICY, env);
     expect(config).toMatchObject({ limitsEnabled: false, timeoutSeconds: null, maxModelCalls: 40, policyVersion: 1 });

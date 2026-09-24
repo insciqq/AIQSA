@@ -1,4 +1,5 @@
 import { mergeTokenUsage } from "../../domain/usage";
+import { localSettlementError } from "./settlementFailure";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -238,7 +239,8 @@ export async function runProviderToolLoop(
           } else if (next.value.type === "usage") {
             lastReportedUsage = mergeTokenUsage(lastReportedUsage ?? {}, next.value.data);
           } else {
-            await input.onEvent?.(next.value);
+            try { await input.onEvent?.(next.value); }
+            catch (error) { throw localSettlementError("publication", error); }
           }
           next = await stream.next();
         }
@@ -271,11 +273,11 @@ export async function runProviderToolLoop(
           round
         });
       } catch (error) {
-        if (!publicationFailed) throw error;
+        if (!publicationFailed) throw localSettlementError("accounting", error);
         // Preserve the publication failure as the causal stop after making the
         // best effort to attribute the provider-reported usage.
       }
-      if (publicationFailed) throw publicationError;
+      if (publicationFailed) throw localSettlementError("publication", publicationError);
       const calls = result.toolCalls ?? [];
       if (roundRequest.toolChoice === "none" && calls.length > 0) {
         if (result.finalText.startsWith(emittedText)) {

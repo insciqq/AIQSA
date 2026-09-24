@@ -14,13 +14,20 @@ import { defaultMcpRunPlan, getDefaultMcpRuntimeCoordinator } from "../mcp/defau
 import { createPrismaAcceptedMcpRouter } from "../mcp/decisionRouter";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { validateMcpToolArguments } from "../mcp/clientSession";
+import { normalizeMcpResultForModel } from "../mcp/resultNormalization";
 import { getMcpResponseWireLimits, getMcpRequestMaxBytes, mcpRequestSizeFailure } from "../mcp/responseLimits";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { createAgentRunStore } from "./store";
 import { agentBuiltinTools, createAgentBuiltinDispatcher } from "./builtinTools";
+import { restoreAgentMcpTools } from "./mcpResume";
+import { logEvent, runWithContext } from "../observability";
 
-type Authority = McpToolAuthority & Readonly<{ callId: string }>;
+type Authority = McpToolAuthority & Readonly<{ callId: string; markDispatched(): void }>;
+
+class DiscoveryRequiredError extends McpHubServiceError {
+  constructor() { super("tool_unavailable"); }
+}
 
 function textResult(value: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }], ...(isError ? { isError: true } : {}) };
@@ -75,7 +82,7 @@ export async function createAgentMcpGateway(input: Readonly<{
     }
   });
   const catalog = input.request.mcpDiscovery?.catalog ?? catalogFromSnapshot(input.request.mcp);
-  const allowed = new Map((await input.store.mcpTools()).map((tool) => [tool.toolId, tool.version]));
+  const allowed = new Map<string, string>();
   const service = createMcpToolService<Authority>({
     catalog: async () => catalog,
     filterTools: defaultMcpRunPlan.filterTools,
@@ -149,23 +156,47 @@ export async function createAgentMcpGateway(input: Readonly<{
       const deliveryId = `agent-mcp:${hashCanonicalMcpValue(rpc.id ?? null)}`;
       const execute = async (name: string, args: unknown, action: (authority: Authority) => Promise<CallToolResult>) => {
         let callId: string | null = null;
+        let dispatched = false;
+        const started = Date.now();
+        const observe = (failed: boolean, code?: string) => runWithContext({ run_id: input.runId,
+          ...(callId ? { tool_call_id: callId } : {}) }, () => logEvent("tool_execution", {
+          tool_kind: "mcp", stage: dispatched ? "result" : "admission", outcome: failed ? "failed" : "completed",
+          duration_ms: Date.now() - started, ...(code ? { code } : {})
+        }));
         try {
           signal.throwIfAborted();
           callId = await input.store.toolCall(name, { argumentHash: hashCanonicalMcpValue(args) }, false, deliveryId);
-          const authority = { callId, discoveryOperationKey: callId, userId: input.userId, async assertActive() {
+          const authority = { callId, discoveryOperationKey: callId, userId: input.userId,
+            markDispatched() { dispatched = true; }, async assertActive() {
             signal.throwIfAborted(); await input.store.assertActive();
           } };
-          const result = await action(authority);
+          const result = await runWithContext({ run_id: input.runId, tool_call_id: callId }, () => action(authority));
           await input.store.settleTool(callId, result.isError ? "error" : "complete", { status: result.isError ? "error" : "complete" });
+          observe(Boolean(result.isError));
           return result;
         } catch (error) {
           const agentCode = agentFailureCode(error);
-          const code = agentCode ?? (error instanceof McpHubServiceError ? error.code : "execution_unavailable");
+          const code = agentCode ?? (error instanceof McpHubServiceError ? error.code
+            : error instanceof Error && error.message === "agent_mcp_definition_changed" ? "tool_definition_changed" : "execution_unavailable");
           const discoveryFailure = error instanceof McpHubServiceError ? error.discoveryFailure : null;
           const toolFailure = error instanceof McpHubServiceError ? error.toolFailure : null;
           const detail = { code, ...(discoveryFailure ? { discoveryFailure } : {}), ...(toolFailure ? { toolFailure } : {}) };
           if (agentCode && agentCode !== "agent_mcp_call_limit") await input.onFailure(agentCode);
           if (callId) await input.store.settleTool(callId, "error", detail).catch(() => undefined);
+          observe(true, code);
+          if (!dispatched && ["tool_unavailable", "tool_definition_changed", "upstream_unavailable", "invalid_arguments", "authorization_required"].includes(code)) {
+            const discoveryRequired = error instanceof DiscoveryRequiredError;
+            const explanation = discoveryRequired ? "This tool has not been discovered or admitted for the current turn."
+              : code === "tool_definition_changed" ? "The tool definition or configuration changed; the old arguments were not executed."
+                : code === "upstream_unavailable" ? "The MCP runtime is temporarily unavailable."
+                  : code === "invalid_arguments" ? "The arguments do not match the admitted tool schema."
+                    : "The tool is unavailable with the current settings or permissions.";
+            const value = { ...detail, dispatched: false,
+              ...(discoveryRequired ? { reason: "discovery_required" } : {}),
+              recovery: "find_tools",
+              message: `${explanation} No external tool call was sent. Run find_tools and use the returned tool version and argument schema before calling again.` };
+            return { ...textResult(value, true), structuredContent: value };
+          }
           if (code === "discovery_unavailable") {
             const value = { ...detail, message: `${discoveryFailure ? mcpDiscoveryFailureMessage(discoveryFailure) : "Tool discovery is unavailable."} No connected tool was called. This does not establish an authorization failure on the connected service. You may retry find_tools with a narrower goal.` };
             return { ...textResult(value, true), structuredContent: value };
@@ -178,19 +209,28 @@ export async function createAgentMcpGateway(input: Readonly<{
         }
       };
       const call = async (authority: Authority, toolId: string, toolVersion: string, args: Record<string, unknown>) => {
-        if (allowed.get(toolId) !== toolVersion) throw new McpHubServiceError("tool_unavailable");
+        // Gateway handlers can move between workers. PostgreSQL, not this
+        // request's map, owns discovery admissions from another request.
+        let current = configuration.mcpMode === "all" && allowed.has(toolId) ? { toolId, version: allowed.get(toolId)! }
+          : (await input.store.mcpTools()).find(tool => tool.toolId === toolId);
+        if (!current) {
+          const failures = await restoreAgentMcpTools({ ...input, signal, toolId });
+          if (failures.has(toolId)) throw failures.get(toolId)!;
+          current = (await input.store.mcpTools()).find(tool => tool.toolId === toolId);
+        }
+        if (!current) throw new DiscoveryRequiredError();
+        if (current.version !== toolVersion) throw new McpHubServiceError("tool_definition_changed");
         const prepared = await service.prepareToolCall({ authority, toolId, toolVersion, arguments: args, signal });
-        const result = await service.dispatchPreparedToolCall({ authority, prepared, signal });
+        const result = normalizeMcpResultForModel(await service.dispatchPreparedToolCall({ authority, prepared, signal, onDispatch: authority.markDispatched }));
         const content = result.text.map((text) => ({ type: "text" as const, text }));
         const structured = result.structuredContent;
-        const hasStructuredData = structured && Object.keys(structured).length > 0;
         // Codex prefers any structured content, including {}, over ordinary
-        // text. Keep error explanations model-visible, carrying structured
-        // details alongside them without copying private payloads into receipts.
-        if (result.isError && content.length > 0 && hasStructuredData) {
+        // text. Preserve ALL remaining unique text, on success as well as error,
+        // and carry structured data once in the same model-visible channel.
+        const preferStructured = content.length === 0;
+        if (structured && !preferStructured) {
           content.push({ type: "text", text: JSON.stringify(structured) });
         }
-        const preferStructured = content.length === 0 || !result.isError && hasStructuredData;
         return { content,
           ...(structured && preferStructured ? { structuredContent: structured } : {}),
           ...(result.isError ? { isError: true } : {}) } satisfies CallToolResult;
@@ -222,7 +262,6 @@ export async function createAgentMcpGateway(input: Readonly<{
               timeoutMs: (input.request.toolBudgets?.mcpAutoDiscoveryTimeoutSeconds ?? 90) * 1000,
               maxResults: input.request.toolBudgets?.maxMcpToolsPerDiscovery ?? 5,
               maxOutputTokens: input.request.toolBudgets?.mcpAutoDiscoveryMaxOutputTokens });
-            for (const tool of result.tools) allowed.set(tool.tool_id, tool.tool_version);
             return textResult(result);
           }));
           server.registerTool("call_tool", { description: "Call one tool returned by find_tools using its exact tool_id, tool_version and argument schema.",
