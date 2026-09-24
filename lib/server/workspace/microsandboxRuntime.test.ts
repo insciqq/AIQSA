@@ -325,7 +325,7 @@ describe("Microsandbox Workspace lifecycle", () => {
     const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     sdk.callTool.mockRejectedValueOnce(typed ? new McpError(ErrorCode.RequestTimeout, "PRIVATE_TIMEOUT_CANARY") : new Error("PRIVATE_UNKNOWN_CANARY"));
     await expect(runWithContext({ trace_id: "1".repeat(32), tool_call_id: "stored", execution_index: 1 }, () => value.runtime.callBoundTool(callInput)))
-      .rejects.toMatchObject({ code: "workspace_tool_timeout" });
+      .rejects.toMatchObject({ code: typed ? "workspace_tool_timeout" : "workspace_tool_outcome_unknown" });
     expect(sdk.callTool).toHaveBeenCalledOnce();
     const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(records).toContainEqual(expect.objectContaining({ event: "tool_deadline", tool_kind: "workspace", configured_timeout_ms: config.syncToolTimeoutSeconds * 1_000,
@@ -334,6 +334,21 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(records.filter((entry) => entry.event === "nested_abort")).toHaveLength(typed ? 1 : 0);
     if (typed) expect(records).toContainEqual(expect.objectContaining({ event: "nested_abort", abort_source: "workspace_deadline", deadline_kind: "sdk_request", timeout_ms: config.syncToolTimeoutSeconds * 1_000 + 5_000 }));
     expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
+  it("preserves typed invalid parameters and known nonzero without another business dispatch", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    sdk.callTool.mockRejectedValueOnce(new McpError(ErrorCode.InvalidParams, "PRIVATE /host/path"));
+    await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code: "workspace_request_invalid" });
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+    sdk.callTool.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false,
+      error: { code: "exec_failed", message: "PRIVATE", details: { exitCode: 17, stdout: "", stderr: "synthetic bounded diagnostic" } } }) }] });
+    const result = await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell" });
+    expect(result).toMatchObject({ status: "error", exitCode: 17, errorCode: "workspace_command_failed" });
+    expect(JSON.stringify(result)).toContain("synthetic bounded diagnostic");
+    expect(JSON.stringify(result)).not.toContain("PRIVATE");
+    expect(sdk.callTool).toHaveBeenCalledTimes(2);
   });
 
   it("delivers accepted env to separate exec, shell and long-lived commands, then removes it for the next run", async () => {
@@ -427,6 +442,88 @@ describe("Microsandbox Workspace lifecycle", () => {
       expect(await readdir(root)).toEqual([]);
       expect(value.builder.connectOrCreate).not.toHaveBeenCalled();
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["complete", "lease_broken", "invalid_pid", "unsupported", "exit_failure", "corrupt_stream"])(
+    "seals selected bytes only after fenced FD streaming and the helper's final receipt: %s", async outcome => {
+      const value = fixture();
+      const root = await mkdtemp(join(tmpdir(), "aiqsa-micro-selected-test-")); skillDirectories.push(root);
+      const runtime = new MicrosandboxWorkspaceRuntime(config, root);
+      await runtime.ensureSession(ensureInput);
+      const original = Buffer.from("synthetic immutable bytes");
+      const checksum = createHash("sha256").update(original).digest("hex");
+      value.files.set("/proc/42/fd/7", outcome === "corrupt_stream" ? Buffer.from("different mutable bytes!!") : original);
+      const events: unknown[] = [{ kind: "started", pid: 42 }, { kind: "stdout", data: Buffer.from(JSON.stringify(
+        outcome === "unsupported" ? { error: "unsupported" } : {
+          pid: outcome === "invalid_pid" ? 43 : 42, files: [{ fd: 7, checksum, byteSize: original.length }]
+        }
+      ) + "\n") }];
+      const write = vi.fn(async (data: Uint8Array | string) => {
+        if (data === "finish\n") events.push({ kind: "stdout", data: Buffer.from(JSON.stringify(
+          outcome === "lease_broken" ? { error: "source_busy" } : { complete: true }
+        ) + "\n") });
+      });
+      const helper = { recv: vi.fn(async () => events.shift() ?? null), kill: vi.fn(async () => undefined),
+        takeStdin: vi.fn(async () => ({ write, async [Symbol.asyncDispose]() {} })),
+        wait: vi.fn(async () => ({ code: outcome === "exit_failure" ? 65 : 0 })), async [Symbol.asyncDispose]() {} };
+      const execStreamWith = vi.fn(async () => helper);
+      Object.assign(value.sandbox, { execStreamWith });
+      const operation = { generation: 1, owner: "run:producer" };
+      const request = { ...sessionInput, modelRunId: "fixture", outputDirectory: "/workspace/output/fixture",
+        capture: { create: true, id: "d".repeat(32) }, operation,
+        selection: { files: [{ root: "project" as const, relativePath: "report.txt" }], producerOperation: operation } };
+      if (outcome === "complete") {
+        const outputs = await runtime.collectOutputs(request);
+        expect(await new Response(outputs[0]!.body).text()).toBe(original.toString());
+        expect(value.fs.readStream).toHaveBeenLastCalledWith("/proc/42/fd/7");
+        const sent = write.mock.calls[0]![0];
+        expect(JSON.parse(typeof sent === "string" ? sent : Buffer.from(sent).toString())).toMatchObject({ paths: ["/workspace/project/report.txt"] });
+        expect(write).toHaveBeenLastCalledWith("finish\n");
+        expect(helper.kill).not.toHaveBeenCalled();
+        value.files.clear(); value.setState("missing");
+        const gets = sdk.get.mock.calls.length;
+        const recovered = await new MicrosandboxWorkspaceRuntime(config, root).collectOutputs({ ...request,
+          capture: { ...request.capture, create: false }, operation: { generation: 2, owner: "run:recovery" } });
+        expect(await new Response(recovered[0]!.body).text()).toBe(original.toString());
+        expect(sdk.get).toHaveBeenCalledTimes(gets);
+      } else {
+        await expect(runtime.collectOutputs(request)).rejects.toMatchObject({ code: outcome === "unsupported" ? "workspace_capture_unsupported"
+          : outcome === "lease_broken" ? "workspace_capture_source_busy" : "workspace_output_export_failed" });
+        await expect(runtime.collectOutputs({ ...request, capture: { ...request.capture, create: false } })).rejects.toMatchObject({ code: "workspace_output_export_failed" });
+        expect(helper.kill).toHaveBeenCalled();
+      }
+      expect(execStreamWith).toHaveBeenCalledOnce();
+      expect(sdk.callTool).not.toHaveBeenCalled();
+      expect(value.handle.stopWithTimeout).not.toHaveBeenCalled();
+    }
+  );
+
+  it("aborts a pending selected helper without committing bytes or replaying it", async () => {
+    const value = fixture();
+    const root = await mkdtemp(join(tmpdir(), "aiqsa-micro-selected-stop-")); skillDirectories.push(root);
+    const runtime = new MicrosandboxWorkspaceRuntime(config, root);
+    await runtime.ensureSession(ensureInput);
+    let reading!: () => void;
+    const started = new Promise<void>(resolve => { reading = resolve; });
+    const helper = { recv: async () => { reading(); return new Promise<never>(() => undefined); },
+      kill: vi.fn(async () => undefined),
+      takeStdin: async () => ({ write: async () => {}, async [Symbol.asyncDispose]() {} }),
+      async [Symbol.asyncDispose]() {} };
+    const execute = vi.fn(async () => helper);
+    Object.assign(value.sandbox, { execStreamWith: execute });
+    const controller = new AbortController(), operation = { generation: 1, owner: "run:producer" };
+    const request = { ...sessionInput, modelRunId: "fixture", outputDirectory: "/workspace/output/fixture",
+      capture: { create: true, id: "f".repeat(32) }, operation, signal: controller.signal,
+      selection: { files: [{ root: "project" as const, relativePath: "report.txt" }], producerOperation: operation } };
+    const pending = expect(runtime.collectOutputs(request)).rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+    await started;
+    controller.abort();
+    await pending;
+    expect(helper.kill).toHaveBeenCalled();
+    await expect(runtime.collectOutputs({ ...request, signal: undefined, capture: { ...request.capture, create: false } }))
+      .rejects.toMatchObject({ code: "workspace_output_export_failed" });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(value.handle.stopWithTimeout).not.toHaveBeenCalled();
   });
 
   it("creates a persistent VM detached from the creator handle", async () => {
@@ -654,9 +751,9 @@ describe("Microsandbox Workspace lifecycle", () => {
     sdk.callTool.mockResolvedValueOnce({ isError: true, content: [{
       type: "text", text: "status: Stopped; sandbox fixture-runtime; SDK details"
     }] });
-    await expect(value.runtime.callBoundTool(callInput)).resolves.toEqual({
-      content: [{ type: "text", text: "The Workspace operation failed." }], status: "error"
-    });
+    const result = await value.runtime.callBoundTool(callInput);
+    expect(result).toMatchObject({ errorCode: "workspace_operation_failed", status: "error" });
+    expect(JSON.stringify(result)).not.toContain("SDK details");
     expect(sdk.callTool).toHaveBeenCalledTimes(1);
     const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed" }));

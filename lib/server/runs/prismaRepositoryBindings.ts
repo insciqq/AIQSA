@@ -1,3 +1,5 @@
+import { createVisionAnalysisPlanResolver, type AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
+import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { loadInstallationImageProviderRole } from "../providerRuntime/admission";
 import type { AcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
@@ -1233,11 +1235,23 @@ export async function insertAcceptedProviderRunBindings(
   input: {
     nativeBackgroundRequested: boolean;
     imagePlan?: AcceptedImageGenerationPlan;
+    visionAnalysis?: AcceptedVisionAnalysisPlan;
     plan: ProviderAdmissionPlan | undefined;
     runId: string;
     userId: string;
   }
 ): Promise<void> {
+  if (input.visionAnalysis) {
+    const current = await createVisionAnalysisPlanResolver(tx)();
+    if (hashCanonicalMcpValue(current) !== hashCanonicalMcpValue(input.visionAnalysis)) throw new ProviderAdmissionConflictError();
+    const accepted = input.visionAnalysis;
+    if (accepted.available) await tx.providerRunBinding.create({ data: {
+      modelRunId: input.runId, bindingKey: "vision_analysis", role: "vision_analysis", credentialSource: "default",
+      connectionId: accepted.authority.connectionId, providerModelId: accepted.authority.providerModelId,
+      credentialId: accepted.authority.credentialId, credentialVersionId: accepted.authority.credentialVersionId,
+      executionSnapshot: json(accepted.snapshot)
+    } });
+  }
   if (input.imagePlan) {
     const accepted = input.imagePlan;
     const policy = await tx.systemModelPolicy.findUnique({ where: { id: "installation" }, select: { version: true, imageProviderModelId: true } });

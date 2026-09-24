@@ -28,7 +28,7 @@ import {
   type ThreadWorkspaceActivityEntry,
   type ThreadWorkspaceOutputStatus
 } from "../../contracts/workspace";
-import { foldWorkspaceActivityEntries } from "../workspace/activityProjection";
+import { foldWorkspaceActivityEntries, workspaceActivityEntryId, workspaceLifecycleActivity } from "../workspace/activityProjection";
 import { projectThreadSearchSources } from "../../domain/searchSources";
 import { latestGeneratedArtifactsForAnswer } from "../../domain/generatedArtifacts";
 import { decodeAssistantIdentity } from "../../contracts/assistants";
@@ -177,8 +177,11 @@ const assistantRunDetailSelect = {
     }
   },
   updatedAt: true,
+  workspaceExecutions: { take: 512, orderBy: { startedAt: "desc" },
+    select: { modelRunToolCallId: true, state: true, lastErrorCode: true } },
   workspaceRunBinding: {
-    select: { exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true }
+    select: { exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true,
+      outputCapture: true, updatedAt: true }
   },
   workspaceProducedAttachments: {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -188,7 +191,8 @@ const assistantRunDetailSelect = {
       id: true,
       mimeType: true,
       origin: true, metadata: true,
-      workspaceRunOutput: { select: { relativePath: true } }
+      workspaceRunOutput: { select: { relativePath: true } },
+      workspaceCheckpointFile: { select: { relativePath: true, checkpoint: { select: { id: true, description: true, createdAt: true, state: true } } } }
     }
   }
 } satisfies Prisma.ModelRunSelect;
@@ -355,6 +359,7 @@ type ArtifactSummaryRun = {
     id: string;
     mimeType: string;
     workspaceRunOutput: { relativePath: string } | null;
+    workspaceCheckpointFile?: { relativePath: string; checkpoint: { id: string; description: string; createdAt: Date; state: string } } | null;
     origin?: string;
     metadata?: unknown;
   }[];
@@ -1043,9 +1048,13 @@ export function summarizeMessageRunToolActivity(
 }
 
 type WorkspaceActivityRun = {
+  id?: string;
+  workspaceExecutions?: { modelRunToolCallId: string; state: string; lastErrorCode: string | null }[];
   events: { payload: unknown }[];
   status: string;
   workspaceRunBinding?: {
+    outputCapture?: unknown;
+    updatedAt?: Date;
     exportAttemptCount: number;
     exportLeaseExpiresAt: Date | null;
     exportState: string;
@@ -1056,10 +1065,11 @@ type WorkspaceActivityRun = {
 function workspaceOutputStatus(run: WorkspaceActivityRun): ThreadWorkspaceOutputStatus | undefined {
   const binding = run.workspaceRunBinding;
   if (!binding) return undefined;
+  const revision = binding.updatedAt ? { revision: binding.updatedAt.toISOString() } : {};
   const code = isWorkspaceErrorCode(binding.lastExportErrorCode) ? binding.lastExportErrorCode : undefined;
-  if (binding.exportState === "COMPLETE") return { state: "complete" };
+  if (binding.exportState === "COMPLETE") return { ...revision, state: "complete" };
   if (binding.exportState === "EXPORTING" && binding.exportLeaseExpiresAt &&
-    binding.exportLeaseExpiresAt > new Date()) return { state: "exporting" };
+    binding.exportLeaseExpiresAt > new Date()) return { ...revision, state: "exporting" };
   if (binding.exportState === "PENDING" && binding.exportAttemptCount === 0 &&
     (run.status === "cancelled" || run.status === "error")) return undefined;
   if (binding.exportState === "PENDING" && run.status !== "complete" &&
@@ -1067,13 +1077,13 @@ function workspaceOutputStatus(run: WorkspaceActivityRun): ThreadWorkspaceOutput
   const retryable = run.status === "complete" &&
     binding.exportAttemptCount < WORKSPACE_EXPORT_MAX_ATTEMPTS &&
     isRetryableWorkspaceExportErrorCode(binding.lastExportErrorCode);
-  return { ...(code ? { errorCode: code } : {}), state: retryable ? "retrying" : "failed" };
+  return { ...revision, ...(code ? { errorCode: code } : {}), state: retryable ? "retrying" : "failed" };
 }
 
 /**
  * Reloadable Workspace timeline: exact persisted `workspace_activity` entries
- * folded to their latest state, with entries a stopped or crashed run left
- * running settled from the run outcome, plus the export status of the binding.
+ * folded from exact run-owned cessation proofs. Terminal runs without proof
+ * retain an unknown outcome; export status comes independently from the binding.
  */
 export function summarizeMessageRunWorkspaceActivity(
   run: WorkspaceActivityRun
@@ -1086,13 +1096,30 @@ export function summarizeMessageRunWorkspaceActivity(
   const outputStatus = workspaceOutputStatus(run);
   let activity = mergeWorkspaceActivity(null, { entries, ...(outputStatus ? { outputStatus } : {}) });
   for (const event of run.events) activity = mergeWorkspaceActivity(activity, workspaceActivitySnapshot(event.payload));
-  if (!activity) return null;
   const terminal = run.status === "cancelled"
     ? "cancelled" as const
-    : run.status === "error" ? "failed" as const : null;
+    : run.status === "error" ? "failed" as const : run.status === "complete" ? "complete" as const : null;
+  // A complete run with a sealed, run-owned handoff follows the retirement
+  // boundary. Never consult the current shared session for historical proof.
+  const capture = run.workspaceRunBinding?.outputCapture;
+  if (run.id && terminal === "complete" && isRecord(capture) && typeof capture.id === "string" && Array.isArray(capture.outputs)) {
+    activity = mergeWorkspaceActivity(activity, { entries: [workspaceLifecycleActivity({
+      kind: "execution_status", phase: "closed", runId: run.id
+    })] });
+  }
+  if (!activity) return null;
+  const closed = new Set((run.workspaceExecutions ?? []).filter(execution => execution.state === "CLOSED" ||
+    execution.state === "LOST" && execution.lastErrorCode === "workspace_execution_stopped")
+    .map(execution => workspaceActivityEntryId(execution.modelRunToolCallId)));
+  const provenEntries = activity.entries.map(entry => {
+    if (!closed.has(entry.id) || !(entry.phase === "running" || entry.phase === "requested" ||
+      entry.phase === "unknown" || entry.runOutcome !== undefined)) return entry;
+    const { runOutcome: _runOutcome, ...facts } = entry;
+    return { ...facts, phase: "closed" as const };
+  });
   return {
     ...activity,
-    entries: foldWorkspaceActivityEntries(activity.entries, terminal).map((entry) => {
+    entries: foldWorkspaceActivityEntries(provenEntries, terminal).map((entry) => {
       // Background export settles after answer SSE closes, so its durable
       // binding can be newer than the last recorded lifecycle event.
       if (entry.kind !== "outputs_export") return entry;
@@ -1256,7 +1283,11 @@ export function summarizeMessageRunArtifacts(
     return image && image.attachmentId === attachment.id ? [image] : [];
   });
   const generatedFiles = (run.workspaceProducedAttachments ?? []).flatMap((attachment) =>
-    attachment.workspaceRunOutput
+    attachment.workspaceCheckpointFile?.checkpoint.state === "SETTLED"
+      ? [{ attachmentId: attachment.id, byteSize: attachment.byteSize, fileName: attachment.fileName, mimeType: attachment.mimeType,
+        relativePath: attachment.workspaceCheckpointFile.relativePath, checkpoint: { id: attachment.workspaceCheckpointFile.checkpoint.id,
+          description: attachment.workspaceCheckpointFile.checkpoint.description, createdAt: attachment.workspaceCheckpointFile.checkpoint.createdAt.toISOString() } }]
+      : attachment.workspaceRunOutput
       ? [{
           attachmentId: attachment.id,
           byteSize: attachment.byteSize,

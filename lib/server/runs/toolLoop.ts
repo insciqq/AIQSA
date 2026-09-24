@@ -1,8 +1,11 @@
+import { executionFailure } from "./executionFailure";
 import {
   providerStreamSafetyReport,
   type ProviderStreamSafetyReport
 } from "../providers/streamSafety";
 import { bindContext, logEvent, runWithContext, type ToolKind } from "../observability";
+import { observedFailure } from "../providers/providerObservability";
+import { isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
 
 export type ToolLoopObservation = Readonly<{
   /** Only persisted server-owned identities, never the provider's call ID. */
@@ -190,7 +193,7 @@ class SignalDeliveryError extends Error {
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim() ? error.message : fallback;
+  return runSettlementFailure(error)?.message ?? fallback;
 }
 
 function isNonNegativeInteger(value: number): boolean {
@@ -394,7 +397,7 @@ async function settleToolCall<ToolValue>(input: Readonly<{
     result = {
       error: {
         code: "tool_call_timeout",
-        message: `Tool call ${input.call.id} timed out.`
+        message: "The tool call timed out. Its outcome may be unknown; do not repeat an uncertain action."
       },
       status: "error"
     };
@@ -402,16 +405,13 @@ async function settleToolCall<ToolValue>(input: Readonly<{
     result = {
       error: {
         code: "tool_call_cancelled",
-        message: `Tool call ${input.call.id} was cancelled.`
+        message: "The tool call was cancelled. Cancellation does not confirm that its effects were undone."
       },
       status: "error"
     };
   } else {
     result = {
-      error: {
-        code: "tool_call_failed",
-        message: errorMessage(execution.error, `Tool call ${input.call.id} failed.`)
-      },
+      error: executionFailure(execution.error),
       status: "error"
     };
   }
@@ -574,20 +574,17 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       const streamSafetyReport = signalFailure
         ? null
         : providerStreamSafetyReport(providerRound.error);
-      const providerErrorCode = typeof providerRound.error === "object" &&
-        providerRound.error !== null &&
-        "code" in providerRound.error &&
-        typeof providerRound.error.code === "string"
-        ? providerRound.error.code
-        : null;
+      const settlement = runSettlementFailure(providerRound.error);
+      const observedCode = observedFailure(providerRound.error).code;
+      const providerErrorCode = observedCode === "unknown" ? null : observedCode;
       return failed(progress, {
         code: signalFailure
           ? "tool_loop_signal_failed"
-          : providerErrorCode ?? "provider_round_failed",
+          : settlement?.code ?? providerErrorCode ?? "provider_round_failed",
         message: streamSafetyReport?.message ??
           errorMessage(providerRound.error, `Provider round ${round} failed.`),
         round,
-        stage: signalFailure ? "signal" : "provider",
+        stage: signalFailure ? "signal" : settlement || providerErrorCode && isRunPersistenceFailureCode(providerErrorCode) ? "persistence" : "provider",
         ...(streamSafetyReport ? { streamSafetyReport } : {})
       });
     }

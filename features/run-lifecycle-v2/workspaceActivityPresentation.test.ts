@@ -85,7 +85,7 @@ describe("workspace activity presentation", () => {
     expect(workspaceActivityLabelV2({ file: { displayPath: "project/a.ts" }, id: "b", kind: "file_read", phase: "succeeded" })).toBe("Read project/a.ts");
     expect(workspaceActivityLabelV2({ file: { displayPath: "inbox/report.xlsx", targetPath: "project/report.xlsx" }, id: "c", kind: "file_copy", phase: "succeeded" }))
       .toBe("Copied inbox/report.xlsx → project/report.xlsx");
-    expect(workspaceActivityLabelV2({ file: { displayPath: "project/tmp.txt" }, id: "d", kind: "file_check", phase: "failed" })).toBe("Could not find project/tmp.txt");
+    expect(workspaceActivityLabelV2({ file: { displayPath: "project/tmp.txt" }, id: "d", kind: "file_check", phase: "failed" })).toBe("Could not check project/tmp.txt");
     expect(workspaceActivityLabelV2({ count: 3, id: "e", kind: "attachments_prepare", phase: "running" })).toBe("Preparing 3 attachments…");
     expect(workspaceActivityLabelV2({ count: 1, id: "f", kind: "attachments_prepare", phase: "succeeded" })).toBe("Prepared 1 attachment");
     expect(workspaceActivityLabelV2({ count: 2, id: "g", kind: "outputs_export", phase: "running" })).toBe("Exporting 2 files…");

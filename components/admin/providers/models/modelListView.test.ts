@@ -135,6 +135,14 @@ describe("model row copy", () => {
 });
 
 describe("deriveModelUsage and successors", () => {
+  it("shows an unavailable Vision assignment and names its disable consequence", () => {
+    const state = sources();
+    state.systemModelPolicy!.policy.visionModel = { ...state.systemModelPolicy!.policy.chatPdfModel!, available: false };
+    const tags = deriveModelUsage(state).get("model-terra")!;
+    expect(tags).toContain("Vision Model");
+    expect(turnOffConsequence({ model: { displayName: "Image reader" }, successor: null, tags })?.body)
+      .toContain("the Vision Model");
+  });
   it("tags each model with its roles and names the next available reranker", () => {
     const usage = deriveModelUsage(sources());
     expect(usage.get("model-terra")).toEqual(["System model", "Chat PDF"]);

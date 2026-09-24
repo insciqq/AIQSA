@@ -6,6 +6,14 @@ import { agentPrompts } from "./prompt";
 import { withSelectedSkillContext } from "../skills/userContext";
 
 describe("Codex conversation delivery", () => {
+  it("offers first-party analysis to text-only Agent without claiming to see pixels", () => {
+    const request = { content: textMessageContent("Inspect the file"), attachments: [], prompt: { system: "baseline" },
+      workspace: {}, agent: { mcpMode: "off", imageInput: false },
+      visionAnalysis: { version: 1, available: false, code: "vision_model_absent" } } as unknown as ProviderRunRequest;
+    expect(agentPrompts(request).developerInstructions).toContain("do not claim to see their pixels yourself");
+    expect(agentPrompts(request).developerInstructions).toContain("even when external MCP is Off");
+    expect(agentPrompts({ ...request, agent: { ...request.agent!, imageInput: true } }).developerInstructions).toContain("direct image viewer first");
+  });
   it("explains authorized image reuse and forbids regenerating an unconfirmed paid result", () => {
     const request = { content: textMessageContent("Create a picture"), attachments: [], prompt: { system: "baseline" },
       imagePlan: syntheticImagePlan() } as unknown as ProviderRunRequest;
@@ -58,15 +66,19 @@ describe("Codex conversation delivery", () => {
       expect(prompt).not.toContain("messageManifestPath");
       expect(prompt).toContain('"inboxIndexPath":"/workspace/inbox/index.json"');
       expect(prompt).toContain('"attachments":[]');
+      expect(prompt).toContain("No attachments on this turn does not mean earlier sources are absent");
+      expect(prompt).toContain("never filename alone");
     }
   });
 
   it.each(["off", "auto", "all"] as const)("only directs the agent to tools enabled by MCP %s", (mcpMode) => {
     const request = { content: textMessageContent("Read a private issue"), attachments: [],
       agent: { mcpMode }, prompt: { system: "baseline" } } as unknown as ProviderRunRequest;
-    const { developerInstructions } = agentPrompts(request);
+    const { developerInstructions, resumePrompt } = agentPrompts(request);
     expect(developerInstructions.includes("find_tools")).toBe(mcpMode === "auto");
     expect(developerInstructions.includes("not an authorization denial")).toBe(mcpMode !== "off");
+    expect(resumePrompt.includes("discovery_required")).toBe(mcpMode === "auto");
+    if (mcpMode === "auto") expect(resumePrompt).toContain("Never replay a dispatched operation with an unknown outcome");
   });
 
   it("keeps selected Skills at user authority and sends the current turn on resume", () => {

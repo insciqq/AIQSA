@@ -646,7 +646,7 @@ describe("Prisma Workspace maintenance backstop", () => {
     })).resolves.toEqual({ state: "CLOSED" });
 
     await expect(prisma.workspaceExecution.count({ where: {
-      workspaceSessionId: ambiguous.id, state: "LOST", lastErrorCode: "workspace_execution_cleanup_failed"
+      workspaceSessionId: ambiguous.id, state: "LOST", lastErrorCode: "workspace_execution_stopped"
     } })).resolves.toBe(1);
 
     // Nothing left to settle: the backstop is idempotent.

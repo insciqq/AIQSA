@@ -85,6 +85,7 @@ export type RunHandlerDeps = {
     findAdmission(admissionKey: string, userId: string): Promise<PreparingRunAdmissionResponse | null>;
     kick(): void;
   }>;
+  vision?: import("../vision/service").VisionAnalysisService;
   images?: import("../images/service").ImageGenerationService;
   artifacts?: import("../artifacts/service").ArtifactService;
   allowFakeProvider?: boolean;
@@ -260,6 +261,7 @@ function recoveryDeps(
     | "knowledgeProviderDispatch"
     | "artifacts"
     | "skillTools"
+    | "vision"
     | "images"
     | "memoryEgress"
     | "mcp"
@@ -280,6 +282,7 @@ function recoveryDeps(
       ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
       : {}),
     ...(deps.images ? { images: deps.images } : {}),
+    ...(deps.vision ? { vision: deps.vision } : {}),
     ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
     ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
     ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
@@ -762,6 +765,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
       ...(deps.images ? { images: deps.images } : {}),
+      ...(deps.vision ? { vision: deps.vision } : {}),
       ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
       ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
@@ -981,6 +985,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
       ...(deps.images ? { images: deps.images } : {}),
+      ...(deps.vision ? { vision: deps.vision } : {}),
       ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
       ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
@@ -1007,6 +1012,7 @@ export function createGetModelRunHandler(
     | "knowledgeProviderDispatch"
     | "artifacts"
     | "skillTools"
+    | "vision"
     | "images"
     | "memoryEgress"
     | "mcp"

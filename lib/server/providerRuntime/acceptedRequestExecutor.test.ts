@@ -161,4 +161,27 @@ describe("accepted provider request executor", () => {
     expect(transaction).not.toHaveBeenCalled();
     expect(bindingMock).not.toHaveBeenCalled();
   });
+
+  it("does not repeat a crash-ambiguous transport request when the consumer owns dispatch recovery", async () => {
+    const actual = await vi.importActual<typeof import("../providers/runtimeFactory")>("../providers/runtimeFactory");
+    bindingMock.mockImplementation(actual.createProviderRuntimeBinding);
+    const fetchFn = vi.fn<typeof fetch>().mockRejectedValue(new TypeError("synthetic connection lost after dispatch"));
+    const transaction = vi.fn(async operation => operation({ $queryRaw: async () => [{
+      credentialId: "credential-1", id: "credential-version-1", revokedAt: null,
+      secretEnvelope: null, testEvidence: { authenticationMode: "none" }
+    }] }));
+    const accepted = snapshot();
+    const execute = createAcceptedProviderRequestExecutor({
+      $transaction: transaction
+    } as unknown as Pick<PrismaClient, "$transaction">, {
+      createFetch: () => fetchFn, disableRequestRetries: true
+    });
+    await expect(execute({ ...accepted,
+      providerFamily: "openai_compatible",
+      connection: { ...accepted.connection, allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:11434/v1", authenticationMode: "none" },
+      model: { ...accepted.model, adapterKind: "openai_responses_compatible", answerSelectable: true, modelClass: "answer" }
+    }, { ...request(), provider: "openai_compatible" })).rejects.toThrow("synthetic connection lost after dispatch");
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(transaction).toHaveBeenCalledOnce();
+  });
 });

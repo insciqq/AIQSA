@@ -1,3 +1,4 @@
+import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { getDefaultChatPdf } from "../uploads/defaultChatPdf";
 import { getDefaultWorkspaceFollowup } from "./defaultWorkspaceFollowup";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
@@ -9,6 +10,7 @@ import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
+import { visionAnalysisForStorage } from "../vision/defaultVision";
 import { activeRunControllerRegistry } from "./runExecution";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { reconcileInstallationRuns } from "./runRecovery";
@@ -37,6 +39,7 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
       registry: activeRunControllerRegistry,
       repository: createPrismaRunRepository(),
       storage,
+      vision: visionAnalysisForStorage(storage),
       workspace: workspaceCoordinatorForStorage(storage)
     };
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
@@ -47,6 +50,7 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
         await reconcileInstallationRuns(deps);
       },
       recoverWorkspaceExports: async (signal) => {
+        await (await defaultWorkspaceCheckpoints()).recover(signal);
         await deps.workspace.recoverExports({ limit: 10, signal });
       }
     });

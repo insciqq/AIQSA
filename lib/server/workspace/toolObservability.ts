@@ -1,8 +1,9 @@
 import { bindContext, logEvent, type EventFields } from "../observability";
 import { observedFailure } from "../providers/providerObservability";
+import type { WorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
 
 type ToolFields = EventFields["tool_execution"];
-type ResultCode = "operation_failed" | "workspace_shell_syntax_requires_shell";
+type ResultCode = "operation_failed" | "workspace_shell_syntax_requires_shell" | WorkspaceOperationFailureCode;
 const resultCodes = new WeakMap<object, ResultCode>();
 
 /** Retain only the code created at our result boundary, without changing wire data. */

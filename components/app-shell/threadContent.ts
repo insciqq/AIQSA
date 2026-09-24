@@ -1,3 +1,4 @@
+import { decodeThreadWorkspaceCheckpointOutput, type ThreadGeneratedFile } from "@/lib/contracts/workspace";
 import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
 import { decodeThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
@@ -121,6 +122,16 @@ export function summarizeThreadArtifacts(
     .map(groundingDisplayFromEvent)
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
     .at(-1) ?? null;
+  const checkpointFiles = new Map<string, ThreadGeneratedFile>();
+  for (const event of events) {
+    if (artifactTypeFromEvent(event) !== "workspace_checkpoint") continue;
+    const output = decodeThreadWorkspaceCheckpointOutput(artifactPayload(event));
+    for (const file of output?.files ?? []) {
+      // Redelivery cannot rename or replace an already selected immutable version.
+      if (!checkpointFiles.has(file.attachmentId)) checkpointFiles.set(file.attachmentId, file);
+    }
+  }
+  const generatedFiles = [...checkpointFiles.values()];
   const generatedImages = [...new Map(events.filter((event) => artifactTypeFromEvent(event) === "image").flatMap((event) => {
     const image = decodeThreadGeneratedImage(artifactPayload(event));
     return image ? [[image.attachmentId, image] as const] : [];
@@ -148,6 +159,7 @@ export function summarizeThreadArtifacts(
   ]);
 
   if (
+    generatedFiles.length === 0 &&
     generatedImages.length === 0 &&
     !skillCatalogOmittedCount &&
     generatedArtifacts.length === 0 &&
@@ -163,11 +175,26 @@ export function summarizeThreadArtifacts(
     citations,
     ...(skillCatalogOmittedCount ? { skillCatalogOmittedCount } : {}),
     groundingDisplay: grounding?.display ?? null,
+    ...(generatedFiles.length ? { generatedFiles } : {}),
     ...(generatedImages.length ? { generatedImages } : {}),
     ...(generatedArtifacts.length ? { generatedArtifacts } : {}),
     reasoningText,
     sources
   };
+}
+
+/** Persisted outputs and live settled checkpoints share immutable attachment identities. */
+export function mergeLiveThreadArtifacts(
+  saved: ThreadArtifactSummary | null | undefined,
+  live: ThreadArtifactSummary | null | undefined
+): ThreadArtifactSummary | null {
+  if (!live) return saved ?? null;
+  if (!saved) return live;
+  const files = new Map<string, ThreadGeneratedFile>();
+  for (const file of [...saved.generatedFiles ?? [], ...live.generatedFiles ?? []]) {
+    if (!files.has(file.attachmentId)) files.set(file.attachmentId, file);
+  }
+  return { ...saved, ...live, ...(files.size ? { generatedFiles: [...files.values()] } : {}) };
 }
 
 export function textFromPersistedContent(content: unknown): string {

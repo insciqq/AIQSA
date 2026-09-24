@@ -150,6 +150,8 @@ RUN apt-get update \
     Pillow==11.3.0 lxml==6.0.1 matplotlib==3.10.6 openpyxl==3.1.5 \
     pandas==2.3.2 pdfplumber==0.11.7 pyarrow==21.0.0 pypdf==6.0.0 \
     python-docx==1.2.0 python-pptx==1.0.2 uv==0.8.15 playwright==1.60.0 pyotp==2.10.0 \
+  && /opt/aiqsa-python/bin/pip install --disable-pip-version-check --no-cache-dir psd-tools==1.19.0 \
+  && /opt/aiqsa-python/bin/pip check \
   && /opt/aiqsa-python/bin/playwright install --with-deps --only-shell chromium \
   && apt-get purge -y xvfb \
   && rm -rf /var/lib/apt/lists/* \
@@ -165,7 +167,7 @@ WORKDIR /workspace/project
 
 FROM ${NODE_IMAGE} AS workspace-image-layout
 
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 
 WORKDIR /build
 RUN apt-get update \
@@ -174,7 +176,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.27 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.28 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.

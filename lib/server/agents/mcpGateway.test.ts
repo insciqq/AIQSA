@@ -11,6 +11,7 @@ import { McpClientSessionError } from "../mcp/clientSession";
 import { CodexJsonlDecoder, type CodexEvent } from "./codexProtocol";
 import { AgentExecutionOutput } from "./executionOutput";
 import { CODEX_VERSION } from "./codexProfile";
+import * as observability from "../observability";
 
 // Text-result contract from the pinned consumer's CallToolResult conversion:
 // https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/protocol/src/models.rs#L2129
@@ -29,9 +30,79 @@ function codexModelOutput(result: {
   };
 }
 
+async function rpcResult(response: Response) {
+  const text = await response.text();
+  return JSON.parse(text.startsWith("event:") ? text.split("\n").find(line => line.startsWith("data: "))!.slice(6) : text).result;
+}
+
 vi.mock("../prisma", () => ({ prisma: {} }));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 describe("Agent MCP discovery surface", () => {
+  it.each(["missing", "version", "tool_unavailable", "tool_definition_changed", "upstream_unavailable", "execution_outcome_unknown"] as const)(
+    "distinguishes %s from a dispatched unknown outcome in both consumer formats", async kind => {
+      const version = "a".repeat(64), toolId = "arbitrary_delta";
+      const prepare = vi.fn(async () => {
+        if (["tool_unavailable", "tool_definition_changed", "upstream_unavailable"].includes(kind)) throw new hub.McpHubServiceError(kind as hub.McpHubServiceErrorCode);
+        return {};
+      });
+      const dispatch = vi.fn(async ({ onDispatch }: { onDispatch(): void }) => {
+        onDispatch();
+        throw new hub.McpHubServiceError("execution_outcome_unknown");
+      });
+      vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: prepare,
+        dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+      const logs: { context: unknown; fields: unknown }[] = [];
+      vi.spyOn(observability, "logEvent").mockImplementation((_event, fields) => {
+        logs.push({ context: observability.getContext(), fields });
+      });
+      const store = { mcpTools: async () => kind === "missing" ? [] : [{ toolId, version }],
+        toolCall: async () => "attempt", settleTool: vi.fn(async () => {}) } as unknown as ReturnType<typeof createAgentRunStore>;
+      const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" },
+        searchPlan: { options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user",
+        signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+      const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "call_tool",
+          arguments: { tool_id: toolId, tool_version: kind === "version" ? "b".repeat(64) : version,
+            arguments: { canary: "PRIVATE_ARGUMENT" } } } }) }));
+      const result = await rpcResult(response);
+      expect(codexModelOutput(result).body).toMatch(/^\{/u);
+      const value = JSON.parse(codexModelOutput(result).body);
+      expect(value.code).toBe(kind === "missing" ? "tool_unavailable" : kind === "version" ? "tool_definition_changed" : kind);
+      if (kind === "execution_outcome_unknown") {
+        expect(value.message).toContain("outcome is unknown");
+        expect(value.dispatched).not.toBe(false);
+        expect(dispatch).toHaveBeenCalledOnce();
+      } else {
+        expect(value).toMatchObject({ dispatched: false, recovery: "find_tools" });
+        expect(JSON.parse(result.content[0].text)).toEqual(value);
+        expect(value.message).toContain("No external tool call was sent");
+        expect(value.message).not.toMatch(/interrupted|unknown outcome/u);
+        expect(dispatch).not.toHaveBeenCalled();
+        if (kind === "missing") expect(value.reason).toBe("discovery_required");
+      }
+      expect(logs).toContainEqual({ context: expect.objectContaining({ run_id: "run", tool_call_id: "attempt" }),
+        fields: expect.objectContaining({ code: value.code, stage: kind === "execution_outcome_unknown" ? "result" : "admission" }) });
+      expect(JSON.stringify(logs)).not.toContain("PRIVATE_ARGUMENT");
+    });
+
+  it("uses an admission discovered through another gateway handler", async () => {
+    const toolId = "arbitrary_delta", version = "a".repeat(64);
+    const admitted: { toolId: string; version: string }[] = [];
+    const dispatch = vi.fn(async () => ({ text: ["done"], isError: false }));
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: async () => ({}),
+      dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    const store = { mcpTools: async () => [...admitted], toolCall: async () => "call", settleTool: vi.fn() } as unknown as ReturnType<typeof createAgentRunStore>;
+    const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" }, searchPlan: { options: [] } } as unknown as NormalizedRunRequest,
+      store, runId: "run", userId: "user", signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    admitted.push({ toolId, version });
+    const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "call_tool",
+        arguments: { tool_id: toolId, tool_version: version, arguments: {} } } }) }));
+    expect((await rpcResult(response)).isError).not.toBe(true);
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
   it.each(["off", "auto", "all"] as const)("exposes frozen built-in artifacts and images with external MCP %s", async mcpMode => {
     const store = { mcpTools: async () => [], admitMcpPlan: async () => {} } as unknown as ReturnType<typeof createAgentRunStore>;
     const request = { artifactTool: true, artifactToolDescription: "Frozen admitted artifact contract", imagePlan: syntheticImagePlan(),
@@ -80,8 +151,8 @@ describe("Agent MCP discovery surface", () => {
     const message = "Validation error: Provide either url, or project_id, file_path, and ref PRIVATE_TOOL_PATH";
     expect(codexModelOutput({ content: [{ type: "text", text: message }], structuredContent: {}, isError: true }))
       .toEqual({ body: "{}", success: false });
-    for (const isError of [true, false]) for (const text of [[message], []]) {
-      for (const structuredContent of [undefined, {}, { code: "missing_project", detail: "PRIVATE_STRUCTURED_DETAIL" }]) {
+    for (const isError of [true, false]) for (const structuredContent of [undefined, {}, { code: "missing_project", detail: "PRIVATE_STRUCTURED_DETAIL" }]) {
+      for (const text of [[message], [], ...(structuredContent ? [[JSON.stringify(structuredContent)], [message, JSON.stringify(structuredContent, null, 2), "unique after"]] : [])]) {
         const dispatch = vi.fn(async () => ({ text, structuredContent, isError }));
         vi.spyOn(hub, "createMcpToolService").mockReturnValue({
           prepareToolCall: async () => ({}), dispatchPreparedToolCall: dispatch
@@ -106,11 +177,19 @@ describe("Agent MCP discovery surface", () => {
         const body = JSON.parse(responseText.startsWith("event:") ? responseText.split("\n").find(line => line.startsWith("data: "))!.slice(6) : responseText);
         const output = codexModelOutput(body.result);
         expect(output.success).toBe(!isError);
-        if (text.length && (isError || !structuredContent || !Object.keys(structuredContent).length)) expect(output.body).toContain(message);
+        if (text.includes(message)) expect(output.body).toContain(message);
+        if (text.includes("unique after")) expect(output.body).toContain("unique after");
+        if (structuredContent) {
+          const uniqueText = text.filter(value => value === message || value === "unique after");
+          expect(body.result).toMatchObject(uniqueText.length
+            ? { content: [...uniqueText, JSON.stringify(structuredContent)].map(text => ({ type: "text", text })) }
+            : { content: [], structuredContent });
+          if (uniqueText.length) expect(body.result.structuredContent).toBeUndefined();
+        }
         if (structuredContent && Object.keys(structuredContent).length) {
           expect(output.body).toContain("missing_project");
           expect(output.body).toContain("PRIVATE_STRUCTURED_DETAIL");
-          if (!isError) expect(JSON.parse(output.body)).toEqual(structuredContent);
+          if (!text.length) expect(JSON.parse(output.body)).toEqual(structuredContent);
         }
         expect(dispatch).toHaveBeenCalledTimes(1);
         expect(settleTool).toHaveBeenCalledWith("call", isError ? "error" : "complete", { status: isError ? "error" : "complete" });

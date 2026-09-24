@@ -268,15 +268,18 @@ describe("workspace activity projection", () => {
     expect(commandPreview({ command: "x".repeat(5_000) })?.preview.length).toBe(2_048);
   });
 
-  it("settles running entries from the run outcome and crosses the durable event boundary exactly", () => {
+  it("keeps unproven terminal steps unknown and crosses the durable event boundary exactly", () => {
     const running = projectWorkspaceActivity({
       arguments: { command: "sleep 300" },
       callId: "toolcall-12",
       originalName: "sandbox_shell",
       runId: "run-1"
     }, "running")!;
-    expect(foldWorkspaceActivityEntries([running], "cancelled")[0]).toMatchObject({ phase: "cancelled" });
-    expect(foldWorkspaceActivityEntries([running], "failed")[0]).toMatchObject({ phase: "failed" });
+    expect(foldWorkspaceActivityEntries([running], "cancelled")[0]).toMatchObject({ phase: "unknown" });
+    expect(foldWorkspaceActivityEntries([running], "failed")[0]).toMatchObject({ phase: "unknown" });
+    const retirement = workspaceLifecycleActivity({ kind: "execution_status", phase: "closed", runId: "run-1" });
+    expect(projectRunOutputArtifactEvent(workspaceActivityEvent(retirement))).toEqual(workspaceActivityEvent(retirement));
+    expect(foldWorkspaceActivityEntries([running, retirement], "complete")[0]).toMatchObject({ phase: "closed" });
     const lifecycle = workspaceLifecycleActivity({
       count: 2,
       kind: "attachments_prepare",

@@ -1,3 +1,4 @@
+import { workspaceImageTokenReserve } from "../workspace/directImageEvidence";
 import {
   applyContextBudget,
   calculateContextBudgetLimits,
@@ -257,7 +258,7 @@ export function providerFacingSerializedTools(
 
 function providerRequestFixedExtraTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
   return (request.followupContextReserveTokens ?? 0) + estimateApproxTokens(providerFacingSerializedTools(request, bridge)) +
-    estimateApproxTokens(request.providerToolMessages ?? []) +
+    estimateApproxTokens(request.providerToolMessages ?? []) + workspaceImageTokenReserve(request.providerToolMessages) +
     estimateApproxTokens(request.personalContext?.text ?? "") +
     (request.personalContext
       ? estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT) +

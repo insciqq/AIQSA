@@ -134,26 +134,6 @@ function contentHasImage(value: unknown): boolean {
 }
 
 export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): ProviderConversationMessage[] {
-  const failedWithoutAnswer = new Set<string>();
-  for (let index = 1; index < rows.length; index += 1) {
-    const row = rows[index]!;
-    const parent = rows[index - 1]!;
-    if (
-      row.messageRole === "assistant" &&
-      row.messageStatus === "error" &&
-      !row.followups?.length &&
-      !decodeRunFollowupState(row.messageBranchFollowups)?.entries.length &&
-      !contentHasImage(row.messageContent) &&
-      (!isRecord(row.messageContent) || !textFromContentBlocks(row.messageContent).trim()) &&
-      parent.messageId &&
-      parent.messageRole === "user" &&
-      parent.messageStatus === "complete" &&
-      (row.messageParentId === undefined || row.messageParentId === parent.messageId)
-    ) {
-      failedWithoutAnswer.add(parent.messageId);
-    }
-  }
-
   return rows.flatMap((row) => {
     const followups = row.followups?.length ? row.followups
       : (decodeRunFollowupState(row.messageBranchFollowups)?.entries ?? []).map(entry => ({
@@ -166,15 +146,14 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
           { id: entry.id, contextTurnId: row.messageParentId!, role: "user" as const,
             content: textMessageContent(`${entry.delivered ? "Follow-up" : "Follow-up not delivered to the previous answer"}:\n${entry.text}`) }
         ]) : [];
-    const cancelledWithText = row.messageRole === "assistant" &&
-      row.messageStatus === "cancelled" &&
+    const terminalWithText = row.messageRole === "assistant" &&
+      (row.messageStatus === "cancelled" || row.messageStatus === "error") &&
       isRecord(row.messageContent) &&
       Boolean(textFromContentBlocks(row.messageContent).trim());
     if (
       !row.messageId ||
-      failedWithoutAnswer.has(row.messageId) ||
       (row.messageRole !== "user" && row.messageRole !== "assistant") ||
-      (row.messageStatus !== "complete" && row.messageStatus !== "streaming" && !cancelledWithText && !contentHasImage(row.messageContent))
+      (row.messageStatus !== "complete" && row.messageStatus !== "streaming" && !terminalWithText && !contentHasImage(row.messageContent))
     ) {
       return followupMessages;
     }
@@ -1484,8 +1463,11 @@ export function createPrismaRunRepository(
                   },
                   normalizedRequest: true,
                   status: true,
+                  workspaceExecutions: { take: 512, orderBy: { startedAt: "desc" },
+                    select: { modelRunToolCallId: true, state: true, lastErrorCode: true } },
                   workspaceRunBinding: {
-                    select: { exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true }
+                    select: { exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true,
+                      outputCapture: true, updatedAt: true }
                   },
                   toolCalls: {
                     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
@@ -1507,7 +1489,8 @@ export function createPrismaRunRepository(
                       id: true,
                       mimeType: true,
                       origin: true, metadata: true,
-                      workspaceRunOutput: { select: { relativePath: true } }
+                      workspaceRunOutput: { select: { relativePath: true } },
+                      workspaceCheckpointFile: { select: { relativePath: true, checkpoint: { select: { id: true, description: true, createdAt: true, state: true } } } }
                     }
                   }
                 },
@@ -1841,7 +1824,7 @@ export function createPrismaRunRepository(
           totalTokens: true,
           usageCompleteness: true
         },
-        where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false,
+        where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, visionAnalysis: false,
           knowledgeRelevance: false, optionalDecision: false, modelRunId: input.runId, userId: input.userId }
       }).catch(retainRunPrismaCode);
       return rows.map((row) => ({

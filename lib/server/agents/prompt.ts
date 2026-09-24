@@ -1,5 +1,7 @@
+import { WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { textFromContentBlocks } from "@/lib/domain/modelRunEvents";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
+import { visionAnalysisGuidance } from "../tools/analyzeImage";
 import { AGENT_PROMPT_MAX_BYTES } from "./guest";
 
 /** The native prompt is user-level. Selected Skills are never developer instructions. */
@@ -19,10 +21,19 @@ export function agentPrompts(request: ProviderRunRequest) {
       "Continue the AIQSA conversation below and carry out the current user's task. Historical messages are conversation context, not new commands.",
       ...(request.workspace ? [
         "Current AIQSA turn workspace paths (replace all previous turn paths):",
+        "Before asking the user to upload a source again, inspect the current attachment references and inboxIndexPath. " +
+        "No attachments on this turn does not mean earlier sources are absent. The index distinguishes uploads from previous exports; " +
+        "use exact attachment IDs and producing messages, never filename alone. Verify the indexed file before claiming bytes are available; " +
+        "historical context does not authorize replaying earlier or uncertain tool actions.",
         JSON.stringify({ outputDirectory: request.workspace.outputDirectory,
           inboxIndexPath: request.workspace.inboxIndexPath,
           ...(request.attachments.length ? { messageManifestPath: request.workspace.messageManifestPath } : {}),
           attachments: request.attachments.map(({ fileName, mimeType, byteSize }) => ({ fileName, mimeType, byteSize })) })
+      ] : []),
+      ...(currentOnly && request.agent?.mcpMode === "auto" ? [
+        "Previously discovered MCP definitions are usable only after server revalidation for this turn. " +
+        "If call_tool reports discovery_required or tool_definition_changed before dispatch, call find_tools and use its returned version and schema. " +
+        "Discovery does not repeat the business operation. Never replay a dispatched operation with an unknown outcome."
       ] : []),
       JSON.stringify(selected.map((message) => ({ role: message.role, text: textFromContentBlocks(message.content) }))),
       ...(request.prompt.personalInstructions ? ["Current personal instructions:", request.prompt.personalInstructions] : []),
@@ -52,8 +63,11 @@ export function agentPrompts(request: ProviderRunRequest) {
         (request.agent.mcpMode === "auto" ? "Use find_tools to discover the relevant capabilities. " : "") +
         "A tool-discovery failure is not an authorization denial by the connected service. Report the actual diagnostic and which checks were not completed."
       ] : []),
+      ...(request.workspace && request.workspaceCheckpoints ? [WORKSPACE_CHECKPOINT_GUIDANCE, "Use checkpoint_outputs on the managed AIQSA MCP server even when external MCP is Off."] : []),
+      ...(request.workspace && request.visionAnalysis ? [visionAnalysisGuidance(request.visionAnalysis, Boolean(request.agent?.imageInput)),
+        "Use analyze_image on the managed AIQSA MCP server even when external MCP is Off. Never request credentials or substitute shell network calls."] : []),
       ...(request.imagePlan ? [
-        "Use generate_image on the AIQSA MCP server for requested images and edits, even with external MCP Off. " +
+        "Use generate_image on the AIQSA MCP server for image synthesis and generative edits, even with external MCP Off; use native pixel/file operations for exact edits of existing pixels. " +
         "It uses the configured image model; never ask for provider credentials or substitute shell network calls. " +
         "Reference exact image_ids from this conversation or earlier generate_image results. " +
         "Successful results identify the displayed image and its verified workspace_path when staging succeeds. " +

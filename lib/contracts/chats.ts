@@ -32,7 +32,7 @@ import {
 } from "./memoryClient";
 import {
   decodeChatWorkspaceState,
-  decodeThreadGeneratedFile,
+  decodeThreadGeneratedFiles,
   decodeThreadWorkspaceActivity,
   type ChatWorkspaceState,
   type ThreadGeneratedFile,
@@ -793,18 +793,9 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   if (generatedImages === null || generatedImages && (generatedImages.length > 16 || generatedImages.some((image) => !image) || new Set(generatedImages.map((image) => image!.attachmentId)).size !== generatedImages.length)) return null;
   let generatedFiles: ThreadGeneratedFile[] | undefined;
   if (value.generatedFiles !== undefined) {
-    if (!Array.isArray(value.generatedFiles) || value.generatedFiles.length > 25) return null;
-    const decoded = value.generatedFiles.map(decodeThreadGeneratedFile);
-    if (decoded.some((file) => file === null)) return null;
-    generatedFiles = decoded.filter(
-      (file): file is ThreadGeneratedFile => file !== null
-    );
-    if (
-      new Set(generatedFiles.map((file) => file.attachmentId)).size !== generatedFiles.length ||
-      new Set(generatedFiles.map((file) => file.relativePath)).size !== generatedFiles.length
-    ) {
-      return null;
-    }
+    const decoded = decodeThreadGeneratedFiles(value.generatedFiles);
+    if (!decoded) return null;
+    generatedFiles = decoded;
   }
 
   let generatedArtifacts: ThreadGeneratedArtifact[] | undefined;

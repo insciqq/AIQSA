@@ -1,3 +1,4 @@
+import { databaseFailureCode, rememberDatabaseFailure } from "../observability/databaseFailure";
 import { logEvent } from "../observability";
 import { WorkspaceActivityText, workspaceActivitySecretValues } from "./activityText";
 import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
@@ -43,7 +44,8 @@ import {
   type WorkspaceExecutionRecord,
   type WorkspaceExecutionRegistry
 } from "./executionRegistry";
-import { quiesceWorkspaceExecutions } from "./quiescence";
+import { quiesceWorkspaceExecutions, type WorkspaceQuiescence } from "./quiescence";
+import { workspaceOperationFailureMessage, type WorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
 import {
   projectWorkspaceActivity,
   workspaceActivityEvent,
@@ -485,7 +487,8 @@ export function createPrismaWorkspaceCoordinatorRepository(
             {
               origin: "WORKSPACE_OUTPUT",
               messageId: { in: ancestors.map(({ id }) => id) },
-              producerModelRun: { workspaceRunBinding: { exportState: "COMPLETE" } }
+              OR: [{ producerModelRun: { workspaceRunBinding: { exportState: "COMPLETE" } }, workspaceRunOutput: { isNot: null } },
+                { status: "ready", workspaceCheckpointFile: { checkpoint: { state: "SETTLED" } } }]
             },
             {
               origin: "IMAGE_OUTPUT", status: "ready", savedAt: null,
@@ -1170,7 +1173,7 @@ function isExecSessionTool(name: string): boolean {
 function executionErrorResult(
   call: ModelToolCall,
   text: string,
-  code: "operation_failed" | "workspace_shell_syntax_requires_shell" = "operation_failed"
+  code: "operation_failed" | "workspace_shell_syntax_requires_shell" | WorkspaceOperationFailureCode = "operation_failed"
 ): ToolExecutionResult {
   return retainWorkspaceResultCode({
     callId: call.id,
@@ -1199,7 +1202,7 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): To
       content.push({ type: "json", value: entry.value });
     }
   }
-  return {
+  const projected: ToolExecutionResult = {
     callId: call.id,
     content,
     name: call.name,
@@ -1212,6 +1215,7 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): To
     },
     status: result.status
   };
+  return result.errorCode ? retainWorkspaceResultCode(projected, result.errorCode) : projected;
 }
 
 export function createWorkspaceCoordinator(input: Readonly<{
@@ -1687,7 +1691,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
   async function quiesceRun(
     binding: WorkspaceExecutionBinding,
     signal?: AbortSignal
-  ): Promise<Readonly<{ proven: boolean; stoppedVm: boolean }>> {
+  ): Promise<WorkspaceQuiescence> {
     if (!binding.runtimeSandboxId) {
       if (binding.sessionState === "CREATING" || binding.sessionState === "FAILED") {
         // An aborted remote bootstrap can have acquired a VM without returning
@@ -1696,7 +1700,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         try {
           await input.runtime.stopSession({ runtimeSandboxId: null, operation: ownedOperation(binding), sessionId: binding.sessionId });
         } catch {
-          return { proven: false, stoppedVm: false };
+          return { proven: false, stoppedVm: false, failureCode: "workspace_execution_stop_failed" };
         }
       }
       return { proven: true, stoppedVm: false };
@@ -1890,6 +1894,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
     },
     async settle({ onActivity, operation: expectedOperation, outcome, runId, userId, workspace, skipBrowserSave }) {
+      const receipt = async (closed: boolean, errorCode?: WorkspaceErrorCode) => {
+        await onActivity?.(workspaceLifecycleActivity({ kind: "execution_status", runId,
+          phase: closed ? "closed" : "unknown", ...(errorCode ? { errorCode } : {}) })).catch(() => undefined);
+      };
       const binding = await input.repository.binding({ runId, userId });
       const cached = initialized.get(runId);
       const expected = expectedOperation ?? (cached ? ownedOperation(cached) : null);
@@ -1897,6 +1905,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         ? binding.operationOwner !== expected.owner || binding.operationGeneration !== expected.generation
         : binding.operationOwner !== workspaceRunOperationOwner(runId)) || (workspace && !exactBinding(binding, workspace))) {
         forgetRun(runId);
+        await receipt(false);
         return { quiesced: false, sessionSettled: false, stoppedVm: false };
       }
       const current = binding.runtimeSandboxId === null && cached?.runtimeSandboxId
@@ -1916,7 +1925,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
         await input.runtime.claimSessionOperation(operation).catch(() => undefined);
         await input.runtime.retireSessionOperation(operation);
         quiescence = { proven: true, stoppedVm: current.runtimeSandboxId !== null };
-      } catch { quiescence = { proven: false, stoppedVm: false }; }
+      } catch (error) {
+        const failureCode = quiescence.stoppedVm ? "workspace_execution_settlement_failed" : "workspace_execution_stop_failed";
+        logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "release", outcome: "failed",
+          code: failureCode, prisma_code: databaseFailureCode(error), action: "wait" });
+        quiescence = { proven: false, stoppedVm: quiescence.stoppedVm, failureCode };
+      }
       if (quiescence.proven && (outcome === "cancelled" || outcome === "timed_out") && cached) {
         await onActivity?.(workspaceLifecycleActivity({
           kind: "workspace_stopped",
@@ -1930,13 +1944,22 @@ export function createWorkspaceCoordinator(input: Readonly<{
       if (!quiescence.proven) {
         // The session stays RUNNING on purpose: maintenance retries the
         // backstop later instead of reporting a live process as idle.
-        return { quiesced: false, sessionSettled: false, stoppedVm: false };
+        await receipt(false, quiescence.failureCode);
+        return { quiesced: false, sessionSettled: false, stoppedVm: quiescence.stoppedVm };
       }
       const sessionSettled = await input.repository.settleSession({
         outcome: quiescence.stoppedVm ? "stopped" : current.runtimeSandboxId ? "ready" : "pending",
         runtimeSandboxId: current.runtimeSandboxId,
         operation: ownedOperation(binding), sessionId: binding.sessionId
+      }).catch(async error => {
+        await receipt(false, "workspace_execution_settlement_failed");
+        const failure = new WorkspaceRuntimeError("workspace_execution_settlement_failed");
+        rememberDatabaseFailure(failure, databaseFailureCode(error));
+        logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "settle", outcome: "failed",
+          code: failure.code, prisma_code: databaseFailureCode(failure), action: "wait" });
+        throw failure;
       });
+      await receipt(sessionSettled, sessionSettled ? undefined : "workspace_execution_settlement_failed");
       return { quiesced: true, sessionSettled, stoppedVm: quiescence.stoppedVm };
     },
     async execute({ call, modelRunToolCallId, onActivity, runId, signal, userId, workspace }) {
@@ -1986,6 +2009,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
           ? await ownedExecution(binding, call.arguments.execSessionId) : null;
         if (isExecSessionTool(definition.originalName) && !execution) {
           return executionErrorResult(call, "This execution does not belong to the current run.");
+        }
+        if (execution?.state === "LOST") {
+          const code = execution.stopConfirmed ? "workspace_execution_stopped" : "workspace_execution_outcome_unknown";
+          return executionErrorResult(call, workspaceOperationFailureMessage(code), code);
         }
         const projectionInput = {
           arguments: call.arguments,
@@ -2072,7 +2099,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
             if (!registered) {
               const rejected = executionErrorResult(
                 call,
-                "The long-running execution could not be registered and was stopped. Start it again."
+                "The long-running execution could not be registered and was stopped. Its exit outcome is unknown; do not repeat an uncertain action."
               );
               return withActivity(rejected, projectWorkspaceActivity({
                 ...projectionInput,
@@ -2129,7 +2156,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
       const obligation = { runId: request.runId, sessionId: binding.sessionId };
       // Covers a crash after retirement/DB handoff but before run completion.
       // No guest or provider I/O is needed to acknowledge that same obligation.
-      if (await input.repository.outputHandoffReady(obligation)) return { status: "ready" };
+      const acknowledge = async () => {
+        await request.onActivity?.(workspaceLifecycleActivity({ kind: "execution_status", runId: request.runId,
+          phase: "closed" })).catch(() => undefined);
+        return { status: "ready" as const };
+      };
+      if (await input.repository.outputHandoffReady(obligation)) return acknowledge();
       const result = await this.finalize({ ...request, handoff: true });
       request.signal?.throwIfAborted();
       if (result.status === "busy") return result;
@@ -2138,7 +2170,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         !(await input.repository.outputHandoffReady(obligation))) {
         throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
       }
-      return { status: "ready" };
+      return acknowledge();
     },
     async finalize({ handoff, onActivity, recovery, runId, signal, userId, workspace }) {
       if (signal?.aborted) return { reason: "cancelled", status: "deferred" };
@@ -2240,7 +2272,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         // Freeze the output set: no process of this run may still be writing
         // between the listing/hash and the upload.
         const quiescence = await quiesceRun(binding, exportSignal);
-        if (!quiescence.proven) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+        if (!quiescence.proven) throw new WorkspaceRuntimeError(quiescence.failureCode ?? "workspace_execution_cleanup_failed");
         if (quiescence.stoppedVm) {
           // Stopping proves descendants are gone; resume only this exact disk
           // for file I/O. No accepted command is dispatched again.

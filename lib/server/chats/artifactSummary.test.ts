@@ -630,7 +630,7 @@ describe("summarizeMessageRunWorkspaceActivity", () => {
     })).toEqual({
       entries: [
         { command: { exitCode: 0, preview: "npm test" }, id: "call:one", kind: "command", phase: "succeeded" },
-        { command: { preview: "npm test" }, id: "call:two", kind: "command", phase: "cancelled", runOutcome: "cancelled" }
+        { command: { preview: "npm test" }, id: "call:two", kind: "command", phase: "unknown" }
       ],
       outputStatus: { errorCode: "workspace_output_export_failed", state: "failed" }
     });
@@ -654,5 +654,36 @@ describe("summarizeMessageRunWorkspaceActivity", () => {
     })).toEqual({ entries: [], outputStatus: { state: "complete" } });
     expect(summarizeMessageRunWorkspaceActivity({ events: [], status: "complete", workspaceRunBinding: null }))
       .toBeNull();
+  });
+});
+
+describe("Workspace terminal proof projection", () => {
+  it("uses only exact run-owned registry closure and distinguishes legacy LOST", async () => {
+    const { workspaceActivityEntryId } = await import("../workspace/activityProjection");
+    const calls = ["closed-call", "stopped-call", "lost-call", "missing-call"];
+    const projected = summarizeMessageRunWorkspaceActivity({ id: "run", status: "complete",
+      events: calls.map(call => ({ payload: { artifactType: "workspace_activity", payload: {
+        id: workspaceActivityEntryId(call), kind: "command", phase: "running", command: { preview: "bounded command" }
+      } } })), workspaceExecutions: [
+        { modelRunToolCallId: calls[0]!, state: "CLOSED", lastErrorCode: null },
+        { modelRunToolCallId: calls[1]!, state: "LOST", lastErrorCode: "workspace_execution_stopped" },
+        { modelRunToolCallId: calls[2]!, state: "LOST", lastErrorCode: null }
+      ] });
+    expect(projected?.entries.map(entry => entry.phase)).toEqual(["closed", "closed", "unknown", "unknown"]);
+    expect(JSON.stringify(projected)).not.toMatch(/modelRunToolCallId|CLOSED|LOST|missing-call/u);
+  });
+
+  it("reconstructs completed sealed handoff without looking at a successor session, preserving nonzero", () => {
+    const run = { id: "old-run", status: "complete", events: [
+      { payload: { artifactType: "workspace_activity", payload: { id: "unpolled", kind: "command", phase: "running", command: { preview: "work" } } } },
+      { payload: { artifactType: "workspace_activity", payload: { id: "failed", kind: "command", phase: "failed", command: { preview: "check", exitCode: 17 } } } }
+    ], workspaceRunBinding: { exportState: "COMPLETE", exportAttemptCount: 1, exportLeaseExpiresAt: null,
+      lastExportErrorCode: null, updatedAt: new Date("2026-09-24T10:00:00.000Z"), outputCapture: { id: "private-capture", outputs: [] } } };
+    const activity = summarizeMessageRunWorkspaceActivity(run)!;
+    expect(activity.entries[0]).toMatchObject({ phase: "closed" });
+    expect(activity.entries[1]).toMatchObject({ phase: "failed", command: { exitCode: 17 } });
+    expect(activity.outputStatus).toEqual({ state: "complete", revision: "2026-09-24T10:00:00.000Z" });
+    expect(JSON.stringify(activity)).not.toContain("private-capture");
+    expect(summarizeMessageRunWorkspaceActivity({ ...run, workspaceRunBinding: { ...run.workspaceRunBinding, outputCapture: null } })?.entries[0]?.phase).toBe("unknown");
   });
 });

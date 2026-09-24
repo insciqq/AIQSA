@@ -49,14 +49,15 @@ function outputStream(content: string, relativePath: string, batchId = "f".repea
 }
 
 function memoryRegistry() {
-  const rows: Array<WorkspaceExecutionRecord & { state: WorkspaceExecutionRecord["state"] }> = [];
+  const rows: Array<WorkspaceExecutionRecord & { state: WorkspaceExecutionRecord["state"]; stopConfirmed?: boolean }> = [];
   const registry: WorkspaceExecutionRegistry = {
-    async closeAll({ modelRunId, sessionId, to }) {
+    async closeAll({ modelRunId, sessionId, to, errorCode }) {
       let count = 0;
       for (const row of rows) {
         if (row.sessionId !== sessionId || (modelRunId && row.modelRunId !== modelRunId)) continue;
         if (row.state !== "ACTIVE" && row.state !== "TERMINATING") continue;
         row.state = to;
+        row.stopConfirmed = errorCode === "workspace_execution_stopped";
         count += 1;
       }
       return count;
@@ -1262,15 +1263,22 @@ describe("Workspace coordinator export settlement", () => {
     vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([{ ...outputStream("report", "report.txt"),
       body: new ReadableStream({ pull, cancel }, { highWaterMark: 0 }) }]);
     const transfer = vi.spyOn(value.storage, "putObjectStream");
-    const request = { runId: value.runId, userId: "user_1", workspace: value.workspace };
+    const receipts: ThreadWorkspaceActivityEntry[] = [];
+    const request = { runId: value.runId, userId: "user_1", workspace: value.workspace,
+      onActivity: async (entry: ThreadWorkspaceActivityEntry) => { receipts.push(entry); } };
     await expect(value.coordinator.handoff(request)).resolves.toEqual({ status: "ready" });
+    expect(receipts.filter(entry => entry.kind === "execution_status")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "execution_status", phase: "closed" })
+    ]));
     expect(pull).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
     expect(transfer).not.toHaveBeenCalled();
     expect(value.runtime.retireSessionOperation).toHaveBeenCalledOnce();
     expect(value.sessionState()).toBe("STOPPED");
     const fresh = createWorkspaceCoordinator(value);
     await expect(fresh.tools(request)).resolves.toHaveLength(value.tools.length);
+    const previousReceipt = receipts.filter(entry => entry.kind === "execution_status").at(-1);
     await expect(fresh.handoff(request)).resolves.toEqual({ status: "ready" });
+    expect(receipts.at(-1)).toEqual(previousReceipt);
     expect(value.runtime.collectOutputs).toHaveBeenCalledOnce();
     expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
     vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
@@ -1718,7 +1726,7 @@ describe("Workspace coordinator activity projection", () => {
       userId: "user_1",
       workspace: value.workspace
     });
-    expect(exported).toEqual(["outputs_export:running:1", "outputs_export:succeeded:1"]);
+    expect(exported).toEqual(["outputs_export:running:1", "outputs_export:succeeded:1", "execution_status:closed:"]);
 
     const stopped: string[] = [];
     const fresh = fixture();
@@ -1740,7 +1748,7 @@ describe("Workspace coordinator activity projection", () => {
       userId: "user_1",
       workspace: fresh.workspace
     });
-    expect(stopped).toEqual(["workspace_stopped:cancelled"]);
+    expect(stopped).toEqual(["workspace_stopped:cancelled", "execution_status:closed"]);
   });
 });
 
@@ -1804,4 +1812,45 @@ it("does not announce Workspace stopped while process cleanup is unproven", asyn
     outcome: "cancelled", runId: value.runId, userId: "user_1", workspace: value.workspace
   })).resolves.toMatchObject({ quiesced: false, sessionSettled: false });
   expect(activity.some((entry) => entry.kind === "workspace_stopped")).toBe(false);
+  expect(activity).toContainEqual(expect.objectContaining({ kind: "execution_status", phase: "unknown", errorCode: "workspace_execution_stop_failed" }));
+});
+
+it.each([false, true])("reads LOST stop proof=%s without redispatching a command", async stopConfirmed => {
+  const value = fixture();
+  value.registryRows.push({ id: "lost", state: "LOST", stopConfirmed, modelRunId: value.runId,
+    modelRunToolCallId: "started", runtimeExecSessionId: "old", sessionId: value.workspace.sessionId });
+  const result = await value.coordinator.execute({ call: { arguments: { execSessionId: "old" }, id: "poll",
+    name: namespacedWorkspaceToolName("sandbox_exec_poll") }, modelRunToolCallId: "poll", runId: value.runId,
+    userId: "user_1", workspace: value.workspace });
+  expect(result).toMatchObject({ status: "error", content: [{ type: "text", text: expect.stringContaining(
+    stopConfirmed ? "workspace_execution_stopped" : "workspace_execution_outcome_unknown") }] });
+  expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+});
+
+it("retains known nonzero activity after successful cleanup and labels a later settlement failure separately", async () => {
+  const value = fixture();
+  vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({ status: "error", errorCode: "workspace_command_failed", exitCode: 7,
+    content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "workspace_command_failed" }, data: { exitCode: 7, stdout: "", stderr: "bounded diagnostic" } }) }] });
+  const result = await value.coordinator.execute({ call: { arguments: { command: "exit 7" }, id: "nonzero", name: value.shellToolName },
+    modelRunToolCallId: "nonzero", runId: value.runId, userId: "user_1", workspace: value.workspace });
+  const before = JSON.stringify(result);
+  expect(result).toMatchObject({ status: "error", artifacts: [expect.objectContaining({ data: { artifactType: "workspace_activity", payload: expect.objectContaining({ errorCode: "workspace_command_failed", command: expect.objectContaining({ exitCode: 7 }) }) } })] });
+  vi.spyOn(value.repository, "settleSession").mockRejectedValueOnce(new Error("PRIVATE_DB"));
+  await expect(value.coordinator.settle({ outcome: "failed", runId: value.runId, userId: "user_1", workspace: value.workspace }))
+    .rejects.toMatchObject({ code: "workspace_execution_settlement_failed" });
+  expect(JSON.stringify(result)).toBe(before);
+  expect(value.registryRows[0]).toMatchObject({ state: "LOST", stopConfirmed: true });
+  expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+});
+
+it("retains confirmed VM stop when retiring its operation cannot be confirmed", async () => {
+  const value = fixture();
+  await value.coordinator.execute({ call: { id: "prepare", name: value.shellToolName, arguments: { command: "true" } },
+    modelRunToolCallId: "prepare", runId: value.runId, userId: "user_1", workspace: value.workspace });
+  value.unregisteredCommands.count = 1;
+  vi.mocked(value.runtime.retireSessionOperation!).mockRejectedValueOnce(new Error("PRIVATE_RETIREMENT"));
+  await expect(value.coordinator.settle({ outcome: "failed", runId: value.runId, userId: "user_1", workspace: value.workspace }))
+    .resolves.toEqual({ quiesced: false, sessionSettled: false, stoppedVm: true });
+  expect(value.runtime.stopSession).toHaveBeenCalledOnce();
+  expect(value.settledSessions).toEqual([]);
 });

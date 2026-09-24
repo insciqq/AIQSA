@@ -44,6 +44,8 @@ export type AdminRolePatch = Readonly<{
   chatTitleReasoningEffort?: string | null;
   chatPdfNativeProviderModelId?: string | null;
   chatPdfNativeReasoningEffort?: string | null;
+  visionProviderModelId?: string | null;
+  visionReasoningEffort?: string | null;
   chatPdfProviderModelId?: string | null;
   chatPdfReasoningEffort?: string | null;
   chatPdfProcessingMode?: "prefer_chat_model" | "use_pdf_reader" | "read_page_images";
@@ -67,7 +69,7 @@ export type AdminRolesController = Readonly<{
   /** Immediate apply for independent roles; `undo` reverts through the same PATCH. */
   assign(patch: AdminRolePatch, undo: AdminRolePatch | null): Promise<boolean>;
   busy: boolean;
-  checkAndAssign(role: "chat_titles" | "memory" | "system" | "vision" | "direct_pdf", id: string): Promise<boolean>;
+  checkAndAssign(role: "chat_titles" | "memory" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean>;
   checkDocument(mode: KnowledgeModelMode, id: string): Promise<boolean>;
   checking: Readonly<{ id: string; role: AdminSystemModelEligibilityRole }> | null;
   error: string | null;
@@ -265,10 +267,14 @@ export function useAdminRolesController({
     return true;
   }, [invalidateReads, reportError, setPolicy]);
 
-  const checkAndAssign = useCallback(async (role: "chat_titles" | "memory" | "system" | "vision" | "direct_pdf", id: string): Promise<boolean> => {
+  const checkAndAssign = useCallback(async (role: "chat_titles" | "memory" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean> => {
     const previous = policyRef.current?.policy;
     const previousMemory = policyRef.current?.memoryPolicy;
-    if (!previous || !previousMemory || !await check(role === "system" ? "memory" : role, id)) return false;
+    if (!previous || !previousMemory || !await check(role === "system" ? "memory" : role === "pdf_images" ? "vision" : role, id)) return false;
+    if (role === "vision" && previous.version !== policyRef.current?.policy.version) {
+      reportError(adminSystemModelPolicyErrorMessage("system_model_policy_stale"));
+      return false;
+    }
     if (role === "memory") return assign(
       { memoryProviderModelId: id, memoryReasoningEffort: null },
       { memoryProviderModelId: previousMemory.model?.id ?? null, memoryReasoningEffort: previousMemory.reasoningEffort }
@@ -278,6 +284,10 @@ export function useAdminRolesController({
         policyRef.current?.titleCandidates.find((candidate) => candidate.id === id)
       ) },
       { chatTitleProviderModelId: previous.chatTitleModel?.id ?? null, chatTitleReasoningEffort: previous.chatTitleReasoningEffort }
+    );
+    if (role === "vision") return assign(
+      { visionProviderModelId: id, visionReasoningEffort: null },
+      { visionProviderModelId: previous.visionModel?.id ?? null, visionReasoningEffort: previous.visionReasoningEffort ?? null }
     );
     if (role === "direct_pdf") return assign(
       { chatPdfNativeProviderModelId: id, chatPdfNativeReasoningEffort: null },
@@ -296,7 +306,7 @@ export function useAdminRolesController({
             chatPdfReasoningEffort: previous.chatPdfReasoningEffort
           }
         );
-  }, [assign, check]);
+  }, [assign, check, reportError]);
 
   const checkDocument = useCallback(async (mode: KnowledgeModelMode, id: string): Promise<boolean> => {
     if (!await check(mode === "system_model_vision" ? "vision" : "direct_pdf", id)) return false;

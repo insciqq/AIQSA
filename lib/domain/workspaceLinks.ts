@@ -51,6 +51,9 @@ export function resolveWorkspaceOutputLink(input: Readonly<{
   if (runId !== input.runId || !isSafeWorkspaceRelativePath(relativePath)) {
     return { kind: "unresolved" };
   }
-  const file = input.generatedFiles.find((candidate) => candidate.relativePath === relativePath);
-  return file ? { file, kind: "download" } : { kind: "unresolved" };
+  const matches = input.generatedFiles.filter(candidate => candidate.relativePath === relativePath);
+  // A mutable guest path cannot choose between different saved versions.
+  const ids = new Set(matches.map(file => file.attachmentId));
+  const file = matches[0];
+  return file && ids.size === 1 ? { file, kind: "download" } : { kind: "unresolved" };
 }

@@ -61,7 +61,7 @@ function admitLocalTools(value: unknown, budget: { remaining: number }, webSearc
 }
 
 /** Only verified native search may join local tools; no hosted MCP or file access. */
-export function admittedAgentRequest(value: unknown, modelId: string, maxOutputTokens: number, nativeWebSearch = false): Record<string, unknown> {
+export function admittedAgentRequest(value: unknown, modelId: string, maxOutputTokens: number, nativeWebSearch = false, imageInput = false): Record<string, unknown> {
   if (!record(value) || value.model !== modelId || value.stream !== true || !Array.isArray(value.input) ||
     value.input.length > 20_000 || value.previous_response_id !== undefined || value.background === true) {
     throw new Error("agent_model_request_invalid");
@@ -83,7 +83,7 @@ export function admittedAgentRequest(value: unknown, modelId: string, maxOutputT
     // Native reasoning models replay their provider-issued reasoning items on
     // subsequent tool steps. Keep these opaque to AIQSA while admitting the
     // Responses text format used by DeepSeek and OpenAI.
-    const contentTypes = item.type === "reasoning" ? ["reasoning_text"] : ["input_text", "output_text", "input_image"];
+    const contentTypes = item.type === "reasoning" ? ["reasoning_text"] : ["input_text", "output_text", ...(imageInput ? ["input_image"] : [])];
     for (const content of parts) {
       if (!record(content) || !contentTypes.includes(String(content.type)) ||
         content.file_id !== undefined || (content.type === "input_image" &&
@@ -150,7 +150,7 @@ export function createAgentModelGateway(input: Readonly<{
       const bytes = await readBoundedRequestBody(request, { maxBytes: AGENT_REQUEST_MAX_BYTES, signal });
       const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
       const body = admittedAgentRequest(value, input.transport.snapshot.model.upstreamModelId, input.configuration.maxOutputTokens,
-        supportsAgentNativeWebSearch(input.transport.snapshot));
+        supportsAgentNativeWebSearch(input.transport.snapshot), input.configuration.imageInput === true);
       if (input.configuration.limitsEnabled && supportsAgentNativeWebSearch(input.transport.snapshot) && input.transport.snapshot.model.adapterKind === "openai_responses_native") {
         body.max_tool_calls = input.configuration.maxToolCalls;
       }

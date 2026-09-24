@@ -363,7 +363,7 @@ describe("provider-neutral tool loop", () => {
     expect(synthesizedFrom[0]?.result).toEqual({
       error: {
         code: "tool_call_failed",
-        message: "fixture failure"
+        message: "The tool call failed without a confirmed specific cause. Do not repeat an uncertain action."
       },
       status: "error"
     });

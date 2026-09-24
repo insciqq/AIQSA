@@ -1,3 +1,4 @@
+import { visionAnalysisForStorage } from "../vision/defaultVision";
 import { imageGenerationForStorage } from "../images/defaultImages";
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
 import { defaultSkillTools } from "../skills/defaultSkillTools";
@@ -28,7 +29,7 @@ function createDefaultWorkspaceFollowup() {
   const coordinator = createWorkspaceFollowupCoordinator({
     registry: activeRunControllerRegistry, repository: followups,
     continueRun: createWorkspaceFollowupContinuation({
-      images: imageGenerationForStorage(storage), chatTitleGenerator: createPrismaChatTitleGenerator(),
+      images: imageGenerationForStorage(storage), vision: visionAnalysisForStorage(storage), chatTitleGenerator: createPrismaChatTitleGenerator(),
       artifacts: artifactServiceForStorage(storage),
       skillTools: defaultSkillTools,
       knowledgeAdmission: knowledgeRunAdmissionService, knowledgeExecutor: knowledgeToolExecutor,

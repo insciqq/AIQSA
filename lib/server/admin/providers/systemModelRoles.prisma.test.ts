@@ -13,6 +13,7 @@ import { adoptMemoryModelRecommendation } from "../../bootstrap/memoryRecommenda
 import { MEMORY_MODEL_RECOMMENDATIONS } from "../../memory/modelRecommendations";
 import { structuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import { createChatTitleModelRoleResolver } from "../../providerRuntime/chatTitleModelRole";
+import { createVisionModelRoleResolver } from "../../providerRuntime/visionModelRole";
 import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import { providerSetupModels } from "./setupModels";
@@ -107,6 +108,31 @@ async function fixture(run: (input: {
 }
 
 describe("persisted independent System Model roles", () => {
+  it("persists independent Vision assignment, clear and exact evidence revocation", async () => {
+    await fixture(async ({ db, adminId, vision, memory }) => {
+      await db.systemModelPolicy.update({ where: { id: "installation" }, data: {
+        visionProviderModelId: null, visionReasoningEffort: null,
+        chatPdfProviderModelId: vision, chatPdfReasoningEffort: null
+      } });
+      const service = createAdminSystemModelPolicyService(db);
+      const resolver = createVisionModelRoleResolver(db);
+      expect(await resolver.resolve()).toMatchObject({ ok: false, code: "system_model_absent" });
+      let current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+      await service.update({ userId: adminId, expectedVersion: current.version, visionProviderModelId: vision, visionReasoningEffort: null });
+      expect(await resolver.resolve()).toMatchObject({ ok: true, providerModelId: vision });
+      expect((await service.list()).visionAnalysisAvailable).toBe(true);
+      current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+      await expect(service.update({ userId: adminId, expectedVersion: current.version, visionProviderModelId: memory, visionReasoningEffort: null }))
+        .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+      await db.providerModel.update({ where: { id: vision }, data: { enabled: false } });
+      expect(await resolver.resolve()).toMatchObject({ ok: false, code: "system_model_unavailable" });
+      expect((await service.list()).policy.visionModel).toMatchObject({ id: vision, available: false });
+      await service.update({ userId: adminId, expectedVersion: current.version, visionProviderModelId: null, visionReasoningEffort: null });
+      expect(await resolver.resolve()).toMatchObject({ ok: false, code: "system_model_absent" });
+      expect(await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } }))
+        .toMatchObject({ chatPdfProviderModelId: vision, visionProviderModelId: null, visionReasoningEffort: null });
+    });
+  });
   it("adopts qualified defaults once and preserves independent opt-outs on repeated setup", async () => {
     await fixture(async ({ db, adminId, addDecisionModel }) => {
       const id = await addDecisionModel();

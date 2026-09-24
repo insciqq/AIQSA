@@ -1,6 +1,7 @@
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { buildOpenAICompatibleChatRequest } from "../providers/openaiCompatibleChatRequest";
 import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
+import { WORKSPACE_PSD_GUIDANCE } from "../workspace/psdGuidance";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -26,6 +27,7 @@ import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
+import { conversationMessagesFromPathRows } from "./prismaRepository";
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -976,6 +978,7 @@ describe("run preparation", () => {
         expect(prepared.normalizedRequest.agent).toMatchObject({ limitsEnabled, timeoutSeconds: limitsEnabled ? 3600 : null,
           maxOutputTokens: limitsEnabled ? 256 : 2048, policyVersion: limitsEnabled ? 2 : 1 });
         expect(prepared.normalizedRequest.prompt.system).toContain("no current message manifest is present");
+        expect(prepared.normalizedRequest.prompt.system).toContain(WORKSPACE_PSD_GUIDANCE);
         expect(prepared.normalizedRequest.prompt.system).not.toContain("Read messageManifestPath");
         configs.push(prepared.normalizedRequest.agent!);
       }
@@ -986,6 +989,37 @@ describe("run preparation", () => {
       for (const input of [sendInput(body), regenerateInput(body)]) {
         await expect(prepareRun({ ...harness.deps, workspace, providerAdmission: { load } }, input))
           .resolves.toMatchObject({ ok: false, code: "agent_unavailable", status: 503 });
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each([false, true])("freezes proven image input independently of System Vision and external MCP (verified=%s)", async verified => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const h = createHarness({ capabilities: { ...baseCapabilities, vision: true, toolCalling: true } });
+      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
+        normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+      } })) };
+      const original = h.deps.providerAdmission!.load;
+      const load: NonNullable<RunPreparationDeps["providerAdmission"]>["load"] = async input => {
+        const plan = await original(input);
+        return { ...plan, answer: { ...plan.answer, verifiedVisionInput: verified ? true : undefined } };
+      };
+      const plan = { version: 1 as const, available: false as const, code: "vision_model_absent" as const };
+      const deps = { ...h.deps, workspace, providerAdmission: { load }, vision: { resolve: async () => plan },
+        agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
+      for (const agentEnabled of [false, true]) {
+        const result = preparedFrom(await prepareRun(deps, sendInput(successBody({ agentEnabled, workspace: { enabled: true },
+          provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } }))));
+        expect(result.normalizedRequest.visionAnalysis).toEqual(plan);
+        expect(result.normalizedRequest.agent?.imageInput).toBe(agentEnabled ? verified : undefined);
+        expect(result.normalizedRequest.workspaceImageView).toBe(!agentEnabled && verified ? true : undefined);
+        expect(result.providerRequest.tools?.some(tool => tool.name === "analyze_image")).toBe(!agentEnabled);
+        expect(result.normalizedRequest.prompt.system).toContain(verified ? "direct image viewer first" : "Direct image viewing is unavailable");
       }
     } finally { vi.unstubAllEnvs(); }
   });
@@ -1054,6 +1088,7 @@ describe("run preparation", () => {
     if (enabled) {
       expect(workspace.prepare).toHaveBeenCalledOnce();
       expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_BROWSER_GUIDANCE);
+      expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_PSD_GUIDANCE);
       expect(accepted.providerRequest.prompt.system).toBe(accepted.normalizedRequest.prompt.system);
       expect(accepted.normalizedRequest.prompt.system).toContain("aria_snapshot()");
       expect(accepted.normalizedRequest.prompt.system).toContain("no current message manifest is present");
@@ -1061,7 +1096,41 @@ describe("run preparation", () => {
     } else {
       expect(workspace.prepare).not.toHaveBeenCalled();
       expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_BROWSER_GUIDANCE);
+      expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_PSD_GUIDANCE);
     }
+  });
+
+  it.each([false, true])("discovers the prior opaque source after failure, including trimmed history: %s", async (trimmed) => {
+    const source = { ...runAttachment({ id: "source-original", kind: "file", mimeType: "application/octet-stream",
+      storageKey: "synthetic/source", checksum: "a".repeat(64) }), fileName: "same.psd" };
+    const sibling = { ...source, id: "sibling-source", storageKey: "synthetic/sibling" };
+    const history = conversationMessagesFromPathRows([
+      { chatId: "chat", messageId: "original-question", messageRole: "user", messageStatus: "complete",
+        messageContent: { blocks: [{ type: "text", text: "Width 1024; keep the blue layer." + (trimmed ? " detail".repeat(40_000) : "") },
+          { type: "file", attachmentId: source.id }] } },
+      { chatId: "chat", messageId: "failed-answer", messageParentId: "original-question", messageRole: "assistant",
+        messageStatus: "error", messageContent: null }
+    ]);
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true }, attachments: [source, sibling], sendContext: history });
+    const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
+      ...input, expiresAt: new Date(Date.now() + 60_000).toISOString(), policyRevision: 1, sandboxName: "synthetic-files", sessionId: "ws_files", toolDefinitions: [],
+      normalized: { enabled: true as const, imageRef: "synthetic-image", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+        maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/synthetic/manifest.json",
+        outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_files",
+        syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+    } })) };
+    const prepared = materializePreparedRunData(preparedFrom(await prepareRun({ ...harness.deps, workspace },
+      sendInput(successBody({ content: textMessageContent("Continue"), workspace: { enabled: true } })))));
+    const request = prepared.providerRequest;
+    expect(request.prompt.system).toContain('"attachmentId":"source-original"');
+    expect(request.prompt.system).toContain('"referencedByMessage":"original-question"');
+    expect(request.prompt.system).toContain('"index":"/workspace/inbox/index.json"');
+    expect(request.prompt.system).not.toContain("sibling-source");
+    expect(request.attachments).toEqual([]);
+    expect(request.context?.messages.some(message => message.id === "failed-answer")).toBe(false);
+    expect(request.context?.messages.some(message => message.id === "original-question")).toBe(!trimmed);
+    expect(request.prompt.system).toBe(prepared.normalizedRequest.prompt.system);
+    expect(harness.attachmentLoads).toContainEqual({ attachmentIds: ["source-original"], userId: "user-1" });
   });
 
   it("binds Agent native discovery and compatibility to the full catalog and profile", async () => {

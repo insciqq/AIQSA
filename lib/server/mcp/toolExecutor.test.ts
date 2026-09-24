@@ -135,4 +135,18 @@ describe("MCP run tool executor helpers", () => {
       status: "complete"
     });
   });
+
+  it.each([false, true])("projects one JSON copy with unique adjacent text, isError=%s, leaving raw dispatch untouched", async isError => {
+    const structuredContent = { records: [7, 7], marker: "synthetic" };
+    const source = { isError, structuredContent, text: ["before", JSON.stringify(structuredContent, null, 2), "after"], unsupportedContentTypes: [] };
+    const callTool = vi.fn<McpToolRuntimeCall>(async input => { await input.beforeDispatch(); return source; });
+    const raw = await dispatchMcpTool({ arguments: {}, assertCurrent: async () => {}, callTool, generationId: "generation",
+      route: resolveMcpRunTool(snapshot, snapshot.tools[0]!.namespacedName)! });
+    const projected = mcpToolExecutionResult({ id: "call", name: "arbitrary_quartz", arguments: {} }, raw);
+    expect(raw).toBe(source);
+    expect(raw.text).toHaveLength(3);
+    expect(projected.content).toEqual([{ type: "text", text: "before" }, { type: "text", text: "after" }, { type: "json", value: structuredContent }]);
+    expect(projected.status).toBe(isError ? "error" : "complete");
+    expect(callTool).toHaveBeenCalledOnce();
+  });
 });

@@ -300,6 +300,7 @@ enum ProviderRunRole {
   image
   answer
   search
+  vision_analysis
 }
 
 enum ProviderModelClass {
@@ -1367,6 +1368,8 @@ model SystemModelPolicy {
   chatTitleConfiguredAt   DateTime?
   chatPdfNativeProviderModelId String?
   chatPdfNativeReasoningEffort String? @db.VarChar(32)
+  visionProviderModelId   String?
+  visionReasoningEffort   String?        @db.VarChar(32)
   chatPdfProviderModelId   String?
   chatPdfReasoningEffort   String?        @db.VarChar(32)
   chatPdfProcessingMode    ChatPdfProcessingMode @default(PREFER_CHAT_MODEL)
@@ -1392,6 +1395,7 @@ model SystemModelPolicy {
   updatedAt               DateTime       @updatedAt
   chatTitleProviderModel  ProviderModel? @relation("ChatTitleProviderModel", fields: [chatTitleProviderModelId], references: [id], onDelete: Restrict)
   chatPdfNativeProviderModel ProviderModel? @relation("ChatPdfNativeProviderModel", fields: [chatPdfNativeProviderModelId], references: [id], onDelete: Restrict)
+  visionProviderModel     ProviderModel? @relation("VisionProviderModel", fields: [visionProviderModelId], references: [id], onDelete: Restrict)
   chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
   rerankerProviderModel   ProviderModel? @relation("MemoryRerankerProviderModel", fields: [rerankerProviderModelId], references: [id], onDelete: Restrict)
@@ -1403,6 +1407,7 @@ model SystemModelPolicy {
   @@index([rerankerProviderModelId])
   @@index([decisionProviderModelId])
   @@index([chatTitleProviderModelId])
+  @@index([visionProviderModelId])
   @@index([chatPdfProviderModelId])
   @@index([chatPdfNativeProviderModelId])
   @@index([updatedByUserId])
@@ -2719,6 +2724,7 @@ model ProviderModel {
   knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
   chatTitleRoles              SystemModelPolicy[]             @relation("ChatTitleProviderModel")
   chatPdfNativeRoles          SystemModelPolicy[]             @relation("ChatPdfNativeProviderModel")
+  visionRoles                 SystemModelPolicy[]             @relation("VisionProviderModel")
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
   memoryUtilityRoles          MemoryUtilityModelPolicy[]       @relation("MemoryUtilityProviderModel")
@@ -2910,6 +2916,7 @@ model ProviderModelCredentialCheck {
 }
 
 model ProviderRunBinding {
+  visionAnalyses            VisionAnalysisAttempt[]
   agentAttempts             AgentProviderAttempt[]
   id                        String                     @id @default(uuid())
   modelRunId                String
@@ -3390,6 +3397,7 @@ model ModelRun {
   workspaceRunBinding          WorkspaceRunBinding?
   workspaceExecutions          WorkspaceExecution[]
   workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
+  workspaceCaptureReferences   WorkspaceCaptureReference[]
 
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
@@ -3854,6 +3862,8 @@ model McpRunBinding {
 }
 
 model ModelRunToolCall {
+  workspaceCheckpoint       WorkspaceOutputCheckpoint?
+  visionAnalysis             VisionAnalysisAttempt?
   generatedImages            Attachment[]                @relation("ImageToolOutput")
   imageUsage                 UsageEvent?                 @relation("ImageToolUsage")
   id                         String                      @id @default(uuid())
@@ -4358,6 +4368,7 @@ model AttachmentUploadObject {
 }
 
 model Attachment {
+  workspaceCheckpointFile WorkspaceCheckpointFile?
   uploadSession       AttachmentUpload?
   imageToolCallId       String?                  @unique
   imageToolCall         ModelRunToolCall?         @relation("ImageToolOutput", fields: [producerModelRunId, imageToolCallId], references: [modelRunId, id], onDelete: Restrict, onUpdate: Restrict, map: "Attachment_imageToolCallId_fkey")
@@ -4432,10 +4443,79 @@ model WorkspaceRunBinding {
   outputs              WorkspaceRunOutput[]
   toolCalls            ModelRunToolCall[]
   secrets              WorkspaceRunSecret[]
+  selectedCaptures     WorkspaceSelectedCapture[]
+  checkpoints          WorkspaceOutputCheckpoint[]
 
+  @@unique([modelRunId, workspaceSessionId])
   @@index([workspaceSessionId, createdAt])
   @@index([exportState, updatedAt])
   @@index([exportState, exportLeaseExpiresAt])
+}
+
+/// Private immutable selected-file evidence; it never implies attachment publication.
+model WorkspaceSelectedCapture {
+  id                   String   @id @db.Char(32)
+  modelRunId           String
+  workspaceSessionId   String
+  runtimeSandboxId     String
+  requestKey           String   @db.VarChar(128)
+  requestHash          String   @db.Char(64)
+  producerGeneration   Int
+  producerOwner        String   @db.VarChar(160)
+  selection            Json
+  state                String   @default("CAPTURING") @db.VarChar(16)
+  createdAt            DateTime @default(now())
+  sealedAt             DateTime?
+  releasedAt           DateTime?
+  binding              WorkspaceRunBinding @relation(fields: [modelRunId, workspaceSessionId], references: [modelRunId, workspaceSessionId], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceSelectedCapture_binding_fkey")
+  files                WorkspaceCapturedFile[]
+  references           WorkspaceCaptureReference[]
+  reads                WorkspaceCaptureReadLease[]
+  checkpoints          WorkspaceOutputCheckpoint[]
+
+  @@unique([modelRunId, requestKey])
+  @@index([workspaceSessionId, state])
+}
+
+model WorkspaceCapturedFile {
+  id                   String   @id @default(uuid())
+  captureId            String   @db.Char(32)
+  relativePath         String   @db.VarChar(512)
+  byteSize             Int
+  checksum             String   @db.Char(64)
+  mimeType             String   @db.VarChar(255)
+  storageKey           String?  @unique
+  storageState         String   @default("NONE") @db.VarChar(16)
+  storageToken         String?  @db.VarChar(64)
+  storageLeaseExpiresAt DateTime?
+  capture              WorkspaceSelectedCapture @relation(fields: [captureId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  checkpointFiles      WorkspaceCheckpointFile[]
+
+  @@unique([captureId, relativePath])
+}
+
+/// Released references are tombstones; retries cannot resurrect an ended consumer.
+model WorkspaceCaptureReference {
+  captureId            String   @db.Char(32)
+  consumerRunId        String
+  consumerKey          String   @db.VarChar(128)
+  createdAt            DateTime @default(now())
+  releasedAt           DateTime?
+  capture              WorkspaceSelectedCapture @relation(fields: [captureId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  consumer             ModelRun @relation(fields: [consumerRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([captureId, consumerRunId, consumerKey])
+  @@index([consumerRunId])
+}
+
+/// Bounded transfers protect bytes after the final consumer releases its reference.
+model WorkspaceCaptureReadLease {
+  token                String   @id @db.VarChar(64)
+  captureId            String   @db.Char(32)
+  expiresAt            DateTime
+  capture              WorkspaceSelectedCapture @relation(fields: [captureId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([captureId, expiresAt])
 }
 
 enum AgentAttemptState {
@@ -4561,6 +4641,44 @@ model WorkspaceRunSecret {
   @@index([valueId])
 }
 
+model WorkspaceOutputCheckpoint {
+  id                   String @id @default(uuid())
+  modelRunId           String
+  toolCallId           String @unique
+  requestHash          String @db.Char(64)
+  description          String @db.VarChar(300)
+  selection            Json
+  arguments            Json
+  captureId            String? @db.Char(32)
+  state                String @default("PENDING") @db.VarChar(16)
+  result               Json?
+  failureCode          String? @db.VarChar(64)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @default(now()) @updatedAt
+  settledAt            DateTime?
+  binding              WorkspaceRunBinding @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict)
+  toolCall             ModelRunToolCall @relation(fields: [modelRunId, toolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceOutputCheckpoint_toolCall_fkey")
+  capture              WorkspaceSelectedCapture? @relation(fields: [captureId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  files                WorkspaceCheckpointFile[]
+
+  @@unique([id, captureId])
+  @@unique([modelRunId, toolCallId])
+  @@index([modelRunId, createdAt])
+  @@index([state, updatedAt])
+}
+
+model WorkspaceCheckpointFile {
+  checkpointId         String
+  captureId            String @db.Char(32)
+  relativePath         String @db.VarChar(512)
+  attachmentId         String @unique
+  checkpoint           WorkspaceOutputCheckpoint @relation(fields: [checkpointId, captureId], references: [id, captureId], onDelete: Cascade, onUpdate: Restrict)
+  capturedFile         WorkspaceCapturedFile @relation(fields: [captureId, relativePath], references: [captureId, relativePath], onDelete: Cascade, onUpdate: Restrict)
+  attachment           Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([checkpointId, relativePath])
+}
+
 model WorkspaceRunOutput {
   id                    String              @id @default(uuid())
   workspaceRunBindingId String
@@ -4655,6 +4773,9 @@ model SharedChatSnapshot {
 }
 
 model UsageEvent {
+  visionAnalysis                  Boolean                        @default(false)
+  visionAnalysisAttemptId          String?                        @unique
+  visionAnalysisAttempt            VisionAnalysisAttempt?         @relation(fields: [visionAnalysisAttemptId], references: [toolCallId], onDelete: SetNull, onUpdate: Restrict)
   optionalDecision                Boolean                        @default(false)
   optionalDecisionAttemptId       String?                        @unique
   optionalDecisionAttempt         OptionalDecisionAttempt?       @relation(fields: [optionalDecisionAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
@@ -4710,6 +4831,26 @@ model UsageEvent {
   @@index([provider, modelId])
   @@index([projectId, createdAt])
   @@index([knowledgeBaseId, createdAt])
+}
+
+// One immutable Workspace image analysis dispatch per persisted tool call.
+model VisionAnalysisAttempt {
+  toolCallId         String    @id
+  modelRunId         String
+  providerBindingKey String
+  requestHash        String    @db.Char(64)
+  images             Json
+  state              String    @default("dispatched") @db.VarChar(16)
+  result             Json?
+  failureCode        String?   @db.VarChar(64)
+  createdAt          DateTime  @default(now())
+  settledAt          DateTime?
+  toolCall           ModelRunToolCall @relation(fields: [modelRunId, toolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "VisionAnalysisAttempt_tool_fkey")
+  providerBinding    ProviderRunBinding @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: NoAction, onUpdate: Restrict, map: "VisionAnalysisAttempt_binding_fkey")
+  usageEvent         UsageEvent?
+
+  @@unique([modelRunId, toolCallId])
+  @@index([modelRunId, createdAt])
 }
 
 // Content-free dispatch fences for optional interactive decisions. Results

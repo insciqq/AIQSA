@@ -14,7 +14,7 @@ import {
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { WorkspaceActivityTimelineV2 } from "@/features/run-lifecycle-v2/WorkspaceActivityTimelineV2";
 import {
-  workspaceActivityHasFailureV2,
+  workspaceActivityOutcomeV2,
   workspaceProcessLabelV2
 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { MemorySourcesV2 } from "./MemorySourcesV2";
@@ -102,9 +102,8 @@ export function AnswerProcessV2({
   // Workspace steps are rendered by the timeline; the generic list keeps only
   // other tools so no raw sandbox identifier can reach the thread.
   const calls = (toolActivity?.calls ?? []).filter((call) => toolActivityOriginV2(call) !== "workspace");
-  const timeline = workspaceActivity && workspaceActivity.entries.length > 0 ? workspaceActivity : null;
-  const workspaceFailed = workspaceActivityHasFailureV2(timeline);
-  const workspaceOutcome = timeline?.entries.some(entry => entry.phase === "failed") ? "Needs attention" : "Stopped";
+  const timeline = workspaceActivity && (workspaceActivity.entries.length > 0 || workspaceActivity.outputStatus) ? workspaceActivity : null;
+  const workspaceOutcome = workspaceActivityOutcomeV2(timeline);
   const warning = toolActivity?.warning ? (
     <div className="v2-tool-budget-warning" data-kind={toolActivity.warning.kind} role="status">
       Tool {toolActivity.warning.kind === "calls" ? "call" : "round"} limit ({toolActivity.warning.limit}) stopped further tool use.
@@ -149,7 +148,7 @@ export function AnswerProcessV2({
             {live ? <span className="v2-answer-process-spinner v2-spinner" /> : <span className="v2-answer-process-chevron" />}
           </span>
           <span className={live ? "v2-run-shimmer v2-answer-process-label" : "v2-answer-process-label"}>
-            {live && liveLabel ? liveLabel : workspaceFailed ? `${label} · ${workspaceOutcome}` : label}
+            {live && liveLabel ? liveLabel : workspaceOutcome ? `${label} · ${workspaceOutcome}` : label}
           </span>
         </summary>
         <div className="v2-answer-process-body">

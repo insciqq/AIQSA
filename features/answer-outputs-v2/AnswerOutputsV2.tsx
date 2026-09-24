@@ -544,6 +544,7 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
 export function AnswerOutputsV2({
   artifact,
   canSaveFiles = false,
+  live = false,
   onEditArtifact,
   onOpenArtifact,
   onUseImageInArtifact,
@@ -551,12 +552,20 @@ export function AnswerOutputsV2({
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
   canSaveFiles?: boolean;
+  /** While running, show only already-settled draft downloads. */
+  live?: boolean;
   onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void>;
   onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
   onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
   /** Export state of the run's Workspace outputs; shown above the generated files. */
   workspaceOutputStatus?: ThreadWorkspaceOutputStatus | null;
 }>) {
+  if (live) {
+    const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint) ?? [];
+    return drafts.length ? <div className="v2-answer-outputs" data-testid="answer-outputs">
+      <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} />
+    </div> : null;
+  }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
   const hasMemoryStatus = artifact?.memoryStatus === "LIMITED" ||
     artifact?.memoryStatus === "UNAVAILABLE";
@@ -569,7 +578,7 @@ export function AnswerOutputsV2({
   const hasGeneratedFiles = (artifact?.generatedFiles?.length ?? 0) > 0;
   const outputStatusCopy = workspaceOutputStatusCopyV2(
     workspaceOutputStatus ?? undefined,
-    artifact?.generatedFiles?.length ?? 0
+    artifact?.generatedFiles?.filter(file => !file.checkpoint).length ?? 0
   );
 
   if ((!artifact || (
@@ -710,7 +719,13 @@ export function GeneratedFilesV2({ files, canSave = false, onUseFile, useDisable
             <UiV2Icon name="file" />
             <span className="v2-generated-file-copy">
               <strong title={file.relativePath}>{file.fileName}</strong>
-              <small>{generatedFileType(file)} · {formatAttachmentBytes(file.byteSize)}</small>
+              <small>{file.checkpoint ? "Saved draft" : "Final export"} · {generatedFileType(file)} · {formatAttachmentBytes(file.byteSize)}</small>
+              {file.checkpoint ? <>
+                <small className="v2-generated-file-description">{file.checkpoint.description}</small>
+                <small><time dateTime={file.checkpoint.createdAt}>{new Intl.DateTimeFormat(undefined, {
+                  dateStyle: "medium", timeStyle: "medium"
+                }).format(new Date(file.checkpoint.createdAt))}</time></small>
+              </> : null}
             </span>
             <span className="v2-generated-file-actions">
             <a

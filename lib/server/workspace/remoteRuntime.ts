@@ -1,4 +1,5 @@
 import type { WorkspaceMcpToolName } from "@/lib/domain/workspace";
+import { isWorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
 import {
   WORKSPACE_INBOX_INDEX_MAX_ENTRIES,
   decodeWorkspaceStagedAttachmentEntry,
@@ -9,7 +10,7 @@ import type { WorkspaceConfig } from "./config";
 import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
 import { transportFailureFacts } from "../providers/providerObservability";
 import { parseWorkspaceOperation } from "./operationFence";
-import { parseOutputCaptureRequest } from "./outputManifest";
+import { outputIdentities, parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "./secrets/browserSession";
@@ -39,7 +40,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function workspaceError(value: unknown): WorkspaceRuntimeError {
   const code = isRecord(value) && typeof value.error === "string" ? value.error : "";
+  if (isWorkspaceOperationFailureCode(code)) return new WorkspaceRuntimeError(code);
   switch (code) {
+    case "workspace_capture_source_busy":
+    case "workspace_capture_source_invalid":
+    case "workspace_capture_unsupported":
     case "workspace_attachment_unavailable":
     case "workspace_storage_full":
     case "workspace_secrets_prepare_failed":
@@ -113,14 +118,14 @@ function remoteBody(open: () => Promise<Response>): ReadableStream<Uint8Array> {
   }, { highWaterMark: 0 });
 }
 
-function outputMetadata(value: unknown): Omit<WorkspaceOutputStream, "body"> | null {
+function outputMetadata(value: unknown, allowEmptyFiles = false): Omit<WorkspaceOutputStream, "body"> | null {
   if (
     !isRecord(value) ||
     typeof value.batchId !== "string" ||
     !/^[a-f0-9]{32}$/u.test(value.batchId) ||
     typeof value.byteSize !== "number" ||
     !Number.isSafeInteger(value.byteSize) ||
-    value.byteSize <= 0 ||
+    value.byteSize < (allowEmptyFiles ? 0 : 1) ||
     typeof value.checksum !== "string" ||
     !/^[a-f0-9]{64}$/u.test(value.checksum) ||
     typeof value.mimeType !== "string" ||
@@ -141,7 +146,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
   private readonly baseUrl: URL;
   private readonly token: string;
 
-  constructor(config: WorkspaceConfig) {
+  constructor(private readonly config: WorkspaceConfig) {
     if (!config.runnerUrl || !config.runnerToken || config.runtimeMode !== "remote") {
       throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     }
@@ -477,11 +482,13 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         !isRecord(value) ||
         !Array.isArray(value.content) ||
         (value.status !== "complete" && value.status !== "error") ||
-        (value.execSessionId !== undefined && !isWorkspaceRuntimeExecSessionId(value.execSessionId))
+        (value.execSessionId !== undefined && !isWorkspaceRuntimeExecSessionId(value.execSessionId)) ||
+        (value.errorCode !== undefined && !isWorkspaceOperationFailureCode(value.errorCode))
       ) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
-      finish({ outcome: value.status === "error" ? "failed" : "completed", httpStatus });
+      finish({ outcome: value.status === "error" ? "failed" : "completed", httpStatus,
+        code: isWorkspaceOperationFailureCode(value.errorCode) ? value.errorCode : undefined });
       return value as WorkspaceToolResult;
     } catch (error) {
       const facts = workspaceToolFailure(error);
@@ -555,9 +562,11 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+    const selection = selectedCaptureRequest(input, this.config.outputMaxFiles);
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/outputs/list`, {
       body: JSON.stringify({
         ...(input.capture ? { capture: parseOutputCaptureRequest(input.capture) } : {}),
+        ...(selection ? { purpose: "selected_files", selection } : {}),
         modelRunId: input.modelRunId,
         outputDirectory: input.outputDirectory,
         operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
@@ -568,8 +577,15 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     if (!isRecord(value) || !Array.isArray(value.outputs) || (input.capture && value.captureId !== input.capture.id)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
-    const metadata = value.outputs.map(outputMetadata);
+    if (selection && JSON.stringify(parseWorkspaceFileSelection(value.selection)) !== JSON.stringify(selection)) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    const metadata = value.outputs.map((entry) => outputMetadata(entry, selection !== undefined));
     if (metadata.some((entry) => entry === null)) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    if (selection && JSON.stringify(outputIdentities(metadata, this.config, true).map((file) => file.relativePath)) !==
+      JSON.stringify(selection.files.map((file) => `${file.root}/${file.relativePath}`))) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     return (metadata as Omit<WorkspaceOutputStream, "body">[])
@@ -593,7 +609,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     if (!isRecord(value) || !Array.isArray(value.outputs) || value.outputs.length > WORKSPACE_BROWSER_SESSION_MAX_COUNT ||
       !Array.isArray(value.skipped) || value.skipped.length > 130 ||
       !value.skipped.every((code) => WORKSPACE_BROWSER_SKIP_CODES.includes(code))) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-    const metadata = value.outputs.map(outputMetadata);
+    const metadata = value.outputs.map((entry) => outputMetadata(entry));
     if (metadata.some((entry) => !entry || !isWorkspaceBrowserSessionFilename(entry.relativePath) ||
       entry.byteSize > WORKSPACE_BROWSER_SESSION_MAX_BYTES)) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     return { files: (metadata as Omit<WorkspaceOutputStream, "body">[]).map((entry) => this.output(input.sessionId, entry, input.signal)),

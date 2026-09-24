@@ -88,6 +88,7 @@ export type ModelRunSseEvent =
       type: "artifact";
       data: {
         artifactType:
+          | "workspace_checkpoint"
           | "generated_artifact"
           | "image"
           | "citation"

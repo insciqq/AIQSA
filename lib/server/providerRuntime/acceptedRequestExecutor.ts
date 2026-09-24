@@ -31,6 +31,7 @@ type RuntimeClient = Pick<PrismaClient, "$transaction">;
 
 type AcceptedRequestExecutorOptions = Readonly<{
   createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
+  disableRequestRetries?: boolean;
   encryptionKey?: () => Buffer;
 }>;
 
@@ -108,7 +109,7 @@ export function createAcceptedProviderRequestExecutor(
         }
       : baseFetch;
     const runtime = createProviderRuntimeBinding({
-      options: { allowFake: false, fetchFn },
+      options: { allowFake: false, fetchFn, disableRequestRetries: options.disableRequestRetries },
       secret: authenticationMode === "none"
         ? null
         : async () => {

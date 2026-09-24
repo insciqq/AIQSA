@@ -122,9 +122,9 @@ async function fixture(vision = false, temporary = false, workspace = false, nat
 
 afterEach(async () => {
   if (previousPdfPolicy) {
-    const { chatPdfNativeProviderModelId, chatPdfNativeReasoningEffort, chatPdfProcessingMode, chatPdfFallbackMethod, version } = previousPdfPolicy;
+    const { chatPdfNativeProviderModelId, chatPdfNativeReasoningEffort, chatPdfProcessingMode, chatPdfFallbackMethod, visionProviderModelId, visionReasoningEffort, version } = previousPdfPolicy;
     await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
-      chatPdfNativeProviderModelId, chatPdfNativeReasoningEffort, chatPdfProcessingMode, chatPdfFallbackMethod, version
+      chatPdfNativeProviderModelId, chatPdfNativeReasoningEffort, chatPdfProcessingMode, chatPdfFallbackMethod, visionProviderModelId, visionReasoningEffort, version
     } });
     previousPdfPolicy = null;
   }
@@ -154,12 +154,14 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("chat PDF database lifecycle", () => {
-  it("keeps native reader work and its policy immutable after an administrator changes future routing", async () => {
+  it.each(["pdf", "vision"] as const)("keeps accepted PDF work immutable after an administrator changes future %s routing", async (changedRole) => {
     const h = await fixture(true, false, false, true);
     const row = await prisma.chatPdfAttachmentPreparation.findUniqueOrThrow({ where: { id: h.preparationId } });
     expect(chatPdfAdmissionFromRow(row)).toMatchObject(h.admission);
     await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
-      chatPdfProcessingMode: "READ_PAGE_IMAGES", chatPdfNativeProviderModelId: null, version: { increment: 1 }
+      ...(changedRole === "vision" ? { visionProviderModelId: h.admission.snapshot!.providerModelId, visionReasoningEffort: null }
+        : { chatPdfProcessingMode: "READ_PAGE_IMAGES" as const, chatPdfNativeProviderModelId: null }),
+      version: { increment: 1 }
     } });
     await h.savePlan();
     await expect(prisma.chatPdfAttachmentPreparation.update({ where: { id: h.preparationId }, data: { processingMode: "read_page_images" } }))

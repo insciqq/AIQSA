@@ -1,5 +1,6 @@
 import { isMcpDiscoveryFailureMessage } from "./mcpDiscoveryFailure";
 import { isMcpToolFailureMessage } from "./mcpToolFailure";
+import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "./workspaceFailure";
 
 export const WORKSPACE_SESSION_STATES = Object.freeze([
   "not_started",
@@ -17,15 +18,12 @@ export const WORKSPACE_UNAVAILABLE_REASONS = Object.freeze([
 ] as const);
 
 export const WORKSPACE_ERROR_CODES = Object.freeze([
+  ...Object.keys(WORKSPACE_OPERATION_FAILURE_MESSAGES) as Array<keyof typeof WORKSPACE_OPERATION_FAILURE_MESSAGES>,
   "workspace_disabled",
-  "workspace_runtime_unavailable",
   "workspace_model_tools_required",
   "workspace_busy",
   "workspace_session_create_failed",
-  "workspace_session_lost",
   "workspace_runtime_incompatible",
-  "workspace_tool_timeout",
-  "workspace_tool_cancelled",
   "workspace_attachment_unavailable",
   "workspace_storage_full",
   "workspace_secrets_prepare_failed",
@@ -63,7 +61,19 @@ export const UNAVAILABLE_CHAT_WORKSPACE_STATE: ChatWorkspaceState = Object.freez
   unavailableReason: "installation_disabled"
 });
 
+export type ThreadWorkspaceCheckpoint = Readonly<{
+  id: string;
+  description: string;
+  createdAt: string;
+}>;
+
+export type ThreadWorkspaceCheckpointOutput = Readonly<{
+  checkpoint: ThreadWorkspaceCheckpoint;
+  files: readonly ThreadGeneratedFile[];
+}>;
+
 export type ThreadGeneratedFile = Readonly<{
+  checkpoint?: ThreadWorkspaceCheckpoint;
   attachmentId: string;
   byteSize: number;
   fileName: string;
@@ -146,6 +156,35 @@ export function decodeChatWorkspaceState(value: unknown): ChatWorkspaceState | n
   };
 }
 
+export function decodeThreadWorkspaceCheckpoint(value: unknown): ThreadWorkspaceCheckpoint | null {
+  if (!isRecord(value) || Object.keys(value).some(key => !["id", "description", "createdAt"].includes(key)) ||
+    !isBoundedString(value.id) || /\s/u.test(value.id) ||
+    !isBoundedString(value.description, 300) || value.description.trim() !== value.description ||
+    typeof value.createdAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.createdAt) ||
+    !Number.isFinite(Date.parse(value.createdAt)) || new Date(value.createdAt).toISOString() !== value.createdAt) return null;
+  return { id: value.id, description: value.description, createdAt: value.createdAt };
+}
+
+/** A single settled publication; rejects mixed identities and private envelope fields. */
+export function decodeThreadWorkspaceCheckpointOutput(value: unknown): ThreadWorkspaceCheckpointOutput | null {
+  if (!isRecord(value) || Object.keys(value).some(key => !["checkpoint", "files"].includes(key)) ||
+    !Array.isArray(value.files) || value.files.length < 1 || value.files.length > 8) return null;
+  const checkpoint = decodeThreadWorkspaceCheckpoint(value.checkpoint);
+  if (!checkpoint) return null;
+  const files: ThreadGeneratedFile[] = [];
+  const ids = new Set<string>();
+  for (const item of value.files) {
+    if (!isRecord(item) || Object.keys(item).some(key => !["attachmentId", "byteSize", "fileName", "mimeType", "relativePath", "checkpoint"].includes(key))) return null;
+    const file = decodeThreadGeneratedFile(item);
+    if (!file?.checkpoint || file.checkpoint.id !== checkpoint.id ||
+      file.checkpoint.description !== checkpoint.description || file.checkpoint.createdAt !== checkpoint.createdAt ||
+      ids.has(file.attachmentId)) return null;
+    ids.add(file.attachmentId);
+    files.push(file);
+  }
+  return { checkpoint, files };
+}
+
 export function decodeThreadGeneratedFile(value: unknown): ThreadGeneratedFile | null {
   if (
     !isRecord(value) ||
@@ -158,13 +197,43 @@ export function decodeThreadGeneratedFile(value: unknown): ThreadGeneratedFile |
   ) {
     return null;
   }
+  const checkpoint = value.checkpoint === undefined ? undefined : decodeThreadWorkspaceCheckpoint(value.checkpoint);
+  if (checkpoint === null) return null;
   return {
+    ...(checkpoint ? { checkpoint } : {}),
     attachmentId: value.attachmentId,
     byteSize: value.byteSize as number,
     fileName: value.fileName,
     mimeType: value.mimeType,
     relativePath: value.relativePath
   };
+}
+
+/** Final exports (runtime ceiling 100) plus 16 checkpoints of at most 8 files. */
+export function decodeThreadGeneratedFiles(value: unknown): ThreadGeneratedFile[] | null {
+  if (!Array.isArray(value) || value.length > 228) return null;
+  const files: ThreadGeneratedFile[] = [];
+  const attachmentIds = new Set<string>();
+  const finalPaths = new Set<string>();
+  const checkpoints = new Map<string, { metadata: ThreadWorkspaceCheckpoint; count: number }>();
+  for (const item of value) {
+    const file = decodeThreadGeneratedFile(item);
+    if (!file || attachmentIds.has(file.attachmentId)) return null;
+    attachmentIds.add(file.attachmentId);
+    if (file.checkpoint) {
+      const current = checkpoints.get(file.checkpoint.id);
+      if (current && (current.metadata.description !== file.checkpoint.description ||
+        current.metadata.createdAt !== file.checkpoint.createdAt || current.count >= 8)) return null;
+      checkpoints.set(file.checkpoint.id, { metadata: file.checkpoint, count: (current?.count ?? 0) + 1 });
+      if (checkpoints.size > 16) return null;
+    } else {
+      if (finalPaths.has(file.relativePath)) return null;
+      finalPaths.add(file.relativePath);
+      if (finalPaths.size > 100) return null;
+    }
+    files.push(file);
+  }
+  return files;
 }
 
 export function decodeWorkspaceRuntimeHealth(
@@ -239,6 +308,7 @@ export const WORKSPACE_ACTIVITY_KINDS = Object.freeze([
   "folder_create",
   "file_check",
   "outputs_export",
+  "execution_status",
   "file_change",
   "mcp_call",
   "search",
@@ -252,7 +322,9 @@ export const WORKSPACE_ACTIVITY_PHASES = Object.freeze([
   "running",
   "succeeded",
   "failed",
-  "cancelled"
+  "cancelled",
+  "closed",
+  "unknown"
 ] as const);
 
 export type WorkspaceActivityKind = (typeof WORKSPACE_ACTIVITY_KINDS)[number];
@@ -315,6 +387,8 @@ export type ThreadWorkspaceActivityEntry = Readonly<{
 }>;
 
 export type ThreadWorkspaceOutputStatus = Readonly<{
+  /** Durable binding revision, never browser time. */
+  revision?: string;
   errorCode?: WorkspaceErrorCode;
   state: "complete" | "exporting" | "failed" | "retrying";
 }>;
@@ -459,6 +533,7 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     ? value.phase as WorkspaceActivityPhase
     : null;
   if (!id || !kind || !phase) return null;
+  if (kind === "execution_status" && phase !== "closed" && phase !== "unknown") return null;
   const sequence = value.sequence === undefined ? undefined : boundedCount(value.sequence, Number.MAX_SAFE_INTEGER);
   if (sequence === null) return null;
   const firstSequence = value.firstSequence === undefined ? undefined : boundedCount(value.firstSequence, Number.MAX_SAFE_INTEGER);
@@ -580,7 +655,7 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
 }
 
 export function decodeThreadWorkspaceOutputStatus(value: unknown): ThreadWorkspaceOutputStatus | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, new Set(["errorCode", "state"]))) return null;
+  if (!isRecord(value) || !hasOnlyKeys(value, new Set(["errorCode", "state", "revision"]))) return null;
   const state = value.state === "complete" || value.state === "exporting" ||
     value.state === "failed" || value.state === "retrying"
     ? value.state
@@ -590,7 +665,11 @@ export function decodeThreadWorkspaceOutputStatus(value: unknown): ThreadWorkspa
     ? undefined
     : isWorkspaceErrorCode(value.errorCode) ? value.errorCode : null;
   if (value.errorCode !== undefined && !errorCode) return null;
-  return { ...(errorCode ? { errorCode } : {}), state };
+  const revision = value.revision;
+  if (revision !== undefined && (typeof revision !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(revision) ||
+    !Number.isFinite(Date.parse(revision)) || new Date(revision).toISOString() !== revision)) return null;
+  return { ...(errorCode ? { errorCode } : {}), ...(typeof revision === "string" ? { revision } : {}), state };
 }
 
 export function decodeThreadWorkspaceActivity(value: unknown): ThreadWorkspaceActivity | null {

@@ -2,6 +2,8 @@ import type { WorkspaceOperation } from "./operationFence";
 import type { AcceptedWorkspaceSecret } from "./secrets/store";
 import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
 import type { AgentExecutionOutputPage } from "../agents/executionOutput";
+import type { WorkspaceFileSelection } from "./outputManifest";
+import type { WorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
 import type {
   WorkspaceMcpToolName,
   WorkspaceStagedAttachmentEntry
@@ -58,6 +60,7 @@ export type WorkspaceToolCatalog = Readonly<{
 }>;
 
 export type WorkspaceToolResult = Readonly<{
+  errorCode?: WorkspaceOperationFailureCode;
   content: readonly Readonly<{
     text?: string;
     type: "json" | "text";
@@ -250,6 +253,8 @@ export interface WorkspaceRuntime {
   collectOutputs(input: Readonly<{
     /** Create once, then read only this private capture even after guest mutation. */
     capture?: Readonly<{ create: boolean; id: string }>;
+    /** Mid-run, exact files only. Requires capture and current operation authority. */
+    selection?: WorkspaceFileSelection;
     modelRunId: string;
     outputDirectory: string;
     runtimeSandboxId: string;
@@ -308,6 +313,10 @@ export interface WorkspaceRuntime {
 
 export class WorkspaceRuntimeError extends Error {
   readonly code:
+    | WorkspaceOperationFailureCode
+    | "workspace_capture_source_busy"
+    | "workspace_capture_source_invalid"
+    | "workspace_capture_unsupported"
     | "workspace_agent_output_invalid"
     | "workspace_attachment_unavailable"
     | "workspace_storage_full"

@@ -308,6 +308,7 @@ describe("Prisma admin provider repository", () => {
           { rerankerProviderModelId: "model-1" },
           { chatTitleProviderModelId: "model-1" },
           { chatPdfProviderModelId: "model-1" },
+          { visionProviderModelId: "model-1" },
           { chatPdfNativeProviderModelId: "model-1" }
         ]
       }

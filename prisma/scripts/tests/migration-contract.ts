@@ -1,3 +1,7 @@
+import { WORKSPACE_CHECKPOINT_MIGRATION, workspaceCheckpointFixtureSql, workspaceCheckpointProofSql } from "./workspace-checkpoint-adoption";
+import { VISION_ANALYSIS_MIGRATION, visionAnalysisFixtureSql, visionAnalysisProofSql } from "./vision-analysis-adoption";
+import { VISION_MODEL_ROLE_MIGRATION, visionModelRoleFixtureSql, visionModelRoleProofSql, visionModelRoleRepeatProofSql } from "./vision-model-role-adoption";
+import { WORKSPACE_SELECTED_CAPTURE_MIGRATION, workspaceSelectedCaptureFixtureSql, workspaceSelectedCaptureProofSql } from "./workspace-selected-capture-adoption";
 import { ARTIFACT_VERSIONED_MIGRATION, artifactVersionedFixtureSql, artifactVersionedProofSql } from "./artifact-versioned-adoption";
 import { RUN_FOLLOWUPS_MIGRATION, runFollowupsFixtureSql, runFollowupsProofSql } from "./run-followups-adoption";
 import { NATIVE_ROUTING_MIGRATION, nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql } from "./openrouter-native-routing-adoption";
@@ -7374,6 +7378,8 @@ function main(
   for (const database of databases) {
     deployAndVerify(database, migrations, shadowDatabase);
     psqlScalar(database, `DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "visionProviderModelId" IS NOT NULL OR "visionReasoningEffort" IS NOT NULL)
+        THEN RAISE EXCEPTION 'fresh_vision_role_not_unassigned'; END IF;
       IF EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "chatTitleProviderModelId" IS NOT NULL
         OR "chatTitleReasoningEffort" IS NOT NULL OR "chatTitleConfiguredAt" IS NOT NULL)
         THEN RAISE EXCEPTION 'fresh_title_role_not_unassigned'; END IF;
@@ -7459,6 +7465,16 @@ function main(
       THEN RAISE EXCEPTION 'Workspace default migration changed a saved administrator policy'; END IF;
     END $$;`);
 
+  for (const assigned of [false, true]) {
+    runForwardAdoptionProof(shadowDatabase, migrations, VISION_MODEL_ROLE_MIGRATION,
+      visionModelRoleFixtureSql(assigned), visionModelRoleProofSql(assigned), visionModelRoleRepeatProofSql);
+  }
+  runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_MIGRATION,
+    workspaceCheckpointFixtureSql, workspaceCheckpointProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, VISION_ANALYSIS_MIGRATION,
+    visionAnalysisFixtureSql, visionAnalysisProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_SELECTED_CAPTURE_MIGRATION,
+    workspaceSelectedCaptureFixtureSql, workspaceSelectedCaptureProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_ROLE_MIGRATION,
     chatTitleRoleAdoptionFixtureSql(), chatTitleRoleAdoptionProofSql(), chatTitleRoleClearProofSql());
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_SETUP_MIGRATION,

@@ -66,10 +66,12 @@ export function AdminRolePicker({
     triggerRef
   } = useComposerPickerSession({
     dialogId,
-    disabled: disabled || busy,
+    // Keep the checked choice visible on failure/conflict; block all selection
+    // while the asynchronous check is in flight. Ordinary saves still close.
+    disabled: disabled || busy && checkingId === null,
     initialFocus: "selected",
     itemFocusPreventScroll: true,
-    items: ready,
+    items: busy ? [] : ready,
     onSelect: (item) => onSelect(item.id),
     openFromTriggerKeys: true,
     selectedIndex
@@ -149,6 +151,7 @@ export function AdminRolePicker({
                     key={item.id}
                     {...getItemProps(index)}
                     aria-selected={selected}
+                    disabled={busy}
                     className={`flex min-h-[2.125rem] w-full min-w-0 items-center gap-2 rounded-control px-2 text-left text-sm ${focusRing} ${touchTarget} ${
                       selected ? "bg-control-selected text-ink" : active ? "bg-control-hover text-ink" : "text-ink hover:bg-control-hover"
                     }`}

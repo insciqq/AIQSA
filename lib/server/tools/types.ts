@@ -35,6 +35,7 @@ export type ModelToolCall = {
 };
 
 export type ToolExecutionContent =
+  | { type: "workspace_image"; value: import("../workspace/directImageEvidence").WorkspaceImageEvidence }
   | {
       text: string;
       type: "text";

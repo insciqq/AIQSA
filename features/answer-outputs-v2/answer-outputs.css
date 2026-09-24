@@ -92,13 +92,18 @@
 .v2-generated-files li {
   display: grid;
   min-width: 0;
-  grid-template-columns: 1rem minmax(0, 1fr) auto;
+  grid-template-columns: var(--v2-generated-file-icon-column, 1rem) minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.625rem;
   border: 1px solid var(--v2-color-border);
   border-radius: var(--v2-radius-m);
   background: var(--v2-color-surface2);
+}
+
+/* Keep conversation file text clear of the floating jump control's left lane. */
+.v2-conversation-scroll .v2-generated-files {
+  --v2-generated-file-icon-column: 2rem;
 }
 
 .v2-generated-file-copy {
@@ -129,6 +134,10 @@
   font-size: 0.6875rem;
 }
 
+.v2-generated-file-description {
+  overflow-wrap: anywhere;
+}
+
 .v2-generated-file-download {
   display: inline-flex;
   min-height: 2rem;
@@ -153,7 +162,7 @@
 
 @media (max-width: 30rem) {
   .v2-generated-files li {
-    grid-template-columns: 1rem minmax(0, 1fr);
+    grid-template-columns: var(--v2-generated-file-icon-column, 1rem) minmax(0, 1fr);
   }
 
   .v2-generated-file-download {

@@ -7,6 +7,7 @@ import { buildOpenRouterChatRequest } from "../providers/openRouterChatRequest";
 import { buildOpenAICompatibleChatRequest } from "../providers/openaiCompatibleChatRequest";
 import { buildAnthropicMessagesRequest } from "../providers/anthropicMessages";
 import { buildGeminiInteractionsRequest } from "../providers/geminiInteractionsRequest";
+import { ProviderRequestTimeoutError } from "../providers/network";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { runProviderToolLoop } from "./providerToolLoop";
@@ -178,6 +179,30 @@ describe("in-run clarification execution", () => {
     await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 1_000, closeOnFinal: true }));
     expect(timeouts).toEqual([1_000, 600]);
     expect(f.onInterruptedUsage.mock.calls[0]?.[0]).toMatchObject({ inputTokens: null, outputTokens: null, completeness: "unavailable" });
+  });
+
+  it("retains a typed provider deadline before headers without retrying the request", async () => {
+    vi.useFakeTimers();
+    const f = fixture(), started = deferred();
+    let calls = 0;
+    const adapter: Pick<ProviderAdapter, "stream"> = { async *stream(_request, options) {
+      calls++;
+      started.resolve();
+      await new Promise<never>((_resolve, reject) => {
+        options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true });
+      });
+      return result("unreachable");
+    } };
+    const completed = f.consume(f.execution.stream(request(), {
+      adapter, signal: new AbortController().signal, timeoutMs: 45_000, closeOnFinal: true
+    }));
+    const rejected = expect(completed).rejects.toBeInstanceOf(ProviderRequestTimeoutError);
+    await started.promise;
+    await vi.advanceTimersByTimeAsync(45_000);
+    await rejected;
+    expect(calls).toBe(1);
+    expect(f.onInterruptedUsage).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("waits for an in-flight tool and carries its settled result into the clarified request", async () => {

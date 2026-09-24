@@ -39,7 +39,22 @@ describe("Workspace export history", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Export history could not be loaded");
     resolve(Response.json({ exports: [entry("old-answer")], nextCursor: null }));
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText("No completed exports yet.")).toBeVisible();
+    expect(await screen.findByText("No saved drafts or final exports yet.")).toBeVisible();
     expect(screen.queryByText("report.xlsx")).not.toBeInTheDocument();
   });
+});
+
+
+it("reloads and explicitly reuses the chosen draft when names match", async () => {
+  const checkpoint = { id: "cp-1", description: "Original composition", createdAt: "2026-09-24T09:00:00.000Z" };
+  const first = { ...file("draft-one", "result.psd"), checkpoint };
+  const second = { ...file("draft-two", "result.psd"), checkpoint: { ...checkpoint, id: "cp-2", description: "Adjusted composition" } };
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ exports: [entry("failed-answer", [first, second])], nextCursor: null })));
+  const onUse = vi.fn(async () => true);
+  render(<WorkspaceExportHistoryV2 branchKey="leaf" canSave={false} chatId="chat" onClose={vi.fn()} onMessage={vi.fn()} onUse={onUse} />);
+  expect(await screen.findByText("Original composition")).toBeVisible();
+  expect(screen.getByText("Adjusted composition")).toBeVisible();
+  expect(screen.getAllByText(/Saved draft ·/)).toHaveLength(2);
+  fireEvent.click(screen.getAllByRole("button", { name: "Use file" })[0]!);
+  await waitFor(() => expect(onUse).toHaveBeenCalledWith("draft-one", "result.psd"));
 });

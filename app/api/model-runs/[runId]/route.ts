@@ -1,3 +1,4 @@
+import { visionAnalysisForStorage } from "@/lib/server/vision/defaultVision";
 import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
 import { artifactServiceForStorage } from "@/lib/server/artifacts/defaultArtifacts";
 import { defaultSkillTools } from "@/lib/server/skills/defaultSkillTools";
@@ -26,6 +27,7 @@ export const GET: AsyncRouteHandler<ReturnType<typeof createGetModelRunHandler>>
   knowledgeExecutor: knowledgeToolExecutor,
   knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
   images: imageGenerationForStorage(storage),
+  vision: visionAnalysisForStorage(storage),
   artifacts: artifactServiceForStorage(storage),
   skillTools: defaultSkillTools,
   memoryEgress: defaultMemoryToolEgressReceiptService,

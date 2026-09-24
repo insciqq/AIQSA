@@ -67,6 +67,7 @@ import type {
 } from "@/components/app-shell/types";
 import {
   attachmentBlocksFromThreadContent,
+  mergeLiveThreadArtifacts,
   textFromThreadContent
 } from "@/components/app-shell/threadContent";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -1090,7 +1091,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     }
     const events = source.runId === thread.currentRunId ? thread.events : [];
     const artifact = source.runId === thread.currentRunId
-      ? thread.liveArtifactSummary ?? source.artifactSummary ?? null
+      ? mergeLiveThreadArtifacts(source.artifactSummary, thread.liveArtifactSummary)
       : source.artifactSummary ?? null;
     // A genuinely lost stream transport (reader error / end without a
     // terminal frame, recorded by the run-lifecycle store) presents as the
@@ -1111,7 +1112,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       runId: source.runId ?? null
     });
     const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null);
-    const workspaceActivity = presentWorkspaceActivityV2(events, source.workspaceActivity ?? null);
+    const workspaceActivity = presentWorkspaceActivityV2(events, source.workspaceActivity ?? null,
+      !transportLost && (source.status === "complete" || source.status === "error" || source.status === "cancelled"));
     // Model-written `sandbox:` links resolve only against this run's own
     // settled generated files; anything else renders as inert text.
     const generatedFiles = artifact?.generatedFiles ?? [];
@@ -1168,9 +1170,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         processDisclosureId={source.runId ?? source.id}
         actions={settled ? actions : undefined}
         actionsSlot={<>
-              {settled ? <><SentAttachmentsV2 blocks={copiedAttachments} canSave={!projectContext && !temporarySession} />
+              {settled ? <SentAttachmentsV2 blocks={copiedAttachments} canSave={!projectContext && !temporarySession} /> : null}
               <AnswerOutputsV2
                 artifact={artifact}
+                live={!settled}
                 canSaveFiles={!projectContext && !temporarySession}
                 onEditArtifact={projectContext || temporarySession ? undefined : generated => editArtifact(generated)}
                 onOpenArtifact={projectContext || temporarySession ? undefined : (generated, source) => {
@@ -1185,7 +1188,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   }
                 }}
                 workspaceOutputStatus={workspaceActivity?.outputStatus ?? null}
-              /></> : null}
+              />
               {source.id === thread.artifactDraftMessageId && thread.artifactDrafts?.length ? <ArtifactGenerationCardsV2
                 drafts={thread.artifactDrafts} savedArtifacts={settled ? artifact?.generatedArtifacts ?? [] : []}
                 onOpen={(draftId, source) => { if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, draftId }, source); }}

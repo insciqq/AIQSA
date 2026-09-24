@@ -450,12 +450,33 @@ describe("provider tool loop", () => {
     );
     expect(outcome).toMatchObject({
       failure: {
-        code: "provider_publication_stopped",
-        message: "publication stopped",
-        stage: "provider"
+        code: "run_result_publication_failed",
+        message: expect.stringContaining("application could not publish"),
+        stage: "persistence"
       },
       status: "failed"
     });
+  });
+
+  it.each([new Error("PRIVATE Authorization Bearer header https://private/?token=secret"), new DOMException("PRIVATE_LOCAL_TIMEOUT", "TimeoutError")])("attributes terminal usage-write failure to persistence and never executes requested tools (%s)", async failure => {
+    const dispatch = vi.fn();
+    const executeTool = vi.fn();
+    const onUsage = vi.fn(() => { throw failure; });
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream() {
+      dispatch();
+      return { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 7, outputTokens: 3 },
+        toolCalls: [{ id: "once", name: "alpha", arguments: {} }] };
+    } };
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 }, executeTool,
+      initialRequest: request(), onUsage, parallelToolCalls: false,
+      tools: [{ capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" }] });
+    expect(outcome).toMatchObject({ status: "failed", failure: { code: "run_usage_persistence_failed", stage: "persistence" } });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE");
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(onUsage).toHaveBeenCalledOnce();
+    expect(onUsage.mock.calls[0]).toEqual([expect.objectContaining({ inputTokens: 7, outputTokens: 3 }), expect.anything(), { completeness: "terminal", round: 1 }]);
   });
 
   it("labels the latest streamed usage as partial when a provider round fails", async () => {
@@ -489,7 +510,7 @@ describe("provider tool loop", () => {
       { completeness: "partial", round: 1 }
     );
     expect(outcome).toMatchObject({
-      failure: { message: "provider disconnected", stage: "provider" },
+      failure: { message: "Provider round 1 failed.", stage: "provider" },
       status: "failed"
     });
   });
@@ -574,7 +595,7 @@ describe("provider tool loop", () => {
     expect(outcome).toMatchObject({
       failure: {
         code: "provider_round_failed",
-        message: "anthropic_message_refusal",
+        message: "Provider round 2 failed.",
         round: 2,
         stage: "provider"
       },
@@ -635,7 +656,7 @@ describe("provider tool loop", () => {
     expect(outcome).toMatchObject({
       failure: {
         code: "provider_round_failed",
-        message: "anthropic_message_terminal_invalid",
+        message: "Provider round 1 failed.",
         round: 1,
         stage: "provider"
       },

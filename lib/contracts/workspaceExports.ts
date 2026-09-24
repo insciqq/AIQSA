@@ -1,4 +1,4 @@
-import { decodeThreadGeneratedFile, type ThreadGeneratedFile } from "./workspace";
+import { decodeThreadGeneratedFiles, type ThreadGeneratedFile } from "./workspace";
 
 export const WORKSPACE_EXPORT_PAGE_SIZE = 30;
 export type WorkspaceExportEntry = Readonly<{
@@ -23,10 +23,10 @@ export function decodeWorkspaceExportPage(value: unknown): WorkspaceExportPage |
   for (const item of value.exports) {
     if (typeof item !== "object" || item === null || !identifier(item.messageId) ||
       typeof item.createdAt !== "string" || !Number.isFinite(Date.parse(item.createdAt)) ||
-      !Array.isArray(item.files) || item.files.length === 0 || item.files.length > 100) return null;
-    const files = item.files.map(decodeThreadGeneratedFile);
-    if (files.some((file: ThreadGeneratedFile | null) => file === null)) return null;
-    entries.push({ createdAt: new Date(item.createdAt).toISOString(), files: files as ThreadGeneratedFile[], messageId: item.messageId });
+      !Array.isArray(item.files) || item.files.length === 0) return null;
+    const files = decodeThreadGeneratedFiles(item.files);
+    if (!files) return null;
+    entries.push({ createdAt: new Date(item.createdAt).toISOString(), files, messageId: item.messageId });
   }
   return { exports: entries, nextCursor: value.nextCursor };
 }

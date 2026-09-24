@@ -10,6 +10,28 @@ function session(role: "admin" | "user" = "admin") {
 }
 
 describe("administrator system model policy handlers", () => {
+  it.each(["admin", "user"] as const)("guards independent Vision writes for %s", async (role) => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session(role)) as never, service: service as never });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedVersion: 4, visionProviderModelId: null, visionReasoningEffort: null })
+    }));
+    expect(response.status).toBe(role === "admin" ? 200 : 403);
+    if (role === "admin") expect(service.update).toHaveBeenCalledExactlyOnceWith({
+      expectedVersion: 4, visionProviderModelId: null, visionReasoningEffort: null, userId: "user-1"
+    });
+    else expect(service.update).not.toHaveBeenCalled();
+  });
+  it.each([{ visionProviderModelId: "vision" }, { visionProviderModelId: null, visionReasoningEffort: "low" },
+    { visionProviderModelId: "vision", visionReasoningEffort: null, visionAnalysisAvailable: true }])("rejects incomplete or authority-bearing Vision updates %j", async (patch) => {
+    const service = { list: vi.fn(), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 4, ...patch })
+    }));
+    expect(response.status).toBe(400); expect(service.update).not.toHaveBeenCalled();
+  });
   it.each([null, "decision-model"])("saves only the independent optional role (%s)", async (decisionProviderModelId) => {
     const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
     const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });

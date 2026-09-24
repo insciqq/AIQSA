@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   decodeChatWorkspaceState,
   decodeThreadGeneratedFile,
+  decodeThreadGeneratedFiles,
+  decodeThreadWorkspaceCheckpointOutput,
   decodeThreadWorkspaceActivity,
   decodeThreadWorkspaceActivityEntry,
   decodeWorkspacePolicyResponse,
@@ -193,4 +195,46 @@ describe("workspace activity contract", () => {
     expect(decodeThreadWorkspaceActivity({ entries: [entry], outputStatus: { state: "unknown" } })).toBeNull();
     expect(decodeThreadWorkspaceActivity({ entries: "nope" })).toBeNull();
   });
+});
+
+
+describe("settled Workspace checkpoint contract", () => {
+  const checkpoint = { id: "checkpoint-1", description: "First useful result", createdAt: "2026-09-24T09:00:00.000Z" };
+  const file = { attachmentId: "draft-1", byteSize: 7, fileName: "result.psd", mimeType: "image/vnd.adobe.photoshop", relativePath: "result.psd", checkpoint };
+  it("retains the exact saved identity on reload and rejects malformed draft provenance", () => {
+    expect(decodeThreadGeneratedFile(file)).toEqual(file);
+    expect(decodeThreadWorkspaceCheckpointOutput({ checkpoint, files: [file] })).toEqual({ checkpoint, files: [file] });
+    for (const invalid of [null, {}, { ...checkpoint, description: " " }, { ...checkpoint, description: "x".repeat(301) },
+      { ...checkpoint, description: "line\nbreak" }, { ...checkpoint, createdAt: "2026-02-30T09:00:00.000Z" },
+      { ...checkpoint, createdAt: "2026-09-24" }, { ...checkpoint, id: "two ids" }, { ...checkpoint, captureId: "private" }]) {
+      expect(decodeThreadGeneratedFile({ ...file, checkpoint: invalid })).toBeNull();
+    }
+  });
+  it("rejects mixed identity, duplicate attachments, empty or excessive sets and private metadata", () => {
+    for (const files of [[], Array(9).fill(file), [file, file], [{ ...file, checkpoint: { ...checkpoint, id: "other" } }],
+      [{ ...file, checkpoint: undefined }], [{ ...file, storageKey: "private" }]]) {
+      expect(decodeThreadWorkspaceCheckpointOutput({ checkpoint, files })).toBeNull();
+    }
+    expect(decodeThreadWorkspaceCheckpointOutput({ checkpoint, files: [file], state: "UPLOADING" })).toBeNull();
+  });
+});
+
+
+it("bounds combined final exports and checkpoints without collapsing saved paths", () => {
+  const file = { attachmentId: "file", byteSize: 7, fileName: "result.psd", mimeType: "application/octet-stream", relativePath: "result.psd" };
+  const checkpoint = { id: "cp", description: "Draft", createdAt: "2026-09-24T09:00:00.000Z" };
+  const finals = Array.from({ length: 100 }, (_, index) => ({ ...file, attachmentId: `final-${index}`, relativePath: `file-${index}` }));
+  const drafts = Array.from({ length: 128 }, (_, index) => ({ ...file, attachmentId: `draft-${index}`, checkpoint: { ...checkpoint, id: `cp-${Math.floor(index / 8)}` } }));
+  expect(decodeThreadGeneratedFiles([...drafts, ...finals])).toHaveLength(228);
+  expect(decodeThreadGeneratedFiles([...drafts, ...finals, file])).toBeNull();
+  expect(decodeThreadGeneratedFiles([...finals, file])).toBeNull();
+  expect(decodeThreadGeneratedFiles([...drafts.slice(0, 8), { ...drafts[0], attachmentId: "ninth" }])).toBeNull();
+  expect(decodeThreadGeneratedFiles([drafts[0], { ...drafts[1], checkpoint: { ...drafts[1]!.checkpoint, description: "mismatch" } }])).toBeNull();
+});
+
+it("decodes neutral execution receipts and rejects invented success or private proof fields", () => {
+  const receipt = { id: "execution_status:opaque", kind: "execution_status", phase: "closed" };
+  expect(decodeThreadWorkspaceActivityEntry(receipt)).toEqual(receipt);
+  expect(decodeThreadWorkspaceActivityEntry({ ...receipt, phase: "succeeded" })).toBeNull();
+  expect(decodeThreadWorkspaceActivityEntry({ ...receipt, runtimeSandboxId: "private" })).toBeNull();
 });

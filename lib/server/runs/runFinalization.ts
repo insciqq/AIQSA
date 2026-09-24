@@ -1,3 +1,4 @@
+import { RunSettlementError } from "./settlementFailure";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, type ModelTokenPricing } from "../../domain/usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
@@ -53,8 +54,8 @@ export async function usageWithEstimatedCost(
 ): Promise<ModelRunUsage> {
   const normalizedUsage = normalizeTokenUsage(input.usage);
   const pricing = input.providerModelId
-    ? await repository.loadModelPricing(input.provider, input.modelId, input.providerModelId)
-    : await repository.loadModelPricing(input.provider, input.modelId);
+    ? await repository.loadModelPricing(input.provider, input.modelId, input.providerModelId).catch(error => { throw new RunSettlementError("accounting", error); })
+    : await repository.loadModelPricing(input.provider, input.modelId).catch(error => { throw new RunSettlementError("accounting", error); });
   const estimatedCostMicros = hasUsablePricing(pricing) ? estimateCostMicros(normalizedUsage, pricing) : null;
 
   return {
@@ -188,8 +189,8 @@ export async function finalizeRunCompletion(input: Readonly<{
     userId: input.run.userId
   };
   if (input.afterAnswerPublished) {
-    if (!input.repository.publishRunAnswer) throw new Error("run_answer_publication_unavailable");
-    if (!(await input.repository.publishRunAnswer(completion))) return { status: "not_completed" };
+    if (!input.repository.publishRunAnswer) throw new RunSettlementError("publication", undefined);
+    if (!(await input.repository.publishRunAnswer(completion).catch(error => { throw new RunSettlementError("publication", error); }))) return { status: "not_completed" };
     await input.afterAnswerPublished({ finalText: completion.finalText, usage });
   }
   let completed: boolean;
@@ -197,7 +198,7 @@ export async function finalizeRunCompletion(input: Readonly<{
     completed = await input.repository.completeRun(completion);
   } catch (error) {
     logRunPersistence(input.run.runId, "complete", "unconfirmed", error);
-    throw error;
+    throw new RunSettlementError("completion", error);
   }
   logRunPersistence(input.run.runId, "complete", completed ? "confirmed" : "not_applied");
 

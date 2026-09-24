@@ -1,3 +1,4 @@
+import { workspaceImageTokenReserve } from "../workspace/directImageEvidence";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   calculateContextBudgetLimits,
@@ -60,6 +61,18 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("provider request context budget", () => {
+  it("reserves visual tokens for durable references before admitting the next provider request", () => {
+    const descriptor = { version: 1, id: "a".repeat(64), byteSize: 2000, checksum: "b".repeat(64), mimeType: "image/png",
+      width: 1024, height: 1024, frames: 1, transform: null,
+      source: { captureId: "c".repeat(32), relativePath: "project/preview.png", byteSize: 2000, checksum: "b".repeat(64), width: 1024, height: 1024 } };
+    const messages = [{ type: "function_call_output", call_id: "view-1", output: [{ type: "workspace_image", value: { consumerKey: "call-1", descriptor } }] }];
+    expect(workspaceImageTokenReserve(messages)).toBe(5120);
+    const base = request({ modelCapabilities: { ...request().modelCapabilities, contextWindow: 5000 } });
+    expect(applyProviderRequestContextBudget({ request: base }).ok).toBe(true);
+    expect(applyProviderRequestContextBudget({ request: { ...base, providerToolMessages: messages } }).ok).toBe(false);
+    expect(JSON.stringify(messages)).not.toContain("base64");
+  });
+
   afterEach(() => vi.unstubAllEnvs());
 
   it("admits a large two-page native PDF while preserving reserves and genuine overflow rejection", () => {
