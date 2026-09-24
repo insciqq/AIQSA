@@ -28,9 +28,10 @@ function fixture(response: Response, nativeSearch = false) {
 }
 
 describe("Agent model gateway", () => {
-  it("rejects message and tool-output pixels before any text-only provider dispatch", async () => {
+  it("rejects message and function/custom tool-output pixels before dispatch when direct input was not admitted", async () => {
     for (const item of [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,AQ==" }] },
-      { type: "function_call_output", call_id: "view", output: [{ type: "input_image", image_url: "data:image/png;base64,AQ==" }] }]) {
+      { type: "function_call_output", call_id: "view", output: [{ type: "input_image", image_url: "data:image/png;base64,AQ==" }] },
+      { type: "custom_tool_call_output", call_id: "exec", output: [{ type: "input_image", image_url: "data:image/png;base64,AQ==" }] }]) {
       const value = { ...body, input: [item] };
       expect(() => admittedAgentRequest(value, "fixture-model", 1024)).toThrow("agent_model_input_invalid");
       expect(admittedAgentRequest(value, "fixture-model", 1024, false, true).input).toEqual([item]);

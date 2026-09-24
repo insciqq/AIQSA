@@ -28,6 +28,9 @@ import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceSer
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
+import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
+import { renderCodexManagedProfile } from "../agents/codexProfile";
+import { agentPrompts } from "../agents/prompt";
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -993,10 +996,12 @@ describe("run preparation", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
-  it.each([false, true])("freezes proven image input independently of System Vision and external MCP (verified=%s)", async verified => {
+  it.each([
+    { vision: false, verified: false }, { vision: true, verified: false }, { vision: true, verified: true }
+  ])("routes Workspace images only to System Vision independently of the main modality (%j)", async ({ vision, verified }) => {
     vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
     try {
-      const h = createHarness({ capabilities: { ...baseCapabilities, vision: true, toolCalling: true } });
+      const h = createHarness({ capabilities: { ...baseCapabilities, vision, toolCalling: true } });
       const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
         ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
         normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
@@ -1009,17 +1014,38 @@ describe("run preparation", () => {
         const plan = await original(input);
         return { ...plan, answer: { ...plan.answer, verifiedVisionInput: verified ? true : undefined } };
       };
-      const plan = { version: 1 as const, available: false as const, code: "vision_model_absent" as const };
-      const deps = { ...h.deps, workspace, providerAdmission: { load }, vision: { resolve: async () => plan },
-        agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
-      for (const agentEnabled of [false, true]) {
+      const snapshot = compatibleAdmissionPlan("openai_responses_compatible").answer.snapshot;
+      const plans: AcceptedVisionAnalysisPlan[] = [
+        { version: 1, available: false, code: "vision_model_absent" },
+        { version: 1, available: false, code: "vision_model_unavailable" },
+        { version: 1, available: true, policyVersion: 1, verifiedVisionInput: true, reasoningEffort: null, snapshot,
+          authority: { connectionId: snapshot.connectionId, connectionVersion: 1, credentialId: snapshot.credentialId!,
+            credentialVersionId: snapshot.credentialVersionId!, providerModelId: snapshot.providerModelId, modelVersion: 1 } }
+      ];
+      for (const plan of plans) for (const agentEnabled of [false, true]) {
+        const deps = { ...h.deps, workspace, providerAdmission: { load }, vision: { resolve: async () => plan },
+          agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
         const result = preparedFrom(await prepareRun(deps, sendInput(successBody({ agentEnabled, workspace: { enabled: true },
           provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } }))));
         expect(result.normalizedRequest.visionAnalysis).toEqual(plan);
-        expect(result.normalizedRequest.agent?.imageInput).toBe(agentEnabled ? verified : undefined);
-        expect(result.normalizedRequest.workspaceImageView).toBe(!agentEnabled && verified ? true : undefined);
+        expect(result.normalizedRequest.agent?.imageInput).toBe(agentEnabled ? false : undefined);
+        expect(result.normalizedRequest.workspaceImageView).toBeUndefined();
+        expect(result.providerRequest).toMatchObject({ provider: "openai", modelId: "gpt-fixture", modelCapabilities: { vision } });
         expect(result.providerRequest.tools?.some(tool => tool.name === "analyze_image")).toBe(!agentEnabled);
-        expect(result.normalizedRequest.prompt.system).toContain(verified ? "direct image viewer first" : "Direct image viewing is unavailable");
+        expect(result.providerRequest.tools?.some(tool => tool.name === "view_workspace_image")).toBe(false);
+        expect(result.normalizedRequest.prompt.system).toContain("Direct image viewing is unavailable");
+        expect(result.normalizedRequest.prompt.system).not.toContain("direct image viewer first");
+        if (!plan.available) expect(result.normalizedRequest.prompt.system).toContain("without substituting another model");
+        if (agentEnabled) {
+          const configuration = result.normalizedRequest.agent!;
+          const profile = renderCodexManagedProfile({ gatewayOrigin: configuration.gatewayOrigin, modelId: "gpt-fixture",
+            contextWindowTokens: 32768, maxOutputTokens: configuration.maxOutputTokens, mcpTimeoutSeconds: 60,
+            mcpMode: configuration.mcpMode, imageInput: configuration.imageInput, visionAnalysis: Boolean(result.normalizedRequest.visionAnalysis),
+            developerInstructions: agentPrompts(materializePreparedRunData(result).providerRequest).developerInstructions });
+          expect(profile).toContain("view_image = false");
+          expect(profile).toContain('enabled_tools = ["analyze_image"]');
+          expect(profile).not.toContain("direct image viewer first");
+        }
       }
     } finally { vi.unstubAllEnvs(); }
   });
