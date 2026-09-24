@@ -2,6 +2,7 @@ import type { ProviderRunRequest } from "../providers/types";
 import { applyProviderRequestContextBudget } from "../runs/runContextBudget";
 import { isSkillToolName, skillToolError } from "../tools/skill";
 import type { ModelToolCall, ProviderToolBridge, ToolExecutionResult } from "../tools/types";
+import { projectObservationForProvider, projectSkillObservationForBudget } from "../toolObservations/projection";
 
 /** Shared by execution and recovery. Skill calls settle after the other tools
  * in the round, so their admission includes every other result and reserves a
@@ -24,7 +25,11 @@ export function createSkillToolResultBudget() {
         const next = calls.flatMap((call) => {
           const value = call.id === result.callId ? result : results.get(call.id) ??
             (isSkillToolName(call.name) ? skillToolError(call, "skill_too_large_for_context") : null);
-          return value ? [bridge!.appendToolResult(undefined, value)] : [];
+          const projected = value && request!.toolObservationVersion === 1
+            ? isSkillToolName(value.name) && value.status === "complete"
+              ? projectSkillObservationForBudget(value) : projectObservationForProvider(value)
+            : value;
+          return projected ? [bridge!.appendToolResult(undefined, projected)] : [];
         });
         const budget = applyProviderRequestContextBudget({ bridge, request: {
           ...request, providerToolMessages: [...(request.providerToolMessages ?? []), ...next]

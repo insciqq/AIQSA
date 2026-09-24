@@ -2435,7 +2435,8 @@ describe("run preparation", () => {
     ));
     expect(off.normalizedRequest.mcp).toBeUndefined();
     expect(off.normalizedRequest.sessionStatusTool).toBe(true);
-    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
+    expect(off.normalizedRequest.toolObservationVersion).toBe(1);
+    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "read_tool_result"]);
     expect(off.normalizedRequest.mcpDiscovery).toBeUndefined();
     expect(off.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
     expect(catalog).not.toHaveBeenCalled();
@@ -3488,7 +3489,7 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
       "provider_model_client"
     );
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "search_engine_1"]);
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "read_tool_result", "search_engine_1"]);
   });
 
   it("routes a provider-admitted multi-engine plan", async () => {

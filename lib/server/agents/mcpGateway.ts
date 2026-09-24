@@ -1,3 +1,7 @@
+import { defaultToolObservations } from "../toolObservations/defaultService";
+import { captureMcpObservation, projectObservationForProvider, type ToolObservationService } from "../toolObservations/sourceAdapters";
+import { observationFailure } from "../toolObservations/contract";
+import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { createAgentAiqsaSearch } from "./aiqsaSearchTool";
 import { mcpDiscoveryFailureMessage } from "../../contracts/mcpDiscoveryFailure";
 import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
@@ -56,6 +60,7 @@ function frozenSchema(schema: Record<string, unknown>) {
 }
 
 export async function createAgentMcpGateway(input: Readonly<{
+  observations?: ToolObservationService;
   request: NormalizedRunRequest;
   runId: string;
   userId: string;
@@ -64,11 +69,15 @@ export async function createAgentMcpGateway(input: Readonly<{
   onFailure(code: string): Promise<void>;
   onUsage(): Promise<void>;
 }>) {
+  let observations: Promise<ToolObservationService> | undefined;
+  const observationService = () => observations ??= input.observations ? Promise.resolve(input.observations) : defaultToolObservations();
   const configuration = input.request.agent!;
   const builtins = agentBuiltinTools(input.request);
   const dispatchBuiltin = createAgentBuiltinDispatcher(input);
   const repository = createPrismaRunRepository(prisma);
   const search = createAgentAiqsaSearch({ plan: input.request.searchPlan, store: input.store, onUsage: input.onUsage,
+    ...(input.request.toolObservationVersion === 1 ? { observation: {
+      service: await observationService(), runId: input.runId, userId: input.userId } } : {}),
     resolve: (option) => providerRuntimeResolver.resolve(input.runId, "search", `search:${option.optionId}`, { disableRequestRetries: true }),
     async assertAllowed(option) {
       const [entitlements, revision] = await Promise.all([
@@ -175,6 +184,12 @@ export async function createAgentMcpGateway(input: Readonly<{
           observe(Boolean(result.isError));
           return result;
         } catch (error) {
+          const observationError = observationFailure(error);
+          if (observationError) {
+            if (callId) await input.store.settleTool(callId, "error", { code: observationError.code }).catch(() => undefined);
+            observe(true, observationError.code);
+            return textResult(observationError, true);
+          }
           const agentCode = agentFailureCode(error);
           const code = agentCode ?? (error instanceof McpHubServiceError ? error.code
             : error instanceof Error && error.message === "agent_mcp_definition_changed" ? "tool_definition_changed" : "execution_unavailable");
@@ -221,7 +236,23 @@ export async function createAgentMcpGateway(input: Readonly<{
         if (!current) throw new DiscoveryRequiredError();
         if (current.version !== toolVersion) throw new McpHubServiceError("tool_definition_changed");
         const prepared = await service.prepareToolCall({ authority, toolId, toolVersion, arguments: args, signal });
-        const result = normalizeMcpResultForModel(await service.dispatchPreparedToolCall({ authority, prepared, signal, onDispatch: authority.markDispatched }));
+        const dispatch = () => service.dispatchPreparedToolCall({ authority, prepared, signal, onDispatch: authority.markDispatched });
+        if (input.request.toolObservationVersion === 1) {
+          const admitted = await prisma.agentMcpTool.findUnique({ where: { modelRunId_toolId: { modelRunId: input.runId, toolId } }, select: { snapshot: true } });
+          const snapshot = admitted?.snapshot as McpRunPlanSnapshot | undefined;
+          const route = resolveMcpRunTool(snapshot, toolId);
+          const server = route && snapshot?.servers.find(server => server.serverId === route.serverId);
+          if (!route || !server) throw new Error("agent_mcp_binding_invalid");
+          const result = projectObservationForProvider(await captureMcpObservation({ service: await observationService(),
+            producer: { runId: input.runId, userId: input.userId, toolCallId: authority.callId }, signal },
+            { id: authority.callId, name: toolId, arguments: args },
+            { version: 1, source: "mcp", serverId: route.serverId, originalName: route.originalName,
+              revisionId: server.revisionId, fingerprint: route.fingerprint }, dispatch));
+          return { content: result.content.map(part => ({ type: "text" as const,
+            text: part.type === "text" ? part.text : JSON.stringify(part.value) })),
+            ...(result.status === "error" ? { isError: true } : {}) } satisfies CallToolResult;
+        }
+        const result = normalizeMcpResultForModel(await dispatch());
         const content = result.text.map((text) => ({ type: "text" as const, text }));
         const structured = result.structuredContent;
         // Codex prefers any structured content, including {}, over ordinary

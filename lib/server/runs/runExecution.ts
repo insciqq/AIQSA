@@ -1,3 +1,6 @@
+import { defaultToolObservations } from "../toolObservations/defaultService";
+import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, restoreObservedResult, projectObservationForProvider, type ToolObservationService } from "../toolObservations/sourceAdapters";
+import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
@@ -251,6 +254,7 @@ export type RunExecutionRepository = Pick<
 >;
 
 export type RunExecutionInput = Readonly<{
+  observations?: ToolObservationService;
   skillTools?: import("../skills/toolService").SkillToolService;
   agentResponses?: AgentResponsesTransport;
   artifacts?: Pick<import("../artifacts/service").ArtifactService, "execute" | "restore">;
@@ -629,6 +633,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
   const abortController = new AbortController();
   const runId = input.created.runId;
   const normalizedRequest = input.prepared.normalizedRequest;
+  let observations: Promise<ToolObservationService> | undefined;
+  const observationService = () => observations ??= input.observations ? Promise.resolve(input.observations) : defaultToolObservations();
   const toolBudgets = toolRunBudgetsForRequest(normalizedRequest);
   const clientToolsEnabled = normalizedRequest.toolMode !== "none";
   const admittedKnowledgeReady = knowledgeRunAdmissionHasReadySources(
@@ -1891,6 +1897,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(clientToolsEnabled && normalizedRequest.imagePlan ? [imageGenerationTool(normalizedRequest.imagePlan)] : []),
           ...(clientToolsEnabled && normalizedRequest.artifactTool ? [artifactTool(normalizedRequest.artifactToolDescription), ...(normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
           ...(normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
+          ...(normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
@@ -1899,12 +1906,25 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         ];
         let sessionRequest = request;
         const skillResultBudget = createSkillToolResultBudget();
+        const isObservationRead = (name: string) => normalizedRequest.toolObservationVersion === 1 && name === READ_TOOL_RESULT_NAME;
         const isSessionCall = (name: string) => normalizedRequest.sessionStatusTool === true && name === SESSION_STATUS_TOOL_NAME;
         if (tools.length === 0) {
           throw new RunPipelineError("tool_configuration_empty", "No run tools are configured");
         }
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
+        const observationUsageCollected = new Set<string>();
+        const accountObservedSearch = async (persisted: Pick<PersistedToolLoopCall, "id" | "usageAccountedAt">) => {
+          if (observationUsageCollected.has(persisted.id)) return;
+          const executions = await (await observationService()).searchAccounting({
+            runId, userId: input.userId, toolCallId: persisted.id });
+          for (const execution of executions) {
+            if (persisted.usageAccountedAt == null) rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
+            await persistPlanSearchExecution({ execution, modelRunId: runId, repository: input.repository });
+          }
+          observationUsageCollected.add(persisted.id);
+          if (persisted.usageAccountedAt == null) usageAccountedToolCallIds.add(persisted.id);
+        };
         const knowledgeToolResults = new Map<string, ToolExecutionResult>();
         const mcpDiscoveryBatches = new Map<string, Readonly<{
           calls: readonly Readonly<{
@@ -1977,7 +1997,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               const result = settled.result.status === "complete"
                 ? settled.result.value
                 : toolExecutionErrorResult(call, new Error(settled.result.error.message));
-              if (searchPlanRouter?.accepts(call.name)) {
+              if (searchPlanRouter?.accepts(call.name) && normalizedRequest.toolObservationVersion === 1) {
+                const persisted = persistedCalls.get(call.id);
+                if (!persisted) throw new RunPipelineError("tool_call_not_found", "Search accounting identity is unavailable.");
+                await accountObservedSearch(persisted);
+              } else if (searchPlanRouter?.accepts(call.name)) {
                 const executions = searchExecutionsFromToolResult(result);
                 const previewCount = searchExecutionPreviewCount(result);
                 if (previewCount !== null && executions.length !== previewCount) {
@@ -2074,6 +2098,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 runId,
                 userId: input.userId
               });
+              if (claim.kind === "ambiguous" && isObservationRead(call.name)) {
+                const result = await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal);
+                const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+                const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
+                  result: snapshot, runId, state: result.status, userId: input.userId });
+                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Saved-result read could not be settled.");
+                return { status: "complete", value: result };
+              }
               if (claim.kind === "ambiguous" && isCheckpointCall(call.name)) {
                 const restored = await (await defaultWorkspaceCheckpoints()).restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId }, context.signal);
                 return { status: "complete", value: restored };
@@ -2108,6 +2140,20 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   if (settled === "settled" || settled === "reused") return { status: "complete", value: restored };
                 }
               }
+              if (claim.kind === "ambiguous" && normalizedRequest.toolObservationVersion === 1 &&
+                (isWorkspaceCall(call.name) || isSearchCall(call.name) || resolveMcpRunTool(activeMcpSnapshot, call.name))) {
+                const restored = await restoreObservedResult({ service: await observationService(),
+                  producer: { runId, userId: input.userId, toolCallId: persisted.id }, signal: context.signal }, call).catch(() => null);
+                if (restored) {
+                  const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
+                  const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot,
+                    runId, state: restored.status, userId: input.userId });
+                  if (settled === "settled" || settled === "reused") {
+                    await input.memoryEgress?.settleRecoveredToolDispatch({ modelRunToolCallId: persisted.id, outcome: "COMPLETED", runId, userId: input.userId });
+                    return { status: "complete", value: restored };
+                  }
+                }
+              }
               if (claim.kind === "ambiguous") {
                 return {
                   error: {
@@ -2131,7 +2177,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 };
               }
               if (claim.kind === "settled") {
-                const stored = parsePersistedToolExecutionResult(call, claim.call.result);
+                let stored = isObservationRead(call.name)
+                  ? await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal)
+                  : parsePersistedToolExecutionResult(call, claim.call.result);
+                if (stored && !stored.observation && normalizedRequest.toolObservationVersion === 1 && (isSkillCall(call.name) || isKnowledgeCall(call.name))) {
+                  const saved = await (await observationService()).restore({ runId, userId: input.userId, toolCallId: claim.call.id }, context.signal).catch(() => null);
+                  if (saved) stored = { ...stored, observation: saved.projection.observation };
+                }
                 if (stored) skillResultBudget.restore(stored);
                 if (stored && isKnowledgeCall(call.name) &&
                   knowledgeEvidenceFromToolResult(stored) && input.memoryEgress &&
@@ -2170,6 +2222,37 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 fatal: true;
                 message: string;
               }> | null = null;
+              let resultSettled = false;
+              const finishResult = async (result: ToolExecutionResult): Promise<ToolExecutionResult> => {
+                if (resultSettled) return result;
+                result = skillResultBudget.accept(result);
+                result = await deliverSkillWorkspaceBundle({ call, result, request: normalizedRequest,
+                  coordinator: input.workspace, runId, userId: input.userId, signal: context.signal,
+                  onActivity: onWorkspaceActivity });
+                skillResultBudget.restore(result);
+                const storedResult = snapshotToolExecutionResult(
+                  result,
+                  toolLoopPersistenceLimits.resultBytes
+                );
+                if (storedResult === null) {
+                  throw new RunPipelineError(
+                    "tool_call_result_invalid",
+                    "Tool result is invalid or too large"
+                  );
+                }
+                const settled = await input.repository.settleToolLoopCall({
+                  callId: claim.call.id,
+                  result: storedResult,
+                  runId,
+                  state: result.status,
+                  userId: input.userId
+                });
+                if (settled !== "settled" && settled !== "reused") {
+                  throw new RunPipelineError("tool_call_settle_conflict", "Tool result could not be durably settled.");
+                }
+                resultSettled = true;
+                return result;
+              };
               let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
               try {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
@@ -2195,7 +2278,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
+                const externalCall = !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2307,8 +2390,15 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   result = preflightResult;
                 } else if (isSkillCall(call.name)) {
                   if (!input.skillTools) throw new Error("skill_tool_unavailable");
-                  result = await input.skillTools.execute(call, { ...executionContext,
+                  const execute = () => input.skillTools!.execute(call, { ...executionContext,
                     ...(input.prepared.project ? { projectId: input.prepared.project.projectId } : {}) });
+                  const manifest = decodeFrozenSkillManifest(normalizedRequest.skills);
+                  const skill = manifest && [...manifest.pinned, ...manifest.available].find(skill => skill.alias === call.arguments.skill);
+                  result = normalizedRequest.toolObservationVersion === 1 && skill
+                    ? await captureOwnedObservation({ service: await observationService(),
+                        producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, "skill",
+                        { version: 1, source: "skill", skillId: skill.skillId, revisionId: skill.revisionId },
+                        async () => finishResult(await execute())) : await execute();
                 } else if (isArtifactCall(call.name)) {
                   if (!input.artifacts) throw new Error("artifact_tool_unavailable");
                   result = await input.artifacts.execute(call, executionContext, { signal });
@@ -2322,6 +2412,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 } else if (isImageCall(call.name)) {
                   if (!input.images) throw new Error("image_tool_unavailable");
                   result = await input.images.execute(call, executionContext, signal);
+                } else if (isObservationRead(call.name)) {
+                  result = await executeReadToolResult(await observationService(), call, executionContext, context.signal);
                 } else if (isSessionCall(call.name)) {
                   result = executeSessionStatus(call, sessionRequest, toolBridge);
                 } else if (isMcpDiscoveryCall(call.name)) {
@@ -2377,19 +2469,26 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     });
                   }
                 } else if (searchPlanRouter?.accepts(call.name)) {
-                  result = await searchPlanRouter.execute(
-                    call,
-                    request,
-                    { signal: context.signal }
-                  );
+                  const observed = normalizedRequest.toolObservationVersion === 1;
+                  const execute = () => searchPlanRouter.execute(call, request,
+                    { signal: context.signal, ...(observed ? { retainOriginal: true as const } : {}) });
+                  const selected = searchPlanRouter.optionIdsForTool(call.name);
+                  result = observed ? await captureSearchObservation({ service: await observationService(),
+                    producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, call,
+                    normalizedRequest.searchPlan.options.filter(option => selected.includes(option.optionId))
+                      .map(({ optionId, revisionId }) => ({ optionId, revisionId })), execute) : await execute();
                 } else if (isKnowledgeCall(call.name)) {
-                  result = await withKnowledgeToolDeadline([context.signal], (knowledgeSignal) =>
+                  const execute = () => withKnowledgeToolDeadline([context.signal], (knowledgeSignal) =>
                     input.knowledgeExecutor!.execute(call, executionContext, { signal: knowledgeSignal }));
+                  result = normalizedRequest.toolObservationVersion === 1
+                    ? await captureOwnedObservation({ service: await observationService(),
+                        producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, "knowledge", undefined, execute)
+                    : await execute();
                 } else if (workspace && isWorkspaceCall(call.name)) {
                   if (claim.call.workspaceBindingId !== runId) {
                     throw new Error("workspace_run_binding_unavailable");
                   }
-                  result = await input.workspace!.execute({
+                  const execute = () => input.workspace!.execute({
                     call,
                     modelRunToolCallId: claim.call.id,
                     onActivity: onWorkspaceActivity,
@@ -2398,6 +2497,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     userId: input.userId,
                     workspace
                   });
+                  result = normalizedRequest.toolObservationVersion === 1
+                    ? await captureWorkspaceObservation({ service: await observationService(),
+                        producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, call, execute)
+                    : await execute();
                 } else {
                   const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                   const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -2406,7 +2509,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     throw new Error("mcp_run_binding_unavailable");
                   }
                   const activeRuntime = runtime();
-                  result = mcpToolExecutionResult(call, await dispatchMcpTool({
+                  const execute = () => dispatchMcpTool({
                     arguments: call.arguments,
                     async assertCurrent() {
                       const failure = await currentMcpDispatchFailureCode(route, generationId);
@@ -2416,14 +2519,28 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     generationId,
                     route,
                     signal: context.signal
-                  }));
+                  });
+                  result = normalizedRequest.toolObservationVersion === 1
+                    ? await captureMcpObservation({ service: await observationService(),
+                        producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, call,
+                      { version: 1, source: "mcp", serverId: route.serverId, originalName: route.originalName,
+                        fingerprint: route.fingerprint, revisionId: activeMcpSnapshot!.servers.find(server => server.serverId === route.serverId)!.revisionId }, execute)
+                    : mcpToolExecutionResult(call, await execute());
                 }
                 if (externalReceipt &&
                   !(await input.memoryEgress!.completeDispatch(externalReceipt.id))) {
                   throw new Error("memory_egress_receipt_conflict");
                 }
               } catch (error) {
-                if (error instanceof SearchToolCancelledError) {
+                if (normalizedRequest.toolObservationVersion === 1 && isSearchCall(call.name) && context.signal.aborted) {
+                  const cancelled = toolExecutionErrorResult(call, error, "Search");
+                  const snapshot = snapshotToolExecutionResult(cancelled, toolLoopPersistenceLimits.resultBytes);
+                  const settled = snapshot && await input.repository.settleToolLoopCall({ callId: claim.call.id,
+                    result: snapshot, runId, state: "error", userId: input.userId });
+                  if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Search outcome could not be settled.");
+                  await accountObservedSearch(claim.call);
+                  await persistReportedUsageForIncompleteRun();
+                } else if (error instanceof SearchToolCancelledError) {
                   // Search has already collected its engines' outcomes. Settle
                   // that evidence before the cancelled run checkpoints usage.
                   const storedResult = snapshotToolExecutionResult(error.result, toolLoopPersistenceLimits.resultBytes);
@@ -2482,38 +2599,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   );
                 }
               }
-              result = skillResultBudget.accept(result);
-              result = await deliverSkillWorkspaceBundle({ call, result, request: normalizedRequest,
-                coordinator: input.workspace, runId, userId: input.userId, signal: context.signal,
-                onActivity: onWorkspaceActivity });
-              skillResultBudget.restore(result);
-              const storedResult = snapshotToolExecutionResult(
-                result,
-                toolLoopPersistenceLimits.resultBytes
-              );
-              if (storedResult === null) {
-                throw new RunPipelineError(
-                  "tool_call_result_invalid",
-                  "Tool result is invalid or too large"
-                );
-              }
-              const settled = await input.repository.settleToolLoopCall({
-                callId: claim.call.id,
-                result: storedResult,
-                runId,
-                state: result.status,
-                userId: input.userId
-              });
-              if (settled !== "settled" && settled !== "reused") {
-                return {
-                  error: {
-                    code: "tool_call_settle_conflict",
-                    fatal: true,
-                    message: "Tool result could not be durably settled."
-                  },
-                  status: "error"
-                };
-              }
+              result = await finishResult(result);
               if (fatalToolError) {
                 return { error: fatalToolError, status: "error" };
               }
@@ -2560,6 +2646,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               usage: reported
             });
           },
+          projectToolResultForProvider: projectObservationForProvider,
           parallelToolCalls: normalizedRequest.modelCapabilities.parallelToolCalls === true,
           normalizeToolCallName: workspaceTools.length > 0
             ? normalizeWorkspaceProviderToolName
@@ -2574,7 +2661,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isSkillCall(call.name)) {
+                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {

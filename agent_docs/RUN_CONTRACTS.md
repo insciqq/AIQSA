@@ -63,7 +63,9 @@ MCP Auto, Load all and Off require explicit user action. Auto freezes authorized
 
 Normalize only proven whole-result representation duplicates before provider projection. Preserve unique content, ambiguity and error semantics; external Hub results and historical receipts remain unchanged.
 
-Workspace shares that loop. Admission freezes ready runtime/image, official catalog, network, paths, authority and secret revisions. The server owns sandbox identity, VM lifecycle, host-copy and network authority. Guests receive verified run-visible originals and restored personal secrets under [Security](SECURITY.md). Execution/export ownership is exclusive per chat. File relevance follows current-message/branch references independently of chat-wide staging. Inspect the authorized inbox index before requesting repeat uploads; entries cannot prove surviving guest bytes.
+Retain accepted originals before projection. Bounded recall reauthorizes source/branch access, preserves truncation/instruction/citation authority, never proving prior delivery.
+
+Workspace freezes ready runtime/image, official catalog, network, paths, authority and secret revisions. Server controls sandbox identity, VM lifecycle, host-copy/networking; execution/export is chat-exclusive. Guests receive verified run-visible originals and restored personal secrets under [Security](SECURITY.md). Relevance follows current-message/branch references independently of staging. Check authorized inbox index before repeat uploads; entries cannot prove surviving guest bytes.
 
 Mid-run capture requires coherent bytes and current authority; unsupported coherence fails closed. Preserve the running executor and final-export quiescence. Shared image validation is model-independent; transformations retain source identity/geometry. Consumers own publication/provider delivery.
 

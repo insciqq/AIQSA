@@ -1,4 +1,5 @@
 import { WORKSPACE_CHECKPOINT_MIGRATION, workspaceCheckpointFixtureSql, workspaceCheckpointProofSql } from "./workspace-checkpoint-adoption";
+import { TOOL_OBSERVATION_MIGRATION, toolObservationFixtureSql, toolObservationProofSql } from "./tool-observation-adoption";
 import { VISION_ANALYSIS_MIGRATION, visionAnalysisFixtureSql, visionAnalysisProofSql } from "./vision-analysis-adoption";
 import { VISION_MODEL_ROLE_MIGRATION, visionModelRoleFixtureSql, visionModelRoleProofSql, visionModelRoleRepeatProofSql } from "./vision-model-role-adoption";
 import { WORKSPACE_SELECTED_CAPTURE_MIGRATION, workspaceSelectedCaptureFixtureSql, workspaceSelectedCaptureProofSql } from "./workspace-selected-capture-adoption";
@@ -7471,6 +7472,8 @@ function main(
   }
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_MIGRATION,
     workspaceCheckpointFixtureSql, workspaceCheckpointProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, TOOL_OBSERVATION_MIGRATION,
+    toolObservationFixtureSql, toolObservationProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, VISION_ANALYSIS_MIGRATION,
     visionAnalysisFixtureSql, visionAnalysisProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_SELECTED_CAPTURE_MIGRATION,

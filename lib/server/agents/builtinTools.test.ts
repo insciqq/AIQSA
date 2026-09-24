@@ -4,9 +4,42 @@ import type { ToolExecutionResult } from "../tools/types";
 import type { createAgentRunStore } from "./store";
 import { agentBuiltinTools, createAgentBuiltinDispatcher } from "./builtinTools";
 import { WorkspaceCheckpointError } from "../workspace/checkpointInput";
+import { ObservationStoreError } from "../toolObservations/contract";
 
 const request = { workspace: {}, agent: { mcpMode: "off", imageInput: false },
   visionAnalysis: { version: 1, available: false, code: "vision_model_absent" } } as unknown as NormalizedRunRequest;
+
+describe("native saved-result reader", () => {
+  it("reauthorizes repeated deliveries instead of returning a cached fragment after revocation or Stop", async () => {
+    const accepted = { ...request, workspace: undefined, toolObservationVersion: 1 as const };
+    expect(agentBuiltinTools(accepted).map(tool => tool.name)).toEqual(["read_tool_result"]);
+    const observation = { version: 1 as const, source: "workspace" as const, handle: `tor1_${"a".repeat(32)}`,
+      byteSize: 20, checksum: "b".repeat(64), sourceTruncated: false, maskable: true, encoding: "json-utf8-v1" as const };
+    const call = { id: "read", name: "read_tool_result", arguments: { handle: observation.handle } };
+    let allowed = true;
+    const read = vi.fn(async () => {
+      if (!allowed) throw new ObservationStoreError("tool_observation_unavailable");
+      return { observation, fragmentKind: "serialized_json_text" as const, fragment: "synthetic accepted bytes",
+        offset: 0, endOffset: 20, incomplete: false, matchOffset: null, cursor: null };
+    });
+    const store = { claimBuiltinTool: vi.fn(async () => ({ claimed: true, id: "tool", result: null as ToolExecutionResult | null })),
+      settleBuiltinTool: vi.fn(async () => {}), builtinResult: vi.fn(async (): Promise<ToolExecutionResult | null> => null) };
+    const dispatch = createAgentBuiltinDispatcher({ request: accepted, runId: "run", userId: "user",
+      store: store as unknown as ReturnType<typeof createAgentRunStore>, observations: { read } });
+    const original = await dispatch(call, new AbortController().signal);
+    expect(original.status).toBe("complete");
+    store.claimBuiltinTool.mockResolvedValue({ claimed: false, id: "tool", result: original });
+    allowed = false;
+    const revoked = await dispatch(call, new AbortController().signal);
+    expect(revoked.status).toBe("error");
+    expect(JSON.stringify(revoked)).not.toContain("synthetic accepted bytes");
+    expect(read).toHaveBeenCalledTimes(2);
+    const controller = new AbortController();
+    read.mockImplementation(async () => { controller.abort(new Error("synthetic_stop")); throw controller.signal.reason; });
+    store.builtinResult.mockResolvedValue(original);
+    await expect(dispatch(call, controller.signal)).rejects.toThrow("synthetic_stop");
+  });
+});
 describe("native first-party System Vision dispatch", () => {
   it("registers the precise capability even with external MCP Off and a text-only main model", () => {
     expect(agentBuiltinTools(request).map(tool => tool.name)).toEqual(["analyze_image"]);

@@ -82,12 +82,15 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { settleTerminalMemorySource } from "./prismaRepositoryPreparation";
 import {
   activeMessageStatuses,
+  activeToolLoopRun,
+  isRecoveredRunTerminalPayload,
   dispatchableModelRunStatuses,
   isRecord,
   json,
   lockRunSettlementScope,
   projectRunRecoveryAuthority
 } from "./prismaRepositoryShared";
+export { isRecoveredRunTerminalPayload } from "./prismaRepositoryShared";
 
 export async function appendRunOutputEvents(
   tx: Prisma.TransactionClient,
@@ -418,15 +421,6 @@ async function lockToolLoopRun(
   return run ?? null;
 }
 
-function activeToolLoopRun(run: Pick<LockedToolLoopRun, "status" | "errorPayload">): boolean {
-  return dispatchableModelRunStatuses.includes(run.status) ||
-    (run.status === "error" && !isRecoveredRunTerminalPayload(run.errorPayload));
-}
-
-export function isRecoveredRunTerminalPayload(value: unknown): boolean {
-  return isRecord(value) && value[recoveredRunTerminalMarker] === true;
-}
-
 export function recoveredRunErrorPayload(error: { code: string; message: string }) {
   return {
     ...error,
@@ -596,6 +590,7 @@ const normalizedRequestKeys = new Set([
   "reasoningEffort",
   "searchPlan",
   "sessionStatusTool",
+  "toolObservationVersion",
   "skills",
   "toolBudgets",
   "toolMode",
@@ -966,6 +961,7 @@ function decodeProviderDispatchRecoveryRequest(
     value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
+    (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 1) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     value.reasoningEffort !== undefined && value.reasoningEffort !== null &&
       !nonBlank(value.reasoningEffort, 32) ||

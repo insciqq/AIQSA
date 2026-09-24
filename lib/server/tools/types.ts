@@ -46,6 +46,8 @@ export type ToolExecutionContent =
     };
 
 export type ToolExecutionResult = {
+  /** Server-owned exact recall identity; never evidence of prior delivery. */
+  observation?: import("../toolObservations/contract").ToolObservationDescriptor;
   artifacts?: ModelRunSseEvent[];
   callId: string;
   content: ToolExecutionContent[];

@@ -3392,6 +3392,7 @@ model ModelRun {
   searchRuns                   SearchRun[]
   skillRunBindings             ModelRunSkillBinding[]
   toolCalls                    ModelRunToolCall[]
+  toolObservations             ToolObservation[]
   userMessage                  Message                             @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
   workspaceRunBinding          WorkspaceRunBinding?
@@ -3862,6 +3863,7 @@ model McpRunBinding {
 }
 
 model ModelRunToolCall {
+  observation                ToolObservation?
   workspaceCheckpoint       WorkspaceOutputCheckpoint?
   visionAnalysis             VisionAnalysisAttempt?
   generatedImages            Attachment[]                @relation("ImageToolOutput")
@@ -3900,6 +3902,39 @@ model ModelRunToolCall {
   @@index([workspaceRunBindingId])
   @@index([modelRunId, state])
   @@index([updatedAt, id])
+}
+
+/// Exact accepted tool originals; model checkpoints retain only bounded projections.
+model ToolObservation {
+  id                String           @id @db.Char(32)
+  modelRunId        String
+  toolCallId        String           @unique
+  formatVersion     Int              @default(1)
+  sourceKind        String           @db.VarChar(16)
+  sourceBinding     Json?
+  executionReceipt  Json?
+  state             String           @default("RESERVED") @db.VarChar(16)
+  executionOutcome  String?          @db.VarChar(16)
+  reservedBytes     Int
+  byteSize          Int?
+  checksum          String?          @db.Char(64)
+  storageMode       String?          @db.VarChar(16)
+  inlineText        String?
+  storageKey        String?          @unique @db.VarChar(512)
+  projection        Json?
+  sourceTruncated   Boolean          @default(false)
+  maskable          Boolean          @default(false)
+  leaseToken        String?          @db.Char(32)
+  leaseExpiresAt    DateTime?
+  failureCode       String?          @db.VarChar(64)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  modelRun          ModelRun         @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  toolCall          ModelRunToolCall @relation(fields: [modelRunId, toolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([modelRunId, toolCallId])
+  @@index([modelRunId, createdAt])
+  @@index([state, leaseExpiresAt])
 }
 
 model KnowledgeRun {

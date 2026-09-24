@@ -13,7 +13,14 @@ import { KNOWLEDGE_RERANKER_EVIDENCE_VERSION } from "./rerankEvidence";
 import type { KnowledgeRerankExecutor } from "./rerankExecution";
 import { loadKnowledgeRerankOperationalMetrics } from "./rerankMetrics";
 import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
-import { knowledgeToolResultText } from "./toolResult";
+import { knowledgeToolResultContent, knowledgeToolResultText } from "./toolResult";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { createToolObservationRepository } from "../toolObservations/repository";
+import { createToolObservationService } from "../toolObservations/service";
+import { createObservationSourceOwners } from "../toolObservations/sourceOwners";
+import { captureOwnedObservation } from "../toolObservations/sourceAdapters";
+import { knowledgeObservationOwner } from "./observationOwner";
+import { createPrismaKnowledgeLifecycleRepository } from "./lifecycleRepository";
 import {
   deleteKnowledgeSearchArtifacts,
   runKnowledgeSearchProjectionPass
@@ -419,6 +426,7 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
       await tx.chat.deleteMany({
         where: { id: { in: runFixtures.map(({ chatId }) => chatId) } }
       });
+      await tx.knowledgeDeletionJob.deleteMany({ where: { ownerUserId: { in: runFixtures.map(({ userId }) => userId) } } });
       await tx.knowledgeSourceIndexArtifact.deleteMany({
         where: { id: { in: runFixtures.map(({ artifactId }) => artifactId) } }
       });
@@ -437,6 +445,49 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
       });
     });
     await prisma.$disconnect();
+  });
+
+  it("recalls the existing exact Knowledge receipt without copying evidence or proving synthesis delivery", async () => {
+    const fixture = await createRunFixture("Read retained Knowledge evidence");
+    const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: fixture.runId } });
+    const answer = await prisma.message.create({ data: { chatId: fixture.chatId, role: "assistant", status: "streaming",
+      content: { text: "" }, parentMessageId: run.userMessageId } });
+    await prisma.modelRun.update({ where: { id: fixture.runId }, data: { assistantMessageId: answer.id } });
+    const profile = await prisma.knowledgeRunProfileBinding.findFirstOrThrow({ where: { modelRunId: fixture.runId } });
+    await prisma.knowledgeRunSourceBinding.create({ data: { modelRunId: fixture.runId, profileBindingId: profile.id,
+      sourceId: fixture.sourceId, sourceVersionId: fixture.sourceVersionId, sourceArtifactId: fixture.artifactId,
+      ordinal: 0, sourceAlias: "S1", directSelected: true, selectionKind: "direct", sourceVersionNumber: 1,
+      baseProvenance: [] } });
+    const toolCallId = await createSearchToolCall(fixture.runId, 0);
+    const draft = evidence(fixture, { binding: rerankerBinding("complete"), invocationOrdinal: 1,
+      results: [{ ...passage(fixture, "The retained retention period is exactly 37 days."), knowledgeBaseId: profile.id }] });
+    const canonical = { ...draft, bases: draft.bases.map(base => ({ ...base, knowledgeBaseId: profile.id })) };
+    const knowledge = createPrismaKnowledgeRetrievalStore(prisma);
+    const storage = createMemoryStorageAdapter();
+    const observations = () => createToolObservationService({ storage,
+      repository: createToolObservationRepository({ prisma, ...createObservationSourceOwners(knowledgeObservationOwner) }) });
+    const producer = { runId: fixture.runId, userId: fixture.userId, toolCallId };
+    const retrieve = vi.fn(async () => {
+      const accepted = await knowledge.persistReceipt({ evidence: canonical, modelRunToolCallId: toolCallId,
+        runId: fixture.runId, userId: fixture.userId });
+      if (!accepted) throw new Error("synthetic_receipt_missing");
+      return { callId: "synthetic-search", name: "search_knowledge", status: "complete" as const,
+        content: knowledgeToolResultContent(accepted) };
+    });
+    const result = await captureOwnedObservation({ service: observations(), producer }, "knowledge", undefined, retrieve);
+    await prisma.modelRunToolCall.update({ where: { id: toolCallId }, data: { state: "complete" } });
+    const read = () => observations().read(producer, { handle: result.observation!.handle, query: "37 days" });
+    expect((await read()).fragment).toContain("37 days");
+    expect(await prisma.toolObservation.findUnique({ where: { toolCallId } }))
+      .toMatchObject({ storageMode: "SOURCE", storageKey: null, inlineText: null });
+    expect(storage.objects.size).toBe(0);
+    expect(await prisma.knowledgeRun.count({ where: { modelRunId: fixture.runId } })).toBe(1);
+    expect(await prisma.knowledgeEvidenceDispatchManifest.count({ where: { modelRunId: fixture.runId } })).toBe(0);
+    const lifecycle = createPrismaKnowledgeLifecycleRepository(prisma);
+    expect(await lifecycle.trashSource(fixture.userId, fixture.sourceId, 1)).toEqual({ kind: "ok" });
+    expect(await lifecycle.permanentlyDeleteSource(fixture.userId, fixture.sourceId, 2)).toEqual({ kind: "pending" });
+    await expect(read()).rejects.toThrow("tool_observation_unavailable");
+    expect(retrieve).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])("persists and replays reranker evidence with optional decision fallback %s", async optional => {

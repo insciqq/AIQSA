@@ -1,3 +1,7 @@
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
+import { defaultToolObservations } from "../toolObservations/defaultService";
+import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, restoreObservedResult, projectObservationForProvider, type ToolObservationService } from "../toolObservations/sourceAdapters";
+import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
@@ -305,6 +309,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
 }>;
 
 export type RunRecoveryDeps = Readonly<{
+  observations?: ToolObservationService;
   skillTools?: import("../skills/toolService").SkillToolService;
   artifacts?: import("../artifacts/service").ArtifactService;
   vision?: import("../vision/service").VisionAnalysisService;
@@ -778,6 +783,7 @@ async function recoverPreparingRun(repository: RunRecoveryDeps["repository"], in
 }
 
 type RecoverySearchExecutor = Readonly<{
+  optionIdsForTool(name: string): readonly string[];
   accepts(name: string): boolean;
   execute(
     call: ModelToolCall,
@@ -808,6 +814,14 @@ type RecoveryToolContext = {
   usageAccountedToolCallIds: Set<string>;
   usageAttributions: RunUsageAttribution[];
 };
+
+async function recoveredObservations(context: RecoveryToolContext): Promise<ToolObservationService> {
+  return context.deps.observations ?? defaultToolObservations();
+}
+
+function isRecoveredObservationRead(context: RecoveryToolContext, name: string): boolean {
+  return context.run.normalizedRequest.toolObservationVersion === 1 && name === READ_TOOL_RESULT_NAME;
+}
 
 function isRecoveredSearchCall(context: RecoveryToolContext, name: string): boolean {
   return context.searchExecutor?.accepts(name) === true;
@@ -1077,8 +1091,11 @@ async function recordRecoveredSearchResult(input: Readonly<{
   includeUsage: boolean;
   result: ToolExecutionResult;
 }>): Promise<void> {
-  const executions = searchExecutionsFromToolResult(input.result);
-  const previewCount = searchExecutionPreviewCount(input.result);
+  const executions = input.context.run.normalizedRequest.toolObservationVersion === 1
+    ? await (await recoveredObservations(input.context)).searchAccounting({ runId: input.context.run.id,
+        userId: input.context.run.userId, toolCallId: input.modelRunToolCallId })
+    : searchExecutionsFromToolResult(input.result);
+  const previewCount = input.context.run.normalizedRequest.toolObservationVersion === 1 ? null : searchExecutionPreviewCount(input.result);
   if (previewCount !== null && executions.length !== previewCount) {
     throw new ToolLoopRecoveryError(
       "tool_call_result_invalid",
@@ -1367,6 +1384,15 @@ async function executePersistedToolCallInContext(
     runId: context.run.id,
     userId: context.run.userId
   });
+  if (claim.kind === "ambiguous" && isRecoveredObservationRead(context, call.name)) {
+    const result = await executeReadToolResult(await recoveredObservations(context), call,
+      { runId: context.run.id, userId: context.run.userId }, signal);
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
+      result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
+    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Saved-result read could not be settled.");
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
+  }
   if (claim.kind === "ambiguous" && context.run.normalizedRequest.workspaceCheckpoints && call.name === CHECKPOINT_OUTPUTS_TOOL_NAME) {
     const restored = await (await defaultWorkspaceCheckpoints()).restore(call, { persistedToolCallId: persisted.id, request: context.providerRequest, runId: context.run.id, userId: context.run.userId }, signal);
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: restored }, round: persisted.roundIndex };
@@ -1414,6 +1440,22 @@ async function executePersistedToolCallInContext(
       }
     }
   }
+  if (claim.kind === "ambiguous" && context.run.normalizedRequest.toolObservationVersion === 1 &&
+    (isRecoveredWorkspaceCall(context, call.name) || isRecoveredSearchCall(context, call.name) || resolveMcpRunTool(context.activeMcpSnapshot, call.name))) {
+    const restored = await restoreObservedResult({ service: await recoveredObservations(context),
+      producer: { runId: context.run.id, userId: context.run.userId, toolCallId: persisted.id }, signal }, call).catch(() => null);
+    if (restored) {
+      const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
+      const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot,
+        runId: context.run.id, state: restored.status, userId: context.run.userId });
+      if (settled === "settled" || settled === "reused") {
+        await context.deps.memoryEgress?.settleRecoveredToolDispatch({ modelRunToolCallId: persisted.id, outcome: "COMPLETED", runId: context.run.id, userId: context.run.userId });
+        if (isRecoveredSearchCall(context, call.name)) await recordRecoveredSearchResult({ context,
+          includeUsage: persisted.usageAccountedAt == null, modelRunToolCallId: persisted.id, result: restored });
+        return { call, ordinal: persisted.ordinal, result: { status: "complete", value: restored }, round: persisted.roundIndex };
+      }
+    }
+  }
   if (claim.kind === "ambiguous") {
     throw new ToolLoopRecoveryError(
       "tool_call_outcome_unknown",
@@ -1428,7 +1470,15 @@ async function executePersistedToolCallInContext(
     );
   }
   if (claim.kind === "settled") {
-    const result = parsePersistedToolExecutionResult(call, claim.call.result);
+    let result = isRecoveredObservationRead(context, call.name)
+      ? await executeReadToolResult(await recoveredObservations(context), call, { runId: context.run.id, userId: context.run.userId }, signal)
+      : parsePersistedToolExecutionResult(call, claim.call.result);
+    if (result && !result.observation && context.run.normalizedRequest.toolObservationVersion === 1 &&
+      (isRecoveredSkillCall(context, call.name) || isRecoveredKnowledgeCall(context, call.name))) {
+      const saved = await (await recoveredObservations(context)).restore({ runId: context.run.id,
+        userId: context.run.userId, toolCallId: claim.call.id }, signal).catch(() => null);
+      if (saved) result = { ...result, observation: saved.projection.observation };
+    }
     if (!result) {
       throw new ToolLoopRecoveryError(
         "tool_call_result_invalid",
@@ -1468,6 +1518,45 @@ async function executePersistedToolCallInContext(
 
   let result: ToolExecutionResult;
   let fatalToolError: ToolLoopRecoveryError | null = null;
+  let resultSettled = false;
+  const finishResult = async (result: ToolExecutionResult): Promise<ToolExecutionResult> => {
+    if (resultSettled) return result;
+    result = context.skillResultBudget.accept(result);
+    try {
+      result = await deliverSkillWorkspaceBundle({ call, result, request: context.run.normalizedRequest,
+        coordinator: context.deps.workspace, runId: context.run.id, userId: context.run.userId, signal,
+        onActivity: async (entry) => {
+          const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+          if (event) await context.deps.repository.appendRunOutputEvent(context.run.id, event);
+        } });
+    } catch (error) {
+      if (signal.aborted) throw new ToolLoopRecoveryStopped();
+      throw error;
+    }
+    context.skillResultBudget.restore(result);
+    const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    if (stored === null) {
+      throw new ToolLoopRecoveryError(
+        "tool_call_result_invalid",
+        "A recovered tool result is invalid or too large to persist safely."
+      );
+    }
+    const settled = await context.deps.repository.settleToolLoopCall({
+      callId: claim.call.id,
+      result: stored,
+      runId: context.run.id,
+      state: result.status,
+      userId: context.run.userId
+    });
+    if (settled !== "settled" && settled !== "reused") {
+      throw new ToolLoopRecoveryError(
+        "tool_call_settle_conflict",
+        "A recovered tool result could not be durably settled."
+      );
+    }
+    resultSettled = true;
+    return result;
+  };
   let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
   try {
     if (hasInvalidProviderToolArguments(call.arguments)) {
@@ -1498,7 +1587,7 @@ async function executePersistedToolCallInContext(
     const isViewImageCall = context.run.normalizedRequest.workspaceImageView === true && call.name === VIEW_WORKSPACE_IMAGE;
     const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
-    const externalCall = !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
+    const externalCall = !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredObservationRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -1608,8 +1697,15 @@ async function executePersistedToolCallInContext(
       result = preflightResult;
     } else if (isRecoveredSkillCall(context, call.name)) {
       if (!context.deps.skillTools) throw new Error("skill_tool_unavailable");
-      result = await context.deps.skillTools.execute(call, { ...executionContext,
+      const execute = () => context.deps.skillTools!.execute(call, { ...executionContext,
         ...(context.run.project ? { projectId: context.run.project.projectId } : {}) });
+      const manifest = decodeFrozenSkillManifest(context.run.normalizedRequest.skills);
+      const skill = manifest && [...manifest.pinned, ...manifest.available].find(skill => skill.alias === call.arguments.skill);
+      result = context.run.normalizedRequest.toolObservationVersion === 1 && skill
+        ? await captureOwnedObservation({ service: await recoveredObservations(context),
+            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, "skill",
+            { version: 1, source: "skill", skillId: skill.skillId, revisionId: skill.revisionId },
+            async () => finishResult(await execute())) : await execute();
     } else if (isRecoveredArtifactCall(context, call.name)) {
       if (!context.deps.artifacts) throw new Error("artifact_tool_unavailable");
       result = await context.deps.artifacts.execute(call, executionContext, { signal });
@@ -1623,17 +1719,25 @@ async function executePersistedToolCallInContext(
     } else if (isImageCall) {
       if (!context.deps.images) throw new Error("image_tool_unavailable");
       result = await context.deps.images.execute(call, executionContext, signal);
+    } else if (isRecoveredObservationRead(context, call.name)) {
+      result = await executeReadToolResult(await recoveredObservations(context), call, executionContext, signal);
     } else if (isSessionCall) {
       result = executeSessionStatus(call, context.sessionRequest ?? context.providerRequest, context.sessionToolBridge);
     } else if (isRecoveredMcpDiscoveryCall(context, call.name)) {
       result = await executeRecoveredMcpDiscovery(call, persisted, context, signal);
     } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
-      result = await context.searchExecutor.execute(
+      const execute = () => context.searchExecutor!.execute(
         call,
         context.providerRequest,
         context.run.id,
         signal
       );
+      const selected = context.searchExecutor.optionIdsForTool(call.name);
+      result = context.run.normalizedRequest.toolObservationVersion === 1
+        ? await captureSearchObservation({ service: await recoveredObservations(context),
+            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, call,
+            context.run.normalizedRequest.searchPlan.options.filter(option => selected.includes(option.optionId))
+              .map(({ optionId, revisionId }) => ({ optionId, revisionId })), execute) : await execute();
       await recordRecoveredSearchResult({
         context,
         includeUsage: true,
@@ -1641,8 +1745,12 @@ async function executePersistedToolCallInContext(
         result
       });
     } else if (isRecoveredKnowledgeCall(context, call.name)) {
-      result = await withKnowledgeToolDeadline([signal], (knowledgeSignal) =>
+      const execute = () => withKnowledgeToolDeadline([signal], (knowledgeSignal) =>
         context.deps.knowledgeExecutor!.execute(call, executionContext, { signal: knowledgeSignal }));
+      result = context.run.normalizedRequest.toolObservationVersion === 1
+        ? await captureOwnedObservation({ service: await recoveredObservations(context),
+            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, "knowledge", undefined, execute)
+        : await execute();
       recordRecoveredKnowledgeResult({
         callId: call.id,
         context,
@@ -1657,7 +1765,7 @@ async function executePersistedToolCallInContext(
       if (claim.call.workspaceBindingId !== context.run.id) {
         throw new Error("workspace_run_binding_unavailable");
       }
-      result = await context.deps.workspace!.execute({
+      const execute = () => context.deps.workspace!.execute({
         call,
         modelRunToolCallId: claim.call.id,
         onActivity: async (entry) => {
@@ -1667,8 +1775,12 @@ async function executePersistedToolCallInContext(
         runId: context.run.id,
         signal,
         userId: context.run.userId,
-        workspace: context.run.normalizedRequest.workspace
+        workspace: context.run.normalizedRequest.workspace!
       });
+      result = context.run.normalizedRequest.toolObservationVersion === 1
+        ? await captureWorkspaceObservation({ service: await recoveredObservations(context),
+            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, call, execute)
+        : await execute();
     } else {
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -1677,7 +1789,7 @@ async function executePersistedToolCallInContext(
         throw new Error("mcp_run_binding_unavailable");
       }
       const runtime = context.runtime();
-      result = mcpToolExecutionResult(call, await dispatchMcpTool({
+      const execute = () => dispatchMcpTool({
         arguments: call.arguments,
         async assertCurrent() {
           const failure = await currentRecoveryMcpDispatchFailure(context, call.name, generationId);
@@ -1687,14 +1799,28 @@ async function executePersistedToolCallInContext(
         generationId,
         route,
         signal
-      }));
+      });
+      result = context.run.normalizedRequest.toolObservationVersion === 1
+        ? await captureMcpObservation({ service: await recoveredObservations(context),
+            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, call,
+          { version: 1, source: "mcp", serverId: route.serverId, originalName: route.originalName,
+            fingerprint: route.fingerprint, revisionId: context.activeMcpSnapshot!.servers.find(server => server.serverId === route.serverId)!.revisionId }, execute)
+        : mcpToolExecutionResult(call, await execute());
     }
     if (externalReceipt &&
       !(await context.deps.memoryEgress!.completeDispatch(externalReceipt.id))) {
       throw new Error("memory_egress_receipt_conflict");
     }
   } catch (error) {
-    if (error instanceof SearchToolCancelledError) {
+    if (context.run.normalizedRequest.toolObservationVersion === 1 && isRecoveredSearchCall(context, call.name)) {
+      const failed = toolExecutionErrorResult(call, error, "Search");
+      const snapshot = snapshotToolExecutionResult(failed, toolLoopPersistenceLimits.resultBytes);
+      const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: claim.call.id,
+        result: snapshot, runId: context.run.id, state: "error", userId: context.run.userId });
+      if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Search outcome could not be settled.");
+      await recordRecoveredSearchResult({ context, includeUsage: claim.call.usageAccountedAt == null,
+        modelRunToolCallId: claim.call.id, result: failed });
+    } else if (error instanceof SearchToolCancelledError) {
       // Accounting requires a settled call even when Stop has already won
       // the run's terminal state. Only already observed Search evidence is saved.
       const stored = snapshotToolExecutionResult(error.result, toolLoopPersistenceLimits.resultBytes);
@@ -1748,39 +1874,7 @@ async function executePersistedToolCallInContext(
   }
   if (signal.aborted) throw new ToolLoopRecoveryStopped();
 
-  result = context.skillResultBudget.accept(result);
-  try {
-    result = await deliverSkillWorkspaceBundle({ call, result, request: context.run.normalizedRequest,
-      coordinator: context.deps.workspace, runId: context.run.id, userId: context.run.userId, signal,
-      onActivity: async (entry) => {
-        const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
-        if (event) await context.deps.repository.appendRunOutputEvent(context.run.id, event);
-      } });
-  } catch (error) {
-    if (signal.aborted) throw new ToolLoopRecoveryStopped();
-    throw error;
-  }
-  context.skillResultBudget.restore(result);
-  const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
-  if (stored === null) {
-    throw new ToolLoopRecoveryError(
-      "tool_call_result_invalid",
-      "A recovered tool result is invalid or too large to persist safely."
-    );
-  }
-  const settled = await context.deps.repository.settleToolLoopCall({
-    callId: claim.call.id,
-    result: stored,
-    runId: context.run.id,
-    state: result.status,
-    userId: context.run.userId
-  });
-  if (settled !== "settled" && settled !== "reused") {
-    throw new ToolLoopRecoveryError(
-      "tool_call_settle_conflict",
-      "A recovered tool result could not be durably settled."
-    );
-  }
+  result = await finishResult(result);
   if (isRecoveredKnowledgeCall(context, call.name) && result.status === "error") {
     recordRecoveredKnowledgeResult({
       callId: call.id, context, includeUsage: false, modelRunToolCallId: persisted.id, result
@@ -1808,6 +1902,10 @@ async function executePersistedToolBatch(
   const ambiguous = ordered.find((call) =>
     call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME &&
     !isSkillToolName(call.toolName) &&
+    !isRecoveredObservationRead(context, call.toolName) &&
+    !(context.run.normalizedRequest.toolObservationVersion === 1 &&
+      (isRecoveredWorkspaceCall(context, call.toolName) || isRecoveredSearchCall(context, call.toolName) ||
+        resolveMcpRunTool(context.activeMcpSnapshot, call.toolName))) &&
     !isRecoveredArtifactCall(context, call.toolName) &&
     !(context.run.normalizedRequest.workspaceCheckpoints && call.toolName === CHECKPOINT_OUTPUTS_TOOL_NAME) &&
     !(context.run.normalizedRequest.visionAnalysis && context.deps.vision && call.toolName === ANALYZE_IMAGE_TOOL_NAME) &&
@@ -2049,9 +2147,11 @@ async function recoverCheckpointedToolLoop(
       : null;
     const searchExecutor: RecoverySearchExecutor | null = planSearchRouter
       ? {
+          optionIdsForTool: (name) => planSearchRouter.optionIdsForTool(name),
           accepts: (name) => planSearchRouter.accepts(name),
           execute: (call, request, _runId, executionSignal) =>
-            planSearchRouter.execute(call, request, { signal: executionSignal }),
+            planSearchRouter.execute(call, request, { signal: executionSignal,
+              ...(run.normalizedRequest.toolObservationVersion === 1 ? { retainOriginal: true as const } : {}) }),
           tools: planSearchRouter.tools
         }
       : null;
@@ -2096,6 +2196,7 @@ async function recoverCheckpointedToolLoop(
       ...(clientToolsEnabled && run.normalizedRequest.imagePlan ? [imageGenerationTool(run.normalizedRequest.imagePlan)] : []),
       ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool(run.normalizedRequest.artifactToolDescription), ...(run.normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
+      ...(run.normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
       ...(recoveredKnowledgeEnabled
         ? knowledgeRetrievalToolsForRequest(run.normalizedRequest, deps.knowledgeExecutor?.tools ?? [])
         : []),
@@ -2627,7 +2728,7 @@ async function recoverCheckpointedToolLoop(
                 },
                 settled.result.error.message
               );
-          return bridge.appendToolResult(undefined, result);
+          return bridge.appendToolResult(undefined, projectObservationForProvider(result));
         })
       ];
       const completedToolRounds = Math.max(0, round - 1);
@@ -2950,7 +3051,7 @@ async function recoverCheckpointedToolLoop(
       normalizeToolCallName: workspaceTools.length > 0
         ? normalizeWorkspaceProviderToolName
         : undefined,
-      projectToolResultForProvider: (result) => result,
+      projectToolResultForProvider: projectObservationForProvider,
       persistToolBatch: async ({ calls, continuation: nextContinuation, round }) => {
         await persistToolBatch(calls, nextContinuation, round);
       },

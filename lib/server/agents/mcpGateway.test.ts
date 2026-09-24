@@ -12,6 +12,9 @@ import { CodexJsonlDecoder, type CodexEvent } from "./codexProtocol";
 import { AgentExecutionOutput } from "./executionOutput";
 import { CODEX_VERSION } from "./codexProfile";
 import * as observability from "../observability";
+import { prisma } from "../prisma";
+import { memoryToolObservations } from "@/tests/support/toolObservations";
+import type { ToolExecutionResult } from "../tools/types";
 
 // Text-result contract from the pinned consumer's CallToolResult conversion:
 // https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/protocol/src/models.rs#L2129
@@ -35,9 +38,55 @@ async function rpcResult(response: Response) {
   return JSON.parse(text.startsWith("event:") ? text.split("\n").find(line => line.startsWith("data: "))!.slice(6) : text).result;
 }
 
-vi.mock("../prisma", () => ({ prisma: {} }));
+vi.mock("../prisma", () => ({ prisma: { agentMcpTool: { findUnique: vi.fn() } } }));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 describe("Agent MCP discovery surface", () => {
+  it.each(["auto", "all"] as const)("recalls an externalized %s result through a fresh MCP-Off gateway and reauthorizes repeated reads", async mcpMode => {
+    const observations = memoryToolObservations();
+    const toolId = "fixture_records", toolVersion = "a".repeat(64);
+    const snapshot = { version: 1, servers: [{ serverId: "fixture", revisionId: "revision", fingerprint: "b".repeat(64) }],
+      tools: [{ serverId: "fixture", namespacedName: toolId, originalName: "records", definitionHash: "c".repeat(64), inputSchema: { type: "object" } }] };
+    vi.spyOn(prisma.agentMcpTool, "findUnique").mockResolvedValue({ snapshot } as never);
+    const dispatch = vi.fn(async () => ({ text: ["x".repeat(320 * 1024) + "rare_tail=271828"],
+      isError: false, unsupportedContentTypes: [] }));
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: async () => ({}),
+      dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    let cached: ToolExecutionResult | undefined;
+    const store = { mcpTools: async () => [{ toolId, version: toolVersion }], admitMcpPlan: async () => {},
+      toolCall: async () => "business-call", settleTool: vi.fn(),
+      claimBuiltinTool: async () => ({ id: "reader-call", claimed: !cached, result: cached }),
+      settleBuiltinTool: async (_id: string, result: ToolExecutionResult) => { cached ??= result; }
+    } as unknown as ReturnType<typeof createAgentRunStore>;
+    const gateway = (mode: "off" | "auto" | "all") => createAgentMcpGateway({
+      request: { agent: { mcpMode: mode }, searchPlan: { mode: "all_selected", options: [] }, mcp: snapshot,
+        toolObservationVersion: 1 } as unknown as NormalizedRunRequest,
+      observations: observations.service(), store, runId: "run", userId: "user",
+      signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const rpc = (name: string, args: Record<string, unknown>) => new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) });
+    const handler = await gateway(mcpMode);
+    const initial = await rpcResult(await handler(mcpMode === "auto"
+      ? rpc("call_tool", { tool_id: toolId, tool_version: toolVersion, arguments: {} }) : rpc(toolId, {})));
+    expect(initial.isError).not.toBe(true);
+    const projected = codexModelOutput(initial).body;
+    expect(Buffer.byteLength(projected)).toBeLessThan(10 * 1024);
+    expect(projected).not.toContain("rare_tail");
+    const { observation } = JSON.parse(projected);
+    expect(observation.byteSize).toBeGreaterThan(320 * 1024);
+    const restarted = await gateway("off");
+    const readArgs = { handle: observation.handle, query: "rare_tail", maxBytes: 128 };
+    const recalled = await rpcResult(await restarted(rpc("read_tool_result", readArgs)));
+    expect(recalled.isError).not.toBe(true);
+    expect(codexModelOutput(recalled).body).toContain("rare_tail=271828");
+    observations.revoke();
+    const denied = await rpcResult(await restarted(rpc("read_tool_result", readArgs)));
+    expect(denied.isError).toBe(true);
+    expect(codexModelOutput(denied).body).not.toContain("rare_tail=271828");
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(observations.rows.size).toBe(1);
+  });
+
   it.each(["missing", "version", "tool_unavailable", "tool_definition_changed", "upstream_unavailable", "execution_outcome_unknown"] as const)(
     "distinguishes %s from a dispatched unknown outcome in both consumer formats", async kind => {
       const version = "a".repeat(64), toolId = "arbitrary_delta";

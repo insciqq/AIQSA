@@ -1,4 +1,5 @@
 import { parseWorkspaceImageEvidence } from "../workspace/directImageEvidence";
+import { decodeToolObservationDescriptor } from "../toolObservations/contract";
 import { decodeTokenUsage } from "../../domain/usage";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
@@ -105,11 +106,14 @@ export function parsePersistedToolExecutionResult(
     "callId",
     "content",
     "name",
+    "observation",
     "rawPreview",
     "status",
     "usage"
   ]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) return null;
+  const observation = value.observation === undefined ? undefined : decodeToolObservationDescriptor(value.observation);
+  if (value.observation !== undefined && !observation) return null;
 
   const content: ToolExecutionResult["content"] = [];
   for (const entry of value.content) {
@@ -154,6 +158,7 @@ export function parsePersistedToolExecutionResult(
     callId: call.id,
     content,
     name: call.name,
+    ...(observation ? { observation } : {}),
     ...(value.rawPreview !== undefined
       ? { rawPreview: value.rawPreview as Record<string, unknown> }
       : {}),

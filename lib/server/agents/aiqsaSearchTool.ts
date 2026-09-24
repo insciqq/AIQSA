@@ -4,6 +4,7 @@ import type { NormalizedSearchPlan, NormalizedSearchPlanOption } from "../provid
 import { createSearchPlanToolRouter, searchExecutionConfiguration } from "../search/toolExecutor";
 import type { createAgentRunStore } from "./store";
 import { AgentExecutionError } from "./failures";
+import { captureSearchObservation, type ToolObservationService } from "../toolObservations/sourceAdapters";
 
 export function createAgentAiqsaSearch(input: Readonly<{
   plan: NormalizedSearchPlan;
@@ -11,6 +12,7 @@ export function createAgentAiqsaSearch(input: Readonly<{
   resolve(option: NormalizedSearchPlanOption): Promise<ProviderRuntimeBinding>;
   assertAllowed(option: NormalizedSearchPlanOption): Promise<void>;
   onUsage(): Promise<void>;
+  observation?: Readonly<{ service: ToolObservationService; runId: string; userId: string }>;
 }>) {
   const options = input.plan.options;
   if (!options.length) return null;
@@ -77,7 +79,13 @@ export function createAgentAiqsaSearch(input: Readonly<{
       }));
       const router = createSearchPlanToolRouter({ plan: input.plan, runtimes })!;
       const name = choice ? `search_engine_${index + 1}` : "search_selected_engines";
-      const result = await router.execute({ id: callId, name, arguments: { query: args.query } }, undefined, { signal });
+      const call = { id: callId, name, arguments: { query: args.query } };
+      const execute = () => router.execute(call, undefined, { signal,
+        ...(input.observation ? { retainOriginal: true as const } : {}) });
+      const result = input.observation ? await captureSearchObservation({ service: input.observation.service,
+        producer: { runId: input.observation.runId, userId: input.observation.userId, toolCallId: callId }, signal },
+        { ...call, name: "aiqsa_search" }, selected.map(({ optionId, revisionId }) => ({ optionId, revisionId })), execute)
+        : await execute();
       const failure = await input.store.failure();
       if (failure) throw new AgentExecutionError(failure);
       return { content: result.content.map((part) => ({ type: "text" as const,
