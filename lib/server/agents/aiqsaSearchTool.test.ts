@@ -74,8 +74,12 @@ describe("built-in Agent AIQSA Search", () => {
     for (const internal of ["revision-first", "invocationId", "optionId", "inputTokens", "estimatedCostMicros"]) {
       expect(JSON.stringify(observed)).not.toContain(internal);
     }
+    // The saved original is the same model-facing text; usage stays in the receipt.
     const saved = await observations.service().read({ runId: "run", userId: "user" }, { handle: descriptor.observation.handle });
-    expect(saved.fragment).toContain("revision-first");
+    expect(JSON.parse(saved.fragment)).toEqual({ status: "complete", content: [off.content[0]] });
+    for (const internal of ["revision-first", "invocationId", "inputTokens"]) expect(saved.fragment).not.toContain(internal);
+    expect(await observations.service().searchAccounting({ runId: "run", userId: "user", toolCallId: "call" }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ revisionId: "revision-first", usage: expect.objectContaining({ inputTokens: 11 }) })]));
   });
   it("exposes nothing when Search is off and stops dispatch after cancellation", async () => {
     const f = fixture();

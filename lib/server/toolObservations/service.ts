@@ -8,7 +8,7 @@ import { measureObservationJson, observationJsonStream, OBSERVATION_ENCODING } f
 import { decodeToolObservationDescriptor, decodeToolObservationReadInput, toolObservationCursor, ObservationStoreError,
   TOOL_OBSERVATION_LIMITS, type ToolObservationDescriptor, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
 import type { ObservationActor, ObservationProducer, createToolObservationRepository } from "./repository";
-import { readSearchAccounting, readSearchOriginal } from "./searchAccounting";
+import { readSearchOriginal } from "./searchOriginal";
 import { decodeSearchObservationReceipt, searchObservationReceipt } from "./searchReceipt";
 import type { ToolExecutionResult } from "../tools/types";
 
@@ -41,18 +41,22 @@ function boundedSignal(parent?: AbortSignal) {
 }
 
 /** A streamed fragment/preview holds only bounded reader buffers, whatever
- * the object size. A Search accounting read and a source load hold it all. */
+ * the object size. A Search restore and a source load hold it all. */
 const STREAMED_READ_BYTES = 128 * 1024;
+
+const OBSERVED_CODES = Object.freeze({ busy: "tool_observation_busy", limit: "tool_observation_limit_exceeded",
+  waited: "tool_observation_waiting", store_failed: "tool_observation_store_failed" });
 
 /** Content-free store/limit/queue counters. Skills are source-owned and never
  * reach object storage or the branch budget. */
-function observe(source: string, event: "busy" | "limit" | "waited" | "store_failed"): void {
+function observe(source: string, event: keyof typeof OBSERVED_CODES): void {
   if (source !== "mcp" && source !== "workspace" && source !== "search" && source !== "knowledge") return;
+  const code = OBSERVED_CODES[event];
   if (event === "store_failed") {
-    logEvent("tool_execution", { tool_kind: source, stage: "result", outcome: "failed", reason: "unknown", action: "degrade" });
+    logEvent("tool_execution", { tool_kind: source, stage: "result", outcome: "failed", code, reason: "unknown", action: "degrade" });
     return;
   }
-  logEvent("tool_execution", { tool_kind: source, stage: "admission",
+  logEvent("tool_execution", { tool_kind: source, stage: "admission", code,
     outcome: event === "waited" ? "degraded" : "failed",
     reason: event === "limit" ? "policy" : "safety_limit",
     action: event === "waited" ? "wait" : event === "busy" ? "retry" : "fail" });
@@ -299,11 +303,12 @@ export function createToolObservationService(input: Readonly<{
           selector: { offset: 0, maxBytes: TOOL_OBSERVATION_LIMITS.previewBytes }, signal: readSignal });
       }, { ...(signal ? { signal } : {}), whenBusy: "wait" });
       // Search's model projection is rebuilt from its complete retained
-      // result, as at capture; its compact original never becomes the text.
-      const search = row.sourceKind === "search" ? await readPhase(row, reference, async () => {
-        const readSignal = boundedSignal(signal);
-        return readSearchOriginal({ body: await bodyFor(row, reference, readSignal, producer), identity: reference, signal: readSignal });
-      }, { ...(signal ? { signal } : {}), whenBusy: "wait", wholeOriginal: true }) : undefined;
+      // canonical text. A Search without a receipt dispatched no provider.
+      const search = row.sourceKind === "search" ? { providerCall: row.executionReceipt !== null,
+        original: await readPhase(row, reference, async () => {
+          const readSignal = boundedSignal(signal);
+          return readSearchOriginal({ body: await bodyFor(row, reference, readSignal, producer), identity: reference, signal: readSignal });
+        }, { ...(signal ? { signal } : {}), whenBusy: "wait", wholeOriginal: true }) } : undefined;
       const after = await repository.readProducer(producer);
       if (after.state !== "READY" || after.checksum !== reference.checksum) throw unavailable();
       return { status: row.executionOutcome === "error" ? "error" as const : "complete" as const,
@@ -312,26 +317,15 @@ export function createToolObservationService(input: Readonly<{
         ...(search ? { search } : {}) };
     },
 
+    /** Usage and thread sources come only from the immutable receipt, never
+     * from the model-facing original: Stop, storage loss or revocation of
+     * model recall cannot turn a reported charge into an unbilled one. */
     async searchAccounting(producer: ObservationProducer) {
       const row = await repository.readSearchAccounting(producer);
-      if (!row) return [];
+      if (!row || row.executionReceipt === null) return [];
       const receipt = decodeSearchObservationReceipt(row.executionReceipt);
-      if (!receipt && row.executionReceipt === null) return [];
-      if (row.state !== "READY") return receipt?.executions ?? [];
-      try {
-        const identity = descriptor(row);
-        // Accounting may wait for capacity but is never refused as busy.
-        return await readPhase(row, identity, async () => {
-          const signal = boundedSignal();
-          const body = await bodyFor(row, identity, signal);
-          return readSearchAccounting({ body, identity, signal });
-        }, { whenBusy: "wait", wholeOriginal: true });
-      } catch {
-        // Storage loss cannot turn known usage into an unbilled operation.
-        // The model-facing read still fails closed on the same missing bytes.
-        if (!receipt) throw unavailable();
-        return receipt.executions;
-      }
+      if (!receipt) throw unavailable();
+      return receipt.executions;
     }
   };
 }

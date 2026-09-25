@@ -18,6 +18,7 @@ import { captureMcpObservation, captureWorkspaceObservation, captureSearchObserv
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { searchToolResultContent, searchToolResultText, type SearchExecutionEvidence } from "../search/toolResult";
 import { SearchToolCancelledError } from "../search/toolExecutor";
+import { decodeSearchObservationReceipt, searchObservationReceipt } from "./searchReceipt";
 import type { ToolExecutionResult } from "../tools/types";
 
 const producer = { runId: "synthetic-run", userId: "synthetic-owner", toolCallId: "synthetic-call" };
@@ -365,7 +366,7 @@ describe("accepted observation source adapters", () => {
 
   const internalSearchFields = ["invocation-", "option-", "revision-", "inputTokens", "totalTokens", "estimatedCostMicros", "usage"];
 
-  it("gives the model the same canonical Search text as Off and keeps internal identifiers in the retained original", async () => {
+  it("gives the model the same canonical Search text as Off and retains only that model-facing text", async () => {
     const f = fixture();
     const off = searchResult();
     const result = await captureSearchObservation({ service: f.service(), producer }, call, sources, async () => searchResult());
@@ -380,14 +381,17 @@ describe("accepted observation source adapters", () => {
     // The checkpoint keeps the same text and descriptor, never the compact original.
     const checkpoint = JSON.stringify(snapshotToolExecutionResult(result, 256 * 1024));
     for (const field of internalSearchFields) expect(checkpoint).not.toContain(field);
-    const original = JSON.parse((await f.service().read(producer, { handle: result.observation!.handle })).fragment);
-    expect(original).toMatchObject({ content: [{ type: "json", value: { aiqsaType: "search_result" } }],
-      rawPreview: { searchExecutions: [{ invocationId: "invocation-1" }, {}, {}] } });
-    // A restart before settlement restores the same text, not the compact original.
+    // The reader serves exactly the text Off delivers; accounting stays in the receipt.
+    const saved = (await f.service().read(producer, { handle: result.observation!.handle })).fragment;
+    expect(JSON.parse(saved)).toEqual({ status: "complete", content: [{ type: "text", text: searchToolResultText(executions) }] });
+    for (const field of internalSearchFields) expect(saved).not.toContain(field);
+    expect((await f.service().searchAccounting(producer)).map(execution => execution.invocationId))
+      .toEqual(["invocation-1", "invocation-2", "invocation-3"]);
+    // A restart before settlement restores the same text.
     expect(await restoreObservedResult({ service: f.service(), producer }, call)).toEqual(result);
   });
 
-  it("externalizes canonical Search once and retains exact sources and independent usage when its object is lost", async () => {
+  it("externalizes canonical Search once and keeps usage and thread sources in the receipt when its object is lost", async () => {
     const f = fixture();
     const execute = vi.fn(async () => searchResult(true));
     const result = await captureSearchObservation({ service: f.service(), producer }, call, sources, execute);
@@ -404,17 +408,47 @@ describe("accepted observation source adapters", () => {
     expect(Buffer.byteLength(text)).toBeLessThan(80 * 1024);
     for (const field of internalSearchFields) expect(JSON.stringify(result)).not.toContain(field);
     expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
-    expect(await restoreObservedResult({ service: f.service(), producer }, call)).toEqual(result);
-    expect((await f.service().read(producer, { handle: result.observation!.handle, query: "rare-search-3" })).fragment).toContain("rare-search-3");
+    // A restore has only the retained text: it bounds that same text.
+    const restored = await restoreObservedResult({ service: f.service(), producer }, call);
+    const restoredText = restored.content[0]?.type === "text" ? restored.content[0].text : "";
+    expect(restored).toMatchObject({ status: "complete", observation: result.observation });
+    expect(restoredText.startsWith('Search source "Source 1":\nzzz')).toBe(true);
+    expect(restoredText).toContain("Search result shortened here");
+    expect(snapshotToolExecutionResult(restored, 256 * 1024)).not.toBeNull();
+    for (const field of internalSearchFields) expect(JSON.stringify(restored)).not.toContain(field);
+    const tail = (await f.service().read(producer, { handle: result.observation!.handle, query: "rare-search-3" })).fragment;
+    expect(tail).toContain("rare-search-3");
+    for (const field of internalSearchFields) expect(tail).not.toContain(field);
     const accounting = await f.service().searchAccounting(producer);
     expect(accounting.map(execution => execution.usage.totalTokens)).toEqual([11, 22, 33]);
     expect(accounting[2]?.sources[0]?.snippet).toBe("Accepted snippet 3");
     expect(accounting.every(execution => execution.findings === undefined)).toBe(true);
     await f.storage.deleteObject(f.row().storageKey!);
-    const retained = await f.service().searchAccounting(producer);
-    expect(retained.map(execution => execution.usage.totalTokens)).toEqual([11, 22, 33]);
-    expect(retained.every(execution => execution.sources.length === 0)).toBe(true);
+    expect(await f.service().searchAccounting(producer)).toEqual(accounting);
     expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("bounds the Search receipt by dropping snippets, then trailing sources, never usage", () => {
+    const executions: SearchExecutionEvidence[] = [1, 2, 3].map(index => ({ displayName: `Source ${index}`,
+      invocationId: `invocation-${index}`, modelId: "model", optionId: `option-${index}`, provider: "provider",
+      revisionId: `revision-${index}`, findings: "Synthetic findings", status: "complete",
+      sources: Array.from({ length: 20 }, (_, rank) => ({ rank: rank + 1, title: `Title ${index}-${rank} ${"t".repeat(400)}`,
+        url: `https://example.com/${index}/${rank}/${"p".repeat(900)}`, snippet: "s".repeat(1900) })),
+      usage: { inputTokens: index, outputTokens: 1, totalTokens: index + 1 } }));
+    const receipt = searchObservationReceipt({ callId: call.id, name: call.name, status: "complete",
+      content: searchToolResultContent(executions), rawPreview: { searchResultVersion: 2, searchExecutions: executions } });
+    expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(32 * 1024);
+    expect(receipt.executions.map(execution => execution.usage.totalTokens)).toEqual([2, 3, 4]);
+    expect(receipt.executions.every(execution => execution.sources.every(source => source.snippet === undefined))).toBe(true);
+    expect(receipt.executions[0]!.sources.length).toBeGreaterThan(0);
+    expect(receipt.executions[0]!.sources.length).toBeLessThan(20);
+    expect(receipt.executions[0]!.sources[0]).toEqual({ rank: 1, title: executions[0]!.sources[0]!.title, url: executions[0]!.sources[0]!.url });
+    // PostgreSQL JSON reorders object keys; the receipt must still decode.
+    const reordered = { version: 1, executions: receipt.executions.map(execution => ({ ...execution,
+      sources: execution.sources.map(({ url, title, rank }) => ({ url, title, rank })) })) };
+    expect(decodeSearchObservationReceipt(reordered)).toEqual(receipt);
+    expect(decodeSearchObservationReceipt({ ...reordered, executions: [{ ...reordered.executions[0]!,
+      sources: [{ url: "javascript:alert(1)", title: "Unsafe", rank: 1 }] }] })).toBeNull();
   });
 
   it("retains Search usage on Stop without publishing a reader handle", async () => {

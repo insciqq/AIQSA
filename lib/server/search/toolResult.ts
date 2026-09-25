@@ -263,6 +263,14 @@ export function boundedSearchToolResultText(
   }));
 }
 
+/** A bounded prefix of already rendered canonical text, for a caller that
+ * retains only that text; prefer the engine-aware form when available. */
+export function shortenedSearchToolResultText(text: string, maxBytes: number): string {
+  const prefix = utf8Prefix(text, Math.max(0, Math.floor(maxBytes)));
+  return prefix === text ? text
+    : `${prefix}\n[Search result shortened here; the complete saved result remains readable.]`;
+}
+
 export function searchToolResultContent(
   executions: readonly SearchExecutionEvidence[]
 ): ToolExecutionResult["content"] {
