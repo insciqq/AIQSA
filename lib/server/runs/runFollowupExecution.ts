@@ -4,11 +4,9 @@ import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import type { ProviderAdapter, ProviderRunOptions, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { withTimeoutSignal } from "../providers/network";
 import type { ProviderToolBridge } from "../tools/types";
-import { makeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { subscribeRunFollowup } from "./runFollowupRegistry";
 import { followupRequestHeadroom, type RunFollowupOperations } from "./runFollowups";
-import { ContextSummaryError, executeContextSummary, summaryNeedsProvider } from "./contextCompactionSummarizer";
 
 export class RunFollowupChanged extends Error {
   constructor() { super("run_followup_changed"); this.name = "RunFollowupChanged"; }
@@ -25,6 +23,18 @@ export function requestWithRunFollowups(request: ProviderRunRequest, entries: re
       : { role: "user", content: entry.text })] };
 }
 
+/** Removes exactly the clarification tail added by `requestWithRunFollowups`,
+ * keeping the provider projection prepared for the rest of the request. Null
+ * means the tail is not that exact serialization and must not be trusted. */
+export function requestWithoutRunFollowups(request: ProviderRunRequest, entries: readonly RunFollowup[]): ProviderRunRequest | null {
+  if (!entries.length) return request;
+  const messages = request.providerToolMessages ?? [];
+  const tail = requestWithRunFollowups({ ...request, providerToolMessages: [] }, entries).providerToolMessages ?? [];
+  if (messages.length < tail.length ||
+    JSON.stringify(messages.slice(messages.length - tail.length)) !== JSON.stringify(tail)) return null;
+  return { ...request, providerToolMessages: messages.slice(0, messages.length - tail.length) };
+}
+
 export function createRunFollowupExecution(input: {
   runId: string;
   userId: string;
@@ -33,8 +43,6 @@ export function createRunFollowupExecution(input: {
   /** Flush and return only the current generation's displayed text. */
   beforeDelivery(): Promise<string>;
   onDelivery(entries: readonly RunFollowup[]): Promise<void>;
-  onSummaryUsage?(usage: ModelRunUsage, request: ProviderRunRequest): Promise<void> | void;
-  onCompactionStatus?(status: ContextCompactionStatus): Promise<void> | void;
   onInterruptedUsage(usage: ModelRunUsage, request: ProviderRunRequest,
     generation: { completed: boolean; providerResponseId: string | null }): Promise<void>;
 }) {
@@ -112,91 +120,33 @@ export function createRunFollowupExecution(input: {
     closeOnFinal: boolean | (() => boolean);
     adapter: Pick<ProviderAdapter, "stream">;
     timeoutMs: number;
+    /** The owner's single context-compaction consumer. Summary state belongs
+     * to the owner; this generator only delivers and steers clarifications. */
+    compact(request: ProviderRunRequest, signal: AbortSignal): Promise<ProviderRunRequest>;
   }): AsyncGenerator<ModelRunSseEvent, ProviderRunResult, void> {
     // One deadline for the original call and every steering replacement.
     const deadline = Date.now() + options.timeoutMs;
     const timeout = withTimeoutSignal(options.signal, options.timeoutMs, "operation");
     const parent = timeout.signal;
+    // The owner prepared and checkpointed `request` for this round. Only a
+    // delivered clarification changes that source, so only then does the
+    // merged request go back through the owner's consumer. A summary committed
+    // there is carried into every steering replacement, never bought again.
+    let base = request;
     try {
       for (;;) {
         parent.throwIfAborted();
-        let prepared = await prepare(request);
+        await prepare(base);
         if (pending) continue;
-        let compactionRunning = false;
-        const compactionBeforeTokens = prepared.contextCompaction?.beforeTokens;
-        const settleCompaction = async (status: ContextCompactionStatus): Promise<void> => {
-          if (status.state === "running") {
-            compactionRunning = true;
-          } else {
-            compactionRunning = false;
-          }
-          await input.onCompactionStatus?.(status);
-        };
-        for (let summaryCycle = 0; summaryNeedsProvider(prepared); summaryCycle += 1) {
-          if (summaryCycle >= 2) {
-            await settleCompaction(makeContextCompactionStatus({
-              afterTokens: null,
-              beforeTokens: compactionBeforeTokens,
-              outcome: "summary_failed",
-              state: "failed"
-            }));
-            throw new ContextSummaryError("context_compaction_summary_failed", "Context compaction did not make bounded progress.");
-          }
-          if (!compactionRunning) {
-            await settleCompaction(makeContextCompactionStatus({
-              afterTokens: prepared.contextCompaction?.afterTokens,
-              beforeTokens: compactionBeforeTokens,
-              outcome: "pending",
-              state: "running"
-            }));
-          }
-          try {
-            const summarized = await executeContextSummary({
-              adapter: options.adapter,
-              existingAttempts: prepared.contextCompactionSummaryAttempts,
-              existingSummary: prepared.contextCompactionSummary,
-              onUsage: usage => input.onSummaryUsage?.(usage, prepared),
-              request: prepared,
-              signal: parent
-            });
-            const budgeted = applyProviderRequestContextBudget({ bridge: input.bridge, request: summarized.request });
-            if (!budgeted.ok) {
-              await settleCompaction(makeContextCompactionStatus({
-                afterTokens: null,
-                beforeTokens: compactionBeforeTokens,
-                outcome: budgeted.error.code === "context_too_large" ? "irreducible_overflow" : "summary_failed",
-                state: "failed"
-              }));
-              throw new ContextSummaryError("context_compaction_summary_failed", budgeted.error.message);
-            }
-            prepared = budgeted.request;
-            if (!summaryNeedsProvider(prepared)) break;
-          } catch (error) {
-            if (error instanceof ContextSummaryError) {
-              if (compactionRunning) await settleCompaction(makeContextCompactionStatus({
-                afterTokens: null,
-                beforeTokens: compactionBeforeTokens,
-                outcome: error.code === "context_compaction_source_unavailable" ? "source_unavailable" : "summary_failed",
-                state: "failed"
-              }));
-            } else if (compactionRunning) {
-              await settleCompaction(makeContextCompactionStatus({
-                afterTokens: null,
-                beforeTokens: compactionBeforeTokens,
-                outcome: "provider_failed",
-                state: "failed"
-              }));
-            }
-            throw error;
-          }
-        }
-        if (compactionRunning || prepared.contextCompaction?.outcome === "masking_applied") {
-          await settleCompaction(makeContextCompactionStatus({
-            afterTokens: prepared.contextCompaction?.afterTokens,
-            beforeTokens: compactionBeforeTokens,
-            outcome: prepared.contextCompactionSummary ? "summary_applied" : "masking_applied",
-            state: "complete"
-          }));
+        const delivered = entries;
+        let prepared = base;
+        if (delivered.length) {
+          prepared = await options.compact(
+            requestWithRunFollowups({ ...base, followupContextReserveTokens: 0 }, delivered), parent);
+          base = requestWithoutRunFollowups(prepared, delivered) ?? base;
+          // A newer clarification arrived while compacting: include it before
+          // dispatch instead of generating an answer that is already stale.
+          if (pending) continue;
         }
         const current = new AbortController();
         if (child) throw new Error("followup_generation_overlap");

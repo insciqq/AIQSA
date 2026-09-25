@@ -146,6 +146,10 @@ import {
   type RunRecoveryRepository
 } from "./runRecovery";
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
+import { decodeContextCompactionStatus, type ContextPlanMeasurement, type ContextSummary } from "../../contracts/contextCompaction";
+import { openAIResponsesToolBridge } from "../tools/bridges";
+import { contextCompactionCheckpoint, conversationContextPolicy } from "./contextCompactionContract";
+import { measureSessionContext } from "./runContextBudget";
 
 // Most recovery fixtures below intentionally exercise the historical V20/V16
 // new-run path. Persisted V21 snapshots are selected from their durable first
@@ -5200,6 +5204,179 @@ describe("run recovery", () => {
       expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("read_tool_result");
       expect(Buffer.byteLength(JSON.stringify(requests[0]?.providerToolMessages))).toBeLessThan(10 * 1024);
     }
+  });
+
+  describe("hybrid compaction recovery", () => {
+    const summary: ContextSummary = { formatVersion: 1, id: "cs1_checkpointed", notes: "PRIVATE_NOTES checkpointed history.",
+      sourceDigest: "e".repeat(64), sourceRefs: ["old-history"] };
+    const zeroUsage = { completeness: "complete" as const, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+      inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 };
+    const measurement = (outcome: ContextPlanMeasurement["outcome"]): ContextPlanMeasurement => ({ version: 1, outcome,
+      beforeTokens: 100, afterTokens: 100, budgetTokens: 6_861, legacyFallback: false, maskedBatches: 0, maskedObservations: 0 });
+
+    /** 8,192-token window: 6,861 estimated budget tokens; history dominates round 1. */
+    function hybridRequest(historyChars = 20_000): NormalizedRunRequest {
+      const base = normalizedToolRequest();
+      const messages = [
+        { id: "old-history", role: "user" as const, content: { blocks: [{ type: "text", text: `OLD_HISTORY ${"h".repeat(historyChars)}` }] } },
+        ...Array.from({ length: 4 }, (_, index) => ({ id: `recent-${index}`, role: index % 2 ? "user" as const : "assistant" as const,
+          content: { blocks: [{ type: "text", text: "Acknowledged." }] } })),
+        { id: "current-user-message", role: "user" as const, content: base.content }
+      ];
+      return { ...base, context: { mode: "branch_path", messages },
+        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
+        modelCapabilities: { ...base.modelCapabilities, contextWindow: 8_192, defaultMaxOutputTokens: 512, toolCalling: true },
+        toolObservationVersion: 1 };
+    }
+
+    const toolResult = (round: number) => ({ callId: `provider-call-${round}`, name: recoveryToolName, status: "complete" as const,
+      content: [{ type: "text" as const, text: `RESULT_${round} ${"r".repeat(7_000)}` }] });
+
+    function fixture(input: Readonly<{
+      calls: PersistedToolLoopCall[];
+      compaction: Omit<Parameters<typeof contextCompactionCheckpoint>[0], "ownerId" | "request" | "runId">;
+      historyChars?: number;
+      providerToolMessages: ToolLoopJsonValue[];
+      refresh?: () => Promise<ProviderRunRefreshResult>;
+      roundIndex: number;
+      toolCallsBeforeFinal: number;
+    }>) {
+      const request = hybridRequest(input.historyChars);
+      const phase = input.refresh ? "provider_running" as const : "tools_pending" as const;
+      const summaries: ProviderRunRequest[] = [];
+      const answers: ProviderRunRequest[] = [];
+      const withinBudget: boolean[] = [];
+      const harness = createHarness({
+        mcpRuntime: {
+          callTool: async (call) => ({ isError: false, structuredContent: null, unsupportedContentTypes: [],
+            text: [toolResult(call.arguments.value === "beta" ? 2 : 1).content[0]!.text] }),
+          ensureAcceptedGeneration: async () => true
+        },
+        providers: { openai: { buildRequestPreview: () => ({}), ...(input.refresh ? { refresh: input.refresh } : {}), async *stream(next) {
+          if (next.forceNonStreaming) {
+            summaries.push(next);
+            const output = JSON.stringify({ notes: "PRIVATE_NOTES condensed history.", sourceRefs: ["old-history"] });
+            yield { type: "token", data: { delta: output } };
+            return { ...providerResult, finalText: output };
+          }
+          answers.push(next);
+          // Independent of the consumer's own measurement field.
+          const context = measureSessionContext({ bridge: openAIResponsesToolBridge, request: next });
+          withinBudget.push(context.approximateInputTokens <=
+            context.contextWindow! - context.maxOutputTokens - context.safetyMarginTokens);
+          if (answers.length <= input.toolCallsBeforeFinal) {
+            return { ...providerResult, finalText: "", toolCalls: [{ id: `provider-call-${input.roundIndex + answers.length}`,
+              name: recoveryToolName, arguments: { value: "beta" } }] };
+          }
+          yield { type: "token", data: { delta: "Recovered." } };
+          return { ...providerResult, finalText: "Recovered." };
+        } } }
+      });
+      const run: CheckpointedToolLoopRun = {
+        ...checkpointedRun({ calls: input.calls, phase, roundIndex: input.roundIndex,
+          ...(input.refresh ? { providerResponseId: "response-tool-1" } : {}) }),
+        checkpoint: toolLoopCheckpoint({
+          answerRoundUsage: input.refresh ? [] : [{ completeness: "terminal", roundIndex: input.roundIndex, usage: zeroUsage }],
+          contextCompaction: contextCompactionCheckpoint({ ...input.compaction, ownerId: userId, request, runId }),
+          phase,
+          providerContinuation: { providerResponseId: "response-tool-1", providerToolMessages: input.providerToolMessages },
+          roundIndex: input.roundIndex
+        })!,
+        normalizedRequest: request
+      };
+      const installed = installCheckpointState(harness, run);
+      const batches: Parameters<RunRecoveryRepository["persistToolLoopCallBatch"]>[0][] = [];
+      const persist = harness.repository.persistToolLoopCallBatch;
+      harness.repository.persistToolLoopCallBatch = async (value) => { batches.push(value); return persist(value); };
+      const recover = () => refreshProviderRunIfNeeded({ ...harness.deps, observations: memoryToolObservations().service() }, runId, userId);
+      const statuses = () => harness.state.events.flatMap(({ event }) => {
+        const status = event.type === "artifact" && event.data.artifactType === "context_compaction"
+          ? decodeContextCompactionStatus(event.data.payload) : null;
+        return status ? [status] : [];
+      });
+      return { answers, batches, harness, installed, recover, statuses, summaries, withinBudget };
+    }
+
+    it("reuses the checkpointed summary after the crossing round without buying it again", async () => {
+      const recovery = fixture({
+        calls: [{ ...persistedRecoveryCall(), id: "stored-call-2", providerCallId: "provider-call-2", roundIndex: 2,
+          arguments: { value: "beta" } }],
+        // A carried needs_summary from the lost executor is not a decision.
+        compaction: { measurement: measurement("needs_summary"), summary, summaryAttempts: [{ attempt: 1,
+          bindingDigest: "f".repeat(64), id: "csa1_committed", sourceDigest: "e".repeat(64), state: "committed" }] },
+        providerToolMessages: [
+          { arguments: "{\"value\":\"alpha\"}", call_id: "provider-call-1", name: recoveryToolName, type: "function_call" },
+          openAIResponsesToolBridge.appendToolResult(undefined, toolResult(1)) as ToolLoopJsonValue,
+          { arguments: "{\"value\":\"beta\"}", call_id: "provider-call-2", name: recoveryToolName, type: "function_call" }
+        ],
+        roundIndex: 2,
+        toolCallsBeforeFinal: 0
+      });
+      await recovery.recover();
+      expect(recovery.harness.state.recoveredErrors).toEqual([]);
+      expect(recovery.harness.state.completed).toMatchObject({ finalText: "Recovered." });
+      expect(recovery.summaries).toHaveLength(0);
+      expect(recovery.answers).toHaveLength(1);
+      expect(recovery.answers[0]?.contextCompactionSummary).toEqual(summary);
+      expect(JSON.stringify(recovery.answers[0]?.context)).not.toContain("OLD_HISTORY");
+      expect(JSON.stringify(recovery.answers[0]?.providerToolMessages)).toContain("RESULT_2");
+      expect(recovery.withinBudget).toEqual([true]);
+      expect(recovery.statuses()).toEqual([]);
+    });
+
+    it("buys the summary in the recovery consumer when a recovered round crosses the budget", async () => {
+      const recovery = fixture({
+        calls: [persistedRecoveryCall()],
+        compaction: { measurement: measurement("already_fits") },
+        providerToolMessages: [
+          { arguments: "{\"value\":\"alpha\"}", call_id: "provider-call-1", name: recoveryToolName, type: "function_call" }
+        ],
+        roundIndex: 1,
+        toolCallsBeforeFinal: 1
+      });
+      await recovery.recover();
+      expect(recovery.harness.state.recoveredErrors).toEqual([]);
+      expect(recovery.harness.state.completed).toMatchObject({ finalText: "Recovered." });
+      expect(recovery.summaries).toHaveLength(1);
+      expect(recovery.answers).toHaveLength(2);
+      expect(recovery.withinBudget).toEqual([true, true]);
+      const bought = recovery.answers[0]?.contextCompactionSummary;
+      expect(bought?.notes).toContain("condensed");
+      expect(recovery.answers[1]?.contextCompactionSummary).toEqual(bought);
+      for (const answer of recovery.answers) {
+        expect(JSON.stringify(answer.context)).not.toContain("OLD_HISTORY");
+        expect(answer.contextCompaction?.outcome).not.toBe("needs_summary");
+      }
+      const checkpoint = recovery.batches.find(batch => batch.roundIndex === 2)?.contextCompaction;
+      expect(checkpoint?.summary).toEqual(bought);
+      expect(checkpoint?.summaryAttempts).toEqual([expect.objectContaining({ state: "committed" })]);
+      expect(checkpoint?.measurement).toEqual(recovery.answers[0]?.contextCompaction);
+      expect(recovery.statuses().map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
+        [1, "running", "pending"], [1, "complete", "summary_applied"]
+      ]);
+      expect(JSON.stringify(recovery.harness.state.events)).not.toContain("PRIVATE_NOTES");
+    });
+
+    it("measures a refreshed round without buying a summary for a request already dispatched", async () => {
+      const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({ events: [], status: "completed", terminal: true,
+        result: { ...providerResult, finalText: "Refreshed.", providerResponseId: "response-tool-1" } }));
+      const recovery = fixture({
+        calls: [],
+        compaction: { measurement: measurement("needs_summary") },
+        historyChars: 30_000,
+        providerToolMessages: [],
+        refresh,
+        roundIndex: 1,
+        toolCallsBeforeFinal: 0
+      });
+      await recovery.recover();
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(recovery.harness.state.recoveredErrors).toEqual([]);
+      expect(recovery.harness.state.completed).toMatchObject({ finalText: "Refreshed." });
+      expect(recovery.summaries).toHaveLength(0);
+      expect(recovery.answers).toHaveLength(0);
+      expect(recovery.statuses()).toEqual([]);
+    });
   });
 
   it("recovers an explicit Off run through legacy MCP dispatch without observation restore", async () => {
