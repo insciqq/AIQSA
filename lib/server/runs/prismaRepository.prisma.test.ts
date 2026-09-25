@@ -3569,9 +3569,10 @@ describe("Prisma-backed run repository", () => {
       await expect(repository.loadRunUsageAttributions({ runId: active.runId, userId })).resolves.toEqual([
         expect.objectContaining({ modelId: "gpt-test", usage: expect.objectContaining({ inputTokens: 900, totalTokens: 940 }) })]);
 
-      // The begin adopts the receipts; a stale batch projection cannot drop them.
+      // The begin carries only the round's own projection and adopts the stored
+      // receipts; a stale batch projection cannot drop them either.
       await expect(repository.beginToolLoopProviderRound({
-        contextCompaction: { ...compaction, summary, summaryAttempts: [attempt(1, "committed")] },
+        contextCompaction: compaction,
         providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: active.runId, userId
       })).resolves.toBe("started");
       await expect(repository.persistToolLoopCallBatch({
