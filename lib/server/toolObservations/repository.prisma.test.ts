@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Prisma } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
@@ -12,7 +12,9 @@ import { createPrismaRetentionRepository } from "../retention/prune";
 import { createFileSystemStorageAdapter, createS3StorageAdapter } from "../uploads/storage";
 import { measureObservationJson } from "./codec";
 import { createToolObservationRepository, ObservationStoreError, type ObservationActor } from "./repository";
+import { TOOL_OBSERVATION_LIMITS } from "./contract";
 import { createToolObservationService } from "./service";
+import { createObservationAdmission } from "./admission";
 import { createObservationSourceOwners } from "./sourceOwners";
 import { knowledgeObservationOwner } from "../knowledge/observationOwner";
 import { captureMcpObservation, captureOwnedObservation, captureSearchObservation } from "./sourceAdapters";
@@ -82,18 +84,30 @@ describe("durable tool observation ownership", () => {
     const f = await fixture();
     const directory = await mkdtemp(join(tmpdir(), "aiqsa-observation-resource-"));
     cleanups.push(() => rm(directory, { recursive: true, force: true }));
-    const storage = createFileSystemStorageAdapter(directory);
-    const service = createToolObservationService({ repository: f.repository, storage });
+    const filesystem = createFileSystemStorageAdapter(directory);
+    // Count storage phases, not business calls: only uploads hold capacity.
+    let uploading = 0, peakUploading = 0;
+    const storage = { ...filesystem, async putObjectStream(value: Parameters<NonNullable<typeof filesystem.putObjectStream>>[0]) {
+      uploading++; peakUploading = Math.max(peakUploading, uploading);
+      try { return await filesystem.putObjectStream!(value); } finally { uploading--; }
+    } };
+    // Two 8 MiB-class originals may stream at once; business calls are not gated.
+    const admission = createObservationAdmission(2 * (6 * 1024 * 1024 + 1024), 64);
+    const service = createToolObservationService({ repository: f.repository, storage, admission });
     const producers = await Promise.all(Array.from({ length: 4 }, () => f.call()));
     const baselineRss = process.memoryUsage().rss;
     let active = 0, peakActive = 0, peakRss = baselineRss, dispatched = 0;
     const sample = () => { peakRss = Math.max(peakRss, process.memoryUsage().rss); };
     const timer = setInterval(sample, 10);
+    let release!: () => void;
+    const allDispatched = new Promise<void>(resolve => { release = resolve; });
     try {
       const results = await Promise.all(producers.map(async (producer, index) => {
         const result = await service.withReservation({ producer, source: "mcp", maximumBytes: 8 * 1024 * 1024 }, async receipt => {
           active++; peakActive = Math.max(peakActive, active); dispatched++;
+          if (dispatched === producers.length) release();
           try {
+            await allDispatched;
             const original = { text: ["x".repeat(6 * 1024 * 1024) + `rare_tail=${index}`], structuredContent: null,
               isError: false, unsupportedContentTypes: [] };
             const projection = await receipt.store({ original, outcome: "complete", sourceTruncated: false, maskable: true });
@@ -106,7 +120,8 @@ describe("durable tool observation ownership", () => {
       }));
       const retained = await prisma.toolObservation.findMany({ where: { modelRunId: f.run.id } });
       expect(dispatched).toBe(4);
-      expect(peakActive).toBe(2);
+      expect(peakActive).toBe(4);
+      expect(peakUploading).toBeLessThanOrEqual(2);
       expect(active).toBe(0);
       expect(retained).toHaveLength(4);
       expect(retained.every(row => row.storageMode === "OBJECT" && row.state === "READY")).toBe(true);
@@ -117,7 +132,7 @@ describe("durable tool observation ownership", () => {
         const fragment = await restarted.read(f.run.actor, { handle: result.observation.handle, query: "rare_tail", maxBytes: 128 });
         expect(fragment.fragment).toContain(`rare_tail=${index}`);
       }
-      process.stdout.write(JSON.stringify({ observationResource: { calls: dispatched, peakActive,
+      process.stdout.write(JSON.stringify({ observationResource: { calls: dispatched, peakActive, peakUploading,
         originalsBytes: retained.reduce((sum, row) => sum + row.byteSize!, 0), projectionBytes,
         baselineRssBytes: baselineRss, peakRssBytes: peakRss, processMaxRssKiB: process.resourceUsage().maxRSS } }) + "\n");
     } finally { clearInterval(timer); }
@@ -409,7 +424,8 @@ describe("durable tool observation ownership", () => {
     const f = await fixture();
     const producer = await f.call();
     const reserved = await f.repository.reserve(producer, "mcp", 32 * 1024 * 1024);
-    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "error" } });
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "error",
+      errorPayload: { code: "provider_request_failed", message: "Synthetic terminal failure", recoveryTerminal: true } } });
     const next = await f.makeRun(f.run.assistantMessageId);
     await f.repository.reserve(await f.call(next.actor), "mcp", 32 * 1024 * 1024);
     expect(await prisma.toolObservation.findUnique({ where: { id: reserved.observation.id } })).toMatchObject({
@@ -433,5 +449,107 @@ describe("durable tool observation ownership", () => {
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { state: "complete" } });
     expect(saved).toMatchObject({ state: "READY", storageKey: null, inlineText: null, storageMode: "SOURCE" });
     expect((await f.repository.readSource(f.run.actor, saved.id)).original).toEqual(original);
+  });
+
+  it("keeps parallel reservations of a recoverable-error run live, as the tool loop does", async () => {
+    const f = await fixture();
+    const first = await f.call();
+    const reserved = await f.repository.reserve(first, "mcp", 1024 * 1024);
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "error",
+      errorPayload: { code: "provider_request_failed", message: "Synthetic recoverable failure" } } });
+    // Recovery executes another call of the same run while the first is in flight.
+    await f.repository.reserve(await f.call(), "mcp", 1024 * 1024);
+    expect(await prisma.toolObservation.findUniqueOrThrow({ where: { id: reserved.observation.id } }))
+      .toMatchObject({ state: "RESERVED", reservedBytes: 1024 * 1024, executionOutcome: null });
+    await f.repository.recordOutcome(first, "complete");
+    const identity = measureObservationJson({ accepted: "late result" }, 1024 * 1024, 8192);
+    const ready = await f.repository.beginWrite(first, { byteSize: identity.byteSize, checksum: identity.checksum,
+      inlineText: identity.inline, storageMode: "INLINE", projection: null, sourceTruncated: false, maskable: true });
+    expect(ready).toMatchObject({ state: "READY", reservedBytes: identity.byteSize });
+  });
+
+  it("claims an unpublished Skill producer again but never a generic or retired producer", async () => {
+    const f = await fixture();
+    const skill = await f.call();
+    const first = await f.repository.reserve(skill, "skill", 4096);
+    expect(await f.repository.reserve(skill, "skill", 4096)).toMatchObject({ claimed: true, observation: { id: first.observation.id } });
+    const generic = await f.call();
+    await f.repository.reserve(generic, "mcp", 4096);
+    expect((await f.repository.reserve(generic, "mcp", 4096)).claimed).toBe(false);
+    await f.repository.unavailable(skill, "tool_observation_unavailable");
+    expect((await f.repository.reserve(skill, "skill", 4096)).claimed).toBe(false);
+  });
+
+  it("does not exhaust run or branch space with small, source-owned or unavailable observations", async () => {
+    const f = await fixture();
+    for (let index = 0; index < 100; index++) await f.write({ index });
+    // Source-owned receipts (75 MiB counted by size) and retired producers
+    // exceed the run's byte and row limits unless only store bytes count.
+    const calls = Array.from({ length: 450 }, (_, index) => ({ id: randomUUID(), modelRunId: f.run.id, roundIndex: 2,
+      ordinal: index, providerCallId: randomUUID(), toolName: "synthetic_tool", arguments: {}, state: "complete" as const }));
+    await prisma.modelRunToolCall.createMany({ data: calls });
+    await prisma.toolObservation.createMany({ data: calls.map((call, index) => index < 300 ? {
+      id: randomUUID().replaceAll("-", ""), modelRunId: f.run.id, toolCallId: call.id, sourceKind: "knowledge", state: "READY",
+      executionOutcome: "complete", reservedBytes: 256 * 1024, byteSize: 256 * 1024, checksum: "c".repeat(64), storageMode: "SOURCE"
+    } : {
+      id: randomUUID().replaceAll("-", ""), modelRunId: f.run.id, toolCallId: call.id, sourceKind: "mcp", state: "UNAVAILABLE",
+      executionOutcome: "unknown", reservedBytes: 0
+    }) });
+    const reserved = await f.repository.reserve(await f.call(), "mcp", 8 * 1024 * 1024 + 64 * 1024);
+    expect(reserved.claimed).toBe(true);
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "complete" } });
+    const next = await f.makeRun(f.run.assistantMessageId);
+    expect((await f.repository.reserve(await f.call(next.actor), "search", 8 * 1024 * 1024)).claimed).toBe(true);
+  });
+
+  it("reads and restores without waiting for settlement row locks", async () => {
+    const f = await fixture();
+    const saved = await f.write({ text: "x".repeat(20000) });
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let locked!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const holder = prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${f.user.id} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${f.chat.id} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${f.run.id} FOR UPDATE`;
+      locked();
+      await held;
+    }, { timeout: 30_000 });
+    await acquired;
+    const withinDeadline = <T>(operation: Promise<T>) => Promise.race([operation, new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("observation_read_waited_for_row_lock")), 5_000))]);
+    try {
+      expect((await withinDeadline(f.service.read(f.run.actor, { handle: saved.result.observation.handle }))).fragment).toContain("xxxx");
+      expect((await withinDeadline(f.service.restore(saved.producer))).projection.observation).toEqual(saved.result.observation);
+    } finally {
+      release();
+      await holder;
+    }
+  });
+
+  it("keeps a cleanup obligation for an interrupted filesystem upload and reclaims its temporary file", async () => {
+    const f = await fixture();
+    const directory = await mkdtemp(join(tmpdir(), "aiqsa-observation-upload-"));
+    cleanups.push(() => rm(directory, { recursive: true, force: true }));
+    const storage = createFileSystemStorageAdapter(directory);
+    const producer = await f.call();
+    await f.repository.reserve(producer, "mcp", 20000);
+    await f.repository.recordOutcome(producer, "complete");
+    const identity = measureObservationJson({ text: "x".repeat(10000) }, 20000, 0);
+    const storing = await f.repository.beginWrite(producer, { byteSize: identity.byteSize, checksum: identity.checksum,
+      inlineText: null, storageMode: "OBJECT", projection: null, sourceTruncated: false, maskable: true });
+    // A process crash mid-upload leaves only the adapter's exact-key sibling.
+    const temporary = join(directory, `${storing.storageKey!}.upload-${randomUUID()}`);
+    await mkdir(dirname(temporary), { recursive: true });
+    await writeFile(temporary, "partial original");
+    const job = await prisma.attachmentDeletionJob.findUniqueOrThrow({ where: { storageKey: storing.storageKey! } });
+    const retention = createPrismaRetentionRepository(prisma);
+    const now = new Date();
+    expect(await retention.findClaimableAttachmentDeletionJobIds({ now, claimableBefore: now, limit: 1000 })).not.toContain(job.id);
+    const afterLease = new Date(Date.now() + TOOL_OBSERVATION_LIMITS.storageLeaseMs + 60_000);
+    expect(await retention.findClaimableAttachmentDeletionJobIds({ now: afterLease, claimableBefore: afterLease, limit: 1000 })).toContain(job.id);
+    await storage.deleteObject(storing.storageKey!);
+    expect(await readdir(dirname(temporary))).toEqual([]);
   });
 });

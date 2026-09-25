@@ -16,7 +16,7 @@ export type ToolObservationSourceBinding = Readonly<{ version: 1 }> & (
 
 export class ObservationStoreError extends Error {
   constructor(readonly code: "tool_observation_unavailable" | "tool_observation_limit_exceeded" |
-    "tool_observation_conflict" | "tool_observation_storage_unavailable") {
+    "tool_observation_conflict" | "tool_observation_storage_unavailable" | "tool_observation_busy") {
     super(code);
     this.name = "ObservationStoreError";
   }
@@ -28,7 +28,9 @@ export function observationFailure(error: unknown): Readonly<{ code: string; mes
     ? "Saved tool results require streaming storage, which is unavailable. This new operation was not dispatched."
     : error.code === "tool_observation_limit_exceeded"
       ? "The budget for retained tool results is exhausted. This new operation was not dispatched; existing results remain readable."
-      : "The original operation may have completed, but its saved result is unavailable. Do not execute it again to recover the result." };
+      : error.code === "tool_observation_busy"
+        ? "Saved tool results are temporarily busy. This new operation was not dispatched; it may be retried later."
+        : "The original operation may have completed, but its saved result is unavailable. Do not execute it again to recover the result." };
 }
 
 /** Storage location, actor/run IDs, credentials and source bindings stay in
@@ -54,8 +56,12 @@ export const TOOL_OBSERVATION_LIMITS = Object.freeze({
   branchBytes: 256 * 1024 * 1024,
   runCount: 512,
   branchCount: 4096,
-  concurrentDispatches: 2,
-  queuedDispatches: 64,
+  /** Process-wide bytes of originals being encoded, uploaded or read in full.
+   * This bounds storage streams and transient buffers, never business calls. */
+  inFlightBytes: 32 * 1024 * 1024,
+  /** Waiting storage phases before new dispatches and model reads are refused
+   * as transient; an already executed result always waits for its turn. */
+  queuedOperations: 64,
   storageTimeoutMs: 60_000,
   storageLeaseMs: 120_000
 });

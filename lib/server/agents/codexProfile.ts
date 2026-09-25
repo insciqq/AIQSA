@@ -2,8 +2,11 @@ import { WORKSPACE_PROJECT_DIRECTORY } from "@/lib/domain/workspace";
 import { providerResponseTimeoutSeconds } from "@/lib/contracts/providerResponseTimeout";
 
 export const CODEX_VERSION = "0.154.0";
-/** Bump when managed profile semantics change; accepted thread compatibility includes it. */
-export const CODEX_MANAGED_PROFILE_VERSION = 8;
+/** Bump when managed profile semantics change; accepted thread compatibility includes it.
+ * The optional observation reader changes the profile only for accepted
+ * observation-v1 runs, whose identity names that version separately; an
+ * Off run keeps the exact v7 profile and can resume a pre-upgrade thread. */
+export const CODEX_MANAGED_PROFILE_VERSION = 7;
 export const CODEX_PROVIDER_MAX_RETRIES = 2;
 export const CODEX_HOME_DIRECTORY = "/workspace/.aiqsa/codex";
 export const CODEX_RUN_TOKEN_ENV = "AIQSA_AGENT_TOKEN";

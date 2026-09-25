@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { NormalizedSearchPlan, NormalizedSearchPlanOption, ProviderSearchAdapter } from "../providers/types";
+import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { createAgentAiqsaSearch } from "./aiqsaSearchTool";
 
 const usage = { inputTokens: 11, outputTokens: 3, totalTokens: 14 };
@@ -58,6 +59,23 @@ describe("built-in Agent AIQSA Search", () => {
     const result = await f.tool.execute({ query: "docs" }, "call", new AbortController().signal);
     expect(JSON.stringify(result)).toContain("https://example.com/docs");
     expect(f.requests).toHaveLength(1);
+  });
+  it("returns the same Search text with retained observations, plus only the reader descriptor", async () => {
+    const off = await fixture().tool.execute({ query: "official docs" }, "call", new AbortController().signal);
+    const f = fixture();
+    const observations = memoryToolObservations();
+    const tool = createAgentAiqsaSearch({ ...f, observation: { service: observations.service(), runId: "run", userId: "user" } })!;
+    const observed = await tool.execute({ query: "official docs" }, "call", new AbortController().signal);
+    expect(observed.isError).toBeUndefined();
+    expect(observed.content[0]).toEqual(off.content[0]);
+    expect(observed.content).toHaveLength(2);
+    const descriptor = JSON.parse((observed.content[1] as { text: string }).text);
+    expect(descriptor).toMatchObject({ reader: "read_tool_result", observation: { source: "search" } });
+    for (const internal of ["revision-first", "invocationId", "optionId", "inputTokens", "estimatedCostMicros"]) {
+      expect(JSON.stringify(observed)).not.toContain(internal);
+    }
+    const saved = await observations.service().read({ runId: "run", userId: "user" }, { handle: descriptor.observation.handle });
+    expect(saved.fragment).toContain("revision-first");
   });
   it("exposes nothing when Search is off and stops dispatch after cancellation", async () => {
     const f = fixture();

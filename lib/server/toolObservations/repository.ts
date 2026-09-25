@@ -2,7 +2,7 @@ import { decodeSearchObservationReceipt, type SearchObservationReceipt } from ".
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type ToolObservation } from "@prisma/client";
 import { resolveChatAccess } from "../projects/access";
-import { activeToolLoopRun, lockRunSettlementScope } from "../runs/prismaRepositoryShared";
+import { activeToolLoopRun, activeToolLoopRunSql, lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 import { decodeToolObservationSourceBinding, ObservationStoreError, TOOL_OBSERVATION_LIMITS, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
 import { OBSERVATION_READ_LIMITS } from "./byteReader";
 import { measureObservationJson } from "./codec";
@@ -15,7 +15,9 @@ const conflict = () => new ObservationStoreError("tool_observation_conflict");
 const identifier = () => randomUUID().replaceAll("-", "");
 
 /** One accepted producer, with the same owner -> chat -> run locking order as
- * settlement. No transaction below contains storage or provider I/O. */
+ * settlement for every write. Read-only recall and restore take no row locks:
+ * they recheck the same authority, and the service rechecks after its I/O.
+ * No transaction below contains storage or provider I/O. */
 export function createToolObservationRepository(input: Readonly<{
   prisma: PrismaClient;
   authorizeSource(tx: Prisma.TransactionClient, source: ToolObservation, consumer: ObservationActor): Promise<void>;
@@ -23,9 +25,11 @@ export function createToolObservationRepository(input: Readonly<{
 }>) {
   const { prisma } = input;
 
-  async function authority(tx: Prisma.TransactionClient, actor: ObservationActor) {
-    await lockRunSettlementScope(tx, actor.runId);
-    await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${actor.runId} FOR UPDATE`;
+  async function authority(tx: Prisma.TransactionClient, actor: ObservationActor, lock: boolean) {
+    if (lock) {
+      await lockRunSettlementScope(tx, actor.runId);
+      await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${actor.runId} FOR UPDATE`;
+    }
     const run = await tx.modelRun.findFirst({ where: { id: actor.runId, userId: actor.userId }, select: {
       id: true, chatId: true, assistantMessageId: true, status: true, errorPayload: true,
       chat: { select: { archived: true, permanentDeletionAt: true, projectId: true } }
@@ -43,15 +47,15 @@ export function createToolObservationRepository(input: Readonly<{
     return run;
   }
 
-  async function producer(tx: Prisma.TransactionClient, context: ObservationProducer) {
-    const run = await authority(tx, context);
+  async function producer(tx: Prisma.TransactionClient, context: ObservationProducer, lock: boolean) {
+    const run = await authority(tx, context, lock);
     const row = await tx.toolObservation.findUnique({ where: { toolCallId: context.toolCallId } });
     if (!row || row.modelRunId !== run.id) throw unavailable();
     return row;
   }
 
   async function forRead(tx: Prisma.TransactionClient, actor: ObservationActor, id: string) {
-    const run = await authority(tx, actor);
+    const run = await authority(tx, actor, false);
     const source = await tx.toolObservation.findUnique({ where: { id }, include: {
       modelRun: { select: { chatId: true, assistantMessageId: true } }, toolCall: { select: { state: true } }
     } });
@@ -77,10 +81,14 @@ export function createToolObservationRepository(input: Readonly<{
       if (sourceBinding && (!decodeToolObservationSourceBinding(sourceBinding, sourceKind) ||
         Buffer.byteLength(JSON.stringify(sourceBinding)) > 4096)) throw conflict();
       return prisma.$transaction(async tx => {
-        const run = await authority(tx, context);
+        const run = await authority(tx, context, true);
         const existing = await tx.toolObservation.findUnique({ where: { toolCallId: context.toolCallId } });
         if (existing) {
           if (existing.modelRunId !== run.id || existing.sourceKind !== sourceKind) throw conflict();
+          // A Skill load is re-executable by the tool-loop claim and publishes
+          // only from its settled call row, so an unpublished reservation left
+          // by a crash is claimed again rather than becoming a lasting error.
+          if (existing.sourceKind === "skill" && existing.state === "RESERVED") return { claimed: true, observation: existing };
           return { claimed: false, observation: existing };
         }
         const call = await tx.modelRunToolCall.findFirst({ where: { id: context.toolCallId, modelRunId: run.id,
@@ -88,28 +96,37 @@ export function createToolObservationRepository(input: Readonly<{
         if (!call) throw unavailable();
         // A dead producer cannot consume every future branch reservation.
         // Retain its identity/outcome as no-replay evidence, and let the
-        // already-created deletion job retire any abandoned object.
+        // already-created deletion job retire any abandoned object. A run is
+        // dead by the tool loop's own predicate: a recoverable error run still
+        // executes (and reserves) tools, so its reservations stay live.
         await tx.$executeRaw`UPDATE "ToolObservation" o SET "state" = 'UNAVAILABLE',
           "reservedBytes" = 0, "failureCode" = 'tool_observation_unavailable',
           "executionOutcome" = COALESCE(o."executionOutcome", 'unknown'),
           "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
           FROM "ModelRun" producer WHERE producer."id" = o."modelRunId" AND producer."chatId" = ${run.chatId}
-            AND ((o."state" = 'RESERVED' AND producer."status" IN ('complete', 'error', 'cancelled'))
+            AND ((o."state" = 'RESERVED' AND NOT ${activeToolLoopRunSql("producer")})
               OR (o."state" = 'STORING' AND o."leaseExpiresAt" <= CURRENT_TIMESTAMP))`;
-        const [budget] = await tx.$queryRaw<Array<{ runBytes: bigint; branchBytes: bigint; runCount: bigint; branchCount: bigint }>>`
-          WITH RECURSIVE path AS (
-            SELECT "id", "parentMessageId" FROM "Message" WHERE "chatId" = ${run.chatId} AND "id" = ${run.assistantMessageId}
-            UNION SELECT p."id", p."parentMessageId" FROM "Message" p JOIN path c ON p."id" = c."parentMessageId"
-              WHERE p."chatId" = ${run.chatId}
-          ) SELECT COALESCE(SUM(o."reservedBytes") FILTER (WHERE o."modelRunId" = ${run.id}), 0)::bigint AS "runBytes",
-            COALESCE(SUM(o."reservedBytes"), 0)::bigint AS "branchBytes",
-            COUNT(*) FILTER (WHERE o."modelRunId" = ${run.id})::bigint AS "runCount", COUNT(*)::bigint AS "branchCount"
-          FROM "ToolObservation" o JOIN "ModelRun" r ON r."id" = o."modelRunId"
-          WHERE r."chatId" = ${run.chatId} AND (r."id" = ${run.id} OR r."assistantMessageId" IN (SELECT "id" FROM path))`;
-        if (!budget || budget.runBytes + BigInt(maximumBytes) > BigInt(TOOL_OBSERVATION_LIMITS.runBytes) ||
-          budget.branchBytes + BigInt(maximumBytes) > BigInt(TOOL_OBSERVATION_LIMITS.branchBytes) ||
-          budget.runCount >= BigInt(TOOL_OBSERVATION_LIMITS.runCount) || budget.branchCount >= BigInt(TOOL_OBSERVATION_LIMITS.branchCount)) {
-          throw new ObservationStoreError("tool_observation_limit_exceeded");
+        // Source-owned producers (Skill/Knowledge) keep their bytes in their
+        // owner: they neither consume nor are refused by the store budget.
+        if (sourceKind !== "skill" && sourceKind !== "knowledge") {
+          // Only retained or in-flight store bytes count. An in-flight ceiling
+          // becomes the exact size at publication, or zero once UNAVAILABLE.
+          const [budget] = await tx.$queryRaw<Array<{ runBytes: bigint; branchBytes: bigint; runCount: bigint; branchCount: bigint }>>`
+            WITH RECURSIVE path AS (
+              SELECT "id", "parentMessageId" FROM "Message" WHERE "chatId" = ${run.chatId} AND "id" = ${run.assistantMessageId}
+              UNION SELECT p."id", p."parentMessageId" FROM "Message" p JOIN path c ON p."id" = c."parentMessageId"
+                WHERE p."chatId" = ${run.chatId}
+            ) SELECT COALESCE(SUM(o."reservedBytes") FILTER (WHERE o."modelRunId" = ${run.id}), 0)::bigint AS "runBytes",
+              COALESCE(SUM(o."reservedBytes"), 0)::bigint AS "branchBytes",
+              COUNT(*) FILTER (WHERE o."modelRunId" = ${run.id})::bigint AS "runCount", COUNT(*)::bigint AS "branchCount"
+            FROM "ToolObservation" o JOIN "ModelRun" r ON r."id" = o."modelRunId"
+            WHERE r."chatId" = ${run.chatId} AND (r."id" = ${run.id} OR r."assistantMessageId" IN (SELECT "id" FROM path))
+              AND o."state" <> 'UNAVAILABLE' AND o."sourceKind" IN ('mcp', 'workspace', 'search')`;
+          if (!budget || budget.runBytes + BigInt(maximumBytes) > BigInt(TOOL_OBSERVATION_LIMITS.runBytes) ||
+            budget.branchBytes + BigInt(maximumBytes) > BigInt(TOOL_OBSERVATION_LIMITS.branchBytes) ||
+            budget.runCount >= BigInt(TOOL_OBSERVATION_LIMITS.runCount) || budget.branchCount >= BigInt(TOOL_OBSERVATION_LIMITS.branchCount)) {
+            throw new ObservationStoreError("tool_observation_limit_exceeded");
+          }
         }
         return { claimed: true, observation: await tx.toolObservation.create({ data: {
           id: identifier(), modelRunId: run.id, toolCallId: call.id, sourceKind, reservedBytes: maximumBytes,
@@ -147,7 +164,7 @@ export function createToolObservationRepository(input: Readonly<{
 
     async readProducer(context: ObservationProducer) {
       return prisma.$transaction(async tx => {
-        const row = await producer(tx, context);
+        const row = await producer(tx, context, false);
         if (row.state === "READY") await input.authorizeSource(tx, row, context);
         return row;
       });
@@ -158,7 +175,7 @@ export function createToolObservationRepository(input: Readonly<{
       sourceTruncated: boolean; maskable: boolean; storageMode: "INLINE" | "OBJECT" | "SOURCE";
     }>) {
       return prisma.$transaction(async tx => {
-        const row = await producer(tx, context);
+        const row = await producer(tx, context, true);
         if (row.state !== "RESERVED" || !["complete", "error"].includes(row.executionOutcome ?? "") ||
           value.byteSize > row.reservedBytes) throw conflict();
         await input.authorizeSource(tx, row, context);
@@ -179,7 +196,7 @@ export function createToolObservationRepository(input: Readonly<{
 
     async finishWrite(context: ObservationProducer, token: string) {
       return prisma.$transaction(async tx => {
-        const row = await producer(tx, context);
+        const row = await producer(tx, context, true);
         if (row.state !== "STORING" || row.leaseToken !== token || !row.leaseExpiresAt || row.leaseExpiresAt <= new Date() || !row.storageKey) throw conflict();
         await input.authorizeSource(tx, row, context);
         const [job] = await tx.$queryRaw<Array<{ claimToken: string | null }>>`
@@ -216,7 +233,7 @@ export function createToolObservationRepository(input: Readonly<{
 
     async loadProducerSource(context: ObservationProducer) {
       return prisma.$transaction(async tx => {
-        const source = await producer(tx, context);
+        const source = await producer(tx, context, false);
         if (source.state !== "RESERVED" || !["skill", "knowledge"].includes(source.sourceKind)) throw unavailable();
         await input.authorizeSource(tx, source, context);
         return input.loadSource(tx, source, context);

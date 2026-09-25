@@ -32,6 +32,13 @@ import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalys
 import { renderCodexManagedProfile } from "../agents/codexProfile";
 import { agentPrompts } from "../agents/prompt";
 import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
+import { hashCanonicalMcpValue } from "../mcp/definitions";
+
+// Passthrough spy: the Agent compatibility identity input is otherwise private.
+vi.mock("../mcp/definitions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../mcp/definitions")>();
+  return { ...actual, hashCanonicalMcpValue: vi.fn(actual.hashCanonicalMcpValue) };
+});
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -1048,6 +1055,42 @@ describe("run preparation", () => {
           expect(profile).not.toContain("direct image viewer first");
         }
       }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("keeps the pre-observation Agent thread identity under Off and separates observation-v1 threads", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
+        normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+      } })) };
+      const identities = new Map<string, Readonly<{ hash: string; input: Record<string, unknown> }>>();
+      for (const policy of ["off", "v1"] as const) {
+        vi.mocked(hashCanonicalMcpValue).mockClear();
+        const deps = { ...h.deps, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
+          runPolicy: { load: async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: policy }) } };
+        const prepared = preparedFrom(await prepareRun(deps, sendInput(successBody({ agentEnabled: true, workspace: { enabled: true },
+          provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } }))));
+        const input = vi.mocked(hashCanonicalMcpValue).mock.calls.map(([value]) => value)
+          .find((value): value is Record<string, unknown> => typeof value === "object" && value !== null && "managedProfileVersion" in value);
+        expect(input).toBeDefined();
+        expect(prepared.normalizedRequest.toolObservationVersion).toBe(policy === "v1" ? 1 : 0);
+        identities.set(policy, { hash: prepared.normalizedRequest.agent!.compatibilityHash, input: input! });
+      }
+      const off = identities.get("off")!, v1 = identities.get("v1")!;
+      // Off hashes exactly the v0.2.24 identity shape, so arm() still finds a
+      // compatible completed predecessor thread accepted before the upgrade.
+      expect(off.input.managedProfileVersion).toBe(7);
+      expect(off.input).not.toHaveProperty("toolObservationVersion");
+      expect(v1.input).toMatchObject({ managedProfileVersion: 7, toolObservationVersion: 1 });
+      const { toolObservationVersion: _version, ...withoutObservation } = v1.input;
+      expect(hashCanonicalMcpValue(withoutObservation)).toBe(off.hash);
+      expect(v1.hash).not.toBe(off.hash);
     } finally { vi.unstubAllEnvs(); }
   });
 

@@ -226,6 +226,43 @@ export function searchToolResultText(executions: readonly SearchExecutionEvidenc
   ].filter(Boolean).join("\n\n") || "Every selected search engine failed.";
 }
 
+function utf8Prefix(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= maxBytes) return value;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8");
+}
+
+/** The same canonical text with a bounded findings budget. Only findings are
+ * shortened, at UTF-8 boundaries and with an explicit marker; the merged
+ * numbered source list and warnings stay complete. The caller owns where the
+ * complete accepted result can be read. */
+export function boundedSearchToolResultText(
+  executions: readonly SearchExecutionEvidence[],
+  maxFindingsBytes: number
+): string {
+  const sizes = executions.map((execution) => execution.status === "complete" && execution.findings
+    ? Buffer.byteLength(execution.findings, "utf8") : 0);
+  const order = sizes.flatMap((size, index) => size > 0 ? [index] : [])
+    .sort((left, right) => sizes[left]! - sizes[right]! || left - right);
+  // Smaller findings stay whole; their unused share goes to larger engines.
+  const limits = new Map<number, number>();
+  let remaining = Math.max(0, Math.floor(maxFindingsBytes));
+  for (const [position, index] of order.entries()) {
+    const limit = Math.min(sizes[index]!, Math.floor(remaining / (order.length - position)));
+    limits.set(index, limit);
+    remaining -= limit;
+  }
+  return searchToolResultText(executions.map((execution, index) => {
+    const limit = limits.get(index);
+    return limit === undefined || limit >= sizes[index]! ? execution : {
+      ...execution,
+      findings: `${utf8Prefix(execution.findings!, limit)}\n[Findings shortened here; the complete saved result remains readable.]`
+    };
+  }));
+}
+
 export function searchToolResultContent(
   executions: readonly SearchExecutionEvidence[]
 ): ToolExecutionResult["content"] {
