@@ -4,7 +4,8 @@ import type { ProviderAdapter, ProviderConversationMessage, ProviderRunRequest }
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
-import { conversationContextPolicy } from "./contextCompactionContract";
+import { conversationContextPolicy, type ContextObservation } from "./contextCompactionContract";
+import { contextObservationsFromResults } from "./contextCompactionPlanner";
 import { applyKnowledgeAnswerContextBudget, createContextCompactionPublisher, prepareCompactedProviderRequest } from "./contextCompactionEvents";
 import { contextSummarySourceRevision } from "./contextCompactionSummarizer";
 
@@ -96,21 +97,25 @@ function hybridRequest(input: Readonly<{
   };
 }
 
+function observedResult(callId: string, seed: string, chars: number) {
+  return projectObservationForProvider({
+    callId,
+    content: [{ text: `${callId}-${"x".repeat(chars)}`, type: "text" }],
+    name: "read_record",
+    observation: { byteSize: chars, checksum: seed.repeat(64), encoding: "json-utf8-v1", handle: `tor1_${seed.repeat(32)}`,
+      maskable: true, source: "mcp", sourceTruncated: false, version: 1 },
+    status: "complete"
+  });
+}
+
 function observationBatch(callId: string, seed: string, chars: number): unknown[] {
   return [
     { arguments: "{}", call_id: callId, name: "read_record", type: "function_call" },
-    bridge.appendToolResult(undefined, projectObservationForProvider({
-      callId,
-      content: [{ text: `${callId}-${"x".repeat(chars)}`, type: "text" }],
-      name: "read_record",
-      observation: { byteSize: chars, checksum: seed.repeat(64), encoding: "json-utf8-v1", handle: `tor1_${seed.repeat(32)}`,
-        maskable: true, source: "mcp", sourceTruncated: false, version: 1 },
-      status: "complete"
-    }))
+    bridge.appendToolResult(undefined, observedResult(callId, seed, chars))
   ];
 }
 
-function consumer(request: ProviderRunRequest, initial?: ContextCompactionStatus) {
+function consumer(request: ProviderRunRequest, initial?: ContextCompactionStatus, observations?: readonly ContextObservation[]) {
   const events: ContextCompactionStatus[] = [];
   const summaryRequests: ProviderRunRequest[] = [];
   const adapter: Pick<ProviderAdapter, "stream"> = { async *stream(next) {
@@ -123,6 +128,7 @@ function consumer(request: ProviderRunRequest, initial?: ContextCompactionStatus
   const run = () => prepareCompactedProviderRequest({
     bridge,
     failure: (code, message) => Object.assign(new Error(message), { code }),
+    ...(observations ? { observations } : {}),
     onSummaryUsage,
     publisher: createContextCompactionPublisher(async status => { events.push(status); }, initial),
     request,
@@ -162,7 +168,7 @@ describe("single compaction consumer", () => {
       sourceDigest: "d".repeat(64), sourceRefs: ["old"] };
     const compaction = consumer(hybridRequest({ summary, stale: "needs_summary", providerToolMessages: [
       ...observationBatch("older", "a", 8_000), ...observationBatch("newest", "b", 1_200)
-    ] }));
+    ] }), undefined, contextObservationsFromResults([observedResult("older", "a", 8_000), observedResult("newest", "b", 1_200)]));
     const prepared = await compaction.run();
     expect(compaction.summaryRequests).toHaveLength(0);
     expect(prepared.contextCompaction).toMatchObject({ outcome: "masking_applied", maskedObservations: 1 });

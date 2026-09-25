@@ -236,8 +236,12 @@ import {
   runOutputArtifactEvents
 } from "./runOutputEvents";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
-import { contextCompactionCheckpoint } from "./contextCompactionContract";
-import { observationCallIdsInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
+import { contextCompactionCheckpoint, type ContextObservation } from "./contextCompactionContract";
+import {
+  contextObservationsFromResults,
+  observationCallIdsInProviderMessages,
+  observationHandlesInProviderMessages
+} from "./contextCompactionPlanner";
 import { applyContextSummaryToRequest } from "./contextCompactionSummarizer";
 import {
   applyKnowledgeAnswerContextBudget,
@@ -814,6 +818,9 @@ type RecoveryToolContext = {
     execute(signal: AbortSignal): Promise<ReadonlyMap<string, ToolExecutionResult>>;
   }>>;
   mcpDiscoveryQueue: Promise<void>;
+  /** Server-minted observations of the run's settled calls, by provider call
+   * id: the only authority for masking a recovered result or citing its handle. */
+  observations: Map<string, ContextObservation>;
   providerRequest: ProviderRunRequest;
   sessionRequest?: ProviderRunRequest;
   sessionToolBridge?: ProviderToolBridge;
@@ -824,6 +831,27 @@ type RecoveryToolContext = {
   usageAccountedToolCallIds: Set<string>;
   usageAttributions: RunUsageAttribution[];
 };
+
+function persistedContextObservations(calls: readonly PersistedToolLoopCall[]): Map<string, ContextObservation> {
+  return new Map(contextObservationsFromResults(calls.flatMap((call) => {
+    const result = parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result);
+    return result ? [result] : [];
+  })).map((entry) => [entry.callId, entry]));
+}
+
+function recordRecoveredObservations(
+  context: RecoveryToolContext,
+  results: readonly ToolLoopSettledCall<ToolExecutionResult>[]
+): void {
+  for (const entry of contextObservationsFromResults(results.flatMap((settled) =>
+    settled.result.status === "complete" ? [settled.result.value] : []))) {
+    context.observations.set(entry.callId, entry);
+  }
+}
+
+function recoveredContextObservations(context: RecoveryToolContext): readonly ContextObservation[] {
+  return [...context.observations.values()];
+}
 
 async function recoveredObservations(context: RecoveryToolContext): Promise<ToolObservationService> {
   return context.deps.observations ?? defaultToolObservations();
@@ -1914,7 +1942,8 @@ async function executePersistedToolBatch(
   const ordered = [...calls].sort((left, right) => left.ordinal - right.ordinal);
   if (context.sessionToolBridge) context.skillResultBudget.begin({
     request: context.sessionRequest ?? context.providerRequest, bridge: context.sessionToolBridge,
-    calls: ordered.map((call) => ({ id: call.providerCallId, name: call.toolName }))
+    calls: ordered.map((call) => ({ id: call.providerCallId, name: call.toolName })),
+    observations: recoveredContextObservations(context)
   });
   const ambiguous = ordered.find((call) =>
     call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME &&
@@ -1968,7 +1997,9 @@ async function executePersistedToolBatch(
       "The recovered tool batch did not settle every call."
     );
   }
-  return results as readonly ToolLoopSettledCall<ToolExecutionResult>[];
+  const settled = results as readonly ToolLoopSettledCall<ToolExecutionResult>[];
+  recordRecoveredObservations(context, settled);
+  return settled;
 }
 
 async function recoverCheckpointedToolLoop(
@@ -2267,6 +2298,7 @@ async function recoverCheckpointedToolLoop(
       knowledgeResults: new Map(),
       mcpDiscoveryBatches: new Map(),
       mcpDiscoveryQueue: Promise.resolve(),
+      observations: persistedContextObservations(run.calls),
       sessionToolBridge: bridge,
       sessionRequest: {
         ...providerRequest,
@@ -2508,6 +2540,7 @@ async function recoverCheckpointedToolLoop(
     async function appendToolResults(
       results: readonly ToolLoopSettledCall<ToolExecutionResult>[]
     ): Promise<void> {
+      recordRecoveredObservations(context, results);
       for (const settled of results) {
         const call = {
           arguments: isRecord(settled.call.arguments) ? settled.call.arguments : {},
@@ -2543,7 +2576,8 @@ async function recoverCheckpointedToolLoop(
         ? await filterMcpProviderRequest(currentRequest, run.userId, deps.mcp.filterTools)
         : currentRequest;
       if (mode === "measure") {
-        const measured = applyProviderRequestContextBudget({ bridge, request: requestForBudget });
+        const measured = applyProviderRequestContextBudget({ bridge, observations: recoveredContextObservations(context),
+          request: requestForBudget });
         if (!measured.ok) throw new ToolLoopRecoveryError("context_too_large", measured.error.message);
         context.sessionRequest = measured.request;
         return measured.request;
@@ -2553,6 +2587,7 @@ async function recoverCheckpointedToolLoop(
       context.sessionRequest = await prepareCompactedProviderRequest({
         bridge,
         failure: (code, message) => new ToolLoopRecoveryError(code, message),
+        observations: recoveredContextObservations(context),
         onSummaryUsage(usage, source) {
           context.usageAttributions.push({ modelId: source.modelId, operationCount: 1, provider: source.provider, usage });
         },
@@ -2697,7 +2732,8 @@ async function recoverCheckpointedToolLoop(
       round: number
     ): Promise<readonly PersistedToolLoopCall[]> {
       context.sessionRequest = { ...(context.sessionRequest ?? context.providerRequest), providerToolMessages: [...continuation.providerToolMessages] };
-      context.skillResultBudget.begin({ calls, request: context.sessionRequest, bridge });
+      context.skillResultBudget.begin({ calls, request: context.sessionRequest, bridge,
+        observations: recoveredContextObservations(context) });
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
@@ -2746,8 +2782,10 @@ async function recoverCheckpointedToolLoop(
               ownerId: run.userId,
               request: context.sessionRequest,
               runId: run.id,
-              observationRefs: observationHandlesInProviderMessages(context.sessionRequest.providerToolMessages ?? []),
-              recentTailCallIds: observationCallIdsInProviderMessages(context.sessionRequest.providerToolMessages ?? []),
+              observationRefs: observationHandlesInProviderMessages(context.sessionRequest.providerToolMessages ?? [],
+                recoveredContextObservations(context)),
+              recentTailCallIds: observationCallIdsInProviderMessages(context.sessionRequest.providerToolMessages ?? [],
+                recoveredContextObservations(context)),
               ...(context.sessionRequest.contextCompactionSummary ? { summary: context.sessionRequest.contextCompactionSummary } : {}),
               ...(context.sessionRequest.contextCompactionSummaryAttempts ? { summaryAttempts: context.sessionRequest.contextCompactionSummaryAttempts } : {}),
               measurement: context.sessionRequest.contextCompaction
@@ -2893,7 +2931,8 @@ async function recoverCheckpointedToolLoop(
         const completion = await finalizeRunCompletion({
           outputEvents: [...runOutputArtifactEvents(refreshed.events), {
             type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
-              answerText: refreshed.result.finalText, bridge, request: context.sessionRequest ?? providerRequest
+              answerText: refreshed.result.finalText, bridge, observations: recoveredContextObservations(context),
+              request: context.sessionRequest ?? providerRequest
             }) }
           }],
           repository: deps.repository,
@@ -3158,7 +3197,8 @@ async function recoverCheckpointedToolLoop(
     const completion = await finalizeRunCompletion({
       outputEvents: [{
         type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
-          answerText: outcome.final.finalText, bridge, request: context.sessionRequest ?? providerRequest
+          answerText: outcome.final.finalText, bridge, observations: recoveredContextObservations(context),
+          request: context.sessionRequest ?? providerRequest
         }) }
       }],
       repository: deps.repository,

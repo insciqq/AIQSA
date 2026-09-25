@@ -835,6 +835,35 @@ describe("hybrid context budget boundaries", () => {
     expect(assembled(answer.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
   });
 
+  it("requests a headroom summary for a plain chat above 75% only when older history can be summarized", () => {
+    // 80% of the budget, no tool results and therefore nothing to mask.
+    const long = hybrid([...Array.from({ length: 10 }, (_, index) => turn(`h${index}`, index % 2 ? "assistant" : "user", 5_600)),
+      turn("current", "user", 200)]);
+    const pending = accepted(budgetOf(long));
+    expect(pending.request.contextCompaction).toMatchObject({ maskedObservations: 0, outcome: "needs_summary" });
+    expect(pending.request.contextCompaction!.afterTokens).toBeLessThanOrEqual(HYBRID_BUDGET);
+    expect(pending.request.contextCompaction!.afterTokens).toBeGreaterThan(HYBRID_BUDGET * 0.75);
+    expect(summaryNeedsProvider(pending.request)).toBe(true);
+    expect(pending.contextTruncation).toBeNull();
+    // The same load in the exact tail alone: a summary could not reduce it.
+    const tail = hybrid([...Array.from({ length: 4 }, (_, index) => turn(`t${index}`, index % 2 ? "assistant" : "user", 14_000)),
+      turn("current", "user", 200)]);
+    const fits = accepted(budgetOf(tail));
+    expect(fits.request.contextCompaction).toMatchObject({ outcome: "already_fits" });
+    expect(fits.request.contextCompaction!.afterTokens).toBeGreaterThan(HYBRID_BUDGET * 0.75);
+    expect(summaryNeedsProvider(fits.request)).toBe(false);
+  });
+
+  it("never drops a paid summary note: note plus exact minimum over budget is irreducible", () => {
+    const history = [turn("h0", "user", 400), turn("h1", "assistant", 400), turn("h2", "user", 400),
+      turn("h3", "assistant", 400), turn("h4", "user", 400)];
+    const base = hybrid([...history, turn("current", "user", 12_000, "q")]);
+    const summarized = applyContextSummaryToRequest(base, summaryFor(base, "n".repeat(60_000)));
+    expect(budgetOf(summarized)).toMatchObject({ ok: false, error: { code: "context_too_large" } });
+    // Without the oversized note the same exact minimum fits.
+    expect(budgetOf(applyContextSummaryToRequest(base, summaryFor(base))).ok).toBe(true);
+  });
+
   it("keeps exact pins directly before the current message after a summary rebuild", () => {
     const history = Array.from({ length: 12 }, (_, index) => turn(`h${index}`, index % 2 ? "assistant" : "user", 6_000));
     const pin = turn("knowledge-evidence:v1", "user", 400, "k", "knowledge_evidence");

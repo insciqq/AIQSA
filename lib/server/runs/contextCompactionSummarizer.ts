@@ -3,7 +3,7 @@ import type { ContextSummary, ContextSummaryAttempt, ContextSummaryUsage } from 
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { estimateApproxTokens } from "../../domain/contextBudget";
-import { CONTEXT_COMPACTION_LIMITS, contextDigest, decodeContextSummary, summaryBindingDigest } from "./contextCompactionContract";
+import { CONTEXT_COMPACTION_LIMITS, contextDigest, decodeContextSummary, summaryBindingDigest, type ContextObservation } from "./contextCompactionContract";
 import { observationHandlesInProviderMessages } from "./contextCompactionPlanner";
 import { admittedOutputAllowance } from "../providers/modelOutputAllowance";
 import { normalizeTokenUsage } from "../../domain/usage";
@@ -32,6 +32,8 @@ export type ContextSummaryInput = Readonly<{
   signal?: AbortSignal;
   existingSummary?: ContextSummary;
   existingAttempts?: readonly ContextSummaryAttempt[];
+  /** Server-minted observations of the run's settled calls; the only handles a summary may cite. */
+  observations?: readonly ContextObservation[];
 }>;
 
 export type ContextSummaryResult = Readonly<{
@@ -78,23 +80,23 @@ export function contextSummarySourceRevision(request: ProviderRunRequest): strin
   });
 }
 
-function sourceRefsForRequest(request: ProviderRunRequest): readonly string[] {
+function sourceRefsForRequest(request: ProviderRunRequest, observations?: readonly ContextObservation[]): readonly string[] {
   const revision = contextSummarySourceRevision(request);
   const refs = [
     revision,
     ...(request.context?.messages ?? []).map((message) => message.id),
-    ...observationHandlesInProviderMessages(request.providerToolMessages ?? [])
+    ...observationHandlesInProviderMessages(request.providerToolMessages ?? [], observations)
   ];
   return [...new Set(refs)].filter((ref) => ref.length > 0).slice(0, CONTEXT_COMPACTION_LIMITS.summarySourceRefs);
 }
 
-export function contextSummarySource(request: ProviderRunRequest): Readonly<{
+export function contextSummarySource(request: ProviderRunRequest, observations?: readonly ContextObservation[]): Readonly<{
   digest: string;
   refs: readonly string[];
   revision: string;
   text: string;
 }> {
-  const refs = sourceRefsForRequest(request);
+  const refs = sourceRefsForRequest(request, observations);
   const revision = contextSummarySourceRevision(request);
   const envelope = {
     context: request.context?.messages ?? [],
@@ -236,7 +238,7 @@ export function applyContextSummaryToRequest(
 /** Run at most two bounded attempts on the accepted answer binding. The
  * adapter is called directly so summary tokens never become answer SSE. */
 export async function executeContextSummary(input: ContextSummaryInput): Promise<ContextSummaryResult> {
-  const source = contextSummarySource(input.request);
+  const source = contextSummarySource(input.request, input.observations);
   const summaryAlreadyApplied = input.existingSummary &&
     input.request.context?.messages.some((message) => message.id === `__context-summary-${input.existingSummary!.id}`);
   if (input.existingSummary && (input.existingSummary.sourceDigest === source.digest ||

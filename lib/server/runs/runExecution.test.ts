@@ -1582,7 +1582,9 @@ describe("run execution", () => {
   });
 
   it("buys one summary in the round tool results cross the budget and carries it through checkpoints", async () => {
-    const loop = compactionLoopFixture({ historyTokens: 5_000, resultChars: 7_000 });
+    // Round 1 stays below the 75% headroom trigger; round 2's inline tool
+    // result (the newest batch, never masked) pushes it over the budget.
+    const loop = compactionLoopFixture({ historyTokens: 4_600, resultChars: 7_800 });
     const events = await loop.run();
     expect(loop.repository.failedRuns).toEqual([]);
     expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
@@ -1593,7 +1595,7 @@ describe("run execution", () => {
     expect(first?.contextCompactionSummary).toBeUndefined();
     expect(first?.contextCompaction).toMatchObject({ outcome: "already_fits" });
     expect(loop.roundCheckpoints[0]?.contextCompaction?.measurement).toEqual(first?.contextCompaction);
-    expect(loop.roundCheckpoints[0]?.contextCompaction?.measurement.beforeTokens).toBeGreaterThan(5_000);
+    expect(loop.roundCheckpoints[0]?.contextCompaction?.measurement.beforeTokens).toBeGreaterThan(4_600);
     // Round 2 crossed because of its tool result, bought the summary itself
     // and was never dispatched over budget.
     const summary = crossing?.contextCompactionSummary;
@@ -1620,12 +1622,33 @@ describe("run execution", () => {
     expect(events.filter(isContextEvent)).toHaveLength(4);
   });
 
+  it("masks an older settled result live from the run's own server observations", async () => {
+    const loop = compactionLoopFixture({ historyTokens: 1_500, resultChars: 7_800 });
+    await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    const [, second, final] = loop.answers;
+    // Round 2 still fits below the trigger: the first result stays inline.
+    expect(JSON.stringify(second?.providerToolMessages)).toContain(`RESULT_1 ${"r".repeat(100)}`);
+    // Round 3 replaces the older batch with its reader reference and keeps the newest one.
+    const transcript = JSON.stringify(final?.providerToolMessages);
+    expect(transcript).not.toContain(`RESULT_1 ${"r".repeat(100)}`);
+    expect(transcript).toContain(`RESULT_2 ${"r".repeat(100)}`);
+    const handle = transcript.match(/tor1_[a-f0-9]{32}/u)?.[0];
+    expect(handle).toBeDefined();
+    expect(loop.batchCheckpoints.find(batch => batch.roundIndex === 2)?.contextCompaction?.observationRefs)
+      .toContain(handle);
+    for (const request of loop.answers) {
+      expect(request.contextCompaction!.afterTokens).toBeLessThanOrEqual(request.contextCompaction!.budgetTokens!);
+    }
+  });
+
   it("routes a clarification delivered during the loop through the same consumer into the checkpoint", async () => {
     const repository = createRepository();
     const followups = followupFixture(repository.repository);
     const clarification = `Clarified constraint ${"f".repeat(7_000)}`;
     const loop = compactionLoopFixture({
-      historyTokens: 4_000, repository, resultChars: 5_000,
+      // Below the 75% trigger until the clarification is delivered.
+      historyTokens: 3_500, repository, resultChars: 3_000,
       onToolCall: count => { if (count === 1) followups.accept(clarification); }
     });
     await loop.run();

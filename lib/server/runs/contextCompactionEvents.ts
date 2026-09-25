@@ -3,6 +3,7 @@ import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
+import type { ContextObservation } from "./contextCompactionContract";
 import { ContextSummaryError, executeContextSummary, summaryNeedsProvider } from "./contextCompactionSummarizer";
 import { applyProviderRequestContextBudget, type ProviderRequestContextBudgetResult } from "./runContextBudget";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
@@ -92,6 +93,9 @@ export type CompactedProviderRequestInput = Readonly<{
   bridge?: ProviderToolBridge;
   /** The owner's classified error for a compaction or budget failure. */
   failure(code: string, message: string): Error;
+  /** Server-minted observations of the run's settled calls: the only authority
+   * for masking a result or citing its handle in a summary. */
+  observations?: readonly ContextObservation[];
   onSummaryUsage(usage: ModelRunUsage, request: ProviderRunRequest): Promise<void> | void;
   onTruncation?(truncation: ContextTruncationSummary): Promise<void> | void;
   publisher: ContextCompactionPublisher;
@@ -118,6 +122,7 @@ export async function prepareCompactedProviderRequest(
   const { publisher } = input;
   const budget = (request: ProviderRunRequest) => applyProviderRequestContextBudget({
     ...(input.bridge ? { bridge: input.bridge } : {}),
+    ...(input.observations ? { observations: input.observations } : {}),
     request
   });
   const measured = budget(input.request);
@@ -149,6 +154,7 @@ export async function prepareCompactedProviderRequest(
         adapter: input.summaryAdapter,
         existingAttempts: source.contextCompactionSummaryAttempts,
         existingSummary: source.contextCompactionSummary,
+        ...(input.observations ? { observations: input.observations } : {}),
         onUsage: (usage) => input.onSummaryUsage(usage, source),
         request: source,
         signal: input.signal

@@ -204,8 +204,12 @@ import { notifyProjectEvent } from "../projects/events";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
-import { contextCompactionCheckpoint } from "./contextCompactionContract";
-import { observationCallIdsInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
+import { contextCompactionCheckpoint, type ContextObservation } from "./contextCompactionContract";
+import {
+  contextObservationsFromResults,
+  observationCallIdsInProviderMessages,
+  observationHandlesInProviderMessages
+} from "./contextCompactionPlanner";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { CodexProtocolError } from "../agents/codexProtocol";
@@ -741,6 +745,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       let projectAccessValidatedAt = Number.NEGATIVE_INFINITY;
       const reportedUsageAttributions: RunUsageAttribution[] = [];
       const usageAccountedToolCallIds = new Set<string>();
+      // Server-minted observations of this run's settled calls: the only
+      // authority for masking a provider result or citing its handle.
+      const settledObservations = new Map<string, ContextObservation>();
+      const runObservations = (): readonly ContextObservation[] => [...settledObservations.values()];
       let followupBaseRequest = input.prepared.providerRequest;
       let agentFollowupRevision = 0;
       async function publishFollowupDelivery(revision: number) {
@@ -757,6 +765,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         ? createRunFollowupExecution({
             runId, userId: input.userId, operations: input.repository.followups,
             bridge: input.toolBridge ?? providerToolBridges[normalizedRequest.provider as keyof typeof providerToolBridges],
+            observations: runObservations,
             async beforeDelivery() { await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); }); return tokenBuffer.text; },
             async onDelivery() {
               await publishFollowupDelivery(followups!.revision);
@@ -1710,6 +1719,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const event = {
           type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
             bridge: input.toolBridge ?? providerToolBridges[request.provider as keyof typeof providerToolBridges],
+            observations: runObservations(),
             request
           }) }
         } as const;
@@ -1735,6 +1745,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           },
           ...(bridge ? { bridge } : {}),
           failure: (code, message) => new RunPipelineError(code, message),
+          observations: runObservations(),
           onSummaryUsage(usage, source) {
             rememberReportedUsage(source.provider, source.modelId, usage);
           },
@@ -2053,6 +2064,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             }
           },
           onToolBatchSettled: async ({ results }) => {
+            for (const entry of contextObservationsFromResults(results.flatMap(settled =>
+              settled.result.status === "complete" ? [settled.result.value] : []))) {
+              settledObservations.set(entry.callId, entry);
+            }
             await assertProjectRunAccessCurrent(true);
             for (const settled of results) {
               const call = modelToolCall(settled.call);
@@ -2117,8 +2132,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                       ownerId: input.userId,
                       request: roundRequest,
                       runId,
-                      observationRefs: observationHandlesInProviderMessages(roundRequest.providerToolMessages ?? []),
-                      recentTailCallIds: observationCallIdsInProviderMessages(roundRequest.providerToolMessages ?? []),
+                      observationRefs: observationHandlesInProviderMessages(roundRequest.providerToolMessages ?? [], runObservations()),
+                      recentTailCallIds: observationCallIdsInProviderMessages(roundRequest.providerToolMessages ?? [], runObservations()),
                       ...(roundRequest.contextCompactionSummary ? { summary: roundRequest.contextCompactionSummary } : {}),
                       ...(roundRequest.contextCompactionSummaryAttempts ? { summaryAttempts: roundRequest.contextCompactionSummaryAttempts } : {}),
                       ...(followups ? { followupRevision: followups.revision, followupTexts: followups.entries.map(entry => entry.text) } : {}),
@@ -2727,7 +2742,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             ? normalizeWorkspaceProviderToolName
             : undefined,
           persistToolBatch: async ({ calls, continuation, round }) => {
-            skillResultBudget.begin({ calls, bridge: toolBridge, request: {
+            skillResultBudget.begin({ calls, bridge: toolBridge, observations: runObservations(), request: {
               ...sessionRequest, providerToolMessages: [...continuation.providerToolMessages]
             } });
             if (normalizedRequest.artifactTool === true) await artifactGeneration.requested(round, calls.map(modelToolCall));
@@ -2765,8 +2780,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     ownerId: input.userId,
                     request: sessionRequest,
                     runId,
-                    observationRefs: observationHandlesInProviderMessages(sessionRequest.providerToolMessages ?? []),
-                    recentTailCallIds: observationCallIdsInProviderMessages(sessionRequest.providerToolMessages ?? []),
+                    observationRefs: observationHandlesInProviderMessages(sessionRequest.providerToolMessages ?? [], runObservations()),
+                    recentTailCallIds: observationCallIdsInProviderMessages(sessionRequest.providerToolMessages ?? [], runObservations()),
                     ...(sessionRequest.contextCompactionSummary ? { summary: sessionRequest.contextCompactionSummary } : {}),
                     ...(sessionRequest.contextCompactionSummaryAttempts ? { summaryAttempts: sessionRequest.contextCompactionSummaryAttempts } : {}),
                     ...(followups ? { followupRevision: followups.revision, followupTexts: followups.entries.map(entry => entry.text) } : {}),
@@ -3184,6 +3199,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
             answerText: providerResult.finalText,
             bridge: input.toolBridge ?? providerToolBridges[lastSessionRequest.provider as keyof typeof providerToolBridges],
+            observations: runObservations(),
             request: lastSessionRequest
           }) }
         } as const;

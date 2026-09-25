@@ -282,9 +282,9 @@ function priorTurns(messages: readonly ProviderConversationMessage[]): ProviderC
   return groups;
 }
 
-/** Whole covered turns leave oldest first; the summary note leaves last. The
- * summary source already contained every covered message, so this bounds its
- * exact tail instead of discarding unsummarized history. */
+/** Whole covered turns leave oldest first. The summary source already
+ * contained every covered message, so this bounds its exact tail instead of
+ * discarding unsummarized history. The paid summary note itself always stays. */
 function trimCoveredHistory(request: ProviderRunRequest, history: ContextHistory, excessTokens: number): Readonly<{
   droppedMessages: number;
   droppedTokens: number;
@@ -298,10 +298,6 @@ function trimCoveredHistory(request: ProviderRunRequest, history: ContextHistory
       dropped.add(message);
       droppedTokens += estimateApproxTokens(message.content);
     }
-  }
-  if (droppedTokens < excessTokens && history.summaryMessage) {
-    dropped.add(history.summaryMessage);
-    droppedTokens += estimateApproxTokens(history.summaryMessage.content);
   }
   return {
     droppedMessages: dropped.size,
@@ -411,7 +407,9 @@ export function planContextCompaction(input: Readonly<{
   }
 
   const history = contextHistory(planned);
-  if (afterTokens - history.priorTokens > budgetTokens) return result("irreducible_overflow");
+  // The exact minimum keeps an applied summary note: it is never traded away.
+  const summaryTokens = history.summaryMessage ? estimateApproxTokens(history.summaryMessage.content) : 0;
+  if (afterTokens - history.priorTokens + summaryTokens > budgetTokens) return result("irreducible_overflow");
   if (afterTokens > budgetTokens) {
     if (history.uncovered.length > 0) return result("needs_summary");
     const trimmed = trimCoveredHistory(planned, history, afterTokens - budgetTokens);
@@ -422,9 +420,12 @@ export function planContextCompaction(input: Readonly<{
       request: trimmed.request
     });
   }
-  // The 75% trigger only buys headroom for later tool rounds, and only when a
-  // summary can remove history older than the exact tail it keeps.
-  return result(aboveTarget && history.older.length > 0 ? "needs_summary" : settled());
+  // Above the 75% trigger, a summary buys headroom for later rounds whenever
+  // it can remove history older than the exact tail it keeps, whether or not
+  // masking ran; it never turns this fitting request into overflow.
+  const headroom = beforeTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio &&
+    afterTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio && history.older.length > 0;
+  return result(headroom ? "needs_summary" : settled());
 }
 
 function recognizedObservations(

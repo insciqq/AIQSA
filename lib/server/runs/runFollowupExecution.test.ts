@@ -13,7 +13,8 @@ import { openAIResponsesToolBridge } from "../tools/bridges";
 import { readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import type { ContextCompactionStatus } from "../../contracts/contextCompaction";
-import { conversationContextPolicy } from "./contextCompactionContract";
+import { conversationContextPolicy, type ContextObservation } from "./contextCompactionContract";
+import { contextObservationsFromResults } from "./contextCompactionPlanner";
 import { createContextCompactionPublisher, prepareCompactedProviderRequest } from "./contextCompactionEvents";
 import { runProviderToolLoop } from "./providerToolLoop";
 import { createRunFollowupExecution, requestWithoutRunFollowups, requestWithRunFollowups, RunFollowupChanged } from "./runFollowupExecution";
@@ -38,7 +39,7 @@ const result = (text: string): ProviderRunResult => ({ finalText: text, finalPro
 const disposals: (() => void)[] = [];
 afterEach(() => { disposals.splice(0).forEach(dispose => dispose()); vi.useRealTimers(); });
 
-function fixture() {
+function fixture(observations?: () => readonly ContextObservation[]) {
   const rows: RunFollowup[] = [];
   let text = "", closed = false;
   const beforeDelivery = vi.fn(async () => text);
@@ -66,7 +67,7 @@ function fixture() {
     })
   };
   const execution = createRunFollowupExecution({ operations, runId: "run", userId: "user", beforeDelivery, onDelivery,
-    onInterruptedUsage, bridge: openAIResponsesToolBridge });
+    onInterruptedUsage, bridge: openAIResponsesToolBridge, ...(observations ? { observations } : {}) });
   disposals.push(execution.release);
   function accept(value: string, notify = true) {
     rows.push({ id: `f-${rows.length + 1}`, ordinal: rows.length + 1, text: value,
@@ -173,10 +174,14 @@ describe("in-run clarification execution", () => {
   });
 
   it("routes clarifications through the owner's consumer and carries its summary into a steering replacement", async () => {
-    const f = fixture(); f.accept("Keep the exact correction");
+    // History older than the exact tail a summary keeps, so a summary can
+    // create headroom once the older observation has been masked.
+    const turn = (id: string, role: "assistant" | "user", text: string) => ({ content: { blocks: [{ text, type: "text" }] }, id, role });
     const messages = [
-      { content: { blocks: [{ text: "old source", type: "text" }] }, id: "message-old", role: "user" as const },
-      { content: { blocks: [{ text: "current request", type: "text" }] }, id: "message-current", role: "user" as const }
+      turn("message-old", "user", "old source"), turn("reply-old", "assistant", "Noted."),
+      turn("message-2", "user", "Second question."), turn("reply-2", "assistant", "Answered."),
+      turn("message-3", "user", "Third question."), turn("reply-3", "assistant", "Answered."),
+      turn("message-current", "user", "current request")
     ];
     const descriptor = {
       byteSize: 20_000, checksum: "a".repeat(64), encoding: "json-utf8-v1" as const,
@@ -190,15 +195,18 @@ describe("in-run clarification execution", () => {
       observation: { ...descriptor, checksum: seed.repeat(64), handle: `tor1_${seed.repeat(32)}` },
       status: "complete" as const
     });
+    const settled = [observed("old", "a"), observed("new", "b")];
+    const observations = contextObservationsFromResults(settled);
+    const f = fixture(() => observations); f.accept("Keep the exact correction");
     const hybrid = {
       ...request(),
       context: { messages, mode: "branch_path" as const },
       contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "message-current", messages, mode: "hybrid" }),
       modelCapabilities: { ...request().modelCapabilities, contextWindow: 2_000, toolCalling: true },
       providerToolMessages: [
-        openAIResponsesToolBridge.appendToolResult(undefined, observed("old", "a")),
+        openAIResponsesToolBridge.appendToolResult(undefined, settled[0]!),
         { call_id: "new", name: "read_record", type: "function_call" },
-        openAIResponsesToolBridge.appendToolResult(undefined, observed("new", "b"))
+        openAIResponsesToolBridge.appendToolResult(undefined, settled[1]!)
       ],
       toolObservationVersion: 1 as const,
       tools: [readToolResultTool]
@@ -226,6 +234,7 @@ describe("in-run clarification execution", () => {
     const consumer = vi.fn((merged: ProviderRunRequest, signal: AbortSignal) => prepareCompactedProviderRequest({
       bridge: openAIResponsesToolBridge,
       failure: (code, message) => Object.assign(new Error(message), { code }),
+      observations,
       onSummaryUsage: () => undefined,
       publisher,
       request: merged,
@@ -248,6 +257,8 @@ describe("in-run clarification execution", () => {
       expect(dispatched.contextCompaction?.outcome).not.toBe("needs_summary");
     }
     expect(JSON.stringify(answers[1]?.providerToolMessages)).toContain("Keep the exact correction");
+    // The older observation reached the model only as its server-owned reference.
+    for (const dispatched of answers) expect(JSON.stringify(dispatched.providerToolMessages)).not.toContain("x".repeat(2_000));
     expect(statuses.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
       [1, "running", "pending"], [1, "complete", "summary_applied"]
     ]);
