@@ -4646,22 +4646,30 @@ describe("cross-turn compaction reuse", () => {
     capabilities?: ProviderModelCapabilities;
     checkpoints?: readonly BranchContextCheckpoint[];
     history: readonly ProviderConversationMessage[];
+    knowledge?: boolean;
     policy?: "off" | "v1";
     regenerate?: ProviderConversationMessage;
     text?: string;
   }>) {
+    const result = await admitResult(input);
+    return { ...result, prepared: preparedFrom(result.result) };
+  }
+
+  async function admitResult(input: Parameters<typeof admit>[0]) {
     const harness = createHarness({ capabilities: input.capabilities ?? capabilities, sendContext: input.history,
       regenerateContext: input.regenerate ? [...input.history, input.regenerate] : [] });
     const loadBranchContextCheckpoints = vi.fn(async () => [...(input.checkpoints ?? [])]);
     const stream = vi.spyOn(harness.adapter, "stream");
     const deps: RunPreparationDeps = { ...harness.deps,
+      ...(input.knowledge ? { knowledgeAdmission: { load: async (admission: KnowledgeAdmissionInput) => admittedKnowledge(admission, "f") } } : {}),
       repository: { ...harness.deps.repository, loadBranchContextCheckpoints },
       runPolicy: { load: async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: input.policy ?? "v1" }) } };
-    const body = successBody({ content: textMessageContent(input.text ?? "Next question."), modelId: "openai-tool-model", provider: "openai" });
-    const prepared = preparedFrom(await prepareRun(deps, input.regenerate
+    const body = successBody({ content: textMessageContent(input.text ?? "Next question."), modelId: "openai-tool-model", provider: "openai",
+      ...(input.knowledge ? { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) } : {}) });
+    const result = await prepareRun(deps, input.regenerate
       ? regenerateInput(body, { userMessage: { content: input.regenerate.content, id: input.regenerate.id } })
-      : sendInput(body, { activeLeafMessageId: null })));
-    return { loadBranchContextCheckpoints, prepared, stream };
+      : sendInput(body, { activeLeafMessageId: null }));
+    return { loadBranchContextCheckpoints, result, stream };
   }
 
   async function compact(prepared: PreparedRun, notes: ReturnType<typeof noteTaker>, sourceAvailable = async () => true) {
@@ -4784,5 +4792,62 @@ describe("cross-turn compaction reuse", () => {
     expect(off.loadBranchContextCheckpoints).not.toHaveBeenCalled();
     expect(off.prepared.normalizedRequest.toolObservationVersion).toBe(0);
     expect(off.prepared.normalizedRequest.contextCompactionPolicy).toBeUndefined();
+  });
+
+  const messageIds = (prepared: PreparedRun) =>
+    materializePreparedRunData(prepared).normalizedRequest.context?.messages.map((message) => message.id);
+
+  it("admits a v1 Knowledge run with the legacy whole-turn guard and no notes", async () => {
+    const { checkpoints, history } = await converse(10);
+    const knowledge = await admit({ checkpoints, history, knowledge: true });
+    const legacy = await admit({ checkpoints, history, knowledge: true, policy: "off" });
+    const ordinary = await admit({ checkpoints, history });
+    const accepted = materializePreparedRunData(knowledge.prepared);
+    // The store and reader stay; the hybrid policy and carried notes do not.
+    expect(accepted.normalizedRequest.toolObservationVersion).toBe(1);
+    expect(accepted.normalizedRequest.contextCompactionPolicy).toBeUndefined();
+    expect(accepted.providerRequest.contextCompactionPolicy).toBeUndefined();
+    expect(accepted.providerRequest.tools?.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(["read_tool_result", "search_knowledge"]));
+    expect(knowledge.loadBranchContextCheckpoints).not.toHaveBeenCalled();
+    // Whole prior turns leave exactly as for the legacy (Off) Knowledge request.
+    expect(messageIds(knowledge.prepared)).toEqual(messageIds(legacy.prepared));
+    expect(messageIds(knowledge.prepared)!.length).toBeLessThan(history.length + 1);
+    expect(accepted.normalizedRequest.context?.summary?.truncation?.droppedMessages).toBeGreaterThan(0);
+    // The same branch without Knowledge stays hybrid: exact branch plus a carried candidate.
+    expect(ordinary.prepared.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
+    expect(ordinary.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeDefined();
+    expect(messageIds(ordinary.prepared)).toHaveLength(history.length + 1);
+    // Above the trigger ratio the answer consumer still buys no summary.
+    const budget = 17_488;
+    const admittedTokens = accepted.providerRequest.context!.messages
+      .reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+    expect(admittedTokens).toBeGreaterThan(budget * 0.75);
+    const notes = noteTaker();
+    const compacted = await compact(knowledge.prepared, notes);
+    expect(notes.inputs).toEqual([]);
+    expect(compacted.contextCompactionSummary).toBeUndefined();
+    expect(compacted.context?.messages.map((message) => message.id)).toEqual(messageIds(knowledge.prepared));
+  });
+
+  it("rejects irreducible Knowledge overflow exactly like the legacy request", async () => {
+    const history = [...exchange(1), ...exchange(2)];
+    const text = "q".repeat(121_000);
+    const knowledge = await admitResult({ history, knowledge: true, text });
+    const legacy = await admitResult({ history, knowledge: true, policy: "off", text });
+    expect(knowledge.result).toMatchObject({ code: "context_too_large", ok: false, status: 400 });
+    expect(legacy.result).toMatchObject({ code: "context_too_large", ok: false, status: 400 });
+    expect(knowledge.result.ok ? null : knowledge.result.message).toBe(legacy.result.ok ? null : legacy.result.message);
+  });
+
+  it("never carries notes out of a run accepted without the hybrid policy", async () => {
+    const { checkpoints, history } = await converse(10);
+    const latest = checkpoints[0]!;
+    // A Knowledge run's accepted request has no policy; its checkpoint never supplies notes.
+    const fromKnowledge = await admit({ checkpoints: [{ ...latest, policy: null }], history });
+    expect(fromKnowledge.prepared.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
+    expect(fromKnowledge.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
+    const fromHybrid = await admit({ checkpoints: [latest], history });
+    expect(fromHybrid.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({ runId: latest.runId });
   });
 });

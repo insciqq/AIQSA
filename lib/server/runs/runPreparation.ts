@@ -2001,7 +2001,10 @@ export async function prepareRun(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    ...(!agent && toolObservationVersion === 1 ? { contextCompactionPolicy: conversationContextPolicy({
+    // Knowledge runs keep the legacy whole-turn guard on every answer route:
+    // model-derived notes never stand beside citation evidence. The store and
+    // reader stay available for their other tool results.
+    ...(!agent && !knowledgeRequested && toolObservationVersion === 1 ? { contextCompactionPolicy: conversationContextPolicy({
       leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
       messages: contextMessages,
       mode: "hybrid"
@@ -2224,9 +2227,9 @@ export async function prepareRun(
     normalizedRequest.followupContextReserveTokens = reserve;
     providerRequest.followupContextReserveTokens = reserve;
   }
-  // The exact branch stays the admitted context. Knowledge answer routes keep
-  // the legacy guard and never carry notes.
-  const reuse = answeringPlan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT ? null : await carriedContextSummary({
+  // The exact branch stays the admitted context. A Knowledge run has no hybrid
+  // policy, so it never carries notes.
+  const reuse = await carriedContextSummary({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     conversationMessages,
     repository: deps.repository,

@@ -110,4 +110,16 @@ describe("carried compaction notes", () => {
     });
     expect(candidates).toEqual([]);
   });
+
+  it("never carries notes from a run accepted without the hybrid policy, such as a Knowledge run", () => {
+    // A historical checkpoint may hold hybrid notes, but its run's accepted
+    // policy is absent (Knowledge keeps the legacy guard) or not hybrid.
+    const bought = checkpoint({ answer: "a2", seed: "b", userMessageId: "u2" });
+    const withoutPolicy: BranchContextCheckpoint = { ...bought, policy: null };
+    const legacy: BranchContextCheckpoint = { ...bought, policy: { ...bought.policy!, mode: "legacy_compatible" } };
+    expect(contextSummaryReuseCandidates({ checkpoints: [bought], priorMessageIds: branch, userId: "user-1" }))
+      .toHaveLength(1);
+    expect(contextSummaryReuseCandidates({ checkpoints: [withoutPolicy, legacy], priorMessageIds: branch, userId: "user-1" }))
+      .toEqual([]);
+  });
 });

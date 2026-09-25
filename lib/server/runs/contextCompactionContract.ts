@@ -159,9 +159,11 @@ export type BranchContextCheckpoint = Readonly<{
  * when it belongs to the current user, holds hybrid notes of the current
  * format, and its answer and coverage boundary are prior messages of this
  * branch in that order, so edits, forks and regeneration never see sibling
- * notes. Notes a run bought cover its branch through its own user message;
- * notes it carried keep their frozen boundary. Only the notes travel: provider
- * continuations, response ids and receipts of that run never do.
+ * notes. A run accepted without the hybrid policy (Off, legacy or Knowledge)
+ * never supplies notes. Notes a run bought cover its branch through its own
+ * user message; notes it carried keep their frozen boundary. Only the notes
+ * travel: provider continuations, response ids and receipts of that run
+ * never do.
  */
 export function contextSummaryReuseCandidates(input: Readonly<{
   checkpoints: readonly BranchContextCheckpoint[];
@@ -175,7 +177,7 @@ export function contextSummaryReuseCandidates(input: Readonly<{
     .flatMap((candidate): ContextSummaryReuse[] => {
       const { compaction, policy } = candidate;
       const summary = compaction.summary;
-      if (!summary || candidate.userId !== input.userId || compaction.version !== 1 ||
+      if (!summary || policy?.mode !== "hybrid" || candidate.userId !== input.userId || compaction.version !== 1 ||
         compaction.policyRevision !== "hybrid-v1" || compaction.runId !== candidate.runId ||
         compaction.ownerId !== candidate.userId || !decodeContextSummary(summary)) return [];
       const carried = policy?.reuse?.summary.id === summary.id ? policy.reuse : null;

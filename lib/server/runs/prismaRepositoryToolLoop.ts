@@ -1428,6 +1428,8 @@ export function createPrismaRunToolLoopOperations(
       if (answerIds.length === 0) return [];
       // Only the bounded compaction projection and accepted policy are read:
       // never the provider continuation, tool transcript or run payloads.
+      // Knowledge runs keep the legacy guard: even a historical checkpoint of
+      // one never supplies notes beside or after citation evidence.
       const rows = await prismaClient.$queryRaw<Array<{
         assistantMessageId: string;
         compaction: unknown;
@@ -1444,6 +1446,7 @@ export function createPrismaRunToolLoopOperations(
           AND r."assistantMessageId" IN (${Prisma.join(answerIds)})
           AND r."status" IN ('complete', 'cancelled', 'error') AND NOT ${activeToolLoopRunSql("r")}
           AND r."toolLoopState" -> 'contextCompaction' -> 'summary' IS NOT NULL
+          AND COALESCE(r."normalizedRequest" #>> '{knowledgePlan,mode}', 'none') = 'none'
         ORDER BY r."createdAt" DESC, r."id" DESC
         LIMIT 8
       `);

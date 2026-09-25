@@ -344,6 +344,30 @@ describe("context compaction planner", () => {
     expect(JSON.stringify(planned.request.providerToolMessages?.[1])).not.toContain("reader fragment");
   });
 
+  it("never masks Knowledge evidence, even under a historical maskable descriptor", () => {
+    const knowledge = (id: string, seed: string, maskable: boolean): ToolExecutionResult => {
+      const base = result(id, seed);
+      return { ...base, name: "search_knowledge",
+        observation: { ...base.observation!, source: "knowledge", maskable } };
+    };
+    const current = knowledge("knowledge-1", "k1", false);
+    const historical = knowledge("knowledge-2", "k2", true);
+    const old = result("old-3", "e");
+    const newest = result("newest-3", "f");
+    const messages = [
+      openAIResponsesToolBridge.appendToolResult(undefined, current),
+      openAIResponsesToolBridge.appendToolResult(undefined, historical),
+      openAIResponsesToolBridge.appendToolResult(undefined, old),
+      { type: "function_call", call_id: "newest-3", name: "read_record" },
+      openAIResponsesToolBridge.appendToolResult(undefined, newest)
+    ];
+    const planned = plan(openAIResponsesToolBridge, request(messages), [current, historical, old, newest]);
+    expect(planned.measurement.maskedObservations).toBe(1);
+    expect(planned.request.providerToolMessages?.[0]).toEqual(messages[0]);
+    expect(planned.request.providerToolMessages?.[1]).toEqual(messages[1]);
+    expect(JSON.stringify(planned.request.providerToolMessages?.[2])).not.toContain("rare fact old-3");
+  });
+
   it("keeps an unmaskable result in the same settled batch while masking eligible siblings", () => {
     const skill = result("skill-1", "h", "skill");
     const old = result("old-2", "c");
