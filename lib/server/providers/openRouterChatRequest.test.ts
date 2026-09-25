@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { currentSearchToolFixture } from "@/tests/support/tools";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
+import { defaultProviderModels } from "../../domain/catalog";
 import { validateSearchToolArguments } from "../search/query";
 import type {
   ProviderRunRequest,
@@ -688,6 +689,20 @@ describe("OpenRouter request builders", () => {
       searchPolicy: { ...policy, defaultParams }
     }));
     expect(body).not.toHaveProperty("reasoning");
+  });
+
+  it("hides Perplexity template reasoning without disabling it", () => {
+    const template = defaultProviderModels.find((entry) =>
+      entry.provider === "openrouter" && entry.modelId === "perplexity/sonar-pro-search"
+    );
+    expect(template).toBeDefined();
+    const body = buildOpenRouterPerplexitySearchRequest(searchRequest({
+      searchPolicy: {
+        ...searchPolicy(),
+        defaultParams: { ...template!.defaultParams, maxOutputTokens: 1024, stream: false, temperature: 0 }
+      }
+    }));
+    expect(body.reasoning).toEqual({ exclude: true });
   });
 
   it("returns the stable always-safe Perplexity preview envelope", () => {

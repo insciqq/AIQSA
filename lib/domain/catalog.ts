@@ -786,8 +786,8 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
         ...openRouterParams.provider,
         order: ["perplexity"]
       },
+      // Hide reasoning text without disabling the provider's reasoning default.
       reasoning: {
-        ...openRouterParams.reasoning,
         exclude: true
       },
       temperature: neutralTemperature
