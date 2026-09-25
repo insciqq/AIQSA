@@ -23,7 +23,14 @@ import {
   summaryBindingDigest,
   type ContextObservation
 } from "./contextCompactionContract";
-import { contextTurns, maskedObservationHandlesInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
+import {
+  contextTurns,
+  isTranscriptCoverageRef,
+  maskedObservationHandlesInProviderMessages,
+  observationHandlesInProviderMessages,
+  transcriptCoverageMarker,
+  uncoveredToolTranscript
+} from "./contextCompactionPlanner";
 
 const SUMMARY_SYSTEM_PROMPT = [
   "You are the server-owned context compaction summarizer.",
@@ -192,8 +199,11 @@ function unit(text: string, notes?: true): SourceUnit {
 /**
  * The summary source, oldest first: earlier notes (when a summary is applied),
  * every prior branch message outside the pins, the current message and the
- * provider tool transcript. Nothing is cut; oversized input is split across
- * bounded calls. The digest and references describe exactly these units.
+ * provider tool transcript. Tool rounds an applied summary of this run already
+ * covers are represented by its notes and refs, so an incremental summary
+ * reads the notes plus the uncovered delta. Nothing else is cut; oversized
+ * input is split across bounded calls. The digest and references describe
+ * exactly these units; the coverage ref names the newest call they include.
  */
 export function contextSummarySource(request: ProviderRunRequest, observations?: readonly ContextObservation[]): ContextSummarySource {
   const revision = contextSummarySourceRevision(request);
@@ -201,8 +211,10 @@ export function contextSummarySource(request: ProviderRunRequest, observations?:
   const current = messages.at(-1);
   const previous = appliedSummary(request);
   const prior = messages.filter((message) => message !== current && message.purpose === undefined && !isContextSummaryMessage(message));
-  const toolMessages = request.providerToolMessages ?? [];
-  const carried = (previous?.sourceRefs ?? []).filter((ref) => !ref.startsWith("ctxr1_") && ref !== CONTEXT_SUMMARY_REFS_INCOMPLETE);
+  const toolMessages = uncoveredToolTranscript(request);
+  const coverage = transcriptCoverageMarker(request.providerToolMessages ?? []);
+  const carried = (previous?.sourceRefs ?? []).filter((ref) => !ref.startsWith("ctxr1_") &&
+    ref !== CONTEXT_SUMMARY_REFS_INCOMPLETE && !isTranscriptCoverageRef(ref));
   const carriedHandles = carried.filter((ref) => ref.startsWith("tor1_"));
   const toolHandles = observationHandlesInProviderMessages(toolMessages, observations);
   const units: SourceUnit[] = [
@@ -215,9 +227,10 @@ export function contextSummarySource(request: ProviderRunRequest, observations?:
     ...carried.filter((ref) => !ref.startsWith("tor1_"))];
   // Newest tool results first: a cap can never push the latest handles out.
   const handles = [...new Set([...[...toolHandles].reverse(), ...carriedHandles])];
-  const allRefs = [...new Set([revision, ...handles, ...messageIds])].filter((ref) => ref.length > 0);
+  const allRefs = [...new Set([revision, ...(coverage ? [coverage] : []), ...handles, ...messageIds])]
+    .filter((ref) => ref.length > 0);
   const complete = (!previous || contextSummaryRefsComplete(previous)) &&
-    1 + handles.length <= CONTEXT_COMPACTION_LIMITS.summarySourceRefs;
+    1 + (coverage ? 1 : 0) + handles.length <= CONTEXT_COMPACTION_LIMITS.summarySourceRefs;
   const refs = complete ? allRefs : [revision, CONTEXT_SUMMARY_REFS_INCOMPLETE, ...allRefs.slice(1)];
   return {
     allowedRefs: new Set(allRefs),

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
@@ -7,7 +8,15 @@ import { runProviderToolLoop } from "./providerToolLoop";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { openRouterChatToolBridge } from "../tools/bridges";
 import { createOpenRouterChatAdapter } from "../providers/openRouterChat";
-import type { RunTool } from "../tools/types";
+import type { RunTool, ToolExecutionResult } from "../tools/types";
+import { readToolResultTool } from "../tools/readToolResult";
+import { projectObservationForProvider } from "../toolObservations/projection";
+import { conversationContextPolicy } from "./contextCompactionContract";
+import { prepareCompactedProviderRequest } from "./contextCompactionConsumer";
+import { createContextCompactionPublisher } from "./contextCompactionEvents";
+import { contextObservationsFromResults } from "./contextCompactionPlanner";
+import { applyContextSummaryToRequest } from "./contextCompactionSummarizer";
+import type { ProviderToolLoopContinuation } from "./providerToolLoop";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -831,5 +840,115 @@ describe("provider tool loop", () => {
       toolRounds: 0
     });
     expect(executeTool).not.toHaveBeenCalled();
+  });
+});
+
+describe("provider tool loop with transcript compaction", () => {
+  const writeFile: RunTool = { capability: "workspace", description: "Write a Workspace file.", name: "write_file",
+    inputSchema: { properties: { content: { type: "string" }, path: { type: "string" } }, type: "object" } };
+  const observed = (id: string): ToolExecutionResult => ({
+    callId: id, content: [{ text: `Wrote ${id}`, type: "text" }], name: "write_file", status: "complete",
+    observation: { byteSize: 64, checksum: createHash("sha256").update(id).digest("hex"), encoding: "json-utf8-v1",
+      handle: `tor1_${createHash("sha256").update(`handle:${id}`).digest("hex").slice(0, 32)}`, maskable: true,
+      source: "workspace", sourceTruncated: false, version: 1 }
+  });
+  function hybrid(): ProviderRunRequest {
+    const messages = [{ content: { blocks: [{ text: "Write the files.", type: "text" as const }] }, id: "current", role: "user" as const }];
+    return request({ content: messages[0]!.content, context: { messages, mode: "branch_path" },
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages, mode: "hybrid" }),
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: 16_000, defaultMaxOutputTokens: 1_000, toolCalling: true },
+      params: {}, toolObservationVersion: 1 });
+  }
+  const BUDGET = 13_400;
+  const transcriptCalls = (messages: readonly unknown[] | undefined) =>
+    (messages ?? []).flatMap((item) => (item as { type?: string }).type === "function_call" ? [(item as { call_id: string }).call_id] : []);
+
+  function harness(rounds: number) {
+    const settled: ToolExecutionResult[] = [];
+    const summaries: ProviderRunRequest[] = [];
+    const summaryAdapter: Pick<ProviderAdapter, "stream"> = { async *stream(next) {
+      summaries.push(next);
+      const output = JSON.stringify({ notes: `Files written so far (${summaries.length}).`, sourceRefs: [] });
+      yield { data: { delta: output }, type: "token" };
+      return { finalProviderResponsePreview: {}, finalText: output, usage: { inputTokens: 3, outputTokens: 1 } };
+    } };
+    const prepareRequest = (roundRequest: ProviderRunRequest) => prepareCompactedProviderRequest({
+      bridge: openAIResponsesToolBridge, failure: (code, message) => Object.assign(new Error(message), { code }),
+      observations: contextObservationsFromResults(settled),
+      publisher: createContextCompactionPublisher(async () => undefined),
+      receipts: { claim: async () => undefined, settle: async () => undefined },
+      request: roundRequest, signal: new AbortController().signal, summaryAdapter
+    });
+    const dispatched: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(roundRequest) {
+      dispatched.push(roundRequest);
+      const index = Number(transcriptCalls(roundRequest.providerToolMessages).at(-1)?.slice(5) ?? 0) + 1;
+      const call = index <= rounds
+        ? [{ arguments: { content: `ARGS_${index} ${"w".repeat(6_000)}`, path: `f${index}` }, id: `call-${index}`, name: "write_file" }]
+        : undefined;
+      return { finalProviderResponsePreview: {}, finalText: call ? "" : "done", usage: { inputTokens: 1, outputTokens: 1 },
+        ...(call ? { toolCalls: call } : {}) };
+    } };
+    const input = {
+      adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: rounds + 1, maxToolRounds: rounds + 1 },
+      executeTool: async (call: { id: string }) => {
+        const value = observed(call.id);
+        settled.push(value);
+        return { status: "complete" as const, value };
+      },
+      parallelToolCalls: false,
+      prepareRequest,
+      projectToolResultForProvider: projectObservationForProvider,
+      tools: [readToolResultTool, writeFile]
+    };
+    return { dispatched, input, settled, summaries };
+  }
+
+  it("dispatches, fences and checkpoints the same reduced transcript, and recovery resumes from it without a second purchase", async () => {
+    const live = harness(14);
+    const fenced: ProviderToolLoopContinuation[] = [];
+    const persisted: ProviderToolLoopContinuation[] = [];
+    const outcome = await runProviderToolLoop({ ...live.input, initialRequest: hybrid(),
+      beforeProviderRound: ({ continuation }) => { fenced.push(continuation); },
+      persistToolBatch: ({ continuation }) => { persisted.push(continuation); } });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 14 });
+    expect(live.summaries.length).toBeGreaterThan(0);
+    live.dispatched.forEach((sent, index) => {
+      expect(sent.contextCompaction!.afterTokens).toBeLessThanOrEqual(BUDGET);
+      // The durable fence and the batch checkpoint hold exactly what was sent.
+      expect(fenced[index]!.providerToolMessages).toEqual(sent.providerToolMessages);
+      if (index < persisted.length) {
+        expect(persisted[index]!.providerToolMessages.slice(0, sent.providerToolMessages!.length)).toEqual(sent.providerToolMessages);
+      }
+      // Rounds leave oldest first, whole, and a round that left never returns.
+      const calls = transcriptCalls(sent.providerToolMessages);
+      const first = calls.length ? Number(calls[0]!.slice(5)) : index + 1;
+      expect(calls).toEqual(Array.from({ length: index + 1 - first }, (_, offset) => `call-${first + offset}`));
+    });
+    const reducedRound = live.dispatched.findIndex((sent, index) => index > 0 && !transcriptCalls(sent.providerToolMessages).includes("call-1"));
+    expect(reducedRound).toBeGreaterThan(0);
+    expect(reducedRound).toBeLessThan(persisted.length);
+
+    // Recovery from the checkpoint of that round: its persisted continuation,
+    // the checkpoint summary re-applied and the settled batch result.
+    const checkpointSummary = live.dispatched[reducedRound]!.contextCompactionSummary!;
+    const recovered = harness(14);
+    recovered.settled.push(...live.settled.slice(0, reducedRound + 1));
+    const settledCall = live.settled[reducedRound]!;
+    await runProviderToolLoop({ ...recovered.input,
+      initialRequest: applyContextSummaryToRequest(hybrid(), checkpointSummary),
+      resume: {
+        continuation: persisted[reducedRound]!,
+        previousToolResults: [{ call: { arguments: {}, id: settledCall.callId, name: "write_file" }, ordinal: 0,
+          result: { status: "complete", value: settledCall }, round: reducedRound + 1 }],
+        progress: { providerRounds: reducedRound + 1, toolCalls: reducedRound + 1, toolRounds: reducedRound + 1 },
+        seenCallIds: live.settled.slice(0, reducedRound + 1).map((entry) => entry.callId)
+      }
+    });
+    expect(recovered.dispatched[0]!.providerToolMessages).toEqual(live.dispatched[reducedRound + 1]!.providerToolMessages);
+    // The recovered round reuses the checkpoint notes instead of buying them again.
+    expect(recovered.dispatched[0]!.contextCompactionSummary?.id).toBe(checkpointSummary.id);
+    expect(recovered.dispatched[0]!.contextCompactionSummary?.id).toBe(live.dispatched[reducedRound + 1]!.contextCompactionSummary?.id);
   });
 });

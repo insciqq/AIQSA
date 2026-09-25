@@ -6,6 +6,7 @@ import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
 import {
   CONTEXT_COMPACTION_LIMITS,
+  contextDigest,
   contextSummaryCoverage,
   contextSummaryMessageId,
   contextSummaryTail,
@@ -213,6 +214,180 @@ function resultGroups(results: readonly LocatedResult[]): LocatedResult[][] {
   return groups;
 }
 
+/** One provider protocol unit of the retained tool transcript: the items one
+ * provider round emitted (reasoning, text, hosted items and its calls) followed
+ * by the results of those calls. Units are only ever kept or removed whole, so
+ * a request never carries a result without its call, a call without its
+ * result, or reasoning/signature items without the calls they precede. */
+export type ToolTranscriptUnit = Readonly<{
+  /** Inclusive start and exclusive end index in `providerToolMessages`. */
+  start: number;
+  end: number;
+  callIds: readonly string[];
+  /** Every call has exactly one result in this unit and every result answers
+   * one of its calls. Only a settled unit can ever leave. */
+  settled: boolean;
+}>;
+
+function callIdsOf(value: unknown): string[] {
+  const names = new Map<string, string>();
+  recordCallNames(value, names);
+  return [...names.keys()];
+}
+
+/** Splits a tool transcript at batch boundaries: a unit ends where call-side
+ * items follow result items. A clarification tail or any other item after the
+ * last results forms its own call-less unit, which is never reducible. */
+export function toolTranscriptUnits(messages: readonly unknown[]): ToolTranscriptUnit[] {
+  const units: ToolTranscriptUnit[] = [];
+  let start = 0;
+  let calls: string[] = [];
+  let results: string[] = [];
+  let unmatched = false;
+  let inResults = false;
+  const flush = (end: number) => {
+    if (end > start) {
+      const callSet = new Set(calls);
+      const resultSet = new Set(results);
+      units.push({
+        callIds: calls,
+        end,
+        settled: calls.length > 0 && !unmatched && callSet.size === calls.length && resultSet.size === results.length &&
+          calls.length === results.length && results.every((id) => callSet.has(id)),
+        start
+      });
+    }
+    start = end;
+    calls = [];
+    results = [];
+    unmatched = false;
+    inResults = false;
+  };
+  messages.forEach((value, index) => {
+    if (isResultEnvelope(value)) {
+      const callId = envelopeCallId(value);
+      if (callId) results.push(callId);
+      else unmatched = true;
+      inResults = true;
+      return;
+    }
+    if (inResults) flush(index);
+    calls.push(...callIdsOf(value));
+  });
+  flush(messages.length);
+  return units;
+}
+
+const TRANSCRIPT_COVERAGE_PREFIX = "ctxt1_";
+
+/** Opaque summary ref naming the newest provider call its source contained. */
+export function transcriptCoverageRef(callId: string): string {
+  return `${TRANSCRIPT_COVERAGE_PREFIX}${contextDigest({ callId }).slice(0, 32)}`;
+}
+
+export function isTranscriptCoverageRef(ref: string): boolean {
+  return ref.startsWith(TRANSCRIPT_COVERAGE_PREFIX);
+}
+
+/** The coverage ref of a summary source whose tool transcript is `messages`:
+ * the newest call it contains, or null for a transcript without calls. */
+export function transcriptCoverageMarker(messages: readonly unknown[]): string | null {
+  const units = toolTranscriptUnits(messages);
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const newest = units[index]!.callIds.at(-1);
+    if (newest) return transcriptCoverageRef(newest);
+  }
+  return null;
+}
+
+export type ToolTranscriptReduction = Readonly<{
+  /** Settled units strictly older than the newest unit with calls: everything
+   * a summary may stand for. The newest batch, call-less tails and unsettled
+   * units always stay exact. */
+  older: readonly ToolTranscriptUnit[];
+  /** The part of `older` whose items were in the source of a summary this run
+   * bought and applied. Only these may leave the request directly. */
+  covered: readonly ToolTranscriptUnit[];
+}>;
+
+const NO_TRANSCRIPT_REDUCTION: ToolTranscriptReduction = { covered: [], older: [] };
+
+/**
+ * Transcript units a hybrid request may reduce. Ordinary runs resend the full
+ * transcript every round (masking and this reduction require the absence of a
+ * provider continuation), so whole earlier units can leave. Coverage is the
+ * prefix through the unit holding the newest call a summary bought in this run
+ * recorded; notes carried from an earlier turn never cover this run's calls.
+ */
+export function toolTranscriptReduction(request: ProviderRunRequest): ToolTranscriptReduction {
+  const messages = request.providerToolMessages ?? [];
+  if (request.agent || request.previousProviderResponseId || messages.length === 0) return NO_TRANSCRIPT_REDUCTION;
+  const units = toolTranscriptUnits(messages);
+  let newest = -1;
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    if (units[index]!.callIds.length > 0) { newest = index; break; }
+  }
+  const summary = request.contextCompactionSummary;
+  const own = summary && summary.id !== request.contextCompactionPolicy?.reuse?.summary.id &&
+    request.context?.messages.some((message) => message.id === contextSummaryMessageId(summary)) === true
+    ? summary : null;
+  const markers = new Set(own?.sourceRefs.filter(isTranscriptCoverageRef) ?? []);
+  let boundary = -1;
+  if (markers.size > 0) {
+    for (let index = units.length - 1; index >= 0 && boundary < 0; index -= 1) {
+      if (units[index]!.callIds.some((callId) => markers.has(transcriptCoverageRef(callId)))) boundary = index;
+    }
+  }
+  const older: ToolTranscriptUnit[] = [];
+  const covered: ToolTranscriptUnit[] = [];
+  units.forEach((unit, index) => {
+    if (index >= newest || !unit.settled) return;
+    older.push(unit);
+    if (index <= boundary) covered.push(unit);
+  });
+  return { covered, older };
+}
+
+function withoutUnits(messages: readonly unknown[], units: readonly ToolTranscriptUnit[]): unknown[] {
+  const removed = new Set<number>();
+  for (const unit of units) for (let index = unit.start; index < unit.end; index += 1) removed.add(index);
+  return messages.filter((_value, index) => !removed.has(index));
+}
+
+/** The transcript a new summary must still read: covered older units are
+ * already represented by the applied notes, which the source carries. */
+export function uncoveredToolTranscript(request: ProviderRunRequest): readonly unknown[] {
+  const messages = request.providerToolMessages ?? [];
+  const { covered } = toolTranscriptReduction(request);
+  return covered.length > 0 ? withoutUnits(messages, covered) : messages;
+}
+
+/** Covered units leave oldest first, whole, until the excess is released.
+ * The estimate is verified on the exact remaining transcript. */
+function trimCoveredTranscript(request: ProviderRunRequest, covered: readonly ToolTranscriptUnit[], excessTokens: number): Readonly<{
+  droppedTokens: number;
+  request: ProviderRunRequest;
+}> {
+  const messages = request.providerToolMessages ?? [];
+  const total = estimateApproxTokens(messages);
+  const dropped: ToolTranscriptUnit[] = [];
+  let estimated = 0;
+  let remaining = messages;
+  for (const unit of covered) {
+    if (estimated >= excessTokens) {
+      remaining = withoutUnits(messages, dropped);
+      estimated = total - estimateApproxTokens(remaining);
+      if (estimated >= excessTokens) break;
+    }
+    dropped.push(unit);
+    estimated += estimateApproxTokens(messages.slice(unit.start, unit.end));
+  }
+  remaining = withoutUnits(messages, dropped);
+  return dropped.length > 0
+    ? { droppedTokens: total - estimateApproxTokens(remaining), request: { ...request, providerToolMessages: remaining } }
+    : { droppedTokens: 0, request };
+}
+
 function measurement(input: Readonly<{
   beforeTokens: number;
   afterTokens: number;
@@ -315,11 +490,23 @@ function trimCoveredHistory(request: ProviderRunRequest, history: ContextHistory
   };
 }
 
+/** What the irreducible hybrid minimum consists of, for a truthful refusal. */
+export type ContextOverflow = Readonly<{
+  /** Prompt, pins, current input, tools, attachment minimum and any applied notes. */
+  fixedTokens: number;
+  /** The newest tool batch plus transcript items that must stay exact. */
+  transcriptTokens: number;
+  /** An applied summary note is part of `fixedTokens`. */
+  notes: boolean;
+}>;
+
 export type ContextCompactionPlan = Readonly<{
   measurement: ContextPlanMeasurement;
   request: ProviderRunRequest;
   /** Present only when covered hybrid history left the projection. */
   historyTrim?: Readonly<{ droppedMessages: number; droppedTokens: number }>;
+  /** Present with `irreducible_overflow` from the hybrid minimum. */
+  overflow?: ContextOverflow;
 }>;
 
 /**
@@ -388,7 +575,8 @@ export function planContextCompaction(input: Readonly<{
       }
     }
   }
-  const result = (outcome: ContextPlanMeasurement["outcome"], extra: Partial<Pick<ContextCompactionPlan, "historyTrim">> & {
+  const result = (outcome: ContextPlanMeasurement["outcome"], extra: Partial<Pick<ContextCompactionPlan,
+    "historyTrim" | "overflow">> & {
     afterTokens?: number; legacyFallback?: boolean; request?: ProviderRunRequest;
   } = {}): ContextCompactionPlan => ({
     measurement: measurement({
@@ -401,7 +589,8 @@ export function planContextCompaction(input: Readonly<{
       outcome
     }),
     request: extra.request ?? planned,
-    ...(extra.historyTrim ? { historyTrim: extra.historyTrim } : {})
+    ...(extra.historyTrim ? { historyTrim: extra.historyTrim } : {}),
+    ...(extra.overflow ? { overflow: extra.overflow } : {})
   });
   const settled = (): ContextPlanMeasurement["outcome"] => maskedObservations > 0 ? "masking_applied" : "already_fits";
   const aboveTarget = budgetTokens !== null && maskedObservations > 0 &&
@@ -417,17 +606,40 @@ export function planContextCompaction(input: Readonly<{
   const history = contextHistory(planned, budgetTokens);
   // The exact minimum keeps an applied summary note: it is never traded away.
   const summaryTokens = history.summaryMessage ? estimateApproxTokens(history.summaryMessage.content) : 0;
-  if (afterTokens - history.priorTokens + summaryTokens > budgetTokens) return result("irreducible_overflow");
+  // Older settled tool rounds are history too: a summary can stand for them,
+  // after which they leave as whole protocol units. The newest batch stays.
+  const transcript = toolTranscriptReduction(planned);
+  const transcriptMessages = planned.providerToolMessages ?? [];
+  const transcriptTokens = estimateApproxTokens(transcriptMessages);
+  const retainedTranscriptTokens = transcript.older.length > 0
+    ? estimateApproxTokens(withoutUnits(transcriptMessages, transcript.older)) : transcriptTokens;
+  const minimumTokens = afterTokens - history.priorTokens + summaryTokens - (transcriptTokens - retainedTranscriptTokens);
+  const overflow = (): ContextOverflow => ({
+    fixedTokens: Math.max(0, minimumTokens - retainedTranscriptTokens),
+    notes: summaryTokens > 0,
+    transcriptTokens: retainedTranscriptTokens
+  });
+  if (minimumTokens > budgetTokens) return result("irreducible_overflow", { overflow: overflow() });
   if (afterTokens > budgetTokens) {
-    // Covered turns leave first: the note already stands for them. Only
-    // uncovered history that must still leave requires a (new) summary.
+    // Covered turns leave first, then covered tool rounds: the note already
+    // stands for them. Only uncovered history or uncovered older rounds that
+    // must still leave require a (new, incremental) summary.
     const trimmed = trimCoveredHistory(planned, history, afterTokens - budgetTokens);
-    if (history.uncovered.length > 0 && afterTokens - trimmed.droppedTokens > budgetTokens) return result("needs_summary");
+    let tokens = afterTokens - trimmed.droppedTokens;
+    let reduced = trimmed.request;
+    if (tokens > budgetTokens && transcript.covered.length > 0) {
+      const dropped = trimCoveredTranscript(reduced, transcript.covered, tokens - budgetTokens);
+      tokens -= dropped.droppedTokens;
+      reduced = dropped.request;
+    }
+    const uncovered = history.uncovered.length > 0 || transcript.older.length > transcript.covered.length;
+    if (tokens > budgetTokens) return result(uncovered ? "needs_summary" : "irreducible_overflow", uncovered ? {} : { overflow: overflow() });
     return result(settled(), {
-      afterTokens: afterTokens - trimmed.droppedTokens,
-      historyTrim: { droppedMessages: trimmed.droppedMessages, droppedTokens: trimmed.droppedTokens },
-      legacyFallback: true,
-      request: trimmed.request
+      afterTokens: tokens,
+      ...(trimmed.droppedMessages > 0
+        ? { historyTrim: { droppedMessages: trimmed.droppedMessages, droppedTokens: trimmed.droppedTokens } } : {}),
+      legacyFallback: trimmed.droppedMessages > 0,
+      request: reduced
     });
   }
   // Above the 75% trigger, a summary buys headroom for later rounds whenever
