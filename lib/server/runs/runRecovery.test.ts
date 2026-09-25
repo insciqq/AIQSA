@@ -149,6 +149,7 @@ import {
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import { decodeContextCompactionStatus, type ContextPlanMeasurement, type ContextSummary } from "../../contracts/contextCompaction";
 import { openAIResponsesToolBridge } from "../tools/bridges";
+import { projectObservationForProvider } from "../toolObservations/projection";
 import { contextCompactionCheckpoint, conversationContextPolicy } from "./contextCompactionContract";
 import { measureSessionContext } from "./runContextBudget";
 
@@ -5356,6 +5357,38 @@ describe("run recovery", () => {
         [1, "running", "pending"], [1, "complete", "summary_applied"]
       ]);
       expect(JSON.stringify(recovery.harness.state.events)).not.toContain("PRIVATE_NOTES");
+    });
+
+    it("masks an older recovered result from the run's persisted server observations", async () => {
+      const observed = { callId: "provider-call-1", name: recoveryToolName, status: "complete" as const,
+        content: [{ type: "text" as const, text: `RESULT_1 ${"r".repeat(16_000)}` }],
+        observation: { byteSize: 16_009, checksum: "c".repeat(64), encoding: "json-utf8-v1" as const,
+          handle: `tor1_${"c".repeat(32)}`, maskable: true, source: "mcp" as const, sourceTruncated: false, version: 1 as const } };
+      const recovery = fixture({
+        calls: [{ ...persistedRecoveryCall("complete"), result: observed as unknown as ToolLoopJsonValue },
+          { ...persistedRecoveryCall(), id: "stored-call-2", providerCallId: "provider-call-2", roundIndex: 2,
+            arguments: { value: "beta" } }],
+        compaction: { measurement: measurement("already_fits") },
+        historyChars: 100,
+        providerToolMessages: [
+          { arguments: "{\"value\":\"alpha\"}", call_id: "provider-call-1", name: recoveryToolName, type: "function_call" },
+          openAIResponsesToolBridge.appendToolResult(undefined, projectObservationForProvider(observed)) as ToolLoopJsonValue,
+          { arguments: "{\"value\":\"beta\"}", call_id: "provider-call-2", name: recoveryToolName, type: "function_call" }
+        ],
+        roundIndex: 2,
+        toolCallsBeforeFinal: 0
+      });
+      await recovery.recover();
+      expect(recovery.harness.state.recoveredErrors).toEqual([]);
+      expect(recovery.harness.state.completed).toMatchObject({ finalText: "Recovered." });
+      expect(recovery.answers).toHaveLength(1);
+      const transcript = JSON.stringify(recovery.answers[0]?.providerToolMessages);
+      expect(transcript).not.toContain(`RESULT_1 ${"r".repeat(100)}`);
+      expect(transcript).toContain(observed.observation.handle);
+      expect(transcript).toContain("RESULT_2");
+      expect(recovery.answers[0]?.contextCompaction).toMatchObject({ maskedObservations: 1, outcome: "masking_applied" });
+      expect(recovery.summaries).toHaveLength(0);
+      expect(recovery.withinBudget).toEqual([true]);
     });
 
     it("measures a refreshed round without buying a summary for a request already dispatched", async () => {

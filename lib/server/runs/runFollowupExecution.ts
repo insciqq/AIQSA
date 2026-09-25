@@ -4,6 +4,7 @@ import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import type { ProviderAdapter, ProviderRunOptions, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { withTimeoutSignal } from "../providers/network";
 import type { ProviderToolBridge } from "../tools/types";
+import type { ContextObservation } from "./contextCompactionContract";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { subscribeRunFollowup } from "./runFollowupRegistry";
 import { followupRequestHeadroom, type RunFollowupOperations } from "./runFollowups";
@@ -40,6 +41,8 @@ export function createRunFollowupExecution(input: {
   userId: string;
   operations: RunFollowupOperations;
   bridge?: ProviderToolBridge;
+  /** Server-minted observations of the owner's settled calls, read at each check. */
+  observations?(): readonly ContextObservation[];
   /** Flush and return only the current generation's displayed text. */
   beforeDelivery(): Promise<string>;
   onDelivery(entries: readonly RunFollowup[]): Promise<void>;
@@ -66,7 +69,8 @@ export function createRunFollowupExecution(input: {
       if (!batch) return request;
       enabled = true;
       const candidate = requestWithRunFollowups({ ...request, followupContextReserveTokens: 0 }, batch.entries);
-      const budgeted = applyProviderRequestContextBudget({ bridge: input.bridge, request: candidate });
+      const budgeted = applyProviderRequestContextBudget({ bridge: input.bridge, request: candidate,
+        ...(input.observations ? { observations: input.observations() } : {}) });
       if (!budgeted.ok) throw new Error("followup_context_unavailable");
       const newlyDelivered = batch.entries.some(entry => entry.delivery === "accepted");
       const precedingText = newlyDelivered ? await input.beforeDelivery() : "";
