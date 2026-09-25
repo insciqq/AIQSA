@@ -473,7 +473,8 @@ describe("context compaction summarizer", () => {
     expect(summarized.summary.notes).toBe("combined notes of every part");
     // Digest and references describe exactly what was sent.
     expect(summarized.summary.sourceDigest).toBe(contextSummarySource(source).digest);
-    for (const ref of summarized.summary.sourceRefs.filter(ref => !ref.startsWith("ctxr1_"))) {
+    // Revision and transcript coverage refs are server-owned locators, not source content.
+    for (const ref of summarized.summary.sourceRefs.filter(ref => !ref.startsWith("ctxr1_") && !ref.startsWith("ctxt1_"))) {
       expect(bodies.some(body => body.includes(ref))).toBe(true);
     }
     expect(summarized.attempts.map(({ state }) => state)).toEqual([...partials.map(() => "settled"), "committed"]);

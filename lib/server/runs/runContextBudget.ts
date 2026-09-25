@@ -40,7 +40,8 @@ import {
   contextCompactionMeasurementWithBudget,
   contextHistory,
   planContextCompaction,
-  type ContextCompactionPlan
+  type ContextCompactionPlan,
+  type ContextOverflow
 } from "./contextCompactionPlanner";
 
 // Matches the former 20,000-character ASCII ceiling under the shared
@@ -641,6 +642,19 @@ function pinsBeforeCurrentMessage(request: ProviderRunRequest): ProviderRunReque
     : { ...request, context: { ...request.context!, messages: ordered } };
 }
 
+/** Names the part of the irreducible minimum that does not fit: the fixed
+ * request alone, or the newest tool batch beside it. Earlier tool rounds and
+ * prior history are never the cause; a summary can always stand for them. */
+function hybridOverflowMessage(overflow: ContextOverflow | undefined, budgetTokens: number): string {
+  const fixed = overflow?.notes
+    ? "Prompt, pinned context, current message, tools, and context notes"
+    : "Prompt, pinned context, current message, and tools";
+  if (!overflow || overflow.transcriptTokens === 0 || overflow.fixedTokens > budgetTokens) {
+    return `${fixed} exceed the model context budget (${budgetTokens} estimated tokens available).`;
+  }
+  return `The newest tool results (about ${overflow.transcriptTokens} estimated tokens) do not fit beside the ${fixed.charAt(0).toLowerCase()}${fixed.slice(1)} (about ${overflow.fixedTokens} estimated tokens) in the model context budget (${budgetTokens} estimated tokens available).`;
+}
+
 /**
  * Accepted hybrid runs never use the legacy whole-turn trimmer on unsummarized
  * history. The planner owns the outcome; this applies it to the exact request:
@@ -658,10 +672,7 @@ function applyHybridProviderRequestContextBudget(input: ProviderRequestBudgetInp
       return skillsBudgetExceeded(input.request, skills.pinned, skills.catalog);
     }
     return {
-      error: {
-        code: "context_too_large",
-        message: `Prompt, pinned context, current message, tools, and the newest tool results exceed the model context budget (${budget.budgetTokens} estimated tokens available).`
-      },
+      error: { code: "context_too_large", message: hybridOverflowMessage(planned.overflow, budget.budgetTokens) },
       ok: false,
       status: 400
     };
