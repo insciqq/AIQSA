@@ -6,18 +6,19 @@ import { parsePersistedToolExecutionResult } from "../runs/toolExecutionPersiste
 import { searchExecutionPreviewCount, searchExecutionsFromToolResult } from "../search/toolResult";
 import { ObservationStoreError } from "./contract";
 import type { ToolObservationDescriptor } from "./contract";
+import type { ToolExecutionResult } from "../tools/types";
 
 // Three Search engines, each with independently bounded findings and at most
 // twenty normalized source records. Never use the MCP wire cap for this owner.
 export const SEARCH_OBSERVATION_MAX_BYTES = 8 * 1024 * 1024;
 const unavailable = () => new ObservationStoreError("tool_observation_unavailable");
 
-/** Private accounting hydration, never a model reader or an unbounded storage
- * fallback. Only a canonical Search receipt is accepted; findings are dropped
- * before returning accounting/source facts to the existing run owner. */
-export async function readSearchAccounting(input: Readonly<{
+/** The complete retained Search result, checksum-verified and parsed by its
+ * persistence owner (which rehydrates the canonical text). Private recovery
+ * and accounting consumer only; never a model reader or unbounded fallback. */
+export async function readSearchOriginal(input: Readonly<{
   body: ReadableStream<Uint8Array>; identity: ToolObservationDescriptor; signal: AbortSignal;
-}>) {
+}>): Promise<ToolExecutionResult> {
   const { identity, signal } = input;
   if (identity.source !== "search" || identity.byteSize > SEARCH_OBSERVATION_MAX_BYTES) throw unavailable();
   const bytes = Buffer.alloc(identity.byteSize);
@@ -45,15 +46,25 @@ export async function readSearchAccounting(input: Readonly<{
       typeof value.callId !== "string" || typeof value.name !== "string" || !isToolLoopJsonValue(value)) throw unavailable();
     const result = parsePersistedToolExecutionResult({ id: value.callId, name: value.name }, value);
     if (!result) throw unavailable();
-    const executions = searchExecutionsFromToolResult(result);
-    if (!executions.length || executions.length !== searchExecutionPreviewCount(result)) throw unavailable();
-    return executions.map(execution => {
-      const accounting = { ...execution };
-      delete accounting.findings;
-      return accounting;
-    });
+    return result;
   } finally {
     if (!complete) void reader.cancel().catch(() => undefined);
     else reader.releaseLock();
   }
+}
+
+/** Private accounting hydration. Only a canonical Search receipt is accepted;
+ * findings are dropped before returning accounting/source facts to the
+ * existing run owner. */
+export async function readSearchAccounting(input: Readonly<{
+  body: ReadableStream<Uint8Array>; identity: ToolObservationDescriptor; signal: AbortSignal;
+}>) {
+  const result = await readSearchOriginal(input);
+  const executions = searchExecutionsFromToolResult(result);
+  if (!executions.length || executions.length !== searchExecutionPreviewCount(result)) throw unavailable();
+  return executions.map(execution => {
+    const accounting = { ...execution };
+    delete accounting.findings;
+    return accounting;
+  });
 }
