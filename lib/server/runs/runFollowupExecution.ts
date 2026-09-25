@@ -8,6 +8,7 @@ import type { ContextObservation } from "./contextCompactionContract";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { subscribeRunFollowup } from "./runFollowupRegistry";
 import { followupRequestHeadroom, type RunFollowupOperations } from "./runFollowups";
+import { beforeAnswerDispatch } from "./providerToolLoop";
 
 export class RunFollowupChanged extends Error {
   constructor() { super("run_followup_changed"); this.name = "RunFollowupChanged"; }
@@ -128,25 +129,31 @@ export function createRunFollowupExecution(input: {
      * to the owner; this generator only delivers and steers clarifications. */
     compact(request: ProviderRunRequest, signal: AbortSignal): Promise<ProviderRunRequest>;
   }): AsyncGenerator<ModelRunSseEvent, ProviderRunResult, void> {
-    // One deadline for the original call and every steering replacement.
-    const deadline = Date.now() + options.timeoutMs;
-    const timeout = withTimeoutSignal(options.signal, options.timeoutMs, "operation");
-    const parent = timeout.signal;
+    // Delivery and compaction run under the Stop/turn signal only; a summary
+    // chain is bounded by its own call budget, never by the answer deadline.
+    // The per-request deadline bounds provider dispatch time: the original
+    // call and every steering replacement share it, and time spent compacting
+    // between them is not charged to it.
+    const turn = options.signal;
+    let remainingMs = options.timeoutMs;
     // The owner prepared and checkpointed `request` for this round. Only a
     // delivered clarification changes that source, so only then does the
     // merged request go back through the owner's consumer. A summary committed
     // there is carried into every steering replacement, never bought again.
     let base = request;
+    // Set when the failure comes from a dispatched answer request; any other
+    // failure happened while no answer request of this round was in flight.
+    let dispatchFailed = false;
     try {
       for (;;) {
-        parent.throwIfAborted();
+        turn.throwIfAborted();
         await prepare(base);
         if (pending) continue;
         const delivered = entries;
         let prepared = base;
         if (delivered.length) {
           prepared = await options.compact(
-            requestWithRunFollowups({ ...base, followupContextReserveTokens: 0 }, delivered), parent);
+            requestWithRunFollowups({ ...base, followupContextReserveTokens: 0 }, delivered), turn);
           base = requestWithoutRunFollowups(prepared, delivered) ?? base;
           // A newer clarification arrived while compacting: include it before
           // dispatch instead of generating an answer that is already stale.
@@ -155,6 +162,10 @@ export function createRunFollowupExecution(input: {
         const current = new AbortController();
         if (child) throw new Error("followup_generation_overlap");
         child = current;
+        const startedAt = Date.now();
+        const timeoutMs = Math.max(1, remainingMs);
+        const timeout = withTimeoutSignal(turn, timeoutMs, "operation");
+        const parent = timeout.signal;
         let reported: ModelRunUsage = normalizeTokenUsage({});
         let completed = false;
         let dispatched = false;
@@ -165,7 +176,7 @@ export function createRunFollowupExecution(input: {
           parent.throwIfAborted();
           iterator = options.adapter.stream(prepared, {
             signal: AbortSignal.any([parent, current.signal]),
-            timeoutMs: Math.max(1, deadline - Date.now()),
+            timeoutMs,
             ...(options.onToolArguments ? { onToolArguments: async event => {
               if (!current.signal.aborted && !parent.aborted) await options.onToolArguments!(event);
             } } : {})
@@ -200,16 +211,21 @@ export function createRunFollowupExecution(input: {
             if (steering) {
               try { await input.onInterruptedUsage(usage, prepared, { completed, providerResponseId }); }
               catch (settlementError) {
+                dispatchFailed = true;
                 yield { type: "usage", data: usage };
                 throw settlementError;
               }
+            } else {
+              // The ordinary error path already owns usage persistence. Forward
+              // only this call's report once, rather than a fabricated aggregate.
+              dispatchFailed = true;
+              yield { type: "usage", data: usage };
             }
-            // The ordinary error path already owns usage persistence. Forward
-            // only this call's report once, rather than a fabricated aggregate.
-            else yield { type: "usage", data: usage };
           }
           if (!steering) throw error;
         } finally {
+          timeout.clear();
+          remainingMs -= Math.max(0, Date.now() - startedAt);
           if (!completed && iterator) {
             current.abort();
             await iterator.return(undefined as never).catch(() => undefined);
@@ -217,8 +233,10 @@ export function createRunFollowupExecution(input: {
           if (child === current) child = null;
         }
       }
-    } finally {
-      timeout.clear();
+    } catch (error) {
+      // Stop, delivery or compaction failed while no answer request of this
+      // round was in flight: the tool loop records no answer-round usage.
+      throw dispatchFailed ? error : beforeAnswerDispatch(error);
     }
   }
 

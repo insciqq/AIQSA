@@ -302,6 +302,87 @@ describe("in-run clarification execution", () => {
     expect(f.onInterruptedUsage.mock.calls[0]?.[0]).toMatchObject({ inputTokens: null, outputTokens: null, completeness: "unavailable" });
   });
 
+  it("runs a clarification's summary chain outside the per-request deadline and then grants the full deadline", async () => {
+    vi.useFakeTimers();
+    const f = fixture(), timeouts: number[] = [];
+    f.accept("Clarified before the dispatch", false);
+    // A paid summary chain longer than the whole per-request deadline.
+    const compact = vi.fn(async (value: ProviderRunRequest, signal: AbortSignal) => {
+      await vi.advanceTimersByTimeAsync(5_000);
+      signal.throwIfAborted();
+      return value;
+    });
+    const adapter: Pick<ProviderAdapter, "stream"> = { async *stream(_request, options) {
+      timeouts.push(options!.timeoutMs!);
+      expect(options!.signal!.aborted).toBe(false);
+      yield { type: "token", data: { delta: "answer" } };
+      return result("answer");
+    } };
+    const answer = await f.consume(f.execution.stream(request(), {
+      adapter, signal: new AbortController().signal, timeoutMs: 1_000, closeOnFinal: true, compact
+    }));
+    expect(compact).toHaveBeenCalledOnce();
+    expect(answer.result.finalText).toBe("answer");
+    expect(timeouts).toEqual([1_000]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps Stop terminal for a clarification's summary chain before any dispatch", async () => {
+    const f = fixture(), started = deferred(), controller = new AbortController();
+    f.accept("Clarified before the dispatch", false);
+    const stream = vi.fn();
+    const compact = vi.fn((_value: ProviderRunRequest, signal: AbortSignal) => new Promise<ProviderRunRequest>((_resolve, reject) => {
+      started.resolve();
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+    const completed = f.consume(f.execution.stream(request(), {
+      adapter: { stream }, signal: controller.signal, timeoutMs: 1_000, closeOnFinal: true, compact
+    }));
+    await started.promise;
+    controller.abort();
+    await expect(completed).rejects.toMatchObject({ name: "AbortError" });
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it("records no answer-round usage when compaction fails before a clarified dispatch", async () => {
+    const f = fixture();
+    const raw: ProviderAdapter = { buildRequestPreview: () => ({}), stream: vi.fn() };
+    const failure = Object.assign(new Error("summary failed"), { code: "context_compaction_summary_failed" });
+    const onUsage = vi.fn();
+    f.accept("Clarified before the dispatch", false);
+    const outcome = await runProviderToolLoop({
+      adapter: { ...raw, stream: (next, options) => f.execution.stream(next, {
+        adapter: raw, signal: options!.signal!, timeoutMs: 10_000, closeOnFinal: true,
+        compact: async () => { throw failure; } }) },
+      bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool: vi.fn(), initialRequest: request(), onUsage, parallelToolCalls: false, tools: []
+    });
+    expect(outcome).toMatchObject({ status: "failed" });
+    expect(raw.stream).not.toHaveBeenCalled();
+    // No phantom partial round: the paid summary calls own their usage.
+    expect(onUsage).not.toHaveBeenCalled();
+  });
+
+  it("still reports a dispatched answer's partial usage when it fails after a clarification", async () => {
+    const f = fixture();
+    const raw: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream() {
+      yield { type: "usage", data: { inputTokens: 9, outputTokens: 1 } };
+      throw Object.assign(new Error("upstream"), { status: 503 });
+    } };
+    const onUsage = vi.fn();
+    f.accept("Clarified before the dispatch", false);
+    const outcome = await runProviderToolLoop({
+      adapter: { ...raw, stream: (next, options) => f.execution.stream(next, {
+        adapter: raw, signal: options!.signal!, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }) },
+      bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool: vi.fn(), initialRequest: request(), onUsage, parallelToolCalls: false, tools: []
+    });
+    expect(outcome).toMatchObject({ status: "failed" });
+    expect(onUsage).toHaveBeenCalledOnce();
+    expect(onUsage.mock.calls[0]?.[0]).toMatchObject({ inputTokens: 9, completeness: "partial" });
+    expect(onUsage.mock.calls[0]?.[2]).toEqual({ completeness: "partial", round: 1 });
+  });
+
   it("retains a typed provider deadline before headers without retrying the request", async () => {
     vi.useFakeTimers();
     const f = fixture(), started = deferred();

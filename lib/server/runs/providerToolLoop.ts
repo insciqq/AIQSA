@@ -109,6 +109,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const undispatchedRoundFailures = new WeakSet<object>();
+
+/** Marks a round failure raised while no answer request of that round was in
+ * flight (for example Stop or a compaction failure before a clarified
+ * dispatch). Such a round has no provider usage to report. */
+export function beforeAnswerDispatch<T>(error: T): T {
+  if (typeof error === "object" && error !== null) undispatchedRoundFailures.add(error);
+  return error;
+}
+
+function answerDispatchStarted(error: unknown): boolean {
+  return typeof error !== "object" || error === null || !undispatchedRoundFailures.has(error);
+}
+
 export function providerToolLoopContinuationAfterResult(
   bridge: ProviderToolBridge,
   continuation: ProviderToolLoopContinuation,
@@ -266,14 +280,18 @@ export async function runProviderToolLoop(
           next = await stream.next();
         }
       } catch (error) {
-        try {
-          await input.onUsage?.(lastReportedUsage ?? {}, roundRequest, {
-            completeness: "partial",
-            round
-          });
-        } catch {
-          // Usage persistence is secondary once the provider round has
-          // already failed and must not replace its causal classification.
+        // Only a dispatched answer request has partial usage; a failure before
+        // dispatch must not persist a phantom round with unavailable usage.
+        if (lastReportedUsage !== null || answerDispatchStarted(error)) {
+          try {
+            await input.onUsage?.(lastReportedUsage ?? {}, roundRequest, {
+              completeness: "partial",
+              round
+            });
+          } catch {
+            // Usage persistence is secondary once the provider round has
+            // already failed and must not replace its causal classification.
+          }
         }
         throw error;
       } finally {
