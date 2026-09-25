@@ -284,6 +284,18 @@ function contextCompactionBudgetLimits(request: ProviderRunRequest) {
     : null;
 }
 
+/** Share of the admitted input budget one observed MCP/Workspace result may
+ * take whole. A larger result would leave the newest batch, which masking
+ * never replaces, irreducible on a small window; it keeps its bounded preview. */
+const OBSERVATION_WHOLE_RESULT_BUDGET_SHARE = 0.25;
+
+/** Estimated tokens for that share. An unknown window has no budget that
+ * masking could apply, so only the ordinary persisted result bound (Off) applies. */
+export function observationWholeResultTokens(request: ProviderRunRequest): number {
+  const limits = contextCompactionBudgetLimits(request);
+  return limits ? Math.floor(limits.budgetTokens * OBSERVATION_WHOLE_RESULT_BUDGET_SHARE) : Number.POSITIVE_INFINITY;
+}
+
 function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
   const messages = request.context?.messages;
   const contextTokens = messages?.length

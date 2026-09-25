@@ -5997,6 +5997,42 @@ describe("run execution", () => {
     expect([...observations.rows.values()][0]).toMatchObject({ state: "READY", storageMode: "OBJECT", executionOutcome: "complete" });
   });
 
+  it.each<[number, boolean]>([[400_000, true], [32_768, false]])("delivers a 100 KiB MCP result whole within the admitted share (window %s: whole=%s)",
+    async (contextWindow, whole) => {
+      const name = "mcp_synthetic_records";
+      const mcp: McpRunPlanSnapshot = { version: 1,
+        servers: [{ fingerprint: "a".repeat(64), revisionId: "synthetic-revision", serverId: "synthetic-server", serverName: "Records" }],
+        tools: [{ definitionHash: "b".repeat(64), description: "Read records", inputSchema: { type: "object" },
+          name: "records", namespacedName: name, originalName: "records", serverId: "synthetic-server", serverName: "Records" }] };
+      const body = Array.from({ length: 1_600 }, (_, index) => createHash("sha256").update(`records:${index}`).digest("hex")).join("");
+      const original = { isError: false, structuredContent: null, text: [`${body} rare-tail`], unsupportedContentTypes: [] };
+      const callTool = vi.fn(async () => original);
+      const repository = createRepository();
+      const observations = memoryToolObservations();
+      const requests: ProviderRunRequest[] = [];
+      const base = preparedData({ mcp, modelId: "synthetic-model", provider: "openai" });
+      const modelCapabilities = { ...base.normalizedRequest.modelCapabilities, contextWindow };
+      const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, modelCapabilities, toolObservationVersion: 1 as const },
+        providerRequest: { ...base.providerRequest, modelCapabilities, toolObservationVersion: 1 as const } };
+      const adapter = createAdapter(async function* (request) {
+        requests.push(request);
+        return requests.length === 1
+          ? providerResult({ finalText: "", toolCalls: [{ id: "original", name, arguments: {} }] })
+          : providerResult({ finalText: "done" });
+      });
+      await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+        mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } }), observations: observations.service() }).text();
+      expect(repository.failedRuns).toEqual([]);
+      expect(requests).toHaveLength(2);
+      const transcript = JSON.stringify(requests[1]?.providerToolMessages);
+      // Whole or bounded, the model receives the reader descriptor.
+      expect(transcript).toMatch(/tor1_[a-f0-9]{32}/u);
+      expect(transcript.includes(body)).toBe(whole);
+      expect(transcript.includes("rare-tail")).toBe(whole);
+      expect([...observations.rows.values()]).toEqual([expect.objectContaining({ state: "READY", storageMode: "OBJECT" })]);
+      expect(callTool).toHaveBeenCalledOnce();
+    });
+
   it("keeps a newly accepted Off run on legacy tool execution without capture or reader registration", async () => {
     const name = "mcp_synthetic_records_off";
     const mcp: McpRunPlanSnapshot = { version: 1,

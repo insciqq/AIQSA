@@ -5,16 +5,31 @@ import { getMcpResponseWireLimits } from "../mcp/responseLimits";
 import type { ObservationProducer } from "./repository";
 import { TOOL_OBSERVATION_LIMITS, type ToolObservationSourceBinding } from "./contract";
 import type { createToolObservationService, ToolObservationProjection } from "./service";
-import { boundedSearchToolResultText, searchExecutionsFromToolResult, shortenedSearchToolResultText,
-  type SearchExecutionEvidence } from "../search/toolResult";
+import { boundedRenderedSearchToolResultText, boundedSearchToolResultText, searchExecutionsFromToolResult,
+  shortenedSearchToolResultText, type SearchExecutionEvidence } from "../search/toolResult";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { SEARCH_OBSERVATION_MAX_BYTES, searchObservationOriginal, type SearchObservationOriginal } from "./searchOriginal";
 import { ObservationStoreError } from "./contract";
+import { projectObservationForProvider } from "./projection";
+import { estimateApproxTokens } from "../../domain/contextBudget";
 
 export type ToolObservationService = ReturnType<typeof createToolObservationService>;
-type CaptureContext = Readonly<{ service: ToolObservationService; producer: ObservationProducer; signal?: AbortSignal }>;
+type CaptureContext = Readonly<{
+  service: ToolObservationService;
+  producer: ObservationProducer;
+  signal?: AbortSignal;
+  /** Estimated tokens of the admitted input budget one MCP/Workspace result
+   * may occupy whole (Infinity for an unknown window). Absent, results above
+   * the inline bound keep the bounded preview (the Agent gateway). */
+  wholeResultTokens?: number;
+}>;
+
+/** A larger original is never delivered whole, so a restore reads at most
+ * this much to repeat the live decision. Normalization removes only proven
+ * duplicate representations; in practice the persisted result bound decides. */
+const OBSERVATION_WHOLE_ORIGINAL_BYTES = 4 * toolLoopPersistenceLimits.resultBytes;
 
 export function observationResult(call: Pick<ModelToolCall, "id" | "name">, status: ToolExecutionResult["status"],
   projection: ToolObservationProjection): ToolExecutionResult {
@@ -22,7 +37,23 @@ export function observationResult(call: Pick<ModelToolCall, "id" | "name">, stat
     content: [{ type: "json", value: projection }] };
 }
 
-export { projectObservationForProvider } from "./projection";
+export { projectObservationForProvider };
+
+const wholeOriginalBytes = (context: CaptureContext) => context.wholeResultTokens === undefined
+  ? TOOL_OBSERVATION_LIMITS.inlineBytes : OBSERVATION_WHOLE_ORIGINAL_BYTES;
+
+/** Off parity: the model receives the normalized result whole when its
+ * original is inline-sized, or when Off could settle it whole and it takes at
+ * most the caller's share of the admitted budget. It keeps its descriptor, so
+ * the planner can mask it later and the reader recalls it; otherwise the
+ * bounded preview names the reader. */
+function deliveredWhole(context: CaptureContext, byteSize: number, whole: () => ToolExecutionResult): ToolExecutionResult | null {
+  if (byteSize <= TOOL_OBSERVATION_LIMITS.inlineBytes) return whole();
+  if (context.wholeResultTokens === undefined || byteSize > OBSERVATION_WHOLE_ORIGINAL_BYTES) return null;
+  const result = whole();
+  return snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) &&
+    estimateApproxTokens(projectObservationForProvider(result).content) <= context.wholeResultTokens ? result : null;
+}
 
 export async function captureMcpObservation(context: CaptureContext,
   call: ModelToolCall, sourceBinding: Extract<ToolObservationSourceBinding, { source: "mcp" }>,
@@ -34,10 +65,15 @@ export async function captureMcpObservation(context: CaptureContext,
     const projection = await receipt.store({ original, outcome: original.isError ? "error" : "complete",
       sourceTruncated: false, maskable: original.unsupportedContentTypes.length === 0 });
     // Normalize only after the exact accepted original is durable.
-    return projection.observation.byteSize <= TOOL_OBSERVATION_LIMITS.inlineBytes
-      ? { ...mcpToolExecutionResult(call, original), observation: projection.observation }
-      : observationResult(call, original.isError ? "error" : "complete", projection);
+    return mcpObservationProjection(context, call, original, projection);
   });
+}
+
+function mcpObservationProjection(context: CaptureContext, call: Pick<ModelToolCall, "id" | "name">,
+  original: AiqsaMcpToolCallResult, projection: ToolObservationProjection): ToolExecutionResult {
+  return deliveredWhole(context, projection.observation.byteSize, () =>
+    ({ ...mcpToolExecutionResult({ ...call, arguments: {} }, original), observation: projection.observation })) ??
+    observationResult(call, original.isError ? "error" : "complete", projection);
 }
 
 export async function captureWorkspaceObservation(context: CaptureContext, call: ModelToolCall,
@@ -50,10 +86,17 @@ export async function captureWorkspaceObservation(context: CaptureContext, call:
     const original = { status: result.status, content: result.content, ...(result.rawPreview ? { rawPreview: result.rawPreview } : {}) };
     const projection = await receipt.store({ original, outcome: result.status,
       sourceTruncated: result.rawPreview?.truncated === true, maskable: true });
-    return projection.observation.byteSize <= TOOL_OBSERVATION_LIMITS.inlineBytes
-      ? { ...result, observation: projection.observation }
-      : { ...observationResult(call, result.status, projection), ...(result.artifacts ? { artifacts: result.artifacts } : {}) };
+    return workspaceObservationProjection(context, call, result, projection);
   });
+}
+
+/** Artifacts and the runtime's exit/truncation metadata survive either way. */
+function workspaceObservationProjection(context: CaptureContext, call: Pick<ModelToolCall, "id" | "name">,
+  result: Omit<ToolExecutionResult, "callId" | "name">, projection: ToolObservationProjection): ToolExecutionResult {
+  return deliveredWhole(context, projection.observation.byteSize, () =>
+    ({ ...result, callId: call.id, name: call.name, observation: projection.observation })) ??
+    { ...observationResult(call, result.status, projection), ...(result.rawPreview ? { rawPreview: result.rawPreview } : {}),
+      ...(result.artifacts ? { artifacts: result.artifacts } : {}) };
 }
 
 export async function captureSearchObservation(context: CaptureContext, call: ModelToolCall,
@@ -84,18 +127,23 @@ export const SEARCH_PROJECTION_FINDINGS_BYTES = 64 * 1024;
 /** The model receives the retained canonical Search text: whole whenever it
  * fits an ordinary tool result (always when Off would deliver it), otherwise
  * bounded with the descriptor naming the reader. Engine evidence, available
- * at capture, keeps every numbered source; a restore bounds the text itself. */
+ * at capture, keeps every numbered source; a restore bounds the retained text
+ * and keeps the numbered sources its receipt names. */
 function searchObservationProjection(call: Pick<ModelToolCall, "id" | "name">, value: Readonly<{
   original: SearchObservationOriginal; providerCall: boolean; executions?: readonly SearchExecutionEvidence[];
+  /** A restore's receipt: thread sources without findings. */
+  receipt?: readonly SearchExecutionEvidence[];
 }>, projection: ToolObservationProjection): ToolExecutionResult {
   const envelope = { callId: call.id, name: call.name, status: value.original.status, observation: projection.observation,
     ...(!value.providerCall ? { rawPreview: { providerCall: false } } : {}) };
   const whole: ToolExecutionResult = { ...envelope, content: [...value.original.content] };
   if (snapshotToolExecutionResult(whole, toolLoopPersistenceLimits.resultBytes)) return whole;
+  const text = value.original.content[0].text;
   for (let budget = SEARCH_PROJECTION_FINDINGS_BYTES; budget >= 1024; budget = Math.floor(budget / 2)) {
     const bounded: ToolExecutionResult = { ...envelope, content: [{ type: "text", text: value.executions?.length
       ? boundedSearchToolResultText(value.executions, budget)
-      : shortenedSearchToolResultText(value.original.content[0].text, budget) }] };
+      : (value.receipt && boundedRenderedSearchToolResultText(text, value.receipt, budget)) ??
+        shortenedSearchToolResultText(text, budget) }] };
     if (snapshotToolExecutionResult(bounded, toolLoopPersistenceLimits.resultBytes)) return bounded;
   }
   throw new ObservationStoreError("tool_observation_unavailable");
@@ -118,8 +166,39 @@ export async function captureOwnedObservation(context: CaptureContext, source: "
   });
 }
 
+const record = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
+
+/** The fields of the validated MCP result `captureMcpObservation` retained;
+ * JSON drops an absent structured value. */
+function decodeMcpOriginal(value: unknown): AiqsaMcpToolCallResult | null {
+  if (!record(value)) return null;
+  const { isError, structuredContent = null, text, unsupportedContentTypes } = value;
+  if (typeof isError !== "boolean" || !strings(text) || !strings(unsupportedContentTypes) ||
+    structuredContent !== null && !record(structuredContent)) return null;
+  return { isError, structuredContent, text, unsupportedContentTypes };
+}
+
+/** The Workspace original is the result's status, content and runtime metadata. */
+function decodeWorkspaceOriginal(value: unknown): Omit<ToolExecutionResult, "callId" | "name"> | null {
+  if (!record(value)) return null;
+  const { status, content, rawPreview } = value;
+  if (status !== "complete" && status !== "error" || !Array.isArray(content) ||
+    rawPreview !== undefined && !record(rawPreview)) return null;
+  return { status, content: content as ToolExecutionResult["content"], ...(rawPreview ? { rawPreview } : {}) };
+}
+
+/** An ambiguous recovery repeats the live projection rule from the retained
+ * original. Artifacts were never retained; Workspace restores without them. */
 export async function restoreObservedResult(context: CaptureContext, call: Pick<ModelToolCall, "id" | "name">) {
-  const restored = await context.service.restore(context.producer, context.signal);
-  return restored.search ? searchObservationProjection(call, restored.search, restored.projection)
-    : observationResult(call, restored.status, restored.projection);
+  const restored = await context.service.restore(context.producer, context.signal,
+    { wholeOriginalBytes: wholeOriginalBytes(context) });
+  if (restored.search) return searchObservationProjection(call, restored.search, restored.projection);
+  const source = restored.projection.observation.source;
+  const mcp = source === "mcp" ? decodeMcpOriginal(restored.original) : null;
+  if (mcp) return mcpObservationProjection(context, call, mcp, restored.projection);
+  const workspace = source === "workspace" ? decodeWorkspaceOriginal(restored.original) : null;
+  if (workspace) return workspaceObservationProjection(context, call, workspace, restored.projection);
+  return observationResult(call, restored.status, restored.projection);
 }

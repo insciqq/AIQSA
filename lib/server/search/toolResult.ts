@@ -195,16 +195,24 @@ export function searchExecutionsFromToolResult(
   });
 }
 
-export function searchToolResultText(executions: readonly SearchExecutionEvidence[]): string {
-  const successful = executions.filter((execution) => execution.status === "complete");
+/** The merged numbered source list of the canonical text, or "" without sources. */
+function searchSourcesText(executions: readonly SearchExecutionEvidence[]): string {
   const sources = mergeSearchEvidence(
     executions.map((execution) => execution.optionId),
-    successful.map((execution) => ({
+    executions.filter((execution) => execution.status === "complete").map((execution) => ({
       invocationId: execution.invocationId,
       optionId: execution.optionId,
       sources: execution.sources
     }))
   );
+  return sources.length
+    ? `Sources:\n${sources.map((source, index) =>
+        `${index + 1}. ${source.title} — ${source.url}`).join("\n")}`
+    : "";
+}
+
+export function searchToolResultText(executions: readonly SearchExecutionEvidence[]): string {
+  const successful = executions.filter((execution) => execution.status === "complete");
   const warnings = executions.flatMap((execution) => {
     const warning = execution.failure?.code ?? execution.warning;
     return warning
@@ -215,10 +223,7 @@ export function searchToolResultText(executions: readonly SearchExecutionEvidenc
     ...successful.flatMap((execution) => execution.findings
       ? [`Search source ${JSON.stringify(execution.displayName)}:\n${execution.findings}`]
       : []),
-    sources.length
-      ? `Sources:\n${sources.map((source, index) =>
-          `${index + 1}. ${source.title} — ${source.url}`).join("\n")}`
-      : "",
+    searchSourcesText(executions),
     warnings.length
       ? `Search warnings: ${warnings.map((warning) =>
           `${JSON.stringify(warning.displayName)}: ${warning.warning}`).join("; ")}`
@@ -269,6 +274,29 @@ export function shortenedSearchToolResultText(text: string, maxBytes: number): s
   const prefix = utf8Prefix(text, Math.max(0, Math.floor(maxBytes)));
   return prefix === text ? text
     : `${prefix}\n[Search result shortened here; the complete saved result remains readable.]`;
+}
+
+/** Bound rendered canonical text whose per-engine findings are no longer
+ * separately available (a restore retains the text and the receipt's thread
+ * sources). The findings are shortened as one prefix; the numbered source list
+ * rendered from those sources, and the warnings after it, stay whole. Null
+ * when the text does not end with exactly that list (for example a receipt
+ * whose trailing sources were dropped to stay bounded). */
+export function boundedRenderedSearchToolResultText(
+  text: string,
+  executions: readonly SearchExecutionEvidence[],
+  maxFindingsBytes: number
+): string | null {
+  const sources = searchSourcesText(executions);
+  if (!sources) return null;
+  const found = text.lastIndexOf(`\n\n${sources}`);
+  const start = found >= 0 ? found + 2 : text.startsWith(sources) ? 0 : -1;
+  if (start < 0) return null;
+  // Warnings are a single line; nothing else may follow the source list.
+  const tail = text.slice(start + sources.length);
+  if (tail && !/^\n\nSearch warnings: [^\n]*$/u.test(tail)) return null;
+  return start === 0 ? text
+    : `${shortenedSearchToolResultText(text.slice(0, start - 2), maxFindingsBytes)}\n\n${text.slice(start)}`;
 }
 
 export function searchToolResultContent(

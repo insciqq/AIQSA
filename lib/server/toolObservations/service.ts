@@ -8,7 +8,7 @@ import { measureObservationJson, observationJsonStream, OBSERVATION_ENCODING } f
 import { decodeToolObservationDescriptor, decodeToolObservationReadInput, toolObservationCursor, ObservationStoreError,
   TOOL_OBSERVATION_LIMITS, type ToolObservationDescriptor, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
 import type { ObservationActor, ObservationProducer, createToolObservationRepository } from "./repository";
-import { readSearchOriginal } from "./searchOriginal";
+import { readObservationOriginal, readSearchOriginal } from "./searchOriginal";
 import { decodeSearchObservationReceipt, searchObservationReceipt } from "./searchReceipt";
 import type { ToolExecutionResult } from "../tools/types";
 
@@ -290,8 +290,11 @@ export function createToolObservationService(input: Readonly<{
     },
 
     /** Recover the immutable receipt after READY but before call settlement.
-     * Neither a missing reservation nor an unfinished upload is replayable. */
-    async restore(producer: ObservationProducer, signal?: AbortSignal) {
+     * Neither a missing reservation nor an unfinished upload is replayable.
+     * An MCP/Workspace original of at most `wholeOriginalBytes` is also read
+     * whole, so the caller can repeat its live projection rule. */
+    async restore(producer: ObservationProducer, signal?: AbortSignal,
+      options: Readonly<{ wholeOriginalBytes?: number }> = {}) {
       signal?.throwIfAborted();
       const row = await repository.readProducer(producer);
       if (row.state !== "READY") throw unavailable();
@@ -309,12 +312,21 @@ export function createToolObservationService(input: Readonly<{
           const readSignal = boundedSignal(signal);
           return readSearchOriginal({ body: await bodyFor(row, reference, readSignal, producer), identity: reference, signal: readSignal });
         }, { ...(signal ? { signal } : {}), whenBusy: "wait", wholeOriginal: true }) } : undefined;
+      const original = (row.sourceKind === "mcp" || row.sourceKind === "workspace") &&
+        options.wholeOriginalBytes !== undefined && reference.byteSize <= options.wholeOriginalBytes
+        ? { value: await readPhase(row, reference, async () => {
+            const readSignal = boundedSignal(signal);
+            return readObservationOriginal({ body: await bodyFor(row, reference, readSignal, producer), identity: reference, signal: readSignal });
+          }, { ...(signal ? { signal } : {}), whenBusy: "wait", wholeOriginal: true }) } : undefined;
       const after = await repository.readProducer(producer);
       if (after.state !== "READY" || after.checksum !== reference.checksum) throw unavailable();
+      // Its thread sources let a bounded Search restore keep every numbered source.
+      const receipt = search && row.executionReceipt !== null ? decodeSearchObservationReceipt(row.executionReceipt) : null;
       return { status: row.executionOutcome === "error" ? "error" as const : "complete" as const,
         projection: { observation: reference, fragmentKind: "serialized_json_text" as const, preview: preview.fragment,
           incomplete: !preview.completeDocument, reader: "read_tool_result" as const },
-        ...(search ? { search } : {}) };
+        ...(search ? { search: { ...search, ...(receipt ? { receipt: receipt.executions } : {}) } } : {}),
+        ...(original ? { original: original.value } : {}) };
     },
 
     /** Usage and thread sources come only from the immutable receipt, never
