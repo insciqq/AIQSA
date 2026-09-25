@@ -10,6 +10,8 @@ import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVI
 import { summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { freezeSkillManifest } from "../skills/runManifest";
+import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
+import { INITIAL_PROVIDER_CONTINUATION, parseToolLoopCheckpoint } from "./toolLoopPersistence";
 
 function activityStore() {
   const rows: { eventType: string; payload: unknown; sequence: number }[] = [];
@@ -1271,4 +1273,103 @@ it("persists and replays a retirement receipt through the bounded snapshot witho
   expect(stored.entries[0]?.command?.exitCode).toBeUndefined();
   expect(summarizeMessageRunWorkspaceActivity({ events: rows, status: "complete" })).toEqual(stored);
   expect(rows.filter(row => row.eventType === WORKSPACE_ACTIVITY_RECEIPT)).toHaveLength(2);
+});
+
+describe("Prisma context summary receipts", () => {
+  const compaction: ContextCompactionCheckpoint = {
+    branchId: "message-current", followupDigest: "e".repeat(64), followupRevision: 0,
+    measurement: { afterTokens: 300, beforeTokens: 300, budgetTokens: 200, legacyFallback: false,
+      maskedBatches: 0, maskedObservations: 0, outcome: "needs_summary", version: 1 },
+    observationRefs: [], ownerId: "user-1", pinDigest: "f".repeat(64), policyRevision: "hybrid-v1",
+    providerProjectionRevision: 1, recentTailCallIds: [], runId: "run-1", sourceDigest: "1".repeat(64), version: 1
+  };
+  const attempt = (state: ContextSummaryAttempt["state"]): ContextSummaryAttempt => ({
+    attempt: 1, bindingDigest: "c".repeat(64), id: `csa1_${"1".repeat(32)}`, sourceDigest: "b".repeat(64), state,
+    ...(state === "claim" ? {} : { usage: { inputTokens: 900, outputTokens: 40, totalTokens: 940 } })
+  });
+  const summary: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Derived notes.",
+    sourceDigest: "b".repeat(64), sourceRefs: ["message-old"] };
+  const usage = { cachedInputTokens: 0, cacheWriteInputTokens: 0, completeness: "complete" as const,
+    inputTokens: 900, outputTokens: 40, reasoningTokens: 0, totalTokens: 940 };
+
+  function harness(initial: Readonly<{ status?: string; providerResponseId?: string | null }> = {}) {
+    const run = { assistantMessageId: "assistant-1", errorPayload: null, followupRevision: 0,
+      providerResponseId: initial.providerResponseId ?? null, status: initial.status ?? "streaming", toolLoopState: null as unknown };
+    const usageRows: unknown[] = [];
+    const tx = {
+      // The settlement-scope lookup finds no chat in this fake; the run lock returns the row.
+      $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) =>
+        (query.strings ?? []).join("").includes("JOIN \"Chat\"") ? [] : [{ ...run }]),
+      modelRun: {
+        update: vi.fn(async ({ data }: { data: { toolLoopState?: unknown } }) => {
+          if (data.toolLoopState !== undefined) run.toolLoopState = data.toolLoopState;
+        }),
+        updateMany: vi.fn(async ({ data }: { data: { toolLoopState?: unknown } }) => {
+          if (run.status === "complete") return { count: 0 };
+          if (data.toolLoopState !== undefined) run.toolLoopState = data.toolLoopState;
+          return { count: 1 };
+        })
+      },
+      usageEvent: {
+        createMany: vi.fn(async ({ data }: { data: unknown[] }) => { usageRows.push(...data); }),
+        deleteMany: vi.fn(async () => { usageRows.splice(0); })
+      }
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      $transaction: async (consume: (client: typeof tx) => Promise<unknown>) => consume(tx)
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const record = (receipt: Readonly<{ attempt: ContextSummaryAttempt; summary?: ContextSummary; roundIndex?: number | null }>,
+      attributions = [] as { modelId: string; operationCount: number; provider: string; usage: typeof usage }[]) =>
+      operations.recordRunUsageEvents({ chatId: "chat-1", runId: "run-1", userId: "user-1", usageAttributions: attributions,
+        contextSummaryReceipt: { attempt: receipt.attempt, compaction, roundIndex: receipt.roundIndex === undefined ? 1 : receipt.roundIndex,
+          ...(receipt.summary ? { summary: receipt.summary } : {}) } });
+    return { operations, record, run, tx, usageRows };
+  }
+
+  it("claims the first round's summary before its begin, then settles with usage in one write", async () => {
+    const store = harness();
+    await expect(store.record({ attempt: attempt("claim") })).resolves.toBe(true);
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)).toMatchObject({ phase: "provider_running", roundIndex: 1,
+      providerContinuation: INITIAL_PROVIDER_CONTINUATION, contextCompaction: { summaryAttempts: [attempt("claim")] } });
+    await expect(store.record({ attempt: attempt("committed"), summary },
+      [{ modelId: "answer-model", operationCount: 1, provider: "openai", usage }])).resolves.toBe(true);
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)?.contextCompaction)
+      .toMatchObject({ summary, summaryAttempts: [attempt("committed")] });
+    expect(store.usageRows).toEqual([expect.objectContaining({ inputTokens: 900, modelId: "answer-model", totalTokens: 940 })]);
+    // The round's begin adopts the receipts instead of conflicting with them.
+    await expect(store.operations.beginToolLoopProviderRound({
+      contextCompaction: { ...compaction, measurement: { ...compaction.measurement, outcome: "already_fits" }, summary,
+        summaryAttempts: [attempt("committed")] },
+      providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: "run-1", userId: "user-1"
+    })).resolves.toBe("started");
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)?.contextCompaction).toMatchObject({
+      measurement: { outcome: "already_fits" }, summary, summaryAttempts: [attempt("committed")] });
+  });
+
+  it("refuses a claim for an inactive run but still settles incurred usage after Stop", async () => {
+    const store = harness();
+    await store.record({ attempt: attempt("claim") });
+    store.run.status = "cancelled";
+    await expect(store.record({ attempt: { ...attempt("claim"), attempt: 2, id: `csa1_${"2".repeat(32)}` } })).resolves.toBe(false);
+    await expect(store.record({ attempt: attempt("unknown") },
+      [{ modelId: "answer-model", operationCount: 1, provider: "openai", usage }])).resolves.toBe(true);
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)?.contextCompaction?.summaryAttempts).toEqual([attempt("unknown")]);
+  });
+
+  it("rejects a settlement without its claim and a begin after a provider response", async () => {
+    const store = harness();
+    await expect(store.record({ attempt: attempt("committed"), summary })).resolves.toBe(false);
+    expect(store.run.toolLoopState).toBeNull();
+    await store.record({ attempt: attempt("claim") });
+    store.run.providerResponseId = "response-1";
+    await expect(store.operations.beginToolLoopProviderRound({
+      contextCompaction: compaction, providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: "run-1", userId: "user-1"
+    })).resolves.toBe("conflict");
+  });
+
+  it("records usage only for a dispatch outside the tool loop", async () => {
+    const store = harness();
+    await expect(store.record({ attempt: attempt("claim"), roundIndex: null })).resolves.toBe(true);
+    expect(store.run.toolLoopState).toBeNull();
+  });
 });

@@ -15,7 +15,8 @@ import { projectObservationForProvider } from "../toolObservations/projection";
 import type { ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { conversationContextPolicy, type ContextObservation } from "./contextCompactionContract";
 import { contextObservationsFromResults } from "./contextCompactionPlanner";
-import { createContextCompactionPublisher, prepareCompactedProviderRequest } from "./contextCompactionEvents";
+import { prepareCompactedProviderRequest } from "./contextCompactionConsumer";
+import { createContextCompactionPublisher } from "./contextCompactionEvents";
 import { runProviderToolLoop } from "./providerToolLoop";
 import { createRunFollowupExecution, requestWithoutRunFollowups, requestWithRunFollowups, RunFollowupChanged } from "./runFollowupExecution";
 import { notifyRunFollowup } from "./runFollowupRegistry";
@@ -178,7 +179,7 @@ describe("in-run clarification execution", () => {
     // create headroom once the older observation has been masked.
     const turn = (id: string, role: "assistant" | "user", text: string) => ({ content: { blocks: [{ text, type: "text" }] }, id, role });
     const messages = [
-      turn("message-old", "user", "old source"), turn("reply-old", "assistant", "Noted."),
+      turn("message-old", "user", `old source ${"o".repeat(1_200)}`), turn("reply-old", "assistant", "Noted."),
       turn("message-2", "user", "Second question."), turn("reply-2", "assistant", "Answered."),
       turn("message-3", "user", "Third question."), turn("reply-3", "assistant", "Answered."),
       turn("message-current", "user", "current request")
@@ -235,7 +236,7 @@ describe("in-run clarification execution", () => {
       bridge: openAIResponsesToolBridge,
       failure: (code, message) => Object.assign(new Error(message), { code }),
       observations,
-      onSummaryUsage: () => undefined,
+      receipts: { claim: async () => undefined, settle: async () => undefined },
       publisher,
       request: merged,
       signal,

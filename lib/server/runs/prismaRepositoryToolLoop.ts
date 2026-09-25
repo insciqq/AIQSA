@@ -64,6 +64,9 @@ import {
   KNOWLEDGE_MAXIMUM_SEARCHES_MINIMUM
 } from "../knowledge/answerPolicy";
 import {
+  checkpointAdoptingSummaryReceipts,
+  checkpointWithContextSummaryReceipt,
+  mergeContextCompactionReceipts,
   parseToolLoopCheckpoint,
   AUTOMATIC_KNOWLEDGE_CALL_PREFIX,
   snapshotToolLoopJson,
@@ -1157,16 +1160,21 @@ export function createPrismaRunToolLoopOperations(
         if (!run) return "not_found" as const;
         if (run.status === "cancelled") return "cancelled" as const;
         if (!activeToolLoopRun(run)) return "conflict" as const;
+        let next = checkpoint;
         if (run.toolLoopState !== null) {
           const current = parseToolLoopCheckpoint(run.toolLoopState);
-          return current && sameCheckpoint(current, checkpoint)
-            ? "reused" as const
-            : "conflict" as const;
+          if (current && sameCheckpoint(current, checkpoint)) return "reused" as const;
+          // The round's own compaction may have written summary receipts
+          // before this begin; they are kept, never replaced.
+          const adopted = current && run.providerResponseId === null
+            ? checkpointAdoptingSummaryReceipts(current, checkpoint) : null;
+          if (!adopted) return "conflict" as const;
+          next = adopted;
         }
         await tx.modelRun.update({
           data: {
             providerResponseId: null,
-            toolLoopState: json(checkpoint)
+            toolLoopState: json(next)
           },
           where: { id: input.runId }
         });
@@ -1801,13 +1809,12 @@ export function createPrismaRunToolLoopOperations(
         if (!activeToolLoopRun(run)) return { kind: "conflict" as const };
         const current = parseToolLoopCheckpoint(run.toolLoopState);
         if (!current) return { kind: "conflict" as const };
+        // Durable summary receipts never regress to an older projection.
+        const contextCompaction = mergeContextCompactionReceipts(current.contextCompaction, input.contextCompaction);
+        if (contextCompaction === null) return { kind: "conflict" as const };
         const pendingCheckpoint = toolLoopCheckpoint({
           answerRoundUsage: current.answerRoundUsage,
-          ...(input.contextCompaction
-            ? { contextCompaction: input.contextCompaction }
-            : current.contextCompaction
-              ? { contextCompaction: current.contextCompaction }
-              : {}),
+          ...(contextCompaction ? { contextCompaction } : {}),
           phase: "tools_pending",
           providerContinuation: input.providerContinuation,
           providerCursor: input.providerCursor,
@@ -1915,7 +1922,7 @@ export function createPrismaRunToolLoopOperations(
         usageAccountedToolCallIds.some((id) => !id.trim())) {
         return false;
       }
-      if (input.usageAttributions.length === 0 && !input.answerRoundUsage &&
+      if (input.usageAttributions.length === 0 && !input.answerRoundUsage && !input.contextSummaryReceipt &&
         usageAccountedToolCallIds.length === 0) {
         return false;
       }
@@ -1945,15 +1952,25 @@ export function createPrismaRunToolLoopOperations(
           });
           if (calls.length !== usageAccountedToolCallIds.length) return false;
         }
-        const nextCheckpoint = input.answerRoundUsage
-          ? (() => {
-              const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
-              return checkpoint
-                ? upsertAnswerRoundUsage(checkpoint, input.answerRoundUsage)
-                : null;
-            })()
-          : undefined;
-        if (input.answerRoundUsage && !nextCheckpoint) return false;
+        let nextCheckpoint: ToolLoopCheckpoint | null | undefined;
+        if (input.answerRoundUsage || input.contextSummaryReceipt) {
+          nextCheckpoint = parseToolLoopCheckpoint(run.toolLoopState);
+          if (run.toolLoopState !== null && !nextCheckpoint) return false;
+          if (input.answerRoundUsage) {
+            nextCheckpoint = nextCheckpoint ? upsertAnswerRoundUsage(nextCheckpoint, input.answerRoundUsage) : null;
+            if (!nextCheckpoint) return false;
+          }
+          const receipt = input.contextSummaryReceipt;
+          if (receipt) {
+            // A claim authorizes paid dispatch: only an active run may make one.
+            // Settlement records incurred usage even after Stop.
+            if ((receipt.attempt.state === "claim" || receipt.attempt.state === "dispatched") && !activeToolLoopRun(run)) return false;
+            if (receipt.roundIndex !== null) {
+              nextCheckpoint = checkpointWithContextSummaryReceipt(nextCheckpoint ?? null, receipt);
+              if (!nextCheckpoint) return false;
+            }
+          }
+        }
 
         const updatedRun = await tx.modelRun.updateMany({
           data: {

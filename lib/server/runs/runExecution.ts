@@ -192,6 +192,7 @@ import {
 import {
   snapshotToolLoopJson,
   toolLoopPersistenceLimits,
+  type ContextSummaryReceiptWrite,
   type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
   type ToolLoopJsonValue
@@ -216,12 +217,16 @@ import { CodexProtocolError } from "../agents/codexProtocol";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
-  applyKnowledgeAnswerContextBudget,
   contextCompactionArtifact,
   contextCompactionFailureOutcome,
-  createContextCompactionPublisher,
-  prepareCompactedProviderRequest
+  createContextCompactionPublisher
 } from "./contextCompactionEvents";
+import {
+  applyKnowledgeAnswerContextBudget,
+  observationSourceAvailability,
+  prepareCompactedProviderRequest
+} from "./contextCompactionConsumer";
+import type { ContextSummaryReceipts } from "./contextCompactionSummarizer";
 import {
   normalizeWorkspaceProviderToolName,
   workspaceToolNameFromNamespaced
@@ -856,11 +861,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       async function persistReportedUsageForIncompleteRun(
-        answerRoundUsage?: PersistedAnswerRoundUsage
+        answerRoundUsage?: PersistedAnswerRoundUsage,
+        contextSummaryReceipt?: ContextSummaryReceiptWrite
       ): Promise<void> {
         if (answerPublished) return;
         const grouped = groupedUsageAttributions(reportedUsageAttributions);
-        if (grouped.length === 0 && !answerRoundUsage && usageAccountedToolCallIds.size === 0) {
+        if (grouped.length === 0 && !answerRoundUsage && !contextSummaryReceipt && usageAccountedToolCallIds.size === 0) {
           return;
         }
 
@@ -868,12 +874,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const recorded = await input.repository.recordRunUsageEvents({
           ...(answerRoundUsage ? { answerRoundUsage } : {}),
           chatId: normalizedRequest.chatId,
+          ...(contextSummaryReceipt ? { contextSummaryReceipt } : {}),
           runId,
           usageAccountedToolCallIds: [...usageAccountedToolCallIds],
           usageAttributions,
           userId: input.userId
         }).catch(error => { throw new RunSettlementError("accounting", error); });
-        if ((answerRoundUsage || usageAccountedToolCallIds.size > 0) && !recorded) {
+        if ((answerRoundUsage || contextSummaryReceipt || usageAccountedToolCallIds.size > 0) && !recorded) {
           throw new RunPipelineError(
             "tool_loop_usage_checkpoint_conflict",
             "Provider-round usage could not be checkpointed"
@@ -1729,6 +1736,28 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         emitTransient(controller, encoder, event);
       }
 
+      /** The tool-loop round whose dispatch the consumer prepares; null outside the loop. */
+      let compactionRound: number | null = null;
+
+      /** Durable claim before each paid summary call and settlement with its
+       * usage, through the run's checkpoint/accounting owner. */
+      function summaryReceipts(request: ProviderRunRequest): ContextSummaryReceipts {
+        const write = (receipt: Omit<ContextSummaryReceiptWrite, "compaction" | "roundIndex">) =>
+          persistReportedUsageForIncompleteRun(undefined, {
+            ...receipt,
+            compaction: contextCompactionCheckpoint({ ownerId: input.userId, request, runId,
+              ...(request.contextCompaction ? { measurement: request.contextCompaction } : {}) }),
+            roundIndex: compactionRound
+          });
+        return {
+          claim: attempt => write({ attempt }),
+          async settle(attempt, usage, summary) {
+            rememberReportedUsage(request.provider, request.modelId, usage);
+            await write({ attempt, ...(summary ? { summary } : {}) });
+          }
+        };
+      }
+
       /** The run's single compaction consumer; see prepareCompactedProviderRequest. */
       async function compactAnswerRequest(
         request: ProviderRunRequest,
@@ -1746,13 +1775,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(bridge ? { bridge } : {}),
           failure: (code, message) => new RunPipelineError(code, message),
           observations: runObservations(),
-          onSummaryUsage(usage, source) {
-            rememberReportedUsage(source.provider, source.modelId, usage);
-          },
           onTruncation: truncation => emit(controller, encoder, input.repository, runId, contextTruncationArtifact(truncation)),
           publisher: compactionPublisher,
+          receipts: summaryReceipts(request),
           request,
           signal: dispatchSignal,
+          sourceAvailable: observationSourceAvailability(observationService, { runId, userId: input.userId }),
           // Reuse the authorized egress, without treating this internal request
           // as a steerable answer, the session context or a follow-up gate.
           summaryAdapter: { stream: (summaryRequest, options) => streamAnswerProviderDispatch(
@@ -2919,6 +2947,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               : currentRequest;
             // Measure this round's actual messages, then decide. The request
             // becomes the round, session and checkpoint request.
+            compactionRound = round;
             sessionRequest = await compactAnswerRequest(requestForBudget, toolBridge, signal);
             return sessionRequest;
           },
