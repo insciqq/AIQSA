@@ -41,7 +41,9 @@ export async function executeReadToolResult(
       ? error.code : "tool_observation_unavailable";
     return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
       code, message: code === "tool_observation_selector_invalid" ? "Use the bounded selector and original handle returned by the tool."
-        : "The saved result is unavailable to this run. This does not mean the original operation failed or permit executing it again."
+        // Transient load only: the saved result and its handle stay valid.
+        : code === "tool_observation_busy" ? "Saved tool results are temporarily busy. Retry the same read shortly."
+          : "The saved result is unavailable to this run. This does not mean the original operation failed or permit executing it again."
     } }] };
   }
 }

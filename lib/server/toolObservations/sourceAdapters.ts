@@ -5,11 +5,12 @@ import { getMcpResponseWireLimits } from "../mcp/responseLimits";
 import type { ObservationProducer } from "./repository";
 import { TOOL_OBSERVATION_LIMITS, type ToolObservationSourceBinding } from "./contract";
 import type { createToolObservationService, ToolObservationProjection } from "./service";
-import { boundedSearchToolResultText, compactSearchToolExecutionResult, searchExecutionsFromToolResult } from "../search/toolResult";
+import { boundedSearchToolResultText, searchExecutionsFromToolResult, shortenedSearchToolResultText,
+  type SearchExecutionEvidence } from "../search/toolResult";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
-import { SEARCH_OBSERVATION_MAX_BYTES } from "./searchAccounting";
+import { SEARCH_OBSERVATION_MAX_BYTES, searchObservationOriginal, type SearchObservationOriginal } from "./searchOriginal";
 import { ObservationStoreError } from "./contract";
 
 export type ToolObservationService = ReturnType<typeof createToolObservationService>;
@@ -67,34 +68,34 @@ export async function captureSearchObservation(context: CaptureContext, call: Mo
       throw error;
     }
     const noProviderCall = result.rawPreview?.providerCall === false;
+    // The receipt owns usage and thread sources; the original is model-facing.
     if (!noProviderCall) await receipt.recordSearch(result);
-    const original = compactSearchToolExecutionResult(result);
+    const original = searchObservationOriginal(result);
     if (!original) throw new ObservationStoreError("tool_observation_unavailable");
     const projection = await receipt.store({ original, outcome: result.status, sourceTruncated: false, maskable: true });
-    return searchObservationProjection(call, result, projection);
+    return searchObservationProjection(call, { original, providerCall: !noProviderCall,
+      executions: searchExecutionsFromToolResult(result) }, projection);
   });
 }
 
-/** Findings budget for a Search result that Off could not deliver whole. */
+/** Findings budget for a Search result too large to deliver whole. */
 export const SEARCH_PROJECTION_FINDINGS_BYTES = 64 * 1024;
 
-/** The model receives the Search owner's canonical text, never the retained
- * compact original with its invocation, revision, usage or cost fields. When
- * Off would deliver the canonical result unchanged, the text is identical.
- * Otherwise the same text is bounded and the descriptor names the reader. */
-function searchObservationProjection(call: Pick<ModelToolCall, "id" | "name">, result: ToolExecutionResult,
-  projection: ToolObservationProjection): ToolExecutionResult {
-  const envelope = { callId: call.id, name: call.name, status: result.status, observation: projection.observation,
-    ...(result.rawPreview?.providerCall === false ? { rawPreview: { providerCall: false } } : {}) };
-  const executions = searchExecutionsFromToolResult(result);
-  // A non-canonical Search result, such as an exhausted invocation budget, is
-  // already its own bounded model text and carries no engine evidence.
-  if (!executions.length || snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)) {
-    return { ...envelope, content: result.content };
-  }
+/** The model receives the retained canonical Search text: whole whenever it
+ * fits an ordinary tool result (always when Off would deliver it), otherwise
+ * bounded with the descriptor naming the reader. Engine evidence, available
+ * at capture, keeps every numbered source; a restore bounds the text itself. */
+function searchObservationProjection(call: Pick<ModelToolCall, "id" | "name">, value: Readonly<{
+  original: SearchObservationOriginal; providerCall: boolean; executions?: readonly SearchExecutionEvidence[];
+}>, projection: ToolObservationProjection): ToolExecutionResult {
+  const envelope = { callId: call.id, name: call.name, status: value.original.status, observation: projection.observation,
+    ...(!value.providerCall ? { rawPreview: { providerCall: false } } : {}) };
+  const whole: ToolExecutionResult = { ...envelope, content: [...value.original.content] };
+  if (snapshotToolExecutionResult(whole, toolLoopPersistenceLimits.resultBytes)) return whole;
   for (let budget = SEARCH_PROJECTION_FINDINGS_BYTES; budget >= 1024; budget = Math.floor(budget / 2)) {
-    const bounded: ToolExecutionResult = { ...envelope,
-      content: [{ type: "text", text: boundedSearchToolResultText(executions, budget) }] };
+    const bounded: ToolExecutionResult = { ...envelope, content: [{ type: "text", text: value.executions?.length
+      ? boundedSearchToolResultText(value.executions, budget)
+      : shortenedSearchToolResultText(value.original.content[0].text, budget) }] };
     if (snapshotToolExecutionResult(bounded, toolLoopPersistenceLimits.resultBytes)) return bounded;
   }
   throw new ObservationStoreError("tool_observation_unavailable");

@@ -254,12 +254,18 @@ describe("durable tool observation ownership", () => {
       status: "complete", content: searchToolResultContent([execution]),
       rawPreview: { searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: [execution] } }));
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { state: "complete" } });
-    expect((await service.read(run.actor, { handle: result.observation!.handle })).observation.source).toBe("search");
+    const saved = await service.read(run.actor, { handle: result.observation!.handle, query: "Sources:" });
+    expect(saved.observation.source).toBe("search");
+    // Model recall serves only the canonical text; identifiers stay in the receipt.
+    expect(saved.fragment).toContain("1. Synthetic source — https://example.com/synthetic");
+    for (const internal of [revision.id, option.optionId, producer.toolCallId, "inputTokens"]) expect(saved.fragment).not.toContain(internal);
     await prisma.accessGrant.delete({ where: { id: grant.id } });
     await expect(service.read(run.actor, { handle: result.observation!.handle })).rejects.toThrow("tool_observation_unavailable");
     f.storage.objects.clear();
     await prisma.modelRun.update({ where: { id: run.id }, data: { status: "cancelled" } });
-    expect((await service.searchAccounting(producer))[0]?.usage.totalTokens).toBe(11);
+    const [accounting] = await service.searchAccounting(producer);
+    expect(accounting).toMatchObject({ revisionId: revision.id, usage: { totalTokens: 11 },
+      sources: [{ rank: 1, title: "Synthetic source", url: "https://example.com/synthetic", snippet: "Accepted snippet" }] });
     const row = await prisma.toolObservation.findUniqueOrThrow({ where: { toolCallId: producer.toolCallId } });
     expect(JSON.stringify(row.executionReceipt)).not.toContain("xxxx");
     await expect(prisma.toolObservation.update({ where: { id: row.id }, data: { executionReceipt: { changed: true } } })).rejects.toThrow();
