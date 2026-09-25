@@ -7,15 +7,22 @@ import type { NormalizedSearchPlanOption, ProviderAdapter, ProviderConversationM
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
-import { CONTEXT_COMPACTION_LIMITS, conversationContextPolicy } from "./contextCompactionContract";
+import {
+  CONTEXT_COMPACTION_LIMITS,
+  CONTEXT_SUMMARY_NOT_DISPATCHED,
+  CONTEXT_SUMMARY_REFS_INCOMPLETE,
+  conversationContextPolicy
+} from "./contextCompactionContract";
 import { contextObservationsFromResults } from "./contextCompactionPlanner";
 import {
   applyContextSummaryToRequest,
   applyReusedContextSummary,
   contextSummaryIsCurrent,
   contextSummarySource,
+  contextSummarySourceRevision,
   ContextSummaryError,
   executeContextSummary,
+  type ContextSummaryAdapter,
   type ContextSummaryReceipts
 } from "./contextCompactionSummarizer";
 
@@ -70,15 +77,17 @@ function adapter(outputs: readonly Output[], calls: ProviderRunRequest[], log: s
 
 function receipts(log: string[] = []) {
   const claims: ContextSummaryAttempt[] = [];
-  const settled: Array<{ attempt: ContextSummaryAttempt; summary?: ContextSummary; usage: NormalizedTokenUsage }> = [];
+  const dispatched: ContextSummaryAttempt[] = [];
+  const settled: Array<{ attempt: ContextSummaryAttempt; summary?: ContextSummary; usage: NormalizedTokenUsage | null }> = [];
   const hooks: ContextSummaryReceipts = {
     async claim(attempt) { claims.push(attempt); log.push(`claim:${attempt.attempt}`); },
+    async dispatch(attempt) { dispatched.push(attempt); log.push(`dispatched:${attempt.attempt}`); },
     async settle(attempt, usage, summary) {
       settled.push({ attempt, usage, ...(summary ? { summary } : {}) });
       log.push(`settle:${attempt.state}:${attempt.attempt}`);
     }
   };
-  return { claims, hooks, settled };
+  return { claims, dispatched, hooks, settled };
 }
 
 const json = (notes: string, sourceRefs: readonly string[] = []) => JSON.stringify({ notes, sourceRefs });
@@ -204,7 +213,7 @@ describe("context compaction summarizer", () => {
       receipts: recorded.hooks,
       request: request()
     });
-    expect(log).toEqual(["claim:1", "dispatch", "settle:committed:1"]);
+    expect(log).toEqual(["claim:1", "dispatched:1", "dispatch", "settle:committed:1"]);
     expect(recorded.claims[0]).toMatchObject({ attempt: 1, state: "claim", sourceDigest: summarized.summary.sourceDigest });
     expect(recorded.claims[0]?.id).toBe(recorded.settled[0]?.attempt.id);
     expect(recorded.settled[0]).toMatchObject({ attempt: { usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
@@ -233,7 +242,7 @@ describe("context compaction summarizer", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it.each(["claim", "unknown"] as const)("never repeats a %s call for the same source", async state => {
+  it.each(["claim", "dispatched", "unknown"] as const)("never repeats a %s call for the same source", async state => {
     const source = request();
     const calls: ProviderRunRequest[] = [];
     const recorded = receipts();
@@ -258,6 +267,128 @@ describe("context compaction summarizer", () => {
     expect(failure).not.toBeInstanceOf(ContextSummaryError);
     expect(recorded.settled).toEqual([expect.objectContaining({ attempt: expect.objectContaining({ state: "unknown" }),
       usage: expect.objectContaining({ completeness: "partial", inputTokens: 7 }) })]);
+  });
+
+  describe("dispatch receipts", () => {
+    /** Mirrors the run's summary egress: authority and egress checks, then the
+     * dispatched mark, then the provider request. */
+    function egress(log: string[], calls: ProviderRunRequest[], check: () => void = () => undefined): ContextSummaryAdapter {
+      return {
+        reportsDispatch: true,
+        async *stream(next, options) {
+          check();
+          log.push("checked");
+          await options?.beforeDispatch?.();
+          calls.push(next);
+          log.push("dispatch");
+          const output = json("bounded notes", ["message-old"]);
+          yield { data: { delta: output }, type: "token" };
+          yield { data: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, type: "usage" };
+          return { finalProviderResponsePreview: {}, finalText: output, usage: {} };
+        }
+      };
+    }
+
+    it("marks the call dispatched after the pre-dispatch checks and immediately before the provider request", async () => {
+      const log: string[] = [];
+      const recorded = receipts(log);
+      await executeContextSummary({ adapter: egress(log, []), receipts: recorded.hooks, request: request() });
+      expect(log).toEqual(["claim:1", "checked", "dispatched:1", "dispatch", "settle:committed:1"]);
+      expect(recorded.dispatched).toEqual([expect.objectContaining({ attempt: 1, id: recorded.claims[0]!.id, state: "dispatched" })]);
+      expect(recorded.dispatched[0]).not.toHaveProperty("usage");
+    });
+
+    it("settles a refusal before dispatch without usage or an operation and keeps the owner's error", async () => {
+      const log: string[] = [];
+      const calls: ProviderRunRequest[] = [];
+      const recorded = receipts(log);
+      const denied = Object.assign(new Error("model gone"), { code: "model_not_available" });
+      await expect(executeContextSummary({ adapter: egress(log, calls, () => { throw denied; }), receipts: recorded.hooks, request: request() }))
+        .rejects.toBe(denied);
+      expect(calls).toHaveLength(0);
+      expect(recorded.dispatched).toHaveLength(0);
+      expect(recorded.settled).toEqual([{ attempt: expect.objectContaining({ attempt: 1, state: "failed" }), usage: null }]);
+      expect(recorded.settled[0]!.attempt).not.toHaveProperty("usage");
+    });
+
+    it("never commits notes whose stream completed as Stop landed, but keeps the call's usage", async () => {
+      const controller = new AbortController();
+      const recorded = receipts();
+      const late: ContextSummaryAdapter = { async *stream() {
+        const output = json("bought after Stop", ["message-old"]);
+        yield { data: { delta: output }, type: "token" };
+        yield { data: { inputTokens: 9, outputTokens: 3, totalTokens: 12 }, type: "usage" };
+        controller.abort();
+        return { finalProviderResponsePreview: {}, finalText: output, usage: {} };
+      } };
+      const failure = await executeContextSummary({ adapter: late, receipts: recorded.hooks, request: request(), signal: controller.signal })
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({ name: "AbortError" });
+      expect(recorded.settled).toEqual([{ attempt: expect.objectContaining({ state: "settled",
+        usage: { inputTokens: 9, outputTokens: 3, totalTokens: 12 } }), usage: expect.objectContaining({ inputTokens: 9, outputTokens: 3 }) }]);
+    });
+
+    it("buys the summary with a later claim after a claim recovery found never sent", async () => {
+      const source = request();
+      const calls: ProviderRunRequest[] = [];
+      const recorded = receipts();
+      const notSent: ContextSummaryAttempt = { attempt: 1, bindingDigest: "b".repeat(64), errorCode: CONTEXT_SUMMARY_NOT_DISPATCHED,
+        id: "csa1_not_sent", sourceDigest: contextSummarySource(source).digest, state: "failed" };
+      const summarized = await executeContextSummary({ adapter: adapter([json("bought after restart", ["message-old"])], calls),
+        existingAttempts: [notSent], receipts: recorded.hooks, request: source });
+      expect(calls).toHaveLength(1);
+      expect(recorded.claims.map(({ attempt }) => attempt)).toEqual([2]);
+      expect(summarized.attempts.map(({ attempt, state }) => [attempt, state])).toEqual([[1, "failed"], [2, "committed"]]);
+    });
+  });
+
+  describe("canonical identity and bounded refs", () => {
+    const reordered = <T,>(value: T): T => Array.isArray(value) ? value.map(reordered) as T
+      : value !== null && typeof value === "object"
+        ? Object.fromEntries(Object.keys(value).reverse().map((key) => [key, reordered((value as Record<string, unknown>)[key])])) as T
+        : value;
+
+    it("keeps the source digest, revision and binding after a jsonb key reorder of the request and transcript", () => {
+      const source = request({ overrides: { providerToolMessages: [
+        { arguments: "{\"value\":\"alpha\"}", call_id: "call-1", name: "read_record", type: "function_call" },
+        { call_id: "call-1", output: "RESULT", type: "function_call_output" }
+      ] } });
+      const stored = reordered(source);
+      expect(JSON.stringify(stored.providerToolMessages)).not.toBe(JSON.stringify(source.providerToolMessages));
+      expect(contextSummarySourceRevision(stored)).toBe(contextSummarySourceRevision(source));
+      expect(contextSummarySource(stored).digest).toBe(contextSummarySource(source).digest);
+    });
+
+    it("keeps the newest tool handles and refuses cross-turn reuse instead of dropping handles over the cap", () => {
+      const handle = (index: number) => `tor1_${index.toString(16).padStart(32, "0")}`;
+      // 300 handles carried by earlier notes plus 300 new results: 600 on the branch.
+      const results = Array.from({ length: 300 }, (_, index) => projectObservationForProvider({ callId: `call-${index}`,
+        content: [{ text: `result ${index}`, type: "text" }], name: "read_record", status: "complete",
+        observation: { byteSize: 20, checksum: "a".repeat(64), encoding: "json-utf8-v1", handle: handle(1_000 + index),
+          maskable: true, source: "mcp", sourceTruncated: false, version: 1 } }));
+      const carriedHandles = Array.from({ length: 300 }, (_, index) => handle(index));
+      const previous: ContextSummary = { formatVersion: 1, id: "cs1_previous", notes: "Earlier notes.", sourceDigest: "e".repeat(64),
+        sourceRefs: ["ctxr1_earlier", ...carriedHandles] };
+      const overflowing = request({
+        messages: [text("Earlier notes.", "__context-summary-cs1_previous", "assistant"), text("recent", "recent"), text("current", "current")],
+        overrides: { contextCompactionSummary: previous, providerToolMessages: results.flatMap((result) => [
+          { call_id: result.callId, name: "read_record", type: "function_call" },
+          openAIResponsesToolBridge.appendToolResult(undefined, result)
+        ]) }
+      });
+      const source = contextSummarySource(overflowing, contextObservationsFromResults(results));
+      expect(source.refs).toHaveLength(CONTEXT_COMPACTION_LIMITS.summarySourceRefs);
+      expect(source.refs.slice(0, 3)).toEqual([source.revision, CONTEXT_SUMMARY_REFS_INCOMPLETE, handle(1_299)]);
+      expect(results.every((result) => source.refs.includes(result.observation!.handle))).toBe(true);
+      // Every carried handle is still rechecked in this run, whatever the refs keep.
+      expect(source.referencedHandles).toEqual(expect.arrayContaining(carriedHandles));
+      // Within the cap: no marker, newest tool results first, then carried handles.
+      const fitting = contextSummarySource({ ...overflowing, providerToolMessages: overflowing.providerToolMessages!.slice(-4),
+        contextCompactionSummary: { ...previous, sourceRefs: previous.sourceRefs.slice(0, 3) } },
+      contextObservationsFromResults(results));
+      expect(fitting.refs.slice(0, 5)).toEqual([fitting.revision, handle(1_299), handle(1_298), handle(0), handle(1)]);
+      expect(fitting.refs).not.toContain(CONTEXT_SUMMARY_REFS_INCOMPLETE);
+    });
   });
 
   it.each([

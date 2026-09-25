@@ -237,7 +237,8 @@ import {
   runOutputArtifactEvents
 } from "./runOutputEvents";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
-import { contextCompactionCheckpoint, type ContextObservation } from "./contextCompactionContract";
+import type { ContextSummaryAttempt } from "../../contracts/contextCompaction";
+import { CONTEXT_SUMMARY_NOT_DISPATCHED, contextCompactionCheckpoint, type ContextObservation } from "./contextCompactionContract";
 import {
   contextObservationsFromResults,
   observationCallIdsInProviderMessages,
@@ -2153,12 +2154,18 @@ async function recoverCheckpointedToolLoop(
         "A run attachment is no longer available for tool-loop recovery."
       );
     }
-    // A summary call claimed by the lost executor and never settled has an
-    // unknown outcome: it is recorded as such and never repeated.
+    // A summary call the lost executor left unsettled. A bare claim never
+    // passed its pre-dispatch checks, so nothing was sent: it settles as not
+    // dispatched, counts no operation and a later claim may buy the summary.
+    // A dispatched call has an unknown outcome: one operation, never repeated.
     const unsettledSummaryClaim = run.checkpoint.contextCompaction?.summaryAttempts?.find((attempt) =>
       attempt.state === "claim" || attempt.state === "dispatched");
+    const settledSummaryClaim: ContextSummaryAttempt | undefined = unsettledSummaryClaim && (
+      unsettledSummaryClaim.state === "claim"
+        ? { ...unsettledSummaryClaim, errorCode: CONTEXT_SUMMARY_NOT_DISPATCHED, state: "failed" }
+        : { ...unsettledSummaryClaim, state: "unknown" });
     const summaryAttempts = run.checkpoint.contextCompaction?.summaryAttempts?.map((attempt) =>
-      attempt === unsettledSummaryClaim ? { ...attempt, state: "unknown" as const } : attempt);
+      attempt === unsettledSummaryClaim ? settledSummaryClaim! : attempt);
     let providerRequest: ProviderRunRequest = {
       ...run.normalizedRequest,
       attachments,
@@ -2359,7 +2366,9 @@ async function recoverCheckpointedToolLoop(
 
     async function* streamRecoveredProviderRequest(
       request: ProviderRunRequest,
-      dispatchSignal: AbortSignal
+      dispatchSignal: AbortSignal,
+      /** Durable dispatch evidence, written after every pre-dispatch check. */
+      beforeDispatch?: () => Promise<void>
     ): ReturnType<ProviderAdapter["stream"]> {
       let receipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
       let preview: Record<string, unknown> | null = null;
@@ -2424,6 +2433,7 @@ async function recoverCheckpointedToolLoop(
           : null;
         const wireRequest = request.workspaceImageView
           ? await (await defaultWorkspaceImageViewer()).materialize(request, run.id, run.userId, dispatchSignal) : request;
+        await beforeDispatch?.();
         const stream = adapter!.stream(wireRequest, { signal: dispatchSignal });
         let next = await stream.next();
         while (!next.done) {
@@ -2506,20 +2516,25 @@ async function recoverCheckpointedToolLoop(
         });
       return {
         claim: attempt => write({ attempt }),
+        dispatch: attempt => write({ attempt }),
         async settle(attempt, usage, summary) {
-          context.usageAttributions.push({ modelId: request.modelId, operationCount: 1, provider: request.provider, usage });
+          // A call refused before dispatch reported nothing and counts no operation.
+          if (usage) context.usageAttributions.push({ modelId: request.modelId, operationCount: 1, provider: request.provider, usage });
           await write({ attempt, ...(summary ? { summary } : {}) });
         }
       };
     }
 
-    if (unsettledSummaryClaim && run.checkpoint.contextCompaction) {
-      // Its billing is unknown: account one operation without invented usage,
-      // durably with the receipt so a later pass cannot count it again.
-      usageAttributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider,
-        usage: normalizeTokenUsage({ completeness: "unavailable" }) });
+    if (settledSummaryClaim && run.checkpoint.contextCompaction) {
+      // A dispatched call's billing is unknown: account one operation without
+      // invented usage, durably with the receipt so a later pass cannot count
+      // it again. A claim that was never sent accounts nothing.
+      if (settledSummaryClaim.state === "unknown") {
+        usageAttributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider,
+          usage: normalizeTokenUsage({ completeness: "unavailable" }) });
+      }
       await persistCumulativeUsage(undefined, {
-        attempt: { ...unsettledSummaryClaim, state: "unknown" },
+        attempt: settledSummaryClaim,
         compaction: run.checkpoint.contextCompaction,
         roundIndex: run.checkpoint.roundIndex
       });
@@ -2646,7 +2661,8 @@ async function recoverCheckpointedToolLoop(
         request: requestForBudget,
         signal,
         sourceAvailable: observationSourceAvailability(() => recoveredObservations(context), { runId: run.id, userId: run.userId }),
-        summaryAdapter: egressAdapter
+        summaryAdapter: { reportsDispatch: true, stream: (summaryRequest, options) =>
+          streamRecoveredProviderRequest(summaryRequest, options?.signal ?? signal, options?.beforeDispatch) }
       });
       return context.sessionRequest;
     }
@@ -2896,6 +2912,16 @@ async function recoverCheckpointedToolLoop(
       const round = run.checkpoint.roundIndex;
       const roundRequest = await providerRunningRequest(continuation, round);
       let refreshed: ProviderRunRefreshResult;
+      if (!currentProviderResponseId && unsettledSummaryClaim) {
+        // The executor was lost while summarizing earlier context for this
+        // round, so the round's answer request was never sent.
+        throw new ToolLoopRecoveryError(
+          "context_compaction_outcome_unknown",
+          unsettledSummaryClaim.state === "claim"
+            ? "The run stopped while preparing its context summary. The summary was not sent and no answer was produced."
+            : "The run stopped while summarizing earlier context. The summary was not repeated and no answer was produced."
+        );
+      }
       if (!currentProviderResponseId) {
         throw new ToolLoopRecoveryError(
           "tool_loop_provider_round_outcome_unknown",

@@ -2000,8 +2000,9 @@ export function createPrismaRunToolLoopOperations(
           }
           const receipt = input.contextSummaryReceipt;
           if (receipt) {
-            // A claim authorizes paid dispatch: only an active run may make one.
-            // Settlement records incurred usage even after Stop.
+            // A claim, and its dispatched mark immediately before the provider
+            // request, authorize paid dispatch: only an active run may write
+            // them. Settlement records incurred usage even after Stop.
             if ((receipt.attempt.state === "claim" || receipt.attempt.state === "dispatched") && !activeToolLoopRun(run)) return false;
             if (receipt.roundIndex !== null) {
               nextCheckpoint = checkpointWithContextSummaryReceipt(nextCheckpoint ?? null, receipt);

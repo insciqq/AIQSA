@@ -1,17 +1,17 @@
 import type { ContextPlanMeasurement } from "../../contracts/contextCompaction";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
-import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
-import { ObservationStoreError } from "../toolObservations/contract";
+import type { ProviderRunRequest } from "../providers/types";
 import type { ObservationActor } from "../toolObservations/repository";
 import type { ToolObservationService } from "../toolObservations/sourceAdapters";
 import type { ProviderToolBridge } from "../tools/types";
-import { contextSummaryMessageId, type ContextObservation } from "./contextCompactionContract";
+import { contextSummaryMessageId, contextSummaryRefsComplete, type ContextObservation } from "./contextCompactionContract";
 import { contextCompactionFailureOutcome, type ContextCompactionPublisher } from "./contextCompactionEvents";
 import {
   applyReusedContextSummary,
   ContextSummaryError,
   executeContextSummary,
   summaryNeedsProvider,
+  type ContextSummaryAdapter,
   type ContextSummaryReceipts
 } from "./contextCompactionSummarizer";
 import {
@@ -40,7 +40,10 @@ type BudgetedRequest = Extract<ProviderRequestContextBudgetResult, { ok: true }>
  * prefix only when the exact branch would need a summary, the projection fits
  * this binding, and every retained source the notes cite is still readable by
  * this run through the observation authority. Otherwise the exact branch takes
- * the ordinary bounded path, which never sees another run's notes.
+ * the ordinary bounded path, which never sees another run's notes. Notes whose
+ * refs could not name every retained source are never carried. A failed
+ * availability check (not a refusal) throws its classified error instead of
+ * silently dropping the notes.
  */
 async function withCarriedSummary(
   input: CompactedProviderRequestInput,
@@ -48,7 +51,8 @@ async function withCarriedSummary(
 ): Promise<Readonly<{ beforeTokens: number; result: BudgetedRequest }> | null> {
   const { request } = input;
   const reuse = request.contextCompactionPolicy?.reuse;
-  if (!reuse || request.contextCompactionPolicy?.mode !== "hybrid" || request.contextCompactionSummary) return null;
+  if (!reuse || request.contextCompactionPolicy?.mode !== "hybrid" || request.contextCompactionSummary ||
+    !contextSummaryRefsComplete(reuse.summary)) return null;
   const exact = budget(request);
   if (!exact.ok || exact.request.contextCompaction?.outcome !== "needs_summary") return null;
   const projected = applyReusedContextSummary(exact.request);
@@ -77,10 +81,11 @@ export type CompactedProviderRequestInput = Readonly<{
   receipts: ContextSummaryReceipts;
   request: ProviderRunRequest;
   signal: AbortSignal;
-  /** Real availability of retained originals the summary source only references. */
+  /** Real availability of retained originals the summary source only
+   * references; see observationSourceAvailability. */
   sourceAvailable?(handles: readonly string[], signal?: AbortSignal): Promise<boolean>;
   /** The accepted answer binding, used directly so summary text never becomes answer output. */
-  summaryAdapter: Pick<ProviderAdapter, "stream">;
+  summaryAdapter: ContextSummaryAdapter;
 }>;
 
 /**
@@ -103,7 +108,14 @@ export async function prepareCompactedProviderRequest(
     ...(input.observations ? { observations: input.observations } : {}),
     request
   });
-  const carried = await withCarriedSummary(input, budget);
+  let carried: Awaited<ReturnType<typeof withCarriedSummary>>;
+  try {
+    carried = await withCarriedSummary(input, budget);
+  } catch (error) {
+    if (input.signal.aborted || !(error instanceof ContextSummaryError)) throw error;
+    if (publisher.running) await publisher.settle(contextCompactionFailureOutcome(error.code));
+    throw input.failure(error.code, error.message);
+  }
   const measured = carried?.result ?? budget(input.request);
   if (!measured.ok) {
     if (publisher.running) await publisher.settle(contextCompactionFailureOutcome("context_too_large"));
@@ -147,6 +159,9 @@ export async function prepareCompactedProviderRequest(
       await publisher.settle(code ? contextCompactionFailureOutcome(code) : "unknown");
       throw error;
     }
+    // Stop that lands as the last call completes: nothing is applied or
+    // reported as success; the run's cancellation settles the open cycle.
+    input.signal.throwIfAborted();
     const next = budget(summarized.request);
     if (!next.ok) {
       await publisher.settle(contextCompactionFailureOutcome("context_too_large"));
@@ -185,25 +200,25 @@ export async function prepareCompactedProviderRequest(
   return prepared.request;
 }
 
-/** Availability of retained originals by a bounded authorized read of each
- * handle. A busy store is a transient refusal that keeps the handle valid;
- * any other refusal means the original cannot be recalled. */
+/** Availability of retained originals by one authorization-only check of the
+ * whole handle set (no object reads; integrity is verified at actual recall).
+ * Only an authorization or row-state refusal makes a source unavailable. Any
+ * other failure, including obtaining the service, is a transient
+ * `context_compaction_source_check_failed`: never a silent refusal of carried
+ * notes and never `source_unavailable`. */
 export function observationSourceAvailability(
-  service: () => Promise<Pick<ToolObservationService, "read">>,
+  service: () => Promise<Pick<ToolObservationService, "available">>,
   actor: ObservationActor
 ): (handles: readonly string[], signal?: AbortSignal) => Promise<boolean> {
   return async (handles, signal) => {
-    const reader = await service();
-    for (const handle of handles) {
-      try {
-        await reader.read(actor, { handle, maxBytes: 4 }, signal);
-      } catch (error) {
-        signal?.throwIfAborted();
-        if (error instanceof ObservationStoreError && error.code === "tool_observation_busy") continue;
-        return false;
-      }
+    signal?.throwIfAborted();
+    try {
+      return await (await service()).available(actor, handles, signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw new ContextSummaryError("context_compaction_source_check_failed",
+        "The availability of retained context sources could not be checked.", { cause: error });
     }
-    return true;
   };
 }
 

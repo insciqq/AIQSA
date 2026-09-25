@@ -265,7 +265,7 @@ describe("context summary receipts", () => {
   };
   const attempt = (number: number, state: ContextSummaryAttempt["state"], sourceDigest = "b".repeat(64)): ContextSummaryAttempt => ({
     attempt: number, bindingDigest: "c".repeat(64), id: `csa1_${String(number).repeat(32)}`, sourceDigest, state,
-    ...(state === "claim" ? {} : { usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } })
+    ...(state === "claim" || state === "dispatched" ? {} : { usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } })
   });
   const summary: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Derived notes.",
     sourceDigest: "b".repeat(64), sourceRefs: ["message-old"] };
@@ -294,6 +294,36 @@ describe("context summary receipts", () => {
     // Settlement stays possible after the round moved on (usage after Stop).
     expect(write(round(2, "tools_running", claimed.contextCompaction), attempt(1, "unknown"))?.contextCompaction?.summaryAttempts)
       .toEqual([attempt(1, "unknown")]);
+  });
+
+  it("marks a claim dispatched under the claim's guards, never backwards, and settles it once", () => {
+    const claimed = write(round(2), attempt(1, "claim"))!;
+    const dispatched = write(claimed, attempt(1, "dispatched"))!;
+    expect(dispatched.contextCompaction?.summaryAttempts).toEqual([attempt(1, "dispatched")]);
+    expect(write(dispatched, attempt(1, "dispatched"))).toBe(dispatched);
+    expect(write(dispatched, attempt(1, "claim"))).toBeNull();
+    // Only the claim itself, only in the round being prepared.
+    expect(write(round(2), attempt(1, "dispatched"))).toBeNull();
+    expect(write(null, attempt(1, "dispatched"), 1)).toBeNull();
+    expect(write(round(2, "tools_running", claimed.contextCompaction), attempt(1, "dispatched"))).toBeNull();
+    expect(write(claimed, { ...attempt(1, "dispatched"), sourceDigest: "d".repeat(64) })).toBeNull();
+    // Still unsettled: no second call may start beside it.
+    expect(write(dispatched, attempt(2, "claim"))).toBeNull();
+    expect(write(dispatched, attempt(1, "unknown"))?.contextCompaction?.summaryAttempts).toEqual([attempt(1, "unknown")]);
+    // Projections merge forward: dispatched replaces its claim, never the reverse.
+    const claimView = { ...compaction, summaryAttempts: [attempt(1, "claim")] };
+    const dispatchedView = { ...compaction, summaryAttempts: [attempt(1, "dispatched")] };
+    expect(mergeContextCompactionReceipts(claimView, dispatchedView)?.summaryAttempts).toEqual([attempt(1, "dispatched")]);
+    expect(mergeContextCompactionReceipts(dispatchedView, claimView)?.summaryAttempts).toEqual([attempt(1, "dispatched")]);
+  });
+
+  it("lets a later claim follow a claim recovery settled as never sent", () => {
+    const claimed = write(round(2), attempt(1, "claim"))!;
+    const notSent: ContextSummaryAttempt = { ...attempt(1, "claim"), errorCode: "context_compaction_not_dispatched", state: "failed" };
+    const recovered = write(claimed, notSent)!;
+    expect(recovered.contextCompaction?.summaryAttempts).toEqual([notSent]);
+    expect(recovered.contextCompaction?.summaryAttempts?.[0]).not.toHaveProperty("usage");
+    expect(write(recovered, attempt(2, "claim"))?.contextCompaction?.summaryAttempts).toEqual([notSent, attempt(2, "claim")]);
   });
 
   it("seeds the first round's checkpoint with a claim that precedes its begin, and the begin keeps it", () => {

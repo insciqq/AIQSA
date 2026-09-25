@@ -11,6 +11,7 @@ import { prisma } from "../prisma";
 import { createPrismaRetentionRepository } from "../retention/prune";
 import { createFileSystemStorageAdapter, createS3StorageAdapter } from "../uploads/storage";
 import { measureObservationJson } from "./codec";
+import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { createToolObservationRepository, ObservationStoreError, type ObservationActor } from "./repository";
 import { TOOL_OBSERVATION_LIMITS } from "./contract";
 import { createToolObservationService } from "./service";
@@ -307,6 +308,35 @@ describe("durable tool observation ownership", () => {
     await expect(f.repository.read({ ...f.run.actor, userId: other.user.id }, saved.id)).rejects.toThrow("tool_observation_unavailable");
     f.authorizeSource.mockRejectedValue(new ObservationStoreError("tool_observation_unavailable"));
     await expect(f.repository.read(f.run.actor, saved.id)).rejects.toThrow("tool_observation_unavailable");
+  });
+
+  it("checks a branch's handle set in one authorization-only transaction without object reads", async () => {
+    const f = await fixture();
+    const inline = await f.write({ accepted: "inline" });
+    const external = await f.write({ accepted: "external ".repeat(20_000) });
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "complete" } });
+    const next = await f.makeRun(f.run.assistantMessageId);
+    const handles = [inline.result.observation.handle, external.result.observation.handle];
+    f.authorizeSource.mockClear();
+    const reads = vi.spyOn(f.storage, "getObjectStream");
+    const transactions = vi.spyOn(prisma, "$transaction");
+    try {
+      await expect(f.service.available(next.actor, handles)).resolves.toBe(true);
+      expect(transactions).toHaveBeenCalledOnce();
+    } finally {
+      transactions.mockRestore();
+    }
+    expect(reads).not.toHaveBeenCalled();
+    expect(f.authorizeSource).toHaveBeenCalledTimes(2);
+    f.authorizeSource.mockRejectedValueOnce(new McpToolAccessDeniedError());
+    await expect(f.service.available(next.actor, handles)).resolves.toBe(false);
+    await prisma.modelRunToolCall.update({ where: { id: external.producer.toolCallId }, data: { state: "running" } });
+    await expect(f.service.available(next.actor, handles)).resolves.toBe(false);
+    await prisma.modelRunToolCall.update({ where: { id: external.producer.toolCallId }, data: { state: "complete" } });
+    await expect(f.service.available(next.actor, handles)).resolves.toBe(true);
+    await prisma.modelRun.update({ where: { id: next.id }, data: { status: "complete" } });
+    const sibling = await f.makeRun(f.run.userMessageId);
+    await expect(f.service.available(sibling.actor, handles)).resolves.toBe(false);
   });
 
   it("retains the tool loop's recoverable-error authority and fences a terminal error", async () => {

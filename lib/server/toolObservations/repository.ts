@@ -1,6 +1,7 @@
 import { decodeSearchObservationReceipt, type SearchObservationReceipt } from "./searchReceipt";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type ToolObservation } from "@prisma/client";
+import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { resolveChatAccess } from "../projects/access";
 import { activeToolLoopRun, activeToolLoopRunSql, lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 import { decodeToolObservationSourceBinding, ObservationStoreError, TOOL_OBSERVATION_LIMITS, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
@@ -13,6 +14,18 @@ export { ObservationStoreError } from "./contract";
 const unavailable = () => new ObservationStoreError("tool_observation_unavailable");
 const conflict = () => new ObservationStoreError("tool_observation_conflict");
 const identifier = () => randomUUID().replaceAll("-", "");
+
+/** Handles one availability check may cover: a summary source references at
+ * most its carried refs (fewer than the 512 summary refs) plus the masked
+ * handles of one run (at most the 512-observation run cap). */
+export const OBSERVATION_AVAILABILITY_HANDLES = 1024;
+
+/** An authorization or row-state refusal of recall, as opposed to a database
+ * or infrastructure failure, which propagates. */
+function refusal(error: unknown): boolean {
+  return error instanceof ObservationStoreError && error.code === "tool_observation_unavailable" ||
+    error instanceof McpToolAccessDeniedError;
+}
 
 /** One accepted producer, with the same owner -> chat -> run locking order as
  * settlement for every write. Read-only recall and restore take no row locks:
@@ -229,6 +242,45 @@ export function createToolObservationRepository(input: Readonly<{
 
     async read(actor: ObservationActor, id: string) {
       return prisma.$transaction(tx => forRead(tx, actor, id));
+    },
+
+    /** Whether every observation in the set is still recallable by this run,
+     * with forRead's authority and without any source or object I/O: in one
+     * read-only transaction, the run authority once, one lookup of all rows,
+     * one ancestry query and each source's live authorization grouped by
+     * kind. Only a refusal returns false; any other failure propagates. */
+    async available(actor: ObservationActor, ids: readonly string[]): Promise<boolean> {
+      const unique = [...new Set(ids)];
+      if (unique.length > OBSERVATION_AVAILABILITY_HANDLES) throw conflict();
+      if (unique.length === 0) return true;
+      return prisma.$transaction(async tx => {
+        try {
+          const run = await authority(tx, actor, false);
+          const sources = await tx.toolObservation.findMany({ where: { id: { in: unique } }, include: {
+            modelRun: { select: { chatId: true, assistantMessageId: true } }, toolCall: { select: { state: true } }
+          } });
+          if (sources.length !== unique.length || sources.some(source => source.state !== "READY" ||
+            source.modelRun.chatId !== run.chatId || !["complete", "error"].includes(source.toolCall.state))) return false;
+          const foreign = [...new Set(sources.filter(source => source.modelRunId !== run.id)
+            .map(source => source.modelRun.assistantMessageId))];
+          if (foreign.some(id => id === null)) return false;
+          if (foreign.length > 0) {
+            const ancestors = await tx.$queryRaw<Array<{ id: string }>>`WITH RECURSIVE path AS (
+              SELECT "id", "parentMessageId" FROM "Message" WHERE "chatId" = ${run.chatId} AND "id" = ${run.assistantMessageId}
+              UNION SELECT p."id", p."parentMessageId" FROM "Message" p JOIN path c ON p."id" = c."parentMessageId"
+                WHERE p."chatId" = ${run.chatId}
+            ) SELECT "id" FROM path WHERE "id" IN (${Prisma.join(foreign as string[])})`;
+            if (new Set(ancestors.map(row => row.id)).size !== foreign.length) return false;
+          }
+          const ordered = [...sources].sort((left, right) => left.sourceKind.localeCompare(right.sourceKind) ||
+            left.id.localeCompare(right.id));
+          for (const source of ordered) await input.authorizeSource(tx, source, actor);
+          return true;
+        } catch (error) {
+          if (refusal(error)) return false;
+          throw error;
+        }
+      });
     },
 
     async loadProducerSource(context: ObservationProducer) {

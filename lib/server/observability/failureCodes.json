@@ -59,6 +59,7 @@
   "client_identity",
   "context_compaction_outcome_unknown",
   "context_compaction_provider_failed",
+  "context_compaction_source_check_failed",
   "context_compaction_source_unavailable",
   "context_compaction_summary_failed",
   "context_compaction_summary_invalid",

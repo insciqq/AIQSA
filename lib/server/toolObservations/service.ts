@@ -5,8 +5,9 @@ import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
 import { admitToolObservation, type ObservationAdmission } from "./admission";
 import { ObservationReadError, readObservationBytes, type ObservationByteFragment } from "./byteReader";
 import { measureObservationJson, observationJsonStream, OBSERVATION_ENCODING } from "./codec";
-import { decodeToolObservationDescriptor, decodeToolObservationReadInput, toolObservationCursor, ObservationStoreError,
-  TOOL_OBSERVATION_LIMITS, type ToolObservationDescriptor, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
+import { decodeToolObservationDescriptor, decodeToolObservationReadInput, isToolObservationHandle, toolObservationCursor,
+  ObservationStoreError, TOOL_OBSERVATION_LIMITS, type ToolObservationDescriptor, type ToolObservationSource,
+  type ToolObservationSourceBinding } from "./contract";
 import type { ObservationActor, ObservationProducer, createToolObservationRepository } from "./repository";
 import { readObservationOriginal, readSearchOriginal } from "./searchOriginal";
 import { decodeSearchObservationReceipt, searchObservationReceipt } from "./searchReceipt";
@@ -287,6 +288,21 @@ export function createToolObservationService(input: Readonly<{
         if (error instanceof ObservationStoreError && error.code === "tool_observation_busy") observe(source, "busy");
         throw error instanceof ObservationStoreError || error instanceof ObservationReadError ? error : unavailable();
       }
+    },
+
+    /** Authorization-only availability of a set of handles for this run: the
+     * same authority as read, in one repository transaction, with no object
+     * storage or source I/O and no storage admission (so never busy). Bytes
+     * and checksums are verified when an original is actually recalled. False
+     * only for a refusal (including an unknown handle); an infrastructure
+     * failure propagates for the caller to classify. */
+    async available(actor: ObservationActor, handles: readonly string[], signal?: AbortSignal): Promise<boolean> {
+      signal?.throwIfAborted();
+      const unique = [...new Set(handles)];
+      if (!unique.every(isToolObservationHandle)) return false;
+      const available = await repository.available(actor, unique.map(handle => handle.slice(5)));
+      signal?.throwIfAborted();
+      return available;
     },
 
     /** Recover the immutable receipt after READY but before call settlement.
