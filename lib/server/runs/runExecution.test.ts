@@ -112,6 +112,7 @@ import type { RunFollowup } from "../../contracts/runFollowups";
 import * as agentExecutor from "../agents/executor";
 import { agentLimits } from "../agents/config";
 import { DEFAULT_AGENT_POLICY } from "../../contracts/agentPolicy";
+import { conversationContextPolicy } from "./contextCompactionContract";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -1455,6 +1456,61 @@ function followupFixture(repository: RunExecutionRepository) {
 }
 
 describe("run execution", () => {
+  it.each(["followup", "stop"] as const)("keeps %s available during initial context compaction", async mode => {
+    const repository = createRepository();
+    const followups = followupFixture(repository.repository);
+    const base = preparedData({ provider: "openai", modelId: "gpt-tool-model" });
+    const messages = [
+      { id: "old", role: "user" as const, content: textMessageContent("Old synthetic fact. ".repeat(2_000)) },
+      ...Array.from({ length: 6 }, (_, i) => ({ id: `recent-${i}`, role: "assistant" as const, content: textMessageContent("Acknowledged.") })),
+      ...base.providerRequest.context!.messages
+    ];
+    const request: ProviderRunRequest = {
+      ...base.providerRequest,
+      context: { mode: "branch_path", messages },
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
+      contextCompaction: { version: 1, beforeTokens: 10_000, afterTokens: 10_000, budgetTokens: 6_000,
+        legacyFallback: false, maskedBatches: 0, maskedObservations: 0, outcome: "needs_summary" },
+      modelCapabilities: { ...base.providerRequest.modelCapabilities, contextWindow: 8_192 },
+      sessionStatusTool: true,
+      tools: [sessionStatusTool]
+    };
+    let summaryCalls = 0, answerCalls = 0;
+    const adapter = createAdapter(async function* (request, options) {
+      if (request.forceNonStreaming) {
+        summaryCalls += 1;
+        expect(followups.closed).toBe(false);
+        expect(followups.deliver).not.toHaveBeenCalled();
+        if (mode === "stop") {
+          expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
+          options?.signal?.throwIfAborted();
+        }
+        followups.accept("Use the corrected quantity 23.");
+        const summary = JSON.stringify({ notes: "PRIVATE_COMPACTION_NOTES", sourceRefs: [] });
+        yield { type: "token", data: { delta: summary } };
+        return providerResult({ finalText: summary });
+      }
+      answerCalls += 1;
+      expect(JSON.stringify(request.providerToolMessages)).toContain("corrected quantity 23");
+      yield { type: "token", data: { delta: "The quantity is 23." } };
+      return providerResult({ finalText: "The quantity is 23." });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter, repository: repository.repository,
+      prepared: { ...base, normalizedRequest: request, providerRequest: request }
+    })).text(), true);
+    expect(summaryCalls).toBe(1);
+    expect(answerCalls).toBe(mode === "stop" ? 0 : 1);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_COMPACTION_NOTES");
+    const statuses = events.filter(event => event.type === "artifact" && event.data.artifactType === "context_compaction");
+    expect(statuses).toMatchObject([
+      { data: { payload: { state: "running", cycle: 1 } } },
+      { data: { payload: { state: mode === "stop" ? "failed" : "complete", cycle: 1 } } }
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "done", data: { status: mode === "stop" ? "cancelled" : "complete" } });
+    if (mode === "followup") expect(followups.entries[0]?.delivery).toBe("delivered");
+  });
+
   it("keeps a checkpoint visible when the subsequent answer provider fails", async () => {
     const view = { id: "checkpoint-1", description: "Intermediate design", createdAt: "2026-09-24T00:00:00.000Z" };
     const execute = vi.fn(async (call: import("../tools/types").ModelToolCall) => workspaceCheckpointResult(call, view, "a".repeat(32), [{
@@ -1946,6 +2002,8 @@ describe("run execution", () => {
     const repository = createRepository();
     const adapter = createAdapter(async function* () {
       await held.promise;
+      yield { type: "artifact" as const, data: { artifactType: "context_compaction" as const,
+        payload: { notes: "FORGED_PRIVATE_COMPACTION", state: "complete" } } };
       yield { type: "token" as const, data: { delta: "Final answer" } };
       return providerResult();
     });
@@ -1960,6 +2018,8 @@ describe("run execution", () => {
       held.resolve();
     }
     const events = parseSse(await body, true);
+    expect(JSON.stringify(events)).not.toContain("FORGED_PRIVATE_COMPACTION");
+    expect(JSON.stringify(repository.persistedEvents)).not.toContain("FORGED_PRIVATE_COMPACTION");
     expect(events.findIndex(isContextEvent)).toBeLessThan(events.findIndex((event) => event.type === "token"));
     expect(events.filter(isContextEvent)).toMatchObject([
       { data: { payload: { phase: "request" } } }, { data: { payload: { phase: "after_answer" } } }
@@ -5656,6 +5716,34 @@ describe("run execution", () => {
     expect(Buffer.byteLength(JSON.stringify([...repository.toolCalls.values()]))).toBeLessThan(40 * 1024);
     expect(observations.rows.size).toBe(1);
     expect([...observations.rows.values()][0]).toMatchObject({ state: "READY", storageMode: "OBJECT", executionOutcome: "complete" });
+  });
+
+  it("keeps a newly accepted Off run on legacy tool execution without capture or reader registration", async () => {
+    const name = "mcp_synthetic_records_off";
+    const mcp: McpRunPlanSnapshot = { version: 1,
+      servers: [{ fingerprint: "a".repeat(64), revisionId: "synthetic-revision", serverId: "synthetic-server", serverName: "Records" }],
+      tools: [{ definitionHash: "b".repeat(64), description: "Read records", inputSchema: { type: "object" },
+        name: "records", namespacedName: name, originalName: "records", serverId: "synthetic-server", serverName: "Records" }] };
+    const repository = createRepository();
+    const observations = memoryToolObservations();
+    const requests: ProviderRunRequest[] = [];
+    const base = preparedData({ mcp, modelId: "synthetic-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, toolObservationVersion: 0 as const },
+      providerRequest: { ...base.providerRequest, toolObservationVersion: 0 as const } };
+    const callTool = vi.fn(async () => ({ isError: false, structuredContent: null, text: ["legacy-result"], unsupportedContentTypes: [] }));
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      expect(request.tools?.some(tool => tool.name === "read_tool_result")).toBe(false);
+      return requests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ id: "original", name, arguments: {} }] })
+        : providerResult({ finalText: "legacy-result" });
+    });
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } }), observations: observations.service() }).text();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(2);
+    expect(observations.rows.size).toBe(0);
+    expect(repository.completeRuns[0]?.finalText).toBe("legacy-result");
   });
 
   it("publishes the reached budget and terminalizes a forbidden synthesis without losing text or work", async () => {

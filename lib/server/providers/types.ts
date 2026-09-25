@@ -148,6 +148,8 @@ export type NormalizedRunRequest = {
       truncation?: ContextTruncationSummary;
     };
   };
+  /** Accepted branch/prefix identity captured before provider-facing trimming. */
+  contextCompactionPolicy?: import("../../contracts/contextCompaction").ConversationContextPolicy;
   /** Exact immutable request for the single internal focused Knowledge
    * retrieval operation. It is never exposed as an answer-model tool. */
   knowledgeFocusedRequest?: KnowledgeFocusedRequestV1;
@@ -173,6 +175,8 @@ export type NormalizedRunRequest = {
   knowledgeReviewRepairFeedbackVersion?: 1;
   /** Admitted utility allowance for workflow 11; omission retains historical requests. */
   knowledgeGenerationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
+  /** Accepted model output allowance used by internal compaction utilities. */
+  generationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
   /** Frozen retrieval instructions, independent of answer-stage versions.
    * V2 pins the tool descriptor; V3 also pins the retrieval system contract.
    * Omission retains historical descriptor and workflow-based selection. */
@@ -237,8 +241,9 @@ export type NormalizedRunRequest = {
   searchPlan: NormalizedSearchPlan;
   /** Server-owned admission marker; old runs retain their accepted tool set. */
   sessionStatusTool?: true;
-  /** Frozen store/reader policy. Absent on accepted historical runs. */
-  toolObservationVersion?: 1;
+  /** Frozen store/reader policy. Absent on accepted historical runs; 0 is a
+   * newly accepted explicit Off mode and 1 is the observation-store contract. */
+  toolObservationVersion?: 0 | 1;
   /** Exact installation tool-loop limits frozen when the run is accepted. */
   toolBudgets?: Readonly<{
     mcpAutoDiscoveryTimeoutSeconds?: number;
@@ -311,6 +316,14 @@ export type ProviderConversationMessage = {
 
 export type ProviderRunRequest = NormalizedRunRequest & {
   attachments: ProviderAttachment[];
+  /** Ephemeral server-owned planner measurement. It is never accepted from a
+   * browser or written into the normalized run snapshot. */
+  contextCompaction?: import("../../contracts/contextCompaction").ContextPlanMeasurement;
+  /** Ephemeral model-derived notes produced under the accepted hybrid policy;
+   * never accepted from a browser or copied into the normalized request. */
+  contextCompactionSummary?: import("../../contracts/contextCompaction").ContextSummary;
+  /** Bounded attempt receipts carried into the next durable tool-loop fence. */
+  contextCompactionSummaryAttempts?: readonly import("../../contracts/contextCompaction").ContextSummaryAttempt[];
   forceNonStreaming?: boolean;
   parallelToolCalls?: boolean;
   previousProviderResponseId?: string;

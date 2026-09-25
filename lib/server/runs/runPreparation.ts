@@ -36,6 +36,7 @@ import {
   type CatalogAdapterKind
 } from "../../domain/catalog";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
+import { conversationContextPolicy } from "./contextCompactionContract";
 import {
   invalidRunParamsError,
   resolveAcceptedRunReasoningEffort,
@@ -132,6 +133,7 @@ import type {
 } from "./runRepositoryContract";
 import {
   DEFAULT_TOOL_RUN_BUDGETS,
+  normalizeToolObservationPolicy,
   type ToolRunBudgets
 } from "./toolBudgets";
 import type {
@@ -1034,6 +1036,7 @@ export async function prepareRun(
   const toolBudgets = deps.runPolicy
     ? await deps.runPolicy.load()
     : DEFAULT_TOOL_RUN_BUDGETS;
+  const observationPolicy = normalizeToolObservationPolicy(toolBudgets.toolObservationPolicy);
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
   if (body?.agentEnabled !== undefined && typeof body.agentEnabled !== "boolean") return failure("agent_selection_invalid", 400);
   const agentEnabled = body?.agentEnabled === true;
@@ -1919,7 +1922,8 @@ export async function prepareRun(
           pinned: frozenSkills.manifest.pinned.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })),
           available: frozenSkills.manifest.available.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })) },
         search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
-        visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints, toolObservationVersion: 1,
+        visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints,
+        toolObservationVersion: observationPolicy === "v1" ? 1 : 0,
         images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
         artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
           references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
@@ -1928,10 +1932,15 @@ export async function prepareRun(
       })
     };
   }
+  const observationCapable = agent !== undefined || modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({
+      modelId: executionModelId,
+      provider: executionProvider
+    }) === true;
+  const toolObservationVersion: 0 | 1 = observationPolicy === "v1" && observationCapable ? 1 : 0;
+  const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
   const baseNormalizedRequest: NormalizedRunRequest = {
-    ...(agent || modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
-      modelId: executionModelId, provider: executionProvider
-    }) === true ? { toolObservationVersion: 1 as const } : {}),
+    toolObservationVersion,
     ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
     ...(agent ? { agent } : {}),
@@ -1951,14 +1960,20 @@ export async function prepareRun(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
+    ...(!agent && toolObservationVersion === 1 ? { contextCompactionPolicy: conversationContextPolicy({
+      leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
+      messages: contextMessages,
+      mode: "hybrid"
+    }) } : {}),
     ...(knowledgeRequested ? {
       knowledgeAnswerWorkflowVersion: 11 as const,
       knowledgeReviewRepairFeedbackVersion: 1 as const,
-      knowledgeGenerationBudget: admitModelGenerationBudget(admissionPlan.answer.snapshot),
+      knowledgeGenerationBudget: generationBudget,
       knowledgeSearchInstructionVersion: 3 as const,
       knowledgeQueryAnchorVersion: 2 as const,
       knowledgeEvidencePackingVersion: 5 as const
     } : {}),
+    generationBudget,
     knowledgePlan: decodedKnowledgePlan.plan,
     modelCapabilities,
     modelId: executionModelId,

@@ -3,6 +3,10 @@ import {
   isMcpAutoDiscoveryOutputTokens,
   MCP_RUN_PLAN_LIMITS
 } from "./mcp";
+import {
+  isToolObservationPolicy,
+  type ToolObservationPolicy
+} from "./toolObservationPolicy";
 
 export type AdminModelDefaultCandidate = {
   connectionDisplayName: string;
@@ -26,6 +30,8 @@ export type AdminModelPolicyCatalog = {
     maxMcpToolsPerDiscovery: number;
     maxToolCalls: number;
     maxToolRounds: number;
+    /** Additive response field; absent older admin snapshots fail closed to Off. */
+    toolObservationPolicy?: ToolObservationPolicy;
     updatedAt: string;
     updatedBy: { displayName: string; id: string } | null;
     version: number;
@@ -84,6 +90,7 @@ export function decodeAdminModelPolicyResponse(
     Number(policy.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
     !Number.isSafeInteger(policy.maxToolCalls) || Number(policy.maxToolCalls) < 1 ||
     !Number.isSafeInteger(policy.maxToolRounds) || Number(policy.maxToolRounds) < 1 ||
+    policy.toolObservationPolicy !== undefined && !isToolObservationPolicy(policy.toolObservationPolicy) ||
     typeof policy.updatedAt !== "string" || !Number.isFinite(Date.parse(policy.updatedAt)) ||
     !Number.isSafeInteger(policy.version) ||
     Number(policy.version) < 1) return null;
@@ -99,6 +106,7 @@ export function decodeAdminModelPolicyResponse(
         maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
         maxToolCalls: Number(policy.maxToolCalls),
         maxToolRounds: Number(policy.maxToolRounds),
+        ...(policy.toolObservationPolicy === undefined ? {} : { toolObservationPolicy: policy.toolObservationPolicy }),
         updatedAt: policy.updatedAt,
         updatedBy: updatedBy as { displayName: string; id: string } | null,
         version: Number(policy.version)

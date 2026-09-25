@@ -7,6 +7,7 @@ import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
+import type { ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
   answerProcessLabelV2,
   describeToolCallV2,
@@ -65,6 +66,7 @@ function SkillPinV2({ skillId, pinned, onPin }: Readonly<{ skillId: string; pinn
 }
 
 export type AnswerProcessV2Props = Readonly<{
+  contextCompaction?: ContextCompactionStatus;
   disclosureId?: string;
   /** Live status while the run works; it occupies the settled line's place. */
   liveLabel?: string | null;
@@ -86,6 +88,7 @@ export type AnswerProcessV2Props = Readonly<{
  * under a factual label ("Worked for 8s · Past chats · 2"). A reached tool limit stays visible outside the fold.
  */
 export function AnswerProcessV2({
+  contextCompaction,
   disclosureId,
   liveLabel = null,
   onPinSkill,
@@ -110,7 +113,24 @@ export function AnswerProcessV2({
     </div>
   ) : null;
 
-  if (liveLabel && !timeline) {
+  const compactionLabel = contextCompaction?.state === "running"
+    ? "Compacting context…"
+    : contextCompaction?.outcome === "summary_applied" || contextCompaction?.outcome === "masking_applied"
+      ? "Context compacted"
+      : contextCompaction?.outcome === "irreducible_overflow"
+        ? "Context is still too large"
+        : contextCompaction?.outcome === "source_unavailable"
+          ? "Context source unavailable"
+          : contextCompaction?.outcome === "provider_failed"
+            ? "Provider could not compact the context"
+            : contextCompaction?.outcome === "summary_failed"
+              ? "Context compaction failed"
+              : contextCompaction?.state === "failed" ? "Context compaction outcome unavailable" : null;
+  const compactionEstimate = contextCompaction?.state === "complete" && contextCompaction.reducedTokens !== null && contextCompaction.reducedTokens > 0
+    ? `Approx. ${contextCompaction.reducedTokens.toLocaleString("en-US")} working-context tokens removed`
+    : null;
+
+  if (liveLabel && !timeline && !contextCompaction) {
     return (
       <div className="v2-answer-process" data-live="true" data-testid="run-status-line">
         <span className="v2-answer-process-slot" aria-hidden="true">
@@ -131,7 +151,8 @@ export function AnswerProcessV2({
         stepCount: calls.length,
         workDurationMs
       });
-  if (!label) return warning;
+  const displayLabel = [label, compactionLabel].filter((value): value is string => Boolean(value)).join(" · ");
+  if (!displayLabel) return warning;
 
   return (
     <>
@@ -148,10 +169,17 @@ export function AnswerProcessV2({
             {live ? <span className="v2-answer-process-spinner v2-spinner" /> : <span className="v2-answer-process-chevron" />}
           </span>
           <span className={live ? "v2-run-shimmer v2-answer-process-label" : "v2-answer-process-label"}>
-            {live && liveLabel ? liveLabel : workspaceOutcome ? `${label} · ${workspaceOutcome}` : label}
+            {live && liveLabel ? liveLabel : workspaceOutcome ? `${displayLabel} · ${workspaceOutcome}` : displayLabel}
           </span>
         </summary>
         <div className="v2-answer-process-body">
+          {contextCompaction && contextCompaction.state !== "running" ? (
+            <section className="v2-answer-process-section" data-testid="context-compaction-status" data-state={contextCompaction.state}>
+              <h3>Context</h3>
+              <p>{compactionLabel}</p>
+              {compactionEstimate ? <p className="v2-answer-process-step-meta">{compactionEstimate}</p> : null}
+            </section>
+          ) : null}
           {timeline ? (
             <section className="v2-answer-process-section" data-testid="workspace-activity-section">
               <h3>Workspace</h3>

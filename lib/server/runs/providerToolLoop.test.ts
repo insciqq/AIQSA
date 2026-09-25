@@ -36,6 +36,30 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("provider tool loop", () => {
+  it.each([
+    "context_compaction_source_unavailable",
+    "context_compaction_summary_failed",
+    "context_compaction_summary_invalid",
+    "context_compaction_summary_no_progress"
+  ])("retains %s from request preparation without dispatching an answer", async (code) => {
+    const stream = vi.fn();
+    const executeTool = vi.fn();
+    const outcome = await runProviderToolLoop({
+      adapter: { buildRequestPreview: () => ({}), stream },
+      bridge: openRouterChatToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 3, maxToolRounds: 2 },
+      executeTool,
+      initialRequest: request({ provider: "openrouter" }),
+      parallelToolCalls: false,
+      prepareRequest: () => { throw Object.assign(new Error("private provider detail"), { code }); },
+      tools: []
+    });
+    expect(outcome).toMatchObject({ status: "failed", toolCalls: 0, failure: { code } });
+    expect(JSON.stringify(outcome)).not.toContain("private provider detail");
+    expect(stream).not.toHaveBeenCalled();
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("enforces prepared local concurrency %s even when strict routing omits the wire flag", async (parallelToolCalls) => {
     const operations: string[] = [];
     const bodies: Record<string, unknown>[] = [];
@@ -164,6 +188,94 @@ describe("provider tool loop", () => {
     expect(requests[1]?.providerToolMessages).toEqual([
       { call_id: "call-shell", name: canonicalName, type: "function_call" },
       { call_id: "call-shell", output: "ok", type: "function_call_output" }
+    ]);
+  });
+
+  it("uses the prepared provider projection for the durable round fence", async () => {
+    const fencedContinuations: unknown[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        if (!roundRequest.providerToolMessages?.length) {
+          return {
+            finalProviderResponsePreview: {},
+            finalText: "",
+            toolCalls: [{ arguments: {}, id: "call-1", name: "alpha" }],
+            usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+          };
+        }
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "done",
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+        };
+      }
+    };
+    const outcome = await runProviderToolLoop({
+      adapter,
+      beforeProviderRound: ({ continuation }) => { fencedContinuations.push(continuation); },
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 2 },
+      executeTool: async call => ({ status: "complete" as const, value: {
+        callId: call.id,
+        content: [{ text: "large settled result", type: "text" as const }],
+        name: call.name,
+        status: "complete" as const
+      } }),
+      initialRequest: request({ toolObservationVersion: 1 }),
+      parallelToolCalls: false,
+      prepareRequest: (roundRequest, round) => round === 2
+        ? { ...roundRequest, providerToolMessages: [{ call_id: "call-1", output: "reader reference", type: "function_call_output" }] }
+        : roundRequest,
+      tools: [{ capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" }]
+    });
+    expect(outcome).toMatchObject({ final: { finalText: "done" }, status: "complete" });
+    expect(fencedContinuations[1]).toMatchObject({
+      providerToolMessages: [{ call_id: "call-1", output: "reader reference", type: "function_call_output" }]
+    });
+  });
+
+  it("carries a committed summary across tool rounds without restoring the admission history", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const prepare = vi.fn((roundRequest: ProviderRunRequest) => {
+      if (roundRequest.contextCompactionSummary) return roundRequest;
+      return {
+        ...roundRequest,
+        context: { mode: "branch_path" as const, messages: [{
+          id: "__context-summary-summary-1", role: "assistant" as const,
+          content: { blocks: [{ type: "text" as const, text: "A bounded summary." }] }
+        }] },
+        contextCompactionSummary: { formatVersion: 1 as const, id: "summary-1", notes: "A bounded summary.",
+          sourceDigest: "a".repeat(64), sourceRefs: ["original"] }
+      };
+    });
+    const outcome = await runProviderToolLoop({
+      adapter: {
+        buildRequestPreview: () => ({}),
+        async *stream(roundRequest) {
+          requests.push(roundRequest);
+          return { finalProviderResponsePreview: {}, finalText: requests.length === 1 ? "" : "done", usage: {},
+            ...(requests.length === 1 ? { toolCalls: [{ id: "read-1", name: "alpha", arguments: {} }] } : {}) };
+        }
+      },
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 },
+      executeTool: async call => ({ status: "complete", value: {
+        callId: call.id, name: call.name, status: "complete", content: [{ type: "text", text: "exact tool result" }]
+      } }),
+      initialRequest: request({ context: { mode: "branch_path", messages: [{ id: "original", role: "user",
+        content: { blocks: [{ type: "text", text: "Original lengthy history." }] } }] } }),
+      parallelToolCalls: false,
+      prepareRequest: prepare,
+      tools: [{ capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" }]
+    });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 1 });
+    expect(prepare.mock.calls[1]?.[0].contextCompactionSummary?.id).toBe("summary-1");
+    expect(requests[1]?.context).toEqual(requests[0]?.context);
+    expect(JSON.stringify(requests[1])).not.toContain("Original lengthy history.");
+    expect(requests[1]?.providerToolMessages).toMatchObject([
+      { type: "function_call", call_id: "read-1", name: "alpha" },
+      { type: "function_call_output", call_id: "read-1", output: "exact tool result" }
     ]);
   });
 

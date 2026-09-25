@@ -1,3 +1,4 @@
+import { decodeContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeAcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
@@ -51,6 +52,7 @@ import type {
 } from "../knowledge/runAdmission";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
+import { decodeConversationContextPolicy } from "./contextCompactionContract";
 import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { resolveProjectAccess } from "../projects/access";
@@ -562,10 +564,12 @@ const normalizedRequestKeys = new Set([
   "chatId",
   "content",
   "context",
+  "contextCompactionPolicy",
   "knowledgeAnswering",
   "knowledgeAnswerWorkflowVersion",
   "knowledgeReviewRepairFeedbackVersion",
   "knowledgeGenerationBudget",
+  "generationBudget",
   "knowledgeEvidencePackingVersion",
   "knowledgeFocusedRequest",
   "visionAnalysis",
@@ -934,11 +938,13 @@ function decodeProviderDispatchRecoveryRequest(
     (value.followupContextReserveTokens !== undefined && (!Number.isSafeInteger(value.followupContextReserveTokens) ||
       Number(value.followupContextReserveTokens) < 0 || Number(value.followupContextReserveTokens) > 100_000)) ||
     !validContext(value.context) || !validKnowledgeAnswering(value.knowledgeAnswering) ||
+    value.contextCompactionPolicy !== undefined && !decodeConversationContextPolicy(value.contextCompactionPolicy) ||
     value.knowledgeAnswerWorkflowVersion !== undefined && value.knowledgeAnswerWorkflowVersion !== 2 && value.knowledgeAnswerWorkflowVersion !== 3 && value.knowledgeAnswerWorkflowVersion !== 4 && value.knowledgeAnswerWorkflowVersion !== 5 && value.knowledgeAnswerWorkflowVersion !== 6 && value.knowledgeAnswerWorkflowVersion !== 7 && value.knowledgeAnswerWorkflowVersion !== 8 && value.knowledgeAnswerWorkflowVersion !== 9 && value.knowledgeAnswerWorkflowVersion !== 10 && value.knowledgeAnswerWorkflowVersion !== 11 ||
     value.knowledgeReviewRepairFeedbackVersion !== undefined &&
       (value.knowledgeReviewRepairFeedbackVersion !== 1 || value.knowledgeAnswerWorkflowVersion !== 11) ||
     value.knowledgeGenerationBudget !== undefined &&
       (!isModelGenerationBudget(value.knowledgeGenerationBudget) || value.knowledgeAnswerWorkflowVersion !== 11) ||
+    value.generationBudget !== undefined && !isModelGenerationBudget(value.generationBudget) ||
     value.knowledgeEvidencePackingVersion !== undefined &&
       value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 && value.knowledgeEvidencePackingVersion !== 4 && value.knowledgeEvidencePackingVersion !== 5 ||
     value.knowledgeSearchInstructionVersion !== undefined && value.knowledgeSearchInstructionVersion !== 2 && value.knowledgeSearchInstructionVersion !== 3 ||
@@ -961,7 +967,7 @@ function decodeProviderDispatchRecoveryRequest(
     value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
-    (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 1) ||
+    (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 0 && value.toolObservationVersion !== 1) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     value.reasoningEffort !== undefined && value.reasoningEffort !== null &&
       !nonBlank(value.reasoningEffort, 32) ||
@@ -1094,6 +1100,7 @@ export function createPrismaRunToolLoopOperations(
         }
         const next = toolLoopCheckpoint({
           answerRoundUsage: checkpoint.answerRoundUsage,
+          ...(checkpoint.contextCompaction ? { contextCompaction: checkpoint.contextCompaction } : {}),
           phase: "provider_running",
           providerContinuation: checkpoint.providerContinuation,
           providerCursor: checkpoint.providerCursor,
@@ -1138,6 +1145,7 @@ export function createPrismaRunToolLoopOperations(
     },
     beginToolLoopProviderRound: async (input) => {
       const checkpoint = toolLoopCheckpoint({
+        ...(input.contextCompaction ? { contextCompaction: input.contextCompaction } : {}),
         phase: "provider_running",
         providerContinuation: input.providerContinuation,
         providerCursor: input.providerCursor,
@@ -1407,6 +1415,10 @@ export function createPrismaRunToolLoopOperations(
     loadCheckpointedToolLoopRun: async (input) => {
       const run = await prismaClient.modelRun.findFirst({
         include: {
+          events: {
+            orderBy: { sequence: "desc" }, take: 1, select: { payload: true },
+            where: { eventType: "artifact", payload: { path: ["artifactType"], equals: "context_compaction" } }
+          },
           assistantMessage: {
             select: {
               content: true
@@ -1496,6 +1508,8 @@ export function createPrismaRunToolLoopOperations(
             )
           : null,
         calls: run.toolCalls.map(persistedToolLoopCall),
+        contextCompactionStatus: isRecord(run.events?.[0]?.payload)
+          ? decodeContextCompactionStatus(run.events[0].payload.payload) : null,
         chatId: run.chatId,
         checkpoint,
         id: run.id,
@@ -1789,6 +1803,11 @@ export function createPrismaRunToolLoopOperations(
         if (!current) return { kind: "conflict" as const };
         const pendingCheckpoint = toolLoopCheckpoint({
           answerRoundUsage: current.answerRoundUsage,
+          ...(input.contextCompaction
+            ? { contextCompaction: input.contextCompaction }
+            : current.contextCompaction
+              ? { contextCompaction: current.contextCompaction }
+              : {}),
           phase: "tools_pending",
           providerContinuation: input.providerContinuation,
           providerCursor: input.providerCursor,

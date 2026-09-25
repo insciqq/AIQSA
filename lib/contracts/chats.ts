@@ -38,6 +38,7 @@ import {
   type ThreadGeneratedFile,
   type ThreadWorkspaceActivity
 } from "./workspace";
+import { decodeContextCompactionStatus, type ContextCompactionStatus } from "./contextCompaction";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -96,6 +97,7 @@ export type ThreadMessage = {
 export type ThreadAssistantIdentity = AssistantIdentity;
 
 export type ThreadArtifactSummary = {
+  contextCompaction?: ContextCompactionStatus;
   skillCatalogOmittedCount?: number;
   citations: ThreadCitation[];
   generatedArtifacts?: ThreadGeneratedArtifact[];
@@ -772,6 +774,11 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   }
 
   const citations = value.citations.map(decodeThreadCitation);
+  let contextCompaction: ContextCompactionStatus | undefined;
+  if (value.contextCompaction !== undefined) {
+    contextCompaction = decodeContextCompactionStatus(value.contextCompaction) ?? undefined;
+    if (!contextCompaction) return null;
+  }
   if (value.skillCatalogOmittedCount !== undefined && (!Number.isSafeInteger(value.skillCatalogOmittedCount) || Number(value.skillCatalogOmittedCount) < 0)) return null;
   const sources = value.sources.map(decodeThreadSearchSource);
   if (
@@ -872,6 +879,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     citations: citations.filter(
       (citation): citation is ThreadCitation => citation !== null
     ),
+    ...(contextCompaction ? { contextCompaction } : {}),
     ...(typeof value.skillCatalogOmittedCount === "number" ? { skillCatalogOmittedCount: value.skillCatalogOmittedCount } : {}),
     ...(generatedArtifacts ? { generatedArtifacts } : {}),
     ...(generatedImages ? { generatedImages: generatedImages as ThreadGeneratedImage[] } : {}),

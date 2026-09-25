@@ -115,6 +115,42 @@ describe("administrator model policy handlers", () => {
     expect(service.update).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["off", "v1"] as const)("forwards the observation rollout policy %s", async toolObservationPolicy => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+    const handlers = createAdminModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.PATCH(new Request(
+      "http://local.test/api/admin/providers/model-policy",
+      {
+        body: JSON.stringify({ expectedVersion: 2, toolObservationPolicy }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }
+    ));
+    expect(response.status).toBe(200);
+    expect(service.update).toHaveBeenCalledWith({ expectedVersion: 2, toolObservationPolicy, userId: "user-1" });
+  });
+
+  it("rejects unsupported observation rollout policy before mutation", async () => {
+    const service = { list: vi.fn(), update: vi.fn() };
+    const handlers = createAdminModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.PATCH(new Request(
+      "http://local.test/api/admin/providers/model-policy",
+      {
+        body: JSON.stringify({ expectedVersion: 2, toolObservationPolicy: "provider-model" }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }
+    ));
+    expect(response.status).toBe(400);
+    expect(service.update).not.toHaveBeenCalled();
+  });
+
   it.each([1024, 32768, 65536, 1023, 65537, 4096.5, "8192", null])("validates the MCP output allowance %s before dispatch", async (tokens) => {
     const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
     const handlers = createAdminModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });

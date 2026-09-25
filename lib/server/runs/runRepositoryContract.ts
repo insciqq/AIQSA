@@ -63,6 +63,7 @@ import type {
   ProviderRunRequest
 } from "../providers/types";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
+import type { ContextCompactionCheckpoint } from "../../contracts/contextCompaction";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import type {
@@ -540,6 +541,7 @@ export type RunRepository = {
   ): Promise<void>;
   appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<RunOutputArtifactEvent>;
   beginToolLoopProviderRound(input: {
+    contextCompaction?: ContextCompactionCheckpoint;
     providerContinuation: ToolLoopJsonValue | null;
     providerCursor?: number | string | null;
     roundIndex: number;

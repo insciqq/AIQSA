@@ -13,6 +13,7 @@ import { projectThreadSearchSources } from "../../domain/searchSources";
 import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
+import { decodeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 
 const citationTitleLimit = 500;
 const citationSnippetLimit = 2_000;
@@ -44,6 +45,7 @@ export type RunOutputArtifactEvent =
   | { type: "artifact"; data: { artifactType: "generated_artifact"; payload: RunOutputGeneratedArtifact } }
   | { type: "artifact"; data: { artifactType: "image"; payload: ThreadGeneratedImage } }
   | { type: "artifact"; data: { artifactType: "context_status"; payload: SessionContextStatus } }
+  | { type: "artifact"; data: { artifactType: "context_compaction"; payload: ContextCompactionStatus } }
   | { type: "grounding_display"; data: GroundingDisplay }
   | {
       data: {
@@ -308,6 +310,9 @@ export function isRunOutputArtifactEvent(
   if (event.data.artifactType === "image") return decodeThreadGeneratedImage(event.data.payload) !== null;
   if (event.data.artifactType === "context_status") {
     return decodeSessionContextStatus(event.data.payload) !== null;
+  }
+  if (event.data.artifactType === "context_compaction") {
+    return decodeContextCompactionStatus(event.data.payload) !== null;
   }
 
   if (event.data.artifactType === "citation") {

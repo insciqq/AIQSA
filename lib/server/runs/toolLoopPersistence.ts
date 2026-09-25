@@ -7,6 +7,8 @@ import type { KnowledgePlan } from "../../contracts/knowledge";
 import type { KnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
 import type { KnowledgeRunAdmissionExclusion } from "../knowledge/runAdmission";
 import type { KnowledgeSourceBindingStrategy } from "../knowledge/retrievalTypes";
+import type { ContextCompactionCheckpoint, ContextCompactionStatus, ContextPlanMeasurement } from "../../contracts/contextCompaction";
+import { CONTEXT_COMPACTION_LIMITS, decodeContextSummary, decodeContextSummaryAttempt } from "./contextCompactionContract";
 
 export type ToolLoopJsonValue =
   | boolean
@@ -33,6 +35,7 @@ export type ToolLoopCheckpoint = Readonly<{
   providerCursor: number | string | null;
   roundIndex: number;
   version: 2;
+  contextCompaction?: ContextCompactionCheckpoint;
 }>;
 
 export type PersistedToolLoopCallState = "pending" | "running" | "complete" | "error" | "cancelled";
@@ -92,6 +95,7 @@ export type KnowledgeRunRecoveryScope = Readonly<{
 }>;
 
 export type CheckpointedToolLoopRun = Readonly<{
+  contextCompactionStatus?: ContextCompactionStatus | null;
   assistantMessageId: string | null;
   assistantText: string | null;
   calls: readonly PersistedToolLoopCall[];
@@ -129,6 +133,7 @@ export type PersistToolLoopCallBatchInput = Readonly<{
   roundIndex: number;
   runId: string;
   userId: string;
+  contextCompaction?: ContextCompactionCheckpoint;
 }>;
 
 export type PersistToolLoopCallBatchResult =
@@ -230,6 +235,36 @@ function normalizedUsage(value: unknown): NormalizedTokenUsage | null {
   return normalized;
 }
 
+function validContextCompactionMeasurement(value: unknown): value is ContextPlanMeasurement {
+  if (!isRecord(value) || Object.keys(value).sort().join(",") !==
+    "afterTokens,beforeTokens,budgetTokens,legacyFallback,maskedBatches,maskedObservations,outcome,version" ||
+    value.version !== 1 || !["already_fits", "masking_applied", "needs_summary", "irreducible_overflow"].includes(String(value.outcome)) ||
+    typeof value.legacyFallback !== "boolean" ||
+    !["afterTokens", "beforeTokens", "maskedBatches", "maskedObservations"].every(key => Number.isSafeInteger(value[key]) && Number(value[key]) >= 0) ||
+    !(value.budgetTokens === null || Number.isSafeInteger(value.budgetTokens) && Number(value.budgetTokens) >= 0)) return false;
+  return true;
+}
+
+function validContextCompactionCheckpoint(value: unknown): value is ContextCompactionCheckpoint {
+  if (!isRecord(value) || Object.keys(value).filter((key) => !["summary", "summaryAttempts"].includes(key)).sort().join(",") !==
+      "branchId,followupDigest,followupRevision,measurement,observationRefs,ownerId,pinDigest,policyRevision,providerProjectionRevision,recentTailCallIds,runId,sourceDigest,version" ||
+    value.version !== 1 || value.policyRevision !== "legacy-compatible-v1" && value.policyRevision !== "hybrid-v1" ||
+    !["ownerId", "runId", "branchId"].every(key => typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 256) ||
+    !["sourceDigest", "pinDigest", "followupDigest"].every(key => typeof value[key] === "string" && /^[a-f0-9]{64}$/u.test(value[key] as string)) ||
+    !Number.isSafeInteger(value.followupRevision) || Number(value.followupRevision) < 0 ||
+    !Number.isSafeInteger(value.providerProjectionRevision) || Number(value.providerProjectionRevision) < 1 ||
+    !Array.isArray(value.observationRefs) || value.observationRefs.length > 512 ||
+    value.observationRefs.some(entry => typeof entry !== "string" || !/^tor1_[a-f0-9]{32}$/u.test(entry)) ||
+    !Array.isArray(value.recentTailCallIds) || value.recentTailCallIds.length > 64 ||
+    value.recentTailCallIds.some(entry => typeof entry !== "string" || entry.length === 0 || entry.length > 1024) ||
+    value.summary !== undefined && !decodeContextSummary(value.summary) ||
+    value.summaryAttempts !== undefined && (!Array.isArray(value.summaryAttempts) ||
+      value.summaryAttempts.length > CONTEXT_COMPACTION_LIMITS.summaryAttempts ||
+      value.summaryAttempts.some((attempt) => !decodeContextSummaryAttempt(attempt))) ||
+    !validContextCompactionMeasurement(value.measurement)) return false;
+  return true;
+}
+
 function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAnswerRoundUsage[] | null {
   if (!Array.isArray(value) || value.length > checkpointRound) return null;
   const entries: PersistedAnswerRoundUsage[] = [];
@@ -267,8 +302,9 @@ export function parseToolLoopCheckpoint(value: unknown): ToolLoopCheckpoint | nu
   if (!isRecord(value) ||
     !["answerRoundUsage", "phase", "providerContinuation", "providerCursor", "roundIndex", "version"]
       .every((key) => Object.hasOwn(value, key)) ||
+    Object.keys(value).some(key => !["answerRoundUsage", "phase", "providerContinuation", "providerCursor", "roundIndex", "version", "contextCompaction"].includes(key)) ||
     value.version !== 2 ||
-    Object.keys(value).length !== 6 ||
+    (Object.keys(value).length !== 6 && Object.keys(value).length !== 7) ||
     !["provider_running", "tools_pending", "tools_running"].includes(String(value.phase)) ||
     !Number.isSafeInteger(value.roundIndex) || (value.roundIndex as number) < 0 ||
     (value.roundIndex as number) > toolLoopPersistenceLimits.roundIndex ||
@@ -277,7 +313,8 @@ export function parseToolLoopCheckpoint(value: unknown): ToolLoopCheckpoint | nu
     (typeof value.providerCursor === "number" && !Number.isFinite(value.providerCursor)) ||
     (typeof value.providerCursor === "string" &&
       value.providerCursor.length > toolLoopPersistenceLimits.providerCursorLength) ||
-    !isToolLoopJsonValue(value.providerContinuation)) {
+    !isToolLoopJsonValue(value.providerContinuation) ||
+    value.contextCompaction !== undefined && !validContextCompactionCheckpoint(value.contextCompaction)) {
     return null;
   }
   const parsedAnswerRoundUsage = answerRoundUsage(
@@ -296,6 +333,7 @@ export function toolLoopCheckpoint(input: Readonly<{
   providerContinuation: ToolLoopJsonValue | null;
   providerCursor?: number | string | null;
   roundIndex: number;
+  contextCompaction?: ContextCompactionCheckpoint;
 }>): ToolLoopCheckpoint | null {
   return parseToolLoopCheckpoint({
     answerRoundUsage: input.answerRoundUsage ?? [],
@@ -303,7 +341,8 @@ export function toolLoopCheckpoint(input: Readonly<{
     providerContinuation: input.providerContinuation,
     providerCursor: input.providerCursor ?? null,
     roundIndex: input.roundIndex,
-    version: 2
+    version: 2,
+    ...(input.contextCompaction ? { contextCompaction: input.contextCompaction } : {})
   });
 }
 
@@ -357,6 +396,7 @@ export function upsertAnswerRoundUsage(
     phase: checkpoint.phase,
     providerContinuation: checkpoint.providerContinuation,
     providerCursor: checkpoint.providerCursor,
-    roundIndex: checkpoint.roundIndex
+    roundIndex: checkpoint.roundIndex,
+    ...(checkpoint.contextCompaction ? { contextCompaction: checkpoint.contextCompaction } : {})
   });
 }

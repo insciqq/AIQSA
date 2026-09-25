@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
+import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
 import {
   isRunOutputArtifactEvent,
   projectRunOutputArtifactEvent,
@@ -16,6 +17,17 @@ it("accepts a server-owned context snapshot for persistence but rejects provider
   expect(isRunOutputArtifactEvent(event)).toBe(true);
   expect(projectRunOutputArtifactEvent(event)).toBeNull();
   expect(isRunOutputArtifactEvent({ ...event, data: { ...event.data, payload: { ...payload, rawRequest: "private" } } })).toBe(false);
+});
+
+it("accepts only the content-free server compaction status at the durable event boundary", () => {
+  const payload = makeContextCompactionStatus({
+    afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete"
+  });
+  const event = { type: "artifact", data: { artifactType: "context_compaction", payload } } as const;
+  expect(isRunOutputArtifactEvent(event)).toBe(true);
+  expect(projectRunOutputArtifactEvent(event)).toBeNull();
+  expect(isRunOutputArtifactEvent({ ...event, data: { ...event.data, payload: { ...payload, notes: "private" } } })).toBe(false);
+  expect(JSON.stringify(payload)).not.toMatch(/notes|sourceRefs|prompt|provider/iu);
 });
 
 describe("durable run output events", () => {

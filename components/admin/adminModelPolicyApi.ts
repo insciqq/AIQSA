@@ -2,6 +2,7 @@ import {
   decodeAdminModelPolicyResponse,
   type AdminModelPolicyCatalog
 } from "@/lib/contracts/adminModelPolicy";
+import type { ToolObservationPolicy } from "@/lib/contracts/toolObservationPolicy";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -49,6 +50,7 @@ export type AdminModelPolicyUpdateInput = Readonly<{
   maxToolRounds?: number;
   mcpAutoDiscoveryTimeoutSeconds?: number | null;
   mcpAutoDiscoveryMaxOutputTokens?: number | null;
+  toolObservationPolicy?: ToolObservationPolicy;
 }>;
 
 /** One PATCH for the Chat defaults card: model and limits under one version. */

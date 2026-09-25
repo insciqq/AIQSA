@@ -96,6 +96,17 @@ test("v2 run lifecycle refreshes only on request and isolates its live source", 
   await expect(announcer).toHaveText("Searching the web…");
   await page.getByRole("treeitem", { exact: true, name: "Settled answer" }).click();
   await expect(announcer).toHaveText("");
+
+  const compacted = page.getByRole("region", { name: "Complete · context compacted" });
+  await expect(compacted).toContainText("Context compacted");
+  await compacted.getByTestId("tool-activity-disclosure").locator("summary").click();
+  await expect(compacted.getByTestId("context-compaction-status")).toContainText("Approx. 600 working-context tokens removed");
+  await expect(compacted).not.toContainText("notes");
+
+  const unavailable = page.getByRole("region", { name: "Failed · context source unavailable" });
+  await expect(unavailable).toContainText("Context source unavailable");
+  await unavailable.getByTestId("tool-activity-disclosure").locator("summary").click();
+  await expect(unavailable.getByTestId("context-compaction-status")).toContainText("Context source unavailable");
 });
 
 test("v2 conversation preserves the visible anchor after loading earlier messages", async ({ page }) => {

@@ -11,6 +11,7 @@ import type {
 import { safeExternalHref } from "@/lib/domain/links";
 import { projectThreadSearchSources } from "@/lib/domain/searchSources";
 import { latestGeneratedArtifactsForAnswer } from "@/lib/domain/generatedArtifacts";
+import { decodeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 
 function artifactTypeFromEvent(event: RunEventView): string | null {
   return event.type === "artifact" &&
@@ -109,6 +110,19 @@ function sourceValuesFromSearchEvent(event: RunEventView): unknown[] {
   return Array.isArray(action?.sources) ? [action.sources] : [];
 }
 
+function contextCompactionFromEvents(
+  events: readonly RunEventView[]
+): ContextCompactionStatus | null {
+  let latest: ContextCompactionStatus | null = null;
+  for (const event of events) {
+    if (artifactTypeFromEvent(event) !== "context_compaction") continue;
+    const status = decodeContextCompactionStatus(artifactPayload(event));
+    if (!status) continue;
+    latest = mergeContextCompactionStatus(latest, status);
+  }
+  return latest;
+}
+
 export function summarizeThreadArtifacts(
   events: RunEventView[]
 ): ThreadArtifactSummary | null {
@@ -118,6 +132,7 @@ export function summarizeThreadArtifacts(
       Number.isSafeInteger(payload.skillCatalogOmittedCount) && Number(payload.skillCatalogOmittedCount) > 0
       ? [Number(payload.skillCatalogOmittedCount)] : [];
   }).at(-1);
+  const contextCompaction = contextCompactionFromEvents(events);
   const grounding = events
     .map(groundingDisplayFromEvent)
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
@@ -166,13 +181,15 @@ export function summarizeThreadArtifacts(
     citations.length === 0 &&
     sources.length === 0 &&
     reasoningText.length === 0 &&
-    !grounding
+    !grounding &&
+    !contextCompaction
   ) {
     return null;
   }
 
   return {
     citations,
+    ...(contextCompaction ? { contextCompaction } : {}),
     ...(skillCatalogOmittedCount ? { skillCatalogOmittedCount } : {}),
     groundingDisplay: grounding?.display ?? null,
     ...(generatedFiles.length ? { generatedFiles } : {}),
@@ -194,7 +211,15 @@ export function mergeLiveThreadArtifacts(
   for (const file of [...saved.generatedFiles ?? [], ...live.generatedFiles ?? []]) {
     if (!files.has(file.attachmentId)) files.set(file.attachmentId, file);
   }
-  return { ...saved, ...live, ...(files.size ? { generatedFiles: [...files.values()] } : {}) };
+  const savedCompaction = saved.contextCompaction;
+  const liveCompaction = live.contextCompaction;
+  const contextCompaction = mergeContextCompactionStatus(savedCompaction, liveCompaction);
+  return {
+    ...saved,
+    ...live,
+    ...(contextCompaction ? { contextCompaction } : {}),
+    ...(files.size ? { generatedFiles: [...files.values()] } : {})
+  };
 }
 
 export function textFromPersistedContent(content: unknown): string {

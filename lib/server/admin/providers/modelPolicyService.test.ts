@@ -159,6 +159,7 @@ describe("administrator model policy service", () => {
         maxMcpToolsPerDiscovery: 10,
         maxToolCalls: 20,
         maxToolRounds: 8,
+        toolObservationPolicy: "off",
         updatedAt: NOW.toISOString(),
         updatedBy: { displayName: "Administrator", id: "admin-1" },
         version: 4
@@ -282,6 +283,25 @@ describe("administrator model policy service", () => {
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },
+      where: { id: "installation" }
+    });
+  });
+
+  it.each(["off", "v1"] as const)("updates the frozen observation rollout default: %s", async toolObservationPolicy => {
+    const update = vi.fn().mockResolvedValue({});
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ version: 5 }]),
+      modelPolicy: { update }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
+    } as unknown as PrismaClient;
+
+    await createAdminModelPolicyService(prisma).update({
+      expectedVersion: 5, toolObservationPolicy, userId: "admin-1"
+    });
+    expect(update).toHaveBeenCalledWith({
+      data: { toolObservationPolicy, updatedByUserId: "admin-1", version: { increment: 1 } },
       where: { id: "installation" }
     });
   });

@@ -4,6 +4,7 @@ import { projectMessageFollowups } from "../runs/runFollowups";
 import { sumTokenUsage } from "../../domain/usage";
 import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
+import { decodeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
@@ -1184,6 +1185,19 @@ function artifactInnerPayload(payload: unknown): unknown {
   return isRecord(payload) && "payload" in payload ? payload.payload : null;
 }
 
+function contextCompactionFromArtifactPayloads(
+  payloads: readonly unknown[]
+): ContextCompactionStatus | null {
+  let latest: ContextCompactionStatus | null = null;
+  for (const payload of payloads) {
+    if (artifactType(payload) !== "context_compaction") continue;
+    const status = decodeContextCompactionStatus(artifactInnerPayload(payload));
+    if (!status) continue;
+    latest = mergeContextCompactionStatus(latest, status);
+  }
+  return latest;
+}
+
 function reasoningText(payload: unknown): string | null {
   const inner = artifactInnerPayload(payload);
   return reasoningTextFromValue(inner);
@@ -1254,6 +1268,7 @@ export function summarizeMessageRunArtifacts(
     .map((event) => projectGroundingDisplay(event.payload))
     .filter((display) => display !== null).at(-1) ?? null;
   const artifactPayloads = run.events.map((event) => event.payload);
+  const contextCompaction = contextCompactionFromArtifactPayloads(artifactPayloads);
   const reasoningPayloads = artifactPayloads.filter(
     (payload) => artifactType(payload) === "reasoning"
   );
@@ -1363,6 +1378,7 @@ export function summarizeMessageRunArtifacts(
     !memoryAction &&
     !memoryStatus &&
     memorySources.length === 0 &&
+    !contextCompaction &&
     workDurationMs === null
   ) {
     return null;
@@ -1370,6 +1386,7 @@ export function summarizeMessageRunArtifacts(
 
   return {
     citations,
+    ...(contextCompaction ? { contextCompaction } : {}),
     ...(skillCatalogOmittedCount > 0 ? { skillCatalogOmittedCount } : {}),
     ...(generatedArtifacts.length > 0 ? { generatedArtifacts } : {}),
     ...(generatedImages.length > 0 ? { generatedImages } : {}),

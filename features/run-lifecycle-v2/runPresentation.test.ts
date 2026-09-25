@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
 import { TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
   answerProcessLabelV2,
   describeToolCallV2,
@@ -31,6 +32,48 @@ function summary(payload: Record<string, unknown>): RunEventView {
 }
 
 describe("run lifecycle v2 presentation", () => {
+  it("projects compaction as a live process status and keeps terminal state over late progress", () => {
+    const running = {
+      type: "artifact",
+      data: { artifactType: "context_compaction", payload: makeContextCompactionStatus({
+        afterTokens: 600, beforeTokens: 1_200, outcome: "pending", state: "running"
+      }) }
+    } satisfies RunEventView;
+    const complete = {
+      type: "artifact",
+      data: { artifactType: "context_compaction", payload: makeContextCompactionStatus({
+        afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete"
+      }) }
+    } satisfies RunEventView;
+    expect(presentRunLifecycleV2(state({ events: [running] }))).toMatchObject({
+      activity: { kind: "compaction", label: "Compacting context…" },
+      compaction: { state: "running", outcome: "pending" },
+      kind: "activity"
+    });
+    expect(presentRunLifecycleV2(state({
+      authoritativeMessageStatus: "complete", events: [complete, running], runId: "run-1"
+    })).compaction).toMatchObject({ state: "complete", outcome: "summary_applied", reducedTokens: 600 });
+    expect(presentRunLifecycleV2(state({ contextCompaction: complete.data.payload, runId: "run-1" })).compaction)
+      .toMatchObject({ state: "complete", outcome: "summary_applied" });
+    expect(presentRunLifecycleV2(state({ contextCompaction: complete.data.payload, events: [running], runId: "run-1" })).compaction)
+      .toMatchObject({ state: "complete", outcome: "summary_applied" });
+    const later = { ...running, data: { ...running.data, payload: { ...running.data.payload, cycle: 2 } } };
+    expect(presentRunLifecycleV2(state({ contextCompaction: complete.data.payload, events: [later, running] })).compaction)
+      .toMatchObject({ cycle: 2, state: "running" });
+    for (const terminal of ["complete", "cancelled", "error"] as const) {
+      expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: terminal, events: [later] })).compaction)
+        .toMatchObject({ cycle: 2, state: "failed", outcome: "unknown", reducedTokens: null });
+    }
+  });
+
+  it("ignores malformed compaction payloads and keeps private fields out of the projection", () => {
+    const event = { type: "artifact", data: { artifactType: "context_compaction", payload: {
+      afterTokens: 1, beforeTokens: 2, outcome: "summary_applied", reducedTokens: 1,
+      stage: "settled", state: "complete", version: 1, notes: "private"
+    } } } satisfies RunEventView;
+    expect(presentRunLifecycleV2(state({ events: [event] }))).toEqual({ kind: "idle", runId: null });
+  });
+
   it("projects safe Skill facts only from the Skill origin and keeps model payloads out of activity", () => {
     const event = { type: "artifact", data: { artifactType: "tool_call", payload: {
       name: "load_skill", origin: "skill", skillId: "review", skillName: "Careful review", round: 1,

@@ -35,6 +35,8 @@ import type { ProviderToolBridge } from "../tools/types";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 import type { SkillBudgetFacts } from "../../contracts/skills";
+import { planContextCompaction, contextCompactionMeasurementWithBudget } from "./contextCompactionPlanner";
+import { contextSummaryIsCurrent } from "./contextCompactionSummarizer";
 
 // Matches the former 20,000-character ASCII ceiling under the shared
 // estimator, but applies once across every selected text attachment and is
@@ -266,20 +268,61 @@ function providerRequestFixedExtraTokens(request: ProviderRunRequest, bridge?: P
     estimateApproxTokens(knowledgeToolLoopContract(request) ?? "");
 }
 
+function contextCompactionBudgetLimits(request: ProviderRunRequest) {
+  const contextWindow = request.modelCapabilities.contextWindow;
+  return Number.isFinite(contextWindow) && Number(contextWindow) > 0
+    ? calculateContextBudgetLimits({
+        contextWindow: Number(contextWindow),
+        maxOutputTokens: maxOutputTokensForBudget(request.params, request.modelCapabilities, request.provider),
+        provider: request.provider
+      })
+    : null;
+}
+
+function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+  const messages = request.context?.messages;
+  const contextTokens = messages?.length
+    ? messages.reduce((total, message) => total + estimateApproxTokens(message.content), 0)
+    : estimateApproxTokens(request.content);
+  const prompt = contextBudgetPrompt(request.prompt);
+  return contextTokens + estimateApproxTokens(prompt.system ?? "") + estimateApproxTokens(prompt.developer ?? "") +
+    providerRequestFixedExtraTokens(request, bridge) +
+    providerAttachmentBudgetTokens({ attachments: request.attachments, modelCapabilities: request.modelCapabilities });
+}
+
+function planProviderRequestContext(input: Readonly<{
+  bridge?: ProviderToolBridge;
+  request: ProviderRunRequest;
+}>): Readonly<{
+  limits: ReturnType<typeof contextCompactionBudgetLimits>;
+  planned: ReturnType<typeof planContextCompaction>;
+}> {
+  const limits = contextCompactionBudgetLimits(input.request);
+  return {
+    limits,
+    planned: planContextCompaction({
+      ...input,
+      assembledTokens: approximateProviderRequestTokens(input.request, input.bridge),
+      budgetTokens: limits?.budgetTokens ?? null
+    })
+  };
+}
+
 /** Reads the same contributors as the budget guard, without changing a request. */
 export function measureSessionContext(input: Readonly<{
   answerText?: string;
   bridge?: ProviderToolBridge;
   request: ProviderRunRequest;
 }>): SessionContextStatus {
-  const { request } = input;
+  const { limits, planned } = planProviderRequestContext(input);
+  const { request } = planned;
   const prompt = contextBudgetPrompt(request.prompt);
   const messages = request.context?.messages;
   const contextTokens = messages?.length
     ? messages.reduce((total, message) => total + estimateApproxTokens(message.content), 0)
     : estimateApproxTokens(request.content);
   const contextWindow = request.modelCapabilities.contextWindow;
-  const limits = calculateContextBudgetLimits({
+  const measuredLimits = limits ?? calculateContextBudgetLimits({
     contextWindow: contextWindow ?? 0,
     maxOutputTokens: maxOutputTokensForBudget(request.params, request.modelCapabilities, request.provider),
     provider: request.provider
@@ -293,11 +336,11 @@ export function measureSessionContext(input: Readonly<{
     contextWindow: Number.isFinite(contextWindow) && Number(contextWindow) > 0 ? Math.floor(contextWindow!) : null,
     droppedMessages: request.context?.summary?.truncation?.droppedMessages ?? 0,
     loadedTools: providerFacingSerializedTools(request, input.bridge).length,
-    maxOutputTokens: limits.maxOutputTokens,
+    maxOutputTokens: measuredLimits.maxOutputTokens,
     modelId: request.modelId,
     phase: input.answerText === undefined ? "request" : "after_answer",
     provider: request.provider,
-    safetyMarginTokens: limits.safetyMarginTokens,
+    safetyMarginTokens: measuredLimits.safetyMarginTokens,
     version: 1
   };
 }
@@ -470,17 +513,76 @@ export function applyProviderRequestContextBudget(input: Readonly<{
   bridge?: ProviderToolBridge;
   request: ProviderRunRequest;
 }>): ProviderRequestContextBudgetResult {
-  const result = applyProviderRequestContextBudgetCore(input);
-  if (result.ok || input.request.agent) return result;
-  const messages = input.request.context?.messages ?? [];
+  const { limits, planned } = planProviderRequestContext(input);
+  const plannedInput = { ...input, request: planned.request };
+  // A newly admitted hybrid run must reach the execution lease with its
+  // bounded source intact so the summarizer can run before the first answer
+  // request. Legacy runs continue through the existing whole-turn guard.
+  if (planned.request.contextCompactionPolicy?.mode === "hybrid" && limits) {
+    const hybridMeasurement = contextCompactionMeasurementWithBudget(
+      planned.measurement,
+      limits.budgetTokens,
+      true
+    );
+    if (hybridMeasurement.outcome === "needs_summary") {
+      const summaryApplied = planned.request.contextCompactionSummary !== undefined &&
+        planned.request.context?.messages.some((message) =>
+          message.id === `__context-summary-${planned.request.contextCompactionSummary!.id}`
+        ) === true;
+      // A committed summary is the guarded lossy boundary. If the exact
+      // projection still cannot fit, stop with overflow evidence instead of
+      // silently applying the legacy trimmer or buying the same summary again.
+      if (summaryApplied && contextSummaryIsCurrent(planned.request)) {
+        return {
+          error: {
+            code: "context_too_large",
+            message: "The committed context summary and exact current context exceed the model budget."
+          },
+          ok: false,
+          status: 400
+        };
+      }
+      const attachmentFit = fitProviderAttachmentText({
+        fixedExtraTokens: providerRequestFixedExtraTokens(planned.request, input.bridge),
+        request: planned.request
+      });
+      if (!attachmentFit.ok) {
+        return {
+          error: {
+            code: "context_too_large",
+            message: "Prompt, current message, tools, and selected attachments exceed the model context budget."
+          },
+          ok: false,
+          status: 400
+        };
+      }
+      return {
+        contextTruncation: null,
+        ok: true,
+        request: {
+          ...planned.request,
+          attachments: attachmentFit.attachments,
+          contextCompaction: { ...hybridMeasurement, legacyFallback: false }
+        }
+      };
+    }
+  }
+  const result = applyProviderRequestContextBudgetCore(plannedInput);
+  const withMeasurement = (value: ProviderRequestContextBudgetResult): ProviderRequestContextBudgetResult => {
+    const next = contextCompactionMeasurementWithBudget(planned.measurement, limits?.budgetTokens ?? null, value.ok);
+    if (value.ok) return { ...value, request: { ...value.request, contextCompaction: next } };
+    return value;
+  };
+  if (result.ok || input.request.agent) return withMeasurement(result);
+  const messages = planned.request.context?.messages ?? [];
   const pinned = messages.filter((message) => message.purpose === "skill_context");
   const catalog = messages.filter((message) => message.purpose === "skill_catalog");
-  if (!pinned.length && !catalog.length) return result;
-  const withoutSkills = applyProviderRequestContextBudgetCore({ ...input, request: {
-    ...input.request, context: { ...input.request.context!, messages: messages.filter((message) => message.purpose !== "skill_context" && message.purpose !== "skill_catalog") }
+  if (!pinned.length && !catalog.length) return withMeasurement(result);
+  const withoutSkills = applyProviderRequestContextBudgetCore({ ...plannedInput, request: {
+    ...planned.request, context: { ...planned.request.context!, messages: messages.filter((message) => message.purpose !== "skill_context" && message.purpose !== "skill_catalog") }
   } });
-  if (!withoutSkills.ok) return result;
-  const limits = calculateContextBudgetLimits({
+  if (!withoutSkills.ok) return withMeasurement(result);
+  const skillLimits = calculateContextBudgetLimits({
     contextWindow: input.request.modelCapabilities.contextWindow ?? 0,
     maxOutputTokens: maxOutputTokensForBudget(input.request.params, input.request.modelCapabilities, input.request.provider),
     provider: input.request.provider
@@ -488,7 +590,7 @@ export function applyProviderRequestContextBudget(input: Readonly<{
   return { ok: false, status: 400, error: {
     code: "skills_budget_exceeded", message: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window.",
     skillBudget: { pinnedTokens: pinned.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0),
-      catalogTokens: catalog.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0), budgetTokens: limits.budgetTokens }
+      catalogTokens: catalog.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0), budgetTokens: skillLimits.budgetTokens }
   } };
 }
 

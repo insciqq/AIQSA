@@ -93,6 +93,7 @@ export type ModelRunSseEvent =
           | "image"
           | "citation"
           | "context_status"
+          | "context_compaction"
           | "context_truncated"
           | "reasoning"
           | "search"

@@ -1089,8 +1089,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       );
     }
-    const events = source.runId === thread.currentRunId ? thread.events : [];
-    const artifact = source.runId === thread.currentRunId
+    const ownsLiveRun = Boolean(source.runId) && source.runId === thread.currentRunId;
+    const events = ownsLiveRun ? thread.events : [];
+    const artifact = ownsLiveRun
       ? mergeLiveThreadArtifacts(source.artifactSummary, thread.liveArtifactSummary)
       : source.artifactSummary ?? null;
     // A genuinely lost stream transport (reader error / end without a
@@ -1108,6 +1109,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         persistedRunStatus: null
       }),
       content: messageText(source),
+      contextCompaction: artifact?.contextCompaction,
       events,
       runId: source.runId ?? null
     });
@@ -1158,7 +1160,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // The persisted work duration wins once the run settles; while it streams
     // the client clock (send → first token) fills the same slot.
     const workDurationMs = artifact?.workDurationMs ??
-      (source.runId === thread.currentRunId ? thread.liveWorkDurationMs : null);
+      (ownsLiveRun ? thread.liveWorkDurationMs : null);
     const copiedAttachments = attachmentBlocksFromThreadContent(source.content)
       .filter((block) => !artifact?.generatedImages?.some((image) => image.attachmentId === block.attachmentId));
     return (

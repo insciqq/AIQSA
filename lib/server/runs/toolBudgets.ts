@@ -7,6 +7,10 @@ import {
   isMcpDiscoveryOutputBudget,
   MCP_RUN_PLAN_LIMITS
 } from "../../contracts/mcp";
+import {
+  isToolObservationPolicy,
+  type ToolObservationPolicy
+} from "../../contracts/toolObservationPolicy";
 
 export type ToolRunBudgets = Readonly<{
   mcpAutoDiscoveryTimeoutSeconds: number;
@@ -15,6 +19,8 @@ export type ToolRunBudgets = Readonly<{
   maxMcpToolsPerDiscovery: number;
   maxToolCalls: number;
   maxToolRounds: number;
+  /** Operator rollout gate loaded with the installation policy. */
+  toolObservationPolicy?: ToolObservationPolicy;
 }>;
 
 export const DEFAULT_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
@@ -22,7 +28,8 @@ export const DEFAULT_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
   mcpAutoDiscoveryTimeoutSeconds: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.defaultSeconds,
   maxMcpToolsPerDiscovery: 10,
   maxToolCalls: 20,
-  maxToolRounds: 8
+  maxToolRounds: 8,
+  toolObservationPolicy: "off"
 });
 
 const LEGACY_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
@@ -32,6 +39,11 @@ const LEGACY_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
   maxToolCalls: 16,
   maxToolRounds: 3
 });
+
+/** Invalid or absent operator state fails closed for new admission. */
+export function normalizeToolObservationPolicy(value: unknown): ToolObservationPolicy {
+  return isToolObservationPolicy(value) ? value : "off";
+}
 
 function positiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
@@ -102,7 +114,8 @@ export const installationToolBudgetPolicy = {
         mcpAutoDiscoveryMaxOutputTokens: true,
         maxMcpToolsPerDiscovery: true,
         maxToolCalls: true,
-        maxToolRounds: true
+        maxToolRounds: true,
+        toolObservationPolicy: true
       },
       where: { id: "installation" }
     });
@@ -119,7 +132,8 @@ export const installationToolBudgetPolicy = {
       mcpAutoDiscoveryMaxOutputTokens: policy.mcpAutoDiscoveryMaxOutputTokens === null ? "model" as const : Number(policy.mcpAutoDiscoveryMaxOutputTokens),
       maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
       maxToolCalls: Number(policy.maxToolCalls),
-      maxToolRounds: Number(policy.maxToolRounds)
+      maxToolRounds: Number(policy.maxToolRounds),
+      toolObservationPolicy: normalizeToolObservationPolicy(policy.toolObservationPolicy)
     };
     if (!valid(budgets)) throw new Error("installation_tool_budgets_invalid");
     return budgets;

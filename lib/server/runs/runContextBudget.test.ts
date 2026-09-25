@@ -16,6 +16,8 @@ import {
 } from "../providers/personalContext";
 import type { ProviderRunRequest } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
+import { readToolResultTool } from "../tools/readToolResult";
+import { projectObservationForProvider } from "../toolObservations/projection";
 import {
   applyProviderRequestContextBudget,
   measureSessionContext,
@@ -294,6 +296,61 @@ describe("provider request context budget", () => {
     });
 
     expect(budgeted).toMatchObject({ error: { code: "context_too_large" }, ok: false });
+  });
+
+  it("plans v1 observation masking before the exact assembled-request guard", () => {
+    const descriptor = (seed: string) => ({
+      byteSize: 20_000,
+      checksum: seed.repeat(64),
+      encoding: "json-utf8-v1" as const,
+      handle: `tor1_${seed.repeat(32)}`,
+      maskable: true,
+      source: "mcp" as const,
+      sourceTruncated: false,
+      version: 1 as const
+    });
+    const projected = (id: string, seed: string) => projectObservationForProvider({
+      callId: id,
+      content: [{ text: `rare-${id}-${"x".repeat(6000)}`, type: "text" as const }],
+      name: "read_record",
+      observation: descriptor(seed),
+      status: "complete" as const
+    });
+    const planned = applyProviderRequestContextBudget({
+      bridge: openAIResponsesToolBridge,
+      request: request({
+        context: {
+          messages: [
+            { content: { blocks: [{ text: "pinned", type: "text" }] }, id: "pinned", purpose: "knowledge_evidence", role: "user" },
+            { content: { blocks: [{ text: "current", type: "text" }] }, id: "current", role: "user" }
+          ],
+          mode: "branch_path"
+        },
+        contextCompactionPolicy: {
+          mode: "legacy_compatible",
+          source: { digest: "a".repeat(64), leafMessageId: "leaf", messageCount: 2 },
+          version: 1
+        },
+        modelCapabilities: { ...request().modelCapabilities, contextWindow: 5_000, toolCalling: true },
+        providerToolMessages: [
+          openAIResponsesToolBridge.appendToolResult(undefined, projected("old", "a")),
+          { call_id: "new", name: "read_record", type: "function_call" },
+          openAIResponsesToolBridge.appendToolResult(undefined, projected("new", "b"))
+        ],
+        toolObservationVersion: 1,
+        tools: [readToolResultTool]
+      })
+    });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) throw new Error("unexpected context rejection");
+    expect(planned.request.context?.messages.map(message => message.id)).toEqual(["pinned", "current"]);
+    expect(JSON.stringify(planned.request.providerToolMessages?.[0])).not.toContain("rare-old");
+    expect(JSON.stringify(planned.request.providerToolMessages?.[2])).toContain("rare-new");
+    expect(planned.request.contextCompaction).toMatchObject({
+      maskedBatches: 1,
+      maskedObservations: 1,
+      outcome: "masking_applied"
+    });
   });
 
   it("drops older turns while keeping the full Skill context directly before current user text", () => {

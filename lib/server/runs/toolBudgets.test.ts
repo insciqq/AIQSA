@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NormalizedRunRequest } from "../providers/types";
 import {
   DEFAULT_TOOL_RUN_BUDGETS,
+  normalizeToolObservationPolicy,
   toolRunBudgetsForRequest
 } from "./toolBudgets";
 
@@ -51,7 +52,17 @@ describe("accepted tool budgets", () => {
       mcpAutoDiscoveryMaxOutputTokens: "model",
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 20,
-      maxToolRounds: 8
+      maxToolRounds: 8,
+      toolObservationPolicy: "off"
     });
+  });
+
+  it.each([undefined, null, "future"])("fails closed for an invalid rollout policy: %s", value => {
+    expect(normalizeToolObservationPolicy(value)).toBe("off");
+  });
+
+  it("accepts only the two rollout modes", () => {
+    expect(normalizeToolObservationPolicy("off")).toBe("off");
+    expect(normalizeToolObservationPolicy("v1")).toBe("v1");
   });
 });
