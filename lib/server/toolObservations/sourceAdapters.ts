@@ -119,5 +119,6 @@ export async function captureOwnedObservation(context: CaptureContext, source: "
 
 export async function restoreObservedResult(context: CaptureContext, call: Pick<ModelToolCall, "id" | "name">) {
   const restored = await context.service.restore(context.producer, context.signal);
-  return observationResult(call, restored.status, restored.projection);
+  return restored.search ? searchObservationProjection(call, restored.search, restored.projection)
+    : observationResult(call, restored.status, restored.projection);
 }

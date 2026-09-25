@@ -13,7 +13,8 @@ import { createFileSystemStorageAdapter, type StorageAdapter } from "../uploads/
 import { observationFailure, TOOL_OBSERVATION_LIMITS } from "./contract";
 import { ObservationStoreError } from "./repository";
 import { createToolObservationService, type ToolObservationRepository } from "./service";
-import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider } from "./sourceAdapters";
+import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider,
+  restoreObservedResult } from "./sourceAdapters";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { searchToolResultContent, searchToolResultText, type SearchExecutionEvidence } from "../search/toolResult";
 import { SearchToolCancelledError } from "../search/toolExecutor";
@@ -382,6 +383,8 @@ describe("accepted observation source adapters", () => {
     const original = JSON.parse((await f.service().read(producer, { handle: result.observation!.handle })).fragment);
     expect(original).toMatchObject({ content: [{ type: "json", value: { aiqsaType: "search_result" } }],
       rawPreview: { searchExecutions: [{ invocationId: "invocation-1" }, {}, {}] } });
+    // A restart before settlement restores the same text, not the compact original.
+    expect(await restoreObservedResult({ service: f.service(), producer }, call)).toEqual(result);
   });
 
   it("externalizes canonical Search once and retains exact sources and independent usage when its object is lost", async () => {
@@ -401,6 +404,7 @@ describe("accepted observation source adapters", () => {
     expect(Buffer.byteLength(text)).toBeLessThan(80 * 1024);
     for (const field of internalSearchFields) expect(JSON.stringify(result)).not.toContain(field);
     expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
+    expect(await restoreObservedResult({ service: f.service(), producer }, call)).toEqual(result);
     expect((await f.service().read(producer, { handle: result.observation!.handle, query: "rare-search-3" })).fragment).toContain("rare-search-3");
     const accounting = await f.service().searchAccounting(producer);
     expect(accounting.map(execution => execution.usage.totalTokens)).toEqual([11, 22, 33]);

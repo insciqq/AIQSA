@@ -8,7 +8,7 @@ import { measureObservationJson, observationJsonStream, OBSERVATION_ENCODING } f
 import { decodeToolObservationDescriptor, decodeToolObservationReadInput, toolObservationCursor, ObservationStoreError,
   TOOL_OBSERVATION_LIMITS, type ToolObservationDescriptor, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
 import type { ObservationActor, ObservationProducer, createToolObservationRepository } from "./repository";
-import { readSearchAccounting } from "./searchAccounting";
+import { readSearchAccounting, readSearchOriginal } from "./searchAccounting";
 import { decodeSearchObservationReceipt, searchObservationReceipt } from "./searchReceipt";
 import type { ToolExecutionResult } from "../tools/types";
 
@@ -298,11 +298,18 @@ export function createToolObservationService(input: Readonly<{
         return readObservationBytes({ body, identity: reference,
           selector: { offset: 0, maxBytes: TOOL_OBSERVATION_LIMITS.previewBytes }, signal: readSignal });
       }, { ...(signal ? { signal } : {}), whenBusy: "wait" });
+      // Search's model projection is rebuilt from its complete retained
+      // result, as at capture; its compact original never becomes the text.
+      const search = row.sourceKind === "search" ? await readPhase(row, reference, async () => {
+        const readSignal = boundedSignal(signal);
+        return readSearchOriginal({ body: await bodyFor(row, reference, readSignal, producer), identity: reference, signal: readSignal });
+      }, { ...(signal ? { signal } : {}), whenBusy: "wait", wholeOriginal: true }) : undefined;
       const after = await repository.readProducer(producer);
       if (after.state !== "READY" || after.checksum !== reference.checksum) throw unavailable();
       return { status: row.executionOutcome === "error" ? "error" as const : "complete" as const,
         projection: { observation: reference, fragmentKind: "serialized_json_text" as const, preview: preview.fragment,
-          incomplete: !preview.completeDocument, reader: "read_tool_result" as const } };
+          incomplete: !preview.completeDocument, reader: "read_tool_result" as const },
+        ...(search ? { search } : {}) };
     },
 
     async searchAccounting(producer: ObservationProducer) {
