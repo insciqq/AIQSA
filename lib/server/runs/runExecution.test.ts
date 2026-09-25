@@ -113,7 +113,7 @@ import * as agentExecutor from "../agents/executor";
 import { agentLimits } from "../agents/config";
 import { DEFAULT_AGENT_POLICY } from "../../contracts/agentPolicy";
 import { conversationContextPolicy } from "./contextCompactionContract";
-import { decodeContextCompactionStatus } from "../../contracts/contextCompaction";
+import { decodeContextCompactionStatus, type ContextSummary } from "../../contracts/contextCompaction";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -1638,6 +1638,46 @@ describe("run execution", () => {
     expect(statuses[1]?.afterTokens).toBe(crossing?.contextCompaction?.afterTokens);
     expect(JSON.stringify(events)).not.toContain("PRIVATE_NOTES");
     expect(events.filter(isContextEvent)).toHaveLength(4);
+  });
+
+  it.each([
+    ["readable", [] as string[]],
+    ["no longer readable", [`tor1_${"9".repeat(32)}`]]
+  ])("applies carried checkpoint notes in the crossing round when their sources are %s", async (state, handles) => {
+    const carried: ContextSummary = { formatVersion: 1, id: `cs1_${"7".repeat(32)}`, notes: "CARRIED_NOTES old history condensed earlier.",
+      sourceDigest: "7".repeat(64), sourceRefs: ["old-history", ...handles] };
+    const loop = compactionLoopFixture({ historyTokens: 4_600, resultChars: 7_800, mutate: request => ({ ...request,
+      contextCompactionPolicy: { ...request.contextCompactionPolicy!,
+        reuse: { coveredMessageId: "recent-1", runId: "run-previous", summary: carried } } }) });
+    await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    const [first, crossing, next] = loop.answers;
+    // The exact branch fits in round 1; its admitted context is sent whole.
+    expect(first?.contextCompactionSummary).toBeUndefined();
+    expect(JSON.stringify(first?.context)).toContain("OLD_HISTORY");
+    const checkpoint = loop.batchCheckpoints.find(batch => batch.roundIndex === 2)?.contextCompaction;
+    if (state === "readable") {
+      // The crossing round reuses the notes: nothing is bought and the checkpoint records them.
+      expect(loop.summaries).toEqual([]);
+      expect(crossing?.contextCompactionSummary).toEqual(carried);
+      expect(crossing?.context?.messages.map(message => message.id).slice(0, 1)).toEqual([`__context-summary-${carried.id}`]);
+      expect(crossing?.context?.messages.map(message => message.id)).toEqual(expect.arrayContaining(["recent-2", "recent-3"]));
+      expect(JSON.stringify(crossing?.context)).not.toContain("OLD_HISTORY");
+      expect(checkpoint?.summary).toEqual(carried);
+      expect(checkpoint?.summaryAttempts).toBeUndefined();
+      expect(next?.contextCompactionSummary).toEqual(carried);
+      expect(loop.compactionStatuses().map(({ cycle, outcome, state: status }) => [cycle, status, outcome]))
+        .toEqual([[1, "complete", "summary_applied"]]);
+    } else {
+      // A covered source the run cannot read: a fresh bounded plan over the exact branch, never the notes.
+      expect(loop.summaries.length).toBeGreaterThan(0);
+      expect(loop.summaries.some(summary => JSON.stringify(summary.content).includes("CARRIED_NOTES"))).toBe(false);
+      expect(crossing?.contextCompactionSummary?.id).not.toBe(carried.id);
+      expect(checkpoint?.summary?.id).toBe(crossing?.contextCompactionSummary?.id);
+    }
+    for (const request of loop.answers) {
+      expect(request.contextCompaction!.afterTokens).toBeLessThanOrEqual(request.contextCompaction!.budgetTokens!);
+    }
   });
 
   it("sends summaries without Memory, Knowledge, Search or tools and publishes no session context for them", async () => {

@@ -19,7 +19,7 @@ import {
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
-import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities } from "../providers/types";
+import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
 import type { ProjectRunAdmission, RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import { materializePreparedRunData, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
@@ -33,6 +33,11 @@ import { renderCodexManagedProfile } from "../agents/codexProfile";
 import { agentPrompts } from "../agents/prompt";
 import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
+import { estimateApproxTokens } from "../../domain/contextBudget";
+import { openAIResponsesToolBridge } from "../tools/bridges";
+import { prepareCompactedProviderRequest } from "./contextCompactionConsumer";
+import { contextCompactionCheckpoint, type BranchContextCheckpoint } from "./contextCompactionContract";
+import { createContextCompactionPublisher } from "./contextCompactionEvents";
 
 // Passthrough spy: the Agent compatibility identity input is otherwise private.
 vi.mock("../mcp/definitions", async (importOriginal) => {
@@ -4610,5 +4615,174 @@ describe("run preparation", () => {
     }
     expect(providerJson).toContain(imageDataUrl);
     expect(providerJson).toContain(pdfBase64);
+  });
+});
+
+describe("cross-turn compaction reuse", () => {
+  // Budget: 20,000 window - 512 output - 2,000 margin = 17,488 estimated tokens.
+  const capabilities: ProviderModelCapabilities = { ...baseCapabilities, contextWindow: 20_000, defaultMaxOutputTokens: 512,
+    maxOutputTokens: 512, toolCalling: true };
+  const question = (turn: number) => `Question ${turn}.${turn === 1 ? " The project codename is ZEBRA-42." : ""} ${"q".repeat(2_400)}`;
+  const answer = (turn: number) => `Answer ${turn}. ${"a".repeat(5_600)}`;
+  const say = (id: string, role: "assistant" | "user", value: string): ProviderConversationMessage =>
+    ({ content: textMessageContent(value), id, role });
+  const exchange = (turn: number): ProviderConversationMessage[] =>
+    [say(`u${turn}`, "user", question(turn)), say(`a${turn}`, "assistant", answer(turn))];
+
+  /** A deterministic summarizer that carries the turn-one codename forward when its envelope shows it. */
+  function noteTaker() {
+    const inputs: number[] = [];
+    const adapter: Pick<ProviderAdapter, "stream"> = { async *stream(request) {
+      inputs.push(estimateApproxTokens(request.content));
+      const fact = JSON.stringify(request.content).includes("ZEBRA-42") ? " The project codename is ZEBRA-42." : "";
+      const output = JSON.stringify({ notes: `Notes ${inputs.length}.${fact}`, sourceRefs: [] });
+      yield { data: { delta: output }, type: "token" as const };
+      return { finalProviderResponsePreview: {}, finalText: output, usage: { inputTokens: 1, outputTokens: 1 } };
+    } };
+    return { adapter, inputs };
+  }
+
+  async function admit(input: Readonly<{
+    capabilities?: ProviderModelCapabilities;
+    checkpoints?: readonly BranchContextCheckpoint[];
+    history: readonly ProviderConversationMessage[];
+    policy?: "off" | "v1";
+    regenerate?: ProviderConversationMessage;
+    text?: string;
+  }>) {
+    const harness = createHarness({ capabilities: input.capabilities ?? capabilities, sendContext: input.history,
+      regenerateContext: input.regenerate ? [...input.history, input.regenerate] : [] });
+    const loadBranchContextCheckpoints = vi.fn(async () => [...(input.checkpoints ?? [])]);
+    const stream = vi.spyOn(harness.adapter, "stream");
+    const deps: RunPreparationDeps = { ...harness.deps,
+      repository: { ...harness.deps.repository, loadBranchContextCheckpoints },
+      runPolicy: { load: async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: input.policy ?? "v1" }) } };
+    const body = successBody({ content: textMessageContent(input.text ?? "Next question."), modelId: "openai-tool-model", provider: "openai" });
+    const prepared = preparedFrom(await prepareRun(deps, input.regenerate
+      ? regenerateInput(body, { userMessage: { content: input.regenerate.content, id: input.regenerate.id } })
+      : sendInput(body, { activeLeafMessageId: null })));
+    return { loadBranchContextCheckpoints, prepared, stream };
+  }
+
+  async function compact(prepared: PreparedRun, notes: ReturnType<typeof noteTaker>, sourceAvailable = async () => true) {
+    return prepareCompactedProviderRequest({
+      bridge: openAIResponsesToolBridge,
+      failure: (code, message) => Object.assign(new Error(message), { code }),
+      publisher: createContextCompactionPublisher(async () => undefined),
+      receipts: { claim: async () => undefined, settle: async () => undefined },
+      request: materializePreparedRunData(prepared).providerRequest,
+      signal: new AbortController().signal,
+      sourceAvailable,
+      summaryAdapter: notes.adapter
+    });
+  }
+
+  /** The checkpoint the executor leaves for a turn (answer a<turn>). */
+  function checkpointOf(turn: number, request: ProviderRunRequest): BranchContextCheckpoint {
+    const runId = `run-${turn}`;
+    return {
+      assistantMessageId: `a${turn}`,
+      compaction: contextCompactionCheckpoint({ ownerId: "user-1", request, runId,
+        ...(request.contextCompactionSummary ? { summary: request.contextCompactionSummary } : {}),
+        ...(request.contextCompactionSummaryAttempts ? { summaryAttempts: request.contextCompactionSummaryAttempts } : {}) }),
+      policy: request.contextCompactionPolicy ?? null,
+      runId,
+      userId: "user-1",
+      userMessageId: `u${turn}`
+    };
+  }
+
+  async function converse(turns: number) {
+    const history: ProviderConversationMessage[] = [];
+    const checkpoints: BranchContextCheckpoint[] = [];
+    const notes = noteTaker();
+    const calls: number[] = [];
+    const carried: (string | null)[] = [];
+    let last: ProviderRunRequest | undefined;
+    for (let turn = 1; turn <= turns; turn += 1) {
+      const admitted = await admit({ checkpoints, history, text: question(turn) });
+      // Preparation performs no provider I/O; the admitted context stays the exact branch.
+      expect(admitted.stream).not.toHaveBeenCalled();
+      expect(admitted.prepared.normalizedRequest.context?.messages).toHaveLength(history.length + 1);
+      carried.push(admitted.prepared.normalizedRequest.contextCompactionPolicy?.reuse?.runId ?? null);
+      const before = notes.inputs.length;
+      last = await compact(admitted.prepared, notes);
+      calls.push(notes.inputs.length - before);
+      if (last.contextCompactionSummary) checkpoints.unshift(checkpointOf(turn, last));
+      history.push(...exchange(turn));
+    }
+    return { calls, carried, checkpoints, crossing: calls.findIndex((count) => count > 0), history, last: last!, notes };
+  }
+
+  it("buys notes once at the crossing, then carries them with at most one incremental call per turn", async () => {
+    const { calls, carried, crossing, history, last, notes } = await converse(18);
+    expect(crossing).toBeGreaterThan(2);
+    expect(calls[crossing]).toBe(1);
+    const later = calls.slice(crossing + 1);
+    expect(later.every((count) => count <= 1)).toBe(true);
+    expect(later.filter((count) => count === 0).length).toBeGreaterThan(later.filter((count) => count === 1).length);
+    expect(later.filter((count) => count === 1).length).toBeGreaterThan(0);
+    // Every turn after the crossing starts from the latest checkpoint on its branch.
+    expect(carried.slice(crossing + 1).every((runId) => runId !== null)).toBe(true);
+    expect(carried[crossing + 1]).toBe(`run-${crossing + 1}`);
+    // The paid input per turn stays within one window while the branch outgrows it twice.
+    const branchTokens = history.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+    expect(branchTokens).toBeGreaterThan(2 * 17_488);
+    expect(Math.max(...notes.inputs.slice(calls[crossing]!))).toBeLessThan(17_488);
+    // The rare turn-one fact is recalled from the carried notes long after its message left.
+    expect(last.context?.messages.some((message) => message.id === "u1")).toBe(false);
+    expect(JSON.stringify(last.context)).toContain("ZEBRA-42");
+  });
+
+  it("carries only notes on the edited or regenerated branch, never a sibling's", async () => {
+    const { checkpoints, crossing, history } = await converse(10);
+    const turn = crossing + 1;
+    // Editing the question after the crossing forks at its parent: later answers are siblings.
+    const prefix = history.slice(0, 2 * (turn + 1));
+    const edited = await admit({ checkpoints, history: prefix, text: "Edited question." });
+    expect(edited.loadBranchContextCheckpoints).toHaveBeenCalledWith({
+      assistantMessageIds: prefix.filter((message) => message.role === "assistant").map((message) => message.id),
+      chatId: "chat-1", userId: "user-1"
+    });
+    expect(edited.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({
+      coveredMessageId: `u${turn}`, runId: `run-${turn + 1}`
+    });
+    // Regenerating an answer never sees that answer's own notes.
+    const regenerated = await admit({ checkpoints, history: history.slice(0, 2 * turn + 1 - 1),
+      regenerate: history[2 * turn]! });
+    expect(regenerated.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({ runId: `run-${turn}` });
+    // A branch whose answers carry no compatible notes starts a fresh bounded plan.
+    const siblingsOnly = await admit({ checkpoints: checkpoints.map((checkpoint) => ({
+      ...checkpoint, assistantMessageId: `${checkpoint.assistantMessageId}-sibling` })), history: prefix });
+    expect(siblingsOnly.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
+    const fresh = noteTaker();
+    await compact(siblingsOnly.prepared, fresh);
+    expect(fresh.inputs.length).toBeGreaterThan(0);
+  });
+
+  it("rechecks the admitted binding after a model change and never carries notes that do not fit", async () => {
+    const { checkpoints, history } = await converse(10);
+    // A larger window: the notes are a frozen candidate, but the exact branch fits and is sent whole.
+    const larger = await admit({ capabilities: { ...capabilities, contextWindow: 200_000 }, checkpoints, history });
+    expect(larger.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({ runId: checkpoints[0]!.runId });
+    const unused = noteTaker();
+    const exact = await compact(larger.prepared, unused);
+    expect(unused.inputs).toEqual([]);
+    expect(exact.contextCompactionSummary).toBeUndefined();
+    expect(exact.context?.messages).toHaveLength(history.length + 1);
+    const oversized = checkpoints.map((checkpoint) => ({ ...checkpoint, compaction: { ...checkpoint.compaction,
+      summary: { ...checkpoint.compaction.summary!, notes: "N".repeat(40_000) } } }));
+    const smaller = await admit({ capabilities: { ...capabilities, contextWindow: 12_000 }, checkpoints: oversized, history });
+    expect(smaller.loadBranchContextCheckpoints).toHaveBeenCalled();
+    expect(smaller.prepared.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
+    expect(smaller.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
+  });
+
+  it("keeps Off and accepted legacy admissions free of carried notes", async () => {
+    const { checkpoints, history } = await converse(10);
+    const off = await admit({ checkpoints, history, policy: "off" });
+    expect(off.loadBranchContextCheckpoints).not.toHaveBeenCalled();
+    expect(off.prepared.normalizedRequest.toolObservationVersion).toBe(0);
+    expect(off.prepared.normalizedRequest.contextCompactionPolicy).toBeUndefined();
   });
 });

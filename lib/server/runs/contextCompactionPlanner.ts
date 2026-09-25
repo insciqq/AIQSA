@@ -6,6 +6,7 @@ import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
 import {
   CONTEXT_COMPACTION_LIMITS,
+  contextSummaryCoverage,
   contextSummaryMessageId,
   contextSummaryTail,
   type ContextObservation
@@ -248,17 +249,20 @@ export type ContextHistory = Readonly<{
 
 /** The summary rebuild keeps pins, its note, a token-bounded exact tail (the
  * summarizer's `contextSummaryTail` rule) and the current message. Everything
- * else in the prior branch is reducible. */
+ * else in the prior branch is reducible. Notes carried from an earlier turn
+ * cover only their frozen branch prefix (`contextSummaryCoverage`). */
 export function contextHistory(request: ProviderRunRequest, budgetTokens: number | null = null): ContextHistory {
   const messages = request.context?.messages ?? [];
   const current = messages.at(-1);
   const prior = messages.filter((message) => message.purpose === undefined && message !== current);
-  const summaryId = request.contextCompactionSummary ? contextSummaryMessageId(request.contextCompactionSummary) : null;
+  const summary = request.contextCompactionSummary;
+  const summaryId = summary ? contextSummaryMessageId(summary) : null;
   const summaryMessage = summaryId ? prior.find((message) => message.id === summaryId) ?? null : null;
   const rest = prior.filter((message) => message !== summaryMessage);
-  const uncovered = summaryMessage ? [] : rest;
+  const { covered, uncovered } = summary && summaryMessage
+    ? contextSummaryCoverage(request, summary, rest) : { covered: [], uncovered: rest };
   return {
-    covered: summaryMessage ? rest : [],
+    covered,
     older: uncovered.slice(0, uncovered.length - contextSummaryTail(uncovered, budgetTokens).length),
     prior,
     priorTokens: prior.reduce((total, message) => total + estimateApproxTokens(message.content), 0),
@@ -413,8 +417,10 @@ export function planContextCompaction(input: Readonly<{
   const summaryTokens = history.summaryMessage ? estimateApproxTokens(history.summaryMessage.content) : 0;
   if (afterTokens - history.priorTokens + summaryTokens > budgetTokens) return result("irreducible_overflow");
   if (afterTokens > budgetTokens) {
-    if (history.uncovered.length > 0) return result("needs_summary");
+    // Covered turns leave first: the note already stands for them. Only
+    // uncovered history that must still leave requires a (new) summary.
     const trimmed = trimCoveredHistory(planned, history, afterTokens - budgetTokens);
+    if (history.uncovered.length > 0 && afterTokens - trimmed.droppedTokens > budgetTokens) return result("needs_summary");
     return result(settled(), {
       afterTokens: afterTokens - trimmed.droppedTokens,
       historyTrim: { droppedMessages: trimmed.droppedMessages, droppedTokens: trimmed.droppedTokens },

@@ -272,6 +272,10 @@ function validContextCompactionCheckpoint(value: unknown): value is ContextCompa
   return true;
 }
 
+export function decodeContextCompactionCheckpoint(value: unknown): ContextCompactionCheckpoint | null {
+  return validContextCompactionCheckpoint(value) ? value : null;
+}
+
 function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAnswerRoundUsage[] | null {
   if (!Array.isArray(value) || value.length > checkpointRound) return null;
   const entries: PersistedAnswerRoundUsage[] = [];

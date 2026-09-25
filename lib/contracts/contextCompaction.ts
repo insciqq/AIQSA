@@ -141,10 +141,21 @@ export function terminalContextCompactionStatus(status: ContextCompactionStatus 
   return status?.state === "running" ? null : status ?? null;
 }
 
+/** Notes of an earlier turn's compaction checkpoint, frozen at admission as a
+ * candidate for this run. They may stand only for the branch prefix through
+ * `coveredMessageId`; later branch messages always stay exact. */
+export type ContextSummaryReuse = Readonly<{
+  /** The run whose checkpoint supplied the notes. */
+  runId: string;
+  coveredMessageId: string;
+  summary: ContextSummary;
+}>;
+
 export type ConversationContextPolicy = Readonly<{
   version: 1;
   mode: "legacy_compatible" | "hybrid";
   source: Readonly<{ leafMessageId: string | null; digest: string; messageCount: number }>;
+  reuse?: ContextSummaryReuse;
 }>;
 
 export type ContextCompactionCheckpoint = Readonly<{

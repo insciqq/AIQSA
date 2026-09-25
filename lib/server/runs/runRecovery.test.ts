@@ -5249,10 +5249,14 @@ describe("run recovery", () => {
       phase?: "provider_running";
       providerToolMessages: ToolLoopJsonValue[];
       refresh?: () => Promise<ProviderRunRefreshResult>;
+      /** Notes the accepted policy froze from an earlier turn's checkpoint. */
+      reuse?: NonNullable<NormalizedRunRequest["contextCompactionPolicy"]>["reuse"];
       roundIndex: number;
       toolCallsBeforeFinal: number;
     }>) {
-      const request = hybridRequest(input.historyChars);
+      const exact = hybridRequest(input.historyChars);
+      const request: NormalizedRunRequest = input.reuse
+        ? { ...exact, contextCompactionPolicy: { ...exact.contextCompactionPolicy!, reuse: input.reuse } } : exact;
       const phase = input.phase ?? (input.refresh ? "provider_running" as const : "tools_pending" as const);
       const summaries: ProviderRunRequest[] = [];
       const answers: ProviderRunRequest[] = [];
@@ -5336,6 +5340,35 @@ describe("run recovery", () => {
       expect(JSON.stringify(recovery.answers[0]?.providerToolMessages)).toContain("RESULT_2");
       expect(recovery.withinBudget).toEqual([true]);
       expect(recovery.statuses()).toEqual([]);
+    });
+
+    it("re-applies carried checkpoint notes to the exact admitted branch, keeping later messages exact", async () => {
+      const carried: ContextSummary = { formatVersion: 1, id: "cs1_carried", notes: "PRIVATE_NOTES carried from an earlier turn.",
+        sourceDigest: "d".repeat(64), sourceRefs: ["old-history"] };
+      const recovery = fixture({
+        calls: [{ ...persistedRecoveryCall(), id: "stored-call-2", providerCallId: "provider-call-2", roundIndex: 2,
+          arguments: { value: "beta" } }],
+        // The live round applied the frozen notes; its checkpoint records them without receipts.
+        compaction: { measurement: measurement("already_fits"), summary: carried },
+        providerToolMessages: [
+          { arguments: "{\"value\":\"alpha\"}", call_id: "provider-call-1", name: recoveryToolName, type: "function_call" },
+          openAIResponsesToolBridge.appendToolResult(undefined, toolResult(1)) as ToolLoopJsonValue,
+          { arguments: "{\"value\":\"beta\"}", call_id: "provider-call-2", name: recoveryToolName, type: "function_call" }
+        ],
+        reuse: { coveredMessageId: "recent-1", runId: "run-previous", summary: carried },
+        roundIndex: 2,
+        toolCallsBeforeFinal: 0
+      });
+      await recovery.recover();
+      expect(recovery.harness.state.recoveredErrors).toEqual([]);
+      expect(recovery.summaries).toHaveLength(0);
+      expect(recovery.answers).toHaveLength(1);
+      expect(recovery.answers[0]?.contextCompactionSummary).toEqual(carried);
+      expect(recovery.answers[0]?.context?.messages.map((message) => message.id)).toEqual([
+        "__context-summary-cs1_carried", "recent-0", "recent-1", "recent-2", "recent-3", "current-user-message"
+      ]);
+      expect(JSON.stringify(recovery.answers[0]?.context)).not.toContain("OLD_HISTORY");
+      expect(recovery.withinBudget).toEqual([true]);
     });
 
     it("buys the summary in the recovery consumer when a recovered round crosses the budget", async () => {

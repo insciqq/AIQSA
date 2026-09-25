@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { ProviderRunRequest } from "../providers/types";
+import type { ContextSummary } from "../../contracts/contextCompaction";
+import { estimateApproxTokens } from "../../domain/contextBudget";
+import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
   anthropicMessagesToolBridge,
   geminiInteractionsToolBridge,
@@ -414,5 +416,45 @@ describe("context compaction planner", () => {
       recentTailCallIds: ["checkpoint-1"]
     });
     expect(JSON.stringify(checkpoint).length).toBeLessThan(512 * 1024);
+  });
+
+  it("drops covered turns before asking for new notes and summarizes only history the carried notes do not cover", () => {
+    const notes: ContextSummary = { formatVersion: 1, id: "cs1_carried", notes: "Carried notes.", sourceDigest: "c".repeat(64), sourceRefs: [] };
+    const say = (id: string, role: "assistant" | "user", chars: number): ProviderConversationMessage =>
+      ({ content: { blocks: [{ text: `${id} ${"t".repeat(chars)}`, type: "text" }] }, id, role });
+    const messages = [
+      { ...say("note", "assistant", 0), id: "__context-summary-cs1_carried" },
+      say("u2", "user", 4_000),
+      ...["a2", "u3", "a3", "u4", "a4"].map((id) => say(id, id.startsWith("u") ? "user" : "assistant", 1_000)),
+      say("current", "user", 0)
+    ];
+    const base = request([]);
+    const policy = conversationContextPolicy({ leafMessageId: "a4", messages, mode: "hybrid" });
+    const carried: ProviderRunRequest = { ...base, context: { messages, mode: "branch_path" }, contextCompactionSummary: notes,
+      contextCompactionPolicy: { ...policy, reuse: { coveredMessageId: "u2", runId: "run-2", summary: notes } } };
+    const prior = messages.slice(0, -1).reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+    const assembledTokens = prior + 100;
+    const covered = estimateApproxTokens(messages[1]!.content);
+    const plan = (input: ProviderRunRequest, budgetTokens: number) =>
+      planContextCompaction({ assembledTokens, budgetTokens, bridge: openAIResponsesToolBridge, request: input });
+
+    // Over budget, and dropping the covered turn is enough: nothing is bought.
+    const trimmed = plan(carried, assembledTokens - covered + 200);
+    expect(trimmed.measurement).toMatchObject({ legacyFallback: true, outcome: "already_fits" });
+    expect(trimmed.historyTrim).toMatchObject({ droppedMessages: 1 });
+    expect(trimmed.request.context?.messages.map((message) => message.id)).toEqual([
+      "__context-summary-cs1_carried", "a2", "u3", "a3", "u4", "a4", "current"
+    ]);
+    // Uncovered history must still leave: new notes, never a legacy trim of it.
+    expect(plan(carried, assembledTokens - covered - 200).measurement.outcome).toBe("needs_summary");
+    // Fits above the trigger with uncovered history older than the exact tail: headroom notes.
+    expect(plan(carried, Math.floor(assembledTokens / 0.8)).measurement.outcome).toBe("needs_summary");
+    expect(plan(carried, assembledTokens * 2).measurement.outcome).toBe("already_fits");
+    // Notes bought in this run cover every prior message: covered turns leave instead.
+    const { reuse: _reuse, ...own } = carried.contextCompactionPolicy!;
+    void _reuse;
+    const inRun = plan({ ...carried, contextCompactionPolicy: own }, assembledTokens - covered - 200);
+    expect(inRun.measurement.outcome).toBe("already_fits");
+    expect(inRun.request.context?.messages[0]!.id).toBe("__context-summary-cs1_carried");
   });
 });

@@ -8,9 +8,16 @@ import type {
   ContextPlanOutcome,
   ContextSummary,
   ContextSummaryAttempt,
+  ContextSummaryReuse,
   ConversationContextPolicy
 } from "../../contracts/contextCompaction";
-export type { ContextCompactionCheckpoint, ContextPlanMeasurement, ContextPlanOutcome, ConversationContextPolicy } from "../../contracts/contextCompaction";
+export type {
+  ContextCompactionCheckpoint,
+  ContextPlanMeasurement,
+  ContextPlanOutcome,
+  ContextSummaryReuse,
+  ConversationContextPolicy
+} from "../../contracts/contextCompaction";
 
 export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
   triggerRatio: 0.75,
@@ -36,7 +43,10 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
   /** Receipts retained in the checkpoint; never fewer than `summaryCalls`. */
   summaryReceipts: 24,
   summaryNotesBytes: 64 * 1024,
-  summarySourceRefs: 512
+  summarySourceRefs: 512,
+  /** Newest answers of a branch whose checkpoints preparation may consider
+   * for carried notes. */
+  reuseCandidateAnswers: 64
 });
 
 const CONTEXT_SUMMARY_MESSAGE_PREFIX = "__context-summary-";
@@ -99,13 +109,83 @@ export function conversationContextPolicy(input: {
   } };
 }
 
+function decodeContextSummaryReuse(value: unknown): ContextSummaryReuse | null {
+  return record(value) && exactKeys(value, ["coveredMessageId", "runId", "summary"]) &&
+    id(value.runId) && id(value.coveredMessageId) && decodeContextSummary(value.summary)
+    ? value as ContextSummaryReuse : null;
+}
+
 export function decodeConversationContextPolicy(value: unknown): ConversationContextPolicy | null {
-  if (!record(value) || !exactKeys(value, ["version", "mode", "source"]) || value.version !== 1 ||
+  if (!record(value) || !exactKeys(value, Object.hasOwn(value, "reuse") ? ["version", "mode", "source", "reuse"] : ["version", "mode", "source"]) ||
+    value.version !== 1 ||
     value.mode !== "legacy_compatible" && value.mode !== "hybrid" || !record(value.source) ||
     !exactKeys(value.source, ["leafMessageId", "digest", "messageCount"]) ||
     value.source.leafMessageId !== null && !id(value.source.leafMessageId) ||
-    !index(value.source.messageCount) || typeof value.source.digest !== "string" || !/^[a-f0-9]{64}$/u.test(value.source.digest)) return null;
+    !index(value.source.messageCount) || typeof value.source.digest !== "string" || !/^[a-f0-9]{64}$/u.test(value.source.digest) ||
+    value.reuse !== undefined && (value.mode !== "hybrid" || !decodeContextSummaryReuse(value.reuse))) return null;
   return value as ConversationContextPolicy;
+}
+
+/**
+ * The prior messages an applied summary stands for. Notes bought in this run
+ * cover every prior message of their request. Notes carried from an earlier
+ * turn's checkpoint cover the branch only through their frozen boundary; later
+ * messages stay uncovered until a new summary includes them.
+ */
+export function contextSummaryCoverage(
+  request: Pick<NormalizedRunRequest, "contextCompactionPolicy">,
+  summary: Pick<ContextSummary, "id">,
+  prior: readonly ProviderConversationMessage[]
+): Readonly<{ covered: readonly ProviderConversationMessage[]; uncovered: readonly ProviderConversationMessage[] }> {
+  const reuse = request.contextCompactionPolicy?.reuse;
+  if (reuse?.summary.id !== summary.id) return { covered: prior, uncovered: [] };
+  const boundary = prior.findIndex((message) => message.id === reuse.coveredMessageId);
+  return { covered: prior.slice(0, boundary + 1), uncovered: prior.slice(boundary + 1) };
+}
+
+/** A settled run's compaction checkpoint whose answer lies on the branch. */
+export type BranchContextCheckpoint = Readonly<{
+  assistantMessageId: string;
+  compaction: ContextCompactionCheckpoint;
+  /** The accepted policy of that run: it names notes the run itself carried. */
+  policy: ConversationContextPolicy | null;
+  runId: string;
+  userId: string;
+  userMessageId: string;
+}>;
+
+/**
+ * Carried-notes candidates, newest answer first. A checkpoint qualifies only
+ * when it belongs to the current user, holds hybrid notes of the current
+ * format, and its answer and coverage boundary are prior messages of this
+ * branch in that order, so edits, forks and regeneration never see sibling
+ * notes. Notes a run bought cover its branch through its own user message;
+ * notes it carried keep their frozen boundary. Only the notes travel: provider
+ * continuations, response ids and receipts of that run never do.
+ */
+export function contextSummaryReuseCandidates(input: Readonly<{
+  checkpoints: readonly BranchContextCheckpoint[];
+  priorMessageIds: readonly string[];
+  userId: string;
+}>): ContextSummaryReuse[] {
+  const position = new Map(input.priorMessageIds.map((messageId, order) => [messageId, order]));
+  return [...input.checkpoints]
+    .filter((candidate) => position.has(candidate.assistantMessageId))
+    .sort((left, right) => position.get(right.assistantMessageId)! - position.get(left.assistantMessageId)!)
+    .flatMap((candidate): ContextSummaryReuse[] => {
+      const { compaction, policy } = candidate;
+      const summary = compaction.summary;
+      if (!summary || candidate.userId !== input.userId || compaction.version !== 1 ||
+        compaction.policyRevision !== "hybrid-v1" || compaction.runId !== candidate.runId ||
+        compaction.ownerId !== candidate.userId || !decodeContextSummary(summary)) return [];
+      const carried = policy?.reuse?.summary.id === summary.id ? policy.reuse : null;
+      const bought = compaction.summaryAttempts?.some((attempt) =>
+        attempt.state === "committed" && attempt.sourceDigest === summary.sourceDigest) === true;
+      const coveredMessageId = carried?.coveredMessageId ?? (bought ? candidate.userMessageId : null);
+      const boundary = coveredMessageId === null ? undefined : position.get(coveredMessageId);
+      if (boundary === undefined || boundary >= position.get(candidate.assistantMessageId)!) return [];
+      return [{ coveredMessageId: coveredMessageId!, runId: candidate.runId, summary }];
+    });
 }
 
 const summaryAttemptStates = new Set([

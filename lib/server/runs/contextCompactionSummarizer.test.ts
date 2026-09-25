@@ -11,6 +11,7 @@ import { CONTEXT_COMPACTION_LIMITS, conversationContextPolicy } from "./contextC
 import { contextObservationsFromResults } from "./contextCompactionPlanner";
 import {
   applyContextSummaryToRequest,
+  applyReusedContextSummary,
   contextSummaryIsCurrent,
   contextSummarySource,
   ContextSummaryError,
@@ -464,5 +465,71 @@ describe("context compaction summarizer", () => {
       text("current", "current")], overrides: { contextCompactionSummary: old } });
     expect(applyContextSummaryToRequest(source, next).context?.messages.map(message => message.id))
       .toEqual(["__context-summary-cs1_new", "recent", "current"]);
+  });
+
+  describe("notes carried from an earlier turn", () => {
+    const carriedNotes: ContextSummary = { formatVersion: 1, id: "cs1_carried", notes: "FACT_RARE7731 was agreed in turn one.",
+      sourceDigest: "c".repeat(64), sourceRefs: ["u1", "u2"] };
+    // Budget 3,200: the exact tail may hold four messages within 640 tokens.
+    const branch = [
+      text("FACT_RARE7731 " + "o".repeat(2_000), "u1"), text("a".repeat(2_000), "a1", "assistant"),
+      text("second question", "u2"), text("second answer", "a2", "assistant"),
+      text("third question", "u3"), text("third answer", "a3", "assistant"),
+      text("exact pin", "skill-context:v1", "user", "skill_context"),
+      text("current request", "current-user-message")
+    ];
+    const reused = (coveredMessageId = "u2") => {
+      const base = request({ messages: branch });
+      return { ...base, contextCompactionPolicy: { ...base.contextCompactionPolicy!,
+        reuse: { coveredMessageId, runId: "run-2", summary: carriedNotes } } };
+    };
+
+    it("stands only for the covered prefix: later branch messages stay exact and pins stay before the current input", () => {
+      const projected = applyReusedContextSummary(reused())!;
+      expect(projected.context?.messages.map((message) => message.id)).toEqual([
+        "__context-summary-cs1_carried", "u2", "a2", "u3", "a3", "skill-context:v1", "current-user-message"
+      ]);
+      expect(projected.contextCompactionSummary).toBe(carriedNotes);
+      expect(JSON.stringify(projected.context)).not.toContain("o".repeat(64));
+      expect(applyReusedContextSummary(reused("u2-sibling"))).toBeNull();
+      // Recovery re-applies the checkpoint's carried notes to the exact branch identically.
+      expect(applyContextSummaryToRequest(reused(), carriedNotes)).toEqual(projected);
+    });
+
+    it("is never current in the carrying run, even for an identical current message", () => {
+      const base = reused();
+      const revision = contextSummarySource(base).revision;
+      const identical = { ...carriedNotes, sourceRefs: [revision] };
+      const request = { ...base, contextCompactionPolicy: { ...base.contextCompactionPolicy!,
+        reuse: { ...base.contextCompactionPolicy!.reuse!, summary: identical } } };
+      const projected = applyContextSummaryToRequest(request, identical);
+      expect(contextSummaryIsCurrent(projected)).toBe(false);
+      // The same notes bought by this run would be current.
+      const { reuse: _reuse, ...own } = projected.contextCompactionPolicy!;
+      void _reuse;
+      expect(contextSummaryIsCurrent({ ...projected, contextCompactionPolicy: own })).toBe(true);
+    });
+
+    it("summarizes previous notes plus the exact delta, and the new notes cover everything", async () => {
+      const calls: ProviderRunRequest[] = [];
+      const projected = applyReusedContextSummary(reused())!;
+      const summarized = await executeContextSummary({
+        adapter: adapter([json("FACT_RARE7731 still binds; third turn settled.")], calls),
+        existingSummary: carriedNotes,
+        request: projected
+      });
+      expect(calls).toHaveLength(1);
+      const body = envelopeText(calls[0]!);
+      expect(body.indexOf("<previous-notes")).toBeLessThan(body.indexOf("third question"));
+      expect(body).toContain("FACT_RARE7731 was agreed");
+      expect(body).not.toContain("o".repeat(64));
+      // New notes cover the carried notes and every exact message; only the bounded tail stays verbatim.
+      expect(summarized.request.context?.messages.map((message) => message.id)).toEqual([
+        "__context-summary-" + summarized.summary.id, "u2", "a2", "u3", "a3", "skill-context:v1", "current-user-message"
+      ]);
+      // Recovery rebuilds the same request from the exact branch and the new checkpoint notes.
+      expect(applyContextSummaryToRequest({ ...reused(), contextCompaction: projected.contextCompaction },
+        summarized.summary, summarized.attempts).context).toEqual(summarized.request.context);
+    });
   });
 });
