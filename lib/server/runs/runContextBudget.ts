@@ -35,8 +35,13 @@ import type { ProviderToolBridge } from "../tools/types";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 import type { SkillBudgetFacts } from "../../contracts/skills";
-import { planContextCompaction, contextCompactionMeasurementWithBudget } from "./contextCompactionPlanner";
-import { contextSummaryIsCurrent } from "./contextCompactionSummarizer";
+import type { ContextObservation } from "./contextCompactionContract";
+import {
+  contextCompactionMeasurementWithBudget,
+  contextHistory,
+  planContextCompaction,
+  type ContextCompactionPlan
+} from "./contextCompactionPlanner";
 
 // Matches the former 20,000-character ASCII ceiling under the shared
 // estimator, but applies once across every selected text attachment and is
@@ -290,19 +295,75 @@ function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: 
     providerAttachmentBudgetTokens({ attachments: request.attachments, modelCapabilities: request.modelCapabilities });
 }
 
+type TextAttachmentCandidate = Readonly<{
+  index: number;
+  labelTokens: number;
+  minimumTokens: number;
+  source: string;
+  sourceTokens: number;
+}>;
+
+function clampedProviderAttachments(request: ProviderRunRequest): ProviderRunRequest["attachments"] {
+  const operatorMaxChars = getAttachmentTextConfig().extractedTextMaxChars;
+  return request.attachments.map((attachment) => ({
+    ...attachment,
+    extractedText: attachment.extractedText
+      ? truncateProviderAttachmentText(attachment.extractedText, operatorMaxChars)
+      : null
+  }));
+}
+
+function textAttachmentCandidates(
+  attachments: ProviderRunRequest["attachments"],
+  capabilities: ProviderModelCapabilities
+): TextAttachmentCandidate[] {
+  return attachments.flatMap((attachment, index) => {
+    if (!textModeAttachment(attachment, capabilities) || !attachment.extractedText?.trim()) return [];
+    return [{
+      index,
+      labelTokens: estimateApproxTokens(`[${providerAttachmentTextLabel(attachment)}]\n`),
+      minimumTokens: estimateApproxTokens(String.fromCodePoint(attachment.extractedText.codePointAt(0)!)),
+      source: attachment.extractedText,
+      sourceTokens: estimateApproxTokens(attachment.extractedText)
+    }];
+  });
+}
+
+function withoutAttachmentText(request: ProviderRunRequest): ProviderRunRequest {
+  return { ...request, attachments: request.attachments.map((attachment) =>
+    textModeAttachment(attachment, request.modelCapabilities) ? { ...attachment, extractedText: null } : attachment) };
+}
+
+/** Hybrid measures extracted attachment text at its minimum share: the text is
+ * elastic and receives only the room left after exact context and history.
+ * It cannot by itself trigger masking, a summary purchase, or overflow. */
+function hybridRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+  const text = textAttachmentCandidates(clampedProviderAttachments(request), request.modelCapabilities);
+  return approximateProviderRequestTokens(withoutAttachmentText(request), bridge) +
+    text.reduce((total, candidate) => total + candidate.labelTokens + candidate.minimumTokens, 0);
+}
+
+function usesHybridBudget(request: ProviderRunRequest): boolean {
+  return request.contextCompactionPolicy?.mode === "hybrid" && !request.agent &&
+    contextCompactionBudgetLimits(request) !== null;
+}
+
 function planProviderRequestContext(input: Readonly<{
   bridge?: ProviderToolBridge;
+  observations?: readonly ContextObservation[];
   request: ProviderRunRequest;
 }>): Readonly<{
   limits: ReturnType<typeof contextCompactionBudgetLimits>;
-  planned: ReturnType<typeof planContextCompaction>;
+  planned: ContextCompactionPlan;
 }> {
   const limits = contextCompactionBudgetLimits(input.request);
   return {
     limits,
     planned: planContextCompaction({
       ...input,
-      assembledTokens: approximateProviderRequestTokens(input.request, input.bridge),
+      assembledTokens: usesHybridBudget(input.request)
+        ? hybridRequestTokens(input.request, input.bridge)
+        : approximateProviderRequestTokens(input.request, input.bridge),
       budgetTokens: limits?.budgetTokens ?? null
     })
   };
@@ -312,6 +373,7 @@ function planProviderRequestContext(input: Readonly<{
 export function measureSessionContext(input: Readonly<{
   answerText?: string;
   bridge?: ProviderToolBridge;
+  observations?: readonly ContextObservation[];
   request: ProviderRunRequest;
 }>): SessionContextStatus {
   const { limits, planned } = planProviderRequestContext(input);
@@ -390,28 +452,14 @@ type AttachmentTextFitResult =
   | Readonly<{ ok: false }>;
 
 function fitProviderAttachmentText(input: Readonly<{
+  /** Exact room for extracted text after labels, from a caller that already
+   * measured every other retained contributor. */
+  availableTextTokens?: number;
   fixedExtraTokens: number;
   request: ProviderRunRequest;
 }>): AttachmentTextFitResult {
-  const operatorMaxChars = getAttachmentTextConfig().extractedTextMaxChars;
-  const attachments = input.request.attachments.map((attachment) => ({
-    ...attachment,
-    extractedText: attachment.extractedText
-      ? truncateProviderAttachmentText(attachment.extractedText, operatorMaxChars)
-      : null
-  }));
-  const textCandidates = attachments.flatMap((attachment, index) => {
-    if (!textModeAttachment(attachment, input.request.modelCapabilities) || !attachment.extractedText?.trim()) {
-      return [];
-    }
-    return [{
-      index,
-      labelTokens: estimateApproxTokens(`[${providerAttachmentTextLabel(attachment)}]\n`),
-      minimumTokens: estimateApproxTokens(String.fromCodePoint(attachment.extractedText.codePointAt(0)!)),
-      source: attachment.extractedText,
-      sourceTokens: estimateApproxTokens(attachment.extractedText)
-    }];
-  });
+  const attachments = clampedProviderAttachments(input.request);
+  const textCandidates = textAttachmentCandidates(attachments, input.request.modelCapabilities);
   if (textCandidates.length === 0) return { attachments, ok: true };
 
   const contextWindow = input.request.modelCapabilities.contextWindow ?? 0;
@@ -419,6 +467,8 @@ function fitProviderAttachmentText(input: Readonly<{
   let availableTextTokens: number;
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
     availableTextTokens = UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS - labelTokens;
+  } else if (input.availableTextTokens !== undefined) {
+    availableTextTokens = input.availableTextTokens;
   } else {
     const limits = calculateContextBudgetLimits({
       contextWindow,
@@ -508,65 +558,50 @@ function fitProviderAttachmentText(input: Readonly<{
   };
 }
 
-/** Budgets the exact provider-facing client tools and retained tool transcript. */
-export function applyProviderRequestContextBudget(input: Readonly<{
+type ProviderRequestBudgetInput = Readonly<{
   bridge?: ProviderToolBridge;
+  /** Server-minted descriptors of this run's settled calls. They are the only
+   * authority for replacing a provider result with a reader reference. */
+  observations?: readonly ContextObservation[];
   request: ProviderRunRequest;
-}>): ProviderRequestContextBudgetResult {
+}>;
+
+function skillsBudgetExceeded(
+  request: ProviderRunRequest,
+  pinned: readonly ProviderConversationMessage[],
+  catalog: readonly ProviderConversationMessage[]
+): ProviderRequestContextBudgetResult {
+  const skillLimits = calculateContextBudgetLimits({
+    contextWindow: request.modelCapabilities.contextWindow ?? 0,
+    maxOutputTokens: maxOutputTokensForBudget(request.params, request.modelCapabilities, request.provider),
+    provider: request.provider
+  });
+  return { ok: false, status: 400, error: {
+    code: "skills_budget_exceeded", message: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window.",
+    skillBudget: { pinnedTokens: pinned.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0),
+      catalogTokens: catalog.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0), budgetTokens: skillLimits.budgetTokens }
+  } };
+}
+
+function withoutSkillPins(request: ProviderRunRequest): Readonly<{
+  catalog: ProviderConversationMessage[];
+  pinned: ProviderConversationMessage[];
+  request: ProviderRunRequest;
+}> {
+  const messages = request.context?.messages ?? [];
+  return {
+    catalog: messages.filter((message) => message.purpose === "skill_catalog"),
+    pinned: messages.filter((message) => message.purpose === "skill_context"),
+    request: request.context ? { ...request, context: { ...request.context, messages: messages.filter((message) =>
+      message.purpose !== "skill_context" && message.purpose !== "skill_catalog") } } : request
+  };
+}
+
+/** Budgets the exact provider-facing client tools and retained tool transcript. */
+export function applyProviderRequestContextBudget(input: ProviderRequestBudgetInput): ProviderRequestContextBudgetResult {
+  if (usesHybridBudget(input.request)) return applyHybridProviderRequestContextBudget(input);
   const { limits, planned } = planProviderRequestContext(input);
-  const plannedInput = { ...input, request: planned.request };
-  // A newly admitted hybrid run must reach the execution lease with its
-  // bounded source intact so the summarizer can run before the first answer
-  // request. Legacy runs continue through the existing whole-turn guard.
-  if (planned.request.contextCompactionPolicy?.mode === "hybrid" && limits) {
-    const hybridMeasurement = contextCompactionMeasurementWithBudget(
-      planned.measurement,
-      limits.budgetTokens,
-      true
-    );
-    if (hybridMeasurement.outcome === "needs_summary") {
-      const summaryApplied = planned.request.contextCompactionSummary !== undefined &&
-        planned.request.context?.messages.some((message) =>
-          message.id === `__context-summary-${planned.request.contextCompactionSummary!.id}`
-        ) === true;
-      // A committed summary is the guarded lossy boundary. If the exact
-      // projection still cannot fit, stop with overflow evidence instead of
-      // silently applying the legacy trimmer or buying the same summary again.
-      if (summaryApplied && contextSummaryIsCurrent(planned.request)) {
-        return {
-          error: {
-            code: "context_too_large",
-            message: "The committed context summary and exact current context exceed the model budget."
-          },
-          ok: false,
-          status: 400
-        };
-      }
-      const attachmentFit = fitProviderAttachmentText({
-        fixedExtraTokens: providerRequestFixedExtraTokens(planned.request, input.bridge),
-        request: planned.request
-      });
-      if (!attachmentFit.ok) {
-        return {
-          error: {
-            code: "context_too_large",
-            message: "Prompt, current message, tools, and selected attachments exceed the model context budget."
-          },
-          ok: false,
-          status: 400
-        };
-      }
-      return {
-        contextTruncation: null,
-        ok: true,
-        request: {
-          ...planned.request,
-          attachments: attachmentFit.attachments,
-          contextCompaction: { ...hybridMeasurement, legacyFallback: false }
-        }
-      };
-    }
-  }
+  const plannedInput = { bridge: input.bridge, request: planned.request };
   const result = applyProviderRequestContextBudgetCore(plannedInput);
   const withMeasurement = (value: ProviderRequestContextBudgetResult): ProviderRequestContextBudgetResult => {
     const next = contextCompactionMeasurementWithBudget(planned.measurement, limits?.budgetTokens ?? null, value.ok);
@@ -574,24 +609,96 @@ export function applyProviderRequestContextBudget(input: Readonly<{
     return value;
   };
   if (result.ok || input.request.agent) return withMeasurement(result);
-  const messages = planned.request.context?.messages ?? [];
-  const pinned = messages.filter((message) => message.purpose === "skill_context");
-  const catalog = messages.filter((message) => message.purpose === "skill_catalog");
-  if (!pinned.length && !catalog.length) return withMeasurement(result);
-  const withoutSkills = applyProviderRequestContextBudgetCore({ ...plannedInput, request: {
-    ...planned.request, context: { ...planned.request.context!, messages: messages.filter((message) => message.purpose !== "skill_context" && message.purpose !== "skill_catalog") }
-  } });
+  const skills = withoutSkillPins(planned.request);
+  if (!skills.pinned.length && !skills.catalog.length) return withMeasurement(result);
+  const withoutSkills = applyProviderRequestContextBudgetCore({ ...plannedInput, request: skills.request });
   if (!withoutSkills.ok) return withMeasurement(result);
-  const skillLimits = calculateContextBudgetLimits({
-    contextWindow: input.request.modelCapabilities.contextWindow ?? 0,
-    maxOutputTokens: maxOutputTokensForBudget(input.request.params, input.request.modelCapabilities, input.request.provider),
-    provider: input.request.provider
+  return skillsBudgetExceeded(input.request, skills.pinned, skills.catalog);
+}
+
+/** Same provider order as the legacy guard: exact pins directly precede the
+ * current message, also after a summary rebuilt the prior context. */
+function pinsBeforeCurrentMessage(request: ProviderRunRequest): ProviderRunRequest {
+  const messages = request.context?.messages ?? [];
+  const current = messages.at(-1);
+  const pins = messages.filter((message) => message.purpose !== undefined && message !== current);
+  if (!current || pins.length === 0) return request;
+  const ordered = [...messages.filter((message) => message.purpose === undefined && message !== current), ...pins, current];
+  return ordered.every((message, index) => message === messages[index])
+    ? request
+    : { ...request, context: { ...request.context!, messages: ordered } };
+}
+
+/**
+ * Accepted hybrid runs never use the legacy whole-turn trimmer on unsummarized
+ * history. The planner owns the outcome; this applies it to the exact request:
+ * an irreducible minimum is rejected here (before a run exists at admission),
+ * a pending summary keeps its source intact for the execution consumer, and a
+ * fitting projection gives extracted attachment text only the remaining room.
+ */
+function applyHybridProviderRequestContextBudget(input: ProviderRequestBudgetInput): ProviderRequestContextBudgetResult {
+  const { limits, planned } = planProviderRequestContext(input);
+  const budget = limits!;
+  if (planned.measurement.outcome === "irreducible_overflow") {
+    const skills = withoutSkillPins(input.request);
+    if ((skills.pinned.length || skills.catalog.length) &&
+      applyHybridProviderRequestContextBudget({ ...input, request: skills.request }).ok) {
+      return skillsBudgetExceeded(input.request, skills.pinned, skills.catalog);
+    }
+    return {
+      error: {
+        code: "context_too_large",
+        message: `Prompt, pinned context, current message, tools, and the newest tool results exceed the model context budget (${budget.budgetTokens} estimated tokens available).`
+      },
+      ok: false,
+      status: 400
+    };
+  }
+  const request = planned.request;
+  const text = textAttachmentCandidates(clampedProviderAttachments(request), request.modelCapabilities);
+  // A pending summary replaces prior history before any answer request, and
+  // truncated text cannot grow back, so reserve the text's pre-summary share.
+  const releasedHistoryTokens = planned.measurement.outcome === "needs_summary" ? contextHistory(request).priorTokens : 0;
+  const attachmentFit = fitProviderAttachmentText({
+    availableTextTokens: budget.budgetTokens + releasedHistoryTokens -
+      approximateProviderRequestTokens(withoutAttachmentText(request), input.bridge) -
+      text.reduce((total, candidate) => total + candidate.labelTokens, 0),
+    fixedExtraTokens: providerRequestFixedExtraTokens(request, input.bridge),
+    request
   });
-  return { ok: false, status: 400, error: {
-    code: "skills_budget_exceeded", message: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window.",
-    skillBudget: { pinnedTokens: pinned.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0),
-      catalogTokens: catalog.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0), budgetTokens: skillLimits.budgetTokens }
-  } };
+  if (!attachmentFit.ok) {
+    return {
+      error: {
+        code: "context_too_large",
+        message: "Prompt, current message, tools, and selected attachments exceed the model context budget."
+      },
+      ok: false,
+      status: 400
+    };
+  }
+  const fitted: ProviderRunRequest = {
+    ...pinsBeforeCurrentMessage(request),
+    attachments: attachmentFit.attachments,
+    contextCompaction: planned.measurement
+  };
+  if (!planned.historyTrim || !fitted.context) return { contextTruncation: null, ok: true, request: fitted };
+  const finalTokens = approximateProviderRequestTokens(fitted, input.bridge);
+  const contextTruncation = cumulativeTruncationSummary(request.context?.summary?.truncation, {
+    approxDroppedTokens: planned.historyTrim.droppedTokens,
+    approxFinalTokens: finalTokens,
+    approxOriginalTokens: finalTokens + planned.historyTrim.droppedTokens,
+    budgetTokens: budget.budgetTokens,
+    contextWindow: budget.contextWindow,
+    droppedMessages: planned.historyTrim.droppedMessages,
+    keptMessages: fitted.context.messages.length,
+    maxOutputTokens: budget.maxOutputTokens,
+    safetyMarginTokens: budget.safetyMarginTokens
+  });
+  return {
+    contextTruncation,
+    ok: true,
+    request: { ...fitted, context: { ...fitted.context, summary: { truncation: contextTruncation } } }
+  };
 }
 
 function applyProviderRequestContextBudgetCore(input: Readonly<{

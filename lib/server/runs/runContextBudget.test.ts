@@ -14,10 +14,20 @@ import {
   MEMORY_READER_FINALIZATION_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING
 } from "../providers/personalContext";
-import type { ProviderRunRequest } from "../providers/types";
+import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { readToolResultTool } from "../tools/readToolResult";
+import type { ToolExecutionResult } from "../tools/types";
 import { projectObservationForProvider } from "../toolObservations/projection";
+import type { ContextSummary } from "../../contracts/contextCompaction";
+import { conversationContextPolicy } from "./contextCompactionContract";
+import { contextObservationsFromResults } from "./contextCompactionPlanner";
+import {
+  applyContextSummaryToRequest,
+  contextSummaryIsCurrent,
+  contextSummarySourceRevision,
+  summaryNeedsProvider
+} from "./contextCompactionSummarizer";
 import {
   applyProviderRequestContextBudget,
   measureSessionContext,
@@ -318,6 +328,7 @@ describe("provider request context budget", () => {
     });
     const planned = applyProviderRequestContextBudget({
       bridge: openAIResponsesToolBridge,
+      observations: contextObservationsFromResults([projected("old", "a"), projected("new", "b")]),
       request: request({
         context: {
           messages: [
@@ -675,4 +686,182 @@ it.each(["personalInstructions", "responseReminder"] as const)("reserves the com
   const result = applyProviderRequestContextBudget({ request: input });
   expect(result).toMatchObject({ ok: false, error: { code: "context_too_large" } });
   expect(JSON.stringify(input.prompt)).toBe(before);
+});
+
+// Review reproductions: window 20 000, maxOutput 512, OpenAI Responses bridge.
+describe("hybrid context budget boundaries", () => {
+  const HYBRID_BUDGET = 17_488;
+  const capabilities = { ...request().modelCapabilities, contextWindow: 20_000, defaultMaxOutputTokens: 512, toolCalling: true };
+  const turn = (id: string, role: "assistant" | "user", chars: number, fill = "h",
+    purpose?: ProviderConversationMessage["purpose"]): ProviderConversationMessage => ({
+    content: { blocks: [{ text: fill.repeat(chars), type: "text" }] }, id, role, ...(purpose ? { purpose } : {})
+  });
+  const hybrid = (messages: ProviderConversationMessage[], overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest => request({
+    content: messages.at(-1)!.content,
+    context: { messages, mode: "branch_path" },
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: messages.at(-1)!.id, messages, mode: "hybrid" }),
+    modelCapabilities: capabilities,
+    toolObservationVersion: 1,
+    tools: [readToolResultTool],
+    ...overrides
+  });
+  const legacyOf = (input: ProviderRunRequest): ProviderRunRequest => ({
+    ...input, contextCompactionPolicy: { ...input.contextCompactionPolicy!, mode: "legacy_compatible" }
+  });
+  const budgetOf = (input: ProviderRunRequest, observations?: ReturnType<typeof contextObservationsFromResults>) =>
+    applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: input, ...(observations ? { observations } : {}) });
+  const accepted = (result: ReturnType<typeof budgetOf>) => {
+    if (!result.ok) throw new Error(`unexpected ${result.error.code}`);
+    return result;
+  };
+  const assembled = (input: ProviderRunRequest) =>
+    measureSessionContext({ bridge: openAIResponsesToolBridge, request: input }).approximateInputTokens;
+  const summaryFor = (source: ProviderRunRequest, notes = "n".repeat(2_000)): ContextSummary => ({
+    formatVersion: 1, id: `cs1_${"c".repeat(32)}`, notes, sourceDigest: "d".repeat(64),
+    sourceRefs: [contextSummarySourceRevision(source)]
+  });
+  const hex = (seed: string, length: number) => Buffer.from(seed).toString("hex").padEnd(length, "0").slice(0, length);
+  const observed = (id: string, chars = 1_000): ToolExecutionResult => projectObservationForProvider({
+    callId: id, content: [{ text: `rare ${id} ${"x".repeat(chars)}`, type: "text" }], name: "read_record", status: "complete",
+    observation: { byteSize: 20_000, checksum: hex(id, 64), encoding: "json-utf8-v1", handle: `tor1_${hex(id, 32)}`,
+      maskable: true, source: "mcp", sourceTruncated: false, version: 1 }
+  });
+  const reference = (settled: ToolExecutionResult) => openAIResponsesToolBridge.appendToolResult(undefined, {
+    callId: settled.callId, content: [{ type: "json", value: { observation: settled.observation, reader: "read_tool_result" } }],
+    name: settled.name, status: settled.status
+  });
+  const document = (chars: number) => ({
+    byteSize: chars, extractedText: "d".repeat(chars), fileName: "large.txt", id: "doc-1",
+    kind: "document" as const, metadata: {}, mimeType: "text/plain", status: "ready" as const
+  });
+
+  it("uses the reviewed 17 488-token budget", () => {
+    expect(calculateContextBudgetLimits({ contextWindow: 20_000, maxOutputTokens: 512, provider: "openai" }).budgetTokens)
+      .toBe(HYBRID_BUDGET);
+  });
+
+  it("rejects an irreducible current message before a run exists, exactly like legacy", () => {
+    const current = turn("current", "user", 121_000, "q");
+    for (const input of [hybrid([current]), hybrid([turn("old", "user", 40_000), turn("old-answer", "assistant", 400), current])]) {
+      for (const candidate of [input, legacyOf(input)]) {
+        expect(budgetOf(candidate)).toMatchObject({ ok: false, error: { code: "context_too_large" } });
+      }
+    }
+  });
+
+  it("reports pinned Skills over budget as skills_budget_exceeded", () => {
+    const input = hybrid([turn("skill-context:current", "user", 80_000, "s", "skill_context"), turn("current", "user", 100)]);
+    for (const candidate of [input, legacyOf(input)]) {
+      expect(budgetOf(candidate)).toMatchObject({
+        ok: false, error: { code: "skills_budget_exceeded", skillBudget: { budgetTokens: HYBRID_BUDGET } }
+      });
+    }
+  });
+
+  it("accepts a current summary with nothing left to mask at 75-100% without trimming or a second summary", () => {
+    const settled = [observed("old-1"), observed("old-2"), observed("new-1")];
+    const recent = [turn("u1", "user", 12_500), turn("a1", "assistant", 12_500), turn("u2", "user", 12_500), turn("a2", "assistant", 12_500)];
+    const base = hybrid([turn("older", "user", 40_000), ...recent, turn("current", "user", 100)], { providerToolMessages: [
+      reference(settled[0]!), reference(settled[1]!),
+      { call_id: "new-1", name: "read_record", type: "function_call" },
+      openAIResponsesToolBridge.appendToolResult(undefined, settled[2]!)
+    ] });
+    const summarized = applyContextSummaryToRequest(base, summaryFor(base));
+    expect(contextSummaryIsCurrent(summarized)).toBe(true);
+    const observations = contextObservationsFromResults(settled);
+    const result = accepted(budgetOf(summarized, observations));
+    const measurement = result.request.contextCompaction!;
+    expect(measurement.beforeTokens).toBeGreaterThan(HYBRID_BUDGET * 0.75);
+    expect(measurement.beforeTokens).toBeLessThanOrEqual(HYBRID_BUDGET);
+    expect(measurement).toMatchObject({ afterTokens: measurement.beforeTokens, maskedObservations: 0, outcome: "already_fits" });
+    expect(result.contextTruncation).toBeNull();
+    expect(result.request.context?.messages).toEqual(summarized.context?.messages);
+    expect(summaryNeedsProvider(result.request)).toBe(false);
+    // Regression oracle: legacy admits the same request unchanged.
+    const legacy = accepted(budgetOf(legacyOf(summarized), observations));
+    expect(legacy.contextTruncation).toBeNull();
+    expect(legacy.request.context?.messages).toEqual(result.request.context?.messages);
+    expect(legacy.request.providerToolMessages).toEqual(result.request.providerToolMessages);
+
+    // A later round that can still mask stays masking-only: the summary
+    // already covers every retained turn, so the 75% trigger cannot buy it again.
+    const grown = { ...summarized, providerToolMessages: [
+      reference(settled[0]!), openAIResponsesToolBridge.appendToolResult(undefined, observed("old-2", 4_000)),
+      ...summarized.providerToolMessages!.slice(2)
+    ] };
+    const masked = accepted(budgetOf(grown, observations));
+    expect(masked.request.contextCompaction).toMatchObject({ maskedObservations: 1, outcome: "masking_applied" });
+    expect(masked.contextTruncation).toBeNull();
+    expect(summaryNeedsProvider(masked.request)).toBe(false);
+  });
+
+  it("keeps a short history beside a large attachment without buying a summary", () => {
+    const input = hybrid([turn("u1", "user", 200), turn("a1", "assistant", 200), turn("u2", "user", 200),
+      turn("a2", "assistant", 200), turn("current", "user", 200)], { attachmentIds: ["doc-1"], attachments: [document(200_000)] });
+    const result = accepted(budgetOf(input));
+    expect(result.request.contextCompaction).toMatchObject({ outcome: "already_fits" });
+    expect(summaryNeedsProvider(result.request)).toBe(false);
+    expect(result.contextTruncation).toBeNull();
+    expect(result.request.context?.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2", "a2", "current"]);
+    expect(result.request.attachments[0]!.extractedText).toContain("[truncated for model context]");
+    expect(assembled(result.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
+    // Legacy answers too, by dropping the two short turns.
+    const legacy = accepted(budgetOf(legacyOf(input)));
+    expect(legacy.contextTruncation).toMatchObject({ droppedMessages: 4 });
+    expect(legacy.request.contextCompaction).toMatchObject({ legacyFallback: true, outcome: "needs_summary" });
+  });
+
+  it("fits a large attachment after the summary replaces a long history instead of refusing it", () => {
+    const history = Array.from({ length: 12 }, (_, index) => turn(`h${index}`, index % 2 ? "assistant" : "user", 6_000));
+    const input = hybrid([...history, turn("current", "user", 200)], { attachmentIds: ["doc-1"], attachments: [document(200_000)] });
+    const pending = accepted(budgetOf(input));
+    expect(pending.request.contextCompaction).toMatchObject({ outcome: "needs_summary", legacyFallback: false });
+    expect(pending.request.contextCompaction!.afterTokens).toBeGreaterThan(HYBRID_BUDGET);
+    expect(summaryNeedsProvider(pending.request)).toBe(true);
+    expect(pending.contextTruncation).toBeNull();
+    expect(pending.request.context?.messages).toHaveLength(13);
+    const pendingText = pending.request.attachments[0]!.extractedText!.length;
+
+    const summarized = applyContextSummaryToRequest(pending.request, summaryFor(pending.request));
+    const answer = accepted(budgetOf(summarized));
+    expect(answer.request.contextCompaction!.outcome).not.toBe("needs_summary");
+    expect(summaryNeedsProvider(answer.request)).toBe(false);
+    expect(answer.contextTruncation).toBeNull();
+    expect(answer.request.context?.messages.map((message) => message.id))
+      .toEqual([`__context-summary-${summarized.contextCompactionSummary!.id}`, "h8", "h9", "h10", "h11", "current"]);
+    const answerText = answer.request.attachments[0]!.extractedText!.length;
+    expect(answerText).toBeLessThan(pendingText);
+    expect(answerText).toBeGreaterThan(20_000);
+    expect(assembled(answer.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
+  });
+
+  it("keeps exact pins directly before the current message after a summary rebuild", () => {
+    const history = Array.from({ length: 12 }, (_, index) => turn(`h${index}`, index % 2 ? "assistant" : "user", 6_000));
+    const pin = turn("knowledge-evidence:v1", "user", 400, "k", "knowledge_evidence");
+    const pending = accepted(budgetOf(hybrid([...history, pin, turn("current", "user", 200)])));
+    expect(pending.request.contextCompaction).toMatchObject({ outcome: "needs_summary" });
+    const summarized = applyContextSummaryToRequest(pending.request, summaryFor(pending.request));
+    const answer = accepted(budgetOf(summarized));
+    expect(answer.request.context?.messages.map((message) => message.id)).toEqual([
+      `__context-summary-${summarized.contextCompactionSummary!.id}`, "h8", "h9", "h10", "h11", pin.id, "current"
+    ]);
+    expect(answer.request.context?.messages.at(-2)?.content).toEqual(pin.content);
+  });
+
+  it("bounds an oversized exact tail after a summary instead of refusing the paid result", () => {
+    const history = [turn("h0", "user", 400), turn("h1", "assistant", 400), turn("h2", "user", 400), turn("h3", "assistant", 400),
+      turn("h4", "user", 20_000), turn("h5", "assistant", 20_000), turn("h6", "user", 20_000), turn("h7", "assistant", 20_000)];
+    const pending = accepted(budgetOf(hybrid([...history, turn("current", "user", 200)])));
+    expect(pending.request.contextCompaction).toMatchObject({ outcome: "needs_summary" });
+    const summarized = applyContextSummaryToRequest(pending.request, summaryFor(pending.request));
+    const answer = accepted(budgetOf(summarized));
+    const summaryId = `__context-summary-${summarized.contextCompactionSummary!.id}`;
+    expect(answer.contextTruncation).toMatchObject({ droppedMessages: 2 });
+    expect(answer.request.context?.messages.map((message) => message.id)).toEqual([summaryId, "h6", "h7", "current"]);
+    expect(answer.request.contextCompaction).toMatchObject({ legacyFallback: true, outcome: "already_fits" });
+    expect(answer.request.contextCompaction!.afterTokens).toBeLessThanOrEqual(HYBRID_BUDGET);
+    expect(summaryNeedsProvider(answer.request)).toBe(false);
+    expect(assembled(answer.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
+    expect(budgetOf(legacyOf(summarized)).ok).toBe(true);
+  });
 });
