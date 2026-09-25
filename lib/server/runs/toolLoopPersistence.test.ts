@@ -335,6 +335,20 @@ describe("context summary receipts", () => {
     expect(mergeContextCompactionReceipts(durable, newer)).toMatchObject({ summary: stale });
   });
 
+  it("treats receipts as equal after a jsonb-style key reorder", () => {
+    const reorder = (value: unknown): unknown => Array.isArray(value)
+      ? value.map(reorder)
+      : value !== null && typeof value === "object"
+        ? Object.fromEntries(Object.keys(value as Record<string, unknown>).reverse()
+          .map((key) => [key, reorder((value as Record<string, unknown>)[key])]))
+        : value;
+    const durable = { ...compaction, summary, summaryAttempts: [attempt(1, "settled"), attempt(2, "committed")] };
+    const stored = reorder(durable) as typeof durable;
+    expect(JSON.stringify(stored)).not.toBe(JSON.stringify(durable));
+    expect(mergeContextCompactionReceipts(stored, durable)).toMatchObject({ summary, summaryAttempts: durable.summaryAttempts });
+    expect(mergeContextCompactionReceipts(durable, stored)).not.toBeNull();
+  });
+
   it("bounds retained receipts and rejects duplicate receipt ids", () => {
     const many = Array.from({ length: 30 }, (_, index) => ({ ...attempt(1, "invalid"), attempt: (index % 16) + 1,
       id: `csa1_${String(index).padStart(32, "0")}` }));
