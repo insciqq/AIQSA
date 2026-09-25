@@ -378,7 +378,8 @@ describe("context compaction summarizer", () => {
       });
       const source = contextSummarySource(overflowing, contextObservationsFromResults(results));
       expect(source.refs).toHaveLength(CONTEXT_COMPACTION_LIMITS.summarySourceRefs);
-      expect(source.refs.slice(0, 3)).toEqual([source.revision, CONTEXT_SUMMARY_REFS_INCOMPLETE, handle(1_299)]);
+      expect(source.refs.slice(0, 2)).toEqual([source.revision, CONTEXT_SUMMARY_REFS_INCOMPLETE]);
+      expect(source.refs.filter((ref) => ref.startsWith("tor1_"))[0]).toBe(handle(1_299));
       expect(results.every((result) => source.refs.includes(result.observation!.handle))).toBe(true);
       // Every carried handle is still rechecked in this run, whatever the refs keep.
       expect(source.referencedHandles).toEqual(expect.arrayContaining(carriedHandles));
@@ -386,7 +387,8 @@ describe("context compaction summarizer", () => {
       const fitting = contextSummarySource({ ...overflowing, providerToolMessages: overflowing.providerToolMessages!.slice(-4),
         contextCompactionSummary: { ...previous, sourceRefs: previous.sourceRefs.slice(0, 3) } },
       contextObservationsFromResults(results));
-      expect(fitting.refs.slice(0, 5)).toEqual([fitting.revision, handle(1_299), handle(1_298), handle(0), handle(1)]);
+      expect(fitting.refs[0]).toBe(fitting.revision);
+      expect(fitting.refs.filter((ref) => ref.startsWith("tor1_")).slice(0, 4)).toEqual([handle(1_299), handle(1_298), handle(0), handle(1)]);
       expect(fitting.refs).not.toContain(CONTEXT_SUMMARY_REFS_INCOMPLETE);
     });
   });

@@ -1429,7 +1429,10 @@ export function createPrismaRunToolLoopOperations(
       // Only the bounded compaction projection and accepted policy are read:
       // never the provider continuation, tool transcript or run payloads.
       // Knowledge runs keep the legacy guard: even a historical checkpoint of
-      // one never supplies notes beside or after citation evidence.
+      // one never supplies notes beside or after citation evidence. Settled
+      // runs qualify; a failure that recovery may still resume qualifies only
+      // through its committed receipt for exactly the checkpoint notes:
+      // committed notes are final even when the run later failed.
       const rows = await prismaClient.$queryRaw<Array<{
         assistantMessageId: string;
         compaction: unknown;
@@ -1444,9 +1447,14 @@ export function createPrismaRunToolLoopOperations(
         FROM "ModelRun" AS r
         WHERE r."chatId" = ${input.chatId} AND r."userId" = ${input.userId}
           AND r."assistantMessageId" IN (${Prisma.join(answerIds)})
-          AND r."status" IN ('complete', 'cancelled', 'error') AND NOT ${activeToolLoopRunSql("r")}
+          AND r."status" IN ('complete', 'cancelled', 'error')
           AND r."toolLoopState" -> 'contextCompaction' -> 'summary' IS NOT NULL
           AND COALESCE(r."normalizedRequest" #>> '{knowledgePlan,mode}', 'none') = 'none'
+          AND (NOT ${activeToolLoopRunSql("r")} OR COALESCE(
+            r."toolLoopState" -> 'contextCompaction' -> 'summaryAttempts' @> jsonb_build_array(jsonb_build_object(
+              'state', 'committed',
+              'sourceDigest', r."toolLoopState" -> 'contextCompaction' -> 'summary' -> 'sourceDigest'
+            )), false))
         ORDER BY r."createdAt" DESC, r."id" DESC
         LIMIT 8
       `);

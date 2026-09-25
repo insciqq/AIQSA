@@ -236,7 +236,7 @@ describe("in-run clarification execution", () => {
       bridge: openAIResponsesToolBridge,
       failure: (code, message) => Object.assign(new Error(message), { code }),
       observations,
-      receipts: { claim: async () => undefined, settle: async () => undefined },
+      receipts: { claim: async () => undefined, dispatch: async () => undefined, settle: async () => undefined },
       publisher,
       request: merged,
       signal,

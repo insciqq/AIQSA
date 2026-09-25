@@ -129,7 +129,7 @@ function compaction(request: ProviderRunRequest, wire: Wire, results: readonly T
     failure: (code, message) => Object.assign(new Error(message), { code }),
     observations: contextObservationsFromResults(results),
     publisher: createContextCompactionPublisher(async (status) => { statuses.push(status); }),
-    receipts: { claim: async () => undefined, settle },
+    receipts: { claim: async () => undefined, dispatch: async () => undefined, settle },
     request,
     signal: new AbortController().signal,
     summaryAdapter: adapter
