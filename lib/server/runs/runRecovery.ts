@@ -1464,6 +1464,13 @@ async function executePersistedToolCallInContext(
           includeUsage: persisted.usageAccountedAt == null, modelRunToolCallId: persisted.id, result: restored });
         return { call, ordinal: persisted.ordinal, result: { status: "complete", value: restored }, round: persisted.roundIndex };
       }
+    } else if (isRecoveredSearchCall(context, call.name)) {
+      // The result is unavailable, but a dispatched Search may hold an
+      // immutable usage receipt. It settles with the terminal outcome below;
+      // accounting failure never masks that outcome or permits a replay.
+      await recordRecoveredSearchResult({ context, includeUsage: persisted.usageAccountedAt == null,
+        modelRunToolCallId: persisted.id, result: { callId: call.id, name: call.name, status: "error", content: [] } })
+        .catch(() => undefined);
     }
   }
   if (claim.kind === "ambiguous") {
