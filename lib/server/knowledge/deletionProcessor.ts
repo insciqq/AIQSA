@@ -6,6 +6,13 @@ import {
   explicitKnowledgeSelection
 } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
+import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
+import {
+  contextNotesDescendantRunIds,
+  withoutCarriedContextNotes,
+  withoutCheckpointContextNotes,
+  type ContextNotesRun
+} from "./deletionContextNotes";
 import { deleteKnowledgeSearchArtifacts } from "./searchProjection";
 
 export const DEFAULT_KNOWLEDGE_DELETION_BATCH_SIZE = 25;
@@ -1049,6 +1056,137 @@ async function scrubConfigurationReferences(
   }
 }
 
+type RetainedEvidenceCopies = Readonly<{
+  /** Knowledge calls that published a retained observation. */
+  knowledgeCalls: readonly Readonly<{ modelRunId: string; providerCallId: string }>[];
+  /** Runs beyond the affected ones whose notes descend from them. */
+  notesRunIds: readonly string[];
+  /** Reader calls, in any run of the affected chats, that read an affected
+   * Knowledge observation by its handle. */
+  readerCalls: readonly Readonly<{ id: string; modelRunId: string; providerCallId: string }>[];
+}>;
+
+/** Read-only discovery of every retained copy of the affected runs' Knowledge
+ * evidence outside its owner: the observation preview, reader fragments and
+ * model-derived context notes (including those later turns carried). Reader
+ * handles and carried notes never leave their chat, which bounds the search. */
+async function findRetainedEvidenceCopies(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{ chatIds: readonly string[]; modelRunIds: readonly string[] }>
+): Promise<RetainedEvidenceCopies> {
+  if (input.modelRunIds.length === 0 || input.chatIds.length === 0) {
+    return { knowledgeCalls: [], notesRunIds: [], readerCalls: [] };
+  }
+  const observations = await tx.toolObservation.findMany({
+    orderBy: { id: "asc" },
+    select: { id: true, modelRunId: true, toolCall: { select: { providerCallId: true } } },
+    where: { modelRunId: { in: [...input.modelRunIds] }, sourceKind: "knowledge" }
+  });
+  const handles = observations.map((observation) => `tor1_${observation.id}`);
+  const readerCalls = handles.length === 0 ? [] : await tx.$queryRaw<Array<{
+    id: string;
+    modelRunId: string;
+    providerCallId: string;
+  }>>(Prisma.sql`
+    SELECT tool_call."id", tool_call."modelRunId", tool_call."providerCallId"
+    FROM "ModelRunToolCall" AS tool_call
+    JOIN "ModelRun" AS model_run ON model_run."id" = tool_call."modelRunId"
+    WHERE model_run."chatId" IN (${Prisma.join([...input.chatIds])})
+      AND tool_call."toolName" = ${READ_TOOL_RESULT_NAME}
+      AND tool_call."arguments" ->> 'handle' IN (${Prisma.join(handles)})
+    ORDER BY tool_call."modelRunId", tool_call."id"
+  `);
+  const notesRuns = await tx.$queryRaw<ContextNotesRun[]>(Prisma.sql`
+    SELECT model_run."id",
+      model_run."normalizedRequest" #>> '{contextCompactionPolicy,reuse,runId}' AS "reuseRunId",
+      model_run."normalizedRequest" #>> '{contextCompactionPolicy,reuse,summary,id}' AS "reuseSummaryId",
+      model_run."toolLoopState" #>> '{contextCompaction,summary,id}' AS "summaryId"
+    FROM "ModelRun" AS model_run
+    WHERE model_run."chatId" IN (${Prisma.join([...input.chatIds])})
+      AND (model_run."normalizedRequest" #> '{contextCompactionPolicy,reuse}' IS NOT NULL
+        OR model_run."toolLoopState" #> '{contextCompaction,summary}' IS NOT NULL)
+    ORDER BY model_run."id"
+  `);
+  return {
+    knowledgeCalls: observations.map((observation) => ({
+      modelRunId: observation.modelRunId,
+      providerCallId: observation.toolCall.providerCallId
+    })),
+    notesRunIds: contextNotesDescendantRunIds({ affectedRunIds: input.modelRunIds, runs: notesRuns }),
+    readerCalls
+  };
+}
+
+/**
+ * Runs after the affected runs are scrubbed (and therefore row-locked and no
+ * longer active), so no new Knowledge observation can be published. A READY
+ * observation is immutable by database contract and a Knowledge SOURCE row
+ * holds no bytes of its own, only its preview projection, so the row is
+ * removed: its call, the Knowledge receipts and usage accounting remain, and
+ * the handle resolves to nothing. Reader calls of those handles and their
+ * provider messages are tombstoned like Knowledge calls, and descendant runs
+ * lose the notes they carried or derived. Every step is idempotent.
+ */
+async function scrubRetainedEvidenceCopies(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    affectedRunIds: readonly string[];
+    copies: RetainedEvidenceCopies;
+    providerCallIdsByRun: ReadonlyMap<string, ReadonlySet<string>>;
+  }>
+): Promise<void> {
+  if (input.affectedRunIds.length === 0) return;
+  const observations = await tx.toolObservation.findMany({
+    select: { id: true, projection: true, state: true },
+    where: { modelRunId: { in: [...input.affectedRunIds] }, sourceKind: "knowledge" }
+  });
+  const ready = observations.filter((observation) => observation.state === "READY").map(({ id }) => id);
+  if (ready.length > 0) await tx.toolObservation.deleteMany({ where: { id: { in: ready }, sourceKind: "knowledge" } });
+  const unpublished = observations
+    .filter((observation) => observation.state !== "READY" && observation.projection !== null)
+    .map(({ id }) => id);
+  if (unpublished.length > 0) {
+    await tx.toolObservation.updateMany({
+      data: { projection: Prisma.DbNull },
+      where: { id: { in: unpublished }, sourceKind: "knowledge", state: { not: "READY" } }
+    });
+  }
+  if (input.copies.readerCalls.length > 0) {
+    await tx.modelRunToolCall.updateMany({
+      data: { arguments: json({ deleted: true }), result: Prisma.DbNull },
+      where: { id: { in: input.copies.readerCalls.map(({ id }) => id) }, toolName: READ_TOOL_RESULT_NAME }
+    });
+  }
+  const affected = new Set(input.affectedRunIds);
+  const notesRunIds = new Set(input.copies.notesRunIds);
+  const otherRunIds = uniqueStrings([
+    ...input.copies.notesRunIds,
+    ...input.copies.readerCalls.map(({ modelRunId }) => modelRunId)
+  ]).filter((id) => !affected.has(id));
+  if (otherRunIds.length === 0) return;
+  const others = await tx.modelRun.findMany({
+    orderBy: { id: "asc" },
+    select: { id: true, normalizedRequest: true, toolLoopState: true },
+    where: { id: { in: otherRunIds } }
+  });
+  for (const run of others) {
+    const notes = notesRunIds.has(run.id);
+    const normalizedRequest = notes ? withoutCarriedContextNotes(run.normalizedRequest) : run.normalizedRequest;
+    const withoutMessages = scrubProviderToolMessageContainers(
+      run.toolLoopState,
+      input.providerCallIdsByRun.get(run.id) ?? new Set<string>()
+    );
+    const toolLoopState = notes ? withoutCheckpointContextNotes(withoutMessages) : withoutMessages;
+    const data = {
+      ...(run.normalizedRequest !== null && JSON.stringify(normalizedRequest) !== JSON.stringify(run.normalizedRequest)
+        ? { normalizedRequest: json(normalizedRequest) } : {}),
+      ...(run.toolLoopState !== null && JSON.stringify(toolLoopState) !== JSON.stringify(run.toolLoopState)
+        ? { toolLoopState: json(toolLoopState) } : {})
+    };
+    if (Object.keys(data).length > 0) await tx.modelRun.update({ data, where: { id: run.id } });
+  }
+}
+
 async function scrubModelRuns(
   tx: Prisma.TransactionClient,
   input: Readonly<{
@@ -1063,14 +1201,16 @@ async function scrubModelRuns(
   if (input.modelRunIds.length === 0) return;
   const privateValues = new Set([input.resourceId, ...input.privateValues]);
   const providerCallIdsByRun = new Map<string, Set<string>>();
-  for (const call of input.providerCalls) {
-    const ids = providerCallIdsByRun.get(call.modelRunId) ?? new Set<string>();
-    ids.add(call.providerCallId);
-    providerCallIdsByRun.set(call.modelRunId, ids);
-  }
+  const removeProviderCall = (modelRunId: string, providerCallId: string) => {
+    const ids = providerCallIdsByRun.get(modelRunId) ?? new Set<string>();
+    ids.add(providerCallId);
+    providerCallIdsByRun.set(modelRunId, ids);
+  };
+  for (const call of input.providerCalls) removeProviderCall(call.modelRunId, call.providerCallId);
   const rows = await tx.modelRun.findMany({
     select: {
       assistantMessageId: true,
+      chatId: true,
       errorPayload: true,
       id: true,
       normalizedRequest: true,
@@ -1079,6 +1219,13 @@ async function scrubModelRuns(
     },
     where: { id: { in: [...input.modelRunIds] } }
   });
+  const copies = await findRetainedEvidenceCopies(tx, {
+    chatIds: uniqueStrings(rows.map((row) => row.chatId)),
+    modelRunIds: rows.map((row) => row.id)
+  });
+  for (const call of [...copies.knowledgeCalls, ...copies.readerCalls]) {
+    removeProviderCall(call.modelRunId, call.providerCallId);
+  }
   for (const row of rows) {
     const active = row.status === "preparing" || row.status === "queued" ||
       row.status === "streaming" || row.status === "in_progress";
@@ -1095,21 +1242,21 @@ async function scrubModelRuns(
           : { errorPayload: json(redactPrivateKnowledgeValues(row.errorPayload, privateValues)) }),
         ...(row.normalizedRequest === null
           ? {}
-          : { normalizedRequest: json(scrubRunNormalizedRequest(
+          : { normalizedRequest: json(withoutCarriedContextNotes(scrubRunNormalizedRequest(
               row.normalizedRequest,
               {
                 privateValues,
                 resourceId: input.resourceId,
                 resourceType: input.resourceType
               }
-            )) }),
+            ))) }),
         providerResponseId: null,
         ...(row.toolLoopState === null
           ? {}
-          : { toolLoopState: json(scrubProviderToolMessageContainers(
+          : { toolLoopState: json(withoutCheckpointContextNotes(scrubProviderToolMessageContainers(
               redactPrivateKnowledgeValues(row.toolLoopState, privateValues),
               providerCallIdsByRun.get(row.id) ?? new Set<string>()
-            )) })
+            ))) })
       },
       where: { id: row.id }
     });
@@ -1133,6 +1280,11 @@ async function scrubModelRuns(
       });
     }
   }
+  await scrubRetainedEvidenceCopies(tx, {
+    affectedRunIds: rows.map((row) => row.id),
+    copies,
+    providerCallIdsByRun
+  });
   const scopes = await tx.knowledgeRunScope.findMany({
     select: { modelRunId: true, selection: true },
     where: { modelRunId: { in: [...input.modelRunIds] } }
