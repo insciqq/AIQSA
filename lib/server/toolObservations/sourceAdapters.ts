@@ -5,8 +5,10 @@ import { getMcpResponseWireLimits } from "../mcp/responseLimits";
 import type { ObservationProducer } from "./repository";
 import { TOOL_OBSERVATION_LIMITS, type ToolObservationSourceBinding } from "./contract";
 import type { createToolObservationService, ToolObservationProjection } from "./service";
-import { compactSearchToolExecutionResult } from "../search/toolResult";
+import { boundedSearchToolResultText, compactSearchToolExecutionResult, searchExecutionsFromToolResult } from "../search/toolResult";
 import { SearchToolCancelledError } from "../search/toolExecutor";
+import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { SEARCH_OBSERVATION_MAX_BYTES } from "./searchAccounting";
 import { ObservationStoreError } from "./contract";
 
@@ -69,8 +71,33 @@ export async function captureSearchObservation(context: CaptureContext, call: Mo
     const original = compactSearchToolExecutionResult(result);
     if (!original) throw new ObservationStoreError("tool_observation_unavailable");
     const projection = await receipt.store({ original, outcome: result.status, sourceTruncated: false, maskable: true });
-    return { ...observationResult(call, result.status, projection), ...(noProviderCall ? { rawPreview: { providerCall: false } } : {}) };
+    return searchObservationProjection(call, result, projection);
   });
+}
+
+/** Findings budget for a Search result that Off could not deliver whole. */
+export const SEARCH_PROJECTION_FINDINGS_BYTES = 64 * 1024;
+
+/** The model receives the Search owner's canonical text, never the retained
+ * compact original with its invocation, revision, usage or cost fields. When
+ * Off would deliver the canonical result unchanged, the text is identical.
+ * Otherwise the same text is bounded and the descriptor names the reader. */
+function searchObservationProjection(call: Pick<ModelToolCall, "id" | "name">, result: ToolExecutionResult,
+  projection: ToolObservationProjection): ToolExecutionResult {
+  const envelope = { callId: call.id, name: call.name, status: result.status, observation: projection.observation,
+    ...(result.rawPreview?.providerCall === false ? { rawPreview: { providerCall: false } } : {}) };
+  const executions = searchExecutionsFromToolResult(result);
+  // A non-canonical Search result, such as an exhausted invocation budget, is
+  // already its own bounded model text and carries no engine evidence.
+  if (!executions.length || snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)) {
+    return { ...envelope, content: result.content };
+  }
+  for (let budget = SEARCH_PROJECTION_FINDINGS_BYTES; budget >= 1024; budget = Math.floor(budget / 2)) {
+    const bounded: ToolExecutionResult = { ...envelope,
+      content: [{ type: "text", text: boundedSearchToolResultText(executions, budget) }] };
+    if (snapshotToolExecutionResult(bounded, toolLoopPersistenceLimits.resultBytes)) return bounded;
+  }
+  throw new ObservationStoreError("tool_observation_unavailable");
 }
 
 /** Skills settle their existing admitted result before this callback returns;
@@ -82,8 +109,11 @@ export async function captureOwnedObservation(context: CaptureContext, source: "
   return context.service.withReservation({ ...context, source, sourceBinding,
     maximumBytes: 256 * 1024, sourceOwned: true }, async receipt => {
     const retained = await executeAndRetain();
+    // The owner already holds (a Skill has even settled) the admitted result.
+    // Its descriptor is optional recall metadata: an unpublishable receipt,
+    // such as a Knowledge error without a retrieval run, keeps that result.
     const projection = await receipt.storeSource({ outcome: retained.status, sourceTruncated: false, maskable: source !== "skill" });
-    return { ...retained, observation: projection.observation };
+    return projection ? { ...retained, observation: projection.observation } : retained;
   });
 }
 

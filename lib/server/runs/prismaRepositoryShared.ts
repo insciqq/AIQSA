@@ -50,6 +50,15 @@ export function activeToolLoopRun(run: Readonly<{ status: ModelRunStatus; errorP
     (run.status === "error" && !isRecoveredRunTerminalPayload(run.errorPayload));
 }
 
+/** The same predicate as activeToolLoopRun for set-based SQL guards. `alias`
+ * names a "ModelRun" row in the enclosing query; statuses are enum literals. */
+export function activeToolLoopRunSql(alias: string): Prisma.Sql {
+  if (!/^[a-z][a-z_]*$/u.test(alias)) throw new Error("tool_loop_run_alias_invalid");
+  const statuses = dispatchableModelRunStatuses.map((status) => `'${status}'`).join(", ");
+  return Prisma.raw(`("${alias}"."status" IN (${statuses}) OR ("${alias}"."status" = 'error' AND NOT COALESCE(` +
+    `jsonb_typeof("${alias}"."errorPayload") = 'object' AND "${alias}"."errorPayload" -> 'recoveryTerminal' = 'true'::jsonb, false)))`);
+}
+
 export const activeModelRunStatuses: ModelRunStatus[] = [
   "preparing",
   ...dispatchableModelRunStatuses

@@ -1923,7 +1923,8 @@ export async function prepareRun(
           available: frozenSkills.manifest.available.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })) },
         search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
         visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints,
-        toolObservationVersion: observationPolicy === "v1" ? 1 : 0,
+        // Absent for Off: pre-observation accepted threads keep their identity.
+        ...(observationPolicy === "v1" ? { toolObservationVersion: 1 } : {}),
         images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
         artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
           references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,

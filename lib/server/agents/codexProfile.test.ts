@@ -18,6 +18,12 @@ describe("managed Codex invocation", () => {
     expect(text).not.toContain('"find_tools"');
     expect(renderCodexManagedProfile({ ...profile, mcpMode: "off" })).not.toContain("[mcp_servers.aiqsa]");
   });
+  it("renders the unchanged v7 profile when observations are Off", () => {
+    for (const mcpMode of ["off", "auto", "all"] as const) {
+      expect(renderCodexManagedProfile({ ...profile, mcpMode, toolObservations: false }))
+        .toBe(renderCodexManagedProfile({ ...profile, mcpMode }));
+    }
+  });
   it("exposes explicit checkpoints even with external MCP Off", () => {
     expect(renderCodexManagedProfile({ ...profile, mcpMode: "off", checkpoints: true })).toContain('enabled_tools = ["checkpoint_outputs"]');
   });
@@ -31,7 +37,7 @@ describe("managed Codex invocation", () => {
     const config = renderCodexManagedProfile(profile);
     expect(config).toContain("stream_max_retries = 2\n");
     expect(config).toContain("request_max_retries = 0\n");
-    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(8);
+    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(7);
   });
   it.each([undefined, 5_000, 3_600_000, 86_400_000])("uses the admitted response budget for native idle reasoning: %s", (responseTimeoutMs) => {
     expect(renderCodexManagedProfile({ ...profile, responseTimeoutMs }))

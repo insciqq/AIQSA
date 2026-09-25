@@ -6,14 +6,16 @@ import { join } from "node:path";
 import type { Prisma, ToolObservation } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { memoryToolObservations } from "@/tests/support/toolObservations";
+import { createObservationAdmission } from "./admission";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { createFileSystemStorageAdapter, type StorageAdapter } from "../uploads/storage";
-import { TOOL_OBSERVATION_LIMITS } from "./contract";
+import { observationFailure, TOOL_OBSERVATION_LIMITS } from "./contract";
 import { ObservationStoreError } from "./repository";
 import { createToolObservationService, type ToolObservationRepository } from "./service";
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider } from "./sourceAdapters";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
-import { searchToolResultContent, type SearchExecutionEvidence } from "../search/toolResult";
+import { searchToolResultContent, searchToolResultText, type SearchExecutionEvidence } from "../search/toolResult";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolExecutionResult } from "../tools/types";
 
@@ -31,7 +33,7 @@ function fixture(storage: StorageAdapter = createMemoryStorageAdapter()) {
     toolCall: { state: "complete" as const } });
   const repository = {
     reserve: vi.fn<ToolObservationRepository["reserve"]>(async (_context, sourceKind, reservedBytes) => {
-      if (row) return { claimed: false, observation: row };
+      if (row) return { claimed: row.sourceKind === "skill" && row.state === "RESERVED", observation: row };
       row = { id: randomUUID().replaceAll("-", ""), modelRunId: producer.runId, toolCallId: producer.toolCallId,
         formatVersion: 1, sourceKind, sourceBinding: null, executionReceipt: null, state: "RESERVED", reservedBytes, executionOutcome: null, byteSize: null,
         checksum: null, storageMode: null, inlineText: null, storageKey: null, projection: null,
@@ -199,13 +201,105 @@ describe("observation storage and recall boundary", () => {
     expect(f.repository.readSource).toHaveBeenCalledOnce();
   });
 
-  it.each(["😀", "Я", '"', "\\"])("bounds bytes and estimated tokens for %s-heavy fragments", async char => {
+  it.each(["😀", "Я", '"', "\\", "©", "☀"])("bounds bytes and estimated tokens for %s-heavy fragments", async char => {
     const f = fixture();
     const projection = await f.write({ text: char.repeat(10000) });
     const read = await f.service().read(producer, { handle: projection.observation.handle });
     expect(Buffer.byteLength(JSON.stringify(read))).toBeLessThanOrEqual(TOOL_OBSERVATION_LIMITS.readerBytes);
     expect(estimateApproxTokens(read)).toBeLessThanOrEqual(TOOL_OBSERVATION_LIMITS.readerEstimatedTokens);
     expect(read.cursor).not.toBeNull();
+  });
+
+  it("shortens a pictograph-dense fragment instead of refusing it and continues exactly at the cut", async () => {
+    const f = fixture();
+    const original = { text: "©☀".repeat(6000) + "tail" };
+    const exact = Buffer.from(JSON.stringify(original));
+    const projection = await f.write(original);
+    const first = await f.service().read(producer, { handle: projection.observation.handle, maxBytes: 6144 });
+    expect(first.endOffset - first.offset).toBeLessThan(6144);
+    expect(first.endOffset - first.offset).toBeGreaterThan(1024);
+    expect(first.fragment).toBe(exact.subarray(first.offset, first.endOffset).toString());
+    expect(first.incomplete).toBe(true);
+    expect(estimateApproxTokens(first)).toBeLessThanOrEqual(TOOL_OBSERVATION_LIMITS.readerEstimatedTokens);
+    const next = await f.service().read(producer, { handle: projection.observation.handle, cursor: first.cursor!, maxBytes: 6144 });
+    expect(next.offset).toBe(first.endOffset);
+    expect(next.fragment).toBe(exact.subarray(next.offset, next.endOffset).toString());
+  });
+});
+
+describe("observation admission holds storage phases, not business calls", () => {
+  function gate() {
+    let open!: () => void;
+    const promise = new Promise<void>(resolve => { open = resolve; });
+    return { promise, open };
+  }
+  const actor = { runId: "admission-run", userId: "admission-owner" };
+  const call = (toolCallId: string) => ({ ...actor, toolCallId });
+
+  it("lets other callers dispatch and read while slow business calls are in flight", async () => {
+    const observations = memoryToolObservations();
+    const admission = createObservationAdmission(1024 * 1024, 1);
+    const service = createToolObservationService({ repository: observations.repository, storage: observations.storage, admission });
+    const saved = await service.withReservation({ producer: call("saved"), source: "mcp", maximumBytes: 1024 * 1024 },
+      receipt => receipt.store({ original: { text: `${"x".repeat(300_000)} rare-saved` }, outcome: "complete", sourceTruncated: false, maskable: true }));
+    const gates = Array.from({ length: 8 }, gate);
+    const started: number[] = [];
+    const slow = gates.map((current, index) => service.withReservation({ producer: call(`slow-${index}`), source: "workspace",
+      maximumBytes: 1024 * 1024 }, async receipt => {
+      started.push(index);
+      await current.promise;
+      return receipt.store({ original: { text: "y".repeat(20_000) }, outcome: "complete", sourceTruncated: false, maskable: true });
+    }));
+    await vi.waitFor(() => expect(started).toHaveLength(8));
+    expect(admission.busy()).toBe(false);
+    const read = await service.read(actor, { handle: saved.observation.handle, query: "rare-saved" });
+    expect(read.fragment).toContain("rare-saved");
+    const fresh = await service.withReservation({ producer: call("fresh"), source: "mcp", maximumBytes: 1024 * 1024 },
+      receipt => receipt.store({ original: { text: "fresh" }, outcome: "complete", sourceTruncated: false, maskable: true }));
+    expect(fresh.observation.byteSize).toBeGreaterThan(0);
+    for (const current of gates) current.open();
+    expect((await Promise.all(slow)).every(projection => projection.incomplete)).toBe(true);
+  });
+
+  it("refuses new dispatches and reads transiently while storage is saturated, without a budget message", async () => {
+    const observations = memoryToolObservations();
+    const admission = createObservationAdmission(1024 * 1024, 1);
+    const service = createToolObservationService({ repository: observations.repository, storage: observations.storage, admission });
+    const saved = await service.withReservation({ producer: call("saved"), source: "mcp", maximumBytes: 1024 * 1024 },
+      receipt => receipt.store({ original: { text: "z".repeat(20_000) }, outcome: "complete", sourceTruncated: false, maskable: true }));
+    const holder = gate();
+    const holding = admission(1024 * 1024, () => holder.promise);
+    const waiting = admission(1, async () => undefined, { whenBusy: "wait" });
+    const business = vi.fn();
+    const refused = await service.withReservation({ producer: call("refused"), source: "search", maximumBytes: 1024 * 1024 }, business)
+      .catch((error: unknown) => error);
+    expect(refused).toMatchObject({ code: "tool_observation_busy" });
+    expect(business).not.toHaveBeenCalled();
+    expect(observations.rows.has("refused")).toBe(false);
+    expect(observationFailure(refused)?.message).not.toMatch(/budget|exhausted/iu);
+    await expect(service.read(actor, { handle: saved.observation.handle })).rejects.toMatchObject({ code: "tool_observation_busy" });
+    holder.open();
+    await Promise.all([holding, waiting]);
+    expect((await service.read(actor, { handle: saved.observation.handle })).fragment).toContain("zzzz");
+  });
+
+  it("records the executed outcome before an original waits for capacity, then publishes it", async () => {
+    const observations = memoryToolObservations();
+    const admission = createObservationAdmission(1024 * 1024, 1);
+    const service = createToolObservationService({ repository: observations.repository, storage: observations.storage, admission });
+    const holder = gate();
+    const holding = admission(1024 * 1024, () => holder.promise);
+    const business = vi.fn(async () => ({ text: "w".repeat(20_000) }));
+    const pending = service.withReservation({ producer: call("queued"), source: "mcp", maximumBytes: 1024 * 1024 },
+      async receipt => receipt.store({ original: await business(), outcome: "complete", sourceTruncated: false, maskable: true }));
+    // A crash here leaves a dispatched producer with its known outcome for
+    // recovery, never an unreserved running call that was not dispatched.
+    await vi.waitFor(() => expect(observations.rows.get("queued")).toMatchObject({ state: "RESERVED", executionOutcome: "complete" }));
+    expect(business).toHaveBeenCalledOnce();
+    holder.open();
+    await holding;
+    expect((await pending).observation.byteSize).toBeGreaterThan(20_000);
+    expect(observations.rows.get("queued")).toMatchObject({ state: "READY", storageMode: "OBJECT" });
   });
 });
 
@@ -268,12 +362,44 @@ describe("accepted observation source adapters", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  const internalSearchFields = ["invocation-", "option-", "revision-", "inputTokens", "totalTokens", "estimatedCostMicros", "usage"];
+
+  it("gives the model the same canonical Search text as Off and keeps internal identifiers in the retained original", async () => {
+    const f = fixture();
+    const off = searchResult();
+    const result = await captureSearchObservation({ service: f.service(), producer }, call, sources, async () => searchResult());
+    expect(result.content).toEqual(off.content);
+    const executions = off.rawPreview!.searchExecutions as SearchExecutionEvidence[];
+    expect(result.content).toEqual([{ type: "text", text: searchToolResultText(executions) }]);
+    expect(result).not.toHaveProperty("usage");
+    const visible = JSON.stringify(projectObservationForProvider(result).content);
+    expect(visible).toContain("1. Title 1 — https://example.com/1");
+    expect(visible).toContain(result.observation!.handle);
+    for (const field of internalSearchFields) expect(visible).not.toContain(field);
+    // The checkpoint keeps the same text and descriptor, never the compact original.
+    const checkpoint = JSON.stringify(snapshotToolExecutionResult(result, 256 * 1024));
+    for (const field of internalSearchFields) expect(checkpoint).not.toContain(field);
+    const original = JSON.parse((await f.service().read(producer, { handle: result.observation!.handle })).fragment);
+    expect(original).toMatchObject({ content: [{ type: "json", value: { aiqsaType: "search_result" } }],
+      rawPreview: { searchExecutions: [{ invocationId: "invocation-1" }, {}, {}] } });
+  });
+
   it("externalizes canonical Search once and retains exact sources and independent usage when its object is lost", async () => {
     const f = fixture();
     const execute = vi.fn(async () => searchResult(true));
     const result = await captureSearchObservation({ service: f.service(), producer }, call, sources, execute);
     expect(f.row().byteSize).toBeGreaterThan(256 * 1024);
-    expect(JSON.stringify(result).length).toBeLessThan(8192);
+    const [part] = result.content;
+    expect(result.content).toHaveLength(1);
+    const text = part?.type === "text" ? part.text : "";
+    // Off would have dropped these engines; the model receives their canonical
+    // text within a bounded budget, every numbered source and the reader.
+    expect(text.startsWith('Search source "Source 1":\nzzz')).toBe(true);
+    expect(text).toContain("Findings shortened here");
+    expect(text).toContain("Sources:\n1. Title 1 — https://example.com/1\n2. Title 2 — https://example.com/2\n3. Title 3 — https://example.com/3");
+    expect(text).not.toContain("rare-search-1");
+    expect(Buffer.byteLength(text)).toBeLessThan(80 * 1024);
+    for (const field of internalSearchFields) expect(JSON.stringify(result)).not.toContain(field);
     expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
     expect((await f.service().read(producer, { handle: result.observation!.handle, query: "rare-search-3" })).fragment).toContain("rare-search-3");
     const accounting = await f.service().searchAccounting(producer);
@@ -318,5 +444,54 @@ describe("accepted observation source adapters", () => {
     const projected = projectObservationForProvider(result);
     expect(projected.content[0]).toEqual(original.content[0]);
     expect(JSON.parse((await f.service().read(producer, { handle: result.observation!.handle })).fragment)).toEqual(original);
+  });
+
+  const skillBinding = { version: 1 as const, source: "skill" as const, skillId: "skill", revisionId: "revision" };
+  const instructions: ToolExecutionResult = { callId: call.id, name: "load_skill", status: "complete",
+    content: [{ type: "text", text: "Exact admitted instructions" }] };
+
+  it("loads a Skill again after a crash left its reservation unpublished", async () => {
+    const f = fixture();
+    delete f.storage.getObjectStream;
+    delete f.storage.putObjectStream;
+    await f.repository.reserve(producer, "skill", 256 * 1024, skillBinding);
+    f.setSource(instructions);
+    f.repository.loadProducerSource.mockImplementation(async () => instructions);
+    const execute = vi.fn(async () => instructions);
+    const result = await captureOwnedObservation({ service: f.service(), producer }, "skill", skillBinding, execute);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ content: instructions.content, observation: { source: "skill", maskable: false } });
+    expect(f.row()).toMatchObject({ state: "READY", storageMode: "SOURCE" });
+  });
+
+  it("keeps a settled Skill result when its descriptor cannot be published", async () => {
+    const f = fixture();
+    f.repository.beginWrite.mockRejectedValue(new ObservationStoreError("tool_observation_conflict"));
+    f.repository.loadProducerSource.mockImplementation(async () => instructions);
+    const result = await captureOwnedObservation({ service: f.service(), producer }, "skill", skillBinding, async () => instructions);
+    expect(result).toEqual(instructions);
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "complete" });
+  });
+
+  it("executes an owner-claimed Skill without touching a producer that was already retired", async () => {
+    const f = fixture();
+    await f.repository.reserve(producer, "skill", 256 * 1024, skillBinding);
+    await f.repository.unavailable(producer, "tool_observation_unavailable");
+    const execute = vi.fn(async () => instructions);
+    const result = await captureOwnedObservation({ service: f.service(), producer }, "skill", skillBinding, execute);
+    expect(result).toEqual(instructions);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(f.repository.loadProducerSource).not.toHaveBeenCalled();
+    expect(f.repository.recordOutcome).not.toHaveBeenCalled();
+  });
+
+  it("preserves a Knowledge error result that has no retrieval receipt", async () => {
+    const f = fixture();
+    const failure: ToolExecutionResult = { callId: call.id, name: "search_knowledge", status: "error",
+      content: [{ type: "text", text: "Knowledge search failed: invalid query." }] };
+    f.repository.loadProducerSource.mockRejectedValue(new ObservationStoreError("tool_observation_unavailable"));
+    const result = await captureOwnedObservation({ service: f.service(), producer }, "knowledge", undefined, async () => failure);
+    expect(result).toEqual(failure);
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "error" });
   });
 });

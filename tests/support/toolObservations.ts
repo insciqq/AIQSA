@@ -20,7 +20,8 @@ export function memoryToolObservations(loadSource: (producer: ObservationProduce
   const repository: ToolObservationRepository = {
     async reserve(context, sourceKind, reservedBytes, sourceBinding) {
       const existing = rows.get(context.toolCallId);
-      if (existing) return { claimed: false, observation: existing };
+      // Mirrors the repository: only an unpublished Skill producer is re-claimed.
+      if (existing) return { claimed: existing.sourceKind === "skill" && existing.state === "RESERVED", observation: existing };
       const row: ToolObservation = { id: randomUUID().replaceAll("-", ""), modelRunId: context.runId,
         toolCallId: context.toolCallId, formatVersion: 1, sourceKind, sourceBinding: sourceBinding as Prisma.JsonValue ?? null,
         executionReceipt: null, state: "RESERVED", executionOutcome: null, reservedBytes, byteSize: null, checksum: null,

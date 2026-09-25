@@ -4,7 +4,7 @@ import type { NormalizedSearchPlan, NormalizedSearchPlanOption } from "../provid
 import { createSearchPlanToolRouter, searchExecutionConfiguration } from "../search/toolExecutor";
 import type { createAgentRunStore } from "./store";
 import { AgentExecutionError } from "./failures";
-import { captureSearchObservation, type ToolObservationService } from "../toolObservations/sourceAdapters";
+import { captureSearchObservation, projectObservationForProvider, type ToolObservationService } from "../toolObservations/sourceAdapters";
 
 export function createAgentAiqsaSearch(input: Readonly<{
   plan: NormalizedSearchPlan;
@@ -82,9 +82,11 @@ export function createAgentAiqsaSearch(input: Readonly<{
       const call = { id: callId, name, arguments: { query: args.query } };
       const execute = () => router.execute(call, undefined, { signal,
         ...(input.observation ? { retainOriginal: true as const } : {}) });
-      const result = input.observation ? await captureSearchObservation({ service: input.observation.service,
+      // The same canonical Search text as without observations, plus the
+      // reader descriptor exactly as the ordinary tool loop projects it.
+      const result = input.observation ? projectObservationForProvider(await captureSearchObservation({ service: input.observation.service,
         producer: { runId: input.observation.runId, userId: input.observation.userId, toolCallId: callId }, signal },
-        { ...call, name: "aiqsa_search" }, selected.map(({ optionId, revisionId }) => ({ optionId, revisionId })), execute)
+        { ...call, name: "aiqsa_search" }, selected.map(({ optionId, revisionId }) => ({ optionId, revisionId })), execute))
         : await execute();
       const failure = await input.store.failure();
       if (failure) throw new AgentExecutionError(failure);
