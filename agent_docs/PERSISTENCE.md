@@ -17,13 +17,13 @@ The protected `Full access` group's explicit members receive all current/future 
 
 ### Recovery And Derived State
 
-External side effects need durable dispatch identity before I/O. Unknown outcomes are never replayed; usage settles once and unknown usage stays unknown. Compatible settled PDF work may be reused by an admitted retry; restore preserves ambiguity. Transient decoded content clears once its durable result is recoverable or by cleanup. Infrastructure failure cannot produce false success or provider replay.
+External side effects need durable dispatch identity before I/O. Unknown outcomes are never replayed; usage settles once and unknown usage stays unknown. Compatible checksum-verified settled PDF work may be reused by an admitted retry; restore preserves ambiguity. Transient decoded/transcribed content is cleared atomically once its durable result is recoverable or by cleanup. Infrastructure failure cannot produce false success or provider replay.
 
-Claims and terminal writers require status/version/lease guards. Release database locks before guest/file I/O. Memory/history/Knowledge derivatives reprove owner, source, lifecycle, safety and generation authority at use, including during purge. Rebuilds cannot repair canonical state from derived indexes. Rejected replacement preflight leaves serving indexes intact; activation follows integrity proof. Projection/deletion obligations survive source deletion so stale retries cannot resurrect content.
+Claims and terminal writers require status/version/lease guards. Release database locks before guest/file I/O. Memory/history/Knowledge derivatives reprove owner, source, lifecycle, safety and generation authority at use, including during purge. Rebuilds cannot repair canonical state from derived indexes. Rejected replacement preflight leaves serving indexes intact; readiness/alias activation follows full integrity proof. Projection/deletion obligations survive source deletion so stale retries cannot resurrect content.
 
 Checkpoints retain bounded branch/source/pin/revision and refs. Hybrid adds notes and attempt receipts (binding/source digests/usage), never prompts/transcript/guest bytes; stale writers are fenced. Reuse summaries on source revision; unavailable/oversized sources fail closed without replay/fallback.
 
-Knowledge Source identity is independent of Base membership; equal checksums never merge Sources. Reprocessing preserves attempts; replacement becomes current only after guarded settlement, leaving the prior ready version on failure. Normalized artifacts support reindexing without originals/parser services; citations resolve exact stored versions/artifacts. Embedding reuse requires exact text hash and vector space/dimension, creating no usage. Memory cutover/rollback uses one immutable generation and fresh eligibility/authority checks. Operational evidence stays bounded and content-free.
+Knowledge Source identity is independent of Base membership; equal checksums never merge Sources. Reprocessing preserves attempts; replacement becomes current only after guarded settlement, leaving the prior ready version on failure. Normalized artifacts support reindexing without originals/parser services; citations resolve exact stored versions/artifacts. Embedding reuse requires exact text hash and vector space/dimension, creating no usage. Memory cutover/rollback uses one immutable generation and fresh eligibility/authority checks, never a partial pointer repair. Operational evidence stays bounded and content-free.
 
 Workspace originals/outputs survive runtime loss. Execution/export/settlement require current session ownership. Expiry/cancellation cannot prove cleanup; uncertainty blocks the session. Handover fences stale requests across restarts. Export captures quiescent bytes; recovery requires capture without guest enumeration/provider replay. Capacity may reject export, never evict another answer or block chat.
 
@@ -33,11 +33,11 @@ References/readers protect immutable captures. Checkpoints settle independently 
 
 System Vision claims unknown usage before dispatch; analysis settles once. Ambiguous attempts never rebill. Stop/access loss suppresses success, preserving usage separately. Recovery reuses settled analysis without pixels/provider I/O.
 
-Artifact deduplication is owner-scoped; publication membership never changes author bytes. Renderer caches preserve identity/revocation. Cleanup reservations protect concurrent writes/reuse/deletion.
+Artifact deduplication is owner-scoped; publication membership never changes author bytes. Renderer caches preserve identity/revocation. Cleanup reservations and references protect concurrent writes/reuse/deletion.
 
 ## Migrations And Bootstrap
 
-v0.2.0 starts supported persistent upgrades; earlier development databases need no bridge. Forward migrations preserve operator data, credentials and configuration, tolerating previous-release writers during Compose replacement. Destructive/incompatible upgrades require a separate operator procedure, never ordinary `pull`/`up`. Verification never resets operator data.
+v0.2.0 starts supported persistent upgrades; earlier development databases need no bridge. Forward migrations preserve operator data, credentials and configuration, tolerating previous-release writers during Compose replacement. Destructive/incompatible upgrades require a separate operator procedure, never ordinary `pull`/`up`.
 
 `20260815000000_baseline` is the immutable first migration anchor, including custom PostgreSQL DDL that Prisma cannot reconstruct. Changes are append-only migrations. Persistent installations use `prisma migrate deploy`, never `prisma db push`.
 
@@ -47,7 +47,7 @@ Keep custom checks and deferred triggers for row, tenant/source, history, deleti
 
 Bootstrap accepts an empty schema or the exact adopted administrator identity under serializable/advisory-lock protection. It refuses other nonempty targets before mutation and creates minimal foundations without demo content or real provider deployments. Adopted reruns may repair code-owned foundations, preserving operator identity, credentials, settings, grants, policy, and content.
 
-The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains bounded, resumable, idempotent, and content-free. It preserves explicit document/version identities and never deduplicates by checksum. Inspect executable migrations/backfills for the actual upgrade path; development fixtures do not establish an external compatibility contract.
+The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains bounded, resumable, idempotent, and content-free. It preserves explicit document/version identities and never deduplicates by checksum. Inspect executable migrations/backfills for the actual upgrade path.
 
 ## Retention And Deletion
 
