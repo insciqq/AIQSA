@@ -8,6 +8,7 @@ import {
   createPrismaRetentionRepository,
   drainDeletionObligations
 } from "../retention/prune";
+import { createToolObservationRepository, ObservationStoreError } from "../toolObservations/repository";
 import { createPrismaKnowledgeLifecycleRepository } from "./lifecycleRepository";
 import { createAccountKnowledgeDeletionHook } from "./accountDeletion";
 import { loadKnowledgeEvidencePackage } from "./evidenceRepository";
@@ -2731,6 +2732,277 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
         select: { normalizedRequest: true },
         where: { id: run.id }
       })).resolves.toEqual({ normalizedRequest: { knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 } } });
+    } finally {
+      await cleanup({ baseIds: [base.id], ownerUserId });
+    }
+  });
+
+  it("scrubs observation previews, reader fragments and carried notes of deleted Knowledge evidence", async () => {
+    const suffix = randomUUID();
+    const ownerUserId = "knowledge-copies-delete-owner-" + suffix;
+    const excerpt = "private excerpt " + suffix;
+    const knowledgeNotesText = "Notes derived from " + excerpt;
+    const earlierNotesText = "Unrelated earlier notes " + suffix;
+    await prisma.user.create({
+      data: { displayName: "Retained copies deletion owner", id: ownerUserId, status: "active" }
+    });
+    const base = await prisma.knowledgeBase.create({
+      data: { name: "Private copies Base", ownerUserId },
+      select: { id: true }
+    });
+    const chat = await prisma.chat.create({
+      data: { title: "Retained Knowledge copies", userId: ownerUserId },
+      select: { id: true }
+    });
+    const messageIds: string[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      const created = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: { text: index % 2 === 0 ? `question ${index}` : `generated answer ${index}` },
+          parentMessageId: messageIds.at(-1) ?? null,
+          role: index % 2 === 0 ? "user" : "assistant"
+        },
+        select: { id: true }
+      });
+      messageIds.push(created.id);
+    }
+    const [earlierRunId, knowledgeRunId, childRunId, readerRunId] =
+      [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    const notes = (seed: string, text: string) => ({
+      formatVersion: 1, id: `cs1_${seed.repeat(32)}`, notes: text, sourceDigest: seed.repeat(64), sourceRefs: []
+    });
+    const earlierNotes = notes("a", earlierNotesText);
+    const knowledgeNotes = notes("b", knowledgeNotesText);
+    const childNotes = notes("c", "Child notes carrying " + excerpt);
+    type Notes = ReturnType<typeof notes>;
+    const policy = (reuse?: Readonly<{ coveredMessageId: string; runId: string; summary: Notes }>) => ({
+      mode: "hybrid",
+      source: { digest: "7".repeat(64), leafMessageId: null, messageCount: 1 },
+      version: 1,
+      ...(reuse ? { reuse } : {})
+    });
+    const compaction = (runId: string, summary: Notes | null) => ({
+      branchId: "branch",
+      followupDigest: "1".repeat(64),
+      followupRevision: 0,
+      measurement: {
+        afterTokens: 10, beforeTokens: 20, budgetTokens: 100, legacyFallback: false,
+        maskedBatches: 0, maskedObservations: 0, outcome: "already_fits", version: 1
+      },
+      observationRefs: [],
+      ownerId: ownerUserId,
+      pinDigest: "2".repeat(64),
+      policyRevision: "hybrid-v1",
+      providerProjectionRevision: 1,
+      recentTailCallIds: [],
+      runId,
+      sourceDigest: "3".repeat(64),
+      summary,
+      summaryAttempts: [{
+        attempt: 1, bindingDigest: "4".repeat(64), id: `csa1_${runId}`, sourceDigest: "5".repeat(64),
+        state: "committed", usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }
+      }],
+      version: 1
+    });
+    const toolLoopState = (runId: string, summary: Notes, providerToolMessages: Prisma.InputJsonValue[]) => ({
+      answerRoundUsage: [],
+      contextCompaction: compaction(runId, summary),
+      phase: "provider_running",
+      providerContinuation: { providerResponseId: null, providerToolMessages },
+      providerCursor: null,
+      roundIndex: 1,
+      version: 2
+    });
+    const unrelatedMessage = { call_id: "unrelated-" + suffix, output: "safe retained output", type: "function_call_output" };
+    const knowledgeProviderCallId = "knowledge-" + suffix;
+    const knowledgeReaderProviderCallId = "reader-own-" + suffix;
+    const childReaderProviderCallId = "reader-child-" + suffix;
+    const observationId = randomUUID().replaceAll("-", "");
+    const handle = `tor1_${observationId}`;
+    const readerMessages = (providerCallId: string) => [
+      { arguments: JSON.stringify({ handle }), call_id: providerCallId, name: "read_tool_result", type: "function_call" },
+      { call_id: providerCallId, output: `{"fragment":"${excerpt}"}`, type: "function_call_output" }
+    ];
+
+    const earlierState = toolLoopState(earlierRunId, earlierNotes, [unrelatedMessage]);
+    await prisma.modelRun.create({
+      data: {
+        assistantMessageId: messageIds[1], chatId: chat.id, id: earlierRunId, modelId: "test-model",
+        normalizedRequest: { contextCompactionPolicy: policy() }, provider: "test", status: "complete",
+        toolLoopState: earlierState, userId: ownerUserId, userMessageId: messageIds[0]!
+      }
+    });
+    await prisma.modelRun.create({
+      data: {
+        assistantMessageId: messageIds[3], chatId: chat.id, id: knowledgeRunId, modelId: "test-model",
+        normalizedRequest: {
+          contextCompactionPolicy: policy({ coveredMessageId: messageIds[0]!, runId: earlierRunId, summary: earlierNotes }),
+          knowledgePlan: { baseIds: [base.id] }
+        },
+        provider: "test", status: "complete",
+        toolLoopState: toolLoopState(knowledgeRunId, knowledgeNotes, [
+          { arguments: "{}", call_id: knowledgeProviderCallId, name: "retrieve_knowledge", type: "function_call" },
+          { call_id: knowledgeProviderCallId, output: excerpt, type: "function_call_output" },
+          ...readerMessages(knowledgeReaderProviderCallId),
+          unrelatedMessage
+        ]),
+        userId: ownerUserId, userMessageId: messageIds[2]!
+      }
+    });
+    await prisma.modelRun.create({
+      data: {
+        assistantMessageId: messageIds[5], chatId: chat.id, id: childRunId, modelId: "test-model",
+        normalizedRequest: {
+          contextCompactionPolicy: policy({ coveredMessageId: messageIds[2]!, runId: knowledgeRunId, summary: knowledgeNotes }),
+          knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }
+        },
+        provider: "test", status: "complete",
+        toolLoopState: toolLoopState(childRunId, childNotes, [...readerMessages(childReaderProviderCallId), unrelatedMessage]),
+        userId: ownerUserId, userMessageId: messageIds[4]!
+      }
+    });
+    // An active later turn carried the child's notes unchanged; it also reads.
+    await prisma.modelRun.create({
+      data: {
+        assistantMessageId: messageIds[7], chatId: chat.id, id: readerRunId, modelId: "test-model",
+        normalizedRequest: {
+          contextCompactionPolicy: policy({ coveredMessageId: messageIds[4]!, runId: childRunId, summary: childNotes }),
+          knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }
+        },
+        provider: "test", status: "streaming",
+        toolLoopState: toolLoopState(readerRunId, childNotes, [unrelatedMessage]),
+        userId: ownerUserId, userMessageId: messageIds[6]!
+      }
+    });
+    const knowledgeCall = await prisma.modelRunToolCall.create({
+      data: {
+        arguments: { query: "private copies query" },
+        completedAt: new Date(),
+        modelRunId: knowledgeRunId,
+        ordinal: 0,
+        providerCallId: knowledgeProviderCallId,
+        result: { bases: [{ baseName: "Private copies Base", knowledgeBaseId: base.id }], results: [] },
+        roundIndex: 0,
+        startedAt: new Date(),
+        state: "complete",
+        toolName: "retrieve_knowledge"
+      },
+      select: { id: true }
+    });
+    await prisma.knowledgeRun.create({
+      data: {
+        baseEvidence: [{ baseName: "Private copies Base", knowledgeBaseId: base.id }],
+        candidateCount: 0,
+        candidateLimit: 12,
+        durationMs: 4,
+        embeddingUsage: [],
+        fusion: "rrf_k60",
+        invocationOrdinal: 1,
+        modelRunId: knowledgeRunId,
+        modelRunToolCallId: knowledgeCall.id,
+        outcome: "base_empty",
+        providerText: "Knowledge retrieval returned no indexed passages: base_empty.",
+        query: "private copies query",
+        resultLimit: 8,
+        results: []
+      }
+    });
+    await prisma.toolObservation.create({
+      data: {
+        byteSize: 64,
+        checksum: "e".repeat(64),
+        executionOutcome: "complete",
+        id: observationId,
+        maskable: false,
+        modelRunId: knowledgeRunId,
+        projection: {
+          fragmentKind: "serialized_json_text",
+          incomplete: false,
+          observation: { handle },
+          preview: excerpt,
+          reader: "read_tool_result"
+        },
+        reservedBytes: 64,
+        sourceKind: "knowledge",
+        state: "READY",
+        storageMode: "SOURCE",
+        toolCallId: knowledgeCall.id
+      }
+    });
+    const readerCall = (modelRunId: string, providerCallId: string) => prisma.modelRunToolCall.create({
+      data: {
+        arguments: { handle, query: excerpt },
+        completedAt: new Date(),
+        modelRunId,
+        ordinal: 1,
+        providerCallId,
+        result: {
+          callId: providerCallId, content: [{ type: "json", value: { fragment: excerpt } }],
+          name: "read_tool_result", status: "complete"
+        },
+        roundIndex: 0,
+        startedAt: new Date(),
+        state: "complete",
+        toolName: "read_tool_result"
+      },
+      select: { id: true }
+    });
+    const ownReader = await readerCall(knowledgeRunId, knowledgeReaderProviderCallId);
+    const childReader = await readerCall(childRunId, childReaderProviderCallId);
+    // Authority of the later reader run is independent of the Knowledge owner:
+    // the handle resolves before deletion and resolves to nothing afterwards.
+    const observations = createToolObservationRepository({
+      authorizeSource: async () => undefined,
+      loadSource: async () => null,
+      prisma
+    });
+    const reader = { runId: readerRunId, userId: ownerUserId };
+    await expect(observations.read(reader, observationId)).resolves.toMatchObject({ id: observationId });
+
+    try {
+      const lifecycle = createPrismaKnowledgeLifecycleRepository(prisma);
+      await expect(lifecycle.trashBase(ownerUserId, base.id, 1))
+        .resolves.toEqual({ kind: "ok" });
+      await expect(lifecycle.permanentlyDeleteBase(ownerUserId, base.id, 2))
+        .resolves.toEqual({ kind: "pending" });
+      const summary = await drainDeletionObligations({
+        repository: createPrismaRetentionRepository(prisma),
+        storage: { async deleteObject() {} }
+      });
+      expect(summary.knowledgeJobs.failed).toBe(0);
+
+      await expect(prisma.toolObservation.findUnique({ where: { id: observationId } })).resolves.toBeNull();
+      await expect(observations.read(reader, observationId)).rejects.toMatchObject({ code: "tool_observation_unavailable" });
+      await expect(observations.read(reader, observationId)).rejects.toBeInstanceOf(ObservationStoreError);
+      const calls = await prisma.modelRunToolCall.findMany({
+        select: { arguments: true, id: true, result: true, state: true },
+        where: { id: { in: [knowledgeCall.id, ownReader.id, childReader.id] } }
+      });
+      expect(calls).toHaveLength(3);
+      for (const call of calls) {
+        expect(call).toMatchObject({ arguments: { deleted: true }, result: null, state: "complete" });
+      }
+
+      const runs = new Map((await prisma.modelRun.findMany({
+        select: { id: true, normalizedRequest: true, status: true, toolLoopState: true },
+        where: { chatId: chat.id }
+      })).map((run) => [run.id, run]));
+      // Notes a Knowledge run only carried from an unrelated earlier turn stay there.
+      expect(runs.get(earlierRunId)?.toolLoopState).toEqual(earlierState);
+      for (const runId of [knowledgeRunId, childRunId, readerRunId]) {
+        const run = runs.get(runId)!;
+        const state = run.toolLoopState as { contextCompaction: Record<string, unknown>; providerContinuation: { providerToolMessages: unknown[] } };
+        expect(JSON.stringify(run)).not.toContain(excerpt);
+        expect(JSON.stringify(run)).not.toContain(earlierNotesText);
+        expect((run.normalizedRequest as { contextCompactionPolicy: unknown }).contextCompactionPolicy).toEqual(policy());
+        expect(state.contextCompaction).not.toHaveProperty("summary");
+        expect(state.contextCompaction.summaryAttempts).toEqual(compaction(runId, null).summaryAttempts);
+        expect(state.providerContinuation.providerToolMessages).toEqual([unrelatedMessage]);
+      }
+      expect(runs.get(readerRunId)?.status).toBe("streaming");
+      await expect(prisma.message.findUnique({ select: { content: true }, where: { id: messageIds[3]! } }))
+        .resolves.toEqual({ content: { text: "generated answer 3" } });
     } finally {
       await cleanup({ baseIds: [base.id], ownerUserId });
     }
