@@ -15,6 +15,8 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
   triggerRatio: 0.75,
   targetRatio: 0.5,
   recentBatches: 1,
+  /** Exact prior messages a committed summary keeps before the current one. */
+  summaryRecentMessages: 4,
   references: TOOL_OBSERVATION_LIMITS.runCount,
   metadataBytes: 512 * 1024,
   historyPageMessages: 32,

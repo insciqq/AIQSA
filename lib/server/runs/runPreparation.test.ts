@@ -2513,6 +2513,21 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.tools?.some(tool => tool.name === "read_tool_result")).toBe(policy === "v1");
   });
 
+  it("rejects an irreducible hybrid current message at admission before a run exists", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, contextWindow: 20_000, defaultMaxOutputTokens: 512, toolCalling: true } });
+    const load = vi.fn(async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: "v1" as const }));
+    const deps = { ...harness.deps, runPolicy: { load } };
+    const fitting = preparedFrom(await prepareRun(deps, sendInput(successBody({
+      modelId: "openai-tool-model", provider: "openai"
+    }))));
+    expect(fitting.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
+    // About 30 000 estimated tokens: no summary or mask can make it fit.
+    const result = await prepareRun(deps, sendInput(successBody({
+      content: textMessageContent("q".repeat(121_000)), modelId: "openai-tool-model", provider: "openai"
+    })));
+    expect(result).toMatchObject({ code: "context_too_large", ok: false, status: 400 });
+  });
+
   it("does not consult a new default for an already accepted run", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     let policy: "off" | "v1" = "v1";

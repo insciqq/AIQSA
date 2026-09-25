@@ -8,15 +8,17 @@ import {
   openRouterChatToolBridge
 } from "../tools/bridges";
 import { projectObservationForProvider } from "../toolObservations/projection";
-import type { ToolExecutionResult } from "../tools/types";
+import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
 import { readToolResultTool } from "../tools/readToolResult";
 import { conversationContextPolicy, contextCompactionCheckpoint } from "./contextCompactionContract";
 import {
   contextCompactionMeasurementWithBudget,
+  contextObservationsFromResults,
   observationCallIdsInProviderMessages,
   observationHandlesInProviderMessages,
   planContextCompaction
 } from "./contextCompactionPlanner";
+import { contextSummarySource } from "./contextCompactionSummarizer";
 
 const descriptor = (seed: string, source: "mcp" | "workspace" | "search" | "skill" = "mcp") => ({
   byteSize: 20_000,
@@ -60,16 +62,33 @@ function request(messages: unknown[], version: 0 | 1 = 1): ProviderRunRequest {
   };
 }
 
+/** A tiny budget makes every fixture cross the masking trigger. */
+const TRIGGERING_BUDGET = 100;
+
+function plan(bridge: ProviderToolBridge, input: ProviderRunRequest, settled: readonly ToolExecutionResult[],
+  budgetTokens: number | null = TRIGGERING_BUDGET) {
+  return planContextCompaction({ bridge, budgetTokens, observations: contextObservationsFromResults(settled), request: input });
+}
+
+function reference(bridge: ProviderToolBridge, settled: ToolExecutionResult): unknown {
+  return bridge.appendToolResult(undefined, { callId: settled.callId, name: settled.name, status: settled.status,
+    content: [{ type: "json", value: { observation: settled.observation, reader: "read_tool_result" } }] });
+}
+
 describe("context compaction planner", () => {
-  it("keeps the newest settled batch and masks complete older results across growing cycles", () => {
-    let messages: unknown[] = [result("call-1", "a")].map(value => openAIResponsesToolBridge.appendToolResult(undefined, value));
+  it("keeps the newest settled batch and masks each older result once across growing cycles", () => {
+    const settled = [result("call-1", "a")];
+    let messages: unknown[] = settled.map(value => openAIResponsesToolBridge.appendToolResult(undefined, value));
     const observations: string[] = [];
     for (let cycle = 1; cycle <= 3; cycle += 1) {
-      const planned = planContextCompaction({ bridge: openAIResponsesToolBridge, request: request(messages) });
+      const planned = plan(openAIResponsesToolBridge, request(messages), settled);
       messages = planned.request.providerToolMessages ?? [];
       observations.push(JSON.stringify(messages));
-      expect(planned.measurement.maskedObservations).toBe(cycle === 1 ? 0 : cycle - 1);
+      // An earlier reference is never masked again; each cycle masks only the
+      // batch that has just stopped being the newest one.
+      expect(planned.measurement.maskedObservations).toBe(cycle === 1 ? 0 : 1);
       const next = result(`call-${cycle + 1}`, String.fromCharCode(96 + cycle + 1));
+      settled.push(next);
       messages = [...messages, { type: "function_call", call_id: `call-${cycle + 1}`, name: "read_record" }, openAIResponsesToolBridge.appendToolResult(undefined, next)];
     }
     expect(observations[0]).toContain("rare fact call-1");
@@ -95,16 +114,15 @@ describe("context compaction planner", () => {
       name: "read_tool_result",
       status: "complete" as const
     };
-    const planned = planContextCompaction({
-      bridge: openAIResponsesToolBridge,
-      request: request([
-        openAIResponsesToolBridge.appendToolResult(undefined, result("old-reader-source", "old-reader")),
-        { type: "function_call", call_id: "reader-1", name: "read_tool_result" },
-        openAIResponsesToolBridge.appendToolResult(undefined, readerResult),
-        { type: "function_call", call_id: "newest-reader", name: "read_tool_result" },
-        openAIResponsesToolBridge.appendToolResult(undefined, result("newest-reader", "newest-reader"))
-      ])
-    });
+    const oldSource = result("old-reader-source", "old-reader");
+    const newest = result("newest-reader", "newest-reader");
+    const planned = plan(openAIResponsesToolBridge, request([
+      openAIResponsesToolBridge.appendToolResult(undefined, oldSource),
+      { type: "function_call", call_id: "reader-1", name: "read_tool_result" },
+      openAIResponsesToolBridge.appendToolResult(undefined, readerResult),
+      { type: "function_call", call_id: "newest-reader", name: "read_tool_result" },
+      openAIResponsesToolBridge.appendToolResult(undefined, newest)
+    ]), [oldSource, newest]);
     expect(planned.measurement.maskedObservations).toBe(2);
     expect(JSON.stringify(planned.request.providerToolMessages?.[2])).not.toContain("large exact fragment");
     expect(JSON.stringify(planned.request.providerToolMessages?.[2])).toContain(saved.handle);
@@ -113,45 +131,56 @@ describe("context compaction planner", () => {
   it("does not mask skills, unsupported shapes, agents, or legacy/off requests", () => {
     const skill = result("skill-1", "b");
     const skillValue = { ...skill, observation: { ...skill.observation, source: "skill" as const, maskable: false } as typeof skill.observation };
-    const agentRequest = { ...request([openAIResponsesToolBridge.appendToolResult(undefined, result("agent-1", "c"))]), agent: {} as NonNullable<ProviderRunRequest["agent"]> };
+    const agentResult = result("agent-1", "c");
+    const offResult = result("off-1", "d");
+    const agentRequest = { ...request([openAIResponsesToolBridge.appendToolResult(undefined, agentResult)]), agent: {} as NonNullable<ProviderRunRequest["agent"]> };
     for (const candidate of [
       request([openAIResponsesToolBridge.appendToolResult(undefined, skillValue)]),
       request([{ role: "tool", content: "unrecognized result" }]),
       agentRequest,
-      request([openAIResponsesToolBridge.appendToolResult(undefined, result("off-1", "d"))], 0)
+      request([openAIResponsesToolBridge.appendToolResult(undefined, offResult)], 0)
     ]) {
-      const planned = planContextCompaction({ bridge: openAIResponsesToolBridge, request: candidate });
+      const planned = plan(openAIResponsesToolBridge, candidate, [skillValue, agentResult, offResult]);
       expect(planned.measurement.maskedObservations).toBe(0);
       expect(planned.request.providerToolMessages).toEqual(candidate.providerToolMessages);
     }
   });
 
   it("does not rewrite a remote continuation whose provider owns hidden history", () => {
-    const input = request([openAIResponsesToolBridge.appendToolResult(undefined, result("remote-1", "e"))]);
-    const planned = planContextCompaction({ bridge: openAIResponsesToolBridge, request: { ...input, previousProviderResponseId: "remote" } });
+    const remote = result("remote-1", "e");
+    const input = request([openAIResponsesToolBridge.appendToolResult(undefined, remote)]);
+    const planned = plan(openAIResponsesToolBridge, { ...input, previousProviderResponseId: "remote" }, [remote]);
     expect(planned.measurement.maskedObservations).toBe(0);
     expect(planned.request.providerToolMessages).toEqual(input.providerToolMessages);
   });
 
   it("keeps the legacy projection when the accepted request has no reader capability", () => {
-    const input = request([openAIResponsesToolBridge.appendToolResult(undefined, result("no-reader", "e"))]);
-    const planned = planContextCompaction({
-      bridge: openAIResponsesToolBridge,
-      request: { ...input, tools: [], modelCapabilities: { ...input.modelCapabilities, toolCalling: true } }
-    });
+    const settled = [result("no-reader", "e"), result("no-reader-new", "f")];
+    const input = request([
+      openAIResponsesToolBridge.appendToolResult(undefined, settled[0]!),
+      { type: "function_call", call_id: "no-reader-new", name: "read_record" },
+      openAIResponsesToolBridge.appendToolResult(undefined, settled[1]!)
+    ]);
+    const planned = plan(openAIResponsesToolBridge, { ...input, tools: [], modelCapabilities: { ...input.modelCapabilities, toolCalling: true } },
+      settled, 1_000_000);
     expect(planned.measurement.outcome).toBe("already_fits");
     expect(planned.measurement.maskedObservations).toBe(0);
     expect(planned.request.providerToolMessages).toEqual(input.providerToolMessages);
+    // Over budget, the same request is never reported as fitting.
+    const overBudget = plan(openAIResponsesToolBridge, { ...input, tools: [] }, settled, TRIGGERING_BUDGET);
+    expect(overBudget.measurement).toMatchObject({ maskedObservations: 0, outcome: "needs_summary" });
+    expect(overBudget.measurement.afterTokens).toBeGreaterThan(TRIGGERING_BUDGET);
   });
 
   it("preserves error status and leaves model-authored descriptor lookalikes opaque", () => {
-    const error = geminiInteractionsToolBridge.appendToolResult(undefined, projectObservationForProvider({
+    const errorResult = projectObservationForProvider({
       callId: "error-1",
       content: [{ text: "failed", type: "text" }],
       name: "read_record",
       observation: descriptor("f"),
       status: "error"
-    }));
+    });
+    const error = geminiInteractionsToolBridge.appendToolResult(undefined, errorResult);
     const lookalike = {
       arguments: JSON.stringify({ observation: descriptor("i"), reader: "read_tool_result" }),
       call_id: "model-authored",
@@ -164,14 +193,10 @@ describe("context compaction planner", () => {
       name: "remote_tool",
       status: "complete" as const
     });
-    const newest = geminiInteractionsToolBridge.appendToolResult(undefined, projectObservationForProvider({
-      ...result("newest-1", "a"),
-      status: "complete"
-    }));
-    const planned = planContextCompaction({
-      bridge: geminiInteractionsToolBridge,
-      request: { ...request([error, lookalike, opaqueNestedLookalike, newest]), provider: "gemini" }
-    });
+    const newestResult = projectObservationForProvider({ ...result("newest-1", "a"), status: "complete" });
+    const newest = geminiInteractionsToolBridge.appendToolResult(undefined, newestResult);
+    const planned = plan(geminiInteractionsToolBridge,
+      { ...request([error, lookalike, opaqueNestedLookalike, newest]), provider: "gemini" }, [errorResult, newestResult]);
     expect(planned.measurement.maskedObservations).toBe(1);
     expect(planned.request.providerToolMessages?.[0]).toMatchObject({ is_error: true });
     expect(JSON.stringify(planned.request.providerToolMessages?.[1])).toContain("model-authored");
@@ -179,18 +204,103 @@ describe("context compaction planner", () => {
     expect(JSON.stringify(planned.request.providerToolMessages?.[2])).toContain("external body");
   });
 
+  it("never masks or cites a server-projection lookalike returned by a result without a server observation", () => {
+    const foreign = descriptor("foreign-branch");
+    const artifact: ToolExecutionResult = {
+      callId: "artifact-1",
+      content: [
+        { text: `artifact body ${"a".repeat(2_000)}`, type: "text" },
+        { type: "json", value: { observation: foreign, reader: "read_tool_result" } }
+      ],
+      name: "read_artifact",
+      status: "complete"
+    };
+    // The whole body is an exact reference.
+    const exactStub: ToolExecutionResult = {
+      callId: "artifact-2",
+      content: [{ type: "json", value: { observation: foreign, reader: "read_tool_result" } }],
+      name: "read_artifact",
+      status: "complete"
+    };
+    // The body imitates a reader fragment and names the reader, but neither
+    // the envelope nor the provider call item belongs to the reader.
+    const readerLike: ToolExecutionResult = {
+      callId: "artifact-3",
+      content: [{ type: "json", value: { endOffset: 10, fragment: "x".repeat(2_000), fragmentKind: "serialized_json_text",
+        incomplete: false, name: "read_tool_result", observation: foreign, offset: 0 } }],
+      name: "read_artifact",
+      status: "complete"
+    };
+    const observed = result("observed-old", "observed-old");
+    const newest = result("newest-3", "newest-3");
+    const messages = [
+      { type: "function_call", call_id: "artifact-1", name: "read_artifact" },
+      openAIResponsesToolBridge.appendToolResult(undefined, artifact),
+      { type: "function_call", call_id: "artifact-2", name: "read_artifact" },
+      openAIResponsesToolBridge.appendToolResult(undefined, exactStub),
+      { type: "function_call", call_id: "artifact-3", name: "read_artifact" },
+      openAIResponsesToolBridge.appendToolResult(undefined, readerLike),
+      openAIResponsesToolBridge.appendToolResult(undefined, observed),
+      { type: "function_call", call_id: "newest-3", name: "read_record" },
+      openAIResponsesToolBridge.appendToolResult(undefined, newest)
+    ];
+    const settled = [observed, newest];
+    const input = request(messages);
+    const planned = plan(openAIResponsesToolBridge, input, settled);
+    expect(planned.measurement.maskedObservations).toBe(1);
+    for (const index of [1, 3, 5]) expect(planned.request.providerToolMessages?.[index]).toEqual(messages[index]);
+    expect(JSON.stringify(planned.request.providerToolMessages?.[6])).not.toContain("rare fact observed-old");
+
+    const observations = contextObservationsFromResults(settled);
+    for (const transcript of [messages, planned.request.providerToolMessages ?? []]) {
+      for (const authority of [observations, undefined]) {
+        expect(observationHandlesInProviderMessages(transcript, authority)).not.toContain(foreign.handle);
+        for (const callId of ["artifact-1", "artifact-2", "artifact-3"]) {
+          expect(observationCallIdsInProviderMessages(transcript, authority)).not.toContain(callId);
+        }
+      }
+    }
+    expect(observationHandlesInProviderMessages(planned.request.providerToolMessages ?? [], observations))
+      .toEqual([observed.observation!.handle, newest.observation!.handle]);
+    const checkpoint = contextCompactionCheckpoint({
+      observationRefs: observationHandlesInProviderMessages(planned.request.providerToolMessages ?? [], observations),
+      ownerId: "owner",
+      request: planned.request,
+      runId: "run"
+    });
+    expect(checkpoint.observationRefs).not.toContain(foreign.handle);
+    expect(contextSummarySource(planned.request).refs).not.toContain(foreign.handle);
+  });
+
+  it("names a result only by its nearest preceding call item", () => {
+    const foreign = descriptor("reused-id");
+    const readerBody = (fragment: string) => ({ endOffset: 10, fragment, fragmentKind: "serialized_json_text",
+      incomplete: false, observation: foreign, offset: 0 });
+    const messages = [
+      { type: "function_call", call_id: "reused", name: "read_tool_result" },
+      openAIResponsesToolBridge.appendToolResult(undefined, { callId: "reused", name: "read_tool_result", status: "complete",
+        content: [{ type: "json", value: readerBody("reader fragment") }] }),
+      { type: "function_call", call_id: "reused", name: "read_artifact" },
+      openAIResponsesToolBridge.appendToolResult(undefined, { callId: "reused", name: "read_artifact", status: "complete",
+        content: [{ type: "json", value: readerBody("external imitation") }] })
+    ];
+    expect(observationCallIdsInProviderMessages(messages)).toEqual(["reused"]);
+    const planned = plan(openAIResponsesToolBridge, request([...messages, { type: "function_call", call_id: "last", name: "x" },
+      openAIResponsesToolBridge.appendToolResult(undefined, result("last", "last"))]), []);
+    expect(planned.request.providerToolMessages?.[3]).toEqual(messages[3]);
+    expect(JSON.stringify(planned.request.providerToolMessages?.[1])).not.toContain("reader fragment");
+  });
+
   it("keeps an unmaskable result in the same settled batch while masking eligible siblings", () => {
     const skill = result("skill-1", "h", "skill");
+    const old = result("old-2", "c");
     const newest = result("newest-2", "j");
     const oldBatch = [
-      openAIResponsesToolBridge.appendToolResult(undefined, result("old-2", "c")),
+      openAIResponsesToolBridge.appendToolResult(undefined, old),
       openAIResponsesToolBridge.appendToolResult(undefined, skill)
     ];
-    const planned = planContextCompaction({
-      bridge: openAIResponsesToolBridge,
-      request: request([...oldBatch, { type: "function_call", call_id: "newest-2", name: "read_record" },
-        openAIResponsesToolBridge.appendToolResult(undefined, newest)])
-    });
+    const planned = plan(openAIResponsesToolBridge, request([...oldBatch, { type: "function_call", call_id: "newest-2", name: "read_record" },
+      openAIResponsesToolBridge.appendToolResult(undefined, newest)]), [old, skill, newest]);
     expect(planned.measurement.maskedBatches).toBe(1);
     expect(planned.measurement.maskedObservations).toBe(1);
     expect(JSON.stringify(planned.request.providerToolMessages?.[0])).not.toContain("rare fact old-2");
@@ -203,16 +313,59 @@ describe("context compaction planner", () => {
     ["openrouter", openRouterChatToolBridge, { role: "assistant", tool_calls: [{ function: { arguments: "{}", name: "read_record" }, id: "new", type: "function" }] }],
     ["gemini", geminiInteractionsToolBridge, { id: "new", name: "read_record", type: "function_call" }],
     ["anthropic", anthropicMessagesToolBridge, { content: [{ id: "new", input: {}, name: "read_record", type: "tool_use" }], role: "assistant" }]
-  ] as const)("masks through the %s bridge without changing its result envelope", (provider, bridge, separator) => {
-    const oldResult = bridge.appendToolResult(undefined, result("old-bridge", "c"));
-    const newResult = bridge.appendToolResult(undefined, result("new-bridge", "d"));
-    const planned = planContextCompaction({
-      bridge,
-      request: { ...request([oldResult, separator, newResult]), provider }
-    });
+  ] as const)("masks through the %s bridge once without changing its result envelope", (provider, bridge, separator) => {
+    const settled = [result("old-bridge", "c"), result("new-bridge", "d")];
+    const input = { ...request([bridge.appendToolResult(undefined, settled[0]!), separator,
+      bridge.appendToolResult(undefined, settled[1]!)]), provider };
+    const planned = plan(bridge, input, settled);
     expect(planned.measurement.maskedObservations).toBe(1);
-    expect(JSON.stringify(planned.request.providerToolMessages?.[0])).not.toContain("rare fact old-bridge");
+    expect(planned.request.providerToolMessages?.[0]).toEqual(reference(bridge, settled[0]!));
     expect(JSON.stringify(planned.request.providerToolMessages?.[2])).toContain("rare fact new-bridge");
+    const again = plan(bridge, planned.request, settled);
+    expect(again.measurement.maskedObservations).toBe(0);
+    expect(again.request.providerToolMessages).toEqual(planned.request.providerToolMessages);
+  });
+
+  it("reports an already masked projection that fits as already_fits instead of a summary request", () => {
+    const settled = [result("masked-1", "k"), result("masked-2", "l"), result("newest-4", "m")];
+    const messages = [
+      reference(openAIResponsesToolBridge, settled[0]!),
+      reference(openAIResponsesToolBridge, settled[1]!),
+      { type: "function_call", call_id: "newest-4", name: "read_record" },
+      openAIResponsesToolBridge.appendToolResult(undefined, settled[2]!)
+    ];
+    const input = request(messages);
+    const size = planContextCompaction({ request: input }).measurement.beforeTokens;
+    // 75–100% of the budget with nothing left to mask.
+    const budgetTokens = Math.ceil(size / 0.8);
+    for (const candidate of [input, { ...input, contextCompactionPolicy: conversationContextPolicy({
+      leafMessageId: "current", messages: input.context!.messages, mode: "hybrid" }) }]) {
+      const planned = plan(openAIResponsesToolBridge, candidate, settled, budgetTokens);
+      expect(planned.measurement).toMatchObject({ maskedObservations: 0, outcome: "already_fits" });
+      expect(planned.request.providerToolMessages).toEqual(messages);
+    }
+  });
+
+  it("adds no new reference when the reader cannot be called this round or the window is unknown", () => {
+    const settled = [result("stub-1", "n"), result("older-1", "o"), result("newest-5", "p")];
+    const messages = [
+      reference(openAIResponsesToolBridge, settled[0]!),
+      openAIResponsesToolBridge.appendToolResult(undefined, settled[1]!),
+      { type: "function_call", call_id: "newest-5", name: "read_record" },
+      openAIResponsesToolBridge.appendToolResult(undefined, settled[2]!)
+    ];
+    const finalRound = plan(openAIResponsesToolBridge, { ...request(messages), toolChoice: "none" }, settled);
+    expect(finalRound.measurement.maskedObservations).toBe(0);
+    expect(finalRound.request.providerToolMessages).toEqual(messages);
+    expect(finalRound.measurement.outcome).not.toBe("already_fits");
+    for (const budgetTokens of [null, undefined]) {
+      const unknown = planContextCompaction({ bridge: openAIResponsesToolBridge, budgetTokens,
+        observations: contextObservationsFromResults(settled), request: request(messages) });
+      expect(unknown.measurement).toMatchObject({ budgetTokens: null, maskedObservations: 0, outcome: "already_fits" });
+      expect(unknown.request.providerToolMessages).toEqual(messages);
+    }
+    const auto = plan(openAIResponsesToolBridge, { ...request(messages), toolChoice: "auto" }, settled);
+    expect(auto.measurement.maskedObservations).toBe(1);
   });
 
   it("reports a bounded future-summary state without claiming a summary was produced", () => {
@@ -239,21 +392,24 @@ describe("context compaction planner", () => {
   });
 
   it("keeps checkpoint identity bounded to the accepted branch and recent references", () => {
-    const input = request([openAIResponsesToolBridge.appendToolResult(undefined, result("checkpoint-1", "b"))]);
+    const settled = result("checkpoint-1", "b");
+    const input = request([openAIResponsesToolBridge.appendToolResult(undefined, settled)]);
+    const observations = contextObservationsFromResults([settled]);
     const policy = conversationContextPolicy({ leafMessageId: "accepted-leaf", messages: input.context!.messages });
     const withPolicy = { ...input, contextCompactionPolicy: policy };
     const checkpoint = contextCompactionCheckpoint({
       ownerId: "owner",
       request: withPolicy,
       runId: "run",
-      observationRefs: observationHandlesInProviderMessages(input.providerToolMessages ?? []),
-      recentTailCallIds: observationCallIdsInProviderMessages(input.providerToolMessages ?? []),
+      observationRefs: observationHandlesInProviderMessages(input.providerToolMessages ?? [], observations),
+      recentTailCallIds: observationCallIdsInProviderMessages(input.providerToolMessages ?? [], observations),
       followupRevision: 4,
       followupTexts: ["clarify this"]
     });
     expect(checkpoint).toMatchObject({
       branchId: "accepted-leaf",
       followupRevision: 4,
+      observationRefs: [settled.observation!.handle],
       sourceDigest: policy.source.digest,
       recentTailCallIds: ["checkpoint-1"]
     });
