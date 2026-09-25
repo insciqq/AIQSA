@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,9 @@ import { createToolObservationService, type ToolObservationRepository } from "./
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider,
   restoreObservedResult } from "./sourceAdapters";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
-import { searchToolResultContent, searchToolResultText, type SearchExecutionEvidence } from "../search/toolResult";
+import { boundedRenderedSearchToolResultText, searchToolResultContent, searchToolResultText,
+  type SearchExecutionEvidence } from "../search/toolResult";
+import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import { decodeSearchObservationReceipt, searchObservationReceipt } from "./searchReceipt";
 import type { ToolExecutionResult } from "../tools/types";
@@ -408,12 +410,15 @@ describe("accepted observation source adapters", () => {
     expect(Buffer.byteLength(text)).toBeLessThan(80 * 1024);
     for (const field of internalSearchFields) expect(JSON.stringify(result)).not.toContain(field);
     expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
-    // A restore has only the retained text: it bounds that same text.
+    // A restore has only the retained text and the receipt: it bounds that
+    // same text and keeps the receipt's numbered sources.
     const restored = await restoreObservedResult({ service: f.service(), producer }, call);
     const restoredText = restored.content[0]?.type === "text" ? restored.content[0].text : "";
     expect(restored).toMatchObject({ status: "complete", observation: result.observation });
     expect(restoredText.startsWith('Search source "Source 1":\nzzz')).toBe(true);
     expect(restoredText).toContain("Search result shortened here");
+    expect(restoredText.endsWith("Sources:\n1. Title 1 — https://example.com/1\n2. Title 2 — https://example.com/2\n3. Title 3 — https://example.com/3"))
+      .toBe(true);
     expect(snapshotToolExecutionResult(restored, 256 * 1024)).not.toBeNull();
     for (const field of internalSearchFields) expect(JSON.stringify(restored)).not.toContain(field);
     const tail = (await f.service().read(producer, { handle: result.observation!.handle, query: "rare-search-3" })).fragment;
@@ -531,5 +536,135 @@ describe("accepted observation source adapters", () => {
     const result = await captureOwnedObservation({ service: f.service(), producer }, "knowledge", undefined, async () => failure);
     expect(result).toEqual(failure);
     expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "error" });
+  });
+});
+
+describe("observed MCP and Workspace projections match Off", () => {
+  const call = { id: "parity-call", name: "synthetic_tool", arguments: {} };
+  const binding = { version: 1 as const, source: "mcp" as const, serverId: "server", originalName: "synthetic_tool",
+    revisionId: "revision", fingerprint: "a".repeat(64) };
+  /** Incompressible, never duplicated text of an exact UTF-8 size. */
+  const unique = (bytes: number, seed: string) => Array.from({ length: Math.ceil(bytes / 64) },
+    (_, index) => createHash("sha256").update(`${seed}:${index}`).digest("hex")).join("").slice(0, bytes);
+  /** A quarter of a 128,000-token admitted budget. */
+  const share = 32_000;
+  const descriptorPart = (result: ToolExecutionResult) =>
+    ({ type: "json", value: { observation: result.observation, reader: "read_tool_result" } });
+  const mcpOriginal = (bytes: number) => ({ isError: false, structuredContent: null,
+    text: [`${unique(bytes, "mcp")} rare-mcp-tail`], unsupportedContentTypes: [] });
+
+  it("delivers a 100 KiB unique MCP result whole with its descriptor, and a restore repeats it", async () => {
+    const f = fixture();
+    const original = mcpOriginal(100 * 1024);
+    const off = mcpToolExecutionResult(call, original);
+    const result = await captureMcpObservation({ service: f.service(), producer, wholeResultTokens: share }, call, binding,
+      async () => original);
+    expect(f.row()).toMatchObject({ state: "READY", storageMode: "OBJECT" });
+    expect(result.observation).toMatchObject({ source: "mcp", maskable: true, byteSize: Buffer.byteLength(JSON.stringify(original)) });
+    expect(result.content).toEqual(off.content);
+    expect(projectObservationForProvider(result).content).toEqual([...off.content, descriptorPart(result)]);
+    expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
+    // The reader still recalls the exact retained original.
+    const read = await f.service().read(producer, { handle: result.observation!.handle, query: "rare-mcp-tail" });
+    expect(read.fragment).toContain("rare-mcp-tail");
+    // Ambiguous recovery restores the same projection live execution delivered.
+    expect(await restoreObservedResult({ service: f.service(), producer, wholeResultTokens: share }, call)).toEqual(result);
+  });
+
+  it("keeps the bounded preview for an MCP result above the persisted result bound, live and restored", async () => {
+    const f = fixture();
+    const result = await captureMcpObservation({ service: f.service(), producer, wholeResultTokens: Number.POSITIVE_INFINITY },
+      call, binding, async () => mcpOriginal(300 * 1024));
+    expect(JSON.stringify(result.content)).not.toContain("rare-mcp-tail");
+    expect(result.content).toEqual([{ type: "json", value: expect.objectContaining({ observation: result.observation,
+      incomplete: true, reader: "read_tool_result" }) }]);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(8192);
+    expect(await restoreObservedResult({ service: f.service(), producer, wholeResultTokens: Number.POSITIVE_INFINITY }, call))
+      .toEqual(result);
+  });
+
+  it("keeps the bounded preview when the result alone would exceed a small window's share", async () => {
+    const f = fixture();
+    // A 16,000-token budget admits a 4,000-token share; 100 KiB is ~25,600 tokens.
+    const context = { service: f.service(), producer, wholeResultTokens: 4_000 };
+    const result = await captureMcpObservation(context, call, binding, async () => mcpOriginal(100 * 1024));
+    expect(JSON.stringify(result.content)).not.toContain("rare-mcp-tail");
+    expect(result.content).toEqual([{ type: "json", value: expect.objectContaining({ observation: result.observation,
+      reader: "read_tool_result" }) }]);
+    expect(await restoreObservedResult(context, call)).toEqual(result);
+    // An inline-sized original is whole whatever the share, as before.
+    const small = fixture();
+    const inline = await captureMcpObservation({ service: small.service(), producer, wholeResultTokens: 1 }, call, binding,
+      async () => mcpOriginal(4 * 1024));
+    expect(inline.content).toEqual(mcpToolExecutionResult(call, mcpOriginal(4 * 1024)).content);
+  });
+
+  it("delivers a 40 KiB Workspace shell result whole with artifacts, exit and truncation metadata", async () => {
+    const f = fixture();
+    const stdout = `${unique(40 * 1024, "workspace")} rare-workspace-tail`;
+    const shell: ToolExecutionResult = { callId: call.id, name: call.name, status: "complete",
+      content: [{ type: "text", text: JSON.stringify({ ok: true, data: { exitCode: 0, stdout, stderr: "" } }) }],
+      rawPreview: { exitCode: 0, originalByteCount: 900_000, truncated: true },
+      artifacts: [{ type: "artifact", data: { artifactType: "workspace_activity", payload: { id: "activity-1" } } }] };
+    const result = await captureWorkspaceObservation({ service: f.service(), producer, wholeResultTokens: share }, call,
+      async () => shell);
+    expect(f.row()).toMatchObject({ state: "READY", storageMode: "OBJECT", sourceTruncated: true });
+    expect(result).toEqual({ ...shell, observation: result.observation });
+    expect(result.observation).toMatchObject({ source: "workspace", sourceTruncated: true, maskable: true });
+    expect(projectObservationForProvider(result).content).toEqual([...shell.content, descriptorPart(result)]);
+    expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
+    // Artifacts were never retained with the original; the model projection is identical.
+    const { artifacts: _artifacts, ...withoutArtifacts } = result;
+    expect(await restoreObservedResult({ service: f.service(), producer, wholeResultTokens: share }, call)).toEqual(withoutArtifacts);
+    // Above the share the bounded preview still carries artifacts and runtime metadata.
+    const bounded = fixture();
+    const preview = await captureWorkspaceObservation({ service: bounded.service(), producer, wholeResultTokens: 1_000 }, call,
+      async () => shell);
+    expect(JSON.stringify(preview.content)).not.toContain("rare-workspace-tail");
+    expect(preview).toMatchObject({ artifacts: shell.artifacts, rawPreview: shell.rawPreview, observation: { sourceTruncated: true } });
+  });
+
+  it("restores a Search result above the persisted bound with every numbered receipt source and its warnings", async () => {
+    const f = fixture();
+    const executions: SearchExecutionEvidence[] = [1, 2, 3].map((index): SearchExecutionEvidence => index === 3
+      ? { displayName: "Source 3", invocationId: "invocation-3", modelId: "model", optionId: "option-3", provider: "provider",
+        revisionId: "revision-3", failure: { code: "search_timeout" }, sources: [], status: "error",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
+      : { displayName: `Source ${index}`, invocationId: `invocation-${index}`, modelId: "model", optionId: `option-${index}`,
+        provider: "provider", revisionId: `revision-${index}`, findings: `${unique(128 * 1024 - 40, `search-${index}`)} rare-search-${index}`,
+        status: "complete", sources: Array.from({ length: 6 }, (_, rank) => ({ rank: rank + 1, title: `Title ${index}-${rank}`,
+          url: `https://example.com/${index}/${rank}`, snippet: `Snippet ${index}-${rank}` })),
+        usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 } });
+    const search: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete",
+      content: searchToolResultContent(executions), rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+    const canonical = searchToolResultText(executions);
+    const tail = canonical.slice(canonical.lastIndexOf("\n\nSources:\n") + 2);
+    expect(tail).toContain("12. Title 2-5 — https://example.com/2/5");
+    expect(tail).toMatch(/\n\nSearch warnings: "Source 3": search_timeout$/u);
+    const live = await captureSearchObservation({ service: f.service(), producer }, call,
+      [1, 2, 3].map(index => ({ optionId: `option-${index}`, revisionId: `revision-${index}` })), async () => search);
+    expect(f.row().byteSize).toBeGreaterThan(256 * 1024);
+    const restored = await restoreObservedResult({ service: f.service(), producer }, call);
+    const text = restored.content[0]?.type === "text" ? restored.content[0].text : "";
+    expect(restored).toMatchObject({ status: "complete", observation: live.observation });
+    expect(text.startsWith('Search source "Source 1":\n')).toBe(true);
+    expect(text).toContain("Search result shortened here");
+    expect(text.endsWith(`\n\n${tail}`)).toBe(true);
+    expect(text).not.toContain("rare-search-2");
+    expect(snapshotToolExecutionResult(restored, 256 * 1024)).not.toBeNull();
+  });
+
+  it("bounds rendered Search text only when the receipt names its exact source list", () => {
+    const executions: SearchExecutionEvidence[] = [{ displayName: "Source", invocationId: "invocation", modelId: null,
+      optionId: "option", provider: "provider", revisionId: "revision", findings: "f".repeat(4096), status: "complete",
+      sources: [1, 2].map(rank => ({ rank, title: `Title ${rank}`, url: `https://example.com/${rank}` })),
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }];
+    const text = searchToolResultText(executions);
+    const bounded = boundedRenderedSearchToolResultText(text, executions, 1024);
+    expect(bounded).toContain("Search result shortened here");
+    expect(bounded?.endsWith("\n\nSources:\n1. Title 1 — https://example.com/1\n2. Title 2 — https://example.com/2")).toBe(true);
+    const trimmed = [{ ...executions[0]!, sources: executions[0]!.sources.slice(0, 1) }];
+    expect(boundedRenderedSearchToolResultText(text, trimmed, 1024)).toBeNull();
+    expect(boundedRenderedSearchToolResultText(`${text}\n\nforged trailer`, executions, 1024)).toBeNull();
   });
 });

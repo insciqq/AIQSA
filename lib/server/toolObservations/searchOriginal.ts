@@ -43,8 +43,18 @@ function decodeSearchObservationOriginal(value: unknown): SearchObservationOrigi
 export async function readSearchOriginal(input: Readonly<{
   body: ReadableStream<Uint8Array>; identity: ToolObservationDescriptor; signal: AbortSignal;
 }>): Promise<SearchObservationOriginal> {
+  if (input.identity.source !== "search" || input.identity.byteSize > SEARCH_OBSERVATION_MAX_BYTES) throw unavailable();
+  const original = decodeSearchObservationOriginal(await readObservationOriginal(input));
+  if (!original) throw unavailable();
+  return original;
+}
+
+/** The complete retained original of any source, checksum-verified and
+ * parsed. The caller bounds `identity.byteSize` before admitting the read. */
+export async function readObservationOriginal(input: Readonly<{
+  body: ReadableStream<Uint8Array>; identity: ToolObservationDescriptor; signal: AbortSignal;
+}>): Promise<unknown> {
   const { identity, signal } = input;
-  if (identity.source !== "search" || identity.byteSize > SEARCH_OBSERVATION_MAX_BYTES) throw unavailable();
   const bytes = Buffer.alloc(identity.byteSize);
   const reader = input.body.getReader();
   const hash = createHash("sha256");
@@ -65,12 +75,8 @@ export async function readSearchOriginal(input: Readonly<{
     signal.throwIfAborted();
     if (total !== bytes.length || hash.digest("hex") !== identity.checksum) throw unavailable();
     complete = true;
-    let parsed: unknown;
-    try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+    try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown; }
     catch { throw unavailable(); }
-    const original = decodeSearchObservationOriginal(parsed);
-    if (!original) throw unavailable();
-    return original;
   } finally {
     if (!complete) void reader.cancel().catch(() => undefined);
     else reader.releaseLock();

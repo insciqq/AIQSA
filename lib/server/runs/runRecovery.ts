@@ -189,7 +189,7 @@ import {
   runProviderToolLoop,
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
-import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
+import { applyProviderRequestContextBudget, measureSessionContext, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import type { ProviderToolBridge } from "../tools/types";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
@@ -1485,7 +1485,8 @@ async function executePersistedToolCallInContext(
   if (claim.kind === "ambiguous" && context.run.normalizedRequest.toolObservationVersion === 1 &&
     (isRecoveredWorkspaceCall(context, call.name) || isRecoveredSearchCall(context, call.name) || resolveMcpRunTool(context.activeMcpSnapshot, call.name))) {
     const restored = await restoreObservedResult({ service: await recoveredObservations(context),
-      producer: { runId: context.run.id, userId: context.run.userId, toolCallId: persisted.id }, signal }, call).catch(() => null);
+      producer: { runId: context.run.id, userId: context.run.userId, toolCallId: persisted.id }, signal,
+      wholeResultTokens: observationWholeResultTokens(context.providerRequest) }, call).catch(() => null);
     if (restored) {
       const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
       const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot,
@@ -1828,7 +1829,8 @@ async function executePersistedToolCallInContext(
       });
       result = context.run.normalizedRequest.toolObservationVersion === 1
         ? await captureWorkspaceObservation({ service: await recoveredObservations(context),
-            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, call, execute)
+            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal,
+            wholeResultTokens: observationWholeResultTokens(context.providerRequest) }, call, execute)
         : await execute();
     } else {
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
@@ -1851,7 +1853,8 @@ async function executePersistedToolCallInContext(
       });
       result = context.run.normalizedRequest.toolObservationVersion === 1
         ? await captureMcpObservation({ service: await recoveredObservations(context),
-            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, call,
+            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal,
+            wholeResultTokens: observationWholeResultTokens(context.providerRequest) }, call,
           { version: 1, source: "mcp", serverId: route.serverId, originalName: route.originalName,
             fingerprint: route.fingerprint, revisionId: context.activeMcpSnapshot!.servers.find(server => server.serverId === route.serverId)!.revisionId }, execute)
         : mcpToolExecutionResult(call, await execute());

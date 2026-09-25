@@ -163,7 +163,7 @@ import {
   type RunTool,
   type ToolExecutionResult
 } from "../tools/types";
-import { measureSessionContext } from "./runContextBudget";
+import { measureSessionContext, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import {
@@ -2261,7 +2261,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               if (claim.kind === "ambiguous" && normalizedRequest.toolObservationVersion === 1 &&
                 (isWorkspaceCall(call.name) || isSearchCall(call.name) || resolveMcpRunTool(activeMcpSnapshot, call.name))) {
                 const restored = await restoreObservedResult({ service: await observationService(),
-                  producer: { runId, userId: input.userId, toolCallId: persisted.id }, signal: context.signal }, call).catch(() => null);
+                  producer: { runId, userId: input.userId, toolCallId: persisted.id }, signal: context.signal,
+                  wholeResultTokens: observationWholeResultTokens(request) }, call).catch(() => null);
                 if (restored) {
                   const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
                   const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot,
@@ -2617,7 +2618,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   });
                   result = normalizedRequest.toolObservationVersion === 1
                     ? await captureWorkspaceObservation({ service: await observationService(),
-                        producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, call, execute)
+                        producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal,
+                        wholeResultTokens: observationWholeResultTokens(request) }, call, execute)
                     : await execute();
                 } else {
                   const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
@@ -2640,7 +2642,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   });
                   result = normalizedRequest.toolObservationVersion === 1
                     ? await captureMcpObservation({ service: await observationService(),
-                        producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, call,
+                        producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal,
+                        wholeResultTokens: observationWholeResultTokens(request) }, call,
                       { version: 1, source: "mcp", serverId: route.serverId, originalName: route.originalName,
                         fingerprint: route.fingerprint, revisionId: activeMcpSnapshot!.servers.find(server => server.serverId === route.serverId)!.revisionId }, execute)
                     : mcpToolExecutionResult(call, await execute());

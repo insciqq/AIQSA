@@ -11,7 +11,9 @@ import {
 } from "../tools/bridges";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
-import { readToolResultTool } from "../tools/readToolResult";
+import { executeReadToolResult, readToolResultTool } from "../tools/readToolResult";
+import { captureMcpObservation } from "../toolObservations/sourceAdapters";
+import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { conversationContextPolicy, contextCompactionCheckpoint } from "./contextCompactionContract";
 import {
   contextCompactionMeasurementWithBudget,
@@ -128,6 +130,55 @@ describe("context compaction planner", () => {
     expect(planned.measurement.maskedObservations).toBe(2);
     expect(JSON.stringify(planned.request.providerToolMessages?.[2])).not.toContain("large exact fragment");
     expect(JSON.stringify(planned.request.providerToolMessages?.[2])).toContain(saved.handle);
+  });
+
+  it("masks an MCP result delivered whole once it is no longer newest, and the reader recalls its exact bytes", async () => {
+    const observations = memoryToolObservations();
+    const actor = { runId: "whole-run", userId: "whole-owner" };
+    const call = { id: "whole-1", name: "mcp_records", arguments: {} };
+    const body = Array.from({ length: 1_600 }, (_, index) => createHash("sha256").update(`whole:${index}`).digest("hex")).join("");
+    const original = { isError: false, structuredContent: null, text: [`${body} rare-whole-tail`], unsupportedContentTypes: [] };
+    // 100 KiB of unique text within a quarter of a 128,000-token budget.
+    const whole = await captureMcpObservation({ service: observations.service(), producer: { ...actor, toolCallId: call.id },
+      wholeResultTokens: 32_000 }, call, { version: 1, source: "mcp", serverId: "server", originalName: "records",
+      revisionId: "revision", fingerprint: "a".repeat(64) }, async () => original);
+    expect(JSON.stringify(whole.content)).toContain("rare-whole-tail");
+    const newest = result("whole-2", "whole-newest");
+    const messages = [
+      { type: "function_call", call_id: call.id, name: call.name },
+      openAIResponsesToolBridge.appendToolResult(undefined, projectObservationForProvider(whole)),
+      { type: "function_call", call_id: newest.callId, name: newest.name },
+      openAIResponsesToolBridge.appendToolResult(undefined, newest)
+    ];
+    const budgetTokens = 128_000;
+    const settled = contextObservationsFromResults([whole, newest]);
+    // Below the trigger the whole result stays inline.
+    const below = planContextCompaction({ bridge: openAIResponsesToolBridge, budgetTokens, assembledTokens: 60_000,
+      observations: settled, request: request(messages) });
+    expect(below.measurement.maskedObservations).toBe(0);
+    expect(JSON.stringify(below.request.providerToolMessages)).toContain("rare-whole-tail");
+    // A later round over 75% of the budget replaces the body by its descriptor.
+    const later = planContextCompaction({ bridge: openAIResponsesToolBridge, budgetTokens, assembledTokens: 100_000,
+      observations: settled, request: request(messages) });
+    expect(later.measurement.maskedObservations).toBe(1);
+    const transcript = JSON.stringify(later.request.providerToolMessages);
+    expect(transcript).not.toContain("rare-whole-tail");
+    expect(transcript).not.toContain(body.slice(0, 64));
+    expect(transcript).toContain(whole.observation!.handle);
+    expect(later.request.providerToolMessages?.[1]).toEqual(reference(openAIResponsesToolBridge, whole));
+    expect(transcript).toContain("rare fact whole-2");
+    const fragments: string[] = [];
+    let cursor: string | undefined;
+    for (let index = 0; index < 32; index += 1) {
+      const read = await executeReadToolResult(observations.service(), { id: `read-${index}`, name: "read_tool_result",
+        arguments: { handle: whole.observation!.handle, ...(cursor ? { cursor } : {}) } }, actor);
+      const value = read.content[0]?.type === "json" ? read.content[0].value as { fragment: string; cursor: string | null } : null;
+      expect(read.status).toBe("complete");
+      fragments.push(value!.fragment);
+      if (!value!.cursor) break;
+      cursor = value!.cursor;
+    }
+    expect(fragments.join("")).toBe(JSON.stringify(original));
   });
 
   it("does not mask skills, unsupported shapes, agents, or legacy/off requests", () => {

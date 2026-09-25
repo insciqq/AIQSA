@@ -5214,6 +5214,33 @@ describe("run recovery", () => {
     }
   });
 
+  it.each<[number | undefined, boolean]>([[undefined, true], [32_768, false]])("restores a 100 KiB MCP result with the live projection rule (window %s: whole=%s)",
+    async (contextWindow, whole) => {
+      const observations = memoryToolObservations();
+      const body = Array.from({ length: 1_600 }, (_, index) => createHash("sha256").update(`restore:${index}`).digest("hex")).join("");
+      const original = { isError: false, structuredContent: null, text: [`${body} rare-restore-tail`], unsupportedContentTypes: [] };
+      await observations.service().withReservation({ producer: { runId, userId, toolCallId: "stored-call-1" }, source: "mcp",
+        maximumBytes: 1024 * 1024 }, async receipt => receipt.store({ original, outcome: "complete", sourceTruncated: false, maskable: true }));
+      const runtimeCall = vi.fn();
+      const requests: ProviderRunRequest[] = [];
+      const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+        async *stream(request) { requests.push(request); return providerResult; } } },
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+      const base = checkpointedRun({ calls: [persistedRecoveryCall("running")], phase: "tools_running" });
+      const installed = installCheckpointState(harness, { ...base, normalizedRequest: { ...base.normalizedRequest,
+        modelCapabilities: { ...base.normalizedRequest.modelCapabilities, ...(contextWindow ? { contextWindow } : {}) },
+        toolObservationVersion: 1 } });
+      await refreshProviderRunIfNeeded({ ...harness.deps, observations: observations.service() }, runId, userId);
+      expect(runtimeCall).not.toHaveBeenCalled();
+      expect(harness.state.recoveredErrors).toEqual([]);
+      const settled = installed.calls()[0];
+      expect(settled).toMatchObject({ state: "complete", result: { observation: { source: "mcp", maskable: true } } });
+      const transcript = JSON.stringify(requests[0]?.providerToolMessages);
+      expect(transcript).toContain("read_tool_result");
+      expect(transcript.includes(body)).toBe(whole);
+      expect(JSON.stringify(settled?.result).includes("rare-restore-tail")).toBe(whole);
+    });
+
   describe("hybrid compaction recovery", () => {
     const summary: ContextSummary = { formatVersion: 1, id: "cs1_checkpointed", notes: "PRIVATE_NOTES checkpointed history.",
       sourceDigest: "e".repeat(64), sourceRefs: ["old-history"] };

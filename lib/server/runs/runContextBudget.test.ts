@@ -32,6 +32,7 @@ import {
   applyProviderRequestContextBudget,
   measureSessionContext,
   normalizedRequestPersonalContextTokenLimit,
+  observationWholeResultTokens,
   providerFacingSerializedTools,
   UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS
 } from "./runContextBudget";
@@ -73,6 +74,14 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("provider request context budget", () => {
+  it("gives one whole observed result a quarter of the admitted input budget, and no share for an unknown window", () => {
+    const capabilities = { ...request().modelCapabilities, contextWindow: 160_000, defaultMaxOutputTokens: 8_000 };
+    const { budgetTokens } = calculateContextBudgetLimits({ contextWindow: 160_000, maxOutputTokens: 8_000, provider: "openai" });
+    expect(observationWholeResultTokens(request({ modelCapabilities: capabilities }))).toBe(Math.floor(budgetTokens / 4));
+    const { contextWindow: _window, ...unknownWindow } = capabilities;
+    expect(observationWholeResultTokens(request({ modelCapabilities: unknownWindow }))).toBe(Number.POSITIVE_INFINITY);
+  });
+
   it("reserves visual tokens for durable references before admitting the next provider request", () => {
     const descriptor = { version: 1, id: "a".repeat(64), byteSize: 2000, checksum: "b".repeat(64), mimeType: "image/png",
       width: 1024, height: 1024, frames: 1, transform: null,
