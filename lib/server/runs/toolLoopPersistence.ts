@@ -7,7 +7,13 @@ import type { KnowledgePlan } from "../../contracts/knowledge";
 import type { KnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
 import type { KnowledgeRunAdmissionExclusion } from "../knowledge/runAdmission";
 import type { KnowledgeSourceBindingStrategy } from "../knowledge/retrievalTypes";
-import type { ContextCompactionCheckpoint, ContextCompactionStatus, ContextPlanMeasurement } from "../../contracts/contextCompaction";
+import type {
+  ContextCompactionCheckpoint,
+  ContextCompactionStatus,
+  ContextPlanMeasurement,
+  ContextSummary,
+  ContextSummaryAttempt
+} from "../../contracts/contextCompaction";
 import { CONTEXT_COMPACTION_LIMITS, decodeContextSummary, decodeContextSummaryAttempt } from "./contextCompactionContract";
 
 export type ToolLoopJsonValue =
@@ -259,8 +265,9 @@ function validContextCompactionCheckpoint(value: unknown): value is ContextCompa
     value.recentTailCallIds.some(entry => typeof entry !== "string" || entry.length === 0 || entry.length > 1024) ||
     value.summary !== undefined && !decodeContextSummary(value.summary) ||
     value.summaryAttempts !== undefined && (!Array.isArray(value.summaryAttempts) ||
-      value.summaryAttempts.length > CONTEXT_COMPACTION_LIMITS.summaryAttempts ||
-      value.summaryAttempts.some((attempt) => !decodeContextSummaryAttempt(attempt))) ||
+      value.summaryAttempts.length > CONTEXT_COMPACTION_LIMITS.summaryReceipts ||
+      value.summaryAttempts.some((attempt) => !decodeContextSummaryAttempt(attempt)) ||
+      new Set(value.summaryAttempts.map((attempt) => isRecord(attempt) ? attempt.id : null)).size !== value.summaryAttempts.length) ||
     !validContextCompactionMeasurement(value.measurement)) return false;
   return true;
 }
@@ -398,5 +405,162 @@ export function upsertAnswerRoundUsage(
     providerCursor: checkpoint.providerCursor,
     roundIndex: checkpoint.roundIndex,
     ...(checkpoint.contextCompaction ? { contextCompaction: checkpoint.contextCompaction } : {})
+  });
+}
+
+/** One durable summary receipt. A claim precedes the paid dispatch of the
+ * round being prepared; a settlement replaces its claim with the outcome,
+ * content-free usage and, when committing, the summary itself. */
+export type ContextSummaryReceiptWrite = Readonly<{
+  attempt: ContextSummaryAttempt;
+  /** Compaction identity of the summarized request. It seeds the checkpoint
+   * only when the first round's summary precedes the round's own begin. */
+  compaction: ContextCompactionCheckpoint;
+  /** The provider round being prepared, or null for a dispatch outside the
+   * tool loop: it has no checkpoint and is only ever refreshed, never
+   * replayed, so its receipt reaches accounting without checkpoint state. */
+  roundIndex: number | null;
+  summary?: ContextSummary;
+}>;
+
+/** The continuation of a first round that has not dispatched yet. */
+export const INITIAL_PROVIDER_CONTINUATION: ToolLoopJsonValue = Object.freeze({
+  providerResponseId: null,
+  providerToolMessages: []
+}) as unknown as ToolLoopJsonValue;
+
+const unsettledSummaryStates = new Set<ContextSummaryAttempt["state"]>(["claim", "dispatched"]);
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function boundedReceipts(attempts: readonly ContextSummaryAttempt[]): readonly ContextSummaryAttempt[] {
+  return attempts.slice(-CONTEXT_COMPACTION_LIMITS.summaryReceipts);
+}
+
+/**
+ * Receipts only move forward: a claim may settle once, a settled receipt never
+ * changes, and a committed summary is never replaced by an older projection.
+ * Returns null when the two views conflict.
+ */
+export function mergeContextCompactionReceipts(
+  current: ContextCompactionCheckpoint | undefined,
+  next: ContextCompactionCheckpoint | undefined
+): ContextCompactionCheckpoint | undefined | null {
+  if (!current || !next) return next ?? current;
+  const attempts = [...(current.summaryAttempts ?? [])];
+  for (const candidate of next.summaryAttempts ?? []) {
+    const index = attempts.findIndex((entry) => entry.id === candidate.id);
+    if (index < 0) {
+      attempts.push(candidate);
+      continue;
+    }
+    const existing = attempts[index]!;
+    if (sameJson(existing, candidate)) continue;
+    if (unsettledSummaryStates.has(existing.state) && !unsettledSummaryStates.has(candidate.state)) attempts[index] = candidate;
+    else if (!unsettledSummaryStates.has(existing.state) && unsettledSummaryStates.has(candidate.state)) continue;
+    else return null;
+  }
+  const summary = next.summary ?? current.summary;
+  // A different summary may replace the durable one only as the latest commit.
+  const latest = [...attempts].reverse().find((entry) => entry.state === "committed");
+  if (next.summary && current.summary && next.summary.id !== current.summary.id &&
+    latest?.sourceDigest !== next.summary.sourceDigest) return null;
+  const { summary: _summary, summaryAttempts: _attempts, ...rest } = next;
+  void _summary;
+  void _attempts;
+  return {
+    ...rest,
+    ...(summary ? { summary } : {}),
+    ...(attempts.length ? { summaryAttempts: boundedReceipts(attempts) } : {})
+  };
+}
+
+/**
+ * Applies one receipt write. A claim opens only in the provider round being
+ * prepared (or seeds the first round before its begin) and never beside
+ * another unsettled claim: the compactor is a single sequential writer. A
+ * settlement requires its own claim and is idempotent for the same outcome.
+ */
+export function checkpointWithContextSummaryReceipt(
+  current: ToolLoopCheckpoint | null,
+  write: ContextSummaryReceiptWrite
+): ToolLoopCheckpoint | null {
+  if (write.roundIndex === null) return current;
+  const attempt = decodeContextSummaryAttempt(write.attempt);
+  if (!attempt || write.summary !== undefined && (attempt.state !== "committed" ||
+    !decodeContextSummary(write.summary) || write.summary.sourceDigest !== attempt.sourceDigest)) return null;
+  const claim = unsettledSummaryStates.has(attempt.state);
+  if (!current) {
+    return claim && write.roundIndex === 1
+      ? toolLoopCheckpoint({
+          contextCompaction: { ...stripReceipts(write.compaction), summaryAttempts: [attempt] },
+          phase: "provider_running",
+          providerContinuation: INITIAL_PROVIDER_CONTINUATION,
+          roundIndex: 1
+        })
+      : null;
+  }
+  const compaction = current.contextCompaction ?? stripReceipts(write.compaction);
+  const attempts = [...(compaction.summaryAttempts ?? [])];
+  const index = attempts.findIndex((entry) => entry.id === attempt.id);
+  if (claim) {
+    if (current.phase !== "provider_running" || current.roundIndex !== write.roundIndex) return null;
+    if (index >= 0) return sameJson(attempts[index], attempt) ? current : null;
+    if (attempts.some((entry) => unsettledSummaryStates.has(entry.state))) return null;
+    attempts.push(attempt);
+  } else {
+    if (index < 0) return null;
+    const existing = attempts[index]!;
+    if (!unsettledSummaryStates.has(existing.state)) {
+      return sameJson(existing, attempt) && (!write.summary || compaction.summary?.id === write.summary.id) ? current : null;
+    }
+    if (existing.bindingDigest !== attempt.bindingDigest || existing.sourceDigest !== attempt.sourceDigest ||
+      existing.attempt !== attempt.attempt) return null;
+    attempts[index] = attempt;
+  }
+  return toolLoopCheckpoint({
+    answerRoundUsage: current.answerRoundUsage,
+    contextCompaction: {
+      ...compaction,
+      ...(write.summary ? { summary: write.summary } : {}),
+      summaryAttempts: boundedReceipts(attempts)
+    },
+    phase: current.phase,
+    providerContinuation: current.providerContinuation,
+    providerCursor: current.providerCursor,
+    roundIndex: current.roundIndex
+  });
+}
+
+function stripReceipts(compaction: ContextCompactionCheckpoint): ContextCompactionCheckpoint {
+  const { summary: _summary, summaryAttempts: _attempts, ...rest } = compaction;
+  void _summary;
+  void _attempts;
+  return rest;
+}
+
+/**
+ * A round may begin over receipts its own compaction wrote first: the same
+ * round, still before any provider response or usage. The begin's projection
+ * replaces the seed while every durable receipt and committed summary stays.
+ */
+export function checkpointAdoptingSummaryReceipts(
+  current: ToolLoopCheckpoint,
+  next: ToolLoopCheckpoint
+): ToolLoopCheckpoint | null {
+  if (current.phase !== "provider_running" || next.phase !== "provider_running" ||
+    current.roundIndex !== next.roundIndex || current.answerRoundUsage.length > 0 ||
+    !current.contextCompaction?.summaryAttempts?.length) return null;
+  const compaction = mergeContextCompactionReceipts(current.contextCompaction, next.contextCompaction);
+  if (!compaction) return null;
+  return toolLoopCheckpoint({
+    answerRoundUsage: next.answerRoundUsage,
+    contextCompaction: compaction,
+    phase: next.phase,
+    providerContinuation: next.providerContinuation,
+    providerCursor: next.providerCursor,
+    roundIndex: next.roundIndex
   });
 }

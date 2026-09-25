@@ -224,6 +224,7 @@ import {
   snapshotToolLoopJson,
   toolLoopPersistenceLimits,
   type CheckpointedToolLoopRun,
+  type ContextSummaryReceiptWrite,
   type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
   type ProjectRunRecoveryAuthority,
@@ -242,14 +243,17 @@ import {
   observationCallIdsInProviderMessages,
   observationHandlesInProviderMessages
 } from "./contextCompactionPlanner";
-import { applyContextSummaryToRequest } from "./contextCompactionSummarizer";
+import { applyContextSummaryToRequest, type ContextSummaryReceipts } from "./contextCompactionSummarizer";
 import {
-  applyKnowledgeAnswerContextBudget,
   contextCompactionArtifact,
   contextCompactionFailureOutcome,
-  createContextCompactionPublisher,
-  prepareCompactedProviderRequest
+  createContextCompactionPublisher
 } from "./contextCompactionEvents";
+import {
+  applyKnowledgeAnswerContextBudget,
+  observationSourceAvailability,
+  prepareCompactedProviderRequest
+} from "./contextCompactionConsumer";
 
 export const activeRunStaleMs = 10 * 60 * 1000;
 
@@ -2146,6 +2150,12 @@ async function recoverCheckpointedToolLoop(
         "A run attachment is no longer available for tool-loop recovery."
       );
     }
+    // A summary call claimed by the lost executor and never settled has an
+    // unknown outcome: it is recorded as such and never repeated.
+    const unsettledSummaryClaim = run.checkpoint.contextCompaction?.summaryAttempts?.find((attempt) =>
+      attempt.state === "claim" || attempt.state === "dispatched");
+    const summaryAttempts = run.checkpoint.contextCompaction?.summaryAttempts?.map((attempt) =>
+      attempt === unsettledSummaryClaim ? { ...attempt, state: "unknown" as const } : attempt);
     let providerRequest: ProviderRunRequest = {
       ...run.normalizedRequest,
       attachments,
@@ -2153,13 +2163,13 @@ async function recoverCheckpointedToolLoop(
         ? { contextCompaction: run.checkpoint.contextCompaction.measurement }
         : {}),
       ...(run.checkpoint.contextCompaction?.summary ? { contextCompactionSummary: run.checkpoint.contextCompaction.summary } : {}),
-      ...(run.checkpoint.contextCompaction?.summaryAttempts ? { contextCompactionSummaryAttempts: run.checkpoint.contextCompaction.summaryAttempts } : {})
+      ...(summaryAttempts ? { contextCompactionSummaryAttempts: summaryAttempts } : {})
     };
     if (run.checkpoint.contextCompaction?.summary) {
       providerRequest = applyContextSummaryToRequest(
         providerRequest,
         run.checkpoint.contextCompaction.summary,
-        run.checkpoint.contextCompaction.summaryAttempts
+        summaryAttempts
       );
     }
     if (deps.images) providerRequest = await deps.images.withConversationPixels(providerRequest, run.userId, signal);
@@ -2452,20 +2462,22 @@ async function recoverCheckpointedToolLoop(
     };
 
     async function persistCumulativeUsage(
-      answerRoundEntry?: PersistedAnswerRoundUsage
+      answerRoundEntry?: PersistedAnswerRoundUsage,
+      contextSummaryReceipt?: ContextSummaryReceiptWrite
     ): Promise<void> {
       const grouped = groupedUsageAttributions(allUsageAttributions());
-      if (grouped.length === 0 && !answerRoundEntry &&
+      if (grouped.length === 0 && !answerRoundEntry && !contextSummaryReceipt &&
         context.usageAccountedToolCallIds.size === 0) return;
       const recorded = await deps.repository.recordRunUsageEvents({
         ...(answerRoundEntry ? { answerRoundUsage: answerRoundEntry } : {}),
         chatId: run.chatId,
+        ...(contextSummaryReceipt ? { contextSummaryReceipt } : {}),
         runId: run.id,
         usageAccountedToolCallIds: [...context.usageAccountedToolCallIds],
         usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, grouped),
         userId: run.userId
       });
-      if ((answerRoundEntry || context.usageAccountedToolCallIds.size > 0) && !recorded) {
+      if ((answerRoundEntry || contextSummaryReceipt || context.usageAccountedToolCallIds.size > 0) && !recorded) {
         usageEvidenceTrusted = false;
         throw new ToolLoopRecoveryError(
           "tool_loop_usage_checkpoint_conflict",
@@ -2478,6 +2490,37 @@ async function recoverCheckpointedToolLoop(
     }
 
     persistCancelledUsage = () => persistCumulativeUsage();
+
+    /** The recovered consumer's durable claim/settlement of each paid summary
+     * call, with its usage, in the round being prepared. */
+    function recoveredSummaryReceipts(request: ProviderRunRequest, round: number): ContextSummaryReceipts {
+      const write = (receipt: Omit<ContextSummaryReceiptWrite, "compaction" | "roundIndex">) =>
+        persistCumulativeUsage(undefined, {
+          ...receipt,
+          compaction: contextCompactionCheckpoint({ ownerId: run.userId, request, runId: run.id,
+            ...(request.contextCompaction ? { measurement: request.contextCompaction } : {}) }),
+          roundIndex: round
+        });
+      return {
+        claim: attempt => write({ attempt }),
+        async settle(attempt, usage, summary) {
+          context.usageAttributions.push({ modelId: request.modelId, operationCount: 1, provider: request.provider, usage });
+          await write({ attempt, ...(summary ? { summary } : {}) });
+        }
+      };
+    }
+
+    if (unsettledSummaryClaim && run.checkpoint.contextCompaction) {
+      // Its billing is unknown: account one operation without invented usage,
+      // durably with the receipt so a later pass cannot count it again.
+      usageAttributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider,
+        usage: normalizeTokenUsage({ completeness: "unavailable" }) });
+      await persistCumulativeUsage(undefined, {
+        attempt: { ...unsettledSummaryClaim, state: "unknown" },
+        compaction: run.checkpoint.contextCompaction,
+        roundIndex: run.checkpoint.roundIndex
+      });
+    }
 
     async function recordAnswerRoundUsage(
       usage: ModelRunUsage,
@@ -2588,9 +2631,6 @@ async function recoverCheckpointedToolLoop(
         bridge,
         failure: (code, message) => new ToolLoopRecoveryError(code, message),
         observations: recoveredContextObservations(context),
-        onSummaryUsage(usage, source) {
-          context.usageAttributions.push({ modelId: source.modelId, operationCount: 1, provider: source.provider, usage });
-        },
         onTruncation: truncation => appendEvent({
           data: {
             artifactType: "context_truncated",
@@ -2599,8 +2639,10 @@ async function recoverCheckpointedToolLoop(
           type: "artifact"
         }),
         publisher: compactionPublisher,
+        receipts: recoveredSummaryReceipts(requestForBudget, round),
         request: requestForBudget,
         signal,
+        sourceAvailable: observationSourceAvailability(() => recoveredObservations(context), { runId: run.id, userId: run.userId }),
         summaryAdapter: egressAdapter
       });
       return context.sessionRequest;

@@ -45,6 +45,7 @@ import type {
   BeginToolLoopProviderRoundResult,
   CheckpointedToolLoopRun,
   ClaimToolLoopCallResult,
+  ContextSummaryReceiptWrite,
   PersistedAnswerRoundUsage,
   PersistedToolLoopCall,
   PrepareAutomaticKnowledgeCallBatchInput,
@@ -758,9 +759,14 @@ export type RunRepository = {
   prepareAutomaticKnowledgeCallBatch?(
     input: PrepareAutomaticKnowledgeCallBatchInput
   ): Promise<PrepareAutomaticKnowledgeCallBatchResult>;
+  /** Rewrites the run's cumulative usage events. Answer-round usage and a
+   * context-summary receipt reach the checkpoint in the same transaction, so a
+   * settled paid call and its usage become durable together. A receipt claim
+   * additionally requires an active run in the round being prepared. */
   recordRunUsageEvents(input: {
     answerRoundUsage?: PersistedAnswerRoundUsage;
     chatId: string;
+    contextSummaryReceipt?: ContextSummaryReceiptWrite;
     runId: string;
     usageAccountedToolCallIds?: readonly string[];
     usageAttributions: RunUsageAttribution[];

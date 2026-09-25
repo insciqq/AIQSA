@@ -1430,6 +1430,7 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 function compactionLoopFixture(input: Readonly<{
   historyTokens: number;
   resultChars: number;
+  mutate?(request: NormalizedRunRequest): NormalizedRunRequest;
   onToolCall?(count: number): void;
   repository?: ReturnType<typeof createRepository>;
 }>) {
@@ -1447,20 +1448,23 @@ function compactionLoopFixture(input: Readonly<{
       content: textMessageContent("Acknowledged.") })),
     ...base.normalizedRequest.context!.messages
   ];
-  const normalizedRequest: NormalizedRunRequest = {
+  const hybrid: NormalizedRunRequest = {
     ...base.normalizedRequest,
     context: { mode: "branch_path", messages },
     contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
     modelCapabilities: { ...base.normalizedRequest.modelCapabilities, contextWindow: 8_192 },
     toolObservationVersion: 1
   };
+  const normalizedRequest = input.mutate?.(hybrid) ?? hybrid;
   const prepared = { ...base, normalizedRequest, providerRequest: { ...normalizedRequest, attachments: [] } };
   const summaries: ProviderRunRequest[] = [];
   const answers: ProviderRunRequest[] = [];
   const adapter = createAdapter(async function* (request) {
     if (request.forceNonStreaming) {
       summaries.push(request);
-      const output = JSON.stringify({ notes: "PRIVATE_NOTES old history condensed.", sourceRefs: ["old-history"] });
+      // A part cites only the references it carries.
+      const output = JSON.stringify({ notes: "PRIVATE_NOTES old history condensed.",
+        sourceRefs: JSON.stringify(request.content).includes("old-history") ? ["old-history"] : [] });
       yield { type: "token", data: { delta: output } };
       return providerResult({ finalText: output });
     }
@@ -1555,7 +1559,7 @@ describe("run execution", () => {
           expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
           options?.signal?.throwIfAborted();
         }
-        followups.accept("Use the corrected quantity 23.");
+        if (summaryCalls === 1) followups.accept("Use the corrected quantity 23.");
         const summary = JSON.stringify({ notes: "PRIVATE_COMPACTION_NOTES", sourceRefs: [] });
         yield { type: "token", data: { delta: summary } };
         return providerResult({ finalText: summary });
@@ -1569,7 +1573,9 @@ describe("run execution", () => {
       adapter, repository: repository.repository,
       prepared: { ...base, normalizedRequest: request, providerRequest: request }
     })).text(), true);
-    expect(summaryCalls).toBe(1);
+    // Stop ends the first paid call; otherwise the long history needs bounded parts.
+    if (mode === "stop") expect(summaryCalls).toBe(1);
+    else expect(summaryCalls).toBeGreaterThan(1);
     expect(answerCalls).toBe(mode === "stop" ? 0 : 1);
     expect(JSON.stringify(events)).not.toContain("PRIVATE_COMPACTION_NOTES");
     const statuses = events.filter(event => event.type === "artifact" && event.data.artifactType === "context_compaction");
@@ -1589,7 +1595,8 @@ describe("run execution", () => {
     expect(loop.repository.failedRuns).toEqual([]);
     expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
     expect(loop.answers).toHaveLength(3);
-    expect(loop.summaries).toHaveLength(1);
+    // One summary cycle; the long history takes bounded parts and a reduction.
+    expect(loop.summaries.length).toBeGreaterThan(1);
     const [first, crossing, reuse] = loop.answers;
     // Round 1 fits and its checkpoint records its real measurement.
     expect(first?.contextCompactionSummary).toBeUndefined();
@@ -1607,8 +1614,19 @@ describe("run execution", () => {
     }
     const checkpoint = loop.batchCheckpoints.find(batch => batch.roundIndex === 2)?.contextCompaction;
     expect(checkpoint?.summary).toEqual(summary);
-    expect(checkpoint?.summaryAttempts).toEqual([expect.objectContaining({ state: "committed" })]);
+    expect(checkpoint?.summaryAttempts?.map(({ state }) => state))
+      .toEqual([...loop.summaries.slice(1).map(() => "settled"), "committed"]);
     expect(checkpoint?.measurement).toEqual(crossing?.contextCompaction);
+    // Every paid call was claimed durably in round 2 before dispatch, then
+    // settled with its usage in the same write; the last one committed the summary.
+    const receipts = loop.repository.recordedRunUsageEvents.flatMap(entry =>
+      entry.contextSummaryReceipt ? [entry.contextSummaryReceipt] : []);
+    expect(receipts.map(({ attempt, roundIndex }) => [attempt.attempt, attempt.state, roundIndex])).toEqual(
+      loop.summaries.flatMap((_, index) => [[index + 1, "claim", 2], [index + 1, index === loop.summaries.length - 1 ? "committed" : "settled", 2]]));
+    expect(receipts.at(-1)?.summary).toEqual(summary);
+    const accounted = loop.repository.recordedRunUsageEvents.at(-1)!.usageAttributions
+      .find(entry => entry.modelId === "gpt-tool-model");
+    expect(accounted?.operationCount).toBe(loop.summaries.length + loop.answers.length);
     // Round 3 reuses the committed summary without another purchase.
     expect(reuse?.contextCompactionSummary).toEqual(summary);
     expect(JSON.stringify(reuse?.providerToolMessages)).toContain("RESULT_2");
@@ -1620,6 +1638,27 @@ describe("run execution", () => {
     expect(statuses[1]?.afterTokens).toBe(crossing?.contextCompaction?.afterTokens);
     expect(JSON.stringify(events)).not.toContain("PRIVATE_NOTES");
     expect(events.filter(isContextEvent)).toHaveLength(4);
+  });
+
+  it("sends summaries without Memory, Knowledge, Search or tools and publishes no session context for them", async () => {
+    const personalContext = { approxTokens: 8, itemCount: 1, memoryGeneration: 2, memoryRevision: 3, mode: "prefetched" as const,
+      text: `${PERSONAL_CONTEXT_HEADING}\nPRIVATE_MEMORY_FACT` };
+    const loop = compactionLoopFixture({ historyTokens: 4_600, resultChars: 7_800,
+      mutate: request => ({ ...request, personalContext }) });
+    const events = await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    expect(loop.summaries.length).toBeGreaterThan(0);
+    for (const summary of loop.summaries) {
+      expect(JSON.stringify(summary)).not.toContain("PRIVATE_MEMORY_FACT");
+      expect(summary).not.toHaveProperty("personalContext");
+      expect(summary).not.toHaveProperty("mcp");
+      expect(summary.tools).toBeUndefined();
+      expect(summary).toMatchObject({ knowledgePlan: { mode: "none" }, searchPlan: { options: [] }, toolChoice: "none", toolMode: "none",
+        modelCapabilities: loop.answers[0]!.modelCapabilities, modelId: loop.answers[0]!.modelId, provider: loop.answers[0]!.provider });
+    }
+    expect(loop.answers.every(answer => answer.personalContext?.text.includes("PRIVATE_MEMORY_FACT"))).toBe(true);
+    // Session context describes answer dispatches only: one per answer plus the settled answer.
+    expect(events.filter(isContextEvent)).toHaveLength(loop.answers.length + 1);
   });
 
   it("masks an older settled result live from the run's own server observations", async () => {

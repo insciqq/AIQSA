@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { decodeToolObservationDescriptor, TOOL_OBSERVATION_LIMITS, type ToolObservationDescriptor } from "../toolObservations/contract";
+import { estimateApproxTokens } from "../../domain/contextBudget";
+import { TOOL_OBSERVATION_LIMITS, type ToolObservationDescriptor } from "../toolObservations/contract";
 import type { ProviderConversationMessage, NormalizedRunRequest } from "../providers/types";
 import type {
   ContextCompactionCheckpoint,
@@ -15,17 +16,57 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
   triggerRatio: 0.75,
   targetRatio: 0.5,
   recentBatches: 1,
-  /** Exact prior messages a committed summary keeps before the current one. */
+  /** Ceiling on exact prior messages a committed summary keeps verbatim. */
   summaryRecentMessages: 4,
+  /** Share of the answer budget that exact tail may occupy; larger recent
+   * messages are summarized instead of kept. */
+  summaryTailRatio: 0.2,
+  /** A headroom summary (for a request that already fits) is bought only when
+   * the history older than that tail exceeds this share of the budget: less
+   * cannot release meaningful room once replaced by notes. */
+  summaryMinimumReleaseRatio: 0.1,
   references: TOOL_OBSERVATION_LIMITS.runCount,
   metadataBytes: 512 * 1024,
-  historyPageMessages: 32,
-  historyProjectionBytes: 8 * 1024 * 1024,
-  summaryAttempts: 2,
-  summaryInputBytes: 512 * 1024,
+  /** Paid summary calls (chunks, reductions and repairs) for one source
+   * digest, counted from durable receipts so a restart cannot reset it. */
+  summaryCalls: 16,
+  /** Receipts retained in the checkpoint; never fewer than `summaryCalls`. */
+  summaryReceipts: 24,
   summaryNotesBytes: 64 * 1024,
   summarySourceRefs: 512
 });
+
+const CONTEXT_SUMMARY_MESSAGE_PREFIX = "__context-summary-";
+
+export function contextSummaryMessageId(summary: Pick<ContextSummary, "id">): string {
+  return `${CONTEXT_SUMMARY_MESSAGE_PREFIX}${summary.id}`;
+}
+
+export function isContextSummaryMessage(message: Pick<ProviderConversationMessage, "id">): boolean {
+  return message.id.startsWith(CONTEXT_SUMMARY_MESSAGE_PREFIX);
+}
+
+/** The exact prior messages a summary keeps: the newest contiguous suffix
+ * within both the message ceiling and the tail's token share. The planner and
+ * the summarizer use this one rule, so "older than the tail" means the same
+ * history in both. An unknown budget keeps only the message ceiling. */
+export function contextSummaryTail(
+  prior: readonly ProviderConversationMessage[],
+  budgetTokens: number | null
+): readonly ProviderConversationMessage[] {
+  const limit = budgetTokens === null ? Infinity : Math.floor(budgetTokens * CONTEXT_COMPACTION_LIMITS.summaryTailRatio);
+  let used = 0;
+  let start = prior.length;
+  while (start > 0 && prior.length - start < CONTEXT_COMPACTION_LIMITS.summaryRecentMessages) {
+    const candidate = prior[start - 1]!;
+    if (isContextSummaryMessage(candidate)) break;
+    const tokens = estimateApproxTokens(candidate.content);
+    if (used + tokens > limit) break;
+    used += tokens;
+    start -= 1;
+  }
+  return prior.slice(start);
+}
 
 export type ContextObservation = Readonly<{
   callId: string;
@@ -33,21 +74,6 @@ export type ContextObservation = Readonly<{
   status: "complete" | "error";
   observation: ToolObservationDescriptor;
 }>;
-
-/** Indices address complete result envelopes, never text inside provider data.
- * Metadata is minted from canonical settled results, not parsed model output. */
-export type ContextObservationBatch = Readonly<{
-  outputStart: number;
-  results: readonly ContextObservation[];
-  masked: boolean;
-}>;
-
-export type ContextTranscript = Readonly<{
-  version: 1;
-  batches: readonly ContextObservationBatch[];
-  pending: Readonly<{ callIds: readonly string[] }> | null;
-}>;
-
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).sort().join(",") === keys.sort().join(",");
@@ -110,7 +136,7 @@ export function decodeContextSummaryAttempt(value: unknown): ContextSummaryAttem
     !["attempt", "bindingDigest", "errorCode", "id", "state", "sourceDigest", "usage"].every((key) =>
       key === "errorCode" || key === "usage" || Object.hasOwn(value, key)) ||
     Object.keys(value).some((key) => !["attempt", "bindingDigest", "errorCode", "id", "state", "sourceDigest", "usage"].includes(key)) ||
-    !index(value.attempt) || value.attempt < 1 || value.attempt > CONTEXT_COMPACTION_LIMITS.summaryAttempts ||
+    !index(value.attempt) || value.attempt < 1 || value.attempt > CONTEXT_COMPACTION_LIMITS.summaryCalls ||
     !id(value.id) || !digest(value.bindingDigest) || !digest(value.sourceDigest) ||
     !summaryAttemptStates.has(String(value.state)) ||
     value.errorCode !== undefined && !id(value.errorCode) ||
@@ -121,32 +147,6 @@ export function decodeContextSummaryAttempt(value: unknown): ContextSummaryAttem
 export function summaryBindingDigest(request: NormalizedRunRequest): string {
   return contextDigest({ provider: request.provider, modelId: request.modelId,
     params: request.params, reasoningEffort: request.reasoningEffort ?? null });
-}
-
-export function decodeContextTranscript(value: unknown, messageCount: number): ContextTranscript | null {
-  if (!record(value) || !exactKeys(value, ["version", "batches", "pending"]) || value.version !== 1 ||
-    !Array.isArray(value.batches) || value.batches.length > CONTEXT_COMPACTION_LIMITS.references) return null;
-  let end = 0;
-  let count = 0;
-  const calls = new Set<string>();
-  for (const batch of value.batches) {
-    if (!record(batch) || !exactKeys(batch, ["outputStart", "results", "masked"]) || !index(batch.outputStart) ||
-      batch.outputStart < end || typeof batch.masked !== "boolean" || !Array.isArray(batch.results) || !batch.results.length) return null;
-    end = batch.outputStart + batch.results.length;
-    count += batch.results.length;
-    if (end > messageCount || count > CONTEXT_COMPACTION_LIMITS.references) return null;
-    for (const result of batch.results) {
-      if (!record(result) || !exactKeys(result, ["callId", "name", "status", "observation"]) ||
-        !id(result.callId) || calls.has(result.callId) || !id(result.name) ||
-        result.status !== "complete" && result.status !== "error" || !decodeToolObservationDescriptor(result.observation)) return null;
-      calls.add(result.callId);
-    }
-  }
-  if (value.pending !== null && (!record(value.pending) || !exactKeys(value.pending, ["callIds"]) ||
-    !Array.isArray(value.pending.callIds) || !value.pending.callIds.length || value.pending.callIds.length > 64 ||
-    value.pending.callIds.some(callId => !id(callId) || calls.has(callId)) || new Set(value.pending.callIds).size !== value.pending.callIds.length)) return null;
-  if (Buffer.byteLength(JSON.stringify(value)) > CONTEXT_COMPACTION_LIMITS.metadataBytes) return null;
-  return value as ContextTranscript;
 }
 
 /** Exact instruction bytes and current request stay outside lossy projections. */
@@ -185,7 +185,7 @@ export function contextCompactionCheckpoint(input: Readonly<{
     version: 1,
     ...(input.summary ? { summary: input.summary } : {}),
     ...(input.summaryAttempts?.length ? {
-      summaryAttempts: input.summaryAttempts.slice(-CONTEXT_COMPACTION_LIMITS.summaryAttempts)
+      summaryAttempts: input.summaryAttempts.slice(-CONTEXT_COMPACTION_LIMITS.summaryReceipts)
     } : {})
   };
 }

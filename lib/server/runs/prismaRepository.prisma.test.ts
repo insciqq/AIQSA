@@ -39,9 +39,11 @@ import {
   type RunRepository
 } from "./runRepositoryContract";
 import {
+  INITIAL_PROVIDER_CONTINUATION,
   parseToolLoopCheckpoint,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
+import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
 const fakeControlKey = `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`;
@@ -3530,6 +3532,58 @@ describe("Prisma-backed run repository", () => {
         version: 2
       });
       expect(events).toEqual([{ inputTokens: 12, outputTokens: 8, totalTokens: 20 }]);
+    });
+  });
+
+  it("persists summary receipts with their usage under the run guards and keeps them through begin and batches", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Summary receipts");
+      const compaction: ContextCompactionCheckpoint = {
+        branchId: "message-current", followupDigest: "e".repeat(64), followupRevision: 0,
+        measurement: { afterTokens: 300, beforeTokens: 300, budgetTokens: 200, legacyFallback: false,
+          maskedBatches: 0, maskedObservations: 0, outcome: "needs_summary", version: 1 },
+        observationRefs: [], ownerId: userId, pinDigest: "f".repeat(64), policyRevision: "hybrid-v1",
+        providerProjectionRevision: 1, recentTailCallIds: [], runId: active.runId, sourceDigest: "1".repeat(64), version: 1
+      };
+      const attempt = (number: number, state: ContextSummaryAttempt["state"]): ContextSummaryAttempt => ({
+        attempt: number, bindingDigest: "c".repeat(64), id: `csa1_${String(number).repeat(32)}`, sourceDigest: "b".repeat(64), state,
+        ...(state === "claim" ? {} : { usage: { inputTokens: 900, outputTokens: 40, totalTokens: 940 } })
+      });
+      const summary: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Derived notes.",
+        sourceDigest: "b".repeat(64), sourceRefs: ["message-old"] };
+      const summaryUsage = [{ modelId: "gpt-test", operationCount: 1, provider: "openai",
+        usage: { inputTokens: 900, outputTokens: 40, reasoningTokens: 0, totalTokens: 940 } }];
+      const receipt = (entry: ContextSummaryAttempt, extra: Partial<{ summary: ContextSummary; usage: typeof summaryUsage }> = {}) =>
+        repository.recordRunUsageEvents({ chatId: active.chatId, runId: active.runId, userId, usageAttributions: extra.usage ?? [],
+          contextSummaryReceipt: { attempt: entry, compaction, roundIndex: 1, ...(extra.summary ? { summary: extra.summary } : {}) } });
+      const stored = async () => parseToolLoopCheckpoint((await prisma.modelRun.findUniqueOrThrow({
+        select: { toolLoopState: true }, where: { id: active.runId } })).toolLoopState);
+
+      // The first round's summary is claimed before the round begins.
+      await expect(receipt(attempt(1, "claim"))).resolves.toBe(true);
+      await expect(receipt(attempt(2, "claim"))).resolves.toBe(false);
+      await expect(receipt(attempt(1, "committed"), { summary, usage: summaryUsage })).resolves.toBe(true);
+      await expect(receipt(attempt(1, "committed"), { summary, usage: summaryUsage })).resolves.toBe(true);
+      expect((await stored())?.contextCompaction).toMatchObject({ summary, summaryAttempts: [attempt(1, "committed")] });
+      await expect(repository.loadRunUsageAttributions({ runId: active.runId, userId })).resolves.toEqual([
+        expect.objectContaining({ modelId: "gpt-test", usage: expect.objectContaining({ inputTokens: 900, totalTokens: 940 }) })]);
+
+      // The begin adopts the receipts; a stale batch projection cannot drop them.
+      await expect(repository.beginToolLoopProviderRound({
+        contextCompaction: { ...compaction, summary, summaryAttempts: [attempt(1, "committed")] },
+        providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: active.runId, userId
+      })).resolves.toBe("started");
+      await expect(repository.persistToolLoopCallBatch({
+        calls: [{ arguments: {}, ordinal: 0, providerCallId: "receipt-call-1", toolName: "lookup" }],
+        contextCompaction: compaction,
+        providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: active.runId, userId
+      })).resolves.toMatchObject({ kind: "persisted" });
+      expect((await stored())?.contextCompaction).toMatchObject({ summary, summaryAttempts: [attempt(1, "committed")] });
+
+      // Stop fences new claims; incurred usage of a dispatched call still settles.
+      await repository.cancelRun({ payload: cancelPayload, runId: active.runId, userId });
+      await expect(receipt(attempt(3, "claim"))).resolves.toBe(false);
     });
   });
 

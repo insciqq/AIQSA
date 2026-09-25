@@ -827,8 +827,9 @@ describe("hybrid context budget boundaries", () => {
     expect(answer.request.contextCompaction!.outcome).not.toBe("needs_summary");
     expect(summaryNeedsProvider(answer.request)).toBe(false);
     expect(answer.contextTruncation).toBeNull();
+    // The exact tail keeps only the newest messages within its token share.
     expect(answer.request.context?.messages.map((message) => message.id))
-      .toEqual([`__context-summary-${summarized.contextCompactionSummary!.id}`, "h8", "h9", "h10", "h11", "current"]);
+      .toEqual([`__context-summary-${summarized.contextCompactionSummary!.id}`, "h10", "h11", "current"]);
     const answerText = answer.request.attachments[0]!.extractedText!.length;
     expect(answerText).toBeLessThan(pendingText);
     expect(answerText).toBeGreaterThan(20_000);
@@ -845,13 +846,17 @@ describe("hybrid context budget boundaries", () => {
     expect(pending.request.contextCompaction!.afterTokens).toBeGreaterThan(HYBRID_BUDGET * 0.75);
     expect(summaryNeedsProvider(pending.request)).toBe(true);
     expect(pending.contextTruncation).toBeNull();
-    // The same load in the exact tail alone: a summary could not reduce it.
-    const tail = hybrid([...Array.from({ length: 4 }, (_, index) => turn(`t${index}`, index % 2 ? "assistant" : "user", 14_000)),
-      turn("current", "user", 200)]);
-    const fits = accepted(budgetOf(tail));
-    expect(fits.request.contextCompaction).toMatchObject({ outcome: "already_fits" });
-    expect(fits.request.contextCompaction!.afterTokens).toBeGreaterThan(HYBRID_BUDGET * 0.75);
-    expect(summaryNeedsProvider(fits.request)).toBe(false);
+    // The same load in a current message beside history that stays in the
+    // exact tail, or is too small to release room: a summary cannot help.
+    for (const history of [
+      Array.from({ length: 4 }, (_, index) => turn(`t${index}`, index % 2 ? "assistant" : "user", 3_400)),
+      [turn("small-older", "user", 6_000), ...Array.from({ length: 4 }, (_, index) => turn(`t${index}`, index % 2 ? "assistant" : "user", 400))]
+    ]) {
+      const fits = accepted(budgetOf(hybrid([...history, turn("current", "user", 44_000)])));
+      expect(fits.request.contextCompaction).toMatchObject({ outcome: "already_fits" });
+      expect(fits.request.contextCompaction!.afterTokens).toBeGreaterThan(HYBRID_BUDGET * 0.75);
+      expect(summaryNeedsProvider(fits.request)).toBe(false);
+    }
   });
 
   it("never drops a paid summary note: note plus exact minimum over budget is irreducible", () => {
@@ -872,12 +877,14 @@ describe("hybrid context budget boundaries", () => {
     const summarized = applyContextSummaryToRequest(pending.request, summaryFor(pending.request));
     const answer = accepted(budgetOf(summarized));
     expect(answer.request.context?.messages.map((message) => message.id)).toEqual([
-      `__context-summary-${summarized.contextCompactionSummary!.id}`, "h8", "h9", "h10", "h11", pin.id, "current"
+      `__context-summary-${summarized.contextCompactionSummary!.id}`, "h10", "h11", pin.id, "current"
     ]);
     expect(answer.request.context?.messages.at(-2)?.content).toEqual(pin.content);
   });
 
-  it("bounds an oversized exact tail after a summary instead of refusing the paid result", () => {
+  it("summarizes a large recent turn instead of keeping it in a fixed-count tail", () => {
+    // Legacy would trim these turns; a four-message tail would keep 20 000
+    // tokens verbatim. The token-bounded tail keeps none of them.
     const history = [turn("h0", "user", 400), turn("h1", "assistant", 400), turn("h2", "user", 400), turn("h3", "assistant", 400),
       turn("h4", "user", 20_000), turn("h5", "assistant", 20_000), turn("h6", "user", 20_000), turn("h7", "assistant", 20_000)];
     const pending = accepted(budgetOf(hybrid([...history, turn("current", "user", 200)])));
@@ -885,8 +892,23 @@ describe("hybrid context budget boundaries", () => {
     const summarized = applyContextSummaryToRequest(pending.request, summaryFor(pending.request));
     const answer = accepted(budgetOf(summarized));
     const summaryId = `__context-summary-${summarized.contextCompactionSummary!.id}`;
+    expect(answer.contextTruncation).toBeNull();
+    expect(answer.request.context?.messages.map((message) => message.id)).toEqual([summaryId, "current"]);
+    expect(answer.request.contextCompaction).toMatchObject({ legacyFallback: false, outcome: "already_fits" });
+    expect(assembled(answer.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
+    expect(budgetOf(legacyOf(summarized)).ok).toBe(true);
+  });
+
+  it("bounds a covered exact tail after a summary instead of refusing the paid result", () => {
+    const history = [turn("h0", "user", 8_000), turn("h1", "assistant", 8_000),
+      ...Array.from({ length: 4 }, (_, index) => turn(`t${index}`, index % 2 ? "assistant" : "user", 3_200))];
+    const pending = accepted(budgetOf(hybrid([...history, turn("current", "user", 56_000)])));
+    expect(pending.request.contextCompaction).toMatchObject({ outcome: "needs_summary" });
+    const summarized = applyContextSummaryToRequest(pending.request, summaryFor(pending.request));
+    const answer = accepted(budgetOf(summarized));
+    const summaryId = `__context-summary-${summarized.contextCompactionSummary!.id}`;
     expect(answer.contextTruncation).toMatchObject({ droppedMessages: 2 });
-    expect(answer.request.context?.messages.map((message) => message.id)).toEqual([summaryId, "h6", "h7", "current"]);
+    expect(answer.request.context?.messages.map((message) => message.id)).toEqual([summaryId, "t2", "t3", "current"]);
     expect(answer.request.contextCompaction).toMatchObject({ legacyFallback: true, outcome: "already_fits" });
     expect(answer.request.contextCompaction!.afterTokens).toBeLessThanOrEqual(HYBRID_BUDGET);
     expect(summaryNeedsProvider(answer.request)).toBe(false);

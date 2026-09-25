@@ -6,6 +6,8 @@ import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
 import {
   CONTEXT_COMPACTION_LIMITS,
+  contextSummaryMessageId,
+  contextSummaryTail,
   type ContextObservation
 } from "./contextCompactionContract";
 
@@ -231,8 +233,6 @@ function measurement(input: Readonly<{
   };
 }
 
-const CONTEXT_SUMMARY_MESSAGE_PREFIX = "__context-summary-";
-
 export type ContextHistory = Readonly<{
   /** Prior conversation (not pins, not the current message), including an applied summary. */
   prior: readonly ProviderConversationMessage[];
@@ -246,20 +246,20 @@ export type ContextHistory = Readonly<{
   older: readonly ProviderConversationMessage[];
 }>;
 
-/** The summary rebuild keeps pins, its note, a bounded exact tail and the
- * current message. Everything else in the prior branch is reducible. */
-export function contextHistory(request: ProviderRunRequest): ContextHistory {
+/** The summary rebuild keeps pins, its note, a token-bounded exact tail (the
+ * summarizer's `contextSummaryTail` rule) and the current message. Everything
+ * else in the prior branch is reducible. */
+export function contextHistory(request: ProviderRunRequest, budgetTokens: number | null = null): ContextHistory {
   const messages = request.context?.messages ?? [];
   const current = messages.at(-1);
   const prior = messages.filter((message) => message.purpose === undefined && message !== current);
-  const summaryId = request.contextCompactionSummary
-    ? `${CONTEXT_SUMMARY_MESSAGE_PREFIX}${request.contextCompactionSummary.id}` : null;
+  const summaryId = request.contextCompactionSummary ? contextSummaryMessageId(request.contextCompactionSummary) : null;
   const summaryMessage = summaryId ? prior.find((message) => message.id === summaryId) ?? null : null;
   const rest = prior.filter((message) => message !== summaryMessage);
   const uncovered = summaryMessage ? [] : rest;
   return {
     covered: summaryMessage ? rest : [],
-    older: uncovered.slice(0, Math.max(0, uncovered.length - CONTEXT_COMPACTION_LIMITS.summaryRecentMessages)),
+    older: uncovered.slice(0, uncovered.length - contextSummaryTail(uncovered, budgetTokens).length),
     prior,
     priorTokens: prior.reduce((total, message) => total + estimateApproxTokens(message.content), 0),
     summaryMessage,
@@ -406,7 +406,7 @@ export function planContextCompaction(input: Readonly<{
     return result(aboveTarget ? "needs_summary" : settled());
   }
 
-  const history = contextHistory(planned);
+  const history = contextHistory(planned, budgetTokens);
   // The exact minimum keeps an applied summary note: it is never traded away.
   const summaryTokens = history.summaryMessage ? estimateApproxTokens(history.summaryMessage.content) : 0;
   if (afterTokens - history.priorTokens + summaryTokens > budgetTokens) return result("irreducible_overflow");
@@ -421,10 +421,13 @@ export function planContextCompaction(input: Readonly<{
     });
   }
   // Above the 75% trigger, a summary buys headroom for later rounds whenever
-  // it can remove history older than the exact tail it keeps, whether or not
-  // masking ran; it never turns this fitting request into overflow.
+  // the history older than the exact tail it keeps is large enough to release
+  // room once replaced by notes, whether or not masking ran; it never turns
+  // this fitting request into overflow.
+  const olderTokens = history.older.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
   const headroom = beforeTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio &&
-    afterTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio && history.older.length > 0;
+    afterTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio &&
+    olderTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.summaryMinimumReleaseRatio;
   return result(headroom ? "needs_summary" : settled());
 }
 
@@ -449,6 +452,17 @@ export function observationHandlesInProviderMessages(
     }
   }
   return handles.slice(0, CONTEXT_COMPACTION_LIMITS.references);
+}
+
+/** Handles of results currently replaced by their reader reference: the
+ * provider-facing transcript no longer carries their content. */
+export function maskedObservationHandlesInProviderMessages(
+  messages: readonly unknown[],
+  observations?: readonly ContextObservation[]
+): readonly string[] {
+  return [...new Set(locatedResults(messages, observationIndex(observations)).flatMap((located) =>
+    located.masked && located.observation ? [located.observation.descriptor.handle] : []))]
+    .slice(0, CONTEXT_COMPACTION_LIMITS.references);
 }
 
 export function observationCallIdsInProviderMessages(

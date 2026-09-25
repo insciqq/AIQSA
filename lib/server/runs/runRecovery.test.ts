@@ -46,6 +46,7 @@ import type {
   StaleRunControlRecord
 } from "./runRepositoryContract";
 import {
+  checkpointWithContextSummaryReceipt,
   toolLoopCheckpoint,
   toolLoopPersistenceLimits,
   upsertAnswerRoundUsage,
@@ -1451,6 +1452,11 @@ function installCheckpointState(
     })) return false;
     if (input.answerRoundUsage) {
       const next = upsertAnswerRoundUsage(currentCheckpoint, input.answerRoundUsage);
+      if (!next) return false;
+      currentCheckpoint = next;
+    }
+    if (input.contextSummaryReceipt && input.contextSummaryReceipt.roundIndex !== null) {
+      const next = checkpointWithContextSummaryReceipt(currentCheckpoint, input.contextSummaryReceipt);
       if (!next) return false;
       currentCheckpoint = next;
     }
@@ -5235,16 +5241,19 @@ describe("run recovery", () => {
       content: [{ type: "text" as const, text: `RESULT_${round} ${"r".repeat(7_000)}` }] });
 
     function fixture(input: Readonly<{
+      answerRoundUsage?: readonly PersistedAnswerRoundUsage[];
       calls: PersistedToolLoopCall[];
       compaction: Omit<Parameters<typeof contextCompactionCheckpoint>[0], "ownerId" | "request" | "runId">;
       historyChars?: number;
+      persistedUsage?: PersistedRunUsageAttribution[];
+      phase?: "provider_running";
       providerToolMessages: ToolLoopJsonValue[];
       refresh?: () => Promise<ProviderRunRefreshResult>;
       roundIndex: number;
       toolCallsBeforeFinal: number;
     }>) {
       const request = hybridRequest(input.historyChars);
-      const phase = input.refresh ? "provider_running" as const : "tools_pending" as const;
+      const phase = input.phase ?? (input.refresh ? "provider_running" as const : "tools_pending" as const);
       const summaries: ProviderRunRequest[] = [];
       const answers: ProviderRunRequest[] = [];
       const withinBudget: boolean[] = [];
@@ -5257,7 +5266,9 @@ describe("run recovery", () => {
         providers: { openai: { buildRequestPreview: () => ({}), ...(input.refresh ? { refresh: input.refresh } : {}), async *stream(next) {
           if (next.forceNonStreaming) {
             summaries.push(next);
-            const output = JSON.stringify({ notes: "PRIVATE_NOTES condensed history.", sourceRefs: ["old-history"] });
+            // A part cites only the references it carries.
+            const output = JSON.stringify({ notes: "PRIVATE_NOTES condensed history.",
+              sourceRefs: JSON.stringify(next.content).includes("old-history") ? ["old-history"] : [] });
             yield { type: "token", data: { delta: output } };
             return { ...providerResult, finalText: output };
           }
@@ -5278,7 +5289,8 @@ describe("run recovery", () => {
         ...checkpointedRun({ calls: input.calls, phase, roundIndex: input.roundIndex,
           ...(input.refresh ? { providerResponseId: "response-tool-1" } : {}) }),
         checkpoint: toolLoopCheckpoint({
-          answerRoundUsage: input.refresh ? [] : [{ completeness: "terminal", roundIndex: input.roundIndex, usage: zeroUsage }],
+          answerRoundUsage: input.answerRoundUsage ??
+            (input.refresh ? [] : [{ completeness: "terminal", roundIndex: input.roundIndex, usage: zeroUsage }]),
           contextCompaction: contextCompactionCheckpoint({ ...input.compaction, ownerId: userId, request, runId }),
           phase,
           providerContinuation: { providerResponseId: "response-tool-1", providerToolMessages: input.providerToolMessages },
@@ -5286,7 +5298,7 @@ describe("run recovery", () => {
         })!,
         normalizedRequest: request
       };
-      const installed = installCheckpointState(harness, run);
+      const installed = installCheckpointState(harness, run, input.persistedUsage);
       const batches: Parameters<RunRecoveryRepository["persistToolLoopCallBatch"]>[0][] = [];
       const persist = harness.repository.persistToolLoopCallBatch;
       harness.repository.persistToolLoopCallBatch = async (value) => { batches.push(value); return persist(value); };
@@ -5339,7 +5351,8 @@ describe("run recovery", () => {
       await recovery.recover();
       expect(recovery.harness.state.recoveredErrors).toEqual([]);
       expect(recovery.harness.state.completed).toMatchObject({ finalText: "Recovered." });
-      expect(recovery.summaries).toHaveLength(1);
+      // One cycle: the long history takes bounded parts and a reduction.
+      expect(recovery.summaries.length).toBeGreaterThan(1);
       expect(recovery.answers).toHaveLength(2);
       expect(recovery.withinBudget).toEqual([true, true]);
       const bought = recovery.answers[0]?.contextCompactionSummary;
@@ -5351,8 +5364,12 @@ describe("run recovery", () => {
       }
       const checkpoint = recovery.batches.find(batch => batch.roundIndex === 2)?.contextCompaction;
       expect(checkpoint?.summary).toEqual(bought);
-      expect(checkpoint?.summaryAttempts).toEqual([expect.objectContaining({ state: "committed" })]);
+      expect(checkpoint?.summaryAttempts?.map(({ state }) => state))
+        .toEqual([...recovery.summaries.slice(1).map(() => "settled"), "committed"]);
       expect(checkpoint?.measurement).toEqual(recovery.answers[0]?.contextCompaction);
+      // Every recovered paid call reached run accounting with its receipt.
+      expect(recovery.harness.state.completed?.usageAttributions).toEqual([expect.objectContaining({
+        operationCount: 1 + recovery.summaries.length + recovery.answers.length })]);
       expect(recovery.statuses().map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
         [1, "running", "pending"], [1, "complete", "summary_applied"]
       ]);
@@ -5389,6 +5406,67 @@ describe("run recovery", () => {
       expect(recovery.answers[0]?.contextCompaction).toMatchObject({ maskedObservations: 1, outcome: "masking_applied" });
       expect(recovery.summaries).toHaveLength(0);
       expect(recovery.withinBudget).toEqual([true]);
+    });
+
+    it("reuses a settled summary receipt after a crash before the tool-batch checkpoint, accounting its call once", async () => {
+      // The lost executor claimed, paid and committed a summary in round 2
+      // (receipt and usage in one write), dispatched the answer and crashed
+      // before any tool-batch checkpoint.
+      const roundOne = { ...zeroUsage, inputTokens: 100, outputTokens: 10, totalTokens: 110 };
+      const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({ events: [], status: "completed", terminal: true,
+        result: { ...providerResult, finalText: "Refreshed.", providerResponseId: "response-tool-1",
+          usage: { inputTokens: 300, outputTokens: 20, totalTokens: 320 } } }));
+      const recovery = fixture({
+        answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: roundOne }],
+        calls: [{ ...persistedRecoveryCall("complete"), result: toolResult(1) as unknown as ToolLoopJsonValue }],
+        compaction: { measurement: measurement("already_fits"), summary, summaryAttempts: [{ attempt: 1,
+          bindingDigest: "f".repeat(64), id: "csa1_committed", sourceDigest: summary.sourceDigest, state: "committed",
+          usage: { inputTokens: 900, outputTokens: 40, totalTokens: 940 } }] },
+        persistedUsage: [{ modelId: "gpt-test", operationCount: 2, provider: "openai", recordedAt: "2026-07-12T09:00:00.000Z",
+          usage: { ...roundOne, inputTokens: 1_000, outputTokens: 50, totalTokens: 1_050 } }],
+        providerToolMessages: [
+          { arguments: "{\"value\":\"alpha\"}", call_id: "provider-call-1", name: recoveryToolName, type: "function_call" },
+          openAIResponsesToolBridge.appendToolResult(undefined, toolResult(1)) as ToolLoopJsonValue
+        ],
+        refresh,
+        roundIndex: 2,
+        toolCallsBeforeFinal: 0
+      });
+      await recovery.recover();
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(recovery.harness.state.recoveredErrors).toEqual([]);
+      expect(recovery.harness.state.completed).toMatchObject({ finalText: "Refreshed." });
+      // One paid summary in total: recovery reused the receipt's summary.
+      expect(recovery.summaries).toHaveLength(0);
+      // Summary usage once, beside both answer rounds.
+      expect(recovery.harness.state.completed?.usageAttributions).toEqual([expect.objectContaining({
+        modelId: "gpt-test", operationCount: 3, provider: "openai",
+        usage: expect.objectContaining({ inputTokens: 1_300, outputTokens: 70, totalTokens: 1_370 })
+      })]);
+    });
+
+    it("records an unsettled summary claim as unknown once and never repeats the paid call", async () => {
+      const claim = { attempt: 1, bindingDigest: "f".repeat(64), id: "csa1_claimed", sourceDigest: "e".repeat(64), state: "claim" as const };
+      const recovery = fixture({
+        answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: zeroUsage }],
+        calls: [{ ...persistedRecoveryCall("complete"), result: toolResult(1) as unknown as ToolLoopJsonValue }],
+        compaction: { measurement: measurement("needs_summary"), summaryAttempts: [claim] },
+        historyChars: 30_000,
+        // The lost executor stopped during the round's summary: no response id.
+        phase: "provider_running",
+        providerToolMessages: [],
+        roundIndex: 2,
+        toolCallsBeforeFinal: 0
+      });
+      await recovery.recover();
+      expect(recovery.summaries).toHaveLength(0);
+      expect(recovery.answers).toHaveLength(0);
+      expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual([{ ...claim, state: "unknown" }]);
+      // One more operation with unknown usage beside round 1: never invented, counted once.
+      expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }),
+        usageAttributions: [expect.objectContaining({ operationCount: 2, usage: expect.objectContaining({ completeness: "partial" }) })]
+      })]);
     });
 
     it("measures a refreshed round without buying a summary for a request already dispatched", async () => {

@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
+import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import {
+  checkpointAdoptingSummaryReceipts,
+  checkpointWithContextSummaryReceipt,
+  INITIAL_PROVIDER_CONTINUATION,
+  mergeContextCompactionReceipts,
   mergeAnswerRoundUsage,
   parseToolLoopCheckpoint,
   snapshotToolLoopJson,
   toolLoopCheckpoint,
-  toolLoopPersistenceLimits
+  toolLoopPersistenceLimits,
+  type ToolLoopCheckpoint
 } from "./toolLoopPersistence";
 
 describe("tool-loop persistence values", () => {
@@ -246,5 +252,95 @@ describe("tool-loop persistence values", () => {
       roundIndex: 0
     })).toBeNull();
     expect(snapshotToolLoopJson(undefined, 100)).toBeNull();
+  });
+});
+
+describe("context summary receipts", () => {
+  const compaction: ContextCompactionCheckpoint = {
+    branchId: "message-current", followupDigest: "e".repeat(64), followupRevision: 0,
+    measurement: { afterTokens: 300, beforeTokens: 300, budgetTokens: 200, legacyFallback: false,
+      maskedBatches: 0, maskedObservations: 0, outcome: "needs_summary", version: 1 },
+    observationRefs: [], ownerId: "user-1", pinDigest: "f".repeat(64), policyRevision: "hybrid-v1",
+    providerProjectionRevision: 1, recentTailCallIds: [], runId: "run-1", sourceDigest: "1".repeat(64), version: 1
+  };
+  const attempt = (number: number, state: ContextSummaryAttempt["state"], sourceDigest = "b".repeat(64)): ContextSummaryAttempt => ({
+    attempt: number, bindingDigest: "c".repeat(64), id: `csa1_${String(number).repeat(32)}`, sourceDigest, state,
+    ...(state === "claim" ? {} : { usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } })
+  });
+  const summary: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Derived notes.",
+    sourceDigest: "b".repeat(64), sourceRefs: ["message-old"] };
+  const round = (roundIndex: number, phase: ToolLoopCheckpoint["phase"] = "provider_running", contextCompaction?: ContextCompactionCheckpoint) =>
+    toolLoopCheckpoint({ ...(contextCompaction ? { contextCompaction } : {}), phase,
+      providerContinuation: { providerResponseId: null, providerToolMessages: [] }, roundIndex })!;
+  const write = (current: ToolLoopCheckpoint | null, entry: ContextSummaryAttempt, roundIndex = 2, committed?: ContextSummary) =>
+    checkpointWithContextSummaryReceipt(current, { attempt: entry, compaction, roundIndex, ...(committed ? { summary: committed } : {}) });
+
+  it("claims before dispatch in the round being prepared and settles that claim once", () => {
+    const claimed = write(round(2), attempt(1, "claim"))!;
+    expect(claimed.contextCompaction?.summaryAttempts).toEqual([attempt(1, "claim")]);
+    // A second call cannot start beside an unsettled claim, nor outside the round.
+    expect(write(claimed, attempt(2, "claim"))).toBeNull();
+    expect(write(round(3), attempt(1, "claim"))).toBeNull();
+    expect(write(round(2, "tools_pending"), attempt(1, "claim"))).toBeNull();
+    const committed = write(claimed, attempt(1, "committed"), 2, summary)!;
+    expect(committed.contextCompaction).toMatchObject({ summary, summaryAttempts: [attempt(1, "committed")] });
+    expect(parseToolLoopCheckpoint(committed)).toEqual(committed);
+    // Idempotent for the same outcome; a different outcome or an unknown id conflicts.
+    expect(write(committed, attempt(1, "committed"), 2, summary)).toBe(committed);
+    expect(write(committed, attempt(1, "invalid"))).toBeNull();
+    expect(write(committed, attempt(3, "settled"))).toBeNull();
+    // A summary commits only with its own committed receipt.
+    expect(write(write(committed, attempt(2, "claim"))!, attempt(2, "settled"), 2, summary)).toBeNull();
+    // Settlement stays possible after the round moved on (usage after Stop).
+    expect(write(round(2, "tools_running", claimed.contextCompaction), attempt(1, "unknown"))?.contextCompaction?.summaryAttempts)
+      .toEqual([attempt(1, "unknown")]);
+  });
+
+  it("seeds the first round's checkpoint with a claim that precedes its begin, and the begin keeps it", () => {
+    const seeded = write(null, attempt(1, "claim"), 1)!;
+    expect(seeded).toMatchObject({ phase: "provider_running", providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1 });
+    expect(write(null, attempt(1, "claim"), 2)).toBeNull();
+    expect(write(null, attempt(1, "settled"), 1)).toBeNull();
+    const committed = write(seeded, attempt(1, "committed"), 1, summary)!;
+    const begin = round(1, "provider_running", { ...compaction, summary, summaryAttempts: [attempt(1, "committed")],
+      measurement: { ...compaction.measurement, afterTokens: 100, outcome: "already_fits" } });
+    const adopted = checkpointAdoptingSummaryReceipts(committed, begin)!;
+    expect(adopted.contextCompaction).toMatchObject({ measurement: { outcome: "already_fits" }, summary,
+      summaryAttempts: [attempt(1, "committed")] });
+    // A begin that lost the receipts still cannot drop them.
+    expect(checkpointAdoptingSummaryReceipts(committed, round(1, "provider_running", compaction))?.contextCompaction)
+      .toMatchObject({ summary, summaryAttempts: [attempt(1, "committed")] });
+    // Never adopted across rounds or after the round reported usage.
+    expect(checkpointAdoptingSummaryReceipts(committed, round(2))).toBeNull();
+    expect(checkpointAdoptingSummaryReceipts({ ...committed, answerRoundUsage: [{ completeness: "partial", roundIndex: 1,
+      usage: { cachedInputTokens: 0, cacheWriteInputTokens: 0, completeness: "complete", inputTokens: 1, outputTokens: 1,
+        reasoningTokens: 0, totalTokens: 2 } }] }, begin)).toBeNull();
+  });
+
+  it("keeps a dispatch outside the tool loop out of checkpoint state", () => {
+    const current = round(2);
+    expect(checkpointWithContextSummaryReceipt(current, { attempt: attempt(1, "claim"), compaction, roundIndex: null })).toBe(current);
+  });
+
+  it("merges receipts forward only and never lets an older projection replace the committed summary", () => {
+    const durable = { ...compaction, summary, summaryAttempts: [attempt(1, "settled"), attempt(2, "committed")] };
+    expect(mergeContextCompactionReceipts(durable, { ...compaction, summaryAttempts: [attempt(1, "claim")] })).toMatchObject({
+      summary, summaryAttempts: [attempt(1, "settled"), attempt(2, "committed")]
+    });
+    expect(mergeContextCompactionReceipts(durable, compaction)).toMatchObject({ summary, summaryAttempts: durable.summaryAttempts });
+    expect(mergeContextCompactionReceipts(durable, { ...compaction, summaryAttempts: [attempt(2, "invalid")] })).toBeNull();
+    const stale: ContextSummary = { ...summary, id: `cs1_${"9".repeat(32)}`, sourceDigest: "9".repeat(64) };
+    expect(mergeContextCompactionReceipts(durable, { ...compaction, summary: stale })).toBeNull();
+    const newer = { ...compaction, summary: stale, summaryAttempts: [attempt(3, "committed", "9".repeat(64))] };
+    expect(mergeContextCompactionReceipts(durable, newer)).toMatchObject({ summary: stale });
+  });
+
+  it("bounds retained receipts and rejects duplicate receipt ids", () => {
+    const many = Array.from({ length: 30 }, (_, index) => ({ ...attempt(1, "invalid"), attempt: (index % 16) + 1,
+      id: `csa1_${String(index).padStart(32, "0")}` }));
+    const merged = mergeContextCompactionReceipts(compaction, { ...compaction, summaryAttempts: many })!;
+    expect(merged.summaryAttempts).toHaveLength(24);
+    expect(toolLoopCheckpoint({ contextCompaction: { ...compaction, summaryAttempts: [attempt(1, "settled"), attempt(1, "settled")] },
+      phase: "provider_running", providerContinuation: null, roundIndex: 1 })).toBeNull();
   });
 });
