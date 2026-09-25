@@ -30,6 +30,9 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
   /** Paid summary calls (chunks, reductions and repairs) for one source
    * digest, counted from durable receipts so a restart cannot reset it. */
   summaryCalls: 16,
+  /** Estimated calls one summary plan may use; the rest of `summaryCalls`
+   * covers repairs. A longer source is summarized from its newest span. */
+  summaryPlannedCalls: 12,
   /** Receipts retained in the checkpoint; never fewer than `summaryCalls`. */
   summaryReceipts: 24,
   summaryNotesBytes: 64 * 1024,

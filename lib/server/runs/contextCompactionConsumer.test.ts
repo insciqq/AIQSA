@@ -96,10 +96,12 @@ function consumer(request: ProviderRunRequest, options: Readonly<{
   } };
   const settle = vi.fn<ContextSummaryReceipts["settle"]>(async () => undefined);
   const claim = vi.fn<ContextSummaryReceipts["claim"]>(async () => undefined);
+  const onTruncation = vi.fn();
   const run = () => prepareCompactedProviderRequest({
     bridge,
     failure: (code, message) => Object.assign(new Error(message), { code }),
     ...(options.observations ? { observations: options.observations } : {}),
+    onTruncation,
     publisher: createContextCompactionPublisher(async status => { events.push(status); }, options.initial),
     receipts: { claim, settle },
     request,
@@ -107,7 +109,7 @@ function consumer(request: ProviderRunRequest, options: Readonly<{
     ...(options.sourceAvailable ? { sourceAvailable: options.sourceAvailable } : {}),
     summaryAdapter: adapter
   });
-  return { claim, events, run, settle, summaryRequests };
+  return { claim, events, onTruncation, run, settle, summaryRequests };
 }
 
 async function failureOf(promise: Promise<unknown>): Promise<{ code?: string }> {
@@ -196,6 +198,37 @@ describe("single compaction consumer", () => {
     expect(prepared.context?.messages.map(message => message.id).slice(1)).toEqual(["recent-2", "recent-3", "current"]);
     expect(prepared.contextCompaction).toMatchObject({ legacyFallback: false });
     expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(3_200);
+  });
+
+  it("keeps the newest span of an over-long history and reports the older turns as truncation", async () => {
+    const recent = Array.from({ length: 60 }, (_, index) =>
+      text(`TURN_${index} ${"t".repeat(2_000)}`, `turn-${index}`, index % 2 ? "assistant" : "user"));
+    const compaction = consumer(hybridRequest({ recent }));
+    const prepared = await compaction.run();
+    expect(compaction.summaryRequests.length).toBeLessThanOrEqual(12);
+    expect(JSON.stringify(compaction.summaryRequests.map(request => request.content))).not.toContain('id=\\"old\\"');
+    const truncation = prepared.context?.summary?.truncation;
+    expect(truncation?.droppedMessages).toBeGreaterThan(0);
+    expect(compaction.onTruncation).toHaveBeenCalledWith(truncation);
+    expect(prepared.contextCompaction).toMatchObject({ legacyFallback: true });
+    expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(3_200);
+    expect(prepared.contextCompactionSummary?.sourceRefs).not.toContain("old");
+    expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
+      ["running", "pending"], ["complete", "summary_applied"]
+    ]);
+  });
+
+  it("refuses an uncoverable newest span as irreducible overflow without a paid call", async () => {
+    // A summary window much smaller than the answer window: the current input
+    // alone needs more calls than a plan may use.
+    const request = { ...hybridRequest({ history: 3_000, current: 2_500 }),
+      generationBudget: { version: 1 as const, contextWindow: 1_000, maxOutputTokens: 256, timeoutMs: 30_000 } };
+    const compaction = consumer(request);
+    const failure = await failureOf(compaction.run());
+    expect(failure.code).toBe("context_too_large");
+    expect(compaction.events.at(-1)?.outcome).toBe("irreducible_overflow");
+    expect(compaction.summaryRequests).toHaveLength(0);
+    expect(compaction.claim).not.toHaveBeenCalled();
   });
 
   describe("failure classes publish the run's own code", () => {

@@ -701,6 +701,43 @@ function applyHybridProviderRequestContextBudget(input: ProviderRequestBudgetInp
   };
 }
 
+/**
+ * A bounded summary that could cover only the newest span leaves the older
+ * prior turns out exactly like the legacy whole-turn guard: ordinary
+ * truncation evidence, cumulative with earlier trimming, and a measurement
+ * marked as the legacy fallback. It never hides lost coverage.
+ */
+export function withSummaryHistoryOmission(input: Readonly<{
+  bridge?: ProviderToolBridge;
+  omitted: Readonly<{ messages: number; tokens: number }>;
+  result: Extract<ProviderRequestContextBudgetResult, { ok: true }>;
+}>): Extract<ProviderRequestContextBudgetResult, { ok: true }> {
+  const { request } = input.result;
+  const limits = contextCompactionBudgetLimits(request);
+  if (!limits || !request.context || input.omitted.messages === 0) return input.result;
+  const finalTokens = approximateProviderRequestTokens(request, input.bridge);
+  const contextTruncation = cumulativeTruncationSummary(input.result.contextTruncation ?? request.context.summary?.truncation, {
+    approxDroppedTokens: input.omitted.tokens,
+    approxFinalTokens: finalTokens,
+    approxOriginalTokens: finalTokens + input.omitted.tokens,
+    budgetTokens: limits.budgetTokens,
+    contextWindow: limits.contextWindow,
+    droppedMessages: input.omitted.messages,
+    keptMessages: request.context.messages.length,
+    maxOutputTokens: limits.maxOutputTokens,
+    safetyMarginTokens: limits.safetyMarginTokens
+  });
+  return {
+    contextTruncation,
+    ok: true,
+    request: {
+      ...request,
+      context: { ...request.context, summary: { truncation: contextTruncation } },
+      ...(request.contextCompaction ? { contextCompaction: { ...request.contextCompaction, legacyFallback: true } } : {})
+    }
+  };
+}
+
 function applyProviderRequestContextBudgetCore(input: Readonly<{
   bridge?: ProviderToolBridge;
   request: ProviderRunRequest;
