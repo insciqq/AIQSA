@@ -106,6 +106,13 @@ describe("provider parameter defaults", () => {
     }).reasoning).toMatchObject({ enabled: false, effort: "none", maxTokens: 4096 });
   });
 
+  it("does not turn unset OpenRouter reasoning into an explicit Off", () => {
+    expect(normalizeOpenRouterParams({}).reasoning).toEqual(defaultOpenRouterParams().reasoning);
+    expect(normalizeOpenRouterParams({ reasoning: { exclude: true } }).reasoning.effort).not.toBe("none");
+    expect(normalizeOpenRouterParams({ reasoning: { enabled: true, effort: "high" } }).reasoning)
+      .toMatchObject({ enabled: true, effort: "high" });
+  });
+
   it("preserves the explicit structured-output tool-choice capability", () => {
     expect(normalizeOpenRouterParams({
       provider: { structured_output_tool_choice: "auto" }

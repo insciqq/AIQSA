@@ -1,7 +1,6 @@
 import { admittedOutputAllowance } from "./modelOutputAllowance";
 import { withResponseReminder } from "./responseReminder";
 import {
-  defaultOpenRouterParams,
   normalizeOpenRouterParams,
   type OpenRouterParams
 } from "../../domain/providerParams";
@@ -552,9 +551,6 @@ function searchParamsFromRequest(request: ProviderSearchRequest): OpenRouterPara
         ? controls.maxOutputTokens
         : defaults.maxTokens,
     provider: policy.defaultParams.provider,
-    reasoning: isRecord(policy.defaultParams.reasoning)
-      ? policy.defaultParams.reasoning
-      : defaultOpenRouterParams().reasoning,
     stream: false,
     ...(typeof controls.temperature === "number"
       ? { temperature: controls.temperature }
