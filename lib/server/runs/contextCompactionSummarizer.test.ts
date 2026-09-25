@@ -347,6 +347,51 @@ describe("context compaction summarizer", () => {
     expect(summarized.attempts.map(({ state }) => state)).toEqual([...partials.map(() => "settled"), "committed"]);
   });
 
+  it("summarizes the newest span when the source needs more calls than a plan may use", async () => {
+    // 4,000-token window: about 3,000 input tokens per call; 30,000 tokens of history.
+    const history = Array.from({ length: 60 }, (_, index) =>
+      text(`TURN_${index} ${String(index % 10).repeat(2_000)}`, `h${index}`, index % 2 ? "assistant" : "user"));
+    const source = request({ maxOutputTokens: 256, window: 4_000, messages: [...history, text("CURRENT_QUESTION", "current")],
+      overrides: { providerToolMessages: [{ call_id: "tool-1", name: "read_record", type: "function_call" },
+        { call_id: "tool-1", output: "NEWEST_TOOL_RESULT", type: "function_call_output" }] } });
+    const calls: ProviderRunRequest[] = [];
+    const summarized = await executeContextSummary({
+      adapter: adapter([json("span notes")], calls), request: source
+    });
+    const omitted = summarized.omitted!;
+    // Whole turns (user and reply) leave oldest first; the newest stay.
+    expect(omitted.messages).toBeGreaterThan(0);
+    expect(omitted.messages % 2).toBe(0);
+    expect(omitted.tokens).toBeGreaterThan(0);
+    expect(calls.length).toBeLessThanOrEqual(CONTEXT_COMPACTION_LIMITS.summaryPlannedCalls);
+    const bodies = calls.map(envelopeText).join("\n");
+    expect(bodies).not.toContain('id="h0"');
+    expect(bodies).not.toContain(`id="h${omitted.messages - 1}"`);
+    expect(bodies).toContain(`id="h${omitted.messages}"`);
+    expect(bodies).toContain("CURRENT_QUESTION");
+    expect(bodies).toContain("NEWEST_TOOL_RESULT");
+    // Digest and refs describe only the summarized span.
+    const span: ProviderRunRequest = { ...source, context: { mode: "branch_path", messages: source.context!.messages.slice(omitted.messages) } };
+    expect(summarized.summary.sourceDigest).toBe(contextSummarySource(span).digest);
+    expect(summarized.summary.sourceDigest).not.toBe(contextSummarySource(source).digest);
+    expect(summarized.summary.sourceRefs).not.toContain("h0");
+    expect(summarized.summary.sourceRefs).toContain(`h${omitted.messages}`);
+    expect(summarized.request.context?.messages.some(message => message.id === "h0")).toBe(false);
+  });
+
+  it("refuses as irreducible when even the newest span cannot be covered, before any paid call", async () => {
+    const calls: ProviderRunRequest[] = [];
+    const recorded = receipts();
+    await expect(executeContextSummary({
+      adapter: adapter([json("never")], calls), receipts: recorded.hooks,
+      request: request({ maxOutputTokens: 256, window: 4_000, messages: [
+        text(`old ${"o".repeat(4_000)}`, "old"), text(`HUGE_CURRENT ${"c".repeat(240_000)}`, "current")
+      ] })
+    })).rejects.toMatchObject({ code: "context_too_large" });
+    expect(calls).toHaveLength(0);
+    expect(recorded.claims).toHaveLength(0);
+  });
+
   it("re-summarizes incrementally: earlier notes come first and a rare early fact and its handle survive", async () => {
     const handle = `tor1_${"c".repeat(32)}`;
     const settled = [projectObservationForProvider({ callId: "early", content: [{ text: "early result", type: "text" }],

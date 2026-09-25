@@ -267,7 +267,9 @@ export function contextHistory(request: ProviderRunRequest, budgetTokens: number
   };
 }
 
-function priorTurns(messages: readonly ProviderConversationMessage[]): ProviderConversationMessage[][] {
+/** Whole prior turns, oldest first: a user message starts a turn unless it is
+ * a clarification of the same turn. */
+export function contextTurns(messages: readonly ProviderConversationMessage[]): ProviderConversationMessage[][] {
   const groups: ProviderConversationMessage[][] = [];
   let current: ProviderConversationMessage[] = [];
   for (const message of messages) {
@@ -292,7 +294,7 @@ function trimCoveredHistory(request: ProviderRunRequest, history: ContextHistory
 }> {
   const dropped = new Set<ProviderConversationMessage>();
   let droppedTokens = 0;
-  for (const turn of priorTurns(history.covered)) {
+  for (const turn of contextTurns(history.covered)) {
     if (droppedTokens >= excessTokens) break;
     for (const message of turn) {
       dropped.add(message);

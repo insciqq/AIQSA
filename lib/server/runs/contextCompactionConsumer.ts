@@ -12,7 +12,11 @@ import {
   summaryNeedsProvider,
   type ContextSummaryReceipts
 } from "./contextCompactionSummarizer";
-import { applyProviderRequestContextBudget, type ProviderRequestContextBudgetResult } from "./runContextBudget";
+import {
+  applyProviderRequestContextBudget,
+  withSummaryHistoryOmission,
+  type ProviderRequestContextBudgetResult
+} from "./runContextBudget";
 
 function failureCode(error: unknown): string | null {
   return error !== null && typeof error === "object" && "code" in error && typeof error.code === "string"
@@ -119,7 +123,11 @@ export async function prepareCompactedProviderRequest(
       await publisher.settle(contextCompactionFailureOutcome("context_compaction_summary_no_progress"));
       throw input.failure("context_compaction_summary_no_progress", "The new notes do not reduce the context estimate.");
     }
-    prepared = next;
+    // History older than the span a bounded summary could cover leaves as
+    // whole-turn truncation evidence, as the legacy guard would drop it.
+    prepared = summarized.omitted
+      ? withSummaryHistoryOmission({ ...(input.bridge ? { bridge: input.bridge } : {}), omitted: summarized.omitted, result: next })
+      : next;
     await publisher.settle("summary_applied", prepared.request.contextCompaction);
   } else if (publisher.running) {
     // A cycle left running by a lost executor: a summary committed to the

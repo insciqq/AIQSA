@@ -19,7 +19,7 @@ import {
   summaryBindingDigest,
   type ContextObservation
 } from "./contextCompactionContract";
-import { maskedObservationHandlesInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
+import { contextTurns, maskedObservationHandlesInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
 
 const SUMMARY_SYSTEM_PROMPT = [
   "You are the server-owned context compaction summarizer.",
@@ -72,13 +72,20 @@ export type ContextSummaryInput = Readonly<{
   sourceAvailable?(handles: readonly string[], signal?: AbortSignal): Promise<boolean>;
 }>;
 
+/** Oldest prior history the bounded call plan could not cover. */
+export type ContextSummaryOmission = Readonly<{ messages: number; tokens: number }>;
+
 export type ContextSummaryResult = Readonly<{
   attempts: readonly ContextSummaryAttempt[];
+  /** Present when only the newest span was summarized; its older turns leave
+   * the request as whole-turn truncation, never as silently lost coverage. */
+  omitted?: ContextSummaryOmission;
   request: ProviderRunRequest;
   summary: ContextSummary;
 }>;
 
 export type ContextSummaryErrorCode =
+  | "context_too_large"
   | "context_compaction_outcome_unknown"
   | "context_compaction_provider_failed"
   | "context_compaction_source_unavailable"
@@ -333,6 +340,112 @@ function packParts(units: readonly SourceUnit[], tokenLimit: number): string[] {
   return parts;
 }
 
+type CallPlan = Readonly<{ calls: number; notes: string | null; parts: readonly string[] }>;
+
+const PART_NOTES_WRAPPER_TOKENS = estimateApproxTokens("<part-notes>\n\n</part-notes>\n");
+
+/** Consecutive groups of token counts within the bound. */
+function packTokens(counts: readonly number[], tokenLimit: number): number[] {
+  const groups: number[] = [];
+  let current = 0;
+  for (const count of counts) {
+    if (current > 0 && current + count + 1 > tokenLimit) {
+      groups.push(current);
+      current = 0;
+    }
+    current += count + (current > 0 ? 1 : 0);
+  }
+  if (current > 0) groups.push(current);
+  return groups;
+}
+
+/** The parts of a source and an upper estimate of its paid calls: every part,
+ * each reduction level (part notes are at most half their input) and the
+ * final call. Earlier notes that fit one call join the reduction verbatim. */
+function planCalls(units: readonly SourceUnit[], inputTokens: number): CallPlan {
+  let parts = packParts(units, inputTokens);
+  const notes = parts.length > 1 && units[0]?.notes === true && units[0].tokens <= inputTokens ? units[0].text : null;
+  if (notes !== null) parts = packParts(units.slice(1), inputTokens);
+  if (notes === null && parts.length === 1) return { calls: 1, notes, parts };
+  let calls = parts.length + 1;
+  let level = [...(notes !== null ? [units[0]!.tokens] : []),
+    ...parts.map((part) => Math.ceil(estimateApproxTokens(part) / 2) + PART_NOTES_WRAPPER_TOKENS)];
+  let total = level.reduce((sum, count) => sum + count, 0);
+  while (total > inputTokens) {
+    const groups = packTokens(level, inputTokens);
+    const next = groups.map((count) => Math.ceil(count / 2) + PART_NOTES_WRAPPER_TOKENS);
+    const nextTotal = next.reduce((sum, count) => sum + count, 0);
+    if (nextTotal >= total) return { calls: Infinity, notes, parts };
+    calls += groups.length;
+    level = next;
+    total = nextTotal;
+  }
+  return { calls, notes, parts };
+}
+
+type SummarySpan = Readonly<{
+  dropped: readonly ProviderConversationMessage[];
+  plan: CallPlan;
+  /** The request restricted to the summarized span. */
+  request: ProviderRunRequest;
+  source: ContextSummarySource;
+}>;
+
+/**
+ * The newest span the call plan can cover. When the whole source needs more
+ * calls than a plan may use, whole prior turns leave oldest first. Earlier
+ * notes leave first when they cannot join the reduction verbatim; otherwise
+ * they cost no call and leave only as a last resort. Pins, the current message
+ * and the tool transcript never leave. The source, digest and refs then
+ * describe only that span. A source whose newest span still cannot be covered
+ * is irreducible.
+ */
+function summarySpan(request: ProviderRunRequest, observations: readonly ContextObservation[] | undefined,
+  inputTokens: number): SummarySpan {
+  const full = contextSummarySource(request, observations);
+  const fullPlan = planCalls(full.units, inputTokens);
+  if (fullPlan.calls <= CONTEXT_COMPACTION_LIMITS.summaryPlannedCalls) {
+    return { dropped: [], plan: fullPlan, request, source: full };
+  }
+  const messages = request.context?.messages ?? [];
+  const current = messages.at(-1);
+  const previous = appliedSummary(request);
+  const notesMessage = previous ? messages.find((message) => message.id === contextSummaryMessageId(previous)) : undefined;
+  const prior = messages.filter((message) => message !== current && message.purpose === undefined && !isContextSummaryMessage(message));
+  const notesVerbatim = (full.units[0]?.tokens ?? 0) <= inputTokens;
+  const chunks: ProviderConversationMessage[][] = [
+    ...(notesMessage && !notesVerbatim ? [[notesMessage]] : []),
+    ...contextTurns(prior),
+    ...(notesMessage && notesVerbatim ? [[notesMessage]] : [])
+  ];
+  const spanOf = (count: number): SummarySpan => {
+    const dropped = new Set(chunks.slice(0, count).flat());
+    const spanRequest: ProviderRunRequest = { ...request,
+      context: { ...request.context!, messages: messages.filter((message) => !dropped.has(message)) } };
+    const source = contextSummarySource(spanRequest, observations);
+    return { dropped: [...dropped], plan: planCalls(source.units, inputTokens), request: spanRequest, source };
+  };
+  // Dropping more turns never adds calls: the smallest sufficient drop wins.
+  let low = 1;
+  let high = chunks.length;
+  let found: SummarySpan | null = null;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const span = spanOf(middle);
+    if (span.plan.calls <= CONTEXT_COMPACTION_LIMITS.summaryPlannedCalls) {
+      found = span;
+      high = middle - 1;
+    } else {
+      low = middle + 1;
+    }
+  }
+  if (!found) {
+    throw new ContextSummaryError("context_too_large",
+      "The current message and tool transcript alone need more summary calls than a bounded plan allows.");
+  }
+  return found;
+}
+
 function compactUsage(usage: NormalizedTokenUsage): ContextSummaryUsage {
   return { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens };
 }
@@ -405,7 +518,8 @@ export function applyContextSummaryToRequest(
   };
   return {
     ...request,
-    context: { mode: "branch_path", messages: [summaryMessage, ...tail, ...pins, ...(current ? [current] : [])] },
+    context: { mode: "branch_path", messages: [summaryMessage, ...tail, ...pins, ...(current ? [current] : [])],
+      ...(request.context?.summary ? { summary: request.context.summary } : {}) },
     contextCompactionSummary: summary,
     ...(attempts.length ? { contextCompactionSummaryAttempts: attempts.slice(-CONTEXT_COMPACTION_LIMITS.summaryReceipts) } : {})
   };
@@ -432,36 +546,38 @@ type StepOutcome = Readonly<{
  * Each paid call is claimed durably before dispatch and settled with its
  * provider-reported usage; the per-source call cap counts durable receipts, so
  * a restart continues the counter instead of resetting it, and an unsettled or
- * unknown call for this source is never repeated automatically.
+ * unknown call for this source is never repeated automatically. A source that
+ * needs more calls than a plan may use is summarized from its newest span; the
+ * older turns are returned as `omitted` for whole-turn truncation evidence.
  */
 export async function executeContextSummary(input: ContextSummaryInput): Promise<ContextSummaryResult> {
-  const source = contextSummarySource(input.request, input.observations);
   const applied = appliedSummary(input.request);
-  if (input.existingSummary && (input.existingSummary.sourceDigest === source.digest ||
-    applied?.id === input.existingSummary.id && contextSummaryIsCurrent(input.request))) {
-    return {
-      attempts: input.existingAttempts ?? [],
-      request: applyContextSummaryToRequest(input.request, input.existingSummary, input.existingAttempts),
-      summary: input.existingSummary
-    };
-  }
+  const reuse = (omitted?: ContextSummaryOmission): ContextSummaryResult => ({
+    attempts: input.existingAttempts ?? [],
+    ...(omitted ? { omitted } : {}),
+    request: applyContextSummaryToRequest(input.request, input.existingSummary!, input.existingAttempts),
+    summary: input.existingSummary!
+  });
+  if (input.existingSummary && applied?.id === input.existingSummary.id && contextSummaryIsCurrent(input.request)) return reuse();
+  const budget = summaryCallBudget(input.request);
+  const span = summarySpan(input.request, input.observations, budget.inputTokens);
+  const { source } = span;
+  const omitted: ContextSummaryOmission | undefined = span.dropped.length > 0 ? {
+    messages: span.dropped.length,
+    tokens: span.dropped.reduce((total, message) => total + estimateApproxTokens(message.content), 0)
+  } : undefined;
+  if (input.existingSummary?.sourceDigest === source.digest) return reuse(omitted);
   const attempts = [...(input.existingAttempts ?? [])];
   const forSource = attempts.filter((entry) => entry.sourceDigest === source.digest);
   if (forSource.some((entry) => entry.state === "claim" || entry.state === "dispatched" || entry.state === "unknown")) {
     throw new ContextSummaryError("context_compaction_outcome_unknown",
       "An earlier summary call for this source has an unknown outcome and is not repeated.");
   }
-  const budget = summaryCallBudget(input.request);
   const bindingDigest = summaryBindingDigest(input.request);
   let used = forSource.length;
-  let parts = packParts(source.units, budget.inputTokens);
-  // When the source needs several calls, earlier notes that fit one call are
-  // already notes: they join the reduction verbatim instead of being re-summarized.
-  const notes = parts.length > 1 && source.units[0]?.notes === true && source.units[0].tokens <= budget.inputTokens
-    ? source.units[0].text : null;
-  if (notes !== null) parts = packParts(source.units.slice(1), budget.inputTokens);
-  const plannedCalls = notes === null && parts.length === 1 ? 1 : parts.length + 1;
-  if (used + plannedCalls > CONTEXT_COMPACTION_LIMITS.summaryCalls) {
+  const { notes, parts } = span.plan;
+  // Only earlier receipts for this same source can exhaust the cap here.
+  if (used + span.plan.calls > CONTEXT_COMPACTION_LIMITS.summaryCalls) {
     throw new ContextSummaryError("context_compaction_summary_failed", "The source needs more summary calls than its bounded budget allows.");
   }
   if (input.sourceAvailable && source.referencedHandles.length > 0 &&
@@ -553,7 +669,7 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
   // plus prior messages older than the exact tail), so a valid summary always
   // releases room; the consumer still verifies the released estimate.
   const finalNotes = Math.min(CONTEXT_COMPACTION_LIMITS.summaryNotesBytes,
-    Math.max(MIN_FINAL_NOTES_BYTES, Math.floor(replacedHistoryBytes(input.request) / 2)));
+    Math.max(MIN_FINAL_NOTES_BYTES, Math.floor(replacedHistoryBytes(span.request) / 2)));
   const partialNotes = (part: string) =>
     Math.min(CONTEXT_COMPACTION_LIMITS.summaryNotesBytes, Math.max(MIN_PARTIAL_NOTES_BYTES, Math.floor(Buffer.byteLength(part, "utf8") / 2)));
   let final: StepOutcome;
@@ -595,6 +711,7 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
   await final.settle("committed", summary);
   return {
     attempts: attempts.slice(-CONTEXT_COMPACTION_LIMITS.summaryReceipts),
+    ...(omitted ? { omitted } : {}),
     request: applyContextSummaryToRequest(input.request, summary, attempts),
     summary
   };
