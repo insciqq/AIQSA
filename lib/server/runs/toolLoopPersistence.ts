@@ -435,8 +435,19 @@ export const INITIAL_PROVIDER_CONTINUATION: ToolLoopJsonValue = Object.freeze({
 
 const unsettledSummaryStates = new Set<ContextSummaryAttempt["state"]>(["claim", "dispatched"]);
 
+/** Structural equality independent of object key order: `jsonb` columns
+ * reorder keys on storage, so a replayed receipt must still match its row. */
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort()
+      .map((key) => [key, canonicalJson((value as Record<string, unknown>)[key])]));
+  }
+  return value;
+}
+
 function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
 }
 
 function boundedReceipts(attempts: readonly ContextSummaryAttempt[]): readonly ContextSummaryAttempt[] {
