@@ -1025,6 +1025,9 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
         if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) {
           throw new RangeError("invalid_stored_object_stream_size");
         }
+        // One sized PutObject is atomic: an interrupted stream leaves neither a
+        // partial object nor multipart state. The caller's durable deletion job
+        // for the reserved key covers a completed but unpublished object.
         const upload = createBoundedS3UploadBody(input);
         const abortSignal = input.signal ? AbortSignal.any([input.signal, upload.signal]) : upload.signal;
         try {
