@@ -52,9 +52,10 @@ describe("accepted tool budgets", () => {
       mcpAutoDiscoveryMaxOutputTokens: "model",
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 20,
-      maxToolRounds: 8,
-      toolObservationPolicy: "off"
+      maxToolRounds: 8
     });
+    // Without the installation policy the observation mode is unproven.
+    expect(normalizeToolObservationPolicy(DEFAULT_TOOL_RUN_BUDGETS.toolObservationPolicy)).toBe("off");
   });
 
   it.each([undefined, null, "future"])("fails closed for an invalid rollout policy: %s", value => {

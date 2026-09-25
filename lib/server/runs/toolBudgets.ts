@@ -19,7 +19,8 @@ export type ToolRunBudgets = Readonly<{
   maxMcpToolsPerDiscovery: number;
   maxToolCalls: number;
   maxToolRounds: number;
-  /** Operator rollout gate loaded with the installation policy. */
+  /** Operator observation/compaction policy loaded with the installation row,
+   * whose column default is `v1`. Absent without that loader. */
   toolObservationPolicy?: ToolObservationPolicy;
 }>;
 
@@ -28,8 +29,7 @@ export const DEFAULT_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
   mcpAutoDiscoveryTimeoutSeconds: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.defaultSeconds,
   maxMcpToolsPerDiscovery: 10,
   maxToolCalls: 20,
-  maxToolRounds: 8,
-  toolObservationPolicy: "off"
+  maxToolRounds: 8
 });
 
 const LEGACY_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
@@ -40,7 +40,10 @@ const LEGACY_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
   maxToolRounds: 3
 });
 
-/** Invalid or absent operator state fails closed for new admission. */
+/** The installation default is `v1`; `off` is the operator's kill switch. A
+ * value that is absent (no installation policy loaded) or invalid cannot prove
+ * that choice, so new admission fails closed to `off`: the legacy path adds no
+ * capture, reader or summary. Accepted runs keep their frozen mode either way. */
 export function normalizeToolObservationPolicy(value: unknown): ToolObservationPolicy {
   return isToolObservationPolicy(value) ? value : "off";
 }

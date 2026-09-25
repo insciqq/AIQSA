@@ -1346,7 +1346,7 @@ model ModelPolicy {
   maxMcpToolsPerDiscovery        BigInt         @default(10)
   mcpAutoDiscoveryTimeoutSeconds BigInt?
   mcpAutoDiscoveryMaxOutputTokens BigInt?
-  toolObservationPolicy          String         @default("off") @db.VarChar(8)
+  toolObservationPolicy          String         @default("v1") @db.VarChar(8)
   version                        Int            @default(1)
   updatedByUserId                String?
   createdAt                      DateTime       @default(now())

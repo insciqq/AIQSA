@@ -55,7 +55,8 @@ function modelCatalog(): AdminModelPolicyCatalog {
     candidates: [candidate, { ...candidate, displayName: "GPT Terra", id: "terra" }],
     policy: {
       defaultModel: { ...candidate, available: true }, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8,
-      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192, reasoningEffort: "medium", updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 4
+      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192, reasoningEffort: "medium", toolObservationPolicy: "v1",
+      updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 4
     }
   };
 }
@@ -107,9 +108,9 @@ function knowledgeSettings(): AdminKnowledgeSettings {
 
 type Call = { body: Record<string, unknown> | null; method: string; url: string };
 
-function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSettings()) {
+function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSettings(), initialModel = modelCatalog()) {
   let roles = initialRoles;
-  let model = modelCatalog();
+  let model = initialModel;
   let knowledge = initialKnowledge;
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -191,7 +192,9 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
             maxMcpToolsPerDiscovery: Number(body.maxMcpToolsPerDiscovery), maxToolCalls: Number(body.maxToolCalls),
             maxToolRounds: Number(body.maxToolRounds), mcpAutoDiscoveryTimeoutSeconds: Number(body.mcpAutoDiscoveryTimeoutSeconds),
             mcpAutoDiscoveryMaxOutputTokens: body.mcpAutoDiscoveryMaxOutputTokens === null ? null : Number(body.mcpAutoDiscoveryMaxOutputTokens)
-          } : {})
+          } : {}),
+          ...(body.toolObservationPolicy === "off" || body.toolObservationPolicy === "v1"
+            ? { toolObservationPolicy: body.toolObservationPolicy } : {})
         } };
       }
       return Response.json({ modelPolicy: model });
@@ -711,6 +714,39 @@ describe("AdminRolesSection", () => {
       expectedVersion: 4, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 10,
       mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192, providerModelId: "terra", reasoningEffort: null
     }]);
+    expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+  });
+
+  it("shows observation and compaction on by default and saves the kill switch alone under the policy version", async () => {
+    const calls = server();
+    const { reportNotice } = renderSection();
+    const toggle = await screen.findByRole("switch", { name: "Tool result store and context compaction" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(/Off is a kill switch/)).toBeVisible();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("1 unsaved change")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Chat defaults saved for new chats"));
+    expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{ expectedVersion: 4, toolObservationPolicy: "off" }]);
+    expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patchesTo(calls, "/api/admin/providers/model-policy").at(-1))
+      .toEqual({ expectedVersion: 5, toolObservationPolicy: "v1" }));
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("disables the observation switch with an explanation while its saved setting is unknown", async () => {
+    const model = modelCatalog();
+    const { toolObservationPolicy: _unknown, ...policy } = model.policy;
+    void _unknown;
+    server(rolesCatalog(), knowledgeSettings(), { ...model, policy });
+    renderSection();
+    const toggle = await screen.findByRole("switch", { name: "Tool result store and context compaction" });
+    expect(toggle).toBeDisabled();
+    expect(screen.getByText("The saved setting is unavailable. Reload to change it.")).toBeInTheDocument();
     expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
   });
 
