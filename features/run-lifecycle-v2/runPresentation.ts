@@ -401,6 +401,55 @@ function activityLabel(signal: Omit<ActivitySignal, "index">): string {
   }
 }
 
+export type ContextCompactionCopyV2 = Readonly<{
+  /** Fold and announcer label; a failure keeps its whole bounded reason. */
+  label: string;
+  /** Optional sentence under the label in the fold's Context section. */
+  detail: string | null;
+}>;
+
+/**
+ * Copy for the server-published compaction state only. A cycle whose live
+ * feed was lost reads as lost, never as still compacting; an unknown outcome
+ * appears only when the server published it.
+ */
+export function contextCompactionCopyV2(
+  status: ContextCompactionStatus,
+  options: Readonly<{ connectionLost?: boolean }> = {}
+): ContextCompactionCopyV2 {
+  if (status.state === "running") {
+    return options.connectionLost
+      ? {
+          detail: "The connection was lost while the context was being compacted. Refresh to see the confirmed outcome.",
+          label: "Context compaction · connection lost"
+        }
+      : {
+          detail: "Summarizing earlier messages to fit the working context. The answer continues after this step.",
+          label: "Compacting context…"
+        };
+  }
+  switch (status.outcome) {
+    case "summary_applied":
+    case "masking_applied":
+      return {
+        detail: status.reducedTokens !== null && status.reducedTokens > 0
+          ? `Approx. ${status.reducedTokens.toLocaleString("en-US")} working-context tokens removed`
+          : null,
+        label: "Context compacted"
+      };
+    case "irreducible_overflow":
+      return { detail: null, label: "Context is still too large" };
+    case "source_unavailable":
+      return { detail: null, label: "Context source unavailable" };
+    case "provider_failed":
+      return { detail: null, label: "Provider could not compact the context" };
+    case "summary_failed":
+      return { detail: null, label: "Context compaction failed" };
+    default:
+      return { detail: null, label: "Context compaction outcome unavailable" };
+  }
+}
+
 /** Merges safe live call facts into an existing persisted projection. */
 export function presentToolActivityV2(
   events: readonly RunEventView[],
@@ -534,6 +583,9 @@ export function presentRunLifecycleV2(
   }
 
   terminal = terminalStatus(state.status) ?? terminal;
+  // A settled answer can be observed before its compaction settlement (resume
+  // marks the message complete before the chat refresh): nothing is shown
+  // until the server's settled cycle arrives, never a guessed outcome.
   if (terminal) compaction = terminalContextCompactionStatus(compaction);
   const present = (value: RunPresentationV2): RunPresentationV2 =>
     compaction ? { ...value, compaction } : value;

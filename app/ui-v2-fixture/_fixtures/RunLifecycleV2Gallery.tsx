@@ -317,6 +317,45 @@ export function RunLifecycleV2Gallery() {
                 />
               </StateSpec>
 
+              <StateSpec label="Connection lost · compaction was running">
+                <RunAnswerV2
+                  content="Частичный ответ ждёт подтверждённого состояния после обновления."
+                  presentation={presentRunLifecycleV2(runState({
+                    connectionLost: true,
+                    content: "Частичный ответ",
+                    contextCompaction: makeContextCompactionStatus({
+                      beforeTokens: 1_200, outcome: "pending", state: "running"
+                    }),
+                    runId: "run-compaction-lost"
+                  }))}
+                />
+              </StateSpec>
+
+              <StateSpec label="Failed · provider reason in a long fold label">
+                <RunAnswerV2
+                  content=""
+                  presentation={presentRunLifecycleV2(runState({
+                    contextCompaction: makeContextCompactionStatus({
+                      afterTokens: null, beforeTokens: 1_200, outcome: "provider_failed", state: "failed"
+                    }),
+                    failure: {
+                      code: "provider_request_failed",
+                      message: "The provider could not complete the request.",
+                      recovery: "change_parameters"
+                    },
+                    runId: "run-compaction-provider",
+                    status: "error"
+                  }))}
+                  toolActivity={{
+                    calls: [
+                      { durationMs: 1_400, round: 1, status: "complete", toolName: "web_search" },
+                      { durationMs: 800, round: 2, serverName: "Handbook", status: "complete", toolName: "search_documents" }
+                    ]
+                  }}
+                  workDurationMs={64_000}
+                />
+              </StateSpec>
+
               <StateSpec label="Failed · context source unavailable">
                 <RunAnswerV2
                   content="Частичный ответ сохранён, но продолжение не было выполнено."

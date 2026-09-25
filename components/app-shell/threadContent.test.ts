@@ -209,3 +209,33 @@ it("keeps exact checkpoint downloads through round reset and failure without mer
   expect(mergeLiveThreadArtifacts(running, complete)?.contextCompaction?.state).toBe("complete");
   expect(mergeLiveThreadArtifacts(running, null)?.contextCompaction?.state).toBe("running");
 });
+
+it("keeps saved citations, sources, reasoning and grounding when the live summary carries only compaction", () => {
+  const saved = {
+    citations: [{ index: 1, title: "Saved source", url: "https://example.com/saved" }],
+    groundingDisplay: { provider: "gemini" as const, suggestionsHtml: "<div>Saved suggestions</div>" },
+    reasoningText: ["Saved reasoning"],
+    sources: [{ rank: 1, title: "Saved search result", url: "https://example.com/result" }],
+    workDurationMs: 8_300
+  };
+  const live = summarizeThreadArtifacts([{
+    data: {
+      artifactType: "context_compaction",
+      payload: makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" })
+    },
+    type: "artifact"
+  }]);
+  expect(live).toMatchObject({ citations: [], groundingDisplay: null, reasoningText: [], sources: [] });
+  const merged = mergeLiveThreadArtifacts(saved, live);
+  expect(merged).toMatchObject({
+    citations: saved.citations,
+    groundingDisplay: saved.groundingDisplay,
+    reasoningText: saved.reasoningText,
+    sources: saved.sources,
+    workDurationMs: 8_300
+  });
+  expect(merged?.contextCompaction).toMatchObject({ outcome: "summary_applied", state: "complete" });
+  expect(mergeLiveThreadArtifacts({ ...saved, groundingDisplay: undefined }, live)?.groundingDisplay).toBeNull();
+  expect(mergeLiveThreadArtifacts(saved, { ...live!, reasoningText: ["Live reasoning"] })?.reasoningText)
+    .toEqual(["Live reasoning"]);
+});

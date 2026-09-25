@@ -5,6 +5,7 @@ import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
   answerProcessLabelV2,
+  contextCompactionCopyV2,
   describeToolCallV2,
   formatWorkDurationV2,
   presentRunLifecycleV2,
@@ -61,9 +62,52 @@ describe("run lifecycle v2 presentation", () => {
     expect(presentRunLifecycleV2(state({ contextCompaction: complete.data.payload, events: [later, running] })).compaction)
       .toMatchObject({ cycle: 2, state: "running" });
     for (const terminal of ["complete", "cancelled", "error"] as const) {
+      // Never a spinner on a settled answer, and never a client-invented outcome.
       expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: terminal, events: [later] })).compaction)
-        .toMatchObject({ cycle: 2, state: "failed", outcome: "unknown", reducedTokens: null });
+        .toBeUndefined();
     }
+    const serverUnknown = { ...running, data: { ...running.data, payload: makeContextCompactionStatus({
+      beforeTokens: 1_200, cycle: 2, outcome: "unknown", state: "failed"
+    }) } };
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "cancelled", events: [later, serverUnknown] })).compaction)
+      .toMatchObject({ cycle: 2, outcome: "unknown", state: "failed" });
+  });
+
+  it("does not flash an unavailable outcome when resume settles the answer before the chat refresh", () => {
+    const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
+    const complete = makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" });
+    // Resume poll: the persisted answer is still streaming with a running cycle.
+    expect(presentRunLifecycleV2(state({ contextCompaction: running, runId: "run-1", status: "streaming" }))).toMatchObject({
+      activity: { kind: "compaction", label: "Compacting context…" }, compaction: { state: "running" }, kind: "activity"
+    });
+    // The run outcome marks the message complete before the refreshed summary arrives.
+    const beforeRefresh = presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", contextCompaction: running, runId: "run-1" }));
+    expect(beforeRefresh).toEqual({ kind: "complete", runId: "run-1" });
+    // The refresh carries the server-settled cycle.
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", contextCompaction: complete, runId: "run-1" })))
+      .toMatchObject({ compaction: { outcome: "summary_applied", state: "complete" }, kind: "complete" });
+  });
+
+  it("keeps a running cycle under a lost connection without presenting live compaction", () => {
+    const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
+    const presentation = presentRunLifecycleV2(state({ connectionLost: true, contextCompaction: running, runId: "run-1" }));
+    expect(presentation).toMatchObject({ compaction: { state: "running" }, kind: "connection_lost" });
+    expect(presentation.activity).toBeUndefined();
+  });
+
+  it("describes only server-published compaction states, with each whole reason", () => {
+    const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
+    expect(contextCompactionCopyV2(running).label).toBe("Compacting context…");
+    expect(contextCompactionCopyV2(running).detail).toMatch(/Summarizing earlier messages/u);
+    expect(contextCompactionCopyV2(running, { connectionLost: true })).toEqual({
+      detail: "The connection was lost while the context was being compacted. Refresh to see the confirmed outcome.",
+      label: "Context compaction · connection lost"
+    });
+    expect(contextCompactionCopyV2(makeContextCompactionStatus({
+      afterTokens: 1_200, beforeTokens: 1_200, outcome: "masking_applied", state: "complete"
+    }))).toEqual({ detail: null, label: "Context compacted" });
+    expect(contextCompactionCopyV2(makeContextCompactionStatus({ outcome: "unknown", state: "failed" })).label)
+      .toBe("Context compaction outcome unavailable");
   });
 
   it("ignores malformed compaction payloads and keeps private fields out of the projection", () => {

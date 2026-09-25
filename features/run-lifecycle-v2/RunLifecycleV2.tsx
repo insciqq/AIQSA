@@ -22,6 +22,7 @@ import {
   type ReactNode
 } from "react";
 import {
+  contextCompactionCopyV2,
   describeToolCallV2,
   settledRunPresentationV2,
   stepDurationSumV2,
@@ -264,6 +265,7 @@ export function RunAnswerV2({
     : null;
   const process = (
     <AnswerProcessV2
+      connectionLost={presentation.kind === "connection_lost"}
       contextCompaction={presentation.compaction}
       disclosureId={processDisclosureId ?? anchorId}
       liveLabel={liveLabel}
@@ -416,14 +418,16 @@ export function RunComposerActionV2({
   );
 }
 
-function announcementFor(presentation: RunPresentationV2): string {
+function lifecycleAnnouncement(presentation: RunPresentationV2): string {
   switch (presentation.kind) {
     case "activity":
       return presentation.activity?.label ?? "";
     case "streaming":
       return "Answering…";
     case "connection_lost":
-      return "Connection lost. Refresh the run state.";
+      return presentation.compaction?.state === "running"
+        ? "Connection lost while compacting context. Refresh the run state."
+        : "Connection lost. Refresh the run state.";
     case "complete":
       return "Answer ready. The message field is available.";
     case "cancelled":
@@ -436,6 +440,17 @@ function announcementFor(presentation: RunPresentationV2): string {
   }
 }
 
+/** A server-settled compaction cycle, with its whole bounded reason. */
+function compactionAnnouncement(presentation: RunPresentationV2): string {
+  const status = presentation.compaction;
+  return status && status.state !== "running" ? `${contextCompactionCopyV2(status).label}.` : "";
+}
+
+/**
+ * Announces transitions of one continuously selected answer: its lifecycle
+ * and, once per server-settled compaction cycle, that cycle's outcome. A
+ * different chat or run never replays historical terminal state.
+ */
 export function RunLifecycleAnnouncerV2({
   activeChatId,
   presentation,
@@ -448,12 +463,17 @@ export function RunLifecycleAnnouncerV2({
   const [announcement, setAnnouncement] = useState("");
   const previousRef = useRef<{
     activeChatId: string | null;
+    compaction: string;
+    lifecycle: string;
+    runId: string | null;
     selected: boolean;
-    signature: string;
     sourceChatId: string;
   } | null>(null);
   const selected = activeChatId === sourceChatId;
-  const signature = `${presentation.kind}:${presentation.activity?.label ?? ""}:${presentation.compaction?.state ?? ""}:${presentation.compaction?.outcome ?? ""}`;
+  const lifecycle = `${presentation.kind}:${presentation.activity?.label ?? ""}`;
+  const compaction = presentation.compaction
+    ? `${presentation.compaction.cycle}:${presentation.compaction.state}:${presentation.compaction.outcome}`
+    : "";
 
   useEffect(() => {
     const previous = previousRef.current;
@@ -461,17 +481,25 @@ export function RunLifecycleAnnouncerV2({
       selected &&
       previous?.selected &&
       previous.activeChatId === activeChatId &&
-      previous.sourceChatId === sourceChatId
+      previous.sourceChatId === sourceChatId &&
+      previous.runId === presentation.runId
     );
 
     if (!selected || (settledRunPresentationV2(presentation) && !continuouslySelected)) {
       setAnnouncement("");
-    } else if (!previous || previous.signature !== signature || !previous.selected) {
-      setAnnouncement(announcementFor(presentation));
+    } else if (!continuouslySelected) {
+      setAnnouncement(lifecycleAnnouncement(presentation));
+    } else {
+      const lifecycleChanged = previous!.lifecycle !== lifecycle;
+      const compactionText = previous!.compaction !== compaction ? compactionAnnouncement(presentation) : "";
+      if (lifecycleChanged || compactionText) {
+        setAnnouncement([compactionText, lifecycleChanged ? lifecycleAnnouncement(presentation) : ""]
+          .filter(Boolean).join(" "));
+      }
     }
 
-    previousRef.current = { activeChatId, selected, signature, sourceChatId };
-  }, [activeChatId, presentation, selected, signature, sourceChatId]);
+    previousRef.current = { activeChatId, compaction, lifecycle, runId: presentation.runId, selected, sourceChatId };
+  }, [activeChatId, compaction, lifecycle, presentation, selected, sourceChatId]);
 
   return (
     <p

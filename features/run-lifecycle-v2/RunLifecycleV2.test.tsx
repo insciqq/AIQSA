@@ -32,6 +32,11 @@ describe("Run lifecycle v2", () => {
     })} />);
     expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Compacting context…");
     expect(document.body.textContent).not.toContain("run-compaction");
+    fireEvent.click(screen.getByTestId("tool-activity-disclosure").querySelector("summary")!);
+    const running = screen.getByTestId("context-compaction-status");
+    expect(running).toHaveAttribute("data-state", "running");
+    expect(running).toBeVisible();
+    expect(running).toHaveTextContent("Summarizing earlier messages to fit the working context.");
 
     rerender(<RunAnswerV2 content="Answer" presentation={presentation({
       compaction: makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" }),
@@ -56,6 +61,51 @@ describe("Run lifecycle v2", () => {
     })} />);
     expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(copy);
     expect(document.body.textContent).not.toMatch(/notes|sourceRefs|private|prompt|payload/iu);
+  });
+
+  it("reports a running cycle under a lost connection as lost, without a spinner", () => {
+    render(<RunAnswerV2 content="Partial answer" onRefresh={vi.fn()} presentation={presentation({
+      compaction: makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" }),
+      kind: "connection_lost", runId: "run-compaction"
+    })} />);
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure.querySelector("summary")).toHaveTextContent("Context compaction · connection lost");
+    expect(disclosure.querySelector("summary")).not.toHaveTextContent("Compacting context…");
+    expect(disclosure.querySelector(".v2-spinner")).toBeNull();
+    expect(disclosure).not.toHaveAttribute("data-live");
+    fireEvent.click(disclosure.querySelector("summary")!);
+    expect(screen.getByTestId("context-compaction-status")).toHaveAttribute("data-state", "connection_lost");
+    expect(screen.getByTestId("context-compaction-status")).toHaveTextContent("Refresh to see the confirmed outcome.");
+    expect(screen.getByTestId("run-connection-lost")).toHaveTextContent("Connection lost");
+  });
+
+  it("goes from running to complete on resume without an invented unavailable outcome", () => {
+    const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
+    const { rerender } = render(<RunAnswerV2 content="" presentation={presentation({
+      activity: { kind: "compaction", label: "Compacting context…" }, compaction: running, kind: "activity", runId: "run-resume"
+    })} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Compacting context…");
+    // The run outcome settles the answer before the chat refresh carries the settled cycle.
+    rerender(<RunAnswerV2 content="Answer" presentation={presentation({ kind: "complete", runId: "run-resume" })} />);
+    expect(document.body.textContent).not.toMatch(/unavailable|Compacting context/u);
+    rerender(<RunAnswerV2 content="Answer" presentation={presentation({
+      compaction: makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" }),
+      kind: "complete", runId: "run-resume"
+    })} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Context compacted");
+    expect(document.body.textContent).not.toMatch(/unavailable/u);
+  });
+
+  it("keeps the whole failure reason in the settled fold label", () => {
+    render(<RunAnswerV2 content="" workDurationMs={64_000}
+      toolActivity={{ calls: [{ durationMs: 800, round: 1, status: "complete", toolName: "web_search" }] }}
+      presentation={presentation({
+        compaction: makeContextCompactionStatus({ outcome: "provider_failed", state: "failed" }),
+        kind: "terminal_error"
+      })} />);
+    const label = screen.getByTestId("tool-activity-disclosure").querySelector(".v2-answer-process-label");
+    expect(label).toHaveTextContent("Worked for 1m 4s · Provider could not compact the context");
+    expect(screen.getByTestId("tool-activity-disclosure")).not.toHaveAttribute("data-live");
   });
 
   it("shows safe Skill activity with Pin for a completed load and a catalog omission notice", async () => {
@@ -475,6 +525,61 @@ describe("Run lifecycle v2", () => {
       />
     );
     await waitFor(() => expect(screen.getByTestId("run-lifecycle-announcer")).toBeEmptyDOMElement());
+  });
+
+  it("announces each server-settled compaction outcome once, with its reason", async () => {
+    const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
+    const complete = makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" });
+    const announcer = () => screen.getByTestId("run-lifecycle-announcer");
+    const announce = (value: RunPresentationV2) => <RunLifecycleAnnouncerV2 activeChatId="chat-a" presentation={value} sourceChatId="chat-a" />;
+    const { rerender } = render(announce(presentation({
+      activity: { kind: "compaction", label: "Compacting context…" }, compaction: running, kind: "activity", runId: "run-a"
+    })));
+    await waitFor(() => expect(announcer()).toHaveTextContent("Compacting context…"));
+    rerender(announce(presentation({
+      activity: { kind: "provider", label: "Thinking…" }, compaction: complete, kind: "activity", runId: "run-a"
+    })));
+    await waitFor(() => expect(announcer()).toHaveTextContent("Context compacted. Thinking…"));
+    rerender(announce(presentation({ compaction: complete, kind: "streaming", runId: "run-a" })));
+    await waitFor(() => expect(announcer()).toHaveTextContent(/^Answering…$/u));
+    rerender(announce(presentation({ compaction: complete, kind: "complete", runId: "run-a" })));
+    await waitFor(() => expect(announcer()).toHaveTextContent(/^Answer ready\. The message field is available\.$/u));
+
+    // A different run starts fresh: its failure carries the bounded reason.
+    rerender(announce(presentation({
+      activity: { kind: "compaction", label: "Compacting context…" }, compaction: running, kind: "activity", runId: "run-b"
+    })));
+    await waitFor(() => expect(announcer()).toHaveTextContent("Compacting context…"));
+    rerender(announce(presentation({
+      compaction: makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "source_unavailable", state: "failed" }),
+      failure: { code: "context_compaction_source_unavailable", message: "Unavailable.", recovery: "retry" },
+      kind: "terminal_error", runId: "run-b"
+    })));
+    await waitFor(() => expect(announcer()).toHaveTextContent(
+      "Context source unavailable. Run failed. The message field is available."
+    ));
+  });
+
+  it("announces a lost connection during compaction and a resumed outcome after the refresh", async () => {
+    const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
+    const announcer = () => screen.getByTestId("run-lifecycle-announcer");
+    const announce = (value: RunPresentationV2) => <RunLifecycleAnnouncerV2 activeChatId="chat-a" presentation={value} sourceChatId="chat-a" />;
+    const { rerender } = render(announce(presentation({
+      activity: { kind: "compaction", label: "Compacting context…" }, compaction: running, kind: "activity", runId: "run-a"
+    })));
+    await waitFor(() => expect(announcer()).toHaveTextContent("Compacting context…"));
+    rerender(announce(presentation({ compaction: running, kind: "connection_lost", runId: "run-a" })));
+    await waitFor(() => expect(announcer()).toHaveTextContent(
+      "Connection lost while compacting context. Refresh the run state."
+    ));
+    rerender(announce(presentation({ kind: "complete", runId: "run-a" })));
+    await waitFor(() => expect(announcer()).toHaveTextContent(/^Answer ready\. The message field is available\.$/u));
+    rerender(announce(presentation({
+      compaction: makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" }),
+      kind: "complete", runId: "run-a"
+    })));
+    await waitFor(() => expect(announcer()).toHaveTextContent(/^Context compacted\.$/u));
+    expect(announcer().textContent).not.toMatch(/unavailable/u);
   });
 });
 

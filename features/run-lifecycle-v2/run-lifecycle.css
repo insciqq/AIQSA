@@ -75,6 +75,15 @@ div.v2-answer-process[data-live],
   white-space: nowrap;
 }
 
+/* A settled fold wraps instead of cutting a fact such as a compaction failure
+   reason at phone width; a single line keeps the 28px row. The live status
+   stays one line. */
+.v2-answer-process:not([data-live]) .v2-answer-process-label {
+  padding-block: 0.125rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .v2-answer-process-slot {
   display: grid;
   width: 0.875rem;
