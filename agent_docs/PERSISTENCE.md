@@ -21,7 +21,7 @@ External side effects need durable dispatch identity before I/O. Unknown outcome
 
 Claims and terminal writers require status/version/lease guards. Release database locks before guest/file I/O. Memory/history/Knowledge derivatives reprove owner, source, lifecycle, safety and generation authority at use, including during purge. Rebuilds cannot repair canonical state from derived indexes. Rejected replacement preflight leaves serving indexes intact; readiness/alias activation follows full integrity proof. Projection/deletion obligations survive source deletion so stale retries cannot resurrect content.
 
-Checkpoints retain bounded branch/source/pin/revision and refs. Hybrid adds notes and attempt receipts (binding/source digests/usage), never prompts/transcript/guest bytes; stale writers are fenced. Reuse summaries on source revision; unavailable/oversized sources fail closed without replay/fallback.
+Checkpoints retain bounded branch/source/pin/revision and refs; stale writers are fenced. Hybrid adds notes and receipts (binding/source digests/usage) claimed before dispatch and settled with usage, never prompts/transcript/guest bytes. Notes are reused by source digest and by later turns of their branch; unreadable sources fail closed. Store admission bounds storage phases, not business calls; branch budgets count retained bytes.
 
 Knowledge Source identity is independent of Base membership; equal checksums never merge Sources. Reprocessing preserves attempts; replacement becomes current only after guarded settlement, leaving the prior ready version on failure. Normalized artifacts support reindexing without originals/parser services; citations resolve exact stored versions/artifacts. Embedding reuse requires exact text hash and vector space/dimension, creating no usage. Memory cutover/rollback uses one immutable generation and fresh eligibility/authority checks, never a partial pointer repair. Operational evidence stays bounded and content-free.
 
@@ -41,13 +41,13 @@ v0.2.0 starts supported persistent upgrades; earlier development databases need 
 
 `20260815000000_baseline` is the immutable first migration anchor, including custom PostgreSQL DDL that Prisma cannot reconstruct. Changes are append-only migrations. Persistent installations use `prisma migrate deploy`, never `prisma db push`.
 
-Upgrade adopts Vision from page-image configuration once; later edits/clears stay independent. Accepted PDF bindings remain immutable.
+Upgrade adopts Vision from page-image configuration once; later edits/clears stay independent.
 
 Keep custom checks and deferred triggers for row, tenant/source, history, deletion, and concurrent-writer invariants that relations cannot express, especially with raw SQL workers and destructive handlers. Simplify them only through behavior-proven forward migrations.
 
 Bootstrap accepts an empty schema or the exact adopted administrator identity under serializable/advisory-lock protection. It refuses other nonempty targets before mutation and creates minimal foundations without demo content or real provider deployments. Adopted reruns may repair code-owned foundations, preserving operator identity, credentials, settings, grants, policy, and content.
 
-The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains bounded, resumable, idempotent, and content-free. It preserves explicit document/version identities and never deduplicates by checksum. Inspect executable migrations/backfills for the actual upgrade path.
+The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains bounded, resumable, idempotent, and content-free. It preserves explicit document/version identities and never deduplicates by checksum.
 
 ## Retention And Deletion
 
