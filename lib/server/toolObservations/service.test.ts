@@ -61,6 +61,8 @@ function fixture(storage: StorageAdapter = createMemoryStorageAdapter()) {
       if (!allowed || row?.state !== "READY") throw new ObservationStoreError("tool_observation_unavailable");
       return source();
     }),
+    available: vi.fn<ToolObservationRepository["available"]>(async (_actor, ids) =>
+      allowed && row?.state === "READY" && ids.every(id => id === row!.id)),
     readSource: vi.fn<ToolObservationRepository["readSource"]>(async () => ({ source: source(), original: sourceOriginal })),
     readProducer: vi.fn<ToolObservationRepository["readProducer"]>(async () => row!),
     loadProducerSource: vi.fn<ToolObservationRepository["loadProducerSource"]>(async () => sourceOriginal),
@@ -177,6 +179,29 @@ describe("observation storage and recall boundary", () => {
     await expect(f.service().read(producer, { handle: projection.observation.handle }))
       .rejects.toThrow("tool_observation_unavailable");
     expect(f.repository.read).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks availability of a handle set in one repository call without reading any object", async () => {
+    const storage = createMemoryStorageAdapter();
+    const f = fixture(storage);
+    const projection = await f.write({ text: "x".repeat(10000) });
+    expect(f.row().storageMode).toBe("OBJECT");
+    const objectReads = vi.spyOn(storage, "getObjectStream");
+    const handles = Array.from({ length: 50 }, () => projection.observation.handle);
+    await expect(f.service().available(producer, handles)).resolves.toBe(true);
+    expect(f.repository.available).toHaveBeenCalledOnce();
+    expect(f.repository.available).toHaveBeenCalledWith(producer, [f.row().id]);
+    expect(f.repository.read).not.toHaveBeenCalled();
+    expect(f.repository.readSource).not.toHaveBeenCalled();
+    expect(objectReads).not.toHaveBeenCalled();
+    // A malformed handle is unavailable without a lookup; a refusal is unavailable.
+    await expect(f.service().available(producer, ["tor1_not-a-handle"])).resolves.toBe(false);
+    expect(f.repository.available).toHaveBeenCalledOnce();
+    f.revoke();
+    await expect(f.service().available(producer, handles)).resolves.toBe(false);
+    // Database or storage infrastructure failures propagate for the caller to classify.
+    f.repository.available.mockRejectedValueOnce(new Error("connection reset"));
+    await expect(f.service().available(producer, handles)).rejects.toThrow("connection reset");
   });
 
   it("retains the known execution outcome after Stop and publishes no result", async () => {

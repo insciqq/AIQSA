@@ -1617,12 +1617,14 @@ describe("run execution", () => {
     expect(checkpoint?.summaryAttempts?.map(({ state }) => state))
       .toEqual([...loop.summaries.slice(1).map(() => "settled"), "committed"]);
     expect(checkpoint?.measurement).toEqual(crossing?.contextCompaction);
-    // Every paid call was claimed durably in round 2 before dispatch, then
+    // Every paid call was claimed durably in round 2 before its pre-dispatch
+    // checks, marked dispatched immediately before the provider request, then
     // settled with its usage in the same write; the last one committed the summary.
     const receipts = loop.repository.recordedRunUsageEvents.flatMap(entry =>
       entry.contextSummaryReceipt ? [entry.contextSummaryReceipt] : []);
     expect(receipts.map(({ attempt, roundIndex }) => [attempt.attempt, attempt.state, roundIndex])).toEqual(
-      loop.summaries.flatMap((_, index) => [[index + 1, "claim", 2], [index + 1, index === loop.summaries.length - 1 ? "committed" : "settled", 2]]));
+      loop.summaries.flatMap((_, index) => [[index + 1, "claim", 2], [index + 1, "dispatched", 2],
+        [index + 1, index === loop.summaries.length - 1 ? "committed" : "settled", 2]]));
     expect(receipts.at(-1)?.summary).toEqual(summary);
     const accounted = loop.repository.recordedRunUsageEvents.at(-1)!.usageAttributions
       .find(entry => entry.modelId === "gpt-tool-model");

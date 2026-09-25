@@ -51,6 +51,21 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
 
 const CONTEXT_SUMMARY_MESSAGE_PREFIX = "__context-summary-";
 
+/** Marks a summary whose retained-source handles did not all fit
+ * `summarySourceRefs`. Its notes may rest on an original its refs no longer
+ * name, so a later availability recheck could miss one: the summary serves
+ * only the run that bought it (whose recheck covered every referenced handle)
+ * and is never carried to a later turn, which takes a fresh bounded summary. */
+export const CONTEXT_SUMMARY_REFS_INCOMPLETE = "ctxrefs1_incomplete";
+
+/** Settlement code of a summary claim that never reached its provider
+ * request: recovery found it unsettled without a `dispatched` mark. */
+export const CONTEXT_SUMMARY_NOT_DISPATCHED = "context_compaction_not_dispatched";
+
+export function contextSummaryRefsComplete(summary: Pick<ContextSummary, "sourceRefs">): boolean {
+  return !summary.sourceRefs.includes(CONTEXT_SUMMARY_REFS_INCOMPLETE);
+}
+
 export function contextSummaryMessageId(summary: Pick<ContextSummary, "id">): string {
   return `${CONTEXT_SUMMARY_MESSAGE_PREFIX}${summary.id}`;
 }
@@ -93,8 +108,28 @@ const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.key
 const id = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(value);
 const index = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 
+/** The JSON value with object keys in sorted order at every depth. `jsonb`
+ * reorders keys on storage, so every digest, id or comparison of a value that
+ * may have round-tripped through PostgreSQL uses this form. `toJSON` values
+ * (dates) and dropped members (undefined, functions) serialize as in JSON. */
+export function canonicalJson(value: unknown): unknown {
+  const plain = value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function"
+    ? (value as { toJSON(): unknown }).toJSON() : value;
+  if (Array.isArray(plain)) return plain.map(canonicalJson);
+  if (plain !== null && typeof plain === "object") {
+    return Object.fromEntries(Object.keys(plain).sort()
+      .map((key) => [key, canonicalJson((plain as Record<string, unknown>)[key])]));
+  }
+  return plain;
+}
+
+/** Canonical (sorted-key) serialization, stable across a jsonb round trip. */
+export function canonicalJsonText(value: unknown): string {
+  return JSON.stringify(canonicalJson(value)) ?? "null";
+}
+
 export function contextDigest(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return createHash("sha256").update(canonicalJsonText(value)).digest("hex");
 }
 
 export function conversationContextPolicy(input: {
@@ -179,7 +214,8 @@ export function contextSummaryReuseCandidates(input: Readonly<{
       const summary = compaction.summary;
       if (!summary || policy?.mode !== "hybrid" || candidate.userId !== input.userId || compaction.version !== 1 ||
         compaction.policyRevision !== "hybrid-v1" || compaction.runId !== candidate.runId ||
-        compaction.ownerId !== candidate.userId || !decodeContextSummary(summary)) return [];
+        compaction.ownerId !== candidate.userId || !decodeContextSummary(summary) ||
+        !contextSummaryRefsComplete(summary)) return [];
       const carried = policy?.reuse?.summary.id === summary.id ? policy.reuse : null;
       const bought = compaction.summaryAttempts?.some((attempt) =>
         attempt.state === "committed" && attempt.sourceDigest === summary.sourceDigest) === true;

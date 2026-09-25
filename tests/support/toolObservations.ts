@@ -56,6 +56,10 @@ export function memoryToolObservations(loadSource: (producer: ObservationProduce
       if (!allowed || row?.state !== "READY") throw new ObservationStoreError("tool_observation_unavailable");
       return { ...row, modelRun: { chatId: "chat-1", assistantMessageId: "assistant-1" }, toolCall: { state: "complete" as const } };
     },
+    async available(actor, ids) {
+      return allowed && ids.every(id => [...rows.values()].some(row => row.id === id && row.modelRunId === actor.runId &&
+        row.state === "READY"));
+    },
     async readSource(actor, id) {
       const source = await repository.read(actor, id);
       return { source, original: loadSource({ ...actor, toolCallId: source.toolCallId }) };

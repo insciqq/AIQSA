@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { ContextSummary } from "../../contracts/contextCompaction";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
+  canonicalJsonText,
   contextCompactionCheckpoint,
+  contextDigest,
+  CONTEXT_SUMMARY_REFS_INCOMPLETE,
   contextSummaryReuseCandidates,
   conversationContextPolicy,
   decodeConversationContextPolicy,
+  summaryBindingDigest,
   type BranchContextCheckpoint
 } from "./contextCompactionContract";
 
@@ -121,5 +125,41 @@ describe("carried compaction notes", () => {
       .toHaveLength(1);
     expect(contextSummaryReuseCandidates({ checkpoints: [withoutPolicy, legacy], priorMessageIds: branch, userId: "user-1" }))
       .toEqual([]);
+  });
+
+  it("never carries notes whose refs could not name every retained source", () => {
+    const incomplete = checkpoint({ answer: "a2", seed: "1", userMessageId: "u2" });
+    const marked = { ...incomplete, compaction: { ...incomplete.compaction,
+      summary: { ...incomplete.compaction.summary!, sourceRefs: ["ctxr1_revision", CONTEXT_SUMMARY_REFS_INCOMPLETE] } } };
+    const older = checkpoint({ answer: "a1", seed: "2", userMessageId: "u1" });
+    expect(contextSummaryReuseCandidates({ checkpoints: [older, marked], priorMessageIds: branch, userId: "user-1" }))
+      .toEqual([{ coveredMessageId: "u1", runId: "run-a1", summary: older.compaction.summary }]);
+  });
+});
+
+/** A jsonb-style copy: equal JSON with every object's keys in reverse order. */
+function reordered<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(reordered) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).reverse()
+      .map((key) => [key, reordered((value as Record<string, unknown>)[key])])) as T;
+  }
+  return value;
+}
+
+describe("canonical compaction digests", () => {
+  it("stay equal across a jsonb key reorder of the request and transcript", () => {
+    const accepted: ProviderRunRequest = { ...request(), params: { reasoning: { effort: "low", summary: "auto" }, temperature: 0.2 },
+      providerToolMessages: [{ arguments: "{}", call_id: "call-1", name: "read_record", type: "function_call" }] };
+    const stored = reordered(accepted);
+    expect(JSON.stringify(stored)).not.toBe(JSON.stringify(accepted));
+    expect(canonicalJsonText(stored)).toBe(canonicalJsonText(accepted));
+    expect(contextDigest(stored.context?.messages)).toBe(contextDigest(accepted.context?.messages));
+    expect(contextDigest(stored.providerToolMessages)).toBe(contextDigest(accepted.providerToolMessages));
+    expect(summaryBindingDigest(stored)).toBe(summaryBindingDigest(accepted));
+    // Values still matter and arrays keep their order.
+    expect(contextDigest({ a: [1, 2] })).not.toBe(contextDigest({ a: [2, 1] }));
+    expect(canonicalJsonText({ dropped: undefined, at: new Date("2026-09-26T00:00:00.000Z") }))
+      .toBe('{"at":"2026-09-26T00:00:00.000Z"}');
   });
 });

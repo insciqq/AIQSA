@@ -5,7 +5,8 @@ import { ObservationStoreError } from "../toolObservations/contract";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
-import { conversationContextPolicy, type ContextObservation } from "./contextCompactionContract";
+import { createToolObservationService } from "../toolObservations/service";
+import { CONTEXT_SUMMARY_REFS_INCOMPLETE, conversationContextPolicy, type ContextObservation } from "./contextCompactionContract";
 import { contextObservationsFromResults } from "./contextCompactionPlanner";
 import { applyKnowledgeAnswerContextBudget, observationSourceAvailability, prepareCompactedProviderRequest } from "./contextCompactionConsumer";
 import { contextCompactionFailureOutcome, createContextCompactionPublisher } from "./contextCompactionEvents";
@@ -96,6 +97,7 @@ function consumer(request: ProviderRunRequest, options: Readonly<{
   } };
   const settle = vi.fn<ContextSummaryReceipts["settle"]>(async () => undefined);
   const claim = vi.fn<ContextSummaryReceipts["claim"]>(async () => undefined);
+  const dispatch = vi.fn<ContextSummaryReceipts["dispatch"]>(async () => undefined);
   const onTruncation = vi.fn();
   const run = () => prepareCompactedProviderRequest({
     bridge,
@@ -103,7 +105,7 @@ function consumer(request: ProviderRunRequest, options: Readonly<{
     ...(options.observations ? { observations: options.observations } : {}),
     onTruncation,
     publisher: createContextCompactionPublisher(async status => { events.push(status); }, options.initial),
-    receipts: { claim, settle },
+    receipts: { claim, dispatch, settle },
     request,
     signal: options.signal ?? new AbortController().signal,
     ...(options.sourceAvailable ? { sourceAvailable: options.sourceAvailable } : {}),
@@ -295,15 +297,34 @@ describe("single compaction consumer", () => {
       expect(compaction.events.map(({ state }) => state)).toEqual(["running"]);
       expect(compaction.settle).toHaveBeenCalledWith(expect.objectContaining({ state: "unknown" }), expect.anything(), undefined);
     });
+
+    it("a summary completing as Stop lands is neither committed nor reported as applied, and keeps its usage", async () => {
+      const controller = new AbortController();
+      const compaction = consumer(hybridRequest({ history: 2_500 }), {
+        signal: controller.signal,
+        summarize: async function* () {
+          const output = JSON.stringify({ notes: "Bought as Stop landed.", sourceRefs: [] });
+          yield { type: "token", data: { delta: output } };
+          controller.abort();
+          return output;
+        }
+      });
+      await expect(compaction.run()).rejects.toMatchObject({ name: "AbortError" });
+      expect(compaction.summaryRequests).toHaveLength(1);
+      expect(compaction.events.map(({ outcome }) => outcome)).toEqual(["pending"]);
+      expect(compaction.settle).toHaveBeenCalledOnce();
+      expect(compaction.settle).toHaveBeenCalledWith(expect.objectContaining({ state: "settled" }),
+        expect.objectContaining({ inputTokens: 5, outputTokens: 2 }), undefined);
+    });
   });
 
   describe("notes carried from an earlier turn's checkpoint", () => {
     const handle = `tor1_${"e".repeat(32)}`;
-    const carriedNotes = (notes = "Carried turn-one notes."): ContextSummary => ({
-      formatVersion: 1, id: `cs1_${"d".repeat(32)}`, notes, sourceDigest: "d".repeat(64), sourceRefs: ["u1", handle]
+    const carriedNotes = (notes = "Carried turn-one notes.", sourceRefs: readonly string[] = ["u1", handle]): ContextSummary => ({
+      formatVersion: 1, id: `cs1_${"d".repeat(32)}`, notes, sourceDigest: "d".repeat(64), sourceRefs
     });
     /** The exact branch as admitted; the frozen policy names the notes and their boundary u2. */
-    function carriedRequest(input: Readonly<{ delta?: number; notes?: string; window?: number }> = {}): ProviderRunRequest {
+    function carriedRequest(input: Readonly<{ delta?: number; notes?: string; refs?: readonly string[]; window?: number }> = {}): ProviderRunRequest {
       const messages = [
         text(`Old synthetic fact. ${"o".repeat(3_400 * 4)}`, "u1"),
         text("Earlier answer.", "a1", "assistant"),
@@ -316,7 +337,7 @@ describe("single compaction consumer", () => {
       const base = hybridRequest();
       const policy = conversationContextPolicy({ leafMessageId: "a3", messages, mode: "hybrid" });
       return { ...base, content: messages.at(-1)!.content, context: { messages, mode: "branch_path" },
-        contextCompactionPolicy: { ...policy, reuse: { coveredMessageId: "u2", runId: "run-2", summary: carriedNotes(input.notes) } },
+        contextCompactionPolicy: { ...policy, reuse: { coveredMessageId: "u2", runId: "run-2", summary: carriedNotes(input.notes, input.refs) } },
         ...(input.window ? { modelCapabilities: { ...base.modelCapabilities, contextWindow: input.window } } : {}) };
     }
     const bought = (compaction: ReturnType<typeof consumer>) =>
@@ -380,6 +401,71 @@ describe("single compaction consumer", () => {
       expect(bought(compaction).some((envelope) => envelope.includes("NNNNNNNN"))).toBe(false);
       expect(prepared.contextCompactionSummary?.id).not.toBe(carriedNotes().id);
     });
+
+    describe("with the observation service's availability check", () => {
+      const handles = Array.from({ length: 50 }, (_, index) => `tor1_${index.toString(16).padStart(32, "0")}`);
+      function observationService(available: (ids: readonly string[]) => Promise<boolean>) {
+        const repository = { available: vi.fn(async (_actor: unknown, ids: readonly string[]) => available(ids)), read: vi.fn(),
+          readSource: vi.fn(), readProducer: vi.fn() };
+        const storage = { getObject: vi.fn(), getObjectStream: vi.fn(), putObject: vi.fn(), putObjectStream: vi.fn() };
+        const service = createToolObservationService({ repository: repository as never, storage: storage as never });
+        return { repository, service, storage };
+      }
+
+      it("rechecks 50 carried handles in one authorization-only call with no object reads", async () => {
+        const store = observationService(async () => true);
+        const compaction = consumer(carriedRequest({ refs: ["u1", ...handles] }), {
+          sourceAvailable: observationSourceAvailability(async () => store.service, { runId: "run-3", userId: "user-1" })
+        });
+        const prepared = await compaction.run();
+        expect(compaction.summaryRequests).toHaveLength(0);
+        expect(prepared.contextCompactionSummary?.id).toBe(carriedNotes().id);
+        expect(store.repository.available).toHaveBeenCalledOnce();
+        expect(store.repository.available).toHaveBeenCalledWith({ runId: "run-3", userId: "user-1" },
+          handles.map((handle) => handle.slice(5)));
+        expect(store.repository.read).not.toHaveBeenCalled();
+        expect(store.repository.readSource).not.toHaveBeenCalled();
+        expect(store.storage.getObjectStream).not.toHaveBeenCalled();
+        expect(store.storage.getObject).not.toHaveBeenCalled();
+      });
+
+      it("takes a fresh summary when one of them was revoked", async () => {
+        const store = observationService(async () => false);
+        const compaction = consumer(carriedRequest({ refs: ["u1", ...handles] }), {
+          sourceAvailable: observationSourceAvailability(async () => store.service, { runId: "run-3", userId: "user-1" })
+        });
+        const prepared = await compaction.run();
+        expect(store.repository.available).toHaveBeenCalledOnce();
+        expect(compaction.summaryRequests.length).toBeGreaterThan(0);
+        expect(prepared.contextCompactionSummary?.id).not.toBe(carriedNotes().id);
+      });
+
+      it.each([
+        ["a database error during the check", () => observationService(async () => { throw new Error("connection reset"); }).service],
+        ["an unavailable service", () => { throw new Error("storage configuration unavailable"); }]
+      ])("surfaces %s as a transient classified failure instead of dropping the notes", async (_label, service) => {
+        const compaction = consumer(carriedRequest({ refs: ["u1", ...handles] }), {
+          sourceAvailable: observationSourceAvailability(async () => service(), { runId: "run-3", userId: "user-1" })
+        });
+        const failure = await failureOf(compaction.run());
+        expect(failure.code).toBe("context_compaction_source_check_failed");
+        expect(compaction.summaryRequests).toHaveLength(0);
+        expect(compaction.claim).not.toHaveBeenCalled();
+        expect(compaction.events).toEqual([]);
+      });
+
+      it("never carries notes whose refs could not name every retained source", async () => {
+        const store = observationService(async () => true);
+        const compaction = consumer(carriedRequest({ refs: ["u1", CONTEXT_SUMMARY_REFS_INCOMPLETE, ...handles] }), {
+          sourceAvailable: observationSourceAvailability(async () => store.service, { runId: "run-3", userId: "user-1" })
+        });
+        const prepared = await compaction.run();
+        expect(store.repository.available).not.toHaveBeenCalled();
+        expect(compaction.summaryRequests.length).toBeGreaterThan(0);
+        expect(bought(compaction).some((envelope) => envelope.includes("Carried turn-one"))).toBe(false);
+        expect(prepared.contextCompactionSummary?.id).not.toBe(carriedNotes().id);
+      });
+    });
   });
 
   it("keeps Knowledge answers on the legacy guard: trims prior turns and never needs a summary", () => {
@@ -395,15 +481,34 @@ describe("single compaction consumer", () => {
 });
 
 describe("observation source availability", () => {
-  it("reads each handle with a bounded authorized read; busy stays available, other refusals are unavailable", async () => {
-    const read = vi.fn(async (_actor: unknown, value: { handle: string }) => {
-      if (value.handle.endsWith("b")) throw new ObservationStoreError("tool_observation_busy");
-      if (value.handle.endsWith("c")) throw new ObservationStoreError("tool_observation_unavailable");
-      return {};
-    });
-    const available = observationSourceAvailability(async () => ({ read } as never), { runId: "run-1", userId: "user-1" });
-    await expect(available([`tor1_${"a".repeat(32)}`, `tor1_${"b".repeat(32)}`])).resolves.toBe(true);
-    expect(read).toHaveBeenCalledWith({ runId: "run-1", userId: "user-1" }, { handle: `tor1_${"a".repeat(32)}`, maxBytes: 4 }, undefined);
+  const actor = { runId: "run-1", userId: "user-1" };
+  const handles = [`tor1_${"a".repeat(32)}`, `tor1_${"b".repeat(32)}`];
+
+  it("checks the whole set once; only a refusal is unavailable", async () => {
+    const check = vi.fn(async (_actor: unknown, value: readonly string[]) => !value.includes(`tor1_${"c".repeat(32)}`));
+    const available = observationSourceAvailability(async () => ({ available: check }), actor);
+    await expect(available(handles)).resolves.toBe(true);
+    expect(check).toHaveBeenCalledOnce();
+    expect(check).toHaveBeenCalledWith(actor, handles, undefined);
     await expect(available([`tor1_${"c".repeat(32)}`])).resolves.toBe(false);
+  });
+
+  it.each([
+    ["database", new Error("connection reset")],
+    ["store", new ObservationStoreError("tool_observation_conflict")]
+  ])("classifies a %s failure as a transient check failure, never as unavailable", async (_label, cause) => {
+    const available = observationSourceAvailability(async () => ({ available: async () => { throw cause; } }), actor);
+    await expect(available(handles)).rejects.toMatchObject({ code: "context_compaction_source_check_failed", cause });
+    const unobtainable = observationSourceAvailability(async () => { throw cause; }, actor);
+    await expect(unobtainable(handles)).rejects.toMatchObject({ code: "context_compaction_source_check_failed" });
+  });
+
+  it("keeps Stop as the cancellation", async () => {
+    const controller = new AbortController();
+    const available = observationSourceAvailability(async () => ({ available: async () => {
+      controller.abort();
+      throw new Error("aborted query");
+    } }), actor);
+    await expect(available(handles, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   });
 });

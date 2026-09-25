@@ -14,7 +14,7 @@ import type {
   ContextSummary,
   ContextSummaryAttempt
 } from "../../contracts/contextCompaction";
-import { CONTEXT_COMPACTION_LIMITS, decodeContextSummary, decodeContextSummaryAttempt } from "./contextCompactionContract";
+import { canonicalJsonText, CONTEXT_COMPACTION_LIMITS, decodeContextSummary, decodeContextSummaryAttempt } from "./contextCompactionContract";
 
 export type ToolLoopJsonValue =
   | boolean
@@ -433,21 +433,24 @@ export const INITIAL_PROVIDER_CONTINUATION: ToolLoopJsonValue = Object.freeze({
   providerToolMessages: []
 }) as unknown as ToolLoopJsonValue;
 
+/** A claim precedes every pre-dispatch check; `dispatched` is written
+ * immediately before the provider request. Both are unsettled. */
 const unsettledSummaryStates = new Set<ContextSummaryAttempt["state"]>(["claim", "dispatched"]);
 
 /** Structural equality independent of object key order: `jsonb` columns
  * reorder keys on storage, so a replayed receipt must still match its row. */
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort()
-      .map((key) => [key, canonicalJson((value as Record<string, unknown>)[key])]));
-  }
-  return value;
+function sameJson(left: unknown, right: unknown): boolean {
+  return canonicalJsonText(left) === canonicalJsonText(right);
 }
 
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
+/** The same paid call (binding, source and number) in a later state. */
+function sameSummaryCall(left: ContextSummaryAttempt, right: ContextSummaryAttempt): boolean {
+  return left.bindingDigest === right.bindingDigest && left.sourceDigest === right.sourceDigest && left.attempt === right.attempt;
+}
+
+/** Receipt order: claim, then dispatched, then one settlement. */
+function summaryReceiptRank(state: ContextSummaryAttempt["state"]): number {
+  return state === "claim" ? 0 : state === "dispatched" ? 1 : 2;
 }
 
 function boundedReceipts(attempts: readonly ContextSummaryAttempt[]): readonly ContextSummaryAttempt[] {
@@ -455,8 +458,9 @@ function boundedReceipts(attempts: readonly ContextSummaryAttempt[]): readonly C
 }
 
 /**
- * Receipts only move forward: a claim may settle once, a settled receipt never
- * changes, and a committed summary is never replaced by an older projection.
+ * Receipts only move forward: a claim may become dispatched and settle once,
+ * a settled receipt never changes, and a committed summary is never replaced
+ * by an older projection.
  * Returns null when the two views conflict.
  */
 export function mergeContextCompactionReceipts(
@@ -473,9 +477,9 @@ export function mergeContextCompactionReceipts(
     }
     const existing = attempts[index]!;
     if (sameJson(existing, candidate)) continue;
-    if (unsettledSummaryStates.has(existing.state) && !unsettledSummaryStates.has(candidate.state)) attempts[index] = candidate;
-    else if (!unsettledSummaryStates.has(existing.state) && unsettledSummaryStates.has(candidate.state)) continue;
-    else return null;
+    const order = summaryReceiptRank(candidate.state) - summaryReceiptRank(existing.state);
+    if (order === 0 || !sameSummaryCall(existing, candidate)) return null;
+    if (order > 0) attempts[index] = candidate;
   }
   const summary = next.summary ?? current.summary;
   // A different summary may replace the durable one only as the latest commit.
@@ -495,8 +499,10 @@ export function mergeContextCompactionReceipts(
 /**
  * Applies one receipt write. A claim opens only in the provider round being
  * prepared (or seeds the first round before its begin) and never beside
- * another unsettled claim: the compactor is a single sequential writer. A
- * settlement requires its own claim and is idempotent for the same outcome.
+ * another unsettled claim: the compactor is a single sequential writer. The
+ * claim advances to `dispatched` immediately before the provider request,
+ * under the same guards. A settlement requires its own unsettled receipt and
+ * is idempotent for the same outcome.
  */
 export function checkpointWithContextSummaryReceipt(
   current: ToolLoopCheckpoint | null,
@@ -508,7 +514,7 @@ export function checkpointWithContextSummaryReceipt(
     !decodeContextSummary(write.summary) || write.summary.sourceDigest !== attempt.sourceDigest)) return null;
   const claim = unsettledSummaryStates.has(attempt.state);
   if (!current) {
-    return claim && write.roundIndex === 1
+    return attempt.state === "claim" && write.roundIndex === 1
       ? toolLoopCheckpoint({
           contextCompaction: { ...stripReceipts(write.compaction), summaryAttempts: [attempt] },
           phase: "provider_running",
@@ -522,17 +528,23 @@ export function checkpointWithContextSummaryReceipt(
   const index = attempts.findIndex((entry) => entry.id === attempt.id);
   if (claim) {
     if (current.phase !== "provider_running" || current.roundIndex !== write.roundIndex) return null;
-    if (index >= 0) return sameJson(attempts[index], attempt) ? current : null;
-    if (attempts.some((entry) => unsettledSummaryStates.has(entry.state))) return null;
-    attempts.push(attempt);
+    if (index >= 0) {
+      const existing = attempts[index]!;
+      if (sameJson(existing, attempt)) return current;
+      // Only the claim itself may advance to dispatched, never back.
+      if (existing.state !== "claim" || attempt.state !== "dispatched" || !sameSummaryCall(existing, attempt)) return null;
+      attempts[index] = attempt;
+    } else {
+      if (attempt.state !== "claim" || attempts.some((entry) => unsettledSummaryStates.has(entry.state))) return null;
+      attempts.push(attempt);
+    }
   } else {
     if (index < 0) return null;
     const existing = attempts[index]!;
     if (!unsettledSummaryStates.has(existing.state)) {
       return sameJson(existing, attempt) && (!write.summary || compaction.summary?.id === write.summary.id) ? current : null;
     }
-    if (existing.bindingDigest !== attempt.bindingDigest || existing.sourceDigest !== attempt.sourceDigest ||
-      existing.attempt !== attempt.attempt) return null;
+    if (!sameSummaryCall(existing, attempt)) return null;
     attempts[index] = attempt;
   }
   return toolLoopCheckpoint({

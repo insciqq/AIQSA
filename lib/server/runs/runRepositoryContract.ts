@@ -770,8 +770,9 @@ export type RunRepository = {
   ): Promise<PrepareAutomaticKnowledgeCallBatchResult>;
   /** Rewrites the run's cumulative usage events. Answer-round usage and a
    * context-summary receipt reach the checkpoint in the same transaction, so a
-   * settled paid call and its usage become durable together. A receipt claim
-   * additionally requires an active run in the round being prepared. */
+   * settled paid call and its usage become durable together. A receipt claim,
+   * and its `dispatched` mark written immediately before the provider request,
+   * additionally require an active run in the round being prepared. */
   recordRunUsageEvents(input: {
     answerRoundUsage?: PersistedAnswerRoundUsage;
     chatId: string;

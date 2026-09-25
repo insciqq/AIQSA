@@ -1751,8 +1751,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           });
         return {
           claim: attempt => write({ attempt }),
+          dispatch: attempt => write({ attempt }),
           async settle(attempt, usage, summary) {
-            rememberReportedUsage(request.provider, request.modelId, usage);
+            // A call refused before dispatch reported nothing and counts no operation.
+            if (usage) rememberReportedUsage(request.provider, request.modelId, usage);
             await write({ attempt, ...(summary ? { summary } : {}) });
           }
         };
@@ -1783,13 +1785,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           sourceAvailable: observationSourceAvailability(observationService, { runId, userId: input.userId }),
           // Reuse the authorized egress, without treating this internal request
           // as a steerable answer, the session context or a follow-up gate.
-          summaryAdapter: { stream: (summaryRequest, options) => streamAnswerProviderDispatch(
+          summaryAdapter: { reportsDispatch: true, stream: (summaryRequest, options) => streamAnswerProviderDispatch(
             summaryRequest, options?.signal ?? dispatchSignal, undefined,
             effectiveProviderResponseTimeoutMs(
               answerSnapshot.connection,
               "responseTimeoutMs" in answerSnapshot.model ? answerSnapshot.model : null
             ),
-            true
+            true,
+            options?.beforeDispatch
           ) }
         });
       }
@@ -1820,7 +1823,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         onToolArguments?: import("../providers/types").ProviderToolArgumentObserver,
         timeoutMs?: number,
         /** A server-owned summary request: never the session's answer context. */
-        internal = false
+        internal = false,
+        /** Durable dispatch evidence, written after every pre-dispatch check. */
+        beforeDispatch?: () => Promise<void>
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
         if (!internal) lastSessionRequest = request;
         let preview: Record<string, unknown> | null = null;
@@ -1886,6 +1891,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           if (!internal) await publishRequestContext(request);
           const wireRequest = request.workspaceImageView
             ? await (await defaultWorkspaceImageViewer()).materialize(request, runId, input.userId, dispatchSignal) : request;
+          await beforeDispatch?.();
           const stream = input.adapter.stream(wireRequest, { signal: dispatchSignal, onToolArguments, ...(timeoutMs ? { timeoutMs } : {}) });
           try {
             let next = await stream.next();

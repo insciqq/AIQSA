@@ -2,18 +2,21 @@ import { createHash } from "node:crypto";
 import type { ContextSummary, ContextSummaryAttempt, ContextSummaryUsage } from "../../contracts/contextCompaction";
 import { EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
-import type { ModelRunUsage } from "../../domain/modelRunEvents";
+import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { maxOutputTokenParamKeys } from "../../domain/providerParams";
 import { normalizeTokenUsage, type NormalizedTokenUsage } from "../../domain/usage";
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import { MIN_UTILITY_OUTPUT_TOKENS, UNKNOWN_MODEL_OUTPUT_ALLOWANCE } from "../providers/modelOutputAllowance";
 import { observedFailure } from "../providers/providerObservability";
-import type { ProviderAdapter, ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
+import type { ProviderConversationMessage, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import {
+  canonicalJsonText,
   CONTEXT_COMPACTION_LIMITS,
+  CONTEXT_SUMMARY_REFS_INCOMPLETE,
   contextDigest,
   contextSummaryCoverage,
   contextSummaryMessageId,
+  contextSummaryRefsComplete,
   contextSummaryTail,
   decodeContextSummary,
   isContextSummaryMessage,
@@ -51,16 +54,38 @@ type RepairReason = keyof typeof REPAIR_REASONS;
 type RawSummary = Readonly<{ notes: string }>;
 
 /** Durable evidence for every paid summary call, owned by the run's
- * checkpoint/accounting repository. A claim is written before dispatch; the
- * settlement carries the provider-reported usage into run accounting in the
- * same write, and a committing settlement carries the summary itself. */
+ * checkpoint/accounting repository. A claim is written before the call's
+ * pre-dispatch checks and `dispatched` immediately before its provider
+ * request, both under the active-run guards: a lost executor's unsettled claim
+ * was never sent, while an unsettled `dispatched` call has an unknown outcome.
+ * The settlement carries the provider-reported usage into run accounting in
+ * the same write (one operation), and a committing settlement carries the
+ * summary itself. A call refused before dispatch settles with null usage:
+ * nothing was sent, so no operation is accounted. */
 export type ContextSummaryReceipts = Readonly<{
   claim(attempt: ContextSummaryAttempt): Promise<void>;
-  settle(attempt: ContextSummaryAttempt, usage: NormalizedTokenUsage, summary?: ContextSummary): Promise<void>;
+  dispatch(attempt: ContextSummaryAttempt): Promise<void>;
+  settle(attempt: ContextSummaryAttempt, usage: NormalizedTokenUsage | null, summary?: ContextSummary): Promise<void>;
+}>;
+
+export type ContextSummaryCallOptions = Readonly<{
+  signal?: AbortSignal;
+  /** Writes the `dispatched` receipt; awaited immediately before the provider request. */
+  beforeDispatch?(): Promise<void>;
+}>;
+
+/** The accepted answer binding's egress for a summary call. An adapter that
+ * `reportsDispatch` awaits `beforeDispatch` after its own authority and egress
+ * checks, immediately before the provider request, so a refusal before that
+ * point is known never to have been sent. Otherwise the call is marked
+ * dispatched before the adapter starts. */
+export type ContextSummaryAdapter = Readonly<{
+  reportsDispatch?: boolean;
+  stream(request: ProviderRunRequest, options?: ContextSummaryCallOptions): AsyncGenerator<ModelRunSseEvent, ProviderRunResult>;
 }>;
 
 export type ContextSummaryInput = Readonly<{
-  adapter: Pick<ProviderAdapter, "stream">;
+  adapter: ContextSummaryAdapter;
   request: ProviderRunRequest;
   signal?: AbortSignal;
   existingSummary?: ContextSummary;
@@ -69,7 +94,9 @@ export type ContextSummaryInput = Readonly<{
   /** Server-minted observations of the run's settled calls; the only handles a summary may cite. */
   observations?: readonly ContextObservation[];
   receipts?: ContextSummaryReceipts;
-  /** Real availability of originals whose content the source only references. */
+  /** Real availability of originals whose content the source only references:
+   * false only for an authorization or row-state refusal; an infrastructure
+   * failure throws `context_compaction_source_check_failed`. */
   sourceAvailable?(handles: readonly string[], signal?: AbortSignal): Promise<boolean>;
 }>;
 
@@ -89,6 +116,7 @@ export type ContextSummaryErrorCode =
   | "context_too_large"
   | "context_compaction_outcome_unknown"
   | "context_compaction_provider_failed"
+  | "context_compaction_source_check_failed"
   | "context_compaction_source_unavailable"
   | "context_compaction_summary_failed"
   | "context_compaction_summary_invalid"
@@ -108,8 +136,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Ids and revisions hash the canonical (sorted-key) form, so a request or
+ * transcript read back from jsonb yields the same identity. */
 function stableId(prefix: string, value: unknown, length = 32): string {
-  return `${prefix}${createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, length)}`;
+  return `${prefix}${createHash("sha256").update(canonicalJsonText(value)).digest("hex").slice(0, length)}`;
 }
 
 /** Stable locator for the exact live provider/tool tail. It lets a committed
@@ -129,7 +159,7 @@ function appliedSummary(request: ProviderRunRequest): ContextSummary | null {
 }
 
 function blockText(block: unknown): string {
-  return isRecord(block) && block.type === "text" && typeof block.text === "string" ? block.text : JSON.stringify(block) ?? "";
+  return isRecord(block) && block.type === "text" && typeof block.text === "string" ? block.text : canonicalJsonText(block);
 }
 
 function messageText(message: ProviderConversationMessage): string {
@@ -145,7 +175,11 @@ export type ContextSummarySource = Readonly<{
   digest: string;
   /** Handles whose original content the source only references. */
   referencedHandles: readonly string[];
-  /** Bounded refs kept on the summary: revision, recall handles, then newest messages. */
+  /** Bounded refs kept on the summary: the revision, every recall handle
+   * (newest tool results first, then carried handles), then newest messages.
+   * When the handles cannot all fit, the refs carry the incomplete marker
+   * instead of silently dropping one, and the notes are never carried to a
+   * later turn. */
   refs: readonly string[];
   revision: string;
   units: readonly SourceUnit[];
@@ -168,23 +202,28 @@ export function contextSummarySource(request: ProviderRunRequest, observations?:
   const previous = appliedSummary(request);
   const prior = messages.filter((message) => message !== current && message.purpose === undefined && !isContextSummaryMessage(message));
   const toolMessages = request.providerToolMessages ?? [];
-  const carried = (previous?.sourceRefs ?? []).filter((ref) => !ref.startsWith("ctxr1_"));
+  const carried = (previous?.sourceRefs ?? []).filter((ref) => !ref.startsWith("ctxr1_") && ref !== CONTEXT_SUMMARY_REFS_INCOMPLETE);
   const carriedHandles = carried.filter((ref) => ref.startsWith("tor1_"));
   const toolHandles = observationHandlesInProviderMessages(toolMessages, observations);
   const units: SourceUnit[] = [
     ...(previous ? [unit(`<previous-notes refs="${carried.join(" ")}">\n${previous.notes}\n</previous-notes>`, true)] : []),
     ...prior.map((message) => unit(`<message id="${message.id}" role="${message.role}">\n${messageText(message)}\n</message>`)),
     ...(current ? [unit(`<message id="${current.id}" role="${current.role}" current="true">\n${messageText(current)}\n</message>`)] : []),
-    ...toolMessages.map((item) => unit(`<tool-item>\n${JSON.stringify(item) ?? "null"}\n</tool-item>`))
+    ...toolMessages.map((item) => unit(`<tool-item>\n${canonicalJsonText(item)}\n</tool-item>`))
   ];
   const messageIds = [...(current ? [current.id] : []), ...prior.map((message) => message.id).reverse(),
     ...carried.filter((ref) => !ref.startsWith("tor1_"))];
-  const allRefs = [...new Set([revision, ...carriedHandles, ...toolHandles, ...messageIds])].filter((ref) => ref.length > 0);
+  // Newest tool results first: a cap can never push the latest handles out.
+  const handles = [...new Set([...[...toolHandles].reverse(), ...carriedHandles])];
+  const allRefs = [...new Set([revision, ...handles, ...messageIds])].filter((ref) => ref.length > 0);
+  const complete = (!previous || contextSummaryRefsComplete(previous)) &&
+    1 + handles.length <= CONTEXT_COMPACTION_LIMITS.summarySourceRefs;
+  const refs = complete ? allRefs : [revision, CONTEXT_SUMMARY_REFS_INCOMPLETE, ...allRefs.slice(1)];
   return {
     allowedRefs: new Set(allRefs),
     digest: contextDigest({ version: 2, units: units.map((entry) => entry.text) }),
     referencedHandles: [...new Set([...carriedHandles, ...maskedObservationHandlesInProviderMessages(toolMessages, observations)])],
-    refs: allRefs.slice(0, CONTEXT_COMPACTION_LIMITS.summarySourceRefs),
+    refs: refs.slice(0, CONTEXT_COMPACTION_LIMITS.summarySourceRefs),
     revision,
     units
   };
@@ -634,14 +673,27 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
       });
       let reported: ModelRunUsage = {};
       let output = "";
+      let dispatched = false;
+      const dispatch = async () => {
+        if (dispatched) return;
+        input.signal?.throwIfAborted();
+        const mark = receipt({ bindingDigest, number, sourceDigest: source.digest, state: "dispatched" });
+        await input.receipts?.dispatch(mark);
+        record(mark);
+        dispatched = true;
+      };
+      // A call refused before its provider request settles without usage and
+      // counts no operation; a dispatched call always carries its usage.
       const settle = async (state: ContextSummaryAttempt["state"], completeness?: "partial", summary?: ContextSummary, errorCode?: string) => {
-        const usage = normalizeTokenUsage({ ...reported, ...(completeness ? { completeness } : {}) });
-        const settled = receipt({ bindingDigest, ...(errorCode ? { errorCode } : {}), number, sourceDigest: source.digest, state, usage });
+        const usage = dispatched ? normalizeTokenUsage({ ...reported, ...(completeness ? { completeness } : {}) }) : null;
+        const settled = receipt({ bindingDigest, ...(errorCode ? { errorCode } : {}), number, sourceDigest: source.digest, state,
+          ...(usage ? { usage } : {}) });
         await input.receipts?.settle(settled, usage, summary);
         record(settled);
       };
       try {
-        const stream = input.adapter.stream(request, input.signal ? { signal: input.signal } : undefined);
+        if (!input.adapter.reportsDispatch) await dispatch();
+        const stream = input.adapter.stream(request, { ...(input.signal ? { signal: input.signal } : {}), beforeDispatch: dispatch });
         let next = await stream.next();
         while (!next.done) {
           if (next.value.type === "token") output += next.value.data.delta;
@@ -654,6 +706,13 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
         }
         reported = { ...reported, ...next.value.usage };
       } catch (error) {
+        if (!dispatched) {
+          // Refused before the provider request (authority, model, egress
+          // evidence or Stop): nothing was sent, and the owner's error stands.
+          const settled = settle("failed", undefined, undefined, observedFailure(error).code);
+          await (input.signal?.aborted ? settled.catch(() => undefined) : settled);
+          throw error;
+        }
         if (error instanceof ContextSummaryError) {
           await settle("invalid", "partial", undefined, error.code);
           repair = "size";
@@ -671,6 +730,12 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
             "The summary request to the answer model failed before a valid result.", { cause: error });
         }
         throw error;
+      }
+      if (input.signal?.aborted) {
+        // The stream completed as Stop landed: its usage is kept, but notes
+        // bought after Stop are never committed or applied.
+        await settle("settled");
+        throw input.signal.reason;
       }
       const decoded = decodeRawSummary(parseJsonObject(output), allowedRefs, notesBytes);
       if (typeof decoded === "string") {

@@ -148,7 +148,7 @@ import {
   type RunRecoveryRepository
 } from "./runRecovery";
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
-import { decodeContextCompactionStatus, type ContextPlanMeasurement, type ContextSummary } from "../../contracts/contextCompaction";
+import { decodeContextCompactionStatus, type ContextPlanMeasurement, type ContextSummary, type ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import { contextCompactionCheckpoint, conversationContextPolicy } from "./contextCompactionContract";
@@ -5505,28 +5505,52 @@ describe("run recovery", () => {
       })]);
     });
 
-    it("records an unsettled summary claim as unknown once and never repeats the paid call", async () => {
-      const claim = { attempt: 1, bindingDigest: "f".repeat(64), id: "csa1_claimed", sourceDigest: "e".repeat(64), state: "claim" as const };
-      const recovery = fixture({
-        answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: zeroUsage }],
-        calls: [{ ...persistedRecoveryCall("complete"), result: toolResult(1) as unknown as ToolLoopJsonValue }],
-        compaction: { measurement: measurement("needs_summary"), summaryAttempts: [claim] },
-        historyChars: 30_000,
-        // The lost executor stopped during the round's summary: no response id.
-        phase: "provider_running",
-        providerToolMessages: [],
-        roundIndex: 2,
-        toolCallsBeforeFinal: 0
-      });
+    /** The lost executor stopped during the round's summary: no response id. */
+    const crashedDuringSummary = (attempt: ContextSummaryAttempt) => fixture({
+      answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: zeroUsage }],
+      calls: [{ ...persistedRecoveryCall("complete"), result: toolResult(1) as unknown as ToolLoopJsonValue }],
+      compaction: { measurement: measurement("needs_summary"), summaryAttempts: [attempt] },
+      historyChars: 30_000,
+      phase: "provider_running",
+      providerToolMessages: [],
+      roundIndex: 2,
+      toolCallsBeforeFinal: 0
+    });
+
+    it("records an unsettled dispatched summary call as unknown once and never repeats it", async () => {
+      const dispatched = { attempt: 1, bindingDigest: "f".repeat(64), id: "csa1_dispatched", sourceDigest: "e".repeat(64),
+        state: "dispatched" as const };
+      const recovery = crashedDuringSummary(dispatched);
       await recovery.recover();
       expect(recovery.summaries).toHaveLength(0);
       expect(recovery.answers).toHaveLength(0);
-      expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual([{ ...claim, state: "unknown" }]);
+      expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual([{ ...dispatched, state: "unknown" }]);
       // One more operation with unknown usage beside round 1: never invented, counted once.
       expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
-        error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }),
+        error: expect.objectContaining({ code: "context_compaction_outcome_unknown",
+          message: expect.stringContaining("no answer was produced") }),
         usageAttributions: [expect.objectContaining({ operationCount: 2, usage: expect.objectContaining({ completeness: "partial" }) })]
       })]);
+    });
+
+    it("settles an unsettled claim as never sent, counting no operation, so a later claim may buy the summary", async () => {
+      const claim = { attempt: 1, bindingDigest: "f".repeat(64), id: "csa1_claimed", sourceDigest: "e".repeat(64), state: "claim" as const };
+      const recovery = crashedDuringSummary(claim);
+      await recovery.recover();
+      expect(recovery.summaries).toHaveLength(0);
+      expect(recovery.answers).toHaveLength(0);
+      const notSent = { ...claim, errorCode: "context_compaction_not_dispatched", state: "failed" };
+      const checkpoint = recovery.installed.checkpoint();
+      expect(checkpoint.contextCompaction?.summaryAttempts).toEqual([notSent]);
+      expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "context_compaction_outcome_unknown",
+          message: expect.stringContaining("no answer was produced") }),
+        // Only the first answer round: the claim that was never sent is not an operation.
+        usageAttributions: [expect.objectContaining({ operationCount: 1 })]
+      })]);
+      const later = { ...claim, attempt: 2, id: "csa1_later" };
+      expect(checkpointWithContextSummaryReceipt(checkpoint, { attempt: later, compaction: checkpoint.contextCompaction!, roundIndex: 2 })
+        ?.contextCompaction?.summaryAttempts).toEqual([notSent, later]);
     });
 
     it("measures a refreshed round without buying a summary for a request already dispatched", async () => {
