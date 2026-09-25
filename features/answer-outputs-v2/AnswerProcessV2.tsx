@@ -10,6 +10,7 @@ import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import type { ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
   answerProcessLabelV2,
+  contextCompactionCopyV2,
   describeToolCallV2,
   toolActivityOriginV2
 } from "@/features/run-lifecycle-v2/runPresentation";
@@ -66,6 +67,8 @@ function SkillPinV2({ skillId, pinned, onPin }: Readonly<{ skillId: string; pinn
 }
 
 export type AnswerProcessV2Props = Readonly<{
+  /** The live feed was lost: an unsettled compaction cycle reads as lost, not active. */
+  connectionLost?: boolean;
   contextCompaction?: ContextCompactionStatus;
   disclosureId?: string;
   /** Live status while the run works; it occupies the settled line's place. */
@@ -88,6 +91,7 @@ export type AnswerProcessV2Props = Readonly<{
  * under a factual label ("Worked for 8s · Past chats · 2"). A reached tool limit stays visible outside the fold.
  */
 export function AnswerProcessV2({
+  connectionLost = false,
   contextCompaction,
   disclosureId,
   liveLabel = null,
@@ -113,22 +117,8 @@ export function AnswerProcessV2({
     </div>
   ) : null;
 
-  const compactionLabel = contextCompaction?.state === "running"
-    ? "Compacting context…"
-    : contextCompaction?.outcome === "summary_applied" || contextCompaction?.outcome === "masking_applied"
-      ? "Context compacted"
-      : contextCompaction?.outcome === "irreducible_overflow"
-        ? "Context is still too large"
-        : contextCompaction?.outcome === "source_unavailable"
-          ? "Context source unavailable"
-          : contextCompaction?.outcome === "provider_failed"
-            ? "Provider could not compact the context"
-            : contextCompaction?.outcome === "summary_failed"
-              ? "Context compaction failed"
-              : contextCompaction?.state === "failed" ? "Context compaction outcome unavailable" : null;
-  const compactionEstimate = contextCompaction?.state === "complete" && contextCompaction.reducedTokens !== null && contextCompaction.reducedTokens > 0
-    ? `Approx. ${contextCompaction.reducedTokens.toLocaleString("en-US")} working-context tokens removed`
-    : null;
+  const compaction = contextCompaction ? contextCompactionCopyV2(contextCompaction, { connectionLost }) : null;
+  const compactionLabel = compaction?.label ?? null;
 
   if (liveLabel && !timeline && !contextCompaction) {
     return (
@@ -173,11 +163,12 @@ export function AnswerProcessV2({
           </span>
         </summary>
         <div className="v2-answer-process-body">
-          {contextCompaction && contextCompaction.state !== "running" ? (
-            <section className="v2-answer-process-section" data-testid="context-compaction-status" data-state={contextCompaction.state}>
+          {contextCompaction && compaction ? (
+            <section className="v2-answer-process-section" data-testid="context-compaction-status"
+              data-state={contextCompaction.state === "running" && connectionLost ? "connection_lost" : contextCompaction.state}>
               <h3>Context</h3>
-              <p>{compactionLabel}</p>
-              {compactionEstimate ? <p className="v2-answer-process-step-meta">{compactionEstimate}</p> : null}
+              <p>{compaction.label}</p>
+              {compaction.detail ? <p className="v2-answer-process-step-meta">{compaction.detail}</p> : null}
             </section>
           ) : null}
           {timeline ? (

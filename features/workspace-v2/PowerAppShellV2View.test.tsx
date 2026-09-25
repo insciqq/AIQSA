@@ -11,6 +11,7 @@ import {
   WorkspaceHeaderV2,
   answerIdentityV2,
   knowledgeReferenceForMessageV2,
+  liveAnswerSourceV2,
   retryAutoMcpDiscoveryV2,
   applyLoadAllAfterMcpDiscoveryFailureV2,
   blankConversationOrientationV2,
@@ -20,6 +21,8 @@ import {
   type RunSetupComposerV2
 } from "./PowerAppShellV2View";
 import { formatTemporaryRetentionDeadlineV2 } from "./WorkspaceHeaderV2";
+import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
+import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
 
 const galleryModels = composerGalleryConfig.catalog.models;
 
@@ -236,6 +239,61 @@ describe("Knowledge citation provenance v2", () => {
       reasoningText: [],
       sources: []
     }, false)).toBeUndefined();
+  });
+});
+
+describe("Live answer source v2", () => {
+  const runningEvent = {
+    data: {
+      artifactType: "context_compaction",
+      payload: makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" })
+    },
+    type: "artifact"
+  };
+  const saved = {
+    citations: [{ index: 1, title: "Saved source", url: "https://example.com/saved" }],
+    reasoningText: ["Saved reasoning"],
+    sources: []
+  };
+  const liveArtifactSummary = {
+    citations: [],
+    contextCompaction: makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" }),
+    reasoningText: [],
+    sources: []
+  };
+
+  it("never lends the live run to an answer without a run id, even with no current run", () => {
+    for (const currentRunId of [null, "run-live"]) {
+      const source = liveAnswerSourceV2({ artifactSummary: saved, runId: null }, {
+        currentRunId, events: [runningEvent], liveArtifactSummary
+      });
+      expect(source).toEqual({ artifact: saved, events: [], ownsLiveRun: false });
+      expect(presentRunLifecycleV2({
+        authoritativeMessageStatus: "complete",
+        content: "Saved answer",
+        contextCompaction: source.artifact?.contextCompaction,
+        events: source.events,
+        runId: null
+      })).toEqual({ kind: "complete", runId: null });
+    }
+    expect(liveAnswerSourceV2({ runId: undefined }, { currentRunId: null, events: [runningEvent], liveArtifactSummary }))
+      .toEqual({ artifact: null, events: [], ownsLiveRun: false });
+  });
+
+  it("gives the current run its live events and merges its summary over the saved outputs", () => {
+    const source = liveAnswerSourceV2({ artifactSummary: saved, runId: "run-live" }, {
+      currentRunId: "run-live", events: [runningEvent], liveArtifactSummary
+    });
+    expect(source.ownsLiveRun).toBe(true);
+    expect(source.events).toEqual([runningEvent]);
+    expect(source.artifact).toMatchObject({
+      citations: saved.citations,
+      contextCompaction: { state: "running" },
+      reasoningText: saved.reasoningText
+    });
+    expect(liveAnswerSourceV2({ artifactSummary: saved, runId: "run-older" }, {
+      currentRunId: "run-live", events: [runningEvent], liveArtifactSummary
+    })).toEqual({ artifact: saved, events: [], ownsLiveRun: false });
   });
 });
 

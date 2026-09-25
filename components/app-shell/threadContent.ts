@@ -200,7 +200,11 @@ export function summarizeThreadArtifacts(
   };
 }
 
-/** Persisted outputs and live settled checkpoints share immutable attachment identities. */
+/**
+ * Persisted outputs and live settled checkpoints share immutable attachment
+ * identities. A live summary built from only some events (for example only
+ * compaction) never blanks saved citations, sources, reasoning or grounding.
+ */
 export function mergeLiveThreadArtifacts(
   saved: ThreadArtifactSummary | null | undefined,
   live: ThreadArtifactSummary | null | undefined
@@ -214,11 +218,16 @@ export function mergeLiveThreadArtifacts(
   const savedCompaction = saved.contextCompaction;
   const liveCompaction = live.contextCompaction;
   const contextCompaction = mergeContextCompactionStatus(savedCompaction, liveCompaction);
+  const groundingDisplay = live.groundingDisplay ?? saved.groundingDisplay;
   return {
     ...saved,
     ...live,
+    citations: live.citations.length > 0 ? live.citations : saved.citations,
     ...(contextCompaction ? { contextCompaction } : {}),
-    ...(files.size ? { generatedFiles: [...files.values()] } : {})
+    ...(files.size ? { generatedFiles: [...files.values()] } : {}),
+    groundingDisplay: groundingDisplay ?? null,
+    reasoningText: live.reasoningText.length > 0 ? live.reasoningText : saved.reasoningText,
+    sources: live.sources.length > 0 ? live.sources : saved.sources
   };
 }
 

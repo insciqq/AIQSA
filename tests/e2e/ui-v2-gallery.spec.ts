@@ -109,6 +109,31 @@ test("v2 run lifecycle refreshes only on request and isolates its live source", 
   await expect(unavailable.getByTestId("context-compaction-status")).toContainText("Context source unavailable");
 });
 
+test("v2 compaction states stay server-truthful and readable at phone width", async ({ page }) => {
+  await page.setViewportSize({ height: 844, width: 390 });
+  await page.goto("/ui-v2-fixture?fixture=run-lifecycle");
+
+  const running = page.getByRole("region", { exact: true, name: "Context compaction" });
+  await running.getByTestId("tool-activity-disclosure").locator(":scope > summary").click();
+  const runningStatus = running.getByTestId("context-compaction-status");
+  await expect(runningStatus).toHaveAttribute("data-state", "running");
+  await expect(runningStatus).toContainText("Summarizing earlier messages to fit the working context.");
+
+  const lost = page.getByRole("region", { exact: true, name: "Connection lost · compaction was running" });
+  const lostFold = lost.getByTestId("tool-activity-disclosure");
+  await expect(lostFold.locator(":scope > summary")).toHaveText("Context compaction · connection lost");
+  await expect(lostFold.locator(".v2-spinner")).toHaveCount(0);
+  await expect(lost.getByTestId("run-connection-lost")).toBeVisible();
+
+  const failed = page.getByRole("region", { exact: true, name: "Failed · provider reason in a long fold label" });
+  const label = failed.getByTestId("tool-activity-disclosure").locator(":scope > summary .v2-answer-process-label");
+  await label.scrollIntoViewIfNeeded();
+  await expect(label).toHaveText("Worked for 1m 4s · Provider could not compact the context");
+  expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await expectWithinViewport(page, label);
+  await expectNoHorizontalOverflow(page);
+});
+
 test("v2 conversation preserves the visible anchor after loading earlier messages", async ({ page }) => {
   await page.setViewportSize({ height: 700, width: 1100 });
   await page.goto("/ui-v2-fixture?fixture=conversation&state=earlier");

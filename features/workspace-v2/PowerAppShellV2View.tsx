@@ -62,6 +62,8 @@ import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
 import { pinSkillForNextTurn } from "@/components/app-shell/skillPinActions";
 import type { PowerAppShellV2Props, ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
 import type {
+  RunEventView,
+  ThreadArtifactSummary,
   WorkspaceChatSummary,
   ThreadMessage
 } from "@/components/app-shell/types";
@@ -107,12 +109,13 @@ import {
   type NavigationChatRowState,
   type NewChatMode
 } from "@/features/navigation-v2/NavigationV2";
-import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
+import { RunAnswerV2, RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { KnowledgeCitationControl } from "@/features/citations-v2/KnowledgeCitationViewer";
 import {
   presentRunLifecycleV2,
   presentToolActivityV2,
-  settledRunPresentationV2
+  settledRunPresentationV2,
+  type RunPresentationV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { documentTitleV2 } from "@/features/workspace-v2/documentTitle";
 import {
@@ -249,6 +252,25 @@ export function knowledgeReferenceForMessageV2(
         runId: message.runId
       }
     : undefined;
+}
+
+/**
+ * Live run events, the live artifact summary and the live work clock belong
+ * only to the answer whose accepted run id is the current run. An answer
+ * without a run id never adopts them, even while no run is current.
+ */
+export function liveAnswerSourceV2(
+  message: Pick<ThreadMessage, "artifactSummary" | "runId">,
+  live: Readonly<{
+    currentRunId: string | null;
+    events: readonly RunEventView[];
+    liveArtifactSummary: ThreadArtifactSummary | null;
+  }>
+): Readonly<{ artifact: ThreadArtifactSummary | null; events: readonly RunEventView[]; ownsLiveRun: boolean }> {
+  const ownsLiveRun = Boolean(message.runId) && message.runId === live.currentRunId;
+  return ownsLiveRun
+    ? { artifact: mergeLiveThreadArtifacts(message.artifactSummary, live.liveArtifactSummary), events: live.events, ownsLiveRun }
+    : { artifact: message.artifactSummary ?? null, events: [], ownsLiveRun };
 }
 
 export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
@@ -1007,6 +1029,37 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     role: message.role,
     streaming: message.status === "streaming"
   }));
+  // One lifecycle projection per answer, shared by the answer and the announcer.
+  const presentAnswer = (source: ThreadMessage) => {
+    const live = liveAnswerSourceV2(source, {
+      currentRunId: thread.currentRunId,
+      events: thread.events,
+      liveArtifactSummary: thread.liveArtifactSummary
+    });
+    // A genuinely lost stream transport (reader error / end without a
+    // terminal frame, recorded by the run-lifecycle store) presents as the
+    // honest connection-lost strip; the transport slice suppresses the
+    // locally invented post-loss "error" status until refresh reconciles.
+    const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
+    const presentation = presentRunLifecycleV2({
+      workspacePreparation: source.workspacePreparation,
+      pdfPreparation: source.pdfPreparation,
+      ...runTransportStateV2({
+        activeChatStreaming: thread.activeChatStreaming,
+        interruptedRun: thread.interruptedRun,
+        message: { errorMessage: source.errorMessage, id: source.id, runId: source.runId ?? null, status: source.status },
+        persistedRunStatus: null
+      }),
+      content: messageText(source),
+      contextCompaction: live.artifact?.contextCompaction,
+      events: live.events,
+      runId: source.runId ?? null
+    });
+    return { ...live, presentation, transportLost };
+  };
+  const announcedPresentation: RunPresentationV2 = liveTail?.role === "assistant"
+    ? presentAnswer(liveTail).presentation
+    : { kind: "idle", runId: null };
 
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
     const editMutationReason = thread.editingMessageId
@@ -1089,30 +1142,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       );
     }
-    const ownsLiveRun = Boolean(source.runId) && source.runId === thread.currentRunId;
-    const events = ownsLiveRun ? thread.events : [];
-    const artifact = ownsLiveRun
-      ? mergeLiveThreadArtifacts(source.artifactSummary, thread.liveArtifactSummary)
-      : source.artifactSummary ?? null;
-    // A genuinely lost stream transport (reader error / end without a
-    // terminal frame, recorded by the run-lifecycle store) presents as the
-    // honest connection-lost strip; the transport slice suppresses the
-    // locally invented post-loss "error" status until refresh reconciles.
-    const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
-    const presentation = presentRunLifecycleV2({
-      workspacePreparation: source.workspacePreparation,
-      pdfPreparation: source.pdfPreparation,
-      ...runTransportStateV2({
-        activeChatStreaming: thread.activeChatStreaming,
-        interruptedRun: thread.interruptedRun,
-        message: { errorMessage: source.errorMessage, id: source.id, runId: source.runId ?? null, status: source.status },
-        persistedRunStatus: null
-      }),
-      content: messageText(source),
-      contextCompaction: artifact?.contextCompaction,
-      events,
-      runId: source.runId ?? null
-    });
+    const { artifact, events, ownsLiveRun, presentation, transportLost } = presentAnswer(source);
     const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null);
     const workspaceActivity = presentWorkspaceActivityV2(events, source.workspaceActivity ?? null,
       !transportLost && (source.status === "complete" || source.status === "error" || source.status === "cancelled"));
@@ -1641,6 +1671,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 /\(chat_detail_failed_(401|403|404)\)$/u.test(thread.activeChatDetailError ?? "")
               )}
             />
+            {session.activeChatId ? (
+              <RunLifecycleAnnouncerV2
+                activeChatId={session.activeChatId}
+                presentation={announcedPresentation}
+                sourceChatId={session.activeChatId}
+              />
+            ) : null}
             {conversationMessages.length > 0 ? (
               <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={setComposerDockRef}>
                 {shellNotice}

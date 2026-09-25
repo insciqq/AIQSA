@@ -134,11 +134,11 @@ export function mergeContextCompactionStatus(
   return next;
 }
 
-/** A terminal run cannot still be compacting. Never infer successful completion. */
+/** A terminal run cannot still be compacting, and the browser never invents
+ * the outcome: an unsettled cycle stays unshown until the server publishes
+ * its settlement (the server settles every open cycle at run terminal). */
 export function terminalContextCompactionStatus(status: ContextCompactionStatus | null | undefined): ContextCompactionStatus | null {
-  return status?.state === "running"
-    ? makeContextCompactionStatus({ beforeTokens: status.beforeTokens, cycle: status.cycle, outcome: "unknown", state: "failed" })
-    : status ?? null;
+  return status?.state === "running" ? null : status ?? null;
 }
 
 export type ConversationContextPolicy = Readonly<{
