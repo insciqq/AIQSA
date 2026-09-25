@@ -12,9 +12,11 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
+import type { ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { conversationContextPolicy } from "./contextCompactionContract";
+import { createContextCompactionPublisher, prepareCompactedProviderRequest } from "./contextCompactionEvents";
 import { runProviderToolLoop } from "./providerToolLoop";
-import { createRunFollowupExecution, requestWithRunFollowups, RunFollowupChanged } from "./runFollowupExecution";
+import { createRunFollowupExecution, requestWithoutRunFollowups, requestWithRunFollowups, RunFollowupChanged } from "./runFollowupExecution";
 import { notifyRunFollowup } from "./runFollowupRegistry";
 import type { RunFollowupOperations } from "./runFollowups";
 
@@ -42,7 +44,8 @@ function fixture() {
   const beforeDelivery = vi.fn(async () => text);
   const onDelivery = vi.fn(async () => { text = ""; });
   const onInterruptedUsage = vi.fn<Parameters<typeof createRunFollowupExecution>[0]["onInterruptedUsage"]>(async () => undefined);
-  const onCompactionStatus = vi.fn<NonNullable<Parameters<typeof createRunFollowupExecution>[0]["onCompactionStatus"]>>(async () => undefined);
+  // The owner's consumer; these tests only need its identity semantics.
+  const compact = vi.fn(async (value: ProviderRunRequest, _signal: AbortSignal) => value);
   const operations: RunFollowupOperations = {
     accept: vi.fn(), beginKnowledge: vi.fn(async () => 0),
     load: vi.fn(async () => ({ revision: rows.length, entries: rows.map(entry => ({ ...entry })) })),
@@ -63,7 +66,7 @@ function fixture() {
     })
   };
   const execution = createRunFollowupExecution({ operations, runId: "run", userId: "user", beforeDelivery, onDelivery,
-    onInterruptedUsage, onCompactionStatus, bridge: openAIResponsesToolBridge });
+    onInterruptedUsage, bridge: openAIResponsesToolBridge });
   disposals.push(execution.release);
   function accept(value: string, notify = true) {
     rows.push({ id: `f-${rows.length + 1}`, ordinal: rows.length + 1, text: value,
@@ -80,7 +83,7 @@ function fixture() {
     }
     return { events, result: next.value, text };
   }
-  return { accept, consume, execution, operations, rows, onDelivery, onInterruptedUsage, onCompactionStatus };
+  return { accept, compact, consume, execution, operations, rows, onDelivery, onInterruptedUsage };
 }
 
 describe("in-run clarification execution", () => {
@@ -95,7 +98,7 @@ describe("in-run clarification execution", () => {
       yield { type: "token", data: { delta: "Second part." } };
       return result("First part. Second part.");
     } };
-    const answer = await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true }));
+    const answer = await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }));
     expect(calls).toBe(1);
     expect(answer.text).toBe("First part. Second part.");
     expect(f.onInterruptedUsage).not.toHaveBeenCalled();
@@ -119,7 +122,7 @@ describe("in-run clarification execution", () => {
       } finally { active--; }
     } };
     const original = request(), snapshot = structuredClone(original);
-    const completed = f.consume(f.execution.stream(original, { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true }));
+    const completed = f.consume(f.execution.stream(original, { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }));
     await emitted.promise;
     f.accept("Use Russian"); f.accept("Make it concise");
     await Promise.resolve();
@@ -144,7 +147,7 @@ describe("in-run clarification execution", () => {
       yield { type: "token", data: { delta: String(calls) } };
       return result(String(calls));
     } };
-    const answer = await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true }));
+    const answer = await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }));
     expect(answer.result.finalText).toBe("2"); expect(calls).toBe(2);
     expect(f.rows[0]?.delivery).toBe("delivered");
   });
@@ -153,12 +156,23 @@ describe("in-run clarification execution", () => {
     const f = fixture(); f.accept("Answer in two sentences");
     const requests: ProviderRunRequest[] = [];
     const adapter: Pick<ProviderAdapter, "stream"> = { async *stream(value) { requests.push(value); yield { type: "token", data: { delta: "ready" } }; return result("ready"); } };
-    await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true }));
+    await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }));
     expect(requests).toHaveLength(1);
     expect(requests[0]?.providerToolMessages).toEqual([{ role: "user", content: "Answer in two sentences" }]);
   });
 
-  it("summarizes a hybrid context after delivering a clarification", async () => {
+  it("dispatches the owner's prepared round unchanged when no clarification was delivered", async () => {
+    const f = fixture();
+    const requests: ProviderRunRequest[] = [];
+    const adapter: Pick<ProviderAdapter, "stream"> = { async *stream(value) { requests.push(value); return result("done"); } };
+    const prepared = request();
+    await f.consume(f.execution.stream(prepared, { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }));
+    expect(f.compact).not.toHaveBeenCalled();
+    expect(requests).toEqual([prepared]);
+    expect(requests[0]).toBe(prepared);
+  });
+
+  it("routes clarifications through the owner's consumer and carries its summary into a steering replacement", async () => {
     const f = fixture(); f.accept("Keep the exact correction");
     const messages = [
       { content: { blocks: [{ text: "old source", type: "text" }] }, id: "message-old", role: "user" as const },
@@ -189,26 +203,64 @@ describe("in-run clarification execution", () => {
       toolObservationVersion: 1 as const,
       tools: [readToolResultTool]
     };
-    const calls: ProviderRunRequest[] = [];
+    const summaries: ProviderRunRequest[] = [];
+    const answers: ProviderRunRequest[] = [];
     const adapter: Pick<ProviderAdapter, "stream"> = { async *stream(next) {
-      calls.push(next);
-      if (calls.length === 1) {
+      if (next.forceNonStreaming) {
+        summaries.push(next);
         const output = JSON.stringify({ notes: "The correction remains binding.", sourceRefs: ["message-old"] });
         yield { type: "token", data: { delta: output } };
         return result(output);
       }
+      answers.push(next);
+      if (answers.length === 1) {
+        yield { type: "token", data: { delta: "Earlier draft" } };
+        f.accept("Also keep the second correction");
+        return result("stale");
+      }
       yield { type: "token", data: { delta: "final" } };
       return result("final");
     } };
+    const statuses: ContextCompactionStatus[] = [];
+    const publisher = createContextCompactionPublisher(async status => { statuses.push(status); });
+    const consumer = vi.fn((merged: ProviderRunRequest, signal: AbortSignal) => prepareCompactedProviderRequest({
+      bridge: openAIResponsesToolBridge,
+      failure: (code, message) => Object.assign(new Error(message), { code }),
+      onSummaryUsage: () => undefined,
+      publisher,
+      request: merged,
+      signal,
+      summaryAdapter: adapter
+    }));
     const answer = await f.consume(f.execution.stream(hybrid, {
-      adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true
+      adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true, compact: consumer
     }));
     expect(answer.result.finalText).toBe("final");
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.contextCompactionSummary?.notes).toContain("correction");
-    expect(calls[1]?.providerToolMessages?.some(value => JSON.stringify(value).includes("Keep the exact correction"))).toBe(true);
-    expect(f.onCompactionStatus.mock.calls.map(([status]) => status.state)).toEqual(["running", "complete"]);
-    expect(f.onCompactionStatus.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "summary_applied" });
+    // One purchase: the replacement re-enters the same consumer with the
+    // committed summary already carried, so it is not bought again.
+    expect(summaries).toHaveLength(1);
+    expect(consumer).toHaveBeenCalledTimes(2);
+    expect(consumer.mock.calls[1]?.[0].contextCompactionSummary?.notes).toContain("correction");
+    expect(JSON.stringify(consumer.mock.calls[1]?.[0].providerToolMessages?.slice(-2))).toContain("second correction");
+    expect(answers).toHaveLength(2);
+    for (const dispatched of answers) {
+      expect(dispatched.contextCompactionSummary?.notes).toContain("correction");
+      expect(dispatched.contextCompaction?.outcome).not.toBe("needs_summary");
+    }
+    expect(JSON.stringify(answers[1]?.providerToolMessages)).toContain("Keep the exact correction");
+    expect(statuses.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
+      [1, "running", "pending"], [1, "complete", "summary_applied"]
+    ]);
+  });
+
+  it("strips exactly the clarification tail it appended and rejects any other tail", () => {
+    const entries: RunFollowup[] = [{ id: "f-1", ordinal: 1, text: "Clarified", author: "Author",
+      createdAt: new Date().toISOString(), delivery: "delivered" }];
+    const base = { ...request(), providerToolMessages: [{ type: "function_call_output", call_id: "c", output: "masked" }] };
+    const merged = requestWithRunFollowups(base, entries);
+    expect(requestWithoutRunFollowups(merged, entries)?.providerToolMessages).toEqual(base.providerToolMessages);
+    expect(requestWithoutRunFollowups(base, entries)).toBeNull();
+    expect(requestWithoutRunFollowups(base, [])).toBe(base);
   });
 
   it("keeps Stop terminal and never dispatches a pending replacement", async () => {
@@ -218,7 +270,7 @@ describe("in-run clarification execution", () => {
       calls++; started.resolve(); await stopped.promise;
       yield { type: "token", data: { delta: "late" } }; return result("late");
     } };
-    const completed = f.consume(f.execution.stream(request(), { adapter, signal: controller.signal, timeoutMs: 10_000, closeOnFinal: true }));
+    const completed = f.consume(f.execution.stream(request(), { adapter, signal: controller.signal, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }));
     await started.promise; f.accept("Pending update"); controller.abort(); stopped.resolve();
     await expect(completed).rejects.toMatchObject({ name: "AbortError" });
     expect(calls).toBe(1); expect(f.rows[0]?.delivery).toBe("accepted");
@@ -233,7 +285,7 @@ describe("in-run clarification execution", () => {
       if (timeouts.length === 1) { vi.setSystemTime(1_400); f.accept("Shorter"); throw new DOMException("Interrupted", "AbortError"); }
       yield { type: "token", data: { delta: "done" } }; return result("done");
     } };
-    await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 1_000, closeOnFinal: true }));
+    await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 1_000, closeOnFinal: true, compact: f.compact }));
     expect(timeouts).toEqual([1_000, 600]);
     expect(f.onInterruptedUsage.mock.calls[0]?.[0]).toMatchObject({ inputTokens: null, outputTokens: null, completeness: "unavailable" });
   });
@@ -251,7 +303,7 @@ describe("in-run clarification execution", () => {
       return result("unreachable");
     } };
     const completed = f.consume(f.execution.stream(request(), {
-      adapter, signal: new AbortController().signal, timeoutMs: 45_000, closeOnFinal: true
+      adapter, signal: new AbortController().signal, timeoutMs: 45_000, closeOnFinal: true, compact: f.compact
     }));
     const rejected = expect(completed).rejects.toBeInstanceOf(ProviderRequestTimeoutError);
     await started.promise;
@@ -275,7 +327,7 @@ describe("in-run clarification execution", () => {
       return { status: "complete" as const, value: { callId: "effect", name: "update_record", status: "complete" as const, content: [{ type: "text" as const, text: "Saved once" }] } };
     });
     const completion = runProviderToolLoop({ adapter: { ...raw, stream: (next, options) => f.execution.stream(next, {
-      adapter: raw, signal: options!.signal!, timeoutMs: 10_000, closeOnFinal: true }) },
+      adapter: raw, signal: options!.signal!, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }) },
       bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 }, executeTool,
       initialRequest: request(), parallelToolCalls: false,
       tools: [{ capability: "mcp", name: "update_record", description: "Update synthetic record", inputSchema: { type: "object" } }] });

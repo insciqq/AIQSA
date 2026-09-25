@@ -279,6 +279,59 @@ describe("provider tool loop", () => {
     ]);
   });
 
+  it("carries a request re-prepared during dispatch into later rounds and the durable continuation", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const prepared: ProviderRunRequest[] = [];
+    const persisted: unknown[] = [];
+    const summary = { formatVersion: 1 as const, id: "cs1_dispatched", notes: "Bought after a clarification.",
+      sourceDigest: "a".repeat(64), sourceRefs: ["original"] };
+    const outcome = await runProviderToolLoop({
+      adapter: {
+        buildRequestPreview: () => ({}),
+        async *stream(roundRequest) {
+          requests.push(roundRequest);
+          const call = requests.length < 3 ? [{ id: `call-${requests.length}`, name: "alpha", arguments: {} }] : undefined;
+          return { finalProviderResponsePreview: {}, finalText: call ? "" : "done", usage: {}, ...(call ? { toolCalls: call } : {}) };
+        }
+      },
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 3, maxToolRounds: 3 },
+      // The owner compacted round 2 again while dispatching it: the summary and
+      // a masked projection are what the provider actually received.
+      dispatchedRequest: ({ request: roundRequest, round }) => round === 2 ? {
+        ...roundRequest,
+        context: { mode: "branch_path", messages: [{ id: `__context-summary-${summary.id}`, role: "assistant",
+          content: { blocks: [{ type: "text", text: summary.notes }] } }] },
+        contextCompactionSummary: summary,
+        providerToolMessages: roundRequest.providerToolMessages?.map(value =>
+          (value as { type?: string }).type === "function_call_output" ? { ...(value as object), output: "reader reference" } : value)
+      } : undefined,
+      executeTool: async call => ({ status: "complete", value: {
+        callId: call.id, name: call.name, status: "complete", content: [{ type: "text", text: `exact ${call.id}` }]
+      } }),
+      initialRequest: request({ context: { mode: "branch_path", messages: [{ id: "original", role: "user",
+        content: { blocks: [{ type: "text", text: "Original lengthy history." }] } }] } }),
+      parallelToolCalls: false,
+      persistToolBatch: ({ continuation, round }) => { if (round === 2) persisted.push(continuation); },
+      prepareRequest: roundRequest => { prepared.push(roundRequest); return roundRequest; },
+      tools: [{ capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" }]
+    });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 2 });
+    expect(prepared[2]?.contextCompactionSummary?.id).toBe(summary.id);
+    expect(JSON.stringify(requests[2])).not.toContain("Original lengthy history.");
+    expect(persisted[0]).toMatchObject({ providerToolMessages: [
+      { type: "function_call", call_id: "call-1" },
+      { type: "function_call_output", call_id: "call-1", output: "reader reference" },
+      { type: "function_call", call_id: "call-2" }
+    ] });
+    expect(requests[2]?.providerToolMessages).toMatchObject([
+      { type: "function_call", call_id: "call-1" },
+      { type: "function_call_output", call_id: "call-1", output: "reader reference" },
+      { type: "function_call", call_id: "call-2" },
+      { type: "function_call_output", call_id: "call-2", output: "exact call-2" }
+    ]);
+  });
+
   it("keeps streaming/background request controls while executing an ordered parallel batch", async () => {
     const requests: ProviderRunRequest[] = [];
     const events: ModelRunSseEvent[] = [];

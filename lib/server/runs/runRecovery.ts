@@ -238,8 +238,14 @@ import {
 import { toolRunBudgetsForRequest } from "./toolBudgets";
 import { contextCompactionCheckpoint } from "./contextCompactionContract";
 import { observationCallIdsInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
-import { applyContextSummaryToRequest, ContextSummaryError, executeContextSummary, summaryNeedsProvider } from "./contextCompactionSummarizer";
-import { contextCompactionArtifact, contextCompactionFailureOutcome, createContextCompactionPublisher } from "./contextCompactionEvents";
+import { applyContextSummaryToRequest } from "./contextCompactionSummarizer";
+import {
+  applyKnowledgeAnswerContextBudget,
+  contextCompactionArtifact,
+  contextCompactionFailureOutcome,
+  createContextCompactionPublisher,
+  prepareCompactedProviderRequest
+} from "./contextCompactionEvents";
 
 export const activeRunStaleMs = 10 * 60 * 1000;
 
@@ -2510,7 +2516,11 @@ async function recoverCheckpointedToolLoop(
 
     async function prepareRecoveredProviderRequest(
       roundRequest: ProviderRunRequest,
-      round: number
+      round: number,
+      /** `measure` records an already-dispatched round whose result is being
+       * refreshed: it is never sent again, so it buys no summary and publishes
+       * no cycle for work that did not happen here. */
+      mode: "dispatch" | "measure" = "dispatch"
     ): Promise<ProviderRunRequest> {
       const currentRequest = {
           ...roundRequest,
@@ -2522,70 +2532,36 @@ async function recoverCheckpointedToolLoop(
             ? { mcpDiscovery: context.activeMcpDiscovery }
             : {})
       };
-      let requestForBudget = deps.mcp
+      const requestForBudget = deps.mcp
         ? await filterMcpProviderRequest(currentRequest, run.userId, deps.mcp.filterTools)
         : currentRequest;
-      for (let summaryCycle = 0; summaryNeedsProvider(requestForBudget); summaryCycle += 1) {
-        if (summaryCycle >= 2) {
-          await compactionPublisher.settle("summary_failed");
-          throw new ToolLoopRecoveryError("context_compaction_summary_failed", "Context compaction did not make bounded progress.");
-        }
-        await compactionPublisher.begin(requestForBudget.contextCompaction);
-        try {
-          const summarized = await executeContextSummary({
-            adapter: egressAdapter,
-            existingAttempts: requestForBudget.contextCompactionSummaryAttempts,
-            existingSummary: requestForBudget.contextCompactionSummary,
-            onUsage: (usage) => {
-              context.usageAttributions.push({ modelId: requestForBudget.modelId, operationCount: 1, provider: requestForBudget.provider, usage });
-            },
-            request: requestForBudget,
-            signal
-          });
-          requestForBudget = summarized.request;
-        } catch (error) {
-          if (error instanceof ContextSummaryError) {
-            await compactionPublisher.settle(contextCompactionFailureOutcome(error.code));
-            throw new ToolLoopRecoveryError(error.code, error.message);
-          }
-          await compactionPublisher.settle("provider_failed");
-          throw error;
-        }
-        const summarizedBudget = applyProviderRequestContextBudget({ bridge, request: requestForBudget });
-        if (!summarizedBudget.ok) {
-          await compactionPublisher.settle(summarizedBudget.error.code === "context_too_large" ? "irreducible_overflow" : "summary_failed");
-          throw new ToolLoopRecoveryError("context_compaction_summary_failed", summarizedBudget.error.message);
-        }
-        requestForBudget = summarizedBudget.request;
+      if (mode === "measure") {
+        const measured = applyProviderRequestContextBudget({ bridge, request: requestForBudget });
+        if (!measured.ok) throw new ToolLoopRecoveryError("context_too_large", measured.error.message);
+        context.sessionRequest = measured.request;
+        return measured.request;
       }
-      const budgeted = applyProviderRequestContextBudget({
+      // The live run's consumer: measure this round first, then decide. A
+      // recovered request is never dispatched while it still needs a summary.
+      context.sessionRequest = await prepareCompactedProviderRequest({
         bridge,
-        request: requestForBudget
-      });
-      if (!budgeted.ok) {
-        if (compactionPublisher.running) await compactionPublisher.settle(contextCompactionFailureOutcome(budgeted.error.code));
-        throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
-      }
-      context.sessionRequest = budgeted.request;
-      if (compactionPublisher.running || requestForBudget.contextCompaction?.outcome === "masking_applied") {
-        const outcome = requestForBudget.contextCompactionSummary
-          ? "summary_applied" as const
-          : requestForBudget.contextCompaction?.outcome === "masking_applied" ? "masking_applied" as const : null;
-        if (outcome) await compactionPublisher.settle(outcome, budgeted.request.contextCompaction && {
-          ...budgeted.request.contextCompaction,
-          beforeTokens: requestForBudget.contextCompaction?.beforeTokens ?? budgeted.request.contextCompaction.beforeTokens
-        });
-      }
-      if (budgeted.contextTruncation) {
-        await appendEvent({
+        failure: (code, message) => new ToolLoopRecoveryError(code, message),
+        onSummaryUsage(usage, source) {
+          context.usageAttributions.push({ modelId: source.modelId, operationCount: 1, provider: source.provider, usage });
+        },
+        onTruncation: truncation => appendEvent({
           data: {
             artifactType: "context_truncated",
-            payload: budgeted.contextTruncation
+            payload: truncation
           },
           type: "artifact"
-        });
-      }
-      return budgeted.request;
+        }),
+        publisher: compactionPublisher,
+        request: requestForBudget,
+        signal,
+        summaryAdapter: egressAdapter
+      });
+      return context.sessionRequest;
     }
 
     const persistedCalls = new Map<string, PersistedToolLoopCall>(
@@ -2819,7 +2795,7 @@ async function recoverCheckpointedToolLoop(
         providerToolMessages,
         toolChoice,
         tools
-      }, round);
+      }, round, "measure");
       return toolChoice === "none" ? { ...prepared, toolChoice } : prepared;
     }
 
@@ -3211,7 +3187,7 @@ async function recoverCheckpointedToolLoop(
       outcome: signal.aborted || error instanceof ToolLoopRecoveryStopped ? "cancelled" : "failed",
       code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "stop" });
     if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
-      await compactionPublisher.settle("unknown").catch(() => undefined);
+      await compactionPublisher.terminate("unknown").catch(() => undefined);
       await settleRecoveredWorkspaceOnExit("cancelled");
       await tokenBuffer?.flush().catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "progress"));
       if (usageEvidenceTrusted) await persistCancelledUsage?.();
@@ -3264,7 +3240,7 @@ async function recoverCheckpointedToolLoop(
         providerModelId: "unbound"
       });
     }
-    await compactionPublisher.settle(contextCompactionFailureOutcome(failure.code)).catch(() => undefined);
+    await compactionPublisher.terminate(contextCompactionFailureOutcome(failure.code)).catch(() => undefined);
     await settleToolLoopRecoveryError(
       deps,
       run,
@@ -3415,7 +3391,8 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
       "The saved provider request requires a tool-loop checkpoint."
     );
   }
-  const budgeted = applyProviderRequestContextBudget({
+  // Explicit legacy guard: a reserved Knowledge answer has no summary consumer.
+  const budgeted = applyKnowledgeAnswerContextBudget({
     ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {}),
     request: requestWithEvidence
   });
@@ -4654,7 +4631,8 @@ async function refreshProviderRunOnceRegistered(
           );
         }
         const evidenceMessage = knowledgeEvidenceMessageFromDispatchDraft(draft);
-        const budgeted = applyProviderRequestContextBudget({
+        // Explicit legacy guard: this Knowledge answer route has no summary consumer.
+        const budgeted = applyKnowledgeAnswerContextBudget({
           ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {}),
           request: withAutomaticKnowledgeEvidence(providerRequest, evidenceMessage)
         });

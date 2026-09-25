@@ -68,6 +68,13 @@ export type ProviderToolLoopInput = Readonly<{
   ): Promise<void> | void;
   parallelToolCalls: boolean;
   prepareRequest?(request: ProviderRunRequest, round: number): Promise<ProviderRunRequest> | ProviderRunRequest;
+  /**
+   * The request the adapter actually dispatched for this round, without any
+   * clarification tail. The owner may re-prepare a round while dispatching it
+   * (for example after delivering a clarification); later rounds and the
+   * durable continuation then carry that exact summary state and projection.
+   */
+  dispatchedRequest?(input: Readonly<{ request: ProviderRunRequest; round: number }>): ProviderRunRequest | undefined;
   /** Normalize a known provider alias against the tools advertised in this round. */
   normalizeToolCallName?(name: string, advertisedToolNames: ReadonlySet<string>): string;
   projectToolResultForProvider?(
@@ -273,6 +280,15 @@ export async function runProviderToolLoop(
         await stream.return(undefined as never).catch(() => undefined);
       }
       const result = { ...next.value, usage: mergeTokenUsage(lastReportedUsage ?? {}, next.value.usage) };
+      const dispatchedRequest = input.dispatchedRequest?.({ request: roundRequest, round }) ?? roundRequest;
+      preparedRequest = dispatchedRequest;
+      const dispatchedContinuation: ProviderToolLoopContinuation = dispatchedRequest === roundRequest ||
+        !dispatchedRequest.providerToolMessages
+        ? preparedContinuation
+        : {
+            providerResponseId: preparedContinuation.providerResponseId,
+            providerToolMessages: [...dispatchedRequest.providerToolMessages]
+          };
       let publicationFailed = false;
       let publicationError: unknown;
       try {
@@ -333,7 +349,7 @@ export async function runProviderToolLoop(
         calls: normalizedCalls,
         continuation: providerToolLoopContinuationAfterResult(
           input.bridge,
-          preparedContinuation,
+          dispatchedContinuation,
           normalizedResult
         ),
         parallelToolCalls: roundRequest.parallelToolCalls === true,

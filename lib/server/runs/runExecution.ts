@@ -10,7 +10,7 @@ import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
 import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import { createArtifactGeneration } from "../artifacts/generation";
-import { createRunFollowupExecution, RunFollowupChanged } from "./runFollowupExecution";
+import { createRunFollowupExecution, requestWithoutRunFollowups, RunFollowupChanged } from "./runFollowupExecution";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { knowledgeLifecycleAfterFollowup } from "../knowledge/followupExecution";
 import { effectiveFollowupQuestion } from "../../domain/runFollowupContext";
@@ -163,7 +163,7 @@ import {
   type RunTool,
   type ToolExecutionResult
 } from "../tools/types";
-import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
+import { measureSessionContext } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import {
@@ -206,13 +206,18 @@ import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult"
 import { toolRunBudgetsForRequest } from "./toolBudgets";
 import { contextCompactionCheckpoint } from "./contextCompactionContract";
 import { observationCallIdsInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
-import { ContextSummaryError, executeContextSummary, summaryNeedsProvider } from "./contextCompactionSummarizer";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { CodexProtocolError } from "../agents/codexProtocol";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
-import { contextCompactionArtifact, contextCompactionFailureOutcome, createContextCompactionPublisher } from "./contextCompactionEvents";
+import {
+  applyKnowledgeAnswerContextBudget,
+  contextCompactionArtifact,
+  contextCompactionFailureOutcome,
+  createContextCompactionPublisher,
+  prepareCompactedProviderRequest
+} from "./contextCompactionEvents";
 import {
   normalizeWorkspaceProviderToolName,
   workspaceToolNameFromNamespaced
@@ -756,12 +761,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             async onDelivery() {
               await publishFollowupDelivery(followups!.revision);
             },
-            async onSummaryUsage(usage, request) {
-              rememberReportedUsage(request.provider, request.modelId, usage);
-            },
-            async onCompactionStatus(status) {
-              await compactionPublisher.publish(status);
-            },
             async onInterruptedUsage(usage, request, generation) {
               let reported = usage;
               if (!generation.completed && request.params.background === true && !request.forceNonStreaming) {
@@ -1042,7 +1041,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         request: ProviderRunRequest,
         message: ProviderConversationMessage
       ): Promise<ProviderRunRequest> {
-        const budgeted = applyProviderRequestContextBudget({
+        // Explicit legacy guard: this route has no summary consumer.
+        const budgeted = applyKnowledgeAnswerContextBudget({
           ...(input.toolBridge ? { bridge: input.toolBridge } : {}),
           request: withAutomaticKnowledgeEvidence(request, message)
         });
@@ -1719,11 +1719,49 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         emitTransient(controller, encoder, event);
       }
 
+      /** The run's single compaction consumer; see prepareCompactedProviderRequest. */
+      async function compactAnswerRequest(
+        request: ProviderRunRequest,
+        bridge: ProviderToolBridge | undefined,
+        dispatchSignal: AbortSignal
+      ): Promise<ProviderRunRequest> {
+        const answerSnapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
+        return prepareCompactedProviderRequest({
+          async authorize() {
+            await assertProjectRunAccessCurrent(true);
+            if (!(await currentAnswerDispatchAllowed())) {
+              throw new RunPipelineError("model_not_available", "The selected model is no longer available");
+            }
+          },
+          ...(bridge ? { bridge } : {}),
+          failure: (code, message) => new RunPipelineError(code, message),
+          onSummaryUsage(usage, source) {
+            rememberReportedUsage(source.provider, source.modelId, usage);
+          },
+          onTruncation: truncation => emit(controller, encoder, input.repository, runId, contextTruncationArtifact(truncation)),
+          publisher: compactionPublisher,
+          request,
+          signal: dispatchSignal,
+          // Reuse the authorized egress, without treating this internal request
+          // as a steerable answer, the session context or a follow-up gate.
+          summaryAdapter: { stream: (summaryRequest, options) => streamAnswerProviderDispatch(
+            summaryRequest, options?.signal ?? dispatchSignal, undefined,
+            effectiveProviderResponseTimeoutMs(
+              answerSnapshot.connection,
+              "responseTimeoutMs" in answerSnapshot.model ? answerSnapshot.model : null
+            ),
+            true
+          ) }
+        });
+      }
+
       function streamAnswerProviderWithEgress(
         request: ProviderRunRequest,
         dispatchSignal: AbortSignal = signal,
         onToolArguments?: import("../providers/types").ProviderToolArgumentObserver,
-        closeOnFinal: boolean | (() => boolean) = !knowledgeCitationAnswer
+        closeOnFinal: boolean | (() => boolean) = !knowledgeCitationAnswer,
+        compact: (request: ProviderRunRequest, signal: AbortSignal) => Promise<ProviderRunRequest> = (value, compactSignal) =>
+          compactAnswerRequest(value, input.toolBridge ?? providerToolBridges[value.provider as keyof typeof providerToolBridges], compactSignal)
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
         followupBaseRequest = request;
         if (!followups) return streamAnswerProviderDispatch(request, dispatchSignal, onToolArguments);
@@ -1732,6 +1770,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           signal: dispatchSignal, onToolArguments,
           timeoutMs: effectiveProviderResponseTimeoutMs(snapshot.connection, snapshot.model.adapterKind === "fake" ? null : snapshot.model),
           closeOnFinal,
+          compact,
           adapter: { stream: (next, options) => streamAnswerProviderDispatch(next, options?.signal, options?.onToolArguments, options?.timeoutMs) }
         });
       }
@@ -1740,9 +1779,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         request: ProviderRunRequest,
         dispatchSignal: AbortSignal = signal,
         onToolArguments?: import("../providers/types").ProviderToolArgumentObserver,
-        timeoutMs?: number
+        timeoutMs?: number,
+        /** A server-owned summary request: never the session's answer context. */
+        internal = false
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
-        lastSessionRequest = request;
+        if (!internal) lastSessionRequest = request;
         let preview: Record<string, unknown> | null = null;
         const requestPreview = () => {
           preview ??= input.adapter.buildRequestPreview(request);
@@ -1803,7 +1844,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               })
             : null;
           await assertProjectRunAccessCurrent(true);
-          await publishRequestContext(request);
+          if (!internal) await publishRequestContext(request);
           const wireRequest = request.workspaceImageView
             ? await (await defaultWorkspaceImageViewer()).materialize(request, runId, input.userId, dispatchSignal) : request;
           const stream = input.adapter.stream(wireRequest, { signal: dispatchSignal, onToolArguments, ...(timeoutMs ? { timeoutMs } : {}) });
@@ -1976,7 +2017,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   exclusions: input.prepared.knowledgeAdmissionPlan?.exclusions,
                   request,
                   results: [...knowledgeToolResults.values()]
-                }) === null
+                }) === null,
+              // A delivered clarification re-enters the same consumer; its
+              // result becomes the session and checkpoint request.
+              async (merged, compactSignal) => {
+                sessionRequest = await compactAnswerRequest(merged, toolBridge, compactSignal);
+                return sessionRequest;
+              }
             );
           }
         };
@@ -2074,7 +2121,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                       recentTailCallIds: observationCallIdsInProviderMessages(roundRequest.providerToolMessages ?? []),
                       ...(roundRequest.contextCompactionSummary ? { summary: roundRequest.contextCompactionSummary } : {}),
                       ...(roundRequest.contextCompactionSummaryAttempts ? { summaryAttempts: roundRequest.contextCompactionSummaryAttempts } : {}),
-                      ...(followups ? { followupRevision: followups.revision, followupTexts: followups.entries.map(entry => entry.text) } : {})
+                      ...(followups ? { followupRevision: followups.revision, followupTexts: followups.entries.map(entry => entry.text) } : {}),
+                      measurement: roundRequest.contextCompaction
                     }) }
                   : {}),
                 providerContinuation: toolLoopJson(
@@ -2851,87 +2899,19 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 ...(activeMcpSnapshot ? { mcp: activeMcpSnapshot } : {}),
                 ...(activeMcpDiscovery ? { mcpDiscovery: activeMcpDiscovery } : {})
             };
-            let requestForBudget = input.mcp
+            const requestForBudget = input.mcp
               ? await filterMcpProviderRequest(currentRequest, input.userId, input.mcp.filterTools)
               : currentRequest;
-            for (let summaryCycle = 0; summaryNeedsProvider(requestForBudget); summaryCycle += 1) {
-              if (summaryCycle >= 2) {
-                await compactionPublisher.settle("summary_failed");
-                throw new RunPipelineError("context_compaction_summary_failed", "Context compaction did not make bounded progress.");
-              }
-              await compactionPublisher.begin(requestForBudget.contextCompaction);
-              await assertProjectRunAccessCurrent(true);
-              if (!(await currentAnswerDispatchAllowed())) {
-                await compactionPublisher.settle("provider_failed");
-                throw new RunPipelineError("model_not_available", "The selected model is no longer available");
-              }
-              try {
-                const answerSnapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
-                const summarized = await executeContextSummary({
-                  // Reuse the authorized egress, without treating this internal
-                  // request as a steerable answer or closing its follow-up gate.
-                  adapter: { stream: (summaryRequest, options) => streamAnswerProviderDispatch(
-                    summaryRequest, options?.signal ?? signal, undefined,
-                    effectiveProviderResponseTimeoutMs(
-                      answerSnapshot.connection,
-                      "responseTimeoutMs" in answerSnapshot.model ? answerSnapshot.model : null
-                    )
-                  ) },
-                  existingAttempts: requestForBudget.contextCompactionSummaryAttempts,
-                  existingSummary: requestForBudget.contextCompactionSummary,
-                  onUsage: (usage) => { rememberReportedUsage(requestForBudget.provider, requestForBudget.modelId, usage); },
-                  request: requestForBudget,
-                  signal
-                });
-                requestForBudget = summarized.request;
-              } catch (error) {
-                if (error instanceof ContextSummaryError) {
-                  await compactionPublisher.settle(contextCompactionFailureOutcome(error.code));
-                  throw new RunPipelineError(error.code, error.message);
-                }
-                await compactionPublisher.settle("provider_failed");
-                throw error;
-              }
-              const summarizedBudget = applyProviderRequestContextBudget({ bridge: toolBridge, request: requestForBudget });
-              if (!summarizedBudget.ok) {
-                await compactionPublisher.settle(summarizedBudget.error.code === "context_too_large" ? "irreducible_overflow" : "summary_failed");
-                throw new RunPipelineError("context_compaction_summary_failed", summarizedBudget.error.message);
-              }
-              requestForBudget = summarizedBudget.request;
-              if (!summaryNeedsProvider(requestForBudget)) break;
-            }
-            const budgeted = applyProviderRequestContextBudget({
-              bridge: toolBridge,
-              request: requestForBudget
-            });
-            if (!budgeted.ok) {
-              if (compactionPublisher.running) {
-                await compactionPublisher.settle(contextCompactionFailureOutcome(budgeted.error.code));
-              }
-              throw new RunPipelineError("context_too_large", budgeted.error.message);
-            }
-            sessionRequest = budgeted.request;
-            if (compactionPublisher.running || requestForBudget.contextCompaction?.outcome === "masking_applied") {
-              const measurement = requestForBudget.contextCompaction;
-              const outcome = requestForBudget.contextCompactionSummary
-                ? "summary_applied" as const
-                : measurement?.outcome === "masking_applied" ? "masking_applied" as const : null;
-              if (outcome) await compactionPublisher.settle(outcome, budgeted.request.contextCompaction && {
-                ...budgeted.request.contextCompaction,
-                beforeTokens: measurement?.beforeTokens ?? budgeted.request.contextCompaction.beforeTokens
-              });
-            }
-            if (budgeted.contextTruncation) {
-              await emit(
-                controller,
-                encoder,
-                input.repository,
-                runId,
-                contextTruncationArtifact(budgeted.contextTruncation)
-              );
-            }
-            return budgeted.request;
+            // Measure this round's actual messages, then decide. The request
+            // becomes the round, session and checkpoint request.
+            sessionRequest = await compactAnswerRequest(requestForBudget, toolBridge, signal);
+            return sessionRequest;
           },
+          // A clarification delivered while dispatching re-enters the consumer.
+          // Carry that exact summary state and projection to the next round.
+          dispatchedRequest: () => followups
+            ? requestWithoutRunFollowups(sessionRequest, followups.entries) ?? undefined
+            : undefined,
           signal,
           tools
         });
@@ -3163,8 +3143,18 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             providerResult = ordinaryResult;
           }
         } else {
-          providerResult = await streamProviderRequest(providerRequest);
+          // A hybrid request without a tool loop still has exactly one
+          // consumer and is never dispatched while it needs a summary.
+          providerResult = await streamProviderRequest(providerRequest.contextCompactionPolicy?.mode === "hybrid"
+            ? await compactAnswerRequest(
+              providerRequest,
+              input.toolBridge ?? providerToolBridges[providerRequest.provider as keyof typeof providerToolBridges],
+              signal
+            )
+            : providerRequest);
         }
+        // The answer exists; no later compaction cycle can start for this run.
+        await compactionPublisher.terminate();
         const attributedProviderResult = {
           ...providerResult,
           usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
@@ -3296,7 +3286,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           timeout_ms: originalFailure.timeout_ms, prisma_code: runDatabaseFailureCode(error)
         });
         if (cancelled) {
-          await compactionPublisher.settle("unknown").catch(() => undefined);
+          await compactionPublisher.terminate("unknown").catch(() => undefined);
           await input.repository.cancelPendingToolLoopCalls({ runId, userId: input.userId }).catch(() => undefined);
           await settleWorkspace("cancelled");
           await tokenBuffer.flush().catch(() => undefined);
@@ -3370,7 +3360,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               (failure instanceof CodexProtocolError ? failure.code : null) ??
               (failure instanceof WorkspaceRuntimeError ? failure.code : null) ??
               (deadlineExceeded ? "provider_request_timed_out" : observedCode !== "unknown" ? observedCode : "provider_stream_failed"));
-        await compactionPublisher.settle(contextCompactionFailureOutcome(failureCode)).catch(() => undefined);
+        await compactionPublisher.terminate(contextCompactionFailureOutcome(failureCode)).catch(() => undefined);
         const payload = safetyCode
           ? {
               code: safetyCode,

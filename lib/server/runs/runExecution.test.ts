@@ -113,6 +113,7 @@ import * as agentExecutor from "../agents/executor";
 import { agentLimits } from "../agents/config";
 import { DEFAULT_AGENT_POLICY } from "../../contracts/agentPolicy";
 import { conversationContextPolicy } from "./contextCompactionContract";
+import { decodeContextCompactionStatus } from "../../contracts/contextCompaction";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -1425,6 +1426,75 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
   toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300
 };
 
+/** Hybrid MCP tool loop on an 8,192-token window: 6,861 estimated budget tokens. */
+function compactionLoopFixture(input: Readonly<{
+  historyTokens: number;
+  resultChars: number;
+  onToolCall?(count: number): void;
+  repository?: ReturnType<typeof createRepository>;
+}>) {
+  const repository = input.repository ?? createRepository();
+  const observations = memoryToolObservations();
+  const name = "mcp_synthetic_records";
+  const mcp: McpRunPlanSnapshot = { version: 1,
+    servers: [{ fingerprint: "a".repeat(64), revisionId: "synthetic-revision", serverId: "synthetic-server", serverName: "Records" }],
+    tools: [{ definitionHash: "b".repeat(64), description: "Read records", inputSchema: { type: "object" },
+      name: "records", namespacedName: name, originalName: "records", serverId: "synthetic-server", serverName: "Records" }] };
+  const base = preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" });
+  const messages = [
+    { id: "old-history", role: "user" as const, content: textMessageContent(`OLD_HISTORY ${"h".repeat(input.historyTokens * 4)}`) },
+    ...Array.from({ length: 4 }, (_, index) => ({ id: `recent-${index}`, role: index % 2 ? "user" as const : "assistant" as const,
+      content: textMessageContent("Acknowledged.") })),
+    ...base.normalizedRequest.context!.messages
+  ];
+  const normalizedRequest: NormalizedRunRequest = {
+    ...base.normalizedRequest,
+    context: { mode: "branch_path", messages },
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
+    modelCapabilities: { ...base.normalizedRequest.modelCapabilities, contextWindow: 8_192 },
+    toolObservationVersion: 1
+  };
+  const prepared = { ...base, normalizedRequest, providerRequest: { ...normalizedRequest, attachments: [] } };
+  const summaries: ProviderRunRequest[] = [];
+  const answers: ProviderRunRequest[] = [];
+  const adapter = createAdapter(async function* (request) {
+    if (request.forceNonStreaming) {
+      summaries.push(request);
+      const output = JSON.stringify({ notes: "PRIVATE_NOTES old history condensed.", sourceRefs: ["old-history"] });
+      yield { type: "token", data: { delta: output } };
+      return providerResult({ finalText: output });
+    }
+    answers.push(request);
+    if (answers.length < 3) {
+      return providerResult({ finalText: "", toolCalls: [{ id: `read-${answers.length}`, name, arguments: {} }] });
+    }
+    yield { type: "token", data: { delta: "Done." } };
+    return providerResult({ finalText: "Done." });
+  });
+  let toolCalls = 0;
+  const callTool = vi.fn(async () => {
+    toolCalls += 1;
+    input.onToolCall?.(toolCalls);
+    return { isError: false, structuredContent: null, text: [`RESULT_${toolCalls} ${"r".repeat(input.resultChars)}`],
+      unsupportedContentTypes: [] };
+  });
+  const roundCheckpoints: Parameters<RunExecutionRepository["beginToolLoopProviderRound"]>[0][] = [];
+  const batchCheckpoints: Parameters<RunExecutionRepository["persistToolLoopCallBatch"]>[0][] = [];
+  const begin = repository.repository.beginToolLoopProviderRound;
+  repository.repository.beginToolLoopProviderRound = async (value) => { roundCheckpoints.push(value); return begin(value); };
+  const persist = repository.repository.persistToolLoopCallBatch;
+  repository.repository.persistToolLoopCallBatch = async (value) => { batchCheckpoints.push(value); return persist(value); };
+  const run = async () => parseSse(await createRunExecutionResponse({ ...executionInput({ adapter, prepared,
+    repository: repository.repository, mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } }),
+  observations: observations.service() }).text(), true);
+  const compactionStatuses = () => repository.persistedEvents.flatMap(({ event }) => {
+    const status = event.type === "artifact" && event.data.artifactType === "context_compaction"
+      ? decodeContextCompactionStatus(event.data.payload) : null;
+    return status ? [status] : [];
+  });
+  return { answers, batchCheckpoints, compactionStatuses, repository, roundCheckpoints, run, summaries };
+}
+
 function followupFixture(repository: RunExecutionRepository) {
   const entries: RunFollowup[] = [];
   let closed = false;
@@ -1509,6 +1579,113 @@ describe("run execution", () => {
     ]);
     expect(events.at(-1)).toMatchObject({ type: "done", data: { status: mode === "stop" ? "cancelled" : "complete" } });
     if (mode === "followup") expect(followups.entries[0]?.delivery).toBe("delivered");
+  });
+
+  it("buys one summary in the round tool results cross the budget and carries it through checkpoints", async () => {
+    const loop = compactionLoopFixture({ historyTokens: 5_000, resultChars: 7_000 });
+    const events = await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
+    expect(loop.answers).toHaveLength(3);
+    expect(loop.summaries).toHaveLength(1);
+    const [first, crossing, reuse] = loop.answers;
+    // Round 1 fits and its checkpoint records its real measurement.
+    expect(first?.contextCompactionSummary).toBeUndefined();
+    expect(first?.contextCompaction).toMatchObject({ outcome: "already_fits" });
+    expect(loop.roundCheckpoints[0]?.contextCompaction?.measurement).toEqual(first?.contextCompaction);
+    expect(loop.roundCheckpoints[0]?.contextCompaction?.measurement.beforeTokens).toBeGreaterThan(5_000);
+    // Round 2 crossed because of its tool result, bought the summary itself
+    // and was never dispatched over budget.
+    const summary = crossing?.contextCompactionSummary;
+    expect(summary?.notes).toContain("condensed");
+    expect(JSON.stringify(crossing?.context)).not.toContain("OLD_HISTORY");
+    for (const request of loop.answers) {
+      expect(request.contextCompaction?.outcome).not.toBe("needs_summary");
+      expect(request.contextCompaction!.afterTokens).toBeLessThanOrEqual(request.contextCompaction!.budgetTokens!);
+    }
+    const checkpoint = loop.batchCheckpoints.find(batch => batch.roundIndex === 2)?.contextCompaction;
+    expect(checkpoint?.summary).toEqual(summary);
+    expect(checkpoint?.summaryAttempts).toEqual([expect.objectContaining({ state: "committed" })]);
+    expect(checkpoint?.measurement).toEqual(crossing?.contextCompaction);
+    // Round 3 reuses the committed summary without another purchase.
+    expect(reuse?.contextCompactionSummary).toEqual(summary);
+    expect(JSON.stringify(reuse?.providerToolMessages)).toContain("RESULT_2");
+    const statuses = loop.compactionStatuses();
+    expect(statuses.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
+      [1, "running", "pending"], [1, "complete", "summary_applied"]
+    ]);
+    expect(statuses[0]?.beforeTokens).toBeGreaterThan(crossing!.contextCompaction!.budgetTokens!);
+    expect(statuses[1]?.afterTokens).toBe(crossing?.contextCompaction?.afterTokens);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_NOTES");
+    expect(events.filter(isContextEvent)).toHaveLength(4);
+  });
+
+  it("routes a clarification delivered during the loop through the same consumer into the checkpoint", async () => {
+    const repository = createRepository();
+    const followups = followupFixture(repository.repository);
+    const clarification = `Clarified constraint ${"f".repeat(7_000)}`;
+    const loop = compactionLoopFixture({
+      historyTokens: 4_000, repository, resultChars: 5_000,
+      onToolCall: count => { if (count === 1) followups.accept(clarification); }
+    });
+    await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
+    expect(followups.entries[0]?.delivery).toBe("delivered");
+    expect(loop.summaries).toHaveLength(1);
+    // The one purchase measured the clarified request, not the pre-delivery round.
+    expect(JSON.stringify(loop.summaries[0]?.content)).toContain("Clarified constraint");
+    const [, clarified, next] = loop.answers;
+    const summary = clarified?.contextCompactionSummary;
+    expect(summary).toBeDefined();
+    expect(JSON.stringify(clarified?.providerToolMessages)).toContain("Clarified constraint");
+    const checkpoint = loop.batchCheckpoints.find(batch => batch.roundIndex === 2)?.contextCompaction;
+    expect(checkpoint).toMatchObject({ followupRevision: 1, summary });
+    expect(checkpoint?.summaryAttempts).toEqual([expect.objectContaining({ state: "committed" })]);
+    expect(checkpoint?.measurement).toEqual(clarified?.contextCompaction);
+    expect(next?.contextCompactionSummary).toEqual(summary);
+    for (const request of loop.answers) {
+      expect(request.contextCompaction?.outcome).not.toBe("needs_summary");
+      expect(request.contextCompaction!.afterTokens).toBeLessThanOrEqual(request.contextCompaction!.budgetTokens!);
+    }
+    expect(loop.compactionStatuses().map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
+      [1, "running", "pending"], [1, "complete", "summary_applied"]
+    ]);
+  });
+
+  it("keeps a hybrid Knowledge answer on the legacy guard without buying a summary", async () => {
+    const finalText = "Total cholesterol is 5.3 mmol/L [K1].";
+    const repository = createRepository({ groundingResult: structuralGroundingResult(finalText) });
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    const base = fullContextKnowledgePreparedData();
+    const history = [
+      { id: "old-history", role: "user" as const, content: textMessageContent(`OLD_HISTORY ${"h".repeat(32_000)}`) },
+      ...Array.from({ length: 4 }, (_, index) => ({ id: `recent-${index}`, role: index % 2 ? "user" as const : "assistant" as const,
+        content: textMessageContent("Acknowledged.") }))
+    ];
+    const hybrid = <T extends NormalizedRunRequest>(request: T): T => {
+      const messages = [...history, ...request.context!.messages];
+      return { ...request, context: { mode: "branch_path", messages },
+        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
+        modelCapabilities: { ...request.modelCapabilities, contextWindow: 8_192 } };
+    };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      const providerText = JSON.stringify(plannedCurrentKnowledgeOutput(requests.length, "Total cholesterol is 5.3 mmol/L"));
+      yield { data: { delta: providerText }, type: "token" };
+      return providerResult({ finalText: providerText });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter, knowledgeProviderDispatch: dispatch.lifecycle, repository: repository.repository,
+      prepared: { ...base, normalizedRequest: hybrid(base.normalizedRequest), providerRequest: hybrid(base.providerRequest) }
+    })).text(), true);
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns[0]?.finalText).toBe(finalText);
+    expect(requests.some(request => request.forceNonStreaming)).toBe(false);
+    expect(JSON.stringify(requests)).not.toContain("OLD_HISTORY");
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "context_truncated")).toBe(true);
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "context_compaction")).toBe(false);
   });
 
   it("keeps a checkpoint visible when the subsequent answer provider fails", async () => {
