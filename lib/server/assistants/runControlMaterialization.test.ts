@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ModelParameterControls } from "../../contracts/catalog";
+import { buildOpenRouterChatRequest } from "../providers/openRouterChatRequest";
 import {
   assistantRunControlIssue,
   materializeAssistantRunParams
@@ -19,6 +20,23 @@ function controls(overrides: Partial<ModelParameterControls> = {}): ModelParamet
     temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true },
     ...overrides
   };
+}
+
+function openRouterWire(params: Record<string, unknown>) {
+  return buildOpenRouterChatRequest({
+    attachmentIds: [],
+    attachments: [],
+    chatId: "chat-1",
+    content: { blocks: [{ text: "Hello", type: "text" }] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+    modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
+    modelId: "vendor/model",
+    params,
+    prompt: { developer: null, system: null },
+    provider: "openrouter",
+    searchPlan: { mode: "all_selected", options: [] },
+    toolMode: "auto"
+  });
 }
 
 describe("materializeAssistantRunParams", () => {
@@ -242,6 +260,45 @@ describe("materializeAssistantRunParams", () => {
     if (result.ok) {
       expect(result.params.verbosity).toBeUndefined();
       expect(result.params.reasoning).toMatchObject({ enabled: false });
+    }
+  });
+
+  it.each([{}, { reasoningEffort: "none" }])("leaves OpenRouter reasoning unset without a reasoning control %j", (runControls) => {
+    const result = materializeAssistantRunParams({
+      baseParams: { provider: { dataCollection: "deny" } },
+      controls: controls({
+        reasoningEffort: { defaultValue: "none", options: ["none"], supported: false },
+        reasoningMode: undefined
+      }),
+      parameterProvider: "openrouter",
+      runControls
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.params).not.toHaveProperty("reasoning");
+      expect(openRouterWire(result.params)).not.toHaveProperty("reasoning");
+    }
+  });
+
+  it("keeps a saved OpenRouter none as an explicit Off on the wire", () => {
+    const reasoningControls = controls({
+      reasoningEffort: { defaultValue: "high", options: ["none", "low", "high"], supported: true },
+      reasoningMode: undefined
+    });
+    const materialize = (reasoningEffort: string) => materializeAssistantRunParams({
+      baseParams: { reasoning: { enabled: true, effort: "high" } },
+      controls: reasoningControls,
+      parameterProvider: "openrouter",
+      runControls: { reasoningEffort }
+    });
+    const off = materialize("none");
+    const low = materialize("low");
+
+    expect(off.ok && low.ok).toBe(true);
+    if (off.ok && low.ok) {
+      expect(openRouterWire(off.params).reasoning).toEqual({ enabled: false, effort: "none" });
+      expect(openRouterWire(low.params).reasoning).toEqual({ enabled: true, effort: "low" });
     }
   });
 });

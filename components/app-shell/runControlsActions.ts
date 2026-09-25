@@ -208,11 +208,17 @@ export function useRunControlsActions({
       const params: Record<string, unknown> = {
         ...baseParams,
         maxTokens,
-        reasoning: {
-          ...recordValue(baseParams.reasoning),
-          enabled: controls.reasoningEffort.supported && effort !== "none",
-          ...(usesVerbosityEffort || effort === "none" ? {} : { effort })
-        }
+        // Without a reasoning control the run leaves reasoning unset (provider
+        // default); a chosen `none` remains an explicit Off.
+        ...(controls.reasoningEffort.supported
+          ? {
+              reasoning: {
+                ...recordValue(baseParams.reasoning),
+                enabled: effort !== "none",
+                ...(usesVerbosityEffort || effort === "none" ? {} : { effort })
+              }
+            }
+          : {})
       };
 
       if (controls.stream.supported) {
