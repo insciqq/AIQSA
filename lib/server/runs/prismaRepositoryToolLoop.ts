@@ -52,7 +52,7 @@ import type {
 } from "../knowledge/runAdmission";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
-import { decodeConversationContextPolicy } from "./contextCompactionContract";
+import { CONTEXT_COMPACTION_LIMITS, decodeConversationContextPolicy, type BranchContextCheckpoint } from "./contextCompactionContract";
 import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { resolveProjectAccess } from "../projects/access";
@@ -66,6 +66,7 @@ import {
 import {
   checkpointAdoptingSummaryReceipts,
   checkpointWithContextSummaryReceipt,
+  decodeContextCompactionCheckpoint,
   mergeContextCompactionReceipts,
   parseToolLoopCheckpoint,
   AUTOMATIC_KNOWLEDGE_CALL_PREFIX,
@@ -88,6 +89,7 @@ import { settleTerminalMemorySource } from "./prismaRepositoryPreparation";
 import {
   activeMessageStatuses,
   activeToolLoopRun,
+  activeToolLoopRunSql,
   isRecoveredRunTerminalPayload,
   dispatchableModelRunStatuses,
   isRecord,
@@ -538,6 +540,7 @@ export type PrismaRunToolLoopOperations = Pick<
   | "cancelPendingToolLoopCalls"
   | "claimAutomaticKnowledgeCall"
   | "claimToolLoopCall"
+  | "loadBranchContextCheckpoints"
   | "loadCheckpointedToolLoopRun"
   | "loadFocusedKnowledgeCall"
   | "loadFocusedKnowledgeRecoveryScope"
@@ -1418,6 +1421,38 @@ export function createPrismaRunToolLoopOperations(
           }
         });
         return published!;
+      });
+    },
+    loadBranchContextCheckpoints: async (input) => {
+      const answerIds = [...new Set(input.assistantMessageIds)].slice(-CONTEXT_COMPACTION_LIMITS.reuseCandidateAnswers);
+      if (answerIds.length === 0) return [];
+      // Only the bounded compaction projection and accepted policy are read:
+      // never the provider continuation, tool transcript or run payloads.
+      const rows = await prismaClient.$queryRaw<Array<{
+        assistantMessageId: string;
+        compaction: unknown;
+        id: string;
+        policy: unknown;
+        userId: string;
+        userMessageId: string;
+      }>>(Prisma.sql`
+        SELECT r."id", r."userId", r."userMessageId", r."assistantMessageId",
+          r."toolLoopState" -> 'contextCompaction' AS "compaction",
+          r."normalizedRequest" -> 'contextCompactionPolicy' AS "policy"
+        FROM "ModelRun" AS r
+        WHERE r."chatId" = ${input.chatId} AND r."userId" = ${input.userId}
+          AND r."assistantMessageId" IN (${Prisma.join(answerIds)})
+          AND r."status" IN ('complete', 'cancelled', 'error') AND NOT ${activeToolLoopRunSql("r")}
+          AND r."toolLoopState" -> 'contextCompaction' -> 'summary' IS NOT NULL
+        ORDER BY r."createdAt" DESC, r."id" DESC
+        LIMIT 8
+      `);
+      return rows.flatMap((row): BranchContextCheckpoint[] => {
+        const compaction = decodeContextCompactionCheckpoint(row.compaction);
+        const policy = row.policy === null || row.policy === undefined ? null : decodeConversationContextPolicy(row.policy);
+        if (!compaction || row.policy !== null && row.policy !== undefined && !policy) return [];
+        return [{ assistantMessageId: row.assistantMessageId, compaction, policy, runId: row.id,
+          userId: row.userId, userMessageId: row.userMessageId }];
       });
     },
     loadCheckpointedToolLoopRun: async (input) => {

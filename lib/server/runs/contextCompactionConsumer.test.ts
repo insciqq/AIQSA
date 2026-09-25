@@ -297,6 +297,91 @@ describe("single compaction consumer", () => {
     });
   });
 
+  describe("notes carried from an earlier turn's checkpoint", () => {
+    const handle = `tor1_${"e".repeat(32)}`;
+    const carriedNotes = (notes = "Carried turn-one notes."): ContextSummary => ({
+      formatVersion: 1, id: `cs1_${"d".repeat(32)}`, notes, sourceDigest: "d".repeat(64), sourceRefs: ["u1", handle]
+    });
+    /** The exact branch as admitted; the frozen policy names the notes and their boundary u2. */
+    function carriedRequest(input: Readonly<{ delta?: number; notes?: string; window?: number }> = {}): ProviderRunRequest {
+      const messages = [
+        text(`Old synthetic fact. ${"o".repeat(3_400 * 4)}`, "u1"),
+        text("Earlier answer.", "a1", "assistant"),
+        text("Boundary question.", "u2"),
+        text(`Answer after the notes. ${"n".repeat((input.delta ?? 0) * 4)}`, "a2", "assistant"),
+        text("Later question.", "u3"),
+        text("Later answer.", "a3", "assistant"),
+        text("Current question.", "current")
+      ];
+      const base = hybridRequest();
+      const policy = conversationContextPolicy({ leafMessageId: "a3", messages, mode: "hybrid" });
+      return { ...base, content: messages.at(-1)!.content, context: { messages, mode: "branch_path" },
+        contextCompactionPolicy: { ...policy, reuse: { coveredMessageId: "u2", runId: "run-2", summary: carriedNotes(input.notes) } },
+        ...(input.window ? { modelCapabilities: { ...base.modelCapabilities, contextWindow: input.window } } : {}) };
+    }
+    const bought = (compaction: ReturnType<typeof consumer>) =>
+      compaction.summaryRequests.map((request) => JSON.stringify(request.content));
+
+    it("stands in for the covered prefix without a paid call after rechecking its sources", async () => {
+      const sourceAvailable = vi.fn(async () => true);
+      const compaction = consumer(carriedRequest(), { sourceAvailable });
+      const prepared = await compaction.run();
+      expect(compaction.summaryRequests).toHaveLength(0);
+      expect(sourceAvailable).toHaveBeenCalledWith([handle], expect.any(AbortSignal));
+      expect(prepared.context?.messages.map((message) => message.id)).toEqual([
+        `__context-summary-cs1_${"d".repeat(32)}`, "u2", "a2", "u3", "a3", "current"
+      ]);
+      expect(prepared.contextCompactionSummary).toEqual(carriedNotes());
+      expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(prepared.contextCompaction!.budgetTokens!);
+      // One settled cycle reports the reduction from the exact branch; nothing was bought.
+      expect(compaction.events.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([[1, "complete", "summary_applied"]]);
+      expect(compaction.events[0]!.beforeTokens).toBeGreaterThan(3_200);
+      expect(compaction.events[0]!.afterTokens).toBe(prepared.contextCompaction!.afterTokens);
+    });
+
+    it("buys one incremental summary of the previous notes plus the exact delta", async () => {
+      const compaction = consumer(carriedRequest({ delta: 2_300 }), { sourceAvailable: async () => true });
+      const prepared = await compaction.run();
+      expect(compaction.summaryRequests).toHaveLength(1);
+      const [envelope] = bought(compaction);
+      expect(envelope).toContain("previous-notes");
+      expect(envelope).toContain("Carried turn-one notes.");
+      expect(envelope).toContain("n".repeat(64));
+      expect(envelope).not.toContain("o".repeat(64));
+      expect(prepared.contextCompactionSummary?.id).not.toBe(carriedNotes().id);
+      expect(compaction.events.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
+        [1, "running", "pending"], [1, "complete", "summary_applied"]
+      ]);
+      expect(compaction.events[0]!.beforeTokens).toBeGreaterThan(3_200 + 2_000);
+    });
+
+    it("takes a fresh bounded plan without the notes when a covered source is no longer readable", async () => {
+      const compaction = consumer(carriedRequest(), { sourceAvailable: async () => false });
+      const prepared = await compaction.run();
+      expect(compaction.summaryRequests.length).toBeGreaterThan(0);
+      expect(bought(compaction).some((envelope) => envelope.includes("previous-notes") || envelope.includes("Carried turn-one"))).toBe(false);
+      expect(prepared.contextCompactionSummary?.id).not.toBe(carriedNotes().id);
+    });
+
+    it("keeps the exact branch when it fits the admitted binding, as after a switch to a larger window", async () => {
+      const sourceAvailable = vi.fn(async () => true);
+      const compaction = consumer(carriedRequest({ window: 64_000 }), { sourceAvailable });
+      const prepared = await compaction.run();
+      expect(sourceAvailable).not.toHaveBeenCalled();
+      expect(compaction.summaryRequests).toHaveLength(0);
+      expect(prepared.contextCompactionSummary).toBeUndefined();
+      expect(prepared.context?.messages[0]!.id).toBe("u1");
+      expect(compaction.events).toEqual([]);
+    });
+
+    it("does not carry notes that cannot fit the admitted binding", async () => {
+      const compaction = consumer(carriedRequest({ notes: "N".repeat(3_400 * 4) }), { sourceAvailable: async () => true });
+      const prepared = await compaction.run();
+      expect(bought(compaction).some((envelope) => envelope.includes("NNNNNNNN"))).toBe(false);
+      expect(prepared.contextCompactionSummary?.id).not.toBe(carriedNotes().id);
+    });
+  });
+
   it("keeps Knowledge answers on the legacy guard: trims prior turns and never needs a summary", () => {
     const request = hybridRequest({ history: 3_400 });
     const legacy = applyKnowledgeAnswerContextBudget({ bridge, request });

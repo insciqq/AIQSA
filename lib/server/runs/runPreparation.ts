@@ -36,7 +36,12 @@ import {
   type CatalogAdapterKind
 } from "../../domain/catalog";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
-import { conversationContextPolicy } from "./contextCompactionContract";
+import {
+  contextSummaryReuseCandidates,
+  conversationContextPolicy,
+  type ContextSummaryReuse
+} from "./contextCompactionContract";
+import { applyReusedContextSummary } from "./contextCompactionSummarizer";
 import {
   invalidRunParamsError,
   resolveAcceptedRunReasoningEffort,
@@ -161,7 +166,42 @@ type RunPreparationRepository = Pick<
   | "loadAttachments"
   | "loadConversationContextForExpectedLeaf"
   | "loadConversationContextForLeaf"
-> & Partial<Pick<RunRepository, "loadKnowledgeFullContextPassages">>;
+> & Partial<Pick<RunRepository, "loadBranchContextCheckpoints" | "loadKnowledgeFullContextPassages">>;
+
+/**
+ * Notes a hybrid admission freezes as a candidate instead of buying a summary
+ * of its whole branch again: the latest compatible checkpoint on this branch
+ * (`contextSummaryReuseCandidates`) whose notes, standing for their covered
+ * prefix, fit the admitted binding. Memory context and later tool results are
+ * unknown here, so the executor decides whether the exact branch needs them and
+ * rechecks their sources. This reads settled checkpoints only: no provider,
+ * tool or observation I/O happens during preparation.
+ */
+async function carriedContextSummary(input: Readonly<{
+  bridge?: ProviderToolBridge;
+  conversationMessages: readonly ProviderConversationMessage[];
+  repository: RunPreparationRepository;
+  request: ProviderRunRequest;
+  userId: string;
+}>): Promise<ContextSummaryReuse | null> {
+  const policy = input.request.contextCompactionPolicy;
+  const load = input.repository.loadBranchContextCheckpoints;
+  if (policy?.mode !== "hybrid" || !load) return null;
+  const prior = input.conversationMessages.slice(0, -1);
+  const assistantMessageIds = prior.flatMap((message) => message.role === "assistant" ? [message.id] : []);
+  if (assistantMessageIds.length === 0) return null;
+  const checkpoints = await load({ assistantMessageIds, chatId: input.request.chatId, userId: input.userId });
+  for (const reuse of contextSummaryReuseCandidates({
+    checkpoints, priorMessageIds: prior.map((message) => message.id), userId: input.userId
+  })) {
+    const projected = applyReusedContextSummary({ ...input.request, contextCompactionPolicy: { ...policy, reuse } });
+    if (projected && applyProviderRequestContextBudget({
+      ...(input.bridge ? { bridge: input.bridge } : {}),
+      request: projected
+    }).ok) return reuse;
+  }
+  return null;
+}
 
 export type RunPreparationDeps = Readonly<{
   artifacts?: import("../artifacts/service").ArtifactService;
@@ -2183,6 +2223,20 @@ export async function prepareRun(
     const reserve = followupAdmission.budgetTokens + (inheritedFollowups?.entries.reduce((sum, entry) => sum + followupTokenCost(entry.text), 0) ?? 0);
     normalizedRequest.followupContextReserveTokens = reserve;
     providerRequest.followupContextReserveTokens = reserve;
+  }
+  // The exact branch stays the admitted context. Knowledge answer routes keep
+  // the legacy guard and never carry notes.
+  const reuse = answeringPlan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT ? null : await carriedContextSummary({
+    ...(toolBridge ? { bridge: toolBridge } : {}),
+    conversationMessages,
+    repository: deps.repository,
+    request: providerRequest,
+    userId: input.userId
+  });
+  if (reuse && providerRequest.contextCompactionPolicy) {
+    const contextCompactionPolicy = { ...providerRequest.contextCompactionPolicy, reuse };
+    normalizedRequest.contextCompactionPolicy = contextCompactionPolicy;
+    providerRequest.contextCompactionPolicy = contextCompactionPolicy;
   }
   if (agent) {
     try { agentPrompts(providerRequest); } catch { return failure("agent_context_too_large", 413); }

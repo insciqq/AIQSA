@@ -1,3 +1,4 @@
+import type { ContextPlanMeasurement } from "../../contracts/contextCompaction";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
 import { ObservationStoreError } from "../toolObservations/contract";
@@ -7,6 +8,7 @@ import type { ProviderToolBridge } from "../tools/types";
 import { contextSummaryMessageId, type ContextObservation } from "./contextCompactionContract";
 import { contextCompactionFailureOutcome, type ContextCompactionPublisher } from "./contextCompactionEvents";
 import {
+  applyReusedContextSummary,
   ContextSummaryError,
   executeContextSummary,
   summaryNeedsProvider,
@@ -24,10 +26,40 @@ function failureCode(error: unknown): string | null {
     : null;
 }
 
-function appliedSummary(request: ProviderRunRequest): boolean {
+/** Notes this run bought (not notes carried from an earlier turn) are applied. */
+function appliedOwnSummary(request: ProviderRunRequest): boolean {
   const summary = request.contextCompactionSummary;
-  return summary !== undefined &&
+  return summary !== undefined && summary.id !== request.contextCompactionPolicy?.reuse?.summary.id &&
     request.context?.messages.some((message) => message.id === contextSummaryMessageId(summary)) === true;
+}
+
+type BudgetedRequest = Extract<ProviderRequestContextBudgetResult, { ok: true }>;
+
+/**
+ * Carried checkpoint notes, frozen at admission, replace the covered branch
+ * prefix only when the exact branch would need a summary, the projection fits
+ * this binding, and every retained source the notes cite is still readable by
+ * this run through the observation authority. Otherwise the exact branch takes
+ * the ordinary bounded path, which never sees another run's notes.
+ */
+async function withCarriedSummary(
+  input: CompactedProviderRequestInput,
+  budget: (request: ProviderRunRequest) => ProviderRequestContextBudgetResult
+): Promise<Readonly<{ beforeTokens: number; result: BudgetedRequest }> | null> {
+  const { request } = input;
+  const reuse = request.contextCompactionPolicy?.reuse;
+  if (!reuse || request.contextCompactionPolicy?.mode !== "hybrid" || request.contextCompactionSummary) return null;
+  const exact = budget(request);
+  if (!exact.ok || exact.request.contextCompaction?.outcome !== "needs_summary") return null;
+  const projected = applyReusedContextSummary(exact.request);
+  const fitted = projected ? budget(projected) : null;
+  if (!fitted?.ok) return null;
+  const handles = reuse.summary.sourceRefs.filter((ref) => ref.startsWith("tor1_"));
+  if (handles.length > 0 && input.sourceAvailable) {
+    input.signal.throwIfAborted();
+    if (!(await input.sourceAvailable(handles, input.signal))) return null;
+  }
+  return { beforeTokens: exact.request.contextCompaction.beforeTokens, result: fitted };
 }
 
 export type CompactedProviderRequestInput = Readonly<{
@@ -56,10 +88,11 @@ export type CompactedProviderRequestInput = Readonly<{
  * It measures the request's actual messages first and decides only from that
  * fresh measurement; a measurement carried from an earlier round never buys or
  * skips a summary. The returned request is exactly what may be dispatched and
- * checkpointed. At most one summary cycle runs per request: an applied summary
- * covers all prior history, so the planner never asks again, and a request that
- * still does not fit fails as irreducible overflow instead of falling back to
- * legacy trimming. The published outcome and the thrown code always agree.
+ * checkpointed. At most one summary cycle runs per request: notes bought here
+ * cover all prior history (carried notes plus the exact messages after them),
+ * so the planner never asks again, and a request that still does not fit fails
+ * as irreducible overflow instead of falling back to legacy trimming. The
+ * published outcome and the thrown code always agree.
  */
 export async function prepareCompactedProviderRequest(
   input: CompactedProviderRequestInput
@@ -70,16 +103,20 @@ export async function prepareCompactedProviderRequest(
     ...(input.observations ? { observations: input.observations } : {}),
     request
   });
-  const measured = budget(input.request);
+  const carried = await withCarriedSummary(input, budget);
+  const measured = carried?.result ?? budget(input.request);
   if (!measured.ok) {
     if (publisher.running) await publisher.settle(contextCompactionFailureOutcome("context_too_large"));
     throw input.failure("context_too_large", measured.error.message);
   }
-  let prepared: Extract<ProviderRequestContextBudgetResult, { ok: true }> = measured;
+  // Carried notes compact this request: its cycle reports the exact branch's estimate.
+  const cycleMeasurement = (measurement: ContextPlanMeasurement | undefined) =>
+    carried && measurement ? { ...measurement, beforeTokens: carried.beforeTokens } : measurement;
+  let prepared: BudgetedRequest = measured;
   if (summaryNeedsProvider(measured.request)) {
     input.signal.throwIfAborted();
     const source = measured.request;
-    await publisher.begin(source.contextCompaction);
+    await publisher.begin(cycleMeasurement(source.contextCompaction));
     try {
       await input.authorize?.();
     } catch (error) {
@@ -132,8 +169,13 @@ export async function prepareCompactedProviderRequest(
   } else if (publisher.running) {
     // A cycle left running by a lost executor: a summary committed to the
     // checkpoint has been applied again; otherwise its outcome is unknown.
-    if (appliedSummary(prepared.request)) await publisher.settle("summary_applied", prepared.request.contextCompaction);
-    else await publisher.settle("unknown");
+    if (carried || appliedOwnSummary(prepared.request)) {
+      await publisher.settle("summary_applied", cycleMeasurement(prepared.request.contextCompaction));
+    } else await publisher.settle("unknown");
+  } else if (carried) {
+    // Applying carried notes is this request's compaction, reported once with
+    // the reduction from the exact branch; nothing was bought.
+    await publisher.settle("summary_applied", cycleMeasurement(prepared.request.contextCompaction));
   } else if (prepared.request.contextCompaction?.outcome === "masking_applied") {
     // Masking is reported in the round that masked, with that round's numbers.
     // A summary carried from an earlier round does not make it a summary cycle.

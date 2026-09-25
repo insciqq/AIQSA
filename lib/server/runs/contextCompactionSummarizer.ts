@@ -12,6 +12,7 @@ import type { ProviderAdapter, ProviderConversationMessage, ProviderRunRequest }
 import {
   CONTEXT_COMPACTION_LIMITS,
   contextDigest,
+  contextSummaryCoverage,
   contextSummaryMessageId,
   contextSummaryTail,
   decodeContextSummary,
@@ -492,15 +493,19 @@ function replacedHistoryBytes(request: ProviderRunRequest): number {
     replaced.reduce((total, message) => total + Buffer.byteLength(messageText(message), "utf8"), 0);
 }
 
+/** Notes carried from an earlier turn describe that turn's request, never this
+ * one: they are never current here, even for an identical message. */
 export function contextSummaryIsCurrent(request: ProviderRunRequest): boolean {
   const summary = request.contextCompactionSummary;
-  return summary !== undefined && summary.sourceRefs.includes(contextSummarySourceRevision(request));
+  return summary !== undefined && summary.id !== request.contextCompactionPolicy?.reuse?.summary.id &&
+    summary.sourceRefs.includes(contextSummarySourceRevision(request));
 }
 
-/** Rebuilds the prior branch as: the notes, a token-bounded exact tail, the
- * exact pins in their order and the current message. Pins keep their bytes and
- * stay directly before the current input; a superseded summary note is never
- * kept as "recent" history. */
+/** Rebuilds the prior branch as: the notes, the covered messages within the
+ * token-bounded exact tail, every uncovered message, the exact pins in their
+ * order and the current message. Pins keep their bytes and stay directly
+ * before the current input; a superseded summary note is never kept as
+ * "recent" history, and history the notes do not cover is never dropped. */
 export function applyContextSummaryToRequest(
   request: ProviderRunRequest,
   summary: ContextSummary,
@@ -510,7 +515,8 @@ export function applyContextSummaryToRequest(
   const current = messages.at(-1);
   const pins = messages.filter((message) => message !== current && message.purpose !== undefined);
   const prior = messages.filter((message) => message !== current && message.purpose === undefined && !isContextSummaryMessage(message));
-  const tail = contextSummaryTail(prior, request.contextCompaction?.budgetTokens ?? null);
+  const tail = new Set(contextSummaryTail(prior, request.contextCompaction?.budgetTokens ?? null));
+  const { covered, uncovered } = contextSummaryCoverage(request, summary, prior);
   const summaryMessage: ProviderConversationMessage = {
     content: { blocks: [{ text: `Model-derived context notes (verify against exact sources):\n${summary.notes}`, type: "text" }] },
     id: contextSummaryMessageId(summary),
@@ -518,11 +524,23 @@ export function applyContextSummaryToRequest(
   };
   return {
     ...request,
-    context: { mode: "branch_path", messages: [summaryMessage, ...tail, ...pins, ...(current ? [current] : [])],
+    context: { mode: "branch_path", messages: [summaryMessage, ...covered.filter((message) => tail.has(message)), ...uncovered,
+      ...pins, ...(current ? [current] : [])],
       ...(request.context?.summary ? { summary: request.context.summary } : {}) },
     contextCompactionSummary: summary,
     ...(attempts.length ? { contextCompactionSummaryAttempts: attempts.slice(-CONTEXT_COMPACTION_LIMITS.summaryReceipts) } : {})
   };
+}
+
+/** The exact branch with the carried checkpoint notes of its accepted policy
+ * applied, or null when their frozen boundary is not a prior message here. */
+export function applyReusedContextSummary(request: ProviderRunRequest): ProviderRunRequest | null {
+  const reuse = request.contextCompactionPolicy?.reuse;
+  const messages = request.context?.messages ?? [];
+  const current = messages.at(-1);
+  if (!reuse || !messages.some((message) => message !== current && message.purpose === undefined &&
+    message.id === reuse.coveredMessageId)) return null;
+  return applyContextSummaryToRequest(request, reuse.summary);
 }
 
 function mintSummary(notes: string, source: ContextSummarySource): ContextSummary {

@@ -3587,6 +3587,47 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("reads only the settled owner's branch checkpoints that hold notes, and only their compaction projection", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const settled = await createActiveRun(repository, userId, "Carried notes");
+      const summary: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Derived notes.",
+        sourceDigest: "b".repeat(64), sourceRefs: ["message-old"] };
+      const committed: ContextSummaryAttempt = { attempt: 1, bindingDigest: "c".repeat(64), id: `csa1_${"1".repeat(32)}`,
+        sourceDigest: summary.sourceDigest, state: "committed", usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13 } };
+      const compaction = (runId: string, withSummary: boolean): ContextCompactionCheckpoint => ({
+        branchId: "message-current", followupDigest: "e".repeat(64), followupRevision: 0,
+        measurement: { afterTokens: 30, beforeTokens: 300, budgetTokens: 200, legacyFallback: false,
+          maskedBatches: 0, maskedObservations: 0, outcome: "already_fits", version: 1 },
+        observationRefs: [], ownerId: userId, pinDigest: "f".repeat(64), policyRevision: "hybrid-v1",
+        providerProjectionRevision: 1, recentTailCallIds: [], runId, sourceDigest: "1".repeat(64), version: 1,
+        ...(withSummary ? { summary, summaryAttempts: [committed] } : {})
+      });
+      await expect(repository.beginToolLoopProviderRound({ contextCompaction: compaction(settled.runId, true),
+        providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: settled.runId, userId })).resolves.toBe("started");
+      const load = (ids: readonly string[], owner = userId, chatId = settled.chatId) =>
+        repository.loadBranchContextCheckpoints!({ assistantMessageIds: ids, chatId, userId: owner });
+
+      // An active run's checkpoint is still changing and is never a candidate.
+      await expect(load([settled.assistantMessageId])).resolves.toEqual([]);
+      await prisma.modelRun.update({ data: { status: "complete" }, where: { id: settled.runId } });
+      const [found, ...rest] = await load([settled.assistantMessageId, "not-on-this-chat"]);
+      expect(rest).toEqual([]);
+      expect(found).toMatchObject({ assistantMessageId: settled.assistantMessageId, runId: settled.runId, userId,
+        compaction: { runId: settled.runId, summary, summaryAttempts: [committed] } });
+      expect(found!.userMessageId).toEqual(expect.any(String));
+      // Another user, another chat, or a checkpoint without notes yields nothing.
+      await expect(load([settled.assistantMessageId], `${userId}-other`)).resolves.toEqual([]);
+      await expect(load([settled.assistantMessageId], userId, "another-chat")).resolves.toEqual([]);
+      await expect(load([])).resolves.toEqual([]);
+      const plain = await createActiveRun(repository, userId, "No notes");
+      await expect(repository.beginToolLoopProviderRound({ contextCompaction: compaction(plain.runId, false),
+        providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: plain.runId, userId })).resolves.toBe("started");
+      await prisma.modelRun.update({ data: { status: "complete" }, where: { id: plain.runId } });
+      await expect(load([plain.assistantMessageId], userId, plain.chatId)).resolves.toEqual([]);
+    });
+  });
+
   it("settles concurrent terminal writers and duplicate cancels exactly once", async () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);

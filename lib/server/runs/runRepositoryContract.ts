@@ -65,6 +65,7 @@ import type {
 } from "../providers/types";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { ContextCompactionCheckpoint } from "../../contracts/contextCompaction";
+import type { BranchContextCheckpoint } from "./contextCompactionContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import type {
@@ -732,6 +733,14 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<CheckpointedToolLoopRun | null>;
+  /** Decoded compaction checkpoints holding notes, of the user's settled runs
+   * whose answers are among the given messages of one chat; newest first and
+   * bounded. Admission decides compatibility; this performs no other I/O. */
+  loadBranchContextCheckpoints?(input: {
+    assistantMessageIds: readonly string[];
+    chatId: string;
+    userId: string;
+  }): Promise<readonly BranchContextCheckpoint[]>;
   /** Server-only checkpoint for the one focused Knowledge operation. */
   loadFocusedKnowledgeCall?(input: {
     runId: string;
