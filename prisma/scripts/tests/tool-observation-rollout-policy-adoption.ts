@@ -42,9 +42,10 @@ export const toolObservationRolloutPolicyProofSql = `
 DO $$ BEGIN
   IF (SELECT count(*) FROM "_ObservationRolloutFixture") <> 1
     THEN RAISE EXCEPTION 'observation_rollout_fixture_missing'; END IF;
-  -- The new column defaults to Off; every existing policy value is unchanged.
+  -- The new column defaults to v1 (observations and compaction on without an
+  -- administrator action); every existing policy value is unchanged.
   IF NOT EXISTS (SELECT 1 FROM "ModelPolicy" p JOIN "_ObservationRolloutFixture" f ON f.id = p.id
-    WHERE p."toolObservationPolicy" = 'off'
+    WHERE p."toolObservationPolicy" = 'v1'
       AND p."defaultProviderModelId" IS NOT DISTINCT FROM f."defaultProviderModelId"
       AND p."reasoningEffort" IS NOT DISTINCT FROM f."reasoningEffort"
       AND p."memoryAdmissionTimeoutSeconds" = f."memoryAdmissionTimeoutSeconds"
@@ -63,10 +64,11 @@ DO $$ BEGIN
       AND NOT (r."normalizedRequest" ? 'toolObservationVersion')
       AND c.state = f."callState" AND c.result = f."callResult" AND c."updatedAt" = f."callUpdatedAt")
     THEN RAISE EXCEPTION 'observation_rollout_changed_historical_run'; END IF;
-  UPDATE "ModelPolicy" SET "toolObservationPolicy" = 'v1' WHERE id = 'installation';
+  -- Off remains the operator's kill switch.
+  UPDATE "ModelPolicy" SET "toolObservationPolicy" = 'off' WHERE id = 'installation';
   IF NOT EXISTS (SELECT 1 FROM "ModelPolicy"
-    WHERE id = 'installation' AND "toolObservationPolicy" = 'v1')
-    THEN RAISE EXCEPTION 'observation_rollout_policy_v1_not_persisted'; END IF;
+    WHERE id = 'installation' AND "toolObservationPolicy" = 'off')
+    THEN RAISE EXCEPTION 'observation_rollout_policy_off_not_persisted'; END IF;
   BEGIN
     UPDATE "ModelPolicy" SET "toolObservationPolicy" = 'future' WHERE id = 'installation';
     RAISE EXCEPTION 'observation_rollout_policy_accepts_unknown';

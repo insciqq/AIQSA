@@ -600,8 +600,9 @@ function runBootstrapProof(database: string): void {
     "initial administrator inherits organization Search");
   psqlScalar(database, `UPDATE "UserSettings" SET "defaultSearchPlan" = '{"mode":"all_selected","optionIds":[]}';`);
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "");
-  assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "off");
-  psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096, "toolObservationPolicy" = 'v1' WHERE id = 'installation';`);
+  assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "v1",
+    "a fresh installation enables observations and compaction without an administrator action");
+  psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096, "toolObservationPolicy" = 'off' WHERE id = 'installation';`);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "MemoryUtilityModelPolicy" WHERE id = 'installation'
     AND "providerModelId" IS NULL AND "reasoningEffort" IS NULL AND "assignmentSource" = 'UNASSIGNED' AND version = 1;`), "1",
     "fresh bootstrap leaves Memory available for verified automatic setup");
@@ -618,7 +619,7 @@ function runBootstrapProof(database: string): void {
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "synthesisEnabled" OR "decayEnabled";`), "0",
     "bootstrap adoption must preserve later Memory opt-outs");
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "4096", "bootstrap must retain the operator's MCP output allowance");
-  assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "v1", "bootstrap must retain the operator's observation rollout policy");
+  assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "off", "bootstrap must retain the operator's observation kill switch");
   assert.equal(
     bootstrapFoundationDigest(database),
     freshDigest,

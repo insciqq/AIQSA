@@ -2,17 +2,20 @@
 
 import type { AdminModelPolicyUpdateInput } from "@/components/admin/adminModelPolicyApi";
 import { cardClass, compactInputClass, compactSelectClass, sectionHeadingClass } from "@/components/admin/roles/rolesControls";
-import { UiV2Button } from "@/components/ui-v2";
+import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminDefaultAnswerModelCandidate, AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
 import { MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS, MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS, isMcpAutoDiscoveryOutputTokens, MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
+import type { ToolObservationPolicy } from "@/lib/contracts/toolObservationPolicy";
 import { useMemo, useState } from "react";
 
 type Draft = Readonly<{
   calls: string;
   effort: string;
   mcpTools: string;
+  /** Empty while the saved policy is unknown. */
+  observation: ToolObservationPolicy | "";
   outputTokens: string;
   outputMode: "model" | "manual";
   modelId: string;
@@ -20,7 +23,11 @@ type Draft = Readonly<{
   timeout: string;
 }>;
 
-const emptyDraft: Draft = { calls: "", effort: "", mcpTools: "", outputTokens: "", outputMode: "model", modelId: "", rounds: "", timeout: "" };
+const emptyDraft: Draft = {
+  calls: "", effort: "", mcpTools: "", observation: "", outputTokens: "", outputMode: "model", modelId: "", rounds: "", timeout: ""
+};
+
+const OBSERVATION_POLICY_LABEL = "Tool result store and context compaction";
 
 function draftFor(catalog: AdminModelPolicyCatalog | null): Draft {
   if (!catalog) return emptyDraft;
@@ -28,6 +35,7 @@ function draftFor(catalog: AdminModelPolicyCatalog | null): Draft {
     calls: String(catalog.policy.maxToolCalls),
     effort: catalog.policy.reasoningEffort ?? "",
     mcpTools: String(catalog.policy.maxMcpToolsPerDiscovery),
+    observation: catalog.policy.toolObservationPolicy ?? "",
     outputTokens: String(catalog.policy.mcpAutoDiscoveryMaxOutputTokens ?? MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.fallbackTokens),
     outputMode: catalog.policy.mcpAutoDiscoveryMaxOutputTokens === null ? "model" : "manual",
     modelId: catalog.policy.defaultModel?.id ?? "",
@@ -63,7 +71,8 @@ export const NO_REACHABLE_DEFAULT_COPY =
 
 /**
  * Chat defaults (PRD 5.5): the installation default model with its reasoning
- * effort and the per-answer tool limits, saved together with one `Save`.
+ * effort, the per-answer tool limits and the observation/compaction switch,
+ * saved together with one `Save` under the policy version.
  */
 export function AdminChatDefaultsCard({
   busy,
@@ -113,7 +122,8 @@ export function AdminChatDefaultsCard({
   const modelChanged = draft.modelId !== current.modelId || draft.effort !== current.effort;
   const limitsChanged = (["calls", "mcpTools", "outputMode", "outputTokens", "rounds", "timeout"] as const)
     .filter((key) => draft[key] !== current[key]).length;
-  const changed = (modelChanged ? 1 : 0) + limitsChanged;
+  const observationChanged = draft.observation !== "" && draft.observation !== current.observation;
+  const changed = (modelChanged ? 1 : 0) + limitsChanged + (observationChanged ? 1 : 0);
   const canSave = Boolean(catalog) && changed > 0 && effortValid && limitsValid && !busy;
   const currentUnreachable = Boolean(catalog?.policy.defaultModel) &&
     !reachable.some((item) => item.id === catalog?.policy.defaultModel?.id);
@@ -132,7 +142,8 @@ export function AdminChatDefaultsCard({
         maxToolRounds: parsed.rounds!,
         mcpAutoDiscoveryTimeoutSeconds: draft.timeout === "" ? null : parsed.timeout!,
         mcpAutoDiscoveryMaxOutputTokens: draft.outputMode === "model" ? null : parsed.outputTokens!
-      } : {})
+      } : {}),
+      ...(observationChanged && draft.observation !== "" ? { toolObservationPolicy: draft.observation } : {})
     });
     if (message) setFormError(message);
     else setEdits({});
@@ -274,6 +285,23 @@ export function AdminChatDefaultsCard({
               Leave discovery timeout blank to use the System Model’s response timeout. Tool calls use their MCP server’s timeout.
             </p>
           </div>
+        <div className="flex min-w-0 items-center justify-between gap-6 border-t border-trace-subtle px-5 py-4">
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-ink">{OBSERVATION_POLICY_LABEL}</span>
+            <span className="mt-0.5 block text-xs leading-5 text-ink-muted">
+              {draft.observation === ""
+                ? "The saved setting is unavailable. Reload to change it."
+                : "On by default. Keeps full tool results readable on request and compacts long chats with summaries from the answer model. Off is a kill switch: new answers use the previous trimming. Answers already started keep their mode."}
+            </span>
+          </span>
+          <UiV2Switch
+            checked={draft.observation === "v1"}
+            className="shrink-0"
+            disabled={!catalog || busy || draft.observation === ""}
+            label={OBSERVATION_POLICY_LABEL}
+            onChange={(enabled) => setEdits((previous) => ({ ...previous, observation: enabled ? "v1" : "off" }))}
+          />
+        </div>
         <div className="flex flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">
           <p className="mr-auto min-w-0 text-xs text-ink-muted" role="status">
             {error ?? (loading && !catalog

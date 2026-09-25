@@ -1,5 +1,5 @@
 ALTER TABLE "ModelPolicy"
-  ADD COLUMN "toolObservationPolicy" VARCHAR(8) NOT NULL DEFAULT 'off';
+  ADD COLUMN "toolObservationPolicy" VARCHAR(8) NOT NULL DEFAULT 'v1';
 
 ALTER TABLE "ModelPolicy"
   ADD CONSTRAINT "ModelPolicy_tool_observation_policy_check"

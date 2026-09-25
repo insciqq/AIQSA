@@ -30,7 +30,9 @@ export type AdminModelPolicyCatalog = {
     maxMcpToolsPerDiscovery: number;
     maxToolCalls: number;
     maxToolRounds: number;
-    /** Additive response field; absent older admin snapshots fail closed to Off. */
+    /** Observation store and context compaction for new answers (installation
+     * default `v1`, `off` is the kill switch). An absent value is unknown and
+     * never displayed as either state. */
     toolObservationPolicy?: ToolObservationPolicy;
     updatedAt: string;
     updatedBy: { displayName: string; id: string } | null;
