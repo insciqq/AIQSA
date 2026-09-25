@@ -1373,3 +1373,35 @@ describe("Prisma context summary receipts", () => {
     expect(store.run.toolLoopState).toBeNull();
   });
 });
+
+describe("branch context checkpoint candidates", () => {
+  it("offers a failed run's committed notes while its checkpoint can still change only through that receipt", async () => {
+    const queries: Prisma.Sql[] = [];
+    const compaction: ContextCompactionCheckpoint = {
+      branchId: "message-current", followupDigest: "e".repeat(64), followupRevision: 0,
+      measurement: { afterTokens: 30, beforeTokens: 300, budgetTokens: 200, legacyFallback: false,
+        maskedBatches: 0, maskedObservations: 0, outcome: "already_fits", version: 1 },
+      observationRefs: [], ownerId: "user-1", pinDigest: "f".repeat(64), policyRevision: "hybrid-v1",
+      providerProjectionRevision: 1, recentTailCallIds: [], runId: "run-failed", sourceDigest: "1".repeat(64), version: 1,
+      summary: { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Derived notes.", sourceDigest: "b".repeat(64), sourceRefs: [] },
+      summaryAttempts: [{ attempt: 1, bindingDigest: "c".repeat(64), id: `csa1_${"1".repeat(32)}`, sourceDigest: "b".repeat(64),
+        state: "committed", usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13 } }]
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      $queryRaw: vi.fn(async (query: Prisma.Sql) => {
+        queries.push(query);
+        return [{ assistantMessageId: "assistant-1", compaction, id: "run-failed", policy: null, userId: "user-1", userMessageId: "user-message-1" }];
+      })
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadBranchContextCheckpoints!({ assistantMessageIds: ["assistant-1"], chatId: "chat-1", userId: "user-1" }))
+      .resolves.toEqual([expect.objectContaining({ compaction, runId: "run-failed" })]);
+    const sql = queries[0]!.sql.replace(/\s+/gu, " ");
+    // Settled runs (and terminal-marked failures) qualify as before; a failure
+    // recovery may still resume qualifies only by a committed receipt for
+    // exactly the checkpoint notes, which later work cannot revoke.
+    expect(sql).toContain(`r."status" IN ('complete', 'cancelled', 'error')`);
+    expect(sql).toContain(`AND (NOT ("r"."status" IN ('streaming', 'queued', 'in_progress') OR ("r"."status" = 'error' AND NOT COALESCE(`);
+    expect(sql).toContain(`-> 'summaryAttempts' @> jsonb_build_array(jsonb_build_object( 'state', 'committed', ` +
+      `'sourceDigest', r."toolLoopState" -> 'contextCompaction' -> 'summary' -> 'sourceDigest' )), false))`);
+  });
+});

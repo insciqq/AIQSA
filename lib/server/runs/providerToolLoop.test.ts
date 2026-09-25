@@ -876,7 +876,7 @@ describe("provider tool loop with transcript compaction", () => {
       bridge: openAIResponsesToolBridge, failure: (code, message) => Object.assign(new Error(message), { code }),
       observations: contextObservationsFromResults(settled),
       publisher: createContextCompactionPublisher(async () => undefined),
-      receipts: { claim: async () => undefined, settle: async () => undefined },
+      receipts: { claim: async () => undefined, dispatch: async () => undefined, settle: async () => undefined },
       request: roundRequest, signal: new AbortController().signal, summaryAdapter
     });
     const dispatched: ProviderRunRequest[] = [];

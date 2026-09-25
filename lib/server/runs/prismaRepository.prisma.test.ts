@@ -3626,6 +3626,13 @@ describe("Prisma-backed run repository", () => {
         providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: plain.runId, userId })).resolves.toBe("started");
       await prisma.modelRun.update({ data: { status: "complete" }, where: { id: plain.runId } });
       await expect(load([plain.assistantMessageId], userId, plain.chatId)).resolves.toEqual([]);
+      // A provider failure without a terminal marker may still be resumed, yet
+      // notes it committed are final: its committed receipt keeps them offered.
+      await prisma.modelRun.update({ data: { errorPayload: { code: "provider_stream_failed", message: "Upstream failed." },
+        status: "error" }, where: { id: settled.runId } });
+      await expect(load([settled.assistantMessageId])).resolves.toEqual([
+        expect.objectContaining({ compaction: expect.objectContaining({ summary }), runId: settled.runId })
+      ]);
       // A Knowledge run keeps the legacy guard: even its historical notes are never read.
       const accepted = await prisma.modelRun.findUniqueOrThrow({ select: { normalizedRequest: true }, where: { id: settled.runId } });
       await prisma.modelRun.update({ data: { normalizedRequest: { ...(accepted.normalizedRequest as Prisma.JsonObject),
