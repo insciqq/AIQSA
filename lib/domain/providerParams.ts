@@ -114,6 +114,9 @@ export type OpenRouterParams = {
     structuredOutputToolChoice?: "auto" | "required";
     zdr: boolean;
   };
+  /** Tri-state after normalization: `enabled` requests reasoning, `effort:
+   * "none"` is an explicit Off, and otherwise the request omits the directive
+   * so the provider default applies. */
   reasoning: {
     enabled: boolean;
     effort: ReasoningEffort;
@@ -308,7 +311,11 @@ export function normalizeOpenRouterParams(params: Record<string, unknown> = {}):
     provider.structuredOutputToolChoice ?? provider.structured_output_tool_choice
   );
   const reasoningEnabled = booleanValue(reasoning.enabled, defaults.reasoning.enabled);
-  const reasoningEffort = openRouterEffort(reasoning.effort, defaults.reasoning.effort);
+  // Only an explicit Off clears a stale effort; unset reasoning must not
+  // disable the provider default for every unconfigured model.
+  const reasoningEffort = reasoning.enabled === false
+    ? "none"
+    : openRouterEffort(reasoning.effort, defaults.reasoning.effort);
 
   return {
     maxTokens,
@@ -333,9 +340,7 @@ export function normalizeOpenRouterParams(params: Record<string, unknown> = {}):
     },
     reasoning: {
       enabled: reasoningEnabled,
-      // An explicit disabled state must not retain a stale enabled effort.
-      // OpenRouter treats an omitted reasoning object as provider default.
-      effort: reasoningEnabled ? reasoningEffort : "none",
+      effort: reasoningEffort,
       exclude: booleanValue(reasoning.exclude, defaults.reasoning.exclude),
       maxTokens:
         numberValue(reasoning.maxTokens, 0) ||

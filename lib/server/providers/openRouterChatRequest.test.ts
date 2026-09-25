@@ -158,6 +158,17 @@ describe("OpenRouter request builders", () => {
     expect(body.reasoning).toEqual({ enabled: false, effort: "none" });
   });
 
+  it("keeps the provider reasoning default unless reasoning is explicitly configured", () => {
+    const body = (params: Record<string, unknown>) => buildOpenRouterChatRequest(request({ params }));
+    expect(body({})).not.toHaveProperty("reasoning");
+    expect(body({ reasoning: {} })).not.toHaveProperty("reasoning");
+    expect(body({ reasoning: { enabled: false, effort: "high" } }).reasoning)
+      .toEqual({ enabled: false, effort: "none" });
+    expect(body({ reasoning: { enabled: true, effort: "high" } }).reasoning)
+      .toEqual({ enabled: true, effort: "high" });
+    expect(buildOpenRouterChatRequestPreview(request({ params: {} })).body).not.toHaveProperty("reasoning");
+  });
+
   it("serializes required tool choice", () => {
     const body = buildOpenRouterChatRequest(request({
       toolChoice: "required",
@@ -667,6 +678,16 @@ describe("OpenRouter request builders", () => {
     ]) {
       expect(serialized).not.toContain(canary);
     }
+  });
+
+  it("leaves unconfigured Perplexity reasoning at the provider default", () => {
+    const policy = searchPolicy();
+    const defaultParams: Record<string, unknown> = { ...policy.defaultParams };
+    delete defaultParams.reasoning;
+    const body = buildOpenRouterPerplexitySearchRequest(searchRequest({
+      searchPolicy: { ...policy, defaultParams }
+    }));
+    expect(body).not.toHaveProperty("reasoning");
   });
 
   it("returns the stable always-safe Perplexity preview envelope", () => {
