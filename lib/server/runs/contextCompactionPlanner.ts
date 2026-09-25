@@ -369,7 +369,9 @@ export function planContextCompaction(input: Readonly<{
     const retained = new Set((groups.at(-CONTEXT_COMPACTION_LIMITS.recentBatches) ?? []).map(candidate => candidate.index));
     // An existing reference is already the smallest projection; masking it
     // again cannot make progress.
+    // Knowledge evidence is never masked, even under a historical descriptor.
     const toMask = results.filter(candidate => candidate.observation?.descriptor.maskable &&
+      candidate.observation.descriptor.source !== "knowledge" &&
       !candidate.masked && !retained.has(candidate.index));
     if (toMask.length > 0) {
       const byIndex = new Map(toMask.map(candidate => [candidate.index, candidate.observation!]));

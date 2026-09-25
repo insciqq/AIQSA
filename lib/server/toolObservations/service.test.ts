@@ -483,7 +483,9 @@ describe("accepted observation source adapters", () => {
       source === "skill" ? { version: 1, source, skillId: "skill", revisionId: "revision" } : undefined,
       async () => { settled = true; return original; });
     expect(f.row()).toMatchObject({ storageMode: "SOURCE", storageKey: null, inlineText: null });
-    expect(result.observation?.maskable).toBe(source !== "skill");
+    // Neither owner is maskable: instructions stay pinned, evidence stays whole.
+    expect(result.observation?.maskable).toBe(false);
+    expect(f.row()).toMatchObject({ maskable: false });
     const projected = projectObservationForProvider(result);
     expect(projected.content[0]).toEqual(original.content[0]);
     expect(JSON.parse((await f.service().read(producer, { handle: result.observation!.handle })).fragment)).toEqual(original);

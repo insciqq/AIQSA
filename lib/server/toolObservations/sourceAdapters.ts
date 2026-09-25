@@ -161,7 +161,9 @@ export async function captureOwnedObservation(context: CaptureContext, source: "
     // The owner already holds (a Skill has even settled) the admitted result.
     // Its descriptor is optional recall metadata: an unpublishable receipt,
     // such as a Knowledge error without a retrieval run, keeps that result.
-    const projection = await receipt.storeSource({ outcome: retained.status, sourceTruncated: false, maskable: source !== "skill" });
+    // Neither is maskable: instructions stay pinned, and citation evidence is
+    // never replaced by a descriptor.
+    const projection = await receipt.storeSource({ outcome: retained.status, sourceTruncated: false, maskable: false });
     return projection ? { ...retained, observation: projection.observation } : retained;
   });
 }

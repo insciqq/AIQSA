@@ -3626,6 +3626,11 @@ describe("Prisma-backed run repository", () => {
         providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: plain.runId, userId })).resolves.toBe("started");
       await prisma.modelRun.update({ data: { status: "complete" }, where: { id: plain.runId } });
       await expect(load([plain.assistantMessageId], userId, plain.chatId)).resolves.toEqual([]);
+      // A Knowledge run keeps the legacy guard: even its historical notes are never read.
+      const accepted = await prisma.modelRun.findUniqueOrThrow({ select: { normalizedRequest: true }, where: { id: settled.runId } });
+      await prisma.modelRun.update({ data: { normalizedRequest: { ...(accepted.normalizedRequest as Prisma.JsonObject),
+        knowledgePlan: { baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1 } } }, where: { id: settled.runId } });
+      await expect(load([settled.assistantMessageId])).resolves.toEqual([]);
     });
   });
 
