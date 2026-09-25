@@ -12,6 +12,7 @@ import { resolveKnowledgeGroundingExecutionPolicyV1 } from "../knowledge/groundi
 import { knowledgeAnswerHash } from "../knowledge/answerGroundingV5";
 import { createHash } from "node:crypto";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
+import { searchObservationReceipt } from "../toolObservations/searchReceipt";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
@@ -5377,6 +5378,43 @@ describe("run recovery", () => {
       expect(recovery.answers).toHaveLength(0);
       expect(recovery.statuses()).toEqual([]);
     });
+  });
+
+  it("settles Search usage from its receipt when a crash left the retained result unavailable", async () => {
+    const observations = memoryToolObservations();
+    const producer = { runId, userId, toolCallId: "stored-call-1" };
+    const execution: SearchExecutionEvidence = { displayName: "OpenAI Search", invocationId: "invocation-1", modelId: "search-model",
+      optionId: "openai-native-web-search", provider: "openai_compatible", revisionId: "search-revision-1", status: "complete",
+      findings: "Receipt-only findings", sources: [{ rank: 1, title: "Receipt source", url: "https://example.test/receipt" }],
+      usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } };
+    await observations.repository.reserve(producer, "search", 8 * 1024 * 1024);
+    await observations.repository.recordSearchReceipt(producer, searchObservationReceipt({ callId: "provider-call-1",
+      name: "search_engine_1", status: "complete", content: searchToolResultContent([execution]),
+      rawPreview: { searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: [execution] } }));
+    await observations.repository.recordOutcome(producer, "complete");
+    const search = vi.fn<ProviderSearchAdapter["search"]>();
+    const answerStream = vi.fn<ProviderAdapter["stream"]>();
+    const harness = createHarness({
+      providers: { openai: { buildRequestPreview: () => ({}), stream: answerStream },
+        openai_compatible: { buildRequestPreview: () => ({}), stream: answerStream } },
+      searchProviders: { openai_compatible: { buildRequestPreview: () => ({}), search } }
+    });
+    const storedCall: PersistedToolLoopCall = { ...persistedRecoveryCall("running"), arguments: { query: "current sources" },
+      mcpBinding: null, toolName: "search_engine_1" };
+    installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [storedCall], phase: "tools_running", providerToolMessages: [{
+        arguments: JSON.stringify(storedCall.arguments), call_id: storedCall.providerCallId, name: storedCall.toolName, type: "function_call"
+      }] }),
+      normalizedRequest: { ...normalizedClientSearchRequest(), toolObservationVersion: 1 }
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+    await refreshProviderRunIfNeeded({ ...harness.deps, observations: observations.service() }, runId, userId);
+    expect(search).not.toHaveBeenCalled();
+    expect(answerStream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors[0]?.error.code).toBe("tool_call_outcome_unknown");
+    expect(harness.state.recoveredErrors[0]?.usageAttributions).toEqual(expect.arrayContaining([expect.objectContaining({
+      modelId: "search-model", provider: "openai_compatible", usage: expect.objectContaining({ inputTokens: 5, outputTokens: 2 })
+    })]));
   });
 
   it("recovers an explicit Off run through legacy MCP dispatch without observation restore", async () => {
