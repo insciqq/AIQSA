@@ -4,9 +4,11 @@ import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import type { ProviderAdapter, ProviderRunOptions, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { withTimeoutSignal } from "../providers/network";
 import type { ProviderToolBridge } from "../tools/types";
+import { makeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { subscribeRunFollowup } from "./runFollowupRegistry";
 import { followupRequestHeadroom, type RunFollowupOperations } from "./runFollowups";
+import { ContextSummaryError, executeContextSummary, summaryNeedsProvider } from "./contextCompactionSummarizer";
 
 export class RunFollowupChanged extends Error {
   constructor() { super("run_followup_changed"); this.name = "RunFollowupChanged"; }
@@ -31,6 +33,8 @@ export function createRunFollowupExecution(input: {
   /** Flush and return only the current generation's displayed text. */
   beforeDelivery(): Promise<string>;
   onDelivery(entries: readonly RunFollowup[]): Promise<void>;
+  onSummaryUsage?(usage: ModelRunUsage, request: ProviderRunRequest): Promise<void> | void;
+  onCompactionStatus?(status: ContextCompactionStatus): Promise<void> | void;
   onInterruptedUsage(usage: ModelRunUsage, request: ProviderRunRequest,
     generation: { completed: boolean; providerResponseId: string | null }): Promise<void>;
 }) {
@@ -116,8 +120,84 @@ export function createRunFollowupExecution(input: {
     try {
       for (;;) {
         parent.throwIfAborted();
-        const prepared = await prepare(request);
+        let prepared = await prepare(request);
         if (pending) continue;
+        let compactionRunning = false;
+        const compactionBeforeTokens = prepared.contextCompaction?.beforeTokens;
+        const settleCompaction = async (status: ContextCompactionStatus): Promise<void> => {
+          if (status.state === "running") {
+            compactionRunning = true;
+          } else {
+            compactionRunning = false;
+          }
+          await input.onCompactionStatus?.(status);
+        };
+        for (let summaryCycle = 0; summaryNeedsProvider(prepared); summaryCycle += 1) {
+          if (summaryCycle >= 2) {
+            await settleCompaction(makeContextCompactionStatus({
+              afterTokens: null,
+              beforeTokens: compactionBeforeTokens,
+              outcome: "summary_failed",
+              state: "failed"
+            }));
+            throw new ContextSummaryError("context_compaction_summary_failed", "Context compaction did not make bounded progress.");
+          }
+          if (!compactionRunning) {
+            await settleCompaction(makeContextCompactionStatus({
+              afterTokens: prepared.contextCompaction?.afterTokens,
+              beforeTokens: compactionBeforeTokens,
+              outcome: "pending",
+              state: "running"
+            }));
+          }
+          try {
+            const summarized = await executeContextSummary({
+              adapter: options.adapter,
+              existingAttempts: prepared.contextCompactionSummaryAttempts,
+              existingSummary: prepared.contextCompactionSummary,
+              onUsage: usage => input.onSummaryUsage?.(usage, prepared),
+              request: prepared,
+              signal: parent
+            });
+            const budgeted = applyProviderRequestContextBudget({ bridge: input.bridge, request: summarized.request });
+            if (!budgeted.ok) {
+              await settleCompaction(makeContextCompactionStatus({
+                afterTokens: null,
+                beforeTokens: compactionBeforeTokens,
+                outcome: budgeted.error.code === "context_too_large" ? "irreducible_overflow" : "summary_failed",
+                state: "failed"
+              }));
+              throw new ContextSummaryError("context_compaction_summary_failed", budgeted.error.message);
+            }
+            prepared = budgeted.request;
+            if (!summaryNeedsProvider(prepared)) break;
+          } catch (error) {
+            if (error instanceof ContextSummaryError) {
+              if (compactionRunning) await settleCompaction(makeContextCompactionStatus({
+                afterTokens: null,
+                beforeTokens: compactionBeforeTokens,
+                outcome: error.code === "context_compaction_source_unavailable" ? "source_unavailable" : "summary_failed",
+                state: "failed"
+              }));
+            } else if (compactionRunning) {
+              await settleCompaction(makeContextCompactionStatus({
+                afterTokens: null,
+                beforeTokens: compactionBeforeTokens,
+                outcome: "provider_failed",
+                state: "failed"
+              }));
+            }
+            throw error;
+          }
+        }
+        if (compactionRunning || prepared.contextCompaction?.outcome === "masking_applied") {
+          await settleCompaction(makeContextCompactionStatus({
+            afterTokens: prepared.contextCompaction?.afterTokens,
+            beforeTokens: compactionBeforeTokens,
+            outcome: prepared.contextCompactionSummary ? "summary_applied" : "masking_applied",
+            state: "complete"
+          }));
+        }
         const current = new AbortController();
         if (child) throw new Error("followup_generation_overlap");
         child = current;

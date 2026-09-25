@@ -5202,6 +5202,106 @@ describe("run recovery", () => {
     }
   });
 
+  it("recovers an explicit Off run through legacy MCP dispatch without observation restore", async () => {
+    const observations = memoryToolObservations();
+    const runtimeCall = vi.fn(async () => ({
+      isError: false,
+      structuredContent: null,
+      text: ["legacy-recovered"],
+      unsupportedContentTypes: []
+    }));
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true },
+      providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
+        requests.push(request);
+        return { ...providerResult, finalText: "legacy-recovered" };
+      } } }
+    });
+    const pending = checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" });
+    const normalizedRequest = { ...pending.normalizedRequest, toolObservationVersion: 0 as const };
+    const installed = installCheckpointState(harness, { ...pending, normalizedRequest });
+    harness.repository.loadProviderDispatchRecoveryRequest = async () => normalizedRequest;
+    await refreshProviderRunIfNeeded({ ...harness.deps, observations: observations.service() }, runId, userId);
+    expect(runtimeCall).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(installed.calls()[0]).toMatchObject({ state: "complete" });
+    expect(installed.calls()[0]?.result).not.toHaveProperty("observation");
+    expect(observations.rows.size).toBe(0);
+    expect(harness.state.completed).toMatchObject({ finalText: "legacy-recovered" });
+  });
+
+  it("keeps the v1 reader available when a restarted provider requests it", async () => {
+    const observations = memoryToolObservations();
+    const reference = await observations.service().withReservation({
+      producer: { runId, userId, toolCallId: "original-call" },
+      source: "mcp",
+      maximumBytes: 2048
+    }, receipt => receipt.store({
+      original: { text: "PRIVATE_RECALL_FRAGMENT" },
+      outcome: "complete",
+      sourceTruncated: false,
+      maskable: true
+    }));
+    const requests: ProviderRunRequest[] = [];
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      result: {
+        finalProviderResponsePreview: {},
+        finalText: "",
+        providerResponseId: "response-reader-1",
+        providerToolCallMessage: [{
+          arguments: JSON.stringify({ handle: reference.observation.handle }),
+          call_id: "provider-reader-1",
+          name: "read_tool_result",
+          type: "function_call"
+        }],
+        toolCalls: [{
+          arguments: { handle: reference.observation.handle },
+          id: "provider-reader-1",
+          name: "read_tool_result"
+        }],
+        usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 }
+      },
+      status: "completed",
+      terminal: true
+    }));
+    const harness = createHarness({
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          refresh,
+          async *stream(request) {
+            requests.push(request);
+            return { ...providerResult, finalText: "reader-recovered" };
+          }
+        }
+      }
+    });
+    const base = checkpointedRun({
+      phase: "provider_running",
+      providerResponseId: "response-tool-1",
+      providerToolMessages: []
+    });
+    const normalizedRequest = {
+      ...base.normalizedRequest,
+      mcp: undefined,
+      toolMode: "none" as const,
+      toolObservationVersion: 1 as const
+    };
+    const installed = installCheckpointState(harness, { ...base, normalizedRequest });
+    const deps = { ...harness.deps, observations: observations.service() };
+    await refreshProviderRunIfNeeded(deps, runId, userId);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(installed.calls()).toEqual([expect.objectContaining({ state: "complete", toolName: "read_tool_result" })]);
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("PRIVATE_RECALL_FRAGMENT");
+    expect(observations.rows.size).toBe(1);
+    expect(harness.state.completed).toMatchObject({ finalText: "reader-recovered" });
+  });
+
   it.each(["pending", "running", "complete"] as const)("reauthorizes a %s reader after restart without replaying its old fragment", async state => {
     const observations = memoryToolObservations();
     const reference = await observations.service().withReservation({ producer: { runId, userId, toolCallId: "original-call" }, source: "workspace", maximumBytes: 2048 },

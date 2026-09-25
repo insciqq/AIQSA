@@ -10,6 +10,9 @@ import { buildGeminiInteractionsRequest } from "../providers/geminiInteractionsR
 import { ProviderRequestTimeoutError } from "../providers/network";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
+import { readToolResultTool } from "../tools/readToolResult";
+import { projectObservationForProvider } from "../toolObservations/projection";
+import { conversationContextPolicy } from "./contextCompactionContract";
 import { runProviderToolLoop } from "./providerToolLoop";
 import { createRunFollowupExecution, requestWithRunFollowups, RunFollowupChanged } from "./runFollowupExecution";
 import { notifyRunFollowup } from "./runFollowupRegistry";
@@ -39,6 +42,7 @@ function fixture() {
   const beforeDelivery = vi.fn(async () => text);
   const onDelivery = vi.fn(async () => { text = ""; });
   const onInterruptedUsage = vi.fn<Parameters<typeof createRunFollowupExecution>[0]["onInterruptedUsage"]>(async () => undefined);
+  const onCompactionStatus = vi.fn<NonNullable<Parameters<typeof createRunFollowupExecution>[0]["onCompactionStatus"]>>(async () => undefined);
   const operations: RunFollowupOperations = {
     accept: vi.fn(), beginKnowledge: vi.fn(async () => 0),
     load: vi.fn(async () => ({ revision: rows.length, entries: rows.map(entry => ({ ...entry })) })),
@@ -59,7 +63,7 @@ function fixture() {
     })
   };
   const execution = createRunFollowupExecution({ operations, runId: "run", userId: "user", beforeDelivery, onDelivery,
-    onInterruptedUsage, bridge: openAIResponsesToolBridge });
+    onInterruptedUsage, onCompactionStatus, bridge: openAIResponsesToolBridge });
   disposals.push(execution.release);
   function accept(value: string, notify = true) {
     rows.push({ id: `f-${rows.length + 1}`, ordinal: rows.length + 1, text: value,
@@ -76,7 +80,7 @@ function fixture() {
     }
     return { events, result: next.value, text };
   }
-  return { accept, consume, execution, operations, rows, onDelivery, onInterruptedUsage };
+  return { accept, consume, execution, operations, rows, onDelivery, onInterruptedUsage, onCompactionStatus };
 }
 
 describe("in-run clarification execution", () => {
@@ -152,6 +156,59 @@ describe("in-run clarification execution", () => {
     await f.consume(f.execution.stream(request(), { adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true }));
     expect(requests).toHaveLength(1);
     expect(requests[0]?.providerToolMessages).toEqual([{ role: "user", content: "Answer in two sentences" }]);
+  });
+
+  it("summarizes a hybrid context after delivering a clarification", async () => {
+    const f = fixture(); f.accept("Keep the exact correction");
+    const messages = [
+      { content: { blocks: [{ text: "old source", type: "text" }] }, id: "message-old", role: "user" as const },
+      { content: { blocks: [{ text: "current request", type: "text" }] }, id: "message-current", role: "user" as const }
+    ];
+    const descriptor = {
+      byteSize: 20_000, checksum: "a".repeat(64), encoding: "json-utf8-v1" as const,
+      handle: `tor1_${"a".repeat(32)}`, maskable: true, source: "mcp" as const,
+      sourceTruncated: false, version: 1 as const
+    };
+    const observed = (id: string, seed: string) => projectObservationForProvider({
+      callId: id,
+      content: [{ text: `${id}-${"x".repeat(id === "old" ? 6_000 : 1_800)}`, type: "text" as const }],
+      name: "read_record",
+      observation: { ...descriptor, checksum: seed.repeat(64), handle: `tor1_${seed.repeat(32)}` },
+      status: "complete" as const
+    });
+    const hybrid = {
+      ...request(),
+      context: { messages, mode: "branch_path" as const },
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "message-current", messages, mode: "hybrid" }),
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: 2_000, toolCalling: true },
+      providerToolMessages: [
+        openAIResponsesToolBridge.appendToolResult(undefined, observed("old", "a")),
+        { call_id: "new", name: "read_record", type: "function_call" },
+        openAIResponsesToolBridge.appendToolResult(undefined, observed("new", "b"))
+      ],
+      toolObservationVersion: 1 as const,
+      tools: [readToolResultTool]
+    };
+    const calls: ProviderRunRequest[] = [];
+    const adapter: Pick<ProviderAdapter, "stream"> = { async *stream(next) {
+      calls.push(next);
+      if (calls.length === 1) {
+        const output = JSON.stringify({ notes: "The correction remains binding.", sourceRefs: ["message-old"] });
+        yield { type: "token", data: { delta: output } };
+        return result(output);
+      }
+      yield { type: "token", data: { delta: "final" } };
+      return result("final");
+    } };
+    const answer = await f.consume(f.execution.stream(hybrid, {
+      adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true
+    }));
+    expect(answer.result.finalText).toBe("final");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.contextCompactionSummary?.notes).toContain("correction");
+    expect(calls[1]?.providerToolMessages?.some(value => JSON.stringify(value).includes("Keep the exact correction"))).toBe(true);
+    expect(f.onCompactionStatus.mock.calls.map(([status]) => status.state)).toEqual(["running", "complete"]);
+    expect(f.onCompactionStatus.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "summary_applied" });
   });
 
   it("keeps Stop terminal and never dispatches a pending replacement", async () => {

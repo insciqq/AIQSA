@@ -236,6 +236,10 @@ import {
   runOutputArtifactEvents
 } from "./runOutputEvents";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
+import { contextCompactionCheckpoint } from "./contextCompactionContract";
+import { observationCallIdsInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
+import { applyContextSummaryToRequest, ContextSummaryError, executeContextSummary, summaryNeedsProvider } from "./contextCompactionSummarizer";
+import { contextCompactionArtifact, contextCompactionFailureOutcome, createContextCompactionPublisher } from "./contextCompactionEvents";
 
 export const activeRunStaleMs = 10 * 60 * 1000;
 
@@ -1967,6 +1971,9 @@ async function recoverCheckpointedToolLoop(
   let persistCancelledUsage: (() => Promise<void>) | undefined;
   let currentProviderResponseId = run.providerResponseId;
   let tokenBuffer: ReturnType<typeof createRunTokenPersistenceBuffer> | null = null;
+  const compactionPublisher = createContextCompactionPublisher(async status => {
+    await deps.repository.appendRunOutputEvent(run.id, contextCompactionArtifact(status));
+  }, run.contextCompactionStatus);
   // Terminal Workspace settlement for a recovered turn that stops or fails:
   // best effort, never allowed to mask the run's own terminal persistence.
   const onWorkspaceActivity = async (entry: ThreadWorkspaceActivityEntry) => {
@@ -2097,8 +2104,20 @@ async function recoverCheckpointedToolLoop(
     }
     let providerRequest: ProviderRunRequest = {
       ...run.normalizedRequest,
-      attachments
+      attachments,
+      ...(run.checkpoint.contextCompaction?.measurement
+        ? { contextCompaction: run.checkpoint.contextCompaction.measurement }
+        : {}),
+      ...(run.checkpoint.contextCompaction?.summary ? { contextCompactionSummary: run.checkpoint.contextCompaction.summary } : {}),
+      ...(run.checkpoint.contextCompaction?.summaryAttempts ? { contextCompactionSummaryAttempts: run.checkpoint.contextCompaction.summaryAttempts } : {})
     };
+    if (run.checkpoint.contextCompaction?.summary) {
+      providerRequest = applyContextSummaryToRequest(
+        providerRequest,
+        run.checkpoint.contextCompaction.summary,
+        run.checkpoint.contextCompaction.summaryAttempts
+      );
+    }
     if (deps.images) providerRequest = await deps.images.withConversationPixels(providerRequest, run.userId, signal);
     const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
     const planRuntimes: Record<string, ProviderRuntimeBinding> = {};
@@ -2458,7 +2477,7 @@ async function recoverCheckpointedToolLoop(
     }
 
     async function appendEvent(event: ModelRunSseEvent): Promise<void> {
-      if (event.type === "artifact" && event.data.artifactType === "context_status") return;
+      if (event.type === "artifact" && (event.data.artifactType === "context_status" || event.data.artifactType === "context_compaction")) return;
       const effectiveEvent = withPinnedHostedSearchIdentity(event, run.normalizedRequest);
       if (effectiveEvent.type === "token") {
         if (recoveredKnowledgeEnabled) return;
@@ -2503,16 +2522,60 @@ async function recoverCheckpointedToolLoop(
             ? { mcpDiscovery: context.activeMcpDiscovery }
             : {})
       };
+      let requestForBudget = deps.mcp
+        ? await filterMcpProviderRequest(currentRequest, run.userId, deps.mcp.filterTools)
+        : currentRequest;
+      for (let summaryCycle = 0; summaryNeedsProvider(requestForBudget); summaryCycle += 1) {
+        if (summaryCycle >= 2) {
+          await compactionPublisher.settle("summary_failed");
+          throw new ToolLoopRecoveryError("context_compaction_summary_failed", "Context compaction did not make bounded progress.");
+        }
+        await compactionPublisher.begin(requestForBudget.contextCompaction);
+        try {
+          const summarized = await executeContextSummary({
+            adapter: egressAdapter,
+            existingAttempts: requestForBudget.contextCompactionSummaryAttempts,
+            existingSummary: requestForBudget.contextCompactionSummary,
+            onUsage: (usage) => {
+              context.usageAttributions.push({ modelId: requestForBudget.modelId, operationCount: 1, provider: requestForBudget.provider, usage });
+            },
+            request: requestForBudget,
+            signal
+          });
+          requestForBudget = summarized.request;
+        } catch (error) {
+          if (error instanceof ContextSummaryError) {
+            await compactionPublisher.settle(contextCompactionFailureOutcome(error.code));
+            throw new ToolLoopRecoveryError(error.code, error.message);
+          }
+          await compactionPublisher.settle("provider_failed");
+          throw error;
+        }
+        const summarizedBudget = applyProviderRequestContextBudget({ bridge, request: requestForBudget });
+        if (!summarizedBudget.ok) {
+          await compactionPublisher.settle(summarizedBudget.error.code === "context_too_large" ? "irreducible_overflow" : "summary_failed");
+          throw new ToolLoopRecoveryError("context_compaction_summary_failed", summarizedBudget.error.message);
+        }
+        requestForBudget = summarizedBudget.request;
+      }
       const budgeted = applyProviderRequestContextBudget({
         bridge,
-        request: deps.mcp
-          ? await filterMcpProviderRequest(currentRequest, run.userId, deps.mcp.filterTools)
-          : currentRequest
+        request: requestForBudget
       });
       if (!budgeted.ok) {
+        if (compactionPublisher.running) await compactionPublisher.settle(contextCompactionFailureOutcome(budgeted.error.code));
         throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
       }
       context.sessionRequest = budgeted.request;
+      if (compactionPublisher.running || requestForBudget.contextCompaction?.outcome === "masking_applied") {
+        const outcome = requestForBudget.contextCompactionSummary
+          ? "summary_applied" as const
+          : requestForBudget.contextCompaction?.outcome === "masking_applied" ? "masking_applied" as const : null;
+        if (outcome) await compactionPublisher.settle(outcome, budgeted.request.contextCompaction && {
+          ...budgeted.request.contextCompaction,
+          beforeTokens: requestForBudget.contextCompaction?.beforeTokens ?? budgeted.request.contextCompaction.beforeTokens
+        });
+      }
       if (budgeted.contextTruncation) {
         await appendEvent({
           data: {
@@ -2665,6 +2728,7 @@ async function recoverCheckpointedToolLoop(
             !isRecoveredArtifactCall(context, call.name) &&
             !isRecoveredWorkspaceCall(context, call.name) &&
             !isRecoveredSkillCall(context, call.name) &&
+            !isRecoveredObservationRead(context, call.name) &&
             !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
@@ -2693,7 +2757,19 @@ async function recoverCheckpointedToolLoop(
         ),
         roundIndex: round,
         runId: run.id,
-        userId: run.userId
+        userId: run.userId,
+        ...(!run.normalizedRequest.agent && run.normalizedRequest.toolObservationVersion === 1 && context.sessionRequest
+          ? { contextCompaction: contextCompactionCheckpoint({
+              ownerId: run.userId,
+              request: context.sessionRequest,
+              runId: run.id,
+              observationRefs: observationHandlesInProviderMessages(context.sessionRequest.providerToolMessages ?? []),
+              recentTailCallIds: observationCallIdsInProviderMessages(context.sessionRequest.providerToolMessages ?? []),
+              ...(context.sessionRequest.contextCompactionSummary ? { summary: context.sessionRequest.contextCompactionSummary } : {}),
+              ...(context.sessionRequest.contextCompactionSummaryAttempts ? { summaryAttempts: context.sessionRequest.contextCompactionSummaryAttempts } : {}),
+              measurement: context.sessionRequest.contextCompaction
+            }) }
+          : {})
       });
       if (persisted.kind === "cancelled") throw new ToolLoopRecoveryStopped();
       if (persisted.kind !== "persisted" && persisted.kind !== "reused") {
@@ -3135,6 +3211,7 @@ async function recoverCheckpointedToolLoop(
       outcome: signal.aborted || error instanceof ToolLoopRecoveryStopped ? "cancelled" : "failed",
       code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "stop" });
     if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
+      await compactionPublisher.settle("unknown").catch(() => undefined);
       await settleRecoveredWorkspaceOnExit("cancelled");
       await tokenBuffer?.flush().catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "progress"));
       if (usageEvidenceTrusted) await persistCancelledUsage?.();
@@ -3187,6 +3264,7 @@ async function recoverCheckpointedToolLoop(
         providerModelId: "unbound"
       });
     }
+    await compactionPublisher.settle(contextCompactionFailureOutcome(failure.code)).catch(() => undefined);
     await settleToolLoopRecoveryError(
       deps,
       run,

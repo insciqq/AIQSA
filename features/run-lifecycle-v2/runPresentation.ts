@@ -13,6 +13,7 @@ import {
   type ThreadToolBudgetWarning
 } from "@/lib/contracts/chats";
 import { formatMemoryUiCopy } from "@/components/app-shell/memoryUiCopy";
+import { decodeContextCompactionStatus, mergeContextCompactionStatus, terminalContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 
@@ -27,6 +28,7 @@ export type RunLifecycleStateV2 = Readonly<{
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   authoritativeMessageStatus?: "cancelled" | "complete" | "error" | null;
   connectionLost?: boolean;
+  contextCompaction?: ContextCompactionStatus | null;
   content: string;
   events: readonly RunEventView[];
   failure?: RunFailureV2 | null;
@@ -36,6 +38,7 @@ export type RunLifecycleStateV2 = Readonly<{
 
 export type RunActivityKindV2 =
   | "compute"
+  | "compaction"
   | "preparing"
   | "preview"
   | "provider"
@@ -53,6 +56,7 @@ export type RunPresentationV2 = Readonly<{
     serverName?: string;
     toolName?: string;
   }>;
+  compaction?: ContextCompactionStatus;
   failure?: Readonly<{
     code: string | null;
     message: string;
@@ -141,10 +145,30 @@ function eventPayload(event: RunEventView): Record<string, unknown> | null {
   return isRecord(event.data.payload) ? event.data.payload : null;
 }
 
+function contextCompactionFromEvents(
+  events: readonly RunEventView[],
+  fallback: ContextCompactionStatus | null | undefined
+): ContextCompactionStatus | null {
+  let latest: ContextCompactionStatus | null = null;
+  for (const event of events) {
+    if (event.type !== "artifact" || !isRecord(event.data) ||
+      event.data.artifactType !== "context_compaction") continue;
+    const status = decodeContextCompactionStatus(event.data.payload);
+    if (!status) continue;
+    latest = mergeContextCompactionStatus(latest, status);
+  }
+  return mergeContextCompactionStatus(fallback, latest);
+}
+
 function activityFromEvent(event: RunEventView, index: number): ActivitySignal | null {
   if (event.type !== "artifact" || !isRecord(event.data)) return null;
   const payload = eventPayload(event);
   const artifactType = event.data.artifactType;
+
+  if (artifactType === "context_compaction") {
+    const status = decodeContextCompactionStatus(payload);
+    return status?.state === "running" ? { index, kind: "compaction" } : null;
+  }
 
   if (artifactType === "search" || artifactType === "citation") {
     return { index, kind: "search" };
@@ -368,6 +392,8 @@ function activityLabel(signal: Omit<ActivitySignal, "index">): string {
       return `${describeToolCallV2(signal, "running")}…`;
     case "compute":
       return "Computing…";
+    case "compaction":
+      return "Compacting context…";
     case "preview":
       return "Rendering preview…";
     case "provider":
@@ -471,6 +497,7 @@ export function settledRunPresentationV2(presentation: RunPresentationV2): boole
 export function presentRunLifecycleV2(
   state: RunLifecycleStateV2
 ): RunPresentationV2 {
+  let compaction = contextCompactionFromEvents(state.events, state.contextCompaction);
   let terminal: TerminalSignal | null = terminalStatus(
     state.authoritativeMessageStatus
   );
@@ -485,7 +512,7 @@ export function presentRunLifecycleV2(
     }
 
     const activity = activityFromEvent(event, index);
-    if (activity) activitySignals.push(activity);
+    if (activity && (activity.kind !== "compaction" || compaction?.state === "running")) activitySignals.push(activity);
 
     if (event.type === "error") {
       terminal = "error";
@@ -507,12 +534,15 @@ export function presentRunLifecycleV2(
   }
 
   terminal = terminalStatus(state.status) ?? terminal;
+  if (terminal) compaction = terminalContextCompactionStatus(compaction);
+  const present = (value: RunPresentationV2): RunPresentationV2 =>
+    compaction ? { ...value, compaction } : value;
 
   if (terminal === "complete") {
-    return { kind: "complete", runId: state.runId };
+    return present({ kind: "complete", runId: state.runId });
   }
   if (terminal === "cancelled") {
-    return { kind: "cancelled", runId: state.runId };
+    return present({ kind: "cancelled", runId: state.runId });
   }
   if (terminal === "error") {
     const pdfFailed = state.pdfPreparation?.some((item) => item.phase === "failed");
@@ -523,15 +553,15 @@ export function presentRunLifecycleV2(
       recovery: state.pdfPreparation!.some((item) => item.retryable) ? "retry" as const : "change_parameters" as const
     } : failureFromState(state, eventFailure);
     const recoverable = (pdfFailed || state.content.trim().length > 0) && failure.recovery === "retry";
-    return {
+    return present({
       failure,
       kind: recoverable ? "recoverable_error" : "terminal_error",
       runId: state.runId
-    };
+    });
   }
 
   if (state.workspacePreparation) {
-    return { activity: { kind: "preparing", label: "Preparing workspace..." }, kind: "activity", runId: state.runId };
+    return present({ activity: { kind: "preparing", label: "Preparing workspace..." }, kind: "activity", runId: state.runId });
   }
 
   const pendingDocuments = state.pdfPreparation?.filter((item) =>
@@ -546,32 +576,36 @@ export function presentRunLifecycleV2(
       : pendingDocuments.every((item) => item.phase === "assembling") ? "Assembling document…"
       : known ? `Preparing ${documents.length === 1 ? "document" : "documents"} · ${completed} of ${total} pages…`
       : "Preparing documents…";
-    return { activity: { kind: "preparing", label }, kind: "activity", runId: state.runId };
+    return present({ activity: { kind: "preparing", label }, kind: "activity", runId: state.runId });
   }
 
   if (state.connectionLost) {
-    return { kind: "connection_lost", runId: state.runId };
+    return present({ kind: "connection_lost", runId: state.runId });
+  }
+
+  if (compaction?.state === "running") {
+    return present({ activity: { kind: "compaction", label: "Compacting context…" }, kind: "activity", runId: state.runId });
   }
 
   const selectedActivity = activitySignals.at(-1) ?? null;
   if (latestTokenIndex >= 0 && latestTokenIndex >= (selectedActivity?.index ?? -1)) {
-    return { kind: "streaming", runId: state.runId };
+    return present({ kind: "streaming", runId: state.runId });
   }
 
   if (selectedActivity) {
     const { index: _index, ...signal } = selectedActivity;
-    return {
+    return present({
       activity: {
         ...signal,
         label: activityLabel(signal)
       },
       kind: "activity",
       runId: state.runId
-    };
+    });
   }
 
   const activity = statusActivity(state.status);
-  return activity
+  return present(activity
     ? { activity, kind: "activity", runId: state.runId }
-    : { kind: "idle", runId: state.runId };
+    : { kind: "idle", runId: state.runId });
 }

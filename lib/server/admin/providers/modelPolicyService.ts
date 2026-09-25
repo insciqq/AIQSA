@@ -5,8 +5,13 @@ import type {
   AdminModelPolicyCatalog
 } from "../../../contracts/adminModelPolicy";
 import { isMcpAutoDiscoveryOutputTokens, MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS } from "../../../contracts/mcp";
+import {
+  isToolObservationPolicy,
+  type ToolObservationPolicy
+} from "../../../contracts/toolObservationPolicy";
 import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
 import { configuredModelParameterControls } from "../../providers/providerModelCapabilities";
+import { normalizeToolObservationPolicy } from "../../runs/toolBudgets";
 
 export type AdminModelPolicyServiceErrorCode =
   | "model_policy_stale"
@@ -146,6 +151,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
           maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
           maxToolCalls: Number(policy.maxToolCalls),
           maxToolRounds: Number(policy.maxToolRounds),
+          toolObservationPolicy: normalizeToolObservationPolicy(policy.toolObservationPolicy),
           updatedAt: policy.updatedAt.toISOString(),
           updatedBy: policy.updatedBy,
           version: policy.version
@@ -167,6 +173,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
       maxMcpToolsPerDiscovery?: number;
       mcpAutoDiscoveryTimeoutSeconds?: number | null;
       mcpAutoDiscoveryMaxOutputTokens?: number | null;
+      toolObservationPolicy?: ToolObservationPolicy;
       userId: string;
     }>): Promise<void> {
       const hasModel = input.providerModelId !== undefined;
@@ -178,13 +185,15 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
         input.mcpAutoDiscoveryMaxOutputTokens
       ];
       const hasLimits = limits.some((value) => value !== undefined);
+      const hasObservationPolicy = input.toolObservationPolicy !== undefined;
       if (hasModel !== (input.reasoningEffort !== undefined) ||
         hasLimits && limits.some((value) => value === undefined) ||
         hasLimits && input.mcpAutoDiscoveryMaxOutputTokens !== null && !isMcpAutoDiscoveryOutputTokens(input.mcpAutoDiscoveryMaxOutputTokens) ||
         hasLimits && input.mcpAutoDiscoveryTimeoutSeconds !== null &&
           (!Number.isSafeInteger(input.mcpAutoDiscoveryTimeoutSeconds) || Number(input.mcpAutoDiscoveryTimeoutSeconds) < 1 ||
             Number(input.mcpAutoDiscoveryTimeoutSeconds) > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds) ||
-        !hasModel && !hasLimits) {
+        !hasModel && !hasLimits && !hasObservationPolicy ||
+        hasObservationPolicy && !isToolObservationPolicy(input.toolObservationPolicy)) {
         throw new Error("model_policy_update_invalid");
       }
       try {
@@ -246,6 +255,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
                 maxToolCalls: BigInt(input.maxToolCalls!),
                 maxToolRounds: BigInt(input.maxToolRounds!)
               } : {}),
+              ...(hasObservationPolicy ? { toolObservationPolicy: input.toolObservationPolicy } : {}),
               updatedByUserId: input.userId,
               version: { increment: 1 }
             },

@@ -169,6 +169,7 @@ export async function runProviderToolLoop(
     providerResponseId: null,
     providerToolMessages: []
   };
+  let preparedRequest = input.initialRequest;
 
   return continueToolLoop({
     deferToolUntilBatchEnd: input.deferToolUntilBatchEnd,
@@ -206,19 +207,32 @@ export async function runProviderToolLoop(
           ? "required"
           : "auto";
       const requestedRound: ProviderRunRequest = {
-        ...input.initialRequest,
+        ...preparedRequest,
         parallelToolCalls: input.parallelToolCalls,
         providerToolMessages: [...effectiveContinuation.providerToolMessages],
         toolChoice,
         tools: [...input.tools]
       };
       const preparedRound = await input.prepareRequest?.(requestedRound, round) ?? requestedRound;
+      // A planner may replace old settled observations in the provider-facing
+      // projection. Carry that exact projection into the durable continuation;
+      // otherwise recovery would resurrect the bulky pre-mask transcript.
+      const preparedContinuation: ProviderToolLoopContinuation = {
+        providerResponseId: effectiveContinuation.providerResponseId,
+        providerToolMessages: preparedRound.providerToolMessages
+          ? [...preparedRound.providerToolMessages]
+          : effectiveContinuation.providerToolMessages
+      };
       // Request/context preparation cannot restore tool authority after its
       // accepted limit. Keep declarations and signed result context intact.
       const roundRequest: ProviderRunRequest = toolChoice === "none" ? { ...preparedRound, toolChoice } : preparedRound;
+      // Keep a committed summary and its exact recent context for subsequent
+      // rounds. Rebuilding from the admission source would buy the same
+      // compaction again after every tool call.
+      preparedRequest = roundRequest;
       const advertisedToolNames = new Set(roundRequest.tools?.map((tool) => tool.name));
       await input.beforeProviderRound?.({
-        continuation: effectiveContinuation,
+        continuation: preparedContinuation,
         request: roundRequest,
         round
       });
@@ -319,7 +333,7 @@ export async function runProviderToolLoop(
         calls: normalizedCalls,
         continuation: providerToolLoopContinuationAfterResult(
           input.bridge,
-          effectiveContinuation,
+          preparedContinuation,
           normalizedResult
         ),
         parallelToolCalls: roundRequest.parallelToolCalls === true,

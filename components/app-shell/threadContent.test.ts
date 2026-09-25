@@ -6,6 +6,7 @@ import {
   textFromPersistedContent,
   textFromThreadContent
 } from "./threadContent";
+import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 
 describe("thread answer outputs", () => {
   it("projects live Gemini citations and required suggestions without run counters", () => {
@@ -140,6 +141,21 @@ describe("thread answer outputs", () => {
       }
     ])).toBeNull();
   });
+
+  it("keeps the persisted compaction outcome after late progress", () => {
+    const status = (state: "running" | "complete", outcome: "pending" | "summary_applied") => ({
+      data: {
+        artifactType: "context_compaction",
+        payload: makeContextCompactionStatus({
+          afterTokens: 600, beforeTokens: 1_200, outcome, state
+        })
+      },
+      type: "artifact"
+    });
+    const summary = summarizeThreadArtifacts([status("running", "pending"), status("complete", "summary_applied"), status("running", "pending")]);
+    expect(summary?.contextCompaction).toMatchObject({ state: "complete", outcome: "summary_applied", reducedTokens: 600 });
+    expect(JSON.stringify(summary)).not.toContain("pending");
+  });
 });
 
 describe("thread content", () => {
@@ -183,4 +199,13 @@ it("keeps exact checkpoint downloads through round reset and failure without mer
   expect(mergeLiveThreadArtifacts(saved, summary)?.generatedFiles).toEqual([file, second]);
   expect(mergeLiveThreadArtifacts(saved, { citations: [], reasoningText: ["Still working"], sources: [] })?.generatedFiles).toEqual([file]);
   expect(mergeLiveThreadArtifacts(saved, null)).toEqual(saved);
+  const running = { citations: [], reasoningText: [], sources: [], contextCompaction: makeContextCompactionStatus({
+    afterTokens: 600, beforeTokens: 1_200, outcome: "pending", state: "running"
+  }) };
+  const complete = { ...saved, contextCompaction: makeContextCompactionStatus({
+    afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete"
+  }) };
+  expect(mergeLiveThreadArtifacts(complete, running)?.contextCompaction?.state).toBe("complete");
+  expect(mergeLiveThreadArtifacts(running, complete)?.contextCompaction?.state).toBe("complete");
+  expect(mergeLiveThreadArtifacts(running, null)?.contextCompaction?.state).toBe("running");
 });

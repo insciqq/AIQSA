@@ -307,6 +307,8 @@ export function normalizeOpenRouterParams(params: Record<string, unknown> = {}):
   const structuredOutputToolChoice = openRouterStructuredOutputToolChoice(
     provider.structuredOutputToolChoice ?? provider.structured_output_tool_choice
   );
+  const reasoningEnabled = booleanValue(reasoning.enabled, defaults.reasoning.enabled);
+  const reasoningEffort = openRouterEffort(reasoning.effort, defaults.reasoning.effort);
 
   return {
     maxTokens,
@@ -330,8 +332,10 @@ export function normalizeOpenRouterParams(params: Record<string, unknown> = {}):
       zdr: booleanValue(provider.zdr, defaults.provider.zdr)
     },
     reasoning: {
-      enabled: booleanValue(reasoning.enabled, defaults.reasoning.enabled),
-      effort: openRouterEffort(reasoning.effort, defaults.reasoning.effort),
+      enabled: reasoningEnabled,
+      // An explicit disabled state must not retain a stale enabled effort.
+      // OpenRouter treats an omitted reasoning object as provider default.
+      effort: reasoningEnabled ? reasoningEffort : "none",
       exclude: booleanValue(reasoning.exclude, defaults.reasoning.exclude),
       maxTokens:
         numberValue(reasoning.maxTokens, 0) ||

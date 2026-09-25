@@ -8,6 +8,92 @@ import {
 } from "./toolLoopPersistence";
 
 describe("tool-loop persistence values", () => {
+  it("round-trips the bounded masking checkpoint without archiving the transcript", () => {
+    const contextCompaction = {
+      branchId: "message-1",
+      followupDigest: "b".repeat(64),
+      followupRevision: 2,
+      measurement: {
+        afterTokens: 40,
+        beforeTokens: 120,
+        budgetTokens: 200,
+        legacyFallback: false,
+        maskedBatches: 1,
+        maskedObservations: 2,
+        outcome: "masking_applied" as const,
+        version: 1 as const
+      },
+      observationRefs: [`tor1_${"a".repeat(32)}`],
+      ownerId: "user-1",
+      pinDigest: "c".repeat(64),
+      policyRevision: "legacy-compatible-v1" as const,
+      providerProjectionRevision: 1,
+      recentTailCallIds: ["call-2"],
+      runId: "run-1",
+      sourceDigest: "d".repeat(64),
+      version: 1 as const
+    };
+    const checkpoint = toolLoopCheckpoint({
+      contextCompaction,
+      phase: "provider_running",
+      providerContinuation: null,
+      roundIndex: 1
+    });
+    expect(checkpoint?.contextCompaction).toEqual(contextCompaction);
+    expect(parseToolLoopCheckpoint(checkpoint)).toEqual(checkpoint);
+  });
+
+  it("round-trips bounded hybrid summary notes and attempt receipts", () => {
+    const summary = {
+      formatVersion: 1 as const,
+      id: "cs1_" + "a".repeat(32),
+      notes: "A bounded derived note.",
+      sourceDigest: "b".repeat(64),
+      sourceRefs: ["message-old"]
+    };
+    const summaryAttempts = [{
+      attempt: 1,
+      bindingDigest: "c".repeat(64),
+      id: "csa1_" + "d".repeat(32),
+      sourceDigest: "b".repeat(64),
+      state: "committed" as const,
+      usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16 }
+    }];
+    const contextCompaction = {
+      branchId: "message-current",
+      followupDigest: "e".repeat(64),
+      followupRevision: 0,
+      measurement: {
+        afterTokens: 100,
+        beforeTokens: 300,
+        budgetTokens: 200,
+        legacyFallback: false,
+        maskedBatches: 1,
+        maskedObservations: 2,
+        outcome: "needs_summary" as const,
+        version: 1 as const
+      },
+      observationRefs: [],
+      ownerId: "user-1",
+      pinDigest: "f".repeat(64),
+      policyRevision: "hybrid-v1" as const,
+      providerProjectionRevision: 1,
+      recentTailCallIds: [],
+      runId: "run-1",
+      sourceDigest: "1".repeat(64),
+      summary,
+      summaryAttempts,
+      version: 1 as const
+    };
+    const checkpoint = toolLoopCheckpoint({
+      contextCompaction,
+      phase: "provider_running",
+      providerContinuation: null,
+      roundIndex: 1
+    });
+    expect(parseToolLoopCheckpoint(checkpoint)).toEqual(checkpoint);
+  });
+
   it("creates a detached bounded v2 checkpoint", () => {
     const continuation = { responseId: "response-1", toolCalls: [{ id: "call-1" }] };
     const checkpoint = toolLoopCheckpoint({

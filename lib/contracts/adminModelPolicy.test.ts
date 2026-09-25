@@ -2,6 +2,34 @@ import { describe, expect, it } from "vitest";
 import { decodeAdminModelPolicyResponse } from "./adminModelPolicy";
 
 describe("administrator model policy contract", () => {
+  it("accepts only the model-agnostic observation rollout modes", () => {
+    const base = {
+      modelPolicy: {
+        candidates: [],
+        policy: {
+          defaultModel: null,
+          reasoningEffort: null,
+          mcpAutoDiscoveryTimeoutSeconds: null,
+          mcpAutoDiscoveryMaxOutputTokens: null,
+          maxMcpToolsPerDiscovery: 10,
+          maxToolCalls: 20,
+          maxToolRounds: 8,
+          toolObservationPolicy: "off",
+          updatedAt: "2026-09-24T00:00:00.000Z",
+          updatedBy: null,
+          version: 1
+        }
+      }
+    };
+    expect(decodeAdminModelPolicyResponse(base)?.modelPolicy.policy.toolObservationPolicy).toBe("off");
+    expect(decodeAdminModelPolicyResponse({
+      modelPolicy: { ...base.modelPolicy, policy: { ...base.modelPolicy.policy, toolObservationPolicy: "v1" } }
+    })?.modelPolicy.policy.toolObservationPolicy).toBe("v1");
+    expect(decodeAdminModelPolicyResponse({
+      modelPolicy: { ...base.modelPolicy, policy: { ...base.modelPolicy.policy, toolObservationPolicy: "codex-lb" } }
+    })).toBeNull();
+  });
+
   it.each([null, 8192])("decodes Auto or an explicit MCP output allowance: %s", (mcpAutoDiscoveryMaxOutputTokens) => {
     expect(decodeAdminModelPolicyResponse({
       modelPolicy: {

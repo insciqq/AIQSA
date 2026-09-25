@@ -7,6 +7,7 @@ import {
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { summarizeThreadArtifacts } from "../../../components/app-shell/threadContent";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
+import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
 
 describe("summarizeMessageRunArtifacts", () => {
   it("keeps the newest successful version per answer in first-appearance order across live replay and reload", () => {
@@ -375,6 +376,25 @@ describe("summarizeMessageRunArtifacts", () => {
     };
 
     expect(summarizeMessageRunArtifacts(run)).toBeNull();
+  });
+
+  it("reloads a content-free compaction outcome and ignores late progress", () => {
+    const running = makeContextCompactionStatus({
+      afterTokens: 600, beforeTokens: 1_200, outcome: "pending", state: "running"
+    });
+    const complete = makeContextCompactionStatus({
+      afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete"
+    });
+    const summary = summarizeMessageRunArtifacts({
+      events: [
+        { eventType: "artifact", payload: { artifactType: "context_compaction", payload: running } },
+        { eventType: "artifact", payload: { artifactType: "context_compaction", payload: complete } },
+        { eventType: "artifact", payload: { artifactType: "context_compaction", payload: { ...running, notes: "private" } } }
+      ],
+      searchRuns: []
+    });
+    expect(summary?.contextCompaction).toEqual(complete);
+    expect(JSON.stringify(summary)).not.toContain("private");
   });
 });
 

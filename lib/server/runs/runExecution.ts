@@ -204,11 +204,15 @@ import { notifyProjectEvent } from "../projects/events";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
+import { contextCompactionCheckpoint } from "./contextCompactionContract";
+import { observationCallIdsInProviderMessages, observationHandlesInProviderMessages } from "./contextCompactionPlanner";
+import { ContextSummaryError, executeContextSummary, summaryNeedsProvider } from "./contextCompactionSummarizer";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { CodexProtocolError } from "../agents/codexProtocol";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
+import { contextCompactionArtifact, contextCompactionFailureOutcome, createContextCompactionPublisher } from "./contextCompactionEvents";
 import {
   normalizeWorkspaceProviderToolName,
   workspaceToolNameFromNamespaced
@@ -666,6 +670,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const executionStartedAt = Date.now();
       let executionStage: "dispatch" | "execution" | "completion" = "dispatch";
       let answerPublished = false;
+      const compactionPublisher = createContextCompactionPublisher(async status => {
+        const event = contextCompactionArtifact(status);
+        await input.repository.appendRunOutputEvent(runId, event);
+        emitTransient(controller, encoder, event);
+      });
       const artifactGeneration = createArtifactGeneration(runId, async data => {
         await assertProjectRunAccessCurrent(true);
         emitTransient(controller, encoder, { type: "artifact_generation", data });
@@ -746,6 +755,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             async beforeDelivery() { await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); }); return tokenBuffer.text; },
             async onDelivery() {
               await publishFollowupDelivery(followups!.revision);
+            },
+            async onSummaryUsage(usage, request) {
+              rememberReportedUsage(request.provider, request.modelId, usage);
+            },
+            async onCompactionStatus(status) {
+              await compactionPublisher.publish(status);
             },
             async onInterruptedUsage(usage, request, generation) {
               let reported = usage;
@@ -867,7 +882,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       ): Promise<void> {
         // Capacity is minted by the server, never by provider output.
         if (event.type === "artifact" &&
-          (event.data.artifactType === "context_status" || event.data.artifactType === "tool_budget")) return;
+          (event.data.artifactType === "context_status" || event.data.artifactType === "context_compaction" || event.data.artifactType === "tool_budget")) return;
         await assertProjectRunAccessCurrent();
         const includeTokenEvents = options.includeTokenEvents ?? true;
         const effectiveEvent = withPinnedHostedSearchIdentity(event, normalizedRequest);
@@ -2050,6 +2065,18 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             await assertProjectRunAccessCurrent(true);
             if (round === 1) {
               const started = await input.repository.beginToolLoopProviderRound({
+                ...(!normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1
+                  ? { contextCompaction: contextCompactionCheckpoint({
+                      ownerId: input.userId,
+                      request: roundRequest,
+                      runId,
+                      observationRefs: observationHandlesInProviderMessages(roundRequest.providerToolMessages ?? []),
+                      recentTailCallIds: observationCallIdsInProviderMessages(roundRequest.providerToolMessages ?? []),
+                      ...(roundRequest.contextCompactionSummary ? { summary: roundRequest.contextCompactionSummary } : {}),
+                      ...(roundRequest.contextCompactionSummaryAttempts ? { summaryAttempts: roundRequest.contextCompactionSummaryAttempts } : {}),
+                      ...(followups ? { followupRevision: followups.revision, followupTexts: followups.entries.map(entry => entry.text) } : {})
+                    }) }
+                  : {}),
                 providerContinuation: toolLoopJson(
                   continuation,
                   toolLoopPersistenceLimits.checkpointBytes,
@@ -2684,7 +2711,20 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               ),
               roundIndex: round,
               runId,
-              userId: input.userId
+              userId: input.userId,
+              ...(!normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1 && sessionRequest
+                ? { contextCompaction: contextCompactionCheckpoint({
+                    ownerId: input.userId,
+                    request: sessionRequest,
+                    runId,
+                    observationRefs: observationHandlesInProviderMessages(sessionRequest.providerToolMessages ?? []),
+                    recentTailCallIds: observationCallIdsInProviderMessages(sessionRequest.providerToolMessages ?? []),
+                    ...(sessionRequest.contextCompactionSummary ? { summary: sessionRequest.contextCompactionSummary } : {}),
+                    ...(sessionRequest.contextCompactionSummaryAttempts ? { summaryAttempts: sessionRequest.contextCompactionSummaryAttempts } : {}),
+                    ...(followups ? { followupRevision: followups.revision, followupTexts: followups.entries.map(entry => entry.text) } : {}),
+                    measurement: sessionRequest.contextCompaction
+                  }) }
+                : {})
             });
             if (persisted.kind === "cancelled") throw abortError();
             if (persisted.kind !== "persisted" && persisted.kind !== "reused") {
@@ -2811,16 +2851,76 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 ...(activeMcpSnapshot ? { mcp: activeMcpSnapshot } : {}),
                 ...(activeMcpDiscovery ? { mcpDiscovery: activeMcpDiscovery } : {})
             };
+            let requestForBudget = input.mcp
+              ? await filterMcpProviderRequest(currentRequest, input.userId, input.mcp.filterTools)
+              : currentRequest;
+            for (let summaryCycle = 0; summaryNeedsProvider(requestForBudget); summaryCycle += 1) {
+              if (summaryCycle >= 2) {
+                await compactionPublisher.settle("summary_failed");
+                throw new RunPipelineError("context_compaction_summary_failed", "Context compaction did not make bounded progress.");
+              }
+              await compactionPublisher.begin(requestForBudget.contextCompaction);
+              await assertProjectRunAccessCurrent(true);
+              if (!(await currentAnswerDispatchAllowed())) {
+                await compactionPublisher.settle("provider_failed");
+                throw new RunPipelineError("model_not_available", "The selected model is no longer available");
+              }
+              try {
+                const answerSnapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
+                const summarized = await executeContextSummary({
+                  // Reuse the authorized egress, without treating this internal
+                  // request as a steerable answer or closing its follow-up gate.
+                  adapter: { stream: (summaryRequest, options) => streamAnswerProviderDispatch(
+                    summaryRequest, options?.signal ?? signal, undefined,
+                    effectiveProviderResponseTimeoutMs(
+                      answerSnapshot.connection,
+                      "responseTimeoutMs" in answerSnapshot.model ? answerSnapshot.model : null
+                    )
+                  ) },
+                  existingAttempts: requestForBudget.contextCompactionSummaryAttempts,
+                  existingSummary: requestForBudget.contextCompactionSummary,
+                  onUsage: (usage) => { rememberReportedUsage(requestForBudget.provider, requestForBudget.modelId, usage); },
+                  request: requestForBudget,
+                  signal
+                });
+                requestForBudget = summarized.request;
+              } catch (error) {
+                if (error instanceof ContextSummaryError) {
+                  await compactionPublisher.settle(contextCompactionFailureOutcome(error.code));
+                  throw new RunPipelineError(error.code, error.message);
+                }
+                await compactionPublisher.settle("provider_failed");
+                throw error;
+              }
+              const summarizedBudget = applyProviderRequestContextBudget({ bridge: toolBridge, request: requestForBudget });
+              if (!summarizedBudget.ok) {
+                await compactionPublisher.settle(summarizedBudget.error.code === "context_too_large" ? "irreducible_overflow" : "summary_failed");
+                throw new RunPipelineError("context_compaction_summary_failed", summarizedBudget.error.message);
+              }
+              requestForBudget = summarizedBudget.request;
+              if (!summaryNeedsProvider(requestForBudget)) break;
+            }
             const budgeted = applyProviderRequestContextBudget({
               bridge: toolBridge,
-              request: input.mcp
-                ? await filterMcpProviderRequest(currentRequest, input.userId, input.mcp.filterTools)
-                : currentRequest
+              request: requestForBudget
             });
             if (!budgeted.ok) {
+              if (compactionPublisher.running) {
+                await compactionPublisher.settle(contextCompactionFailureOutcome(budgeted.error.code));
+              }
               throw new RunPipelineError("context_too_large", budgeted.error.message);
             }
             sessionRequest = budgeted.request;
+            if (compactionPublisher.running || requestForBudget.contextCompaction?.outcome === "masking_applied") {
+              const measurement = requestForBudget.contextCompaction;
+              const outcome = requestForBudget.contextCompactionSummary
+                ? "summary_applied" as const
+                : measurement?.outcome === "masking_applied" ? "masking_applied" as const : null;
+              if (outcome) await compactionPublisher.settle(outcome, budgeted.request.contextCompaction && {
+                ...budgeted.request.contextCompaction,
+                beforeTokens: measurement?.beforeTokens ?? budgeted.request.contextCompaction.beforeTokens
+              });
+            }
             if (budgeted.contextTruncation) {
               await emit(
                 controller,
@@ -3196,6 +3296,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           timeout_ms: originalFailure.timeout_ms, prisma_code: runDatabaseFailureCode(error)
         });
         if (cancelled) {
+          await compactionPublisher.settle("unknown").catch(() => undefined);
           await input.repository.cancelPendingToolLoopCalls({ runId, userId: input.userId }).catch(() => undefined);
           await settleWorkspace("cancelled");
           await tokenBuffer.flush().catch(() => undefined);
@@ -3269,6 +3370,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               (failure instanceof CodexProtocolError ? failure.code : null) ??
               (failure instanceof WorkspaceRuntimeError ? failure.code : null) ??
               (deadlineExceeded ? "provider_request_timed_out" : observedCode !== "unknown" ? observedCode : "provider_stream_failed"));
+        await compactionPublisher.settle(contextCompactionFailureOutcome(failureCode)).catch(() => undefined);
         const payload = safetyCode
           ? {
               code: safetyCode,

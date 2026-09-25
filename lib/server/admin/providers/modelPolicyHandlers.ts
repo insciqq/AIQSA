@@ -7,6 +7,7 @@ import {
   isMcpAutoDiscoveryOutputTokens,
   MCP_RUN_PLAN_LIMITS
 } from "../../../contracts/mcp";
+import { isToolObservationPolicy, type ToolObservationPolicy } from "../../../contracts/toolObservationPolicy";
 import {
   AdminModelPolicyServiceError,
   type createAdminModelPolicyService
@@ -71,16 +72,18 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
         "maxToolCalls", "maxToolRounds", "maxMcpToolsPerDiscovery", "mcpAutoDiscoveryTimeoutSeconds",
         "mcpAutoDiscoveryMaxOutputTokens"
       ] as const;
-      const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", ...limitKeys];
+      const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "toolObservationPolicy", ...limitKeys];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 &&
         entry.length <= limit && !/[\u0000-\u001f\u007f]/u.test(entry);
       const hasModel = record(value) &&
         (Object.hasOwn(value, "providerModelId") || Object.hasOwn(value, "reasoningEffort"));
       const presentLimits = record(value) ? limitKeys.filter((key) => Object.hasOwn(value, key)) : [];
+      const hasObservationPolicy = record(value) && Object.hasOwn(value, "toolObservationPolicy");
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasModel && presentLimits.length === 0 ||
+        !hasModel && presentLimits.length === 0 && !hasObservationPolicy ||
+        hasObservationPolicy && !isToolObservationPolicy(value.toolObservationPolicy) ||
         hasModel && (!Object.hasOwn(value, "providerModelId") || !Object.hasOwn(value, "reasoningEffort") ||
           !textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32) ||
           value.providerModelId === null && value.reasoningEffort !== null) ||
@@ -110,6 +113,7 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
             mcpAutoDiscoveryTimeoutSeconds: value.mcpAutoDiscoveryTimeoutSeconds === null ? null : Number(value.mcpAutoDiscoveryTimeoutSeconds),
             mcpAutoDiscoveryMaxOutputTokens: value.mcpAutoDiscoveryMaxOutputTokens === null ? null : Number(value.mcpAutoDiscoveryMaxOutputTokens)
           } : {}),
+          ...(hasObservationPolicy ? { toolObservationPolicy: value.toolObservationPolicy as ToolObservationPolicy } : {}),
           userId: auth.session.userId
         });
         return Response.json({ modelPolicy: await input.service.list() });

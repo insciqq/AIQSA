@@ -2,6 +2,7 @@
 
 import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
 import type { RunEventView } from "@/lib/contracts/runs";
+import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
   NavigationSidebar,
   ReadingRoomShellV2
@@ -93,6 +94,20 @@ const activityCases: Array<{
   {
     state: runState({ status: "in_progress" }),
     label: "Provider"
+  },
+  {
+    state: runState({
+      events: [{
+        data: {
+          artifactType: "context_compaction",
+          payload: makeContextCompactionStatus({
+            afterTokens: 600, beforeTokens: 1_200, outcome: "pending", state: "running"
+          })
+        },
+        type: "artifact"
+      }]
+    }),
+    label: "Context compaction"
   }
 ];
 
@@ -286,6 +301,37 @@ export function RunLifecycleV2Gallery() {
                     ]
                   }}
                   workDurationMs={8_300}
+                />
+              </StateSpec>
+
+              <StateSpec label="Complete · context compacted">
+                <RunAnswerV2
+                  content="Ответ продолжен после подтверждённого сокращения рабочего контекста."
+                  presentation={presentRunLifecycleV2(runState({
+                    authoritativeMessageStatus: "complete",
+                    contextCompaction: makeContextCompactionStatus({
+                      afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete"
+                    }),
+                    runId: "run-compaction-complete"
+                  }))}
+                />
+              </StateSpec>
+
+              <StateSpec label="Failed · context source unavailable">
+                <RunAnswerV2
+                  content="Частичный ответ сохранён, но продолжение не было выполнено."
+                  presentation={presentRunLifecycleV2(runState({
+                    contextCompaction: makeContextCompactionStatus({
+                      afterTokens: null, beforeTokens: 1_200, outcome: "source_unavailable", state: "failed"
+                    }),
+                    failure: {
+                      code: "context_compaction_source_unavailable",
+                      message: "The accepted context source is unavailable.",
+                      recovery: "retry"
+                    },
+                    runId: "run-compaction-failed",
+                    status: "error"
+                  }))}
                 />
               </StateSpec>
             </section>

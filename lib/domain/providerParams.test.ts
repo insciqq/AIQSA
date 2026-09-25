@@ -100,6 +100,12 @@ describe("provider parameter defaults", () => {
     });
   });
 
+  it("keeps an explicit OpenRouter reasoning-off state when a stale effort is present", () => {
+    expect(normalizeOpenRouterParams({
+      reasoning: { enabled: false, effort: "high", maxTokens: 4096 }
+    }).reasoning).toMatchObject({ enabled: false, effort: "none", maxTokens: 4096 });
+  });
+
   it("preserves the explicit structured-output tool-choice capability", () => {
     expect(normalizeOpenRouterParams({
       provider: { structured_output_tool_choice: "auto" }

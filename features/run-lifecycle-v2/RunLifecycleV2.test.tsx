@@ -10,6 +10,7 @@ import {
   type RunPresentationV2
 } from "./runPresentation";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import { DisclosurePreferencesProvider } from "@/components/app-shell/disclosurePreferences";
 
 function presentation(
@@ -23,6 +24,40 @@ function presentation(
 }
 
 describe("Run lifecycle v2", () => {
+  it("shows sanitized compaction state in the existing process disclosure", () => {
+    const { rerender } = render(<RunAnswerV2 content="" presentation={presentation({
+      activity: { kind: "compaction", label: "Compacting context…" },
+      compaction: makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "pending", state: "running" }),
+      kind: "activity", runId: "run-compaction"
+    })} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Compacting context…");
+    expect(document.body.textContent).not.toContain("run-compaction");
+
+    rerender(<RunAnswerV2 content="Answer" presentation={presentation({
+      compaction: makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" }),
+      kind: "complete", runId: "run-compaction"
+    })} />);
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure).toHaveTextContent("Context compacted");
+    expect(disclosure).toHaveTextContent("Approx. 600 working-context tokens removed");
+    fireEvent.click(disclosure.querySelector("summary")!);
+    expect(screen.getByTestId("context-compaction-status")).toHaveTextContent("Context compacted");
+  });
+
+  it.each([
+    ["irreducible_overflow", "Context is still too large"],
+    ["summary_failed", "Context compaction failed"],
+    ["source_unavailable", "Context source unavailable"],
+    ["provider_failed", "Provider could not compact the context"]
+  ] as const)("keeps the bounded compaction failure reason %s", (outcome, copy) => {
+    render(<RunAnswerV2 content="" presentation={presentation({
+      compaction: makeContextCompactionStatus({ outcome, state: "failed" }),
+      kind: "terminal_error"
+    })} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(copy);
+    expect(document.body.textContent).not.toMatch(/notes|sourceRefs|private|prompt|payload/iu);
+  });
+
   it("shows safe Skill activity with Pin for a completed load and a catalog omission notice", async () => {
     const onPinSkill = vi.fn(async () => undefined);
     const toolActivity = { calls: [

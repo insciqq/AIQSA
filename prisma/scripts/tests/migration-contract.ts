@@ -1,5 +1,6 @@
 import { WORKSPACE_CHECKPOINT_MIGRATION, workspaceCheckpointFixtureSql, workspaceCheckpointProofSql } from "./workspace-checkpoint-adoption";
 import { TOOL_OBSERVATION_MIGRATION, toolObservationFixtureSql, toolObservationProofSql } from "./tool-observation-adoption";
+import { TOOL_OBSERVATION_ROLLOUT_POLICY_MIGRATION, toolObservationRolloutPolicyFixtureSql, toolObservationRolloutPolicyProofSql } from "./tool-observation-rollout-policy-adoption";
 import { VISION_ANALYSIS_MIGRATION, visionAnalysisFixtureSql, visionAnalysisProofSql } from "./vision-analysis-adoption";
 import { VISION_MODEL_ROLE_MIGRATION, visionModelRoleFixtureSql, visionModelRoleProofSql, visionModelRoleRepeatProofSql } from "./vision-model-role-adoption";
 import { WORKSPACE_SELECTED_CAPTURE_MIGRATION, workspaceSelectedCaptureFixtureSql, workspaceSelectedCaptureProofSql } from "./workspace-selected-capture-adoption";
@@ -551,6 +552,7 @@ function bootstrapFoundationDigest(database: string): string {
           id,
           "defaultProviderModelId",
           "memoryAdmissionTimeoutSeconds",
+          "toolObservationPolicy",
           version,
           "updatedByUserId"
         ) ORDER BY id)
@@ -598,7 +600,8 @@ function runBootstrapProof(database: string): void {
     "initial administrator inherits organization Search");
   psqlScalar(database, `UPDATE "UserSettings" SET "defaultSearchPlan" = '{"mode":"all_selected","optionIds":[]}';`);
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "");
-  psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096 WHERE id = 'installation';`);
+  assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "off");
+  psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096, "toolObservationPolicy" = 'v1' WHERE id = 'installation';`);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "MemoryUtilityModelPolicy" WHERE id = 'installation'
     AND "providerModelId" IS NULL AND "reasoningEffort" IS NULL AND "assignmentSource" = 'UNASSIGNED' AND version = 1;`), "1",
     "fresh bootstrap leaves Memory available for verified automatic setup");
@@ -615,6 +618,7 @@ function runBootstrapProof(database: string): void {
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "synthesisEnabled" OR "decayEnabled";`), "0",
     "bootstrap adoption must preserve later Memory opt-outs");
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "4096", "bootstrap must retain the operator's MCP output allowance");
+  assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "v1", "bootstrap must retain the operator's observation rollout policy");
   assert.equal(
     bootstrapFoundationDigest(database),
     freshDigest,
@@ -7474,6 +7478,8 @@ function main(
     workspaceCheckpointFixtureSql, workspaceCheckpointProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, TOOL_OBSERVATION_MIGRATION,
     toolObservationFixtureSql, toolObservationProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, TOOL_OBSERVATION_ROLLOUT_POLICY_MIGRATION,
+    toolObservationRolloutPolicyFixtureSql, toolObservationRolloutPolicyProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, VISION_ANALYSIS_MIGRATION,
     visionAnalysisFixtureSql, visionAnalysisProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_SELECTED_CAPTURE_MIGRATION,

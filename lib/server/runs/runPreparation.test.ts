@@ -31,6 +31,7 @@ import { conversationMessagesFromPathRows } from "./prismaRepository";
 import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { renderCodexManagedProfile } from "../agents/codexProfile";
 import { agentPrompts } from "../agents/prompt";
+import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -2435,8 +2436,8 @@ describe("run preparation", () => {
     ));
     expect(off.normalizedRequest.mcp).toBeUndefined();
     expect(off.normalizedRequest.sessionStatusTool).toBe(true);
-    expect(off.normalizedRequest.toolObservationVersion).toBe(1);
-    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "read_tool_result"]);
+    expect(off.normalizedRequest.toolObservationVersion).toBe(0);
+    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
     expect(off.normalizedRequest.mcpDiscovery).toBeUndefined();
     expect(off.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
     expect(catalog).not.toHaveBeenCalled();
@@ -2456,6 +2457,35 @@ describe("run preparation", () => {
     expect(loadAll.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "mcp_team_lookup_1"
     ]);
+  });
+
+  it.each(["off", "v1"] as const)("freezes the operator observation policy at acceptance: %s", async policy => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const load = vi.fn(async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: policy }));
+    const deps = { ...harness.deps, runPolicy: { load } };
+    const prepared = preparedFrom(await prepareRun(deps, sendInput(successBody({
+      modelId: "openai-tool-model", provider: "openai"
+    }))));
+    expect(prepared.normalizedRequest.toolObservationVersion).toBe(policy === "v1" ? 1 : 0);
+    expect(prepared.providerRequest.tools?.some(tool => tool.name === "read_tool_result")).toBe(policy === "v1");
+  });
+
+  it("does not consult a new default for an already accepted run", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    let policy: "off" | "v1" = "v1";
+    const load = vi.fn(async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: policy }));
+    const deps = { ...harness.deps, runPolicy: { load } };
+    const accepted = preparedFrom(await prepareRun(deps, sendInput(successBody({
+      modelId: "openai-tool-model", provider: "openai"
+    }))));
+    policy = "off";
+    const later = preparedFrom(await prepareRun(deps, sendInput(successBody({
+      modelId: "openai-tool-model", provider: "openai"
+    }))));
+    expect(accepted.normalizedRequest.toolObservationVersion).toBe(1);
+    expect(accepted.providerRequest.tools?.some(tool => tool.name === "read_tool_result")).toBe(true);
+    expect(later.normalizedRequest.toolObservationVersion).toBe(0);
+    expect(later.providerRequest.tools?.some(tool => tool.name === "read_tool_result")).toBe(false);
   });
 
   it("accepts an MCP snapshot for a provider model with explicit effective tool capabilities", async () => {
@@ -3489,7 +3519,7 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
       "provider_model_client"
     );
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "read_tool_result", "search_engine_1"]);
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "search_engine_1"]);
   });
 
   it("routes a provider-admitted multi-engine plan", async () => {

@@ -3,13 +3,21 @@ import { decodeToolObservationDescriptor } from "./contract";
 
 /** Keep canonical checkpoints separate from their provider representation. */
 export function projectObservationForProvider(result: ToolExecutionResult): ToolExecutionResult {
-  if (!result.observation || result.content.some(part => {
+  if (!result.observation) return result;
+  const projected = result.content.findIndex(part => {
     if (part.type !== "json" || !part.value || typeof part.value !== "object" || !("observation" in part.value)) return false;
     const current = decodeToolObservationDescriptor(part.value.observation);
     return current?.handle === result.observation!.handle && current.checksum === result.observation!.checksum;
-  })) return result;
+  });
+  if (projected >= 0) {
+    if (result.status !== "error") return result;
+    return { ...result, content: result.content.map((part, index) => index === projected && part.type === "json"
+      ? { ...part, value: { ...(part.value as Record<string, unknown>), is_error: true } } : part) };
+  }
   return { ...result, content: [...result.content, { type: "json", value: {
-    observation: result.observation, reader: "read_tool_result"
+    observation: result.observation,
+    reader: "read_tool_result",
+    ...(result.status === "error" ? { is_error: true } : {})
   } }] };
 }
 

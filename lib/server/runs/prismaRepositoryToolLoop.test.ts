@@ -451,6 +451,22 @@ describe("provider dispatch recovery request loading", () => {
     toolMode: "none"
   } satisfies NormalizedRunRequest;
 
+  it("keeps historical requests on the legacy path and accepts the explicit Off marker", async () => {
+    let accepted: unknown = normalizedRequest;
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+      .resolves.toEqual(normalizedRequest);
+    accepted = { ...normalizedRequest, toolObservationVersion: 0 };
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+      .resolves.toEqual(accepted);
+    accepted = { ...normalizedRequest, toolObservationVersion: 2 };
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+      .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
   it("restores legacy pinned arrays and frozen v2 catalogs without consulting the current library", async () => {
     const reference = { skillId: "skill", revisionId: "revision", name: "review", description: "Review text", fileCount: 1 };
     const { manifest } = freezeSkillManifest({ mode: "auto", pinned: [], available: [reference], toolsSupported: true });

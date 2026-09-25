@@ -257,13 +257,14 @@ export function RunAnswerV2({
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
   const liveLabel = presentation.kind === "activity"
-    ? presentation.activity?.kind === "synthesis" ? presentation.activity.label
+    ? presentation.activity?.kind === "synthesis" || presentation.activity?.kind === "compaction" ? presentation.activity.label
       : workspaceLiveLabelV2(workspaceActivity) ??
       (toolActivity ? runningToolLabel(toolActivity) : null) ??
       presentation.activity?.label ?? "Thinking…"
     : null;
   const process = (
     <AnswerProcessV2
+      contextCompaction={presentation.compaction}
       disclosureId={processDisclosureId ?? anchorId}
       liveLabel={liveLabel}
       onPinSkill={onPinSkill}
@@ -452,7 +453,7 @@ export function RunLifecycleAnnouncerV2({
     sourceChatId: string;
   } | null>(null);
   const selected = activeChatId === sourceChatId;
-  const signature = `${presentation.kind}:${presentation.activity?.label ?? ""}`;
+  const signature = `${presentation.kind}:${presentation.activity?.label ?? ""}:${presentation.compaction?.state ?? ""}:${presentation.compaction?.outcome ?? ""}`;
 
   useEffect(() => {
     const previous = previousRef.current;
