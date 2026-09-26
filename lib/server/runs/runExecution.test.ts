@@ -25,6 +25,7 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { McpSemanticRouterError } from "../mcp/router";
+import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
@@ -6709,6 +6710,30 @@ describe("run execution", () => {
     expect(repository.recordedRunUsageEvents.flatMap(event => event.usageAttributions ?? [])).toEqual(expect.arrayContaining([
       expect.objectContaining({ modelId: "perplexity/sonar-pro-search", usage: expect.objectContaining({ inputTokens: 3, outputTokens: 2 }) })
     ]));
+  });
+
+  it("persists a reviewed Gemini HTTP identity as the run outcome without provider text", async () => {
+    const rejected = () => Object.assign(new GeminiHttpError(400, "invalid_request"), {
+      providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY"
+    });
+    const expected = {
+      code: "provider_http_invalid_request",
+      message: "The model provider rejected the request (Gemini HTTP 400: invalid_request)."
+    };
+    const adapter = createAdapter(async function* () { throw rejected(); });
+    // The client Search tool routes the first request through the tool loop;
+    // the plain request fails on the direct stream path.
+    for (const prepared of [
+      preparedData({ modelId: "openai-answer-model", provider: "openai", searchPlan: perplexityClientSearchPlan() }),
+      preparedData()
+    ]) {
+      const repository = createRepository();
+      const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+        searchAdapter: { buildRequestPreview: () => ({}), search: vi.fn() } })).text());
+      expect(events.at(-1)).toMatchObject({ data: expected, type: "error" });
+      expect(repository.failedRuns).toEqual([{ assistantMessageId: "assistant-1", error: expected, runId: "run-1" }]);
+      expect(JSON.stringify([events, repository.failedRuns])).not.toContain("PRIVATE_");
+    }
   });
 
   it("retains completed and partial answer usage with Search when a later tool round fails", async () => {

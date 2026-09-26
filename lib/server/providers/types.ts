@@ -325,6 +325,11 @@ export type ProviderRunRequest = NormalizedRunRequest & {
   /** Bounded attempt receipts carried into the next durable tool-loop fence. */
   contextCompactionSummaryAttempts?: readonly import("../../contracts/contextCompaction").ContextSummaryAttempt[];
   forceNonStreaming?: boolean;
+  /** Ephemeral server-owned name of the advertised tool a `required` round
+   * exists to obtain. Only `toolChoice: "required"` rounds carry it. Adapters
+   * that can restrict a forced choice narrow it to this tool; others keep
+   * their ordinary `required` mapping over every advertised tool. */
+  forcedToolName?: string;
   parallelToolCalls?: boolean;
   previousProviderResponseId?: string;
   providerToolMessages?: unknown[];
