@@ -494,7 +494,19 @@ describe("Prisma MCP OAuth repository", () => {
 
     fake.setConnectionState("disconnecting");
     const tokenGenerationBeforeClear = fake.getConnectionRow()!.tokenGeneration;
-    await expect(repository.finalizeDisconnected(created.value.id)).resolves.toBe(true);
+    // A refresh that rotated after revocation keeps the connection draining.
+    await expect(repository.finalizeDisconnected({
+      connectionId: created.value.id,
+      tokenVersion: String(tokenGenerationBeforeClear - 1)
+    })).resolves.toBe(false);
+    expect(fake.getConnectionRow()).toMatchObject({
+      state: "disconnecting",
+      tokenGeneration: tokenGenerationBeforeClear
+    });
+    await expect(repository.finalizeDisconnected({
+      connectionId: created.value.id,
+      tokenVersion: String(tokenGenerationBeforeClear)
+    })).resolves.toBe(true);
     expect(fake.getConnectionRow()).toMatchObject({
       state: "disconnected",
       tokenEnvelope: null,

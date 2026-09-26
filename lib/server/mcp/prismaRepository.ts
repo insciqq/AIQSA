@@ -24,9 +24,13 @@ import { prisma } from "@/lib/server/prisma";
 import { resolveEffectiveMcpGrant, resolveEffectiveMcpValues } from "./access";
 import {
   hashCanonicalMcpValue,
+  mcpEndpointBinding,
+  mcpValuesForEndpoint,
+  parseMcpEndpointBindings,
   validateMcpDraft,
   validateMcpSlotIdentityLineage,
-  validateMcpSlotValue
+  validateMcpSlotValue,
+  type McpEndpointBinding
 } from "./definitions";
 import type { McpDraftValidator } from "./draftValidator";
 import { unavailableMcpDraftValidator } from "./draftValidator";
@@ -134,13 +138,14 @@ type McpDataClient = Pick<
 >;
 
 type StoredValues = {
+  endpoints: Record<string, McpEndpointBinding>;
   updatedAt: Record<string, string>;
   values: Record<string, McpSlotValue>;
   version: 1;
 };
 
 function emptyStoredValues(): StoredValues {
-  return { updatedAt: {}, values: {}, version: 1 };
+  return { endpoints: {}, updatedAt: {}, values: {}, version: 1 };
 }
 
 function isSlotValue(value: unknown): value is McpSlotValue {
@@ -175,26 +180,107 @@ function readStoredValues(
     if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) throw new Error("mcp_values_invalid");
     updatedAt[slotKey] = value;
   }
-  return { updatedAt, values, version: 1 };
+  const endpoints = parseMcpEndpointBindings(candidate.endpoints);
+  if (!endpoints) throw new Error("mcp_values_invalid");
+  return { endpoints, updatedAt, values, version: 1 };
 }
 
+// Every written value is bound to the destination its owner entered it for.
 function applyStoredValuePatch(
   current: StoredValues,
   patch: Record<string, McpSlotValue | null>,
-  now: Date
+  now: Date,
+  endpoint: McpEndpointBinding
 ): StoredValues {
+  const endpoints = { ...current.endpoints };
   const values = { ...current.values };
   const updatedAt = { ...current.updatedAt };
   for (const [slotKey, value] of Object.entries(patch)) {
     if (value === null) {
+      delete endpoints[slotKey];
       delete values[slotKey];
       delete updatedAt[slotKey];
     } else {
+      endpoints[slotKey] = endpoint;
       values[slotKey] = value;
       updatedAt[slotKey] = now.toISOString();
     }
   }
-  return { updatedAt, values, version: 1 };
+  return { endpoints, updatedAt, values, version: 1 };
+}
+
+function valuesForEndpoint(
+  stored: StoredValues,
+  target: McpEndpointBinding,
+  implicit: McpEndpointBinding | null
+): Record<string, McpSlotValue> {
+  return mcpValuesForEndpoint({ bindings: stored.endpoints, implicit, target, values: stored.values });
+}
+
+// Destination of unbound legacy values: the active revision, if any. An
+// unreadable active revision matches no destination.
+function implicitEndpointBinding(configuration: Prisma.JsonValue | null | undefined): McpEndpointBinding | null {
+  if (configuration === null || configuration === undefined) return null;
+  const parsed = validateMcpDraft(configuration);
+  return parsed.ok ? mcpEndpointBinding(parsed.value) : { endpointHash: "", origin: "" };
+}
+
+function activeConfiguration(
+  activeRevisionId: string | null,
+  revisions: readonly Readonly<{ configuration: Prisma.JsonValue; id: string }>[]
+): Prisma.JsonValue | null {
+  return activeRevisionId
+    ? revisions.find((revision) => revision.id === activeRevisionId)?.configuration ?? null
+    : null;
+}
+
+/**
+ * Before publication moves runtime use to another origin, record the previous
+ * active destination on every unbound legacy value of the server, so those
+ * values are never sent to the new origin. Versions stay unchanged: the values
+ * themselves do not change.
+ */
+async function pinLegacyEndpointBindings(tx: Prisma.TransactionClient, input: Readonly<{
+  key: Buffer;
+  next: McpDraftConfiguration;
+  previous: Prisma.JsonValue | null;
+  serverId: string;
+}>): Promise<void> {
+  const previous = implicitEndpointBinding(input.previous);
+  if (!previous || previous.origin === mcpEndpointBinding(input.next).origin) return;
+  const pinned = (stored: StoredValues): StoredValues | null => {
+    const unbound = Object.keys(stored.values).filter((slotKey) => !stored.endpoints[slotKey]);
+    return unbound.length
+      ? { ...stored, endpoints: { ...stored.endpoints, ...Object.fromEntries(unbound.map((slotKey) => [slotKey, previous])) } }
+      : null;
+  };
+  const server = await tx.mcpServer.findUnique({
+    select: { sharedConfigEnvelope: true, sharedConfigVersion: true },
+    where: { id: input.serverId }
+  });
+  if (server?.sharedConfigEnvelope) {
+    const context = mcpSharedConfigEnvelopeContext(input.serverId, server.sharedConfigVersion);
+    const shared = pinned(readStoredValues(server.sharedConfigEnvelope, input.key, context));
+    if (shared) {
+      await tx.mcpServer.update({
+        data: { sharedConfigEnvelope: encryptMcpEnvelope(shared, input.key, context) },
+        where: { id: input.serverId }
+      });
+    }
+  }
+  const preferences = await tx.mcpUserServer.findMany({
+    select: { id: true, personalConfigEnvelope: true, personalConfigVersion: true },
+    where: { personalConfigEnvelope: { not: null }, serverId: input.serverId }
+  });
+  for (const preference of preferences) {
+    const context = mcpPersonalConfigEnvelopeContext(preference.id, preference.personalConfigVersion);
+    const personal = pinned(readStoredValues(preference.personalConfigEnvelope, input.key, context));
+    if (!personal) continue;
+    await tx.mcpUserServer.update({
+      data: { personalConfigEnvelope: encryptMcpEnvelope(personal, input.key, context) },
+      where: { id: preference.id }
+    });
+  }
 }
 
 function draftFrom(value: Prisma.JsonValue): McpDraftConfiguration {
@@ -450,6 +536,12 @@ function serializeAdminServer(
       ? mcpSharedConfigEnvelopeContext(record.id, record.sharedConfigVersion)
       : undefined
   );
+  // Values entered for another origin read as unset until entered again.
+  const draftSharedValues = valuesForEndpoint(
+    stored,
+    mcpEndpointBinding(draft),
+    implicitEndpointBinding(record.activeRevision?.configuration)
+  );
   const viewerConnections = record.oauthConnections.filter((connection) =>
     connection.userId === validationUserId);
   let validationOAuth: AdminServerRecord["oauthConnections"][number] | null =
@@ -518,10 +610,9 @@ function serializeAdminServer(
     sharedValues: Object.fromEntries(
       draft.slots
         .filter((slot) => slot.policy.kind === "shared")
-        .map((slot) => [slot.slotKey, {
-          configured: Object.hasOwn(stored.values, slot.slotKey),
-          updatedAt: stored.updatedAt[slot.slotKey] ?? null
-        }])
+        .map((slot) => [slot.slotKey, Object.hasOwn(draftSharedValues, slot.slotKey)
+          ? { configured: true, updatedAt: stored.updatedAt[slot.slotKey] ?? null }
+          : { configured: false, updatedAt: null }])
     ),
     updatedAt: record.updatedAt.toISOString(),
     validationOAuth: validationOAuth
@@ -643,11 +734,13 @@ function serializeUserServer(input: {
       ? mcpPersonalConfigEnvelopeContext(preference.id, preference.personalConfigVersion)
       : undefined
   );
+  const endpoint = mcpEndpointBinding(draft);
+  const personalValues = valuesForEndpoint(personal, endpoint, endpoint);
   const resolved = resolveEffectiveMcpValues({
     personalSlotKeys: grant.personalSlotKeys,
-    personalValues: personal.values,
+    personalValues,
     personalVersion: preference?.personalConfigVersion ?? 0,
-    sharedValues: shared.values,
+    sharedValues: valuesForEndpoint(shared, endpoint, endpoint),
     sharedVersion: input.record.sharedConfigVersion,
     slots: draft.slots
   });
@@ -669,8 +762,8 @@ function serializeUserServer(input: {
       ...(slot.maxLength !== undefined ? { maxLength: slot.maxLength } : {}),
       ...(slot.minLength !== undefined ? { minLength: slot.minLength } : {})
     };
-    if (!slot.sensitive && plan.source === "personal" && Object.hasOwn(personal.values, slot.slotKey)) {
-      field.value = personal.values[slot.slotKey];
+    if (!slot.sensitive && plan.source === "personal" && Object.hasOwn(personalValues, slot.slotKey)) {
+      field.value = personalValues[slot.slotKey];
     }
     return [field];
   });
@@ -896,7 +989,7 @@ export function createPrismaMcpRepository(input: {
       tx.mcpServer.findUnique({
         include: {
           activationJob: true,
-          revisions: { select: { configuration: true } }
+          revisions: { select: { configuration: true, id: true } }
         },
         where: { id: serverId }
       }),
@@ -930,7 +1023,11 @@ export function createPrismaMcpRepository(input: {
     const validation = draftValidationValues({
       draft,
       oneTimeValues: {},
-      sharedValues: shared.values
+      sharedValues: valuesForEndpoint(
+        shared,
+        mcpEndpointBinding(draft),
+        implicitEndpointBinding(activeConfiguration(server.activeRevisionId, server.revisions))
+      )
     });
     if (validation.issues.length) {
       return { issues: validation.issues, kind: "invalid_values" };
@@ -1027,6 +1124,12 @@ export function createPrismaMcpRepository(input: {
     }
 
     await tx.mcpActivationJob.deleteMany({ where: { serverId } });
+    await pinLegacyEndpointBindings(tx, {
+      key,
+      next: draft,
+      previous: activeConfiguration(server.activeRevisionId, matchingRevisions),
+      serverId
+    });
     await tx.mcpServer.update({
       data: { activeRevisionId: revisionId, enabled: server.activeRevisionId ? server.enabled : true },
       where: { id: serverId }
@@ -1073,7 +1176,7 @@ export function createPrismaMcpRepository(input: {
       if (issues.length) return { issues, kind: "invalid_values" };
       const key = encryptionKey();
       const now = new Date();
-      const stored = applyStoredValuePatch(emptyStoredValues(), sharedValues, now);
+      const stored = applyStoredValuePatch(emptyStoredValues(), sharedValues, now, mcpEndpointBinding(draft));
       if (activate) {
         const validation = draftValidationValues({
           draft,
@@ -1261,9 +1364,10 @@ export function createPrismaMcpRepository(input: {
         });
         const server = await tx.mcpServer.findFirst({
           select: {
+            activeRevisionId: true,
             archivedAt: true,
             draft: true,
-            revisions: { select: { configuration: true } },
+            revisions: { select: { configuration: true, id: true } },
             sharedConfigEnvelope: true,
             sharedConfigVersion: true
           },
@@ -1286,7 +1390,11 @@ export function createPrismaMcpRepository(input: {
         const validation = draftValidationValues({
           draft,
           oneTimeValues: {},
-          sharedValues: shared.values
+          sharedValues: valuesForEndpoint(
+            shared,
+            mcpEndpointBinding(draft),
+            implicitEndpointBinding(activeConfiguration(server.activeRevisionId, server.revisions))
+          )
         });
         const issues = [...lineageIssues, ...validation.issues].slice(0, 20);
         if (issues.length) {
@@ -1510,6 +1618,12 @@ export function createPrismaMcpRepository(input: {
           testedAt: now.toISOString(),
           toolInventory: inventory
         };
+        await pinLegacyEndpointBindings(tx, {
+          key: encryptionKey(),
+          next: draft,
+          previous: activeConfiguration(server.activeRevisionId, server.revisions),
+          serverId: claim.serverId
+        });
         await tx.mcpServer.update({
           data: {
             activeRevisionId: revisionId,
@@ -1560,6 +1674,19 @@ export function createPrismaMcpRepository(input: {
           return { kind: "artifact_missing" as const };
         }
         await tx.mcpActivationJob.deleteMany({ where: { serverId } });
+        const next = validateMcpDraft(revision.configuration);
+        if (next.ok) {
+          const current = await tx.mcpServer.findUnique({
+            select: { activeRevision: { select: { configuration: true } } },
+            where: { id: serverId }
+          });
+          await pinLegacyEndpointBindings(tx, {
+            key,
+            next: next.value,
+            previous: current?.activeRevision?.configuration ?? null,
+            serverId
+          });
+        }
         await tx.mcpServer.update({
           data: { activeRevisionId: revision.id },
           where: { id: serverId }
@@ -1655,9 +1782,10 @@ export function createPrismaMcpRepository(input: {
       }
       const server = await client.mcpServer.findFirst({
         select: {
+          activeRevisionId: true,
           draft: true,
           id: true,
-          revisions: { select: { configuration: true } },
+          revisions: { select: { configuration: true, id: true } },
           sharedConfigEnvelope: true,
           sharedConfigVersion: true,
           updatedAt: true
@@ -1683,17 +1811,24 @@ export function createPrismaMcpRepository(input: {
         const issues = valueIssues(draft.slots, sharedValues, (slot) => slot.policy.kind === "shared");
         if (issues.length) return { issues, kind: "invalid_values" as const };
       }
-      const storedValues = applyStoredValuePatch(readStoredValues(
+      const currentShared = readStoredValues(
         server.sharedConfigEnvelope,
         key,
         server.sharedConfigEnvelope
           ? mcpSharedConfigEnvelopeContext(server.id, server.sharedConfigVersion)
           : undefined
-      ), sharedValues ?? {}, new Date());
+      );
+      const patchedAt = new Date();
+      const storedValues = applyStoredValuePatch(currentShared, sharedValues ?? {}, patchedAt, mcpEndpointBinding(draft));
+      // The validator reaches the candidate endpoint: send only values entered for its origin.
       const validationInput = draftValidationValues({
         draft,
         oneTimeValues,
-        sharedValues: storedValues.values
+        sharedValues: valuesForEndpoint(
+          storedValues,
+          mcpEndpointBinding(draft),
+          implicitEndpointBinding(activeConfiguration(server.activeRevisionId, server.revisions))
+        )
       });
       if (validationInput.issues.length) {
         return { issues: validationInput.issues, kind: "invalid_values" as const };
@@ -1773,7 +1908,11 @@ export function createPrismaMcpRepository(input: {
           ? {
               sharedConfigVersion,
               sharedConfigEnvelope: Object.keys(storedValues.values).length
-                ? encryptMcpEnvelope(storedValues, key, mcpSharedConfigEnvelopeContext(serverId, sharedConfigVersion))
+                ? encryptMcpEnvelope(
+                    applyStoredValuePatch(currentShared, sharedValues, patchedAt, mcpEndpointBinding(draft)),
+                    key,
+                    mcpSharedConfigEnvelopeContext(serverId, sharedConfigVersion)
+                  )
                 : null
             }
           : {};
@@ -1953,7 +2092,8 @@ export function createPrismaMcpRepository(input: {
                 : undefined
             ),
             sharedValues!,
-            new Date()
+            new Date(),
+            mcpEndpointBinding(effectiveDraft)
           );
           data.sharedConfigEnvelope = Object.keys(stored.values).length
             ? encryptMcpEnvelope(
@@ -2006,6 +2146,7 @@ export function createPrismaMcpRepository(input: {
           if (issues.length) return { issues, kind: "invalid_values" as const };
         }
         const preference = record.userServers[0] ?? null;
+        const endpoint = mcpEndpointBinding(draft);
         const personal = applyStoredValuePatch(
           readStoredValues(
             preference?.personalConfigEnvelope ?? null,
@@ -2015,7 +2156,8 @@ export function createPrismaMcpRepository(input: {
               : undefined
           ),
           values ?? {},
-          new Date()
+          new Date(),
+          endpoint
         );
         if (enabled === true) {
           const shared = readStoredValues(
@@ -2027,9 +2169,9 @@ export function createPrismaMcpRepository(input: {
           );
           const resolved = resolveEffectiveMcpValues({
             personalSlotKeys: grant.personalSlotKeys,
-            personalValues: personal.values,
+            personalValues: valuesForEndpoint(personal, endpoint, endpoint),
             personalVersion: (preference?.personalConfigVersion ?? 0) + (values && Object.keys(values).length ? 1 : 0),
-            sharedValues: shared.values,
+            sharedValues: valuesForEndpoint(shared, endpoint, endpoint),
             sharedVersion: record.sharedConfigVersion,
             slots: draft.slots
           });

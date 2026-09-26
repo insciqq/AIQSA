@@ -442,3 +442,56 @@ export function validateMcpSlotValue(slot: McpConfigurationSlot, value: unknown)
   if (slot.valueType === "enum") return Boolean(slot.enumValues?.includes(value));
   return true;
 }
+
+/**
+ * Destination a stored slot value was entered for: the remote origin plus the
+ * same origin/path hash recorded in validation evidence. Packaged sources share
+ * one local destination.
+ */
+export type McpEndpointBinding = Readonly<{ endpointHash: string; origin: string }>;
+
+const ENDPOINT_HASH = /^[0-9a-f]{64}$/u;
+
+export function mcpEndpointBinding(draft: McpDraftConfiguration): McpEndpointBinding {
+  if (draft.source.kind !== "remote") {
+    return { endpointHash: hashCanonicalMcpValue({ kind: "local" }), origin: "local" };
+  }
+  const endpoint = new URL(draft.source.url);
+  return {
+    endpointHash: hashCanonicalMcpValue({ origin: endpoint.origin, pathname: endpoint.pathname }),
+    origin: endpoint.origin
+  };
+}
+
+export function parseMcpEndpointBindings(value: unknown): Record<string, McpEndpointBinding> | null {
+  if (value === undefined) return {};
+  if (!isObject(value)) return null;
+  const bindings: Record<string, McpEndpointBinding> = {};
+  for (const [slotKey, binding] of Object.entries(value)) {
+    if (!isObject(binding) || typeof binding.origin !== "string" || !binding.origin ||
+      typeof binding.endpointHash !== "string" || !ENDPOINT_HASH.test(binding.endpointHash)) {
+      return null;
+    }
+    bindings[slotKey] = { endpointHash: binding.endpointHash, origin: binding.origin };
+  }
+  return bindings;
+}
+
+/**
+ * Keeps only values entered for the target origin, so an origin change makes
+ * owners enter them again before any outbound use. A same-origin path change,
+ * including endpoint correction, keeps them. Values stored before bindings
+ * existed belong to `implicit`, the active revision's destination; before the
+ * first publication there is none and they stay usable.
+ */
+export function mcpValuesForEndpoint<T>(input: Readonly<{
+  bindings: Readonly<Record<string, McpEndpointBinding>>;
+  implicit: McpEndpointBinding | null;
+  target: McpEndpointBinding;
+  values: Readonly<Record<string, T>>;
+}>): Record<string, T> {
+  return Object.fromEntries(Object.entries(input.values).filter(([slotKey]) => {
+    const binding = input.bindings[slotKey] ?? input.implicit;
+    return !binding || binding.origin === input.target.origin;
+  }));
+}
