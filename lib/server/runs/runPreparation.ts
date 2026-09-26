@@ -81,7 +81,7 @@ import type {
   McpRunPlanResult
 } from "../mcp/runPlan";
 import type { McpSemanticRouter } from "../mcp/router";
-import { mcpFindToolsTool } from "../mcp/discovery";
+import { mcpConnectedServicesGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
@@ -1916,6 +1916,9 @@ export async function prepareRun(
       : "";
     prompt = { ...prompt, system: [prompt.system, imageGuidance, artifactImageGuidance].filter(Boolean).join("\n\n") };
   }
+  // Auto names only the frozen catalog's services; the accepted prompt keeps it through recovery.
+  const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpConnectedServicesGuidance(mcpCatalog) : null;
+  if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
   if (artifactIntent) prompt = { ...prompt, system: `${prompt.system}\n\nThe user explicitly asked for an artifact: call create_artifact for this message.` };
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
   let artifactFocus: NormalizedRunRequest["artifactFocus"];
