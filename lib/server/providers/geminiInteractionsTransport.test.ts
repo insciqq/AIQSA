@@ -37,6 +37,17 @@ describe("Gemini Interactions transport", () => {
       }
     });
 
+  it.each([
+    ["The input token count exceeds the maximum number of tokens allowed 1048576.", { reportedMaximumTokens: 1_048_576 }],
+    ["The input token count exceeds the maximum number of tokens allowed.", {}]
+  ])("classifies the sentence %# without stated counts and extracts only what it states", async (message, counts) => {
+    const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn: async () => Response.json({ error: {
+      code: "invalid_request", message } }, { status: 400 }) });
+    const failure = await client.createInteraction({}).catch((value: unknown) => value);
+    expect(failure).toMatchObject({ code: "context_length_exceeded", httpStatus: 400, ...counts });
+    expect(failure).not.toHaveProperty("reportedPromptTokens");
+  });
+
   it("keeps other 400s and a non-400 status out of the context-length identity", async () => {
     for (const [status, error, code] of [
       [400, { code: "invalid_request", message: "Unknown name \"maxItems\": Cannot find field. PRIVATE_PROVIDER_MESSAGE_CANARY" }, "invalid_request"],
