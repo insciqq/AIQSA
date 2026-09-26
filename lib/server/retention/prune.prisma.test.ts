@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
+import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
+import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
+import { summarizeMessageRunArtifacts, summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository";
 import { createPrismaKnowledgeUploadRepository } from "../knowledge/uploadRepository";
 import { prisma } from "../prisma";
+import { appendRunOutputEvents } from "../runs/prismaRepositoryToolLoop";
+import { projectRunOutputArtifactEvent, type RunOutputArtifactEvent } from "../runs/runOutputEvents";
+import { WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT } from "../runs/workspaceActivityPersistence";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import {
@@ -159,6 +165,109 @@ async function cleanupKnowledgePayloadFixture(input: Awaited<ReturnType<typeof c
     await tx.knowledgeIndexGeneration.deleteMany({ where: { knowledgeBaseId: input.base.id } });
     await tx.knowledgeBase.deleteMany({ where: { id: input.base.id } });
   });
+}
+
+
+function projectedOutput(event: Parameters<typeof projectRunOutputArtifactEvent>[0]): RunOutputArtifactEvent {
+  const projected = projectRunOutputArtifactEvent(event);
+  if (!projected) throw new Error("retention_fixture_output_invalid");
+  return projected;
+}
+
+const answerOutputEvents = [
+  projectedOutput({ type: "grounding_display", data: {
+    citations: [{ endIndex: 8, startIndex: 0, title: "Grounded", url: "https://example.test/grounded" }],
+    provider: "gemini",
+    suggestionsHtml: '<a href="https://www.google.com/search?q=retention">Retention</a>'
+  } }),
+  projectedOutput({ type: "artifact", data: { artifactType: "citation", payload: {
+    title: "Citation", url: "https://example.test/citation"
+  } } }),
+  projectedOutput({ type: "artifact", data: { artifactType: "reasoning", payload: { text: "Compared the sources." } } }),
+  projectedOutput({ type: "artifact", data: { artifactType: "search", payload: { action: { sources: [
+    { title: "Search source", url: "https://example.test/search" }
+  ] } } } }),
+  projectedOutput({ type: "artifact", data: { artifactType: "generated_artifact", payload: {
+    artifactId: "retention-artifact", entrypoint: "index.html", kind: "html",
+    title: "Retention card", versionId: "retention-artifact-v1", versionNumber: 1
+  } } }),
+  { type: "artifact", data: { artifactType: "context_compaction", payload: makeContextCompactionStatus({
+    afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete"
+  }) } } satisfies RunOutputArtifactEvent,
+  projectedOutput({ type: "artifact", data: { artifactType: "workspace_activity", payload: {
+    command: { exitCode: 0, preview: "npm test" }, id: "call:retention", kind: "command", phase: "succeeded"
+  } } })
+];
+
+async function createRunFixture(input: { status: "complete" | "streaming"; userId: string }) {
+  const chat = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: "Retention run fixture", userId: input.userId } });
+  const question = await prisma.message.create({
+    data: { chatId: chat.id, content: textMessageContent("Retention question"), role: "user" }
+  });
+  const answer = await prisma.message.create({
+    data: { chatId: chat.id, content: textMessageContent("Retention answer"), parentMessageId: question.id, role: "assistant" }
+  });
+  return prisma.modelRun.create({
+    data: {
+      assistantMessageId: answer.id,
+      chatId: chat.id,
+      modelId: "retention-fixture-model",
+      normalizedRequest: {},
+      provider: "retention-fixture-provider",
+      status: input.status,
+      userId: input.userId,
+      userMessageId: question.id
+    }
+  });
+}
+
+async function appendContextStatus(modelRunId: string) {
+  await prisma.$transaction((tx) => appendRunOutputEvents(tx, modelRunId, [{
+    type: "artifact",
+    data: { artifactType: "context_status", payload: {
+      approximateInputTokens: 1_000, contextWindow: 128_000, droppedMessages: 0, loadedTools: 0,
+      maxOutputTokens: 4_096, modelId: "retention-fixture-model", phase: "after_answer",
+      provider: "retention-fixture-provider", safetyMarginTokens: 1_024, version: 1
+    } }
+  }]));
+}
+
+async function ageRunEvents(modelRunId: string) {
+  await prisma.modelRunEvent.updateMany({ data: { createdAt: oldDate }, where: { modelRunId } });
+}
+
+// Mirrors the chat read path: only answer-output rows reach the projections.
+async function readRunProjections(modelRunId: string) {
+  const run = await prisma.modelRun.findUniqueOrThrow({
+    select: {
+      events: {
+        orderBy: { sequence: "asc" },
+        select: { eventType: true, payload: true },
+        where: { eventType: { in: ["artifact", "grounding_display", WORKSPACE_ACTIVITY_SNAPSHOT] } }
+      },
+      id: true,
+      status: true
+    },
+    where: { id: modelRunId }
+  });
+  return {
+    artifacts: summarizeMessageRunArtifacts({ ...run, searchRuns: [] }),
+    workspaceActivity: summarizeMessageRunWorkspaceActivity(run)
+  };
+}
+
+async function runEventKinds(modelRunId: string) {
+  const rows = await prisma.modelRunEvent.findMany({
+    orderBy: { sequence: "asc" },
+    select: { eventType: true, payload: true },
+    where: { modelRunId }
+  });
+  return rows.map((row) => {
+    const payload = row.payload as { artifactType?: unknown } | null;
+    return row.eventType === "artifact" && typeof payload?.artifactType === "string"
+      ? `artifact:${payload.artifactType}`
+      : row.eventType;
+  }).sort();
 }
 
 describe("Prisma attachment retention outbox", () => {
@@ -825,6 +934,56 @@ describe("Prisma attachment retention outbox", () => {
       await expect(prisma.authFlowToken.findUnique({ where: { id: unexpired.id } })).resolves.not.toBeNull();
       await expect(prisma.authFlowToken.findUnique({ where: { id: recentConsumed.id } })).resolves.not.toBeNull();
     } finally {
+      await cleanupUser(user.id, []);
+    }
+  });
+
+  it("keeps aged answer projections of terminal runs and expires only technical run events", async () => {
+    const user = await createUser();
+    try {
+      const complete = await createRunFixture({ status: "complete", userId: user.id });
+      const active = await createRunFixture({ status: "streaming", userId: user.id });
+      await prisma.$transaction((tx) => appendRunOutputEvents(tx, complete.id, answerOutputEvents));
+      await appendContextStatus(complete.id);
+      await appendContextStatus(active.id);
+      await ageRunEvents(complete.id);
+      await ageRunEvents(active.id);
+
+      const before = await readRunProjections(complete.id);
+      expect(before.artifacts).toMatchObject({
+        citations: [expect.objectContaining({ url: "https://example.test/grounded" })],
+        contextCompaction: expect.objectContaining({ outcome: "summary_applied" }),
+        generatedArtifacts: [expect.objectContaining({ artifactId: "retention-artifact" })],
+        reasoningText: ["Compared the sources."],
+        sources: expect.arrayContaining([expect.objectContaining({ url: "https://example.test/search" })])
+      });
+      expect(before.workspaceActivity?.entries).toEqual([
+        expect.objectContaining({ id: "call:retention", phase: "succeeded" })
+      ]);
+      const completeKinds = await runEventKinds(complete.id);
+      expect(completeKinds).toEqual(expect.arrayContaining([
+        "artifact:context_status", WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT
+      ]));
+      const expectedKept = completeKinds.filter((kind) =>
+        kind !== "artifact:context_status" && kind !== WORKSPACE_ACTIVITY_RECEIPT);
+      const activeKinds = await runEventKinds(active.id);
+      const repository = createPrismaRetentionRepository(prisma);
+      const storage = { async deleteObject() {} };
+
+      const dryRun = await pruneRetention({ dryRun: true, now: retentionNow, repository, storage });
+      expect(dryRun.modelRunEvents.deleted).toBe(0);
+      expect(dryRun.modelRunEvents.matched).toBeGreaterThanOrEqual(2);
+      expect(dryRun.modelRunEvents.exempt).toBeGreaterThanOrEqual(expectedKept.length);
+      await expect(runEventKinds(complete.id)).resolves.toEqual(completeKinds);
+
+      const executed = await pruneRetention({ dryRun: false, now: retentionNow, repository, storage });
+      expect(executed.modelRunEvents.deleted).toBeGreaterThanOrEqual(2);
+      expect(executed.modelRunEvents.exempt).toBeGreaterThanOrEqual(expectedKept.length);
+      await expect(runEventKinds(complete.id)).resolves.toEqual(expectedKept);
+      await expect(runEventKinds(active.id)).resolves.toEqual(activeKinds);
+      await expect(readRunProjections(complete.id)).resolves.toEqual(before);
+    } finally {
+      await prisma.modelRun.deleteMany({ where: { userId: user.id } });
       await cleanupUser(user.id, []);
     }
   });
