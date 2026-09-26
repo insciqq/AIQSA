@@ -303,6 +303,7 @@ export function createPrismaMessageBranchRepository(
             branchSourceModelRunId: true,
             branchFollowups: true,
             content: true,
+            createdAt: true,
             errorMessage: true,
             id: true,
             inputTokens: true,
@@ -460,6 +461,8 @@ export function createPrismaMessageBranchRepository(
                 defaultProviderModelId:
                   sourceAnswerBinding?.providerModelId ?? lockedChat.defaultProviderModelId,
                 folderId: lockedChat.folderId,
+                // An Excluded source stays excluded; Temporary never branches.
+                memoryMode: lockedChat.memoryMode,
                 pinned: false,
                 title: branchChatTitle(lockedChat.title),
                 userId
@@ -493,6 +496,9 @@ export function createPrismaMessageBranchRepository(
                 sourceMessage.content,
                 clonedAttachmentIds
               ),
+              // Memory barriers, pauses and Resume cutoffs fence by message
+              // creation time; a copy must not re-admit a fenced period.
+              createdAt: sourceMessage.createdAt,
               errorMessage: sourceMessage.errorMessage,
               id: clonedMessageId,
               inputTokens: sourceMessage.inputTokens,
@@ -564,6 +570,7 @@ export function createPrismaMessageBranchRepository(
           });
           if (!newChat) throw new Error("branch_chat_disappeared");
           await applyMemorySourceMutations(tx, {
+            branchSourceChatId: lockedChat.id,
             chat: newChat,
             hooks: memorySourceHooks,
             mutations: ["NORMAL_APPEND"],
