@@ -3,6 +3,7 @@ import type { PrismaClient, ToolObservation } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { createToolObservationRepository, OBSERVATION_AVAILABILITY_HANDLES, ObservationStoreError } from "./repository";
+import { TOOL_OBSERVATION_LIMITS, type ToolObservationBudgetUsage } from "./contract";
 
 const actor = { runId: "run-2", userId: "user-1" };
 
@@ -108,5 +109,38 @@ describe("observation availability", () => {
     const many = Array.from({ length: OBSERVATION_AVAILABILITY_HANDLES + 1 }, (_, index) => index.toString(16).padStart(32, "0"));
     await expect(f.repository.available(actor, many)).rejects.toThrow("tool_observation_conflict");
     expect(f.prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("observation reservation budget", () => {
+  /** The same double plus the reservation's statements; the real budget SQL
+   * and its locking run in repository.prisma.test.ts. */
+  function reservation(budget: ToolObservationBudgetUsage) {
+    const f = fixture([]);
+    const budgetQueries = vi.fn(() => [budget]);
+    Object.assign(f.tx, {
+      $executeRaw: vi.fn(async () => 0),
+      modelRunToolCall: { findFirst: vi.fn(async () => ({ id: "call-new" })) },
+      $queryRaw: vi.fn(async (query: unknown) => Array.isArray(query) && query.join("").includes('AS "branchBytes"') ? budgetQueries() : [])
+    });
+    Object.assign(f.tx.toolObservation, { create: vi.fn(async ({ data }: { data: Partial<Row> }) => row(0, { ...data, state: "RESERVED" })) });
+    return { ...f, budgetQueries, producer: { ...actor, toolCallId: "call-new" } };
+  }
+  const exhausted = { runBytes: 0n, branchBytes: BigInt(TOOL_OBSERVATION_LIMITS.branchBytes) };
+
+  it("claims a call the branch budget cannot admit with a zero ceiling instead of refusing it", async () => {
+    const f = reservation(exhausted);
+    const reserved = await f.repository.reserve(f.producer, "mcp", 1024);
+    expect(reserved).toMatchObject({ claimed: true, degraded: true, observation: { reservedBytes: 0 } });
+    const room = reservation({ runBytes: 0n, branchBytes: 0n });
+    expect(await room.repository.reserve(room.producer, "workspace", 1024))
+      .toEqual({ claimed: true, observation: expect.objectContaining({ reservedBytes: 1024 }) });
+  });
+
+  it("never degrades source-owned producers, which the store budget does not count", async () => {
+    const f = reservation(exhausted);
+    expect(await f.repository.reserve(f.producer, "knowledge", 4096))
+      .toEqual({ claimed: true, observation: expect.objectContaining({ reservedBytes: 4096 }) });
+    expect(f.budgetQueries).not.toHaveBeenCalled();
   });
 });
