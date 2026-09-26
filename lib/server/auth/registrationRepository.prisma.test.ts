@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
+import { createMemoryAuthMailer } from "@/tests/support/authMailers";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
+import { createPrismaPasswordChangeRepository, findAccountUserWithGroups } from "./accountRepository";
+import { getAuthConfig } from "./config";
 import { loadEntitlementsForUser } from "./dbEntitlements";
+import { createPasswordLoginHandler, createPasswordResetRequestHandler } from "./handlers";
 import { hashPassword, verifyPassword } from "./password";
+import { createPrismaPasswordAuthRepository } from "./passwordRepository";
 import { provisionActiveUser } from "./provisioning";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { hashToken } from "./token";
@@ -80,13 +85,14 @@ async function withRegistrationData<T>(
 }
 
 async function register(input: {
+  displayName?: string;
   email: string;
   inviteTokenHash?: string;
   repository: ReturnType<typeof createPrismaAuthRegistrationRepository>;
   token: string;
 }) {
   return input.repository.registerPasswordUser({
-    displayName: "Registration Test",
+    displayName: input.displayName ?? "Registration Test",
     email: input.email,
     expiresAt: new Date("2026-06-15T00:00:00.000Z"),
     inviteTokenHash: input.inviteTokenHash,
@@ -107,6 +113,55 @@ async function verify(input: {
     passwordHash: await hashPassword(input.password ?? "chosen-password"),
     tokenHash: hashToken(input.token)
   });
+}
+
+const passwordAuthConfig = getAuthConfig({
+  AIQSA_APP_BASE_URL: "http://localhost:3000",
+  AIQSA_AUTH_SESSION_SECRET: "registration-profile-test-secret"
+});
+
+function authJsonRequest(path: string, body: Record<string, unknown>): Request {
+  return new Request(`http://app.local${path}`, {
+    body: JSON.stringify(body),
+    headers: {
+      "content-type": "application/json"
+    },
+    method: "POST"
+  });
+}
+
+async function expectNoPasswordAuthority(input: { email: string; userId: string }) {
+  const passwordRepository = createPrismaPasswordAuthRepository(prisma);
+  const login = createPasswordLoginHandler({
+    getConfig: () => passwordAuthConfig,
+    repository: passwordRepository,
+    verifyPassword: async () => true
+  });
+  const mailer = createMemoryAuthMailer();
+  const resetRequest = createPasswordResetRequestHandler({
+    getConfig: () => passwordAuthConfig,
+    mailer,
+    repository: passwordRepository,
+    responseFloorMs: 0
+  });
+
+  const loginResponse = await login(
+    authJsonRequest("/api/auth/login", { email: input.email, password: "any-password-at-all" })
+  );
+  const resetResponse = await resetRequest(authJsonRequest("/api/auth/password/reset", { email: input.email }));
+
+  expect(loginResponse.status).toBe(401);
+  expect(loginResponse.headers.get("set-cookie")).toBeNull();
+  expect(resetResponse.status).toBe(200);
+  expect(mailer.sent).toHaveLength(0);
+  await expect(
+    prisma.authFlowToken.count({ where: { purpose: "password_reset", userId: input.userId } })
+  ).resolves.toBe(0);
+  await expect(prisma.authSession.count({ where: { userId: input.userId } })).resolves.toBe(0);
+  await expect(findAccountUserWithGroups(prisma, input.userId)).resolves.toMatchObject({ hasPassword: false });
+  await expect(
+    createPrismaPasswordChangeRepository(prisma).findPasswordIdentityByUserId(input.userId)
+  ).resolves.toBeNull();
 }
 
 async function createInvite(input: {
@@ -391,6 +446,165 @@ describe("Prisma-backed registration repository", () => {
           token: "verify-first"
         })
       ).resolves.toBeNull();
+    });
+  });
+
+  it("does not change an active SSO user's profile on registration", async () => {
+    await withRegistrationData(async ({ domain, email, groupId, now, repository }) => {
+      await prisma.authAccessRule.create({
+        data: { defaultGroups: { create: { groupId } }, kind: "domain", value: domain }
+      });
+      const owner = await prisma.user.create({
+        data: {
+          displayName: "SSO Owner",
+          email,
+          groups: { create: { groupId, role: "member" } },
+          status: "active"
+        }
+      });
+      const google = await prisma.authIdentity.create({
+        data: {
+          emailVerifiedAt: now,
+          normalizedEmail: email,
+          provider: "google",
+          providerAccountId: `google-${owner.id}`,
+          userId: owner.id
+        }
+      });
+      const snapshot = () =>
+        prisma.user.findUniqueOrThrow({
+          select: {
+            displayName: true,
+            groups: { select: { groupId: true, role: true } },
+            role: true,
+            status: true
+          },
+          where: { id: owner.id }
+        });
+      const before = await snapshot();
+
+      await expect(
+        register({ displayName: "Outsider Name", email, repository, token: "sso-outsider-first" })
+      ).resolves.toEqual({ ok: true, sentToEmail: email });
+      await expect(
+        register({ displayName: "Outsider Again", email, repository, token: "sso-outsider-second" })
+      ).resolves.toEqual({ ok: true, sentToEmail: email });
+      await expect(
+        Promise.all([
+          register({ displayName: "Racing Outsider A", email, repository, token: "sso-outsider-race-a" }),
+          register({ displayName: "Racing Outsider B", email, repository, token: "sso-outsider-race-b" })
+        ])
+      ).resolves.toEqual([
+        { ok: true, sentToEmail: email },
+        { ok: true, sentToEmail: email }
+      ]);
+
+      const [after, identities, liveVerificationTokens] = await Promise.all([
+        snapshot(),
+        prisma.authIdentity.findMany({ where: { userId: owner.id } }),
+        prisma.authFlowToken.findMany({
+          where: { consumedAt: null, purpose: "email_verification", userId: owner.id }
+        })
+      ]);
+      const passwordIdentities = identities.filter((identity) => identity.provider === "password");
+
+      expect(after).toEqual(before);
+      expect(identities.find((identity) => identity.provider === "google")).toEqual(google);
+      expect(passwordIdentities).toHaveLength(1);
+      expect(passwordIdentities[0]).toMatchObject({ emailVerifiedAt: null, passwordHash: null });
+      expect(liveVerificationTokens).toHaveLength(1);
+      await expectNoPasswordAuthority({ email, userId: owner.id });
+
+      const liveTokenHash = liveVerificationTokens[0]!.tokenHash;
+      const liveToken = ["sso-outsider-race-a", "sso-outsider-race-b"].find(
+        (token) => hashToken(token) === liveTokenHash
+      );
+
+      expect(liveToken).toBeDefined();
+      await expect(
+        verify({ now, password: "sso-owner-password", repository, token: liveToken! })
+      ).resolves.toEqual({ source: null, status: "active", userId: owner.id });
+      await expect(snapshot()).resolves.toEqual(before);
+      await expect(findAccountUserWithGroups(prisma, owner.id)).resolves.toMatchObject({
+        displayName: "SSO Owner",
+        hasPassword: true
+      });
+    });
+  });
+
+  it("keeps a pending registration name provisional only until email proof", async () => {
+    await withRegistrationData(async ({ domain, email, now, repository }) => {
+      await prisma.authAccessRule.create({ data: { kind: "domain", value: domain } });
+      await register({ displayName: "Anyone", email, repository, token: "pending-name-first" });
+      await expect(
+        prisma.user.findUniqueOrThrow({ select: { displayName: true, status: true }, where: { email } })
+      ).resolves.toEqual({ displayName: "Anyone", status: "pending" });
+
+      await register({ displayName: "Email Owner", email, repository, token: "pending-name-second" });
+      const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+      expect(user).toMatchObject({ displayName: "Email Owner", status: "pending" });
+      await expectNoPasswordAuthority({ email, userId: user.id });
+
+      await expect(
+        verify({ now, repository, token: "pending-name-second" })
+      ).resolves.toMatchObject({ source: "domain_rule", status: "active" });
+      await expect(
+        register({ displayName: "Late Outsider", email, repository, token: "pending-name-late" })
+      ).resolves.toEqual({ ok: true, sentToEmail: null });
+      await expect(
+        prisma.user.findUniqueOrThrow({ select: { displayName: true, status: true }, where: { email } })
+      ).resolves.toEqual({ displayName: "Email Owner", status: "active" });
+    });
+  });
+
+  it("does not rename a pending account whose email was already proven through OAuth", async () => {
+    await withRegistrationData(async ({ domain, email, now, repository }) => {
+      const user = await prisma.user.create({
+        data: { displayName: "OAuth Proven Name", email, status: "pending" }
+      });
+      await prisma.authIdentity.create({
+        data: {
+          emailVerifiedAt: now,
+          normalizedEmail: email,
+          provider: "yandex",
+          providerAccountId: `yandex-${user.id}`,
+          userId: user.id
+        }
+      });
+      await prisma.authAccessRule.create({ data: { kind: "domain", value: domain } });
+
+      await register({ displayName: "Outsider Name", email, repository, token: "oauth-pending-outsider" });
+
+      await expect(
+        prisma.user.findUniqueOrThrow({ select: { displayName: true, status: true }, where: { id: user.id } })
+      ).resolves.toEqual({ displayName: "OAuth Proven Name", status: "pending" });
+    });
+  });
+
+  it("serializes concurrent first registrations into one pending account and one live link", async () => {
+    await withRegistrationData(async ({ domain, email, repository }) => {
+      await prisma.authAccessRule.create({ data: { kind: "domain", value: domain } });
+
+      await expect(
+        Promise.all([
+          register({ displayName: "Concurrent A", email, repository, token: "concurrent-first-a" }),
+          register({ displayName: "Concurrent B", email, repository, token: "concurrent-first-b" })
+        ])
+      ).resolves.toEqual([
+        { ok: true, sentToEmail: email },
+        { ok: true, sentToEmail: email }
+      ]);
+
+      const users = await prisma.user.findMany({ include: { authIdentities: true }, where: { email } });
+      const liveTokens = await prisma.authFlowToken.count({
+        where: { consumedAt: null, normalizedEmail: email, purpose: "email_verification" }
+      });
+
+      expect(users).toHaveLength(1);
+      expect(users[0]?.status).toBe("pending");
+      expect(["Concurrent A", "Concurrent B"]).toContain(users[0]?.displayName);
+      expect(users[0]?.authIdentities).toHaveLength(1);
+      expect(liveTokens).toBe(1);
     });
   });
 

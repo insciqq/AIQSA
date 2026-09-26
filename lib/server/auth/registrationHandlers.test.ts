@@ -195,6 +195,34 @@ describe("registration auth handlers", () => {
     expect(repository.acceptances).toHaveLength(0);
   });
 
+  it("normalizes an optional invite name and rejects an invalid one without accepting the invite", async () => {
+    const repository = createMemoryRegistrationRepository();
+    const POST = createInviteAcceptanceHandler({
+      getConfig: () => proxyHandlerConfig,
+      repository
+    });
+    const accept = (displayName: unknown, client: string) =>
+      POST(jsonRequest("/api/auth/invite/accept", {
+        displayName,
+        password: "invited-password",
+        token: `invite-${client}`
+      }, client));
+
+    const normalized = await accept("  Grace   Hopper ", "203.0.113.40");
+    const blank = await accept(" ", "203.0.113.41");
+    const oversized = await accept("g".repeat(81), "203.0.113.42");
+    const nonString = await accept(["Grace"], "203.0.113.43");
+
+    expect(normalized.status).toBe(200);
+    expect(blank.status).toBe(200);
+    expect(oversized.status).toBe(400);
+    await expect(oversized.json()).resolves.toEqual({ error: "display_name_invalid" });
+    expect(nonString.status).toBe(400);
+    await expect(nonString.json()).resolves.toEqual({ error: "display_name_invalid" });
+    expect(oversized.headers.get("set-cookie")).toBeNull();
+    expect(repository.acceptances.map((acceptance) => acceptance.displayName)).toEqual(["Grace Hopper", ""]);
+  });
+
   it("registers an email request without a password and sends a verification link", async () => {
     const repository = createMemoryRegistrationRepository();
     const mailer = createMemoryAuthMailer();
@@ -229,6 +257,46 @@ describe("registration auth handlers", () => {
     expect(repository.registrations[0]).not.toHaveProperty("passwordHash");
     expect(mailer.sent).toHaveLength(1);
     expect(mailer.sent[0]?.text).toContain("https://aiqsa.example/login?verify=");
+  });
+
+  it("normalizes an optional registration name and rejects an invalid one before any account lookup", async () => {
+    const repository = createMemoryRegistrationRepository();
+    const mailer = createMemoryAuthMailer();
+    const POST = createRegisterHandler({
+      getConfig: () => proxyHandlerConfig,
+      mailer,
+      repository
+    });
+    const register = (displayName: unknown, client: string) =>
+      POST(jsonRequest("/api/auth/register", { displayName, email: "named.user@example.com" }, client));
+
+    const accepted = [
+      await register("  Ada \n\t Lovelace  ", "203.0.113.20"),
+      await register("   ", "203.0.113.21"),
+      await register(null, "203.0.113.22"),
+      await register("a".repeat(80), "203.0.113.23")
+    ];
+
+    for (const response of accepted) {
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ status: "request_received" });
+    }
+    expect(repository.registrations.map((registration) => registration.displayName)).toEqual([
+      "Ada Lovelace",
+      "",
+      "",
+      "a".repeat(80)
+    ]);
+
+    const mailedBeforeRejections = mailer.sent.length;
+    for (const [index, displayName] of ["a".repeat(81), "x".repeat(60_000), 42, { name: "Ada" }].entries()) {
+      const response = await register(displayName, `203.0.113.${30 + index}`);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "display_name_invalid" });
+    }
+    expect(repository.registrations).toHaveLength(4);
+    expect(mailer.sent).toHaveLength(mailedBeforeRejections);
   });
 
   it("returns the same generic accepted response for new and already-verified eligible emails", async () => {

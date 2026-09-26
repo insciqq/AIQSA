@@ -1,13 +1,24 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import type { AccountProfileRepository, PasswordChangeRepository } from "./accountHandlers";
+import type { SafeUserWithGroups } from "./handlers";
 import { lockAuthIdentity } from "./transactionLocks";
 
 type AccountPrismaClient = Pick<PrismaClient, "$transaction" | "authIdentity" | "authSession" | "user">;
 
+/**
+ * A registration request creates a password identity before anyone proves ownership of the email.
+ * Only email proof sets its hash, so an account has a password only once both are present.
+ */
+const usablePasswordIdentityWhere = {
+  emailVerifiedAt: { not: null },
+  passwordHash: { not: null },
+  provider: "password"
+} satisfies Prisma.AuthIdentityWhereInput;
+
 const profileSelect = {
   authIdentities: {
     select: { id: true },
-    where: { provider: "password" as const }
+    where: usablePasswordIdentityWhere
   },
   displayName: true,
   email: true,
@@ -30,6 +41,46 @@ function serializeProfile(user: ProfileRow | null) {
     email: user.email,
     hasPassword: user.authIdentities.length > 0,
     role: user.role
+  };
+}
+
+export async function findAccountUserWithGroups(
+  prisma: Pick<PrismaClient, "user">,
+  userId: string
+): Promise<SafeUserWithGroups | null> {
+  const user = await prisma.user.findUnique({
+    include: {
+      authIdentities: {
+        select: { id: true },
+        where: usablePasswordIdentityWhere
+      },
+      groups: {
+        include: {
+          group: true
+        }
+      }
+    },
+    where: {
+      id: userId
+    }
+  });
+
+  if (!user) {
+    return null;
+  }
+
+  return {
+    displayName: user.displayName,
+    email: user.email,
+    groups: user.groups.map((membership) => ({
+      groupId: membership.groupId,
+      name: membership.group.name,
+      role: membership.role
+    })),
+    hasPassword: user.authIdentities.length > 0,
+    id: user.id,
+    role: user.role,
+    status: user.status
   };
 }
 
@@ -58,7 +109,7 @@ export function createPrismaPasswordChangeRepository(
     async findPasswordIdentityByUserId(userId) {
       const identity = await prisma.authIdentity.findFirst({
         select: { id: true, passwordHash: true },
-        where: { provider: "password", userId }
+        where: { ...usablePasswordIdentityWhere, userId }
       });
       return identity ? { id: identity.id, passwordHash: identity.passwordHash } : null;
     },

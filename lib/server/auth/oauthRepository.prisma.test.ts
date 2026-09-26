@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { hashPassword } from "./password";
 import { createPrismaOAuthIdentityRepository } from "./oauthRepository";
+import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { hashToken } from "./token";
 
 async function withOAuthData<T>(
@@ -422,6 +423,78 @@ describe("Prisma-backed OAuth identity repository", () => {
       ).resolves.toMatchObject({
         userId: user.id
       });
+      await expect(
+        prisma.user.findUniqueOrThrow({ select: { displayName: true, status: true }, where: { id: user.id } })
+      ).resolves.toEqual({ displayName: "OAuth Pending User", status: "pending" });
+    });
+  });
+
+  it("replaces an unverified registration name when the email owner links an OAuth identity", async () => {
+    await withOAuthData(async ({ domain, email, now, repository }) => {
+      await prisma.authAccessRule.create({
+        data: {
+          kind: "domain",
+          value: domain
+        }
+      });
+      await createPrismaAuthRegistrationRepository(prisma).registerPasswordUser({
+        displayName: "Outsider Name",
+        email,
+        expiresAt: new Date("2026-07-19T12:00:00.000Z"),
+        normalizedEmail: email,
+        now,
+        verificationTokenHash: hashToken(`outsider-registration-${email}`)
+      });
+      const pending = await prisma.user.findUniqueOrThrow({ where: { email } });
+
+      expect(pending).toMatchObject({ displayName: "Outsider Name", status: "pending" });
+      await expect(
+        repository.settleIdentity({
+          displayName: "Real Owner",
+          email,
+          now,
+          provider: "google",
+          providerAccountId: "real-owner-subject"
+        })
+      ).resolves.toEqual({ status: "active", userId: pending.id });
+      await expect(
+        prisma.user.findUniqueOrThrow({ select: { displayName: true, status: true }, where: { id: pending.id } })
+      ).resolves.toEqual({ displayName: "Real Owner", status: "active" });
+    });
+  });
+
+  it("keeps the name of a pending account whose email was already proven", async () => {
+    await withOAuthData(async ({ email, now, repository }) => {
+      const user = await prisma.user.create({
+        data: {
+          displayName: "Verified Pending Name",
+          email,
+          status: "pending"
+        }
+      });
+      await prisma.authIdentity.create({
+        data: {
+          emailVerifiedAt: now,
+          normalizedEmail: email,
+          passwordHash: await hashPassword("verified-pending-password"),
+          provider: "password",
+          providerAccountId: email,
+          userId: user.id
+        }
+      });
+
+      await expect(
+        repository.settleIdentity({
+          displayName: "Provider Name",
+          email,
+          now,
+          provider: "yandex",
+          providerAccountId: "verified-pending-subject"
+        })
+      ).resolves.toEqual({ status: "pending" });
+      await expect(
+        prisma.user.findUniqueOrThrow({ select: { displayName: true }, where: { id: user.id } })
+      ).resolves.toEqual({ displayName: "Verified Pending Name" });
     });
   });
 
