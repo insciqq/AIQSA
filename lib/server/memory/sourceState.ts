@@ -98,6 +98,8 @@ export type MemoryTemporaryFinalizationEvent = Readonly<{
 }>;
 
 export type MemoryRetainedSourceMutationEvent = Readonly<{
+  /** Set only when this mutation publishes a new chat branched from that retained chat. */
+  branchSourceChatId?: string;
   mutations: readonly MemorySourceMutation[];
   previous: LockedMemorySourceChat;
   settlement?: MemoryTerminalSettlement;
@@ -352,6 +354,7 @@ export async function loadMemorySourceSnapshot(
 export async function applyMemorySourceMutations(
   tx: MemoryTransaction,
   input: Readonly<{
+    branchSourceChatId?: string;
     chat: LockedMemorySourceChat;
     hooks?: MemorySourceMutationHooks;
     mutations: readonly MemorySourceMutation[];
@@ -497,6 +500,9 @@ export async function applyMemorySourceMutations(
   const hooks = input.hooks ?? NOOP_MEMORY_SOURCE_MUTATION_HOOKS;
   if (snapshot.memoryMode !== "TEMPORARY") {
     await hooks.onRetainedSourceMutated?.(tx, {
+      ...(input.branchSourceChatId
+        ? { branchSourceChatId: input.branchSourceChatId }
+        : {}),
       mutations: input.mutations,
       previous: input.chat,
       ...(input.terminalSettlement

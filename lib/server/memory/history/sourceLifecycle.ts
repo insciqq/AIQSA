@@ -424,6 +424,59 @@ async function ensurePendingCheckpoint(
   });
 }
 
+/**
+ * A branch copies retained messages with their original creation times, so
+ * global barriers and pause intervals keep fencing them. The source chat's
+ * per-chat Resume cutoff lives in its checkpoint and must follow the copy,
+ * otherwise a branch would backfill the pre-resume path.
+ */
+export async function inheritMemoryHistoryBranchResumeCutoff(
+  tx: MemoryTransaction,
+  event: MemoryRetainedSourceMutationEvent
+): Promise<void> {
+  const activeLeafMessageId = event.snapshot.activeLeafMessageId;
+  if (
+    !event.branchSourceChatId ||
+    isProjectSource(event) ||
+    event.snapshot.memoryMode !== "NORMAL" ||
+    activeLeafMessageId === null
+  ) return;
+  const source = await tx.chatMemoryCheckpoint.findUnique({
+    select: { resumeCreatedAtCutoff: true },
+    where: {
+      userId_chatId: {
+        chatId: event.branchSourceChatId,
+        userId: event.snapshot.userId
+      }
+    }
+  });
+  const resumeCreatedAtCutoff = source?.resumeCreatedAtCutoff ?? null;
+  if (resumeCreatedAtCutoff === null) return;
+  const checkpoint = {
+    activeLeafMessageId,
+    branchGeneration: event.snapshot.memoryBranchGeneration,
+    pipelineVersion: MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
+    resumeCreatedAtCutoff,
+    sourceContentHash: event.snapshot.sourceHash,
+    sourceRevision: event.snapshot.memorySourceRevision,
+    status: "STALE" as const
+  };
+  await tx.chatMemoryCheckpoint.upsert({
+    create: {
+      ...checkpoint,
+      chatId: event.snapshot.id,
+      userId: event.snapshot.userId
+    },
+    update: checkpoint,
+    where: {
+      userId_chatId: {
+        chatId: event.snapshot.id,
+        userId: event.snapshot.userId
+      }
+    }
+  });
+}
+
 export async function applyMemoryHistorySourceMutation(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent
@@ -478,6 +531,8 @@ export async function applyMemoryHistorySourceMutation(
       await updateExistingCheckpoint(tx, event);
     }
   }
+
+  await inheritMemoryHistoryBranchResumeCutoff(tx, event);
 
   if (!shouldIndex(event)) return;
   settings ??= await lockMemorySettings(tx, event.snapshot.userId, false);
