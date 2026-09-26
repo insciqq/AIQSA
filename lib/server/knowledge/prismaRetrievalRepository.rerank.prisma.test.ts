@@ -8,6 +8,7 @@ import {
 } from "./knowledgeProfile";
 import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION } from "./hierarchicalIndex";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
 import { KNOWLEDGE_RERANKER_EVIDENCE_VERSION } from "./rerankEvidence";
 import type { KnowledgeRerankExecutor } from "./rerankExecution";
@@ -541,6 +542,73 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
         readReceipt: { rerankerBinding: binding }
       } })).rejects.toThrow();
     }
+  });
+
+  it("persists and replays excerpt-budget omissions beside a truncated top passage", async () => {
+    const fixture = await createRunFixture("rerank question");
+    const store = createPrismaKnowledgeRetrievalStore(prisma);
+    const toolCallId = await createSearchToolCall(fixture.runId, 0);
+    const top = passage(fixture, "Exports are retained for 30 days.");
+    const truncated = { ...top, sourceTextBytes: top.includedTextBytes + 6_000, textTruncated: true };
+    const omittedPassages = [
+      { reason: "over_budget" as const, sourceTextBytes: 3_072 },
+      { reason: "item_too_large" as const, sourceTextBytes: 40_000 }
+    ];
+    const draft = evidence(fixture, { binding: undefined, invocationOrdinal: 1, results: [truncated] });
+    const receipt: KnowledgeRetrievalEvidence = {
+      ...draft,
+      bases: draft.bases.map((base) => ({ ...base, candidateCount: 3 })),
+      candidateCount: 3,
+      lexicalBackend: knowledgeLexicalBackendEvidenceFixture({ candidateCount: 3 }),
+      omittedPassages
+    };
+    const accepted = await store.persistReceipt({
+      evidence: { ...receipt, providerText: knowledgeToolResultText(receipt) },
+      modelRunToolCallId: toolCallId,
+      runId: fixture.runId,
+      userId: fixture.userId
+    });
+    expect(accepted?.omittedPassages).toEqual(omittedPassages);
+    expect(accepted?.providerText).toContain("passages_omitted_for_size. 2 ranked passages");
+    expect(accepted?.providerText).toContain("passage_truncated. [K1]");
+
+    const stored = await prisma.knowledgeRun.findUniqueOrThrow({
+      select: { budgetEvidence: true, providerText: true, readReceipt: true },
+      where: { modelRunToolCallId: toolCallId }
+    });
+    expect(stored.budgetEvidence).toEqual({ omittedPassages });
+    expect(stored.readReceipt).toBeNull();
+    expect(stored.providerText).toBe(accepted?.providerText);
+    expect(await prisma.knowledgeEvidenceItem.findFirstOrThrow({
+      select: { excerptBytes: true, sourceTextBytes: true, textTruncated: true },
+      where: { passageId: top.chunkId, retrievalSession: { modelRunId: fixture.runId } }
+    })).toEqual({
+      excerptBytes: truncated.includedTextBytes,
+      sourceTextBytes: truncated.sourceTextBytes,
+      textTruncated: true
+    });
+
+    const replayed = await store.loadReceipt!({
+      modelRunToolCallId: toolCallId,
+      runId: fixture.runId,
+      userId: fixture.userId
+    });
+    expect(replayed?.omittedPassages).toEqual(omittedPassages);
+    expect(replayed?.providerText).toBe(accepted?.providerText);
+    expect(replayed?.results).toEqual(accepted?.results);
+    expect(replayed).not.toHaveProperty("budget");
+
+    // Omitted passages carry no occurrence identity: only the delivered
+    // passage is excluded from, and charged to, the next search.
+    const followUpCallId = await createSearchToolCall(fixture.runId, 1);
+    const next = await store.budgetState!({
+      modelRunToolCallId: followUpCallId,
+      operation: "automatic_search",
+      runId: fixture.runId,
+      userId: fixture.userId
+    });
+    expect(next?.priorOccurrenceKeys).toEqual([knowledgeEvidenceOccurrenceKeyV1(top)]);
+    expect(next?.usage.retrievedTokens).toBe(Math.ceil(truncated.includedTextBytes / 4));
   });
 
   it("validates complete ordered passage decisions and rejects unsafe partial or fabricated receipts", async () => {

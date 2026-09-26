@@ -328,6 +328,19 @@ export type KnowledgeSourceBoundRetrievedPassageEvidence =
     sourceName: string;
   }>;
 
+/**
+ * Ranked passages left out of one search result only because of the excerpt
+ * byte budget. `item_too_large` exceeds the whole budget; `over_budget` did
+ * not fit beside higher-ranked excerpts. Content- and identity-free: omitted
+ * passages were never delivered, so they are not excluded from later searches.
+ */
+export type KnowledgeOmittedPassageReason = "item_too_large" | "over_budget";
+
+export type KnowledgeOmittedPassageEvidence = Readonly<{
+  reason: KnowledgeOmittedPassageReason;
+  sourceTextBytes: number;
+}>;
+
 export type KnowledgeEvidenceScopeAlias = Readonly<{
   alias: string;
   kind: "base" | "source";
@@ -389,6 +402,8 @@ export type KnowledgeRetrievalEvidence = Readonly<{
   fusion: "none" | "rrf_k60" | "weighted_rrf_v2";
   invocationOrdinal: number;
   lexicalBackend?: KnowledgeLexicalBackendEvidenceV1;
+  /** Automatic-search passages omitted by the excerpt budget, in rank order. */
+  omittedPassages?: readonly KnowledgeOmittedPassageEvidence[];
   operation?: KnowledgeOperationKind;
   outcome: KnowledgeRetrievalOutcome;
   /** Decode-only fields from accepted planner-era receipts. */

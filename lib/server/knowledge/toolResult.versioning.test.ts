@@ -20,6 +20,7 @@ import {
   knowledgeTableRowId
 } from "./documentContext";
 import { KNOWLEDGE_SIGNAL_RANK_MAX } from "./retrievalRanking";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 
 const vectorSpaceFingerprint = "a".repeat(64);
 
@@ -182,6 +183,50 @@ function readEvidence(): KnowledgeRetrievalEvidence {
       window: 3
     },
     results: [readPassage]
+  });
+}
+
+function automaticSearchEvidence(
+  overrides: Partial<KnowledgeRetrievalEvidence> = {}
+): KnowledgeRetrievalEvidence {
+  const ordinary = currentEvidence();
+  return currentEvidence({
+    bases: [{
+      ...ordinary.bases[0]!,
+      candidateCount: 3,
+      vectorSearch: {
+        bindingOrdinal: 0,
+        candidateCount: 3,
+        eligibleRows: 152,
+        mode: "ann",
+        scan: {
+          efSearch: 400,
+          iterativeScan: "strict_order",
+          maxScanTuples: 100_000,
+          retrievalBucket: 0
+        },
+        targetDimension: 1024
+      }
+    }],
+    candidateCount: 3,
+    candidateLimit: 64,
+    fusion: "weighted_rrf_v2",
+    lexicalBackend: knowledgeLexicalBackendEvidenceFixture({ candidateCount: 3 }),
+    operation: "automatic_search",
+    resultLimit: 16,
+    results: [{
+      ...ordinary.results[0]!,
+      contentHash: "b".repeat(64),
+      signalProvenance: [{
+        exactKind: null,
+        lane: "passage_semantic",
+        rank: 1,
+        rawScore: 0.9,
+        vectorDistance: 0.1,
+        vectorMode: "ann"
+      }]
+    }],
+    ...overrides
   });
 }
 
@@ -642,6 +687,76 @@ describe("Knowledge result contract versioning", () => {
       ...evidence,
       scopeAliases: currentEvidence().scopeAliases
     })).toBeNull();
+  });
+
+  it("round-trips excerpt-budget omissions and still decodes receipts accepted without them", () => {
+    const accepted = automaticSearchEvidence();
+    const [top] = accepted.results;
+    const evidence = automaticSearchEvidence({
+      omittedPassages: [
+        { reason: "over_budget", sourceTextBytes: 3_072 },
+        { reason: "item_too_large", sourceTextBytes: 60_000 }
+      ],
+      results: [{ ...top!, sourceTextBytes: 60_000, textTruncated: true }]
+    });
+    expect(evidence.providerText).toContain("Truncated: yes");
+    expect(evidence.providerText).toContain(
+      "Coverage limitation: passage_truncated. [K1] exceeded the whole evidence size budget " +
+        "and was delivered only as a truncated prefix"
+    );
+    expect(evidence.providerText).toContain(
+      "Coverage limitation: passages_omitted_for_size. 2 ranked passages matching this search " +
+        "were not delivered because of the evidence size budget (over_budget: 1; item_too_large: 1)."
+    );
+    expect(evidence.providerText).toContain("another search_knowledge call");
+    const stored = JSON.parse(JSON.stringify(evidence)) as unknown;
+    expect(decodeKnowledgeRetrievalEvidence(stored)).toEqual(evidence);
+    const result = executionResult(evidence);
+    expect(rehydratePersistedKnowledgeToolExecutionResult(
+      compactKnowledgeToolExecutionResult(result)!
+    )).toEqual(result);
+
+    // Receipts accepted before the disclosure keep their exact provider bytes.
+    expect(accepted.providerText).not.toContain("Coverage limitation");
+    const legacy = decodeKnowledgeRetrievalEvidence(JSON.parse(JSON.stringify(accepted)));
+    expect(legacy).toEqual(accepted);
+    expect(legacy).not.toHaveProperty("omittedPassages");
+    // The disclosure is part of the delivered bytes; it cannot be added or
+    // dropped after acceptance.
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...accepted,
+      omittedPassages: evidence.omittedPassages
+    })).toBeNull();
+    expect(decodeKnowledgeRetrievalEvidence({
+      ...evidence,
+      omittedPassages: undefined
+    })).toBeNull();
+
+    const rendered = (draft: KnowledgeRetrievalEvidence): KnowledgeRetrievalEvidence =>
+      ({ ...draft, providerText: knowledgeToolResultText(draft) });
+    for (const omittedPassages of [
+      [],
+      [{ reason: "filtered", sourceTextBytes: 10 }],
+      [{ reason: "over_budget", sourceTextBytes: 0 }],
+      [{ reason: "over_budget", sourceTextBytes: 1.5 }],
+      [{ reason: "over_budget", sourceTextBytes: 10, chunkId: "private-chunk-id" }],
+      [
+        { reason: "over_budget", sourceTextBytes: 10 },
+        { reason: "over_budget", sourceTextBytes: 10 },
+        { reason: "over_budget", sourceTextBytes: 10 }
+      ]
+    ]) {
+      expect(decodeKnowledgeRetrievalEvidence(rendered({
+        ...accepted,
+        omittedPassages
+      } as unknown as KnowledgeRetrievalEvidence))).toBeNull();
+    }
+    for (const unrelated of [currentEvidence(), readEvidence(), searchUnavailableEvidence()]) {
+      expect(decodeKnowledgeRetrievalEvidence(rendered({
+        ...unrelated,
+        omittedPassages: [{ reason: "over_budget", sourceTextBytes: 10 }]
+      }))).toBeNull();
+    }
   });
 
   it("strictly decodes the normalized V2 read receipt and rejects legacy reinterpretation", () => {
