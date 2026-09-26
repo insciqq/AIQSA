@@ -412,6 +412,27 @@ describe("McpSettingsSection", () => {
     expect(screen.getAllByRole("switch")).toHaveLength(3);
   });
 
+  it("marks exactly the rows that need setup, authorization or a runtime with the attention signal", async () => {
+    const servers: UserMcpServer[] = [
+      userServer("mem0", "Setup server"),
+      { ...userServer("connect", "Connect server"), oauthAvailable: true, oauthState: "disconnected" },
+      { ...userServer("reconnect", "Reconnect server"), enabled: true, oauthAvailable: true,
+        oauthState: "reauthorization_required", readiness: "reauthorization_required" },
+      { ...userServer("down", "Down server"), enabled: true, readiness: "unavailable" },
+      { ...userServer("ready", "Ready server"), enabled: true, readiness: "ready", operationalStatus: "active" },
+      userServer("off", "Off server")
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers })));
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Off server" });
+    const signal = (name: string) => screen.getByRole("heading", { name }).closest("article")!
+      .querySelector(".v2-settings-server-signal");
+    for (const name of ["Setup server", "Connect server", "Reconnect server", "Down server"]) {
+      expect(signal(name), name).toHaveAttribute("aria-hidden", "true");
+    }
+    for (const name of ["Ready server", "Off server"]) expect(signal(name), name).toBeNull();
+  });
+
   it("omits internal failure details from ordinary settings", async () => {
     const server = { ...userServer("missing", "Unavailable server"), enabled: true,
       readiness: "unavailable", errorCode: "mcp_artifact_missing", artifact: "private-image" };

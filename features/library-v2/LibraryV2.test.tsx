@@ -98,6 +98,23 @@ describe("LibraryV2", () => {
     expect(screen.queryByText("Tools")).toBeNull();
   });
 
+  it("flags an attention tab with a decorative signal and a stable name", () => {
+    const tabs = [
+      { id: "assistants" as const, label: "Assistants", content: <p>Assistants</p> },
+      { id: "mcp" as const, label: "MCP servers", attention: true, content: <p>Servers</p> }
+    ];
+    const { rerender } = render(<LibraryV2 onBack={vi.fn()} tabs={tabs} />);
+    const mcp = screen.getByRole("tab", { name: "MCP servers" });
+    expect(mcp).toHaveAccessibleDescription("Needs attention");
+    expect(mcp).toHaveTextContent(/^MCP servers$/u);
+    expect(mcp.querySelector(".v2-library-tab-signal")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("tab", { name: "Assistants" })).not.toHaveAccessibleDescription();
+    expect(screen.getByRole("tab", { name: "Assistants" }).querySelector(".v2-library-tab-signal")).toBeNull();
+    rerender(<LibraryV2 onBack={vi.fn()} tabs={tabs.map(tab => ({ ...tab, attention: false }))} />);
+    expect(screen.getByRole("tab", { name: "MCP servers" })).not.toHaveAccessibleDescription();
+    expect(document.querySelector(".v2-library-tab-signal")).toBeNull();
+  });
+
   it("keeps Artifacts between Files and Memory in keyboard navigation", () => {
     render(<LibraryV2 initialTab="files" onBack={vi.fn()} tabs={[
       { id: "files", label: "Files", content: <p>Files</p> },
