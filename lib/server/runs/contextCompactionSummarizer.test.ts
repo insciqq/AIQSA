@@ -183,13 +183,43 @@ describe("context compaction summarizer", () => {
     expect(recorded.settled.at(-1)?.summary).toEqual(summarized.summary);
   });
 
-  it("rejects a provider that invents source references", async () => {
+  it("fails after a second output that is not the JSON object, each call settled invalid with its usage", async () => {
     const calls: ProviderRunRequest[] = [];
+    const recorded = receipts();
     await expect(executeContextSummary({
-      adapter: adapter([json("unsafe", ["invented"]), json("still unsafe", ["invented"])], calls),
+      adapter: adapter(["not json", "{\"notes\":\"missing refs\"}"], calls),
+      receipts: recorded.hooks,
       request: request()
     })).rejects.toMatchObject({ code: "context_compaction_summary_invalid" });
     expect(calls).toHaveLength(2);
+    expect(recorded.settled.map(({ attempt, usage }) => [attempt.state, usage?.inputTokens]))
+      .toEqual([["invalid", 10], ["invalid", 10]]);
+  });
+
+  it("drops model-cited references that name no source instead of repairing the notes", async () => {
+    const calls: ProviderRunRequest[] = [];
+    const recorded = receipts();
+    const summarized = await executeContextSummary({
+      adapter: adapter([json("bounded notes", ["message-current", "call_3cnAbc", "call_ABSxyz", "invented"])], calls),
+      receipts: recorded.hooks,
+      request: request()
+    });
+    expect(calls).toHaveLength(1);
+    expect(summarized.attempts.map(({ state }) => state)).toEqual(["committed"]);
+    expect(summarized.summary.notes).toBe("bounded notes");
+    // The kept refs are minted from the actual source, never from the model.
+    expect(summarized.summary.sourceRefs).toEqual(contextSummarySource(request()).refs);
+    expect(summarized.summary.sourceRefs).not.toContain("call_3cnAbc");
+    expect(summarized.summary.sourceRefs).not.toContain("invented");
+  });
+
+  it("names the valid reference forms and excludes provider call ids", async () => {
+    const calls: ProviderRunRequest[] = [];
+    await executeContextSummary({ adapter: adapter([json("bounded notes")], calls), request: request() });
+    const system = calls[0]!.prompt.system!;
+    expect(system).toContain("id attribute of a <message> element");
+    expect(system).toContain("tor1_ observation handle");
+    expect(system).toMatch(/call ids .* are not references/u);
   });
 
   it("does not pay again when the committed summary is already applied", async () => {
