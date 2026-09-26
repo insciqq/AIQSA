@@ -99,6 +99,7 @@
 }
 
 .v2-library-tab {
+  position: relative;
   display: inline-flex;
   min-height: 2.5rem;
   align-items: center;
@@ -117,6 +118,19 @@
 
 .v2-library-tab > .v2-icon {
   color: var(--v2-color-text3);
+}
+
+/* The chat MCP chip's attention signal, on the section icon's top-right
+   corner: icon edge (inline padding + 1rem) plus the chip's 0.1875rem offset. */
+.v2-library-tab-signal {
+  position: absolute;
+  top: calc(50% - 0.6875rem);
+  left: 0.9375rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--v2-color-warn);
+  pointer-events: none;
 }
 
 .v2-library-tab:hover:not(:disabled) {
@@ -239,6 +253,10 @@
 
   .v2-library-tab[data-selected="true"] > .v2-icon {
     color: var(--v2-color-accent);
+  }
+
+  .v2-library-tab-signal {
+    left: 1.4375rem;
   }
 
   .v2-library-panel {

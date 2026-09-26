@@ -223,24 +223,29 @@ export function LibraryV2({
                 {group.label ? <p className="v2-library-column-label" aria-hidden="true">{group.label}</p>
                   : groupIndex > 0 ? <span className="v2-library-tabs-divider" aria-hidden="true" /> : null}
                 {group.tabs.map((tab) => (
-                  <button
-                    ref={(node) => { tabRefs.current[tab.id] = node; }}
-                    aria-controls={`v2-library-panel-${tab.id}`}
-                    aria-selected={tab.id === selected.id}
-                    className="v2-library-tab v2-focusable"
-                    data-selected={tab.id === selected.id || undefined}
-                    disabled={busy}
-                    id={`v2-library-tab-${tab.id}`}
-                    key={tab.id}
-                    role="tab"
-                    tabIndex={tab.id === selected.id ? 0 : -1}
-                    type="button"
-                    onClick={() => commitTab(tab.id)}
-                    onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
-                  >
-                    <UiV2Icon name={tabIcons[tab.id]} />
-                    <span>{tab.label}</span>
-                  </button>
+                  <Fragment key={tab.id}>
+                    <button
+                      ref={(node) => { tabRefs.current[tab.id] = node; }}
+                      aria-controls={`v2-library-panel-${tab.id}`}
+                      aria-describedby={tab.attention ? `v2-library-tab-${tab.id}-attention` : undefined}
+                      aria-selected={tab.id === selected.id}
+                      className="v2-library-tab v2-focusable"
+                      data-selected={tab.id === selected.id || undefined}
+                      disabled={busy}
+                      id={`v2-library-tab-${tab.id}`}
+                      role="tab"
+                      tabIndex={tab.id === selected.id ? 0 : -1}
+                      type="button"
+                      onClick={() => commitTab(tab.id)}
+                      onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
+                    >
+                      <UiV2Icon name={tabIcons[tab.id]} />
+                      <span>{tab.label}</span>
+                      {tab.attention ? <span aria-hidden="true" className="v2-library-tab-signal" data-signal="attention" /> : null}
+                    </button>
+                    {/* A description, not a name suffix, keeps the section name stable for navigation. */}
+                    {tab.attention ? <span hidden id={`v2-library-tab-${tab.id}-attention`}>Needs attention</span> : null}
+                  </Fragment>
                 ))}
               </div>
             ))}
