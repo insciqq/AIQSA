@@ -129,6 +129,8 @@ async function withMemoryBranchOwner<T>(run: (userId: string) => Promise<T>): Pr
   try {
     return await run(userId);
   } finally {
+    // A Temporary chat must keep its deletion obligation while it exists.
+    await prisma.chat.deleteMany({ where: { userId } });
     await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
   }
