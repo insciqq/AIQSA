@@ -53,6 +53,11 @@ import {
 } from "./streamSafety";
 import type { ProviderAdapter, ProviderAttachment, ProviderRunRequest, ProviderRunResult } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
+import {
+  PROVIDER_CONTEXT_LENGTH_EXCEEDED,
+  providerContextLengthRejection,
+  type ProviderContextLengthCounts
+} from "./responseFailure";
 
 export type AnthropicStreamEvent = Record<string, unknown>;
 
@@ -691,6 +696,9 @@ function assertAnthropicNonHostedTerminal(
     case "pause_turn":
       throw new Error("anthropic_pause_turn_unexpected");
     case "model_context_window_exceeded":
+      // Generation reached the window after the request was accepted and
+      // billed: the same stable identity, never a pre-generation refusal.
+      throw Object.assign(new Error(`anthropic_message_${stopReason}`), { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED });
     case "refusal":
       throw new Error(`anthropic_message_${stopReason}`);
     default:
@@ -1230,6 +1238,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
 
 async function throwAnthropicHttpError(response: Response, signal: AbortSignal): Promise<never> {
   let forcedToolUseUnsupported = false;
+  let contextLength: ProviderContextLengthCounts | null = null;
   try {
     const text = await readBoundedResponseText(response, { signal });
     if (response.status === 400) {
@@ -1238,6 +1247,8 @@ async function throwAnthropicHttpError(response: Response, signal: AbortSignal):
       const error = objectValue(objectValue(body)?.error);
       forcedToolUseUnsupported = error?.type === "invalid_request_error" &&
         error.message === 'tool_choice: type "tool" and "any" are not supported for this model.';
+      // "prompt is too long: P tokens > M maximum": only the identity and counts leave.
+      contextLength = error?.type === "invalid_request_error" ? providerContextLengthRejection(error) : null;
     }
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
@@ -1247,6 +1258,11 @@ async function throwAnthropicHttpError(response: Response, signal: AbortSignal):
   if (forcedToolUseUnsupported) {
     throw Object.assign(new Error("provider_capability_unsupported"), {
       code: "provider_capability_unsupported", httpStatus: 400, unsupportedCapability: "forcedToolCall"
+    });
+  }
+  if (contextLength) {
+    throw Object.assign(new Error(providerHttpErrorMessage("Anthropic", response.status)), {
+      code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, httpStatus: response.status, ...contextLength
     });
   }
   throw new Error(providerHttpErrorMessage("Anthropic", response.status));

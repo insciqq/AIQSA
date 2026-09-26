@@ -1,7 +1,8 @@
-import { mergeTokenUsage } from "../../domain/usage";
+import { mergeTokenUsage, TOKEN_USAGE_FIELDS } from "../../domain/usage";
 import { localSettlementError } from "./settlementFailure";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
+import { providerContextRejection } from "../providers/providerObservability";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type {
   ModelToolCall,
@@ -21,6 +22,7 @@ import {
   type ToolLoopSignal,
   type ToolLoopToolResult
 } from "./toolLoop";
+import { providerRequestContextRebuild } from "./runContextBudget";
 
 export type ProviderToolLoopContinuation = Readonly<{
   providerResponseId: string | null;
@@ -35,6 +37,13 @@ export type ProviderToolLoopResume = Readonly<{
 }>;
 
 export type ProviderToolLoopInput = Readonly<{
+  /**
+   * Opt-in to the run's one bounded rebuild: a context-length rejection of a
+   * round without any accepted output re-prepares that round under a
+   * tightened budget and dispatches it once more. The owner allows it only
+   * where every earlier rebuild is durably known (see `providerRequestContextRebuild`).
+   */
+  allowContextRebuild?: boolean;
   deferToolUntilBatchEnd?(call: ToolLoopCall): boolean;
   toolObservation?(call: ToolLoopCall): ToolLoopObservation | undefined;
   adapter: ProviderAdapter;
@@ -107,6 +116,17 @@ export type ProviderToolLoopInput = Readonly<{
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A context-length rejection that arrived before any billed usage: an unpaid
+ * refusal for which no usage is invented. A refused request may still report
+ * zero or unknown counts (the follow-up executor forwards an unknown partial
+ * report for every failed dispatch); only a positive count bills.
+ */
+export function unpaidContextRejection(error: unknown, usage: ModelRunUsage | null) {
+  return usage !== null && TOKEN_USAGE_FIELDS.some((field) => (usage[field] ?? 0) > 0)
+    ? null : providerContextRejection(error);
 }
 
 const undispatchedRoundFailures = new WeakSet<object>();
@@ -246,68 +266,106 @@ export async function runProviderToolLoop(
         toolChoice,
         tools: [...input.tools]
       }, input.initialRequest.forcedToolName);
-      const preparedRound = await input.prepareRequest?.(requestedRound, round) ?? requestedRound;
-      // A planner may replace old settled observations in the provider-facing
-      // projection. Carry that exact projection into the durable continuation;
-      // otherwise recovery would resurrect the bulky pre-mask transcript.
-      const preparedContinuation: ProviderToolLoopContinuation = {
-        providerResponseId: effectiveContinuation.providerResponseId,
-        providerToolMessages: preparedRound.providerToolMessages
-          ? [...preparedRound.providerToolMessages]
-          : effectiveContinuation.providerToolMessages
-      };
-      // Request/context preparation cannot restore tool authority after its
-      // accepted limit. Keep declarations and signed result context intact.
-      const roundRequest: ProviderRunRequest = toolChoice === "none" ? { ...preparedRound, toolChoice } : preparedRound;
-      // Keep a committed summary and its exact recent context for subsequent
-      // rounds. Rebuilding from the admission source would buy the same
-      // compaction again after every tool call.
-      preparedRequest = roundRequest;
-      const advertisedToolNames = new Set(roundRequest.tools?.map((tool) => tool.name));
-      await input.beforeProviderRound?.({
-        continuation: preparedContinuation,
-        request: roundRequest,
-        round
-      });
-      if (budget) await input.onFinalSynthesis?.(budget);
-
-      const stream = input.adapter.stream(roundRequest, { signal,
-        ...(input.onToolArguments && toolChoice !== "none" && advertisedToolNames.has("create_artifact")
-          ? { onToolArguments: (event: import("../providers/types").ProviderToolArgumentEvent) => input.onToolArguments!({ round, event }) } : {}) });
-      let emittedText = "";
-      let lastReportedUsage: ModelRunUsage | null = null;
+      let roundInput = requestedRound;
+      let rejected: Readonly<{ error: unknown }> | null = null;
+      let preparedContinuation: ProviderToolLoopContinuation;
+      let roundRequest: ProviderRunRequest;
+      let advertisedToolNames: Set<string>;
+      let emittedText: string;
+      let lastReportedUsage: ModelRunUsage | null;
       let next: IteratorResult<ModelRunSseEvent, ProviderRunResult>;
-      try {
-        next = await stream.next();
-        while (!next.done) {
-          if (next.value.type === "token") {
-            await emitText(next.value.data.delta);
-            emittedText += next.value.data.delta;
-          } else if (next.value.type === "usage") {
-            lastReportedUsage = mergeTokenUsage(lastReportedUsage ?? {}, next.value.data);
-          } else {
-            try { await input.onEvent?.(next.value); }
-            catch (error) { throw localSettlementError("publication", error); }
-          }
+      for (;;) {
+        let preparedRound: ProviderRunRequest;
+        try {
+          preparedRound = await input.prepareRequest?.(roundInput, round) ?? roundInput;
+        } catch (error) {
+          // A rebuild whose irreducible request exceeds even the tightened
+          // budget fails as the provider refusal it answered.
+          if (rejected && typeof error === "object" && error !== null && "code" in error &&
+            error.code === "context_too_large") throw rejected.error;
+          throw error;
+        }
+        // A planner may replace old settled observations in the provider-facing
+        // projection. Carry that exact projection into the durable continuation;
+        // otherwise recovery would resurrect the bulky pre-mask transcript.
+        preparedContinuation = {
+          providerResponseId: effectiveContinuation.providerResponseId,
+          providerToolMessages: preparedRound.providerToolMessages
+            ? [...preparedRound.providerToolMessages]
+            : effectiveContinuation.providerToolMessages
+        };
+        // Request/context preparation cannot restore tool authority after its
+        // accepted limit. Keep declarations and signed result context intact.
+        roundRequest = toolChoice === "none" ? { ...preparedRound, toolChoice } : preparedRound;
+        // Keep a committed summary and its exact recent context for subsequent
+        // rounds. Rebuilding from the admission source would buy the same
+        // compaction again after every tool call.
+        preparedRequest = roundRequest;
+        advertisedToolNames = new Set(roundRequest.tools?.map((tool) => tool.name));
+        if (!rejected) {
+          await input.beforeProviderRound?.({
+            continuation: preparedContinuation,
+            request: roundRequest,
+            round
+          });
+          if (budget) await input.onFinalSynthesis?.(budget);
+        }
+
+        // Text, tool arguments and any event other than the provider's own
+        // lifecycle summary are accepted output of this round.
+        let acceptedOutput = false;
+        const stream = input.adapter.stream(roundRequest, { signal,
+          ...(input.onToolArguments && toolChoice !== "none" && advertisedToolNames.has("create_artifact")
+            ? { onToolArguments: (event: import("../providers/types").ProviderToolArgumentEvent) => {
+                acceptedOutput = true;
+                return input.onToolArguments!({ round, event });
+              } } : {}) });
+        emittedText = "";
+        lastReportedUsage = null;
+        try {
           next = await stream.next();
-        }
-      } catch (error) {
-        // Only a dispatched answer request has partial usage; a failure before
-        // dispatch must not persist a phantom round with unavailable usage.
-        if (lastReportedUsage !== null || answerDispatchStarted(error)) {
-          try {
-            await input.onUsage?.(lastReportedUsage ?? {}, roundRequest, {
-              completeness: "partial",
-              round
-            });
-          } catch {
-            // Usage persistence is secondary once the provider round has
-            // already failed and must not replace its causal classification.
+          while (!next.done) {
+            if (next.value.type === "token") {
+              await emitText(next.value.data.delta);
+              emittedText += next.value.data.delta;
+            } else if (next.value.type === "usage") {
+              lastReportedUsage = mergeTokenUsage(lastReportedUsage ?? {}, next.value.data);
+            } else {
+              if (next.value.type !== "artifact" || next.value.data.artifactType !== "summary") acceptedOutput = true;
+              try { await input.onEvent?.(next.value); }
+              catch (error) { throw localSettlementError("publication", error); }
+            }
+            next = await stream.next();
           }
+          break;
+        } catch (error) {
+          // A context-length rejection before any accepted output or billed
+          // usage of this round is an unpaid refusal: no usage is invented.
+          const rejection = !acceptedOutput && emittedText === "" ? unpaidContextRejection(error, lastReportedUsage) : null;
+          // Only a dispatched answer request has partial usage; a failure before
+          // dispatch must not persist a phantom round with unavailable usage.
+          if (!rejection && (lastReportedUsage !== null || answerDispatchStarted(error))) {
+            try {
+              await input.onUsage?.(lastReportedUsage ?? {}, roundRequest, {
+                completeness: "partial",
+                round
+              });
+            } catch {
+              // Usage persistence is secondary once the provider round has
+              // already failed and must not replace its causal classification.
+            }
+          }
+          // One bounded rebuild re-plans this round's prepared request (its
+          // masks, trims and any bought notes stay) under a tightened budget;
+          // settled tools are never executed again. A second rejection fails.
+          const rebuild = rejection && !rejected && input.allowContextRebuild === true
+            ? providerRequestContextRebuild({ bridge: input.bridge, rejection, request: roundRequest, round }) : null;
+          if (!rebuild) throw error;
+          rejected = { error };
+          roundInput = { ...roundRequest, contextCompactionRebuild: rebuild };
+        } finally {
+          await stream.return(undefined as never).catch(() => undefined);
         }
-        throw error;
-      } finally {
-        await stream.return(undefined as never).catch(() => undefined);
       }
       const result = { ...next.value, usage: mergeTokenUsage(lastReportedUsage ?? {}, next.value.usage) };
       const dispatchedRequest = input.dispatchedRequest?.({ request: roundRequest, round }) ?? roundRequest;

@@ -18,6 +18,7 @@ import { conversationContextPolicy, contextCompactionCheckpoint } from "./contex
 import {
   contextCompactionMeasurementWithBudget,
   contextObservationsFromResults,
+  contextRejectionRebuild,
   maskedObservationHandlesInProviderMessages,
   observationCallIdsInProviderMessages,
   observationHandlesInProviderMessages,
@@ -612,5 +613,35 @@ describe("context compaction planner", () => {
     const inRun = plan({ ...carried, contextCompactionPolicy: own }, assembledTokens - covered - 200);
     expect(inRun.measurement.outcome).toBe("already_fits");
     expect(inRun.request.context?.messages[0]!.id).toBe("__context-summary-cs1_carried");
+  });
+});
+
+describe("context rejection rebuild", () => {
+  it("scales the rejected estimate so the reported prompt fits the reported budget", () => {
+    // The provider counted 1.5x the estimate: the budget keeps 180k real tokens.
+    expect(contextRejectionRebuild({ budgetTokens: 160_000, promptTokens: 210_000, reportedBudgetTokens: 180_000,
+      requestTokens: 140_000, round: 3 })).toEqual({ version: 1, round: 3, budgetTokens: 120_000 });
+  });
+
+  it("falls back to the recorded ratio without usable counts and never loosens or keeps the rejected size", () => {
+    expect(contextRejectionRebuild({ budgetTokens: 160_000, requestTokens: 100_000, round: 1 }))
+      .toEqual({ version: 1, round: 1, budgetTokens: 75_000 });
+    // Counts that would not shrink the request (a prompt within the maximum) use the ratio instead.
+    expect(contextRejectionRebuild({ budgetTokens: 160_000, promptTokens: 90_000, reportedBudgetTokens: 150_000,
+      requestTokens: 100_000, round: 2 })).toEqual({ version: 1, round: 2, budgetTokens: 75_000 });
+    // A request over its admitted budget still ends at or below that budget.
+    expect(contextRejectionRebuild({ budgetTokens: 50_000, requestTokens: 100_000, round: 1 })?.budgetTokens).toBe(50_000);
+    // An output reservation larger than the reported maximum leaves nothing to plan.
+    expect(contextRejectionRebuild({ budgetTokens: 160_000, promptTokens: 200_000, reportedBudgetTokens: 0,
+      requestTokens: 100_000, round: 1 })?.budgetTokens).toBe(0);
+  });
+
+  it("refuses malformed inputs", () => {
+    for (const input of [
+      { budgetTokens: 1_000, requestTokens: 0, round: 1 },
+      { budgetTokens: 1_000, requestTokens: 500, round: 0 },
+      { budgetTokens: -1, requestTokens: 500, round: 1 },
+      { budgetTokens: 1_000, requestTokens: Number.NaN, round: 1 }
+    ]) expect(contextRejectionRebuild(input)).toBeNull();
   });
 });

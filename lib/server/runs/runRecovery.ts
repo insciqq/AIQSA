@@ -2695,8 +2695,14 @@ async function recoverCheckpointedToolLoop(
        * no cycle for work that did not happen here. */
       mode: "dispatch" | "measure" = "dispatch"
     ): Promise<ProviderRunRequest> {
+      // A rebuild the live run recorded keeps its tightened budget here too,
+      // for the measured round and every recovered dispatch.
+      const persistedRebuild = run.checkpoint.contextCompaction?.rebuild;
       const currentRequest = {
           ...roundRequest,
+          ...(persistedRebuild && !roundRequest.contextCompactionRebuild
+            ? { contextCompactionRebuild: persistedRebuild }
+            : {}),
           ...(context.activeMcpDiscovery && round === 1
             ? { parallelToolCalls: false }
             : {}),
@@ -3318,6 +3324,10 @@ async function recoverCheckpointedToolLoop(
       prepareRequest: async (roundRequest, round) => {
         return prepareRecoveredProviderRequest(roundRequest, round);
       },
+      // A tool-batch fence records every earlier rebuild; a lost provider
+      // round may have rebuilt unrecorded, so resuming from it never rebuilds.
+      allowContextRebuild: run.checkpoint.phase !== "provider_running" && !run.normalizedRequest.agent &&
+        run.normalizedRequest.toolObservationVersion === 1,
       resume: {
         continuation,
         previousToolResults,

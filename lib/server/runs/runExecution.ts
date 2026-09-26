@@ -185,7 +185,12 @@ import type {
   RunUsageAttribution
 } from "./runRepositoryContract";
 import { UNAVAILABLE_CHAT_WORKSPACE_STATE } from "../../contracts/workspace";
-import { answerDispatchStarted, beforeAnswerDispatch, runProviderToolLoop as continueProviderToolLoop } from "./providerToolLoop";
+import {
+  answerDispatchStarted,
+  beforeAnswerDispatch,
+  runProviderToolLoop as continueProviderToolLoop,
+  unpaidContextRejection
+} from "./providerToolLoop";
 import {
   parsePersistedToolExecutionResult,
   settleableToolExecutionResult,
@@ -979,8 +984,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           rememberReportedUsage(request.provider, request.modelId, usage);
           return { ...next.value, usage };
         } catch (error) {
-          // A request refused before dispatch is no operation.
-          if (lastReportedUsage !== null || answerDispatchStarted(error)) {
+          // A request refused before dispatch is no operation; a provider's
+          // HTTP context-length refusal is unpaid and invents no usage.
+          if (unpaidContextRejection(error, lastReportedUsage)?.httpStatus === undefined &&
+            (lastReportedUsage !== null || answerDispatchStarted(error))) {
             rememberReportedUsage(request.provider, request.modelId,
               normalizeTokenUsage({ ...(lastReportedUsage ?? {}), completeness: "partial" }));
           }
@@ -2098,6 +2105,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           }
         };
         const outcome = await continueProviderToolLoop({
+          // Every checkpoint of a v1 non-Agent run carries the rebuild record.
+          allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
           deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
