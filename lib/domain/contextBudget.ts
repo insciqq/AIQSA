@@ -106,8 +106,32 @@ export function estimateApproxTokens(value: unknown): number {
   return text ? Math.ceil(approximateTokenUnits(text)) : 0;
 }
 
+/** Alphabetic scripts that current tokenizers encode in a few characters per
+ * token. Weights are tokens per character, calibrated on 2026-09-26 against the
+ * least efficient measured tokenizer (Anthropic count_tokens) with o200k as the
+ * lower bound, so estimates never fall below the real count: Cyrillic prose
+ * 0.24–0.44, technical Cyrillic up to 0.51; Greek, Hebrew and Arabic 0.27–0.79.
+ * CJK (about one token per character) and Latin with diacritics (which splits
+ * neighbouring words) keep the conservative one-token weight. */
+const CYRILLIC_TOKEN_WEIGHT = 0.5;
+const RTL_GREEK_TOKEN_WEIGHT = 0.8;
+
+function isCyrillic(codePoint: number): boolean {
+  return (codePoint >= 0x0400 && codePoint <= 0x052f) || (codePoint >= 0x1c80 && codePoint <= 0x1c8f) ||
+    (codePoint >= 0x2de0 && codePoint <= 0x2dff) || (codePoint >= 0xa640 && codePoint <= 0xa69f);
+}
+
+function isGreekHebrewOrArabic(codePoint: number): boolean {
+  return (codePoint >= 0x0370 && codePoint <= 0x03ff) || (codePoint >= 0x1f00 && codePoint <= 0x1fff) ||
+    (codePoint >= 0x0590 && codePoint <= 0x05ff) || (codePoint >= 0x0600 && codePoint <= 0x06ff) ||
+    (codePoint >= 0x0750 && codePoint <= 0x077f) || (codePoint >= 0x08a0 && codePoint <= 0x08ff) ||
+    (codePoint >= 0xfb1d && codePoint <= 0xfdff) || (codePoint >= 0xfe70 && codePoint <= 0xfeff);
+}
+
 function approximateTokenWeight(codePoint: number): number {
   if (codePoint <= 0x7f) return 0.25;
+  if (isCyrillic(codePoint)) return CYRILLIC_TOKEN_WEIGHT;
+  if (isGreekHebrewOrArabic(codePoint)) return RTL_GREEK_TOKEN_WEIGHT;
   return EXTENDED_PICTOGRAPHIC.test(String.fromCodePoint(codePoint)) ? 2 : 1;
 }
 

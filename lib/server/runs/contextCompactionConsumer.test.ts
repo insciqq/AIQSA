@@ -441,10 +441,10 @@ describe("single compaction consumer", () => {
 
     it.each([
       ["valid notes that do not lower the estimate", "context_compaction_summary_no_progress", true,
-        // Final non-ASCII notes within their byte bound cost more estimated
-        // tokens than the older history they would replace.
+        // Final CJK notes within their byte bound cost more estimated tokens
+        // (one per character) than the older history they would replace.
         () => ({ request: headroomRequest(), options: { output: (next: ProviderRunRequest) => JSON.stringify({ sourceRefs: [],
-          notes: next.prompt.system!.includes("one consecutive part") ? "part" : "ж".repeat(500) }) } })],
+          notes: next.prompt.system!.includes("one consecutive part") ? "part" : "界".repeat(500) }) } })],
       ["an exhausted call budget", "context_compaction_summary_failed", false,
         () => ({ request: { ...headroomRequest(), contextCompactionSummaryAttempts: spentCallBudget(headroomRequest()) }, options: {} })],
       ["a transient source check failure", "context_compaction_source_check_failed", false,

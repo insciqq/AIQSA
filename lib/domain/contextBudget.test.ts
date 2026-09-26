@@ -31,7 +31,9 @@ describe("context budget", () => {
 
   it("estimates multilingual and emoji input more conservatively than ASCII", () => {
     expect(estimateApproxTokens("a".repeat(8))).toBe(2);
-    expect(estimateApproxTokens("я".repeat(8))).toBe(8);
+    expect(estimateApproxTokens("я".repeat(8))).toBe(4);
+    expect(estimateApproxTokens("α".repeat(10))).toBe(8);
+    expect(estimateApproxTokens("日".repeat(8))).toBe(8);
     expect(estimateApproxTokens("界".repeat(8))).toBe(8);
     expect(estimateApproxTokens("😀".repeat(8))).toBe(16);
   });
@@ -172,5 +174,34 @@ describe("context budget", () => {
     expect(fits.ok).toBe(true);
     expect(fits.ok ? fits.messages[0] : null).toBe(current);
     expect(JSON.stringify(fits.ok ? fits.messages[0]?.content : null)).not.toContain("extra");
+  });
+});
+
+describe("token estimate calibration", () => {
+  // Recorded on 2026-09-26 with the Anthropic count_tokens endpoint (claude-sonnet-4-5),
+  // the least efficient measured tokenizer, in tokens per non-ASCII character.
+  const anthropicPerCharacter = { cyrillicProse: 0.441, cyrillicTechnical: 0.513, greek: 0.792, hebrew: 0.792, arabic: 0.701, japanese: 0.979, chinese: 1.028 };
+  const samples = {
+    cyrillicProse: "Пользователь просит подготовить отчёт о продажах за третий квартал, учесть возвраты и не включать тестовые заказы. ".repeat(20),
+    cyrillicTechnical: "Ошибка воспроизводится при запуске миграции: колонка получает значение v1, но старые записи без policy остаются на legacy-пути; проверьте логи контейнера app-1 за 26.09.2026 14:35 UTC. ".repeat(20),
+    greek: "Ο χρήστης ζητά μια αναφορά πωλήσεων για το τρίτο τρίμηνο, λαμβάνοντας υπόψη τις επιστροφές. ".repeat(20),
+    hebrew: "המשתמש מבקש להכין דוח מכירות לרבעון השלישי, לקחת בחשבון החזרות ולא לכלול הזמנות בדיקה. ".repeat(20),
+    arabic: "يطلب المستخدم إعداد تقرير عن مبيعات الربع الثالث مع مراعاة المرتجعات واستبعاد الطلبات التجريبية. ".repeat(20),
+    japanese: "ユーザーは第3四半期の売上レポートの作成を依頼し、返品を考慮し、テスト注文を除外するよう求めています。".repeat(20),
+    chinese: "用户要求准备第三季度的销售报告，考虑退货并排除测试订单。经理明确了期限、预算和负责人。".repeat(20)
+  } as const;
+
+  it("never estimates below the least efficient measured tokenizer and stays within 3x of o200k", async () => {
+    const { encode } = await import("gpt-tokenizer/encoding/o200k_base");
+    for (const [name, text] of Object.entries(samples) as [keyof typeof samples, string][]) {
+      const estimate = estimateApproxTokens(text);
+      const characters = [...text].length;
+      const nonAscii = [...text].filter((character) => (character.codePointAt(0) ?? 0) > 0x7f).length;
+      const recorded = (characters - nonAscii) * 0.25 + nonAscii * anthropicPerCharacter[name];
+      expect(estimate, `${name} vs recorded Anthropic count`).toBeGreaterThanOrEqual(Math.floor(recorded * 0.97));
+      const o200k = encode(text).length;
+      expect(estimate, `${name} vs o200k`).toBeGreaterThanOrEqual(o200k);
+      expect(estimate / o200k, `${name} overestimate against o200k`).toBeLessThanOrEqual(3);
+    }
   });
 });
