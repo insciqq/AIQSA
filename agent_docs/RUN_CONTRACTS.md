@@ -61,7 +61,7 @@ Publication is deterministic and provider-free, revalidating exact excerpts and 
 
 ## MCP And Workspace
 
-MCP Auto, Load all and Off require explicit user action. Auto freezes authorized capabilities and the System Model. An admitted optional route may select one sufficient capability; uncertainty/unavailability preserves the full route. Never substitute destinations. Discovery fails closed without lexical fallback. Reauthorize and checkpoint selection before exposing schemas; recovery never reroutes. Only relevant servers and exact Load all/Assistant allowlists are dependencies. Persist batches before execution; preserve provider order and accepted budgets. Exhaustion disables tools for final synthesis.
+MCP Auto/Load all/Off require explicit user action. Auto freezes authorized capabilities/System Model; answer models see only bounded JSON administrator-defined server names. An admitted optional route may select one sufficient capability; uncertainty/unavailability preserves the full route. Never substitute destinations. Discovery fails closed without lexical fallback. Reauthorize and checkpoint selection before exposing schemas; recovery never reroutes. Only relevant servers and exact Load all/Assistant allowlists are dependencies. Persist batches before execution; preserve provider order and accepted budgets. Exhaustion disables tools for final synthesis.
 
 Normalize only proven whole-result duplicates before provider projection; preserve unique content, ambiguity, errors, Hub results and receipts.
 
