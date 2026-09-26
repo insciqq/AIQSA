@@ -9,6 +9,7 @@ import {
 } from "./deepSeekResponsesSearch";
 import {
   createFetchDeepSeekResponsesClient,
+  DeepSeekHttpError,
   type DeepSeekResponsesClient
 } from "./deepSeekResponsesTransport";
 import type { ProviderRunRequest, ProviderSearchRequest } from "./types";
@@ -180,6 +181,26 @@ describe("DeepSeek Responses provider", () => {
     const [url, init] = fetchFn.mock.calls[0]!;
     expect(url).toBe("https://api.deepseek.com/responses");
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret-key");
+  });
+
+  it("classifies DeepSeek's OpenAI-style context-length 400 and keeps other failures unclassified", async () => {
+    const sentinel = "PRIVATE_PROVIDER_MESSAGE_CANARY";
+    const body = (message: string) => Response.json({ error: { code: "invalid_request_error", message: `${message} ${sentinel}`,
+      param: null, type: "invalid_request_error" } }, { status: 400 });
+    const rejected = createFetchDeepSeekResponsesClient({ apiKey: "key", fetchFn: async () => body(
+      "This model's maximum context length is 131072 tokens. However, you requested 140000 tokens (135000 in the messages, 5000 in the completion). Please reduce the length of the messages or completion.") });
+    for (const send of [() => rejected.create({}), () => rejected.stream({})]) {
+      const failure = await send().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(DeepSeekHttpError);
+      expect(failure).toMatchObject({ code: "provider_context_length_exceeded", status: 400,
+        reportedMaximumTokens: 131_072, reportedPromptTokens: 135_000, message: "DeepSeek request failed with status 400" });
+      expect(JSON.stringify(failure)).not.toContain(sentinel);
+    }
+    const other = createFetchDeepSeekResponsesClient({ apiKey: "key", fetchFn: async () => body("Invalid parameter: tools") });
+    const failure = await other.create({}).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DeepSeekHttpError);
+    expect(failure).not.toHaveProperty("code");
+    expect(JSON.stringify(failure)).not.toContain(sentinel);
   });
 
   it("uses DeepSeek JSON Schema output without OpenAI lifecycle parameters", async () => {

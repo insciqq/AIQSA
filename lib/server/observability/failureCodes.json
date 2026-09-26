@@ -605,6 +605,7 @@
   "provider_check_run_not_found",
   "provider_checks_running",
   "provider_connection_not_found",
+  "provider_context_length_exceeded",
   "provider_context_limit_exceeded",
   "provider_credential_label_taken",
   "provider_credential_not_found",
