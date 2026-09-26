@@ -20,7 +20,9 @@ export type {
 } from "../../contracts/contextCompaction";
 
 export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
-  triggerRatio: 0.75,
+  /** Share of the budget above which a fitting request buys headroom; the
+   * planner spec allows 70–80 %, and 80 % keeps unnecessary summaries rarer. */
+  triggerRatio: 0.8,
   targetRatio: 0.5,
   recentBatches: 1,
   /** Ceiling on exact prior messages a committed summary keeps verbatim. */

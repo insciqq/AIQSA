@@ -220,8 +220,8 @@ describe("context compaction planner", () => {
       observations: settled, request: request(messages) });
     expect(below.measurement.maskedObservations).toBe(0);
     expect(JSON.stringify(below.request.providerToolMessages)).toContain("rare-whole-tail");
-    // A later round over 75% of the budget replaces the body by its descriptor.
-    const later = planContextCompaction({ bridge: openAIResponsesToolBridge, budgetTokens, assembledTokens: 100_000,
+    // A later round over the 80% trigger replaces the body by its descriptor.
+    const later = planContextCompaction({ bridge: openAIResponsesToolBridge, budgetTokens, assembledTokens: 106_000,
       observations: settled, request: request(messages) });
     expect(later.measurement.maskedObservations).toBe(1);
     const transcript = JSON.stringify(later.request.providerToolMessages);

@@ -330,7 +330,7 @@ describe("provider request context budget", () => {
     });
     const projected = (id: string, seed: string) => projectObservationForProvider({
       callId: id,
-      content: [{ text: `rare-${id}-${"x".repeat(6000)}`, type: "text" as const }],
+      content: [{ text: `rare-${id}-${"x".repeat(6600)}`, type: "text" as const }],
       name: "read_record",
       observation: descriptor(seed),
       status: "complete" as const
@@ -660,7 +660,13 @@ describe("provider request context budget", () => {
 
     expect(budgeted.ok).toBe(true);
     if (!budgeted.ok) throw new Error("unexpected budget rejection");
-    expect(budgeted.request.attachments[0]!.extractedText!.length).toBeLessThan(1_000);
+    // Cyrillic is estimated at half a token per character: the text is cut by
+    // its estimate (never above the 900-token budget of a 1,000-token window
+    // with no output reservation), not by raw characters.
+    const fitted = budgeted.request.attachments[0]!.extractedText!;
+    expect(fitted.length).toBeLessThan(2_000);
+    expect(fitted.length).toBeGreaterThan(1_000);
+    expect(estimateApproxTokens(fitted)).toBeLessThanOrEqual(900);
   });
 
   it("honors the reduction-only operator clamp without restoring a fixed provider cap", () => {
