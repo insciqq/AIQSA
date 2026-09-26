@@ -549,7 +549,7 @@ function executionByteSize(execution: SearchExecutionEvidence): number {
   return Buffer.byteLength(JSON.stringify(execution), "utf8");
 }
 
-function fitDurableSearchToolResult(input: Readonly<{
+export function fitDurableSearchToolResult(input: Readonly<{
   call: ModelToolCall;
   executions: readonly SearchExecutionEvidence[];
   name: string;
