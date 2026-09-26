@@ -9,6 +9,7 @@ import {
 } from "@/lib/server/knowledge/deletionProcessor";
 import { DEFAULT_KNOWLEDGE_TRASH_RETENTION_DAYS } from "@/lib/server/knowledge/lifecyclePolicy";
 import { createMcpHubOperationStore, type McpHubMaintenanceResult } from "../mcp/hubOperations";
+import { WORKSPACE_ACTIVITY_RECEIPT } from "../runs/workspaceActivityPersistence";
 
 export const DEFAULT_EVENT_RETENTION_DAYS = 30;
 export const DEFAULT_ORPHAN_ATTACHMENT_RETENTION_DAYS = 7;
@@ -20,6 +21,25 @@ export const DEFAULT_PRUNE_BATCH_SIZE = 1000;
 export const DEFAULT_DELETION_JOB_LEASE_MINUTES = 15;
 
 export const TERMINAL_MODEL_RUN_STATUSES = ["cancelled", "complete", "error"] as const;
+
+function agedTerminalModelRunEventWhere(cutoff: Date) {
+  return {
+    createdAt: { lt: cutoff },
+    modelRun: { status: { in: [...TERMINAL_MODEL_RUN_STATUSES] } }
+  } satisfies Prisma.ModelRunEventWhereInput;
+}
+
+// Retention may expire only this explicit technical allow-list: replay receipts
+// and context meters. Every other event of a terminal run is its sole durable
+// answer projection (grounding, citations, reasoning, sources, generated cards,
+// compaction, Workspace timeline and checkpoints, images), so an unlisted or
+// unknown type is kept rather than deleted.
+const expirableModelRunEventWhere = {
+  OR: [
+    { eventType: WORKSPACE_ACTIVITY_RECEIPT },
+    { eventType: "artifact", payload: { path: ["artifactType"], equals: "context_status" } }
+  ]
+} satisfies Prisma.ModelRunEventWhereInput;
 
 export type AttachmentDeletionClaim = {
   claimToken: string;
@@ -114,6 +134,8 @@ export type RetentionRepository = {
     limit: number;
   }): Promise<InboundMcpOAuthPruneCandidates>;
   findPrunableModelRunEventIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
+  /** Aged terminal-run events that retention deliberately keeps as answer projections. */
+  countExemptModelRunEvents(input: { cutoff: Date }): Promise<number>;
   inspectOrphanedAttachments(input: { cutoff: Date; limit: number }): Promise<AttachmentInspection>;
   inspectStaleKnowledgePayloads(input: {
     cutoff: Date;
@@ -242,7 +264,9 @@ export type PruneRetentionSummary = {
     multipartSessionsMatched: number;
     multipartSessionsReleased: number;
   };
-  modelRunEvents: RetentionCount;
+  modelRunEvents: RetentionCount & {
+    exempt: number;
+  };
   orphanAttachmentCutoff: string;
   orphanedAttachments: {
     jobsStaged: number;
@@ -691,6 +715,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
 
       const result = await prisma.modelRunEvent.deleteMany({
         where: {
+          ...expirableModelRunEventWhere,
           id: {
             in: ids
           },
@@ -845,18 +870,23 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
         },
         take: limit,
         where: {
-          createdAt: {
-            lt: cutoff
-          },
-          modelRun: {
-            status: {
-              in: [...TERMINAL_MODEL_RUN_STATUSES]
-            }
-          }
+          ...agedTerminalModelRunEventWhere(cutoff),
+          ...expirableModelRunEventWhere
         }
       });
 
       return rows.map((row) => row.id);
+    },
+    async countExemptModelRunEvents({ cutoff }) {
+      // Two positive counts avoid SQL NULL semantics of a negated JSON path.
+      const [aged, expirable] = await Promise.all([
+        prisma.modelRunEvent.count({ where: agedTerminalModelRunEventWhere(cutoff) }),
+        prisma.modelRunEvent.count({
+          where: { ...agedTerminalModelRunEventWhere(cutoff), ...expirableModelRunEventWhere }
+        })
+      ]);
+
+      return Math.max(0, aged - expirable);
     },
     async inspectOrphanedAttachments({ cutoff, limit }) {
       const candidates = await prisma.attachment.findMany({
@@ -1459,6 +1489,7 @@ function emptySummary(input: {
   dryRun: boolean;
   eventCutoff: Date;
   eventIds: string[];
+  exemptEventCount: number;
   inboundMcpOAuthCandidates: InboundMcpOAuthPruneCandidates;
   knowledgePayloadCutoff: Date;
   knowledgePayloadInspection: KnowledgePayloadInspection;
@@ -1542,6 +1573,7 @@ function emptySummary(input: {
     },
     modelRunEvents: {
       deleted: 0,
+      exempt: input.exemptEventCount,
       matched: input.eventIds.length
     },
     orphanAttachmentCutoff: input.orphanAttachmentCutoff.toISOString(),
@@ -1589,6 +1621,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
   const claimableBefore = deletionJobClaimableBefore(now, deletionJobLeaseMinutes);
   const [
     eventIds,
+    exemptEventCount,
     orphanInspection,
     knowledgePayloadInspection,
     knowledgeTrashInspection,
@@ -1599,6 +1632,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     initialDeletionJobIds
   ] = await Promise.all([
     options.repository.findPrunableModelRunEventIds({ cutoff: eventCutoff, limit: batchSize }),
+    options.repository.countExemptModelRunEvents({ cutoff: eventCutoff }),
     options.repository.inspectOrphanedAttachments({ cutoff: orphanAttachmentCutoff, limit: batchSize }),
     options.repository.inspectStaleKnowledgePayloads({ cutoff: knowledgePayloadCutoff, limit: batchSize }),
     options.repository.inspectExpiredKnowledgeTrash({ cutoff: knowledgeTrashCutoff, limit: batchSize }),
@@ -1619,6 +1653,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     dryRun,
     eventCutoff,
     eventIds,
+    exemptEventCount,
     inboundMcpOAuthCandidates,
     knowledgePayloadCutoff,
     knowledgePayloadInspection,
