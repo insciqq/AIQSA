@@ -33,8 +33,9 @@ export type PasswordChangeRepository = Readonly<{
   /** The password identity of the user, or null for external-provider-only accounts. */
   findPasswordIdentityByUserId(userId: string): Promise<PasswordChangeIdentity | null>;
   /**
-   * Compare-and-set of the stored hash; on success every other session of the
-   * user is revoked so a stolen session does not outlive the old password.
+   * Compare-and-set of the stored hash; on success every other session and every
+   * inbound MCP grant of the user is revoked so neither a stolen session nor an
+   * app it connected outlives the old password.
    */
   changePassword(input: Readonly<{
     expectedPasswordHash: string;

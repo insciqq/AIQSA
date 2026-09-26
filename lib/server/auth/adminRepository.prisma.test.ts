@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  createInboundMcpTestClient,
+  INBOUND_MCP_TEST_AUTHORITIES,
+  liveInboundMcpFamilyCount
+} from "@/tests/support/inboundMcpOAuth";
 import { prisma } from "../prisma";
 import { createPrismaAdminRepository } from "./adminRepository";
 import { loadEntitlementsForUser } from "./dbEntitlements";
@@ -341,6 +346,79 @@ describe("Prisma-backed admin repository", () => {
       expect(sessions).toHaveLength(2);
       expect(sessions.every((session) => session.revokedAt && session.revokedByUserId === adminId)).toBe(true);
       expect(sessions.every((session) => session.revokedReason === "admin_revoke_user")).toBe(true);
+    });
+  });
+
+  it("ends Memory and Hub inbound MCP grants with admin session revocation and disable", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const mcp = await createInboundMcpTestClient(prisma, new Date());
+      const { hub, memory } = INBOUND_MCP_TEST_AUTHORITIES;
+      try {
+        const [revoked, disabled, bystander] = await Promise.all(
+          ["mcp-revoke", "mcp-disable", "mcp-bystander"].map((emailLocalPart) => createPasswordUser({
+            displayName: "Inbound MCP Admin Test User",
+            domain,
+            emailLocalPart,
+            status: "active"
+          }))
+        );
+        const revokedConnections = [
+          await mcp.connect(revoked!.id, memory),
+          await mcp.connect(revoked!.id, hub)
+        ];
+        const disabledConnections = [
+          await mcp.connect(disabled!.id, memory),
+          await mcp.connect(disabled!.id, hub)
+        ];
+        const bystanderConnection = await mcp.connect(bystander!.id, hub);
+        await prisma.authSession.create({
+          data: {
+            expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+            tokenHash: hashToken(`mcp-revoke-session-${domain}`),
+            userId: revoked!.id
+          }
+        });
+
+        await expect(repository.revokeUserSessions({
+          revokedByUserId: adminId,
+          userId: revoked!.id
+        })).resolves.toBe(1);
+        // Disable (and reject, which shares the same revocation) inherits the grant revocation.
+        await expect(repository.disableUser({
+          revokedByUserId: adminId,
+          userId: disabled!.id
+        })).resolves.toBe("disabled");
+
+        for (const connection of [...revokedConnections, ...disabledConnections]) {
+          await expect(mcp.access(connection)).resolves.toBe(false);
+          await expect(mcp.refresh(connection)).resolves.toMatchObject({ outcome: "invalid" });
+        }
+        await expect(mcp.access(bystanderConnection)).resolves.toBe(true);
+        const grants = await prisma.inboundMcpOAuthGrant.findMany({
+          select: { revokedAt: true, state: true },
+          where: { userId: { in: [revoked!.id, disabled!.id] } }
+        });
+        expect(grants).toHaveLength(4);
+        expect(grants.every((grant) => grant.state === "REVOKED" && grant.revokedAt)).toBe(true);
+        await expect(prisma.inboundMcpOAuthTokenFamily.findMany({
+          distinct: ["revocationReason"],
+          select: { revocationReason: true },
+          where: { grant: { userId: { in: [revoked!.id, disabled!.id] } } }
+        })).resolves.toEqual([{ revocationReason: "admin_revoke_user" }]);
+        await expect(liveInboundMcpFamilyCount(prisma, revoked!.id)).resolves.toBe(0);
+
+        // Re-enabling the account does not revive the old grants; a new consent works.
+        await prisma.user.update({ data: { status: "active" }, where: { id: disabled!.id } });
+        for (const connection of disabledConnections) {
+          await expect(mcp.access(connection)).resolves.toBe(false);
+          await expect(mcp.refresh(connection)).resolves.toMatchObject({ outcome: "invalid" });
+        }
+        await expect(liveInboundMcpFamilyCount(prisma, disabled!.id)).resolves.toBe(0);
+        await expect(mcp.access(await mcp.connect(disabled!.id, hub))).resolves.toBe(true);
+        await expect(mcp.access(await mcp.connect(revoked!.id, memory))).resolves.toBe(true);
+      } finally {
+        await mcp.cleanup();
+      }
     });
   });
 
@@ -1663,28 +1741,72 @@ describe("Prisma-backed admin repository", () => {
         revokedReason: "fixture_prior_revoke"
       });
 
-      const updateMany = vi.spyOn(prisma.authSession, "updateMany").mockResolvedValueOnce({ count: 7 });
-
-      try {
-        await expect(
-          repository.revokeAllSessions({
-            revokedByUserId: adminId
-          })
-        ).resolves.toBe(7);
-        expect(updateMany).toHaveBeenCalledOnce();
-        expect(updateMany).toHaveBeenCalledWith({
-          data: {
-            revokedAt: expect.any(Date),
-            revokedByUserId: adminId,
-            revokedReason: "admin_revoke_all"
+      // The installation-wide writes are recorded instead of executed so the shared test database
+      // keeps every session and inbound MCP grant that this test does not own.
+      const recorded: Readonly<{ args: unknown; model: string; operation: string }>[] = [];
+      const record = (model: string, operation: string, count: number) =>
+        ({ args }: Readonly<{ args: unknown }>) => {
+          recorded.push({ args, model, operation });
+          return Promise.resolve({ count });
+        };
+      const recordingClient = prisma.$extends({
+        query: {
+          authSession: { updateMany: record("authSession", "updateMany", 7) },
+          inboundMcpOAuthAuthorizationCode: {
+            deleteMany: record("inboundMcpOAuthAuthorizationCode", "deleteMany", 1)
           },
-          where: {
-            revokedAt: null
+          inboundMcpOAuthGrant: { updateMany: record("inboundMcpOAuthGrant", "updateMany", 2) },
+          inboundMcpOAuthTokenFamily: {
+            updateMany: record("inboundMcpOAuthTokenFamily", "updateMany", 3)
           }
-        });
-      } finally {
-        updateMany.mockRestore();
-      }
+        }
+      });
+
+      await expect(
+        createPrismaAdminRepository(recordingClient as unknown as PrismaClient).revokeAllSessions({
+          revokedByUserId: adminId
+        })
+      ).resolves.toBe(7);
+      const revokedAt = (recorded[0]?.args as { data?: { revokedAt?: unknown } } | undefined)
+        ?.data?.revokedAt;
+      expect(revokedAt).toBeInstanceOf(Date);
+      expect(recorded).toEqual([
+        {
+          args: {
+            data: {
+              revokedAt,
+              revokedByUserId: adminId,
+              revokedReason: "admin_revoke_all"
+            },
+            where: {
+              revokedAt: null
+            }
+          },
+          model: "authSession",
+          operation: "updateMany"
+        },
+        {
+          args: {
+            data: { revocationReason: "admin_revoke_all", revokedAt },
+            where: { revokedAt: null }
+          },
+          model: "inboundMcpOAuthTokenFamily",
+          operation: "updateMany"
+        },
+        {
+          args: { where: { consumedAt: null } },
+          model: "inboundMcpOAuthAuthorizationCode",
+          operation: "deleteMany"
+        },
+        {
+          args: {
+            data: { revision: { increment: 1 }, revokedAt, state: "REVOKED" },
+            where: { state: "ACTIVE" }
+          },
+          model: "inboundMcpOAuthGrant",
+          operation: "updateMany"
+        }
+      ]);
     });
   });
 
