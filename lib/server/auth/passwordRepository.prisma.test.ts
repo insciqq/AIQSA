@@ -13,6 +13,7 @@ import { getAuthConfig } from "./config";
 import { createPasswordLoginHandler } from "./handlers";
 import { hashPassword, verifyPassword } from "./password";
 import { createPrismaPasswordAuthRepository } from "./passwordRepository";
+import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { hashToken } from "./token";
 
 const resetNow = new Date("2026-07-14T00:00:00.000Z");
@@ -360,6 +361,7 @@ describe("Prisma-backed password reset completion", () => {
           AIQSA_APP_BASE_URL: "http://localhost:3000",
           AIQSA_AUTH_SESSION_SECRET: "password-race-test-secret"
         }),
+      loginRateLimiter: createFixedWindowLoginRateLimiter(),
       repository,
       verifyPassword: async () => {
         verificationStarted.resolve();
