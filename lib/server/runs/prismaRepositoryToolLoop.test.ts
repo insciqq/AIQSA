@@ -1390,12 +1390,25 @@ describe("branch context checkpoint candidates", () => {
     const operations = createPrismaRunToolLoopOperations({
       $queryRaw: vi.fn(async (query: Prisma.Sql) => {
         queries.push(query);
-        return [{ assistantMessageId: "assistant-1", compaction, id: "run-failed", policy: null, userId: "user-1", userMessageId: "user-message-1" }];
+        // One row per ancestor, oldest first; the failed answer carries its checkpoint.
+        const ancestor = (messageId: string) => ({ assistantMessageId: null, compaction: null, id: null, messageId,
+          policy: null, userId: null, userMessageId: null });
+        return [ancestor("user-message-1"), { assistantMessageId: "assistant-1", compaction, id: "run-failed", messageId: "assistant-1",
+          policy: null, userId: "user-1", userMessageId: "user-message-1" }, ancestor("user-message-2")];
       })
     } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
-    await expect(operations.loadBranchContextCheckpoints!({ assistantMessageIds: ["assistant-1"], chatId: "chat-1", userId: "user-1" }))
-      .resolves.toEqual([expect.objectContaining({ compaction, runId: "run-failed" })]);
+    await expect(operations.loadBranchContextCheckpoints!({ chatId: "chat-1", leafMessageId: "user-message-2", userId: "user-1" }))
+      .resolves.toEqual({
+        ancestorMessageIds: ["user-message-1", "assistant-1", "user-message-2"],
+        checkpoints: [expect.objectContaining({ assistantMessageId: "assistant-1", compaction, runId: "run-failed" })]
+      });
+    expect(queries).toHaveLength(1);
     const sql = queries[0]!.sql.replace(/\s+/gu, " ");
+    // The branch is the message parent chain whatever each message's status:
+    // a failed answer left out of the provider context is still an ancestor.
+    expect(sql).toContain(`WITH RECURSIVE "ancestry" AS (`);
+    expect(sql).not.toMatch(/\b(m|parent)\."status"/u);
+    expect(sql).toContain(`INNER JOIN "Message" AS parent ON parent."chatId" = ? AND parent."id" = child."parentMessageId"`);
     // Settled runs (and terminal-marked failures) qualify as before; a failure
     // recovery may still resume qualifies only by a committed receipt for
     // exactly the checkpoint notes, which later work cannot revoke.

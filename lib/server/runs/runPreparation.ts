@@ -186,13 +186,18 @@ async function carriedContextSummary(input: Readonly<{
 }>): Promise<ContextSummaryReuse | null> {
   const policy = input.request.contextCompactionPolicy;
   const load = input.repository.loadBranchContextCheckpoints;
-  if (policy?.mode !== "hybrid" || !load) return null;
-  const prior = input.conversationMessages.slice(0, -1);
-  const assistantMessageIds = prior.flatMap((message) => message.role === "assistant" ? [message.id] : []);
-  if (assistantMessageIds.length === 0) return null;
-  const checkpoints = await load({ assistantMessageIds, chatId: input.request.chatId, userId: input.userId });
+  const leafMessageId = policy?.source.leafMessageId;
+  if (policy?.mode !== "hybrid" || !load || !leafMessageId) return null;
+  // Candidates come from the branch ancestry, not the provider context: an
+  // answer that failed after committing notes is left out of the context yet
+  // stays the parent of this turn. Applying carried notes still requires their
+  // covered boundary in the provider context.
+  const current = input.conversationMessages.at(-1)?.id;
+  const branch = await load({ chatId: input.request.chatId, leafMessageId, userId: input.userId });
   for (const reuse of contextSummaryReuseCandidates({
-    checkpoints, priorMessageIds: prior.map((message) => message.id), userId: input.userId
+    checkpoints: branch.checkpoints,
+    priorMessageIds: branch.ancestorMessageIds.filter((messageId) => messageId !== current),
+    userId: input.userId
   })) {
     const projected = applyReusedContextSummary({ ...input.request, contextCompactionPolicy: { ...policy, reuse } });
     if (projected && applyProviderRequestContextBudget({

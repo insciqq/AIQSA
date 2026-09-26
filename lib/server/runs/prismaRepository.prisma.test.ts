@@ -3606,38 +3606,55 @@ describe("Prisma-backed run repository", () => {
       });
       await expect(repository.beginToolLoopProviderRound({ contextCompaction: compaction(settled.runId, true),
         providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: settled.runId, userId })).resolves.toBe("started");
-      const load = (ids: readonly string[], owner = userId, chatId = settled.chatId) =>
-        repository.loadBranchContextCheckpoints!({ assistantMessageIds: ids, chatId, userId: owner });
+      const load = (leafMessageId: string, owner = userId, chatId = settled.chatId) =>
+        repository.loadBranchContextCheckpoints!({ chatId, leafMessageId, userId: owner });
+      const { userMessageId } = await prisma.modelRun.findUniqueOrThrow({ select: { userMessageId: true }, where: { id: settled.runId } });
+      const branch = [userMessageId, settled.assistantMessageId];
 
       // An active run's checkpoint is still changing and is never a candidate.
-      await expect(load([settled.assistantMessageId])).resolves.toEqual([]);
+      await expect(load(settled.assistantMessageId)).resolves.toEqual({ ancestorMessageIds: branch, checkpoints: [] });
       await prisma.modelRun.update({ data: { status: "complete" }, where: { id: settled.runId } });
-      const [found, ...rest] = await load([settled.assistantMessageId, "not-on-this-chat"]);
+      const loaded = await load(settled.assistantMessageId);
+      expect(loaded.ancestorMessageIds).toEqual(branch);
+      const [found, ...rest] = loaded.checkpoints;
       expect(rest).toEqual([]);
       expect(found).toMatchObject({ assistantMessageId: settled.assistantMessageId, runId: settled.runId, userId,
         compaction: { runId: settled.runId, summary, summaryAttempts: [committed] } });
-      expect(found!.userMessageId).toEqual(expect.any(String));
-      // Another user, another chat, or a checkpoint without notes yields nothing.
-      await expect(load([settled.assistantMessageId], `${userId}-other`)).resolves.toEqual([]);
-      await expect(load([settled.assistantMessageId], userId, "another-chat")).resolves.toEqual([]);
-      await expect(load([])).resolves.toEqual([]);
+      expect(found!.userMessageId).toBe(userMessageId);
+      // Another user or another chat yields no checkpoint; an unknown leaf no branch.
+      await expect(load(settled.assistantMessageId, `${userId}-other`)).resolves.toEqual({ ancestorMessageIds: branch, checkpoints: [] });
+      await expect(load(settled.assistantMessageId, userId, "another-chat")).resolves.toEqual({ ancestorMessageIds: [], checkpoints: [] });
+      await expect(load("not-on-this-chat")).resolves.toEqual({ ancestorMessageIds: [], checkpoints: [] });
       const plain = await createActiveRun(repository, userId, "No notes");
       await expect(repository.beginToolLoopProviderRound({ contextCompaction: compaction(plain.runId, false),
         providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId: plain.runId, userId })).resolves.toBe("started");
       await prisma.modelRun.update({ data: { status: "complete" }, where: { id: plain.runId } });
-      await expect(load([plain.assistantMessageId], userId, plain.chatId)).resolves.toEqual([]);
+      await expect(load(plain.assistantMessageId, userId, plain.chatId)).resolves.toMatchObject({ checkpoints: [] });
       // A provider failure without a terminal marker may still be resumed, yet
       // notes it committed are final: its committed receipt keeps them offered.
+      // The errored answer is left out of the provider context but is the
+      // parent of the next question, so the walk from that question finds it.
+      await prisma.message.update({ data: { status: "error" }, where: { id: settled.assistantMessageId } });
       await prisma.modelRun.update({ data: { errorPayload: { code: "provider_stream_failed", message: "Upstream failed." },
         status: "error" }, where: { id: settled.runId } });
-      await expect(load([settled.assistantMessageId])).resolves.toEqual([
+      const next = await prisma.message.create({ data: { chatId: settled.chatId, content: textMessageContent("Next question"),
+        parentMessageId: settled.assistantMessageId, role: "user" } });
+      await expect(load(next.id)).resolves.toEqual({ ancestorMessageIds: [...branch, next.id], checkpoints: [
         expect.objectContaining({ compaction: expect.objectContaining({ summary }), runId: settled.runId })
-      ]);
+      ] });
+      // The same after recovery ended the run on an unknown answer round.
+      await prisma.modelRun.update({ data: { errorPayload: { code: "tool_loop_provider_round_outcome_unknown",
+        message: "Unknown round.", recoveryTerminal: true }, status: "error" }, where: { id: settled.runId } });
+      await expect(load(next.id)).resolves.toMatchObject({ checkpoints: [expect.objectContaining({ runId: settled.runId })] });
+      // A sibling branch (an edited first question) never sees those notes.
+      const sibling = await prisma.message.create({ data: { chatId: settled.chatId, content: textMessageContent("Edited question"),
+        role: "user" } });
+      await expect(load(sibling.id)).resolves.toEqual({ ancestorMessageIds: [sibling.id], checkpoints: [] });
       // A Knowledge run keeps the legacy guard: even its historical notes are never read.
       const accepted = await prisma.modelRun.findUniqueOrThrow({ select: { normalizedRequest: true }, where: { id: settled.runId } });
       await prisma.modelRun.update({ data: { normalizedRequest: { ...(accepted.normalizedRequest as Prisma.JsonObject),
         knowledgePlan: { baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1 } } }, where: { id: settled.runId } });
-      await expect(load([settled.assistantMessageId])).resolves.toEqual([]);
+      await expect(load(next.id)).resolves.toMatchObject({ checkpoints: [] });
     });
   });
 

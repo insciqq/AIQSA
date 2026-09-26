@@ -4643,6 +4643,8 @@ describe("cross-turn compaction reuse", () => {
   }
 
   async function admit(input: Readonly<{
+    /** The branch ancestry the repository walks; defaults to the provider history. */
+    ancestry?: readonly string[];
     capabilities?: ProviderModelCapabilities;
     checkpoints?: readonly BranchContextCheckpoint[];
     history: readonly ProviderConversationMessage[];
@@ -4658,7 +4660,11 @@ describe("cross-turn compaction reuse", () => {
   async function admitResult(input: Parameters<typeof admit>[0]) {
     const harness = createHarness({ capabilities: input.capabilities ?? capabilities, sendContext: input.history,
       regenerateContext: input.regenerate ? [...input.history, input.regenerate] : [] });
-    const loadBranchContextCheckpoints = vi.fn(async () => [...(input.checkpoints ?? [])]);
+    const loadBranchContextCheckpoints = vi.fn(async () => ({
+      ancestorMessageIds: [...(input.ancestry ?? input.history.map((message) => message.id)),
+        ...(input.regenerate ? [input.regenerate.id] : [])],
+      checkpoints: [...(input.checkpoints ?? [])]
+    }));
     const stream = vi.spyOn(harness.adapter, "stream");
     const deps: RunPreparationDeps = { ...harness.deps,
       ...(input.knowledge ? { knowledgeAdmission: { load: async (admission: KnowledgeAdmissionInput) => admittedKnowledge(admission, "f") } } : {}),
@@ -4668,7 +4674,7 @@ describe("cross-turn compaction reuse", () => {
       ...(input.knowledge ? { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) } : {}) });
     const result = await prepareRun(deps, input.regenerate
       ? regenerateInput(body, { userMessage: { content: input.regenerate.content, id: input.regenerate.id } })
-      : sendInput(body, { activeLeafMessageId: null }));
+      : sendInput(body, { activeLeafMessageId: input.history.length > 0 ? "prior-user-message" : null }));
     return { loadBranchContextCheckpoints, result, stream };
   }
 
@@ -4749,8 +4755,7 @@ describe("cross-turn compaction reuse", () => {
     const prefix = history.slice(0, 2 * (turn + 1));
     const edited = await admit({ checkpoints, history: prefix, text: "Edited question." });
     expect(edited.loadBranchContextCheckpoints).toHaveBeenCalledWith({
-      assistantMessageIds: prefix.filter((message) => message.role === "assistant").map((message) => message.id),
-      chatId: "chat-1", userId: "user-1"
+      chatId: "chat-1", leafMessageId: "prior-user-message", userId: "user-1"
     });
     expect(edited.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({
       coveredMessageId: `u${turn}`, runId: `run-${turn + 1}`
@@ -4766,6 +4771,47 @@ describe("cross-turn compaction reuse", () => {
     const fresh = noteTaker();
     await compact(siblingsOnly.prepared, fresh);
     expect(fresh.inputs.length).toBeGreaterThan(0);
+  });
+
+  it("carries the committed notes of an answer that failed afterwards, found through the branch ancestry", async () => {
+    const { calls, checkpoints, history } = await converse(10);
+    const turn = calls.lastIndexOf(1) + 1;
+    expect(turn).toBeGreaterThan(1);
+    const failed = checkpoints.find((checkpoint) => checkpoint.runId === `run-${turn}`)!;
+    expect(failed.compaction.summaryAttempts?.some((attempt) => attempt.state === "committed")).toBe(true);
+    // Run `turn` committed its notes, then its answer round failed (a provider
+    // error, an unknown round outcome after a restart or an unknown later
+    // summary): the errored answer is left out of the provider context, yet it
+    // is the parent of the next question on this branch.
+    const earlier = checkpoints.filter((checkpoint) => Number(checkpoint.runId.slice("run-".length)) <= turn);
+    const branch = history.slice(0, 2 * turn);
+    const context = branch.slice(0, -1);
+    const ancestry = branch.map((message) => message.id);
+    const admitted = await admit({ ancestry, checkpoints: earlier, history: context });
+    expect(admitted.stream).not.toHaveBeenCalled();
+    expect(admitted.prepared.normalizedRequest.context?.messages).toHaveLength(context.length + 1);
+    expect(admitted.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({
+      coveredMessageId: `u${turn}`, runId: `run-${turn}`
+    });
+    // The request fits with the carried notes: nothing is bought.
+    const notes = noteTaker();
+    const compacted = await compact(admitted.prepared, notes);
+    expect(notes.inputs).toEqual([]);
+    expect(compacted.contextCompactionSummary?.id).toBe(failed.compaction.summary!.id);
+    // Candidates taken from the provider context alone would miss that answer.
+    const contextOnly = await admit({ ancestry: context.map((message) => message.id), checkpoints: earlier, history: context });
+    expect(contextOnly.prepared.normalizedRequest.contextCompactionPolicy?.reuse?.runId).not.toBe(`run-${turn}`);
+    // A failed run without a committed receipt is still not a candidate.
+    const uncommitted = earlier.map((checkpoint) => checkpoint !== failed ? checkpoint : { ...checkpoint,
+      compaction: { ...checkpoint.compaction, summaryAttempts: checkpoint.compaction.summaryAttempts!
+        .map((attempt) => ({ ...attempt, state: "unknown" as const })) } });
+    const unproven = await admit({ ancestry, checkpoints: uncommitted, history: context });
+    expect(unproven.prepared.normalizedRequest.contextCompactionPolicy?.reuse?.runId).not.toBe(`run-${turn}`);
+    // A failed sibling answer (a retry of the same question) is still excluded.
+    const siblings = earlier.map((checkpoint) => checkpoint !== failed ? checkpoint
+      : { ...checkpoint, assistantMessageId: `a${turn}-retry` });
+    const sibling = await admit({ ancestry, checkpoints: siblings, history: context });
+    expect(sibling.prepared.normalizedRequest.contextCompactionPolicy?.reuse?.runId).not.toBe(`run-${turn}`);
   });
 
   it("rechecks the admitted binding after a model change and never carries notes that do not fit", async () => {

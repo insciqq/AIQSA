@@ -1424,47 +1424,74 @@ export function createPrismaRunToolLoopOperations(
       });
     },
     loadBranchContextCheckpoints: async (input) => {
-      const answerIds = [...new Set(input.assistantMessageIds)].slice(-CONTEXT_COMPACTION_LIMITS.reuseCandidateAnswers);
-      if (answerIds.length === 0) return [];
-      // Only the bounded compaction projection and accepted policy are read:
-      // never the provider continuation, tool transcript or run payloads.
+      // One bounded walk of the message parent chain from the accepted leaf,
+      // whatever each message's status: an answer that failed after its
+      // summary was committed is an ancestor of the next turn although it is
+      // not part of the provider context. Only ids of that chain and, for the
+      // newest answers on it, the bounded compaction projection and accepted
+      // policy are read: never message bodies, the provider continuation, the
+      // tool transcript or run payloads.
       // Knowledge runs keep the legacy guard: even a historical checkpoint of
       // one never supplies notes beside or after citation evidence. Settled
       // runs qualify; a failure that recovery may still resume qualifies only
       // through its committed receipt for exactly the checkpoint notes:
       // committed notes are final even when the run later failed.
       const rows = await prismaClient.$queryRaw<Array<{
-        assistantMessageId: string;
+        assistantMessageId: string | null;
         compaction: unknown;
-        id: string;
+        id: string | null;
+        messageId: string;
         policy: unknown;
-        userId: string;
-        userMessageId: string;
+        userId: string | null;
+        userMessageId: string | null;
       }>>(Prisma.sql`
-        SELECT r."id", r."userId", r."userMessageId", r."assistantMessageId",
-          r."toolLoopState" -> 'contextCompaction' AS "compaction",
-          r."normalizedRequest" -> 'contextCompactionPolicy' AS "policy"
-        FROM "ModelRun" AS r
-        WHERE r."chatId" = ${input.chatId} AND r."userId" = ${input.userId}
-          AND r."assistantMessageId" IN (${Prisma.join(answerIds)})
-          AND r."status" IN ('complete', 'cancelled', 'error')
-          AND r."toolLoopState" -> 'contextCompaction' -> 'summary' IS NOT NULL
-          AND COALESCE(r."normalizedRequest" #>> '{knowledgePlan,mode}', 'none') = 'none'
-          AND (NOT ${activeToolLoopRunSql("r")} OR COALESCE(
-            r."toolLoopState" -> 'contextCompaction' -> 'summaryAttempts' @> jsonb_build_array(jsonb_build_object(
-              'state', 'committed',
-              'sourceDigest', r."toolLoopState" -> 'contextCompaction' -> 'summary' -> 'sourceDigest'
-            )), false))
-        ORDER BY r."createdAt" DESC, r."id" DESC
-        LIMIT 8
+        WITH RECURSIVE "ancestry" AS (
+          SELECT m."id", m."parentMessageId", m."role", 0 AS "depth", ARRAY[m."id"]::text[] AS "visitedIds"
+          FROM "Message" AS m WHERE m."chatId" = ${input.chatId} AND m."id" = ${input.leafMessageId}
+          UNION ALL
+          SELECT parent."id", parent."parentMessageId", parent."role", child."depth" + 1, child."visitedIds" || parent."id"
+          FROM "ancestry" AS child
+          INNER JOIN "Message" AS parent ON parent."chatId" = ${input.chatId} AND parent."id" = child."parentMessageId"
+          WHERE NOT parent."id" = ANY(child."visitedIds")
+        ), "answers" AS (
+          SELECT "id", "depth" FROM "ancestry" WHERE "role" = 'assistant'
+          ORDER BY "depth" ASC LIMIT ${Prisma.raw(String(CONTEXT_COMPACTION_LIMITS.reuseCandidateAnswers))}
+        ), "candidates" AS (
+          SELECT r."id", r."userId", r."userMessageId", r."assistantMessageId", r."createdAt",
+            r."toolLoopState" -> 'contextCompaction' AS "compaction",
+            r."normalizedRequest" -> 'contextCompactionPolicy' AS "policy"
+          FROM "answers" AS a
+          INNER JOIN "ModelRun" AS r ON r."assistantMessageId" = a."id"
+          WHERE r."chatId" = ${input.chatId} AND r."userId" = ${input.userId}
+            AND r."status" IN ('complete', 'cancelled', 'error')
+            AND r."toolLoopState" -> 'contextCompaction' -> 'summary' IS NOT NULL
+            AND COALESCE(r."normalizedRequest" #>> '{knowledgePlan,mode}', 'none') = 'none'
+            AND (NOT ${activeToolLoopRunSql("r")} OR COALESCE(
+              r."toolLoopState" -> 'contextCompaction' -> 'summaryAttempts' @> jsonb_build_array(jsonb_build_object(
+                'state', 'committed',
+                'sourceDigest', r."toolLoopState" -> 'contextCompaction' -> 'summary' -> 'sourceDigest'
+              )), false))
+          ORDER BY a."depth" ASC, r."createdAt" DESC, r."id" DESC
+          LIMIT 8
+        )
+        SELECT path."id" AS "messageId", c."id", c."userId", c."userMessageId", c."assistantMessageId",
+          c."compaction", c."policy"
+        FROM "ancestry" AS path
+        LEFT JOIN "candidates" AS c ON c."assistantMessageId" = path."id"
+        ORDER BY path."depth" DESC, c."createdAt" DESC NULLS LAST, c."id" DESC NULLS LAST
       `);
-      return rows.flatMap((row): BranchContextCheckpoint[] => {
+      const ancestorMessageIds: string[] = [];
+      const checkpoints: BranchContextCheckpoint[] = [];
+      for (const row of rows) {
+        if (ancestorMessageIds.at(-1) !== row.messageId) ancestorMessageIds.push(row.messageId);
+        if (row.id === null || row.userId === null || row.userMessageId === null || row.assistantMessageId === null) continue;
         const compaction = decodeContextCompactionCheckpoint(row.compaction);
         const policy = row.policy === null || row.policy === undefined ? null : decodeConversationContextPolicy(row.policy);
-        if (!compaction || row.policy !== null && row.policy !== undefined && !policy) return [];
-        return [{ assistantMessageId: row.assistantMessageId, compaction, policy, runId: row.id,
-          userId: row.userId, userMessageId: row.userMessageId }];
-      });
+        if (!compaction || row.policy !== null && row.policy !== undefined && !policy) continue;
+        checkpoints.push({ assistantMessageId: row.assistantMessageId, compaction, policy, runId: row.id,
+          userId: row.userId, userMessageId: row.userMessageId });
+      }
+      return { ancestorMessageIds, checkpoints };
     },
     loadCheckpointedToolLoopRun: async (input) => {
       const run = await prismaClient.modelRun.findFirst({

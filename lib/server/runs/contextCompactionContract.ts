@@ -191,11 +191,24 @@ export type BranchContextCheckpoint = Readonly<{
 }>;
 
 /**
+ * The branch as preparation sees it for carried notes: the message parent
+ * chain of the accepted leaf, oldest first and whatever each message's status,
+ * with the checkpoints of the newest answers on it. A failed answer is not part
+ * of the provider context, yet it stays an ancestor of the next turn.
+ */
+export type BranchContextCheckpoints = Readonly<{
+  ancestorMessageIds: readonly string[];
+  checkpoints: readonly BranchContextCheckpoint[];
+}>;
+
+/**
  * Carried-notes candidates, newest answer first. A checkpoint qualifies only
  * when it belongs to the current user, holds hybrid notes of the current
  * format, and its answer and coverage boundary are prior messages of this
  * branch in that order, so edits, forks and regeneration never see sibling
- * notes. A run accepted without the hybrid policy (Off, legacy or Knowledge)
+ * notes. `priorMessageIds` is the branch ancestry, not the provider context:
+ * an answer that failed after committing its notes stays a candidate. A run
+ * accepted without the hybrid policy (Off, legacy or Knowledge)
  * never supplies notes. Notes a run bought cover its branch through its own
  * user message; notes it carried keep their frozen boundary. Only the notes
  * travel: provider continuations, response ids and receipts of that run
