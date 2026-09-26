@@ -51,7 +51,8 @@ async function submitLogin(page: Page, user: Credentials): Promise<void> {
 async function signInWithPassword(page: Page, user: Credentials): Promise<void> {
   await page.goto("/login");
   await submitLogin(page, user);
-  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
+  // Password verification alone can take most of this on a cold development server.
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 60_000 });
 }
 
 async function chooseChat(page: Page, title: string): Promise<void> {
@@ -362,11 +363,14 @@ test("Control Center returns to the chat it was opened from", async ({ page, con
     await expect(controlCenter).toHaveAttribute("href", `/admin?return=%2Fc%2F${chatId}`);
     await controlCenter.click();
     await expect(page.getByTestId("admin-shell")).toBeVisible({ timeout: 30_000 });
+    // Control Center links carry its address only once it is interactive.
+    const chats = page.getByTestId("admin-rail").getByRole("link", { name: "Chats" });
+    await expect(chats).toHaveAttribute("href", `/c/${chatId}`);
     await page.getByTestId("admin-nav-users").click();
     await expect(page).toHaveURL(/section=users/u);
     expect(new URL(page.url()).searchParams.get("return")).toBe(`/c/${chatId}`);
     await page.screenshot({ path: testInfo.outputPath("routing-control-center-dark-1440.png") });
-    await page.getByTestId("admin-rail").getByRole("link", { name: "Chats" }).click();
+    await chats.click();
     await expect(page).toHaveURL(exactPath(`/c/${chatId}`), { timeout: 30_000 });
     await expect(page.getByTestId("header-title")).toHaveText(title);
 
