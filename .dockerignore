@@ -3,6 +3,8 @@
 .codex
 DEV_SERVER.md
 AGENTS.override.md
+.claude
+CLAUDE.local.md
 .aiqsa
 node_modules
 .next
