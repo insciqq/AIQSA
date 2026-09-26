@@ -34,34 +34,52 @@ import type {
 
 const REFRESH_SKEW_MS = 60_000;
 const MAX_AUTHORIZATION_URL_BYTES = 8 * 1_024;
-const MAX_OAUTH_TOKEN_RESPONSE_BYTES = 512 * 1_024;
-const OAUTH_TOKEN_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_OAUTH_RESPONSE_BYTES = 512 * 1_024;
+const OAUTH_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_REVOCATION_PASSES = 3;
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
-async function readBoundedOAuthResponse(response: Response): Promise<string> {
+// Every authorization-server response, including the ones the SDK parses with
+// response.json(), passes through this byte bound before it is buffered.
+function boundedOAuthResponse(response: Response): Response {
+  if (!response.body || NULL_BODY_STATUSES.has(response.status)) return response;
   const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_OAUTH_TOKEN_RESPONSE_BYTES) {
-    await response.body?.cancel().catch(() => undefined);
+  if (Number.isFinite(contentLength) && contentLength > MAX_OAUTH_RESPONSE_BYTES) {
+    void response.body.cancel().catch(() => undefined);
     throw new McpOAuthError("mcp_oauth_authorization_failed");
   }
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
   let bytes = 0;
-  let body = "";
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      bytes += chunk.value.byteLength;
-      if (bytes > MAX_OAUTH_TOKEN_RESPONSE_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw new McpOAuthError("mcp_oauth_authorization_failed");
+  const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      bytes += chunk.byteLength;
+      if (bytes > MAX_OAUTH_RESPONSE_BYTES) {
+        controller.error(new McpOAuthError("mcp_oauth_authorization_failed"));
+        return;
       }
-      body += decoder.decode(chunk.value, { stream: true });
+      controller.enqueue(chunk);
     }
-    return body + decoder.decode();
+  }));
+  return new Response(body, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText
+  });
+}
+
+// Settles on the deadline even when the underlying fetch or SDK call ignores
+// its signal, so a stalled authorization server cannot pin a singleflight.
+async function withinDeadline<T>(signal: AbortSignal, operation: Promise<T>): Promise<T> {
+  operation.catch(() => undefined);
+  if (signal.aborted) throw new McpOAuthError("mcp_oauth_authorization_failed");
+  let onAbort: () => void = () => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new McpOAuthError("mcp_oauth_authorization_failed"));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, aborted]);
   } finally {
-    reader.releaseLock();
+    signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -433,14 +451,19 @@ export class McpOAuthService {
   readonly allowInsecureHttp: boolean;
   readonly #fetchForPolicy: (policy: McpOAuthPolicy) => FetchLike;
   readonly #now: () => Date;
-  readonly #refreshes = new Map<string, Promise<OAuthTokens>>();
+  readonly #refreshes = new Map<string, Readonly<{
+    abort: AbortController;
+    promise: Promise<OAuthTokens>;
+  }>>();
   readonly #repository: McpOAuthRepository;
+  readonly #requestTimeoutMs: number;
 
   constructor(input: Readonly<{
     repository: McpOAuthRepository;
     allowInsecureHttp?: boolean;
     fetchForPolicy?: (policy: McpOAuthPolicy) => FetchLike;
     now?: () => Date;
+    requestTimeoutMs?: number;
   }>) {
     this.#repository = input.repository;
     this.allowInsecureHttp = input.allowInsecureHttp ?? true;
@@ -449,6 +472,7 @@ export class McpOAuthService {
       allowPrivateNetwork: policy.allowPrivateNetwork
     }));
     this.#now = input.now ?? (() => new Date());
+    this.#requestTimeoutMs = input.requestTimeoutMs ?? OAUTH_REQUEST_TIMEOUT_MS;
   }
 
   async startAuthorization(input: Readonly<{
@@ -464,11 +488,15 @@ export class McpOAuthService {
       : await this.#repository.loadPolicy(input);
     if (!loadedPolicy) throw new McpOAuthError("mcp_oauth_not_available");
     this.#validatePolicy(loadedPolicy);
-    const fetchFn = this.#oauthFetch(loadedPolicy);
+    const deadline = this.#deadline();
+    const fetchFn = this.#oauthFetch(loadedPolicy, deadline);
     let discovered: OAuthDiscoveryState;
     let policy: McpOAuthPolicy;
     try {
-      discovered = discoveryState(await discoverOAuthServerInfo(loadedPolicy.serverUrl, { fetchFn }));
+      discovered = discoveryState(await withinDeadline(
+        deadline,
+        discoverOAuthServerInfo(loadedPolicy.serverUrl, { fetchFn })
+      ));
       policy = policyForDiscovery(loadedPolicy, discovered);
       this.#validatePolicy(policy);
       validateDiscovery(discovered, policy, this.allowInsecureHttp);
@@ -513,11 +541,11 @@ export class McpOAuthService {
           client_id: policy.clientIdMetadataDocumentUrl
         });
       }
-      const result = await auth(provider, {
+      const result = await withinDeadline(deadline, auth(provider, {
         fetchFn,
         scope: policy.requestedScopes.join(" ") || undefined,
         serverUrl: policy.serverUrl
-      });
+      }));
       if (result !== "REDIRECT" || !provider.authorizationUrl ||
         !provider.capturedCodeVerifier || !provider.client) {
         throw new McpOAuthError("mcp_oauth_authorization_failed");
@@ -579,6 +607,7 @@ export class McpOAuthService {
       repository: this.#repository,
       service: this
     });
+    const deadline = this.#deadline();
     try {
       if (this.#tokenEndpoint(client.discoveryState, policy).protocol === "http:") {
         // SDK v2 intentionally refuses non-loopback HTTP token endpoints. AIQSA's
@@ -591,7 +620,7 @@ export class McpOAuthService {
           issParameterSupported:
             metadata?.authorization_response_iss_parameter_supported === true
         });
-        await provider.saveTokens(await this.#requestTokens({
+        await provider.saveTokens(await withinDeadline(deadline, this.#requestTokens({
           client: client.clientInformation,
           discoveryState: client.discoveryState,
           parameters: new URLSearchParams({
@@ -600,16 +629,17 @@ export class McpOAuthService {
             grant_type: "authorization_code",
             redirect_uri: policy.redirectUri
           }),
-          policy
-        }));
+          policy,
+          signal: deadline
+        })));
       } else {
-        const result = await auth(provider, {
+        const result = await withinDeadline(deadline, auth(provider, {
           authorizationCode: input.authorizationCode,
-          fetchFn: this.#oauthFetch(policy),
+          fetchFn: this.#oauthFetch(policy, deadline),
           iss: input.issuer,
           scope: policy.requestedScopes.join(" ") || undefined,
           serverUrl: policy.serverUrl
-        });
+        }));
         if (result !== "AUTHORIZED") {
           throw new McpOAuthError("mcp_oauth_authorization_failed");
         }
@@ -657,11 +687,13 @@ export class McpOAuthService {
       throw new McpOAuthError("mcp_oauth_reauthorization_required");
     }
     const existing = this.#refreshes.get(connectionId);
-    if (existing) return existing;
-    const promise = this.#refresh(connection).finally(() => {
-      if (this.#refreshes.get(connectionId) === promise) this.#refreshes.delete(connectionId);
+    if (existing) return existing.promise;
+    const abort = new AbortController();
+    const deadline = this.#deadline(abort.signal);
+    const promise = withinDeadline(deadline, this.#refresh(connection, deadline)).finally(() => {
+      if (this.#refreshes.get(connectionId)?.promise === promise) this.#refreshes.delete(connectionId);
     });
-    this.#refreshes.set(connectionId, promise);
+    this.#refreshes.set(connectionId, { abort, promise });
     return promise;
   }
 
@@ -676,17 +708,32 @@ export class McpOAuthService {
   }
 
   async revokeConnectionIfDrained(connectionId: string): Promise<McpOAuthDisconnectResult> {
-    const connection = await this.#repository.loadConnection(connectionId);
-    if (!connection) return "not_found";
-    if (await this.#repository.hasActiveRunBindings(connectionId)) return "disconnecting";
-    try {
-      await this.#revoke(connection);
-    } catch {
-      return "disconnecting";
+    for (let pass = 0; pass < MAX_REVOCATION_PASSES; pass += 1) {
+      const connection = await this.#repository.loadConnection(connectionId);
+      if (!connection) return pass ? "disconnecting" : "not_found";
+      if (await this.#repository.hasActiveRunBindings(connectionId)) return "disconnecting";
+      // A drained disconnect stops any local refresh before revoking.
+      this.#refreshes.get(connectionId)?.abort.abort();
+      try {
+        await this.#revoke(connection);
+      } catch {
+        return "disconnecting";
+      }
+      if (await this.#repository.finalizeDisconnected({
+        connectionId,
+        tokenVersion: connection.tokenVersion
+      })) {
+        return "disconnected";
+      }
+      const current = await this.#repository.loadConnection(connectionId);
+      // Only a refresh that rotated after revocation earns another pass; its
+      // new generation must be revoked before the connection is cleared.
+      if (!current || current.state !== "disconnecting" ||
+        current.tokenVersion === connection.tokenVersion) {
+        return "disconnecting";
+      }
     }
-    return await this.#repository.finalizeDisconnected(connectionId)
-      ? "disconnected"
-      : "disconnecting";
+    return "disconnecting";
   }
 
   async reconcileDisconnecting(): Promise<void> {
@@ -755,8 +802,17 @@ export class McpOAuthService {
     return policyFetch(baseFetch, runtimePolicy, this.allowInsecureHttp);
   }
 
-  #oauthFetch(policy: McpOAuthPolicy): FetchLike {
-    return policyFetch(this.#fetchForPolicy(policy), policy, this.allowInsecureHttp);
+  #deadline(abort?: AbortSignal): AbortSignal {
+    const timeout = AbortSignal.timeout(this.#requestTimeoutMs);
+    return abort ? AbortSignal.any([timeout, abort]) : timeout;
+  }
+
+  #oauthFetch(policy: McpOAuthPolicy, deadline: AbortSignal): FetchLike {
+    const baseFetch = this.#fetchForPolicy(policy);
+    return policyFetch(async (input, init) => boundedOAuthResponse(await baseFetch(input, {
+      ...init,
+      signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline
+    })), policy, this.allowInsecureHttp);
   }
 
   #validatePolicy(policy: McpOAuthPolicy): void {
@@ -777,7 +833,7 @@ export class McpOAuthService {
     }
   }
 
-  async #refresh(connection: McpOAuthStoredConnection): Promise<OAuthTokens> {
+  async #refresh(connection: McpOAuthStoredConnection, deadline: AbortSignal): Promise<OAuthTokens> {
     const latest = await this.#repository.loadConnection(connection.id);
     if (!latest || !["ready", "disconnecting"].includes(latest.state)) {
       throw new McpOAuthError("mcp_oauth_reauthorization_required");
@@ -797,13 +853,14 @@ export class McpOAuthService {
               grant_type: "refresh_token",
               refresh_token: refreshToken
             }),
-            policy: latest.policy
+            policy: latest.policy,
+            signal: deadline
           }).then((refreshed) => refreshed.refresh_token
             ? refreshed
             : { ...refreshed, refresh_token: refreshToken })
         : await refreshAuthorization(latest.client.discoveryState.authorizationServerUrl, {
             clientInformation: latest.client.clientInformation,
-            fetchFn: this.#oauthFetch(latest.policy),
+            fetchFn: this.#oauthFetch(latest.policy, deadline),
             metadata: latest.client.discoveryState.authorizationServerMetadata,
             refreshToken,
             resource: new URL(latest.policy.resource)
@@ -813,7 +870,12 @@ export class McpOAuthService {
         expectedTokenVersion: latest.tokenVersion,
         tokens
       });
-      if (!rotated) throw new McpOAuthError("mcp_oauth_reauthorization_required");
+      if (!rotated || !["ready", "disconnecting"].includes(rotated.state)) {
+        // The connection finished disconnecting while this refresh was in
+        // flight: the new generation was never stored, so revoke it here.
+        if (!rotated) await this.#revoke({ ...latest, tokens }).catch(() => undefined);
+        throw new McpOAuthError("mcp_oauth_reauthorization_required");
+      }
       return rotated.tokens;
     } catch (error) {
       if (error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant) {
@@ -864,6 +926,8 @@ export class McpOAuthService {
         ? { hint: "refresh_token", token: connection.tokens.refresh_token }
         : null
     ].filter((value): value is { hint: string; token: string } => Boolean(value));
+    const deadline = this.#deadline();
+    const fetchFn = this.#oauthFetch(connection.policy, deadline);
     for (const token of tokens) {
       const body = new URLSearchParams({ token: token.token, token_type_hint: token.hint });
       const headers = new Headers({
@@ -876,11 +940,11 @@ export class McpOAuthService {
         headers,
         body
       );
-      const response = await this.#oauthFetch(connection.policy)(endpoint, {
+      const response = await withinDeadline(deadline, fetchFn(endpoint, {
         body,
         headers,
         method: "POST"
-      });
+      }));
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
         throw new McpOAuthError("mcp_oauth_authorization_failed");
@@ -902,6 +966,7 @@ export class McpOAuthService {
     discoveryState: OAuthDiscoveryState;
     parameters: URLSearchParams;
     policy: McpOAuthPolicy;
+    signal: AbortSignal;
   }>): Promise<OAuthTokens> {
     const endpoint = this.#tokenEndpoint(input.discoveryState, input.policy);
     const headers = new Headers({
@@ -918,13 +983,12 @@ export class McpOAuthService {
       headers,
       parameters
     );
-    const response = await this.#oauthFetch(input.policy)(endpoint, {
+    const response = await this.#oauthFetch(input.policy, input.signal)(endpoint, {
       body: parameters,
       headers,
-      method: "POST",
-      signal: AbortSignal.timeout(OAUTH_TOKEN_REQUEST_TIMEOUT_MS)
+      method: "POST"
     });
-    const body = await readBoundedOAuthResponse(response);
+    const body = await response.text();
     if (!response.ok) throw await parseErrorResponse(body);
     let payload: unknown;
     try {

@@ -15,7 +15,14 @@ import {
   resolveEffectiveMcpValues,
   type EffectiveMcpSlotPlanItem
 } from "./access";
-import { validateMcpDraft, validateMcpSlotValue } from "./definitions";
+import {
+  mcpEndpointBinding,
+  mcpValuesForEndpoint,
+  parseMcpEndpointBindings,
+  validateMcpDraft,
+  validateMcpSlotValue,
+  type McpEndpointBinding
+} from "./definitions";
 import {
   decryptMcpEnvelope,
   encryptMcpEnvelope,
@@ -55,9 +62,12 @@ function isSlotValue(value: unknown): value is McpSlotValue {
     (typeof value === "number" && Number.isFinite(value));
 }
 
+// Launch uses only values entered for the active revision's origin. Unbound
+// legacy values belong to it: publication to another origin pins them first.
 function storedValues(
   envelope: string | null,
   key: Buffer,
+  endpoint: McpEndpointBinding,
   context?: McpEnvelopeContext
 ): StoredValues {
   if (!envelope) return { values: {}, version: 1 };
@@ -68,12 +78,17 @@ function storedValues(
     !decoded.values || typeof decoded.values !== "object" || Array.isArray(decoded.values)) {
     throw runtimeConfigurationError("mcp_values_invalid");
   }
+  const bindings = parseMcpEndpointBindings("endpoints" in decoded ? decoded.endpoints : undefined);
+  if (!bindings) throw runtimeConfigurationError("mcp_values_invalid");
   const values: Record<string, McpSlotValue> = {};
   for (const [slotKey, value] of Object.entries(decoded.values)) {
     if (!isSlotValue(value)) throw runtimeConfigurationError("mcp_values_invalid");
     values[slotKey] = value;
   }
-  return { values, version: 1 };
+  return {
+    values: mcpValuesForEndpoint({ bindings, implicit: endpoint, target: endpoint, values }),
+    version: 1
+  };
 }
 
 function storedEffectiveSnapshot(
@@ -237,9 +252,11 @@ function effectiveRuntimeCandidate(input: {
   const groups = input.record.server.grants.filter((grant) => grant.groupId && groupIds.includes(grant.groupId));
   const access = resolveEffectiveMcpGrant({ direct, groups });
   if (!access.canUse) return null;
+  const endpoint = mcpEndpointBinding(configuration);
   const shared = storedValues(
     input.record.server.sharedConfigEnvelope,
     input.key,
+    endpoint,
     input.record.server.sharedConfigEnvelope
       ? mcpSharedConfigEnvelopeContext(
           input.record.server.id,
@@ -250,6 +267,7 @@ function effectiveRuntimeCandidate(input: {
   const personal = storedValues(
     input.record.personalConfigEnvelope,
     input.key,
+    endpoint,
     input.record.personalConfigEnvelope
       ? mcpPersonalConfigEnvelopeContext(input.record.id, input.record.personalConfigVersion)
       : undefined
