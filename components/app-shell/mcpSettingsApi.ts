@@ -200,3 +200,14 @@ export async function disconnectUserMcpServer(serverId: string): Promise<"discon
 export function userMcpOAuthAction(serverId: string, reconnect: boolean): string {
   return `/api/me/mcp/${encodeURIComponent(serverId)}/oauth/${reconnect ? "reconnect" : "connect"}`;
 }
+
+/**
+ * The OAuth start request names the chat route its outcome returns to; the
+ * server validates it and treats a missing one as the new chat.
+ */
+export function withMcpOAuthReturn(action: string, returnPath: string): string {
+  if (returnPath === "/") return action;
+  const url = new URL(action, "https://aiqsa.invalid");
+  url.searchParams.set("return", returnPath);
+  return `${url.pathname}${url.search}`;
+}

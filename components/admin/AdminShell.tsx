@@ -1,4 +1,3 @@
-/* eslint-disable @next/next/no-html-link-for-pages -- Control Center exits are full-document navigations so the native beforeunload guard owns document-level draft safety. */
 "use client";
 
 import {
@@ -20,6 +19,7 @@ import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { AccountMenuV2 } from "@/features/navigation-v2/AccountMenuV2";
 import type { AdminReleaseStatus } from "@/lib/contracts/adminRelease";
+import { chatReturnPath } from "@/lib/domain/chatRoute";
 import { ArrowUpCircle } from "lucide-react";
 import {
   createContext,
@@ -200,6 +200,11 @@ function SectionLink({
   );
 }
 
+/**
+ * Chats returns to the validated chat route Control Center was opened from.
+ * It is a full-document navigation so the native beforeunload guard owns
+ * document-level draft safety.
+ */
 function ChatsLink({
   className,
   onClick,
@@ -209,6 +214,10 @@ function ChatsLink({
   onClick?(event: MouseEvent<HTMLAnchorElement>): void;
   variant: "rail" | "row";
 }>) {
+  const browserReady = useSyncExternalStore(subscribeToBrowser, browserSnapshot, serverSnapshot);
+  const href = browserReady
+    ? chatReturnPath(new URLSearchParams(window.location.search).get("return"))
+    : "/";
   if (variant === "rail") {
     return (
       <a
@@ -216,7 +225,7 @@ function ChatsLink({
         className={`v2-rail-button v2-focusable ${className ?? ""}`.trim()}
         data-tooltip="Chats"
         data-tooltip-side="right"
-        href="/"
+        href={href}
         onClick={onClick}
       >
         <UiV2Icon name="chat" />
@@ -224,7 +233,7 @@ function ChatsLink({
     );
   }
   return (
-    <a className={`v2-navigation-destination v2-focusable ${className ?? ""}`.trim()} href="/" onClick={onClick}>
+    <a className={`v2-navigation-destination v2-focusable ${className ?? ""}`.trim()} href={href} onClick={onClick}>
       <UiV2Icon name="chat" />
       Chats
     </a>

@@ -1,4 +1,5 @@
 import { decodeMemorySourceActionInput } from "../../../contracts/memoryClient";
+import { chatRouteHref } from "../../../domain/chatRoute";
 import { resolveRequestAuth } from "../../auth/defaultAuth";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import type { LoginRateLimiter } from "../../auth/rateLimit";
@@ -97,8 +98,10 @@ export function createMemorySourceNavigationHandler(
     }
     try {
       const target = await deps.service.resolveOpenSource(session.userId, memoryRef);
-      const query = new URLSearchParams({ chat: target.chatId, message: target.messageId });
-      return navigationRedirect(`/?${query.toString()}`);
+      return navigationRedirect(chatRouteHref(
+        { chatId: target.chatId, projectId: null },
+        new URLSearchParams({ message: target.messageId })
+      ));
     } catch {
       return navigationRedirect(MEMORY_SOURCE_UNAVAILABLE_LOCATION);
     }

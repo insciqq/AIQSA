@@ -44,7 +44,7 @@ describe("opening a continuation", () => {
   afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); resetComposerControlStoreForTest(); window.history.replaceState(null, "", "/"); });
 
   it("opens the summary, preserves controls and moves current text and attachments with their handoff", async () => {
-    window.history.replaceState(null, "", "/?chat=chat-a&message=source-message&artifactEdit=edit&artifactId=artifact&versionId=version");
+    window.history.replaceState(null, "", "/c/chat-a?message=source-message&artifactEdit=edit&artifactId=artifact&versionId=version&library=mcp");
     const attachments: ComposerAttachment[] = [{ id: "one", fileName: "one.pdf", kind: "pdf" }, { id: "two", fileName: "two.pdf", kind: "pdf" }];
     const setup = useWorkspaceActionsForTest({ attachments, draft: "Unsent source draft" });
     const source = composerSessionKey("chat-a");
@@ -66,7 +66,8 @@ describe("opening a continuation", () => {
     await expect(opening).resolves.toBe(true);
     expect(fetch).not.toHaveBeenCalled();
     expect(useWorkspaceStore.getState().activeChatId).toBe("continuation");
-    expect(window.location.search).toBe("?chat=continuation");
+    // The new chat's address drops the source chat's one-shot parameters.
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/c/continuation?library=mcp");
     expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === "continuation")).toMatchObject({ memoryMode: "TEMPORARY", hasContinuationSource: true });
     expect(useWorkspaceStore.getState().navigationChats.some((chat) => chat.id === "continuation")).toBe(false);
     expect(setup.session(source)).toMatchObject({ draft: "", attachments: [] });
@@ -935,6 +936,74 @@ describe("workspace actions", () => {
       expect(useWorkspaceStore.getState().navigationChats.map((chat) => chat.id).sort())
         .toEqual(["chat-a", "chat-b"]);
     });
+  });
+
+  it("addresses what it activates by replacing the URL, never through browser storage", async () => {
+    window.history.replaceState(null, "", "/");
+    const historyLength = window.history.length;
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ chat: apiChatDetail(state.chatB, []) })));
+    await state.actions.activateChat(state.chatB);
+    expect(window.location.pathname).toBe("/c/chat-b");
+    state.actions.activateBlankWorkspace("folder-1");
+    expect(window.location.pathname).toBe("/");
+    state.actions.activateBlankWorkspace(null, "NORMAL", "project-1");
+    expect(window.location.pathname).toBe("/p/project-1");
+    await state.actions.activateChat(chat({ id: "project-chat", projectId: "project-1", title: "Project chat" }));
+    expect(window.location.pathname).toBe("/p/project-1/c/project-chat");
+    expect(window.history.length).toBe(historyLength);
+    expect(window.localStorage.length).toBe(0);
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("addresses a first-send chat while it is sent and keeps an unsent draft on the new chat", async () => {
+    window.history.replaceState(null, "", "/");
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    const sourceKey = composerSessionKey(null);
+    state.actions.activateBlankWorkspace();
+    useComposerControlStore.setState({ selectedModelId: "gpt-5.5", selectedProvider: "openai" });
+    useComposerSessionStore.getState().updateSession(sourceKey, { draft: "First question" });
+    expect(useComposerSessionStore.getState().beginSend(sourceKey)).not.toBeNull();
+    const created = await state.actions.createPersonalChatForSend(null, sourceKey);
+    expect(window.location.pathname).toBe(`/c/${created!.id}`);
+
+    const draftKey = composerSessionKey(null, null, "EXCLUDED");
+    state.actions.activateBlankWorkspace(null, "EXCLUDED");
+    useComposerSessionStore.getState().updateSession(draftKey, { draft: "Not sent yet" });
+    const unsent = await state.actions.createPersonalChatForSend(null, draftKey);
+    expect(useWorkspaceStore.getState().activeChatId).toBe(unsent!.id);
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("reports an unlisted refresh target and drops a superseded refresh", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats"
+      ? Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] })
+      : Response.json({ error: "not_found" }, { status: 404 })));
+    const onTargetUnavailable = vi.fn();
+    await state.actions.refreshWorkspace("missing-chat", { onTargetUnavailable });
+    expect(onTargetUnavailable).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+
+    await state.actions.refreshWorkspace(state.chatA.id, { isCurrent: () => false, onTargetUnavailable });
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+    expect(onTargetUnavailable).toHaveBeenCalledOnce();
+    await state.actions.refreshWorkspace(state.chatA.id, { onTargetUnavailable });
+    expect(useWorkspaceStore.getState().activeChatId).toBe(state.chatA.id);
+  });
+
+  it("finds a readable chat's Project without admitting it to the personal workspace", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const project = chat({ activeLeafMessageId: "project-message", id: "project-chat", messageCount: 1, projectId: "project-1", title: "Project" });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats/project-chat"
+      ? Response.json({ chat: { ...apiChatDetail(project, [message({ id: "project-message" })]), projectId: "project-1" } })
+      : String(input) === "/api/chats/chat-b"
+        ? Response.json({ chat: apiChatDetail(state.chatB, []) })
+        : Response.json({ error: "not_found" }, { status: 404 })));
+    await expect(state.actions.resolveChatProjectId("project-chat")).resolves.toBe("project-1");
+    await expect(state.actions.resolveChatProjectId("chat-b")).resolves.toBeNull();
+    await expect(state.actions.resolveChatProjectId("foreign-chat")).resolves.toBeNull();
+    expect(state.chats().map((candidate) => candidate.id)).not.toContain("project-chat");
   });
 
   it("activates a blank workspace without creating a persisted chat", () => {
