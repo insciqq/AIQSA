@@ -1408,7 +1408,11 @@ function deferred<Value>() {
   return { promise, resolve };
 }
 
-function captureRunObservation() {
+/** Captures the runtime logger's JSON lines. The shared writer drops records
+ * while the real stdout is backpressured (a slow pipe of a whole-suite run), so
+ * the stream is flushed before the spy replaces its `write`. */
+async function captureRunObservation() {
+  await new Promise<void>((resolve) => { process.stdout.write("", () => resolve()); });
   const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   return {
     records: () => writer.mock.calls.flatMap(([chunk]) => {
@@ -3181,7 +3185,7 @@ describe("run execution", () => {
   });
 
   it("settles a stream safety failure terminally with exact safe classification and partial text", async () => {
-    const warning = captureRunObservation();
+    const warning = await captureRunObservation();
     const repository = createRepository();
     const adapter = createAdapter(async function* () {
       yield { data: { delta: "partial" }, type: "token" };
@@ -3316,7 +3320,7 @@ describe("run execution", () => {
   });
 
   it("persists an ordinary failed provider draft without executing absent tool calls", async () => {
-    const warning = captureRunObservation();
+    const warning = await captureRunObservation();
     let answerRounds = 0;
     const repository = createRepository({
       usagePersistenceError: new Error("usage_persistence_unavailable")
@@ -6830,7 +6834,7 @@ describe("run execution diagnostics", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it.each([true, false])("reports completion only when guarded persistence applies (%s)", async (completionWins) => {
-    const observation = captureRunObservation();
+    const observation = await captureRunObservation();
     const repository = createRepository({ completionWins });
     const traceId = "1".repeat(32);
     const response = runWithContext({ trace_id: traceId }, () => createRunExecutionResponse(executionInput({
@@ -6852,7 +6856,7 @@ describe("run execution diagnostics", () => {
   });
 
   it.each(["grounding", "pricing", "write"] as const)("reports a completion write failure only after completeRun is attempted (%s)", async (stage) => {
-    const observation = captureRunObservation();
+    const observation = await captureRunObservation();
     const error = stage === "grounding" ? new Error("PRIVATE_GROUNDING_CANARY")
       : new Prisma.PrismaClientInitializationError("PRIVATE_DATABASE_CANARY", "test", "P1001");
     const repository = createRepository(stage === "grounding" ? { groundingError: error } : {});
@@ -6886,7 +6890,7 @@ describe("run execution diagnostics", () => {
   });
 
   it("keeps the original provider failure when failRun also fails and never reports a confirmed terminal", async () => {
-    const observation = captureRunObservation();
+    const observation = await captureRunObservation();
     const repository = createRepository();
     const databaseError = new Error("PRIVATE_SQL_VALUES_CANARY");
     rememberDatabaseFailure(databaseError, "P1001");
@@ -6913,7 +6917,7 @@ describe("run execution diagnostics", () => {
   });
 
   it("correlates a separate Stop trace while cancellation handling retains the original run trace", async () => {
-    const observation = captureRunObservation();
+    const observation = await captureRunObservation();
     const waiting = deferred<void>();
     const repository = createRepository();
     const adapter = createAdapter(async function* (_request, options) {
