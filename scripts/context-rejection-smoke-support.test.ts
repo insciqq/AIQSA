@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { contextRejectionDiagnostics, maskedDiagnostic, providerErrorFromBody } from "./context-rejection-smoke-support";
+import {
+  contextRejectionDiagnostics,
+  isGeminiGenericOverflowEnvelope,
+  maskedDiagnostic,
+  providerErrorFromBody
+} from "./context-rejection-smoke-support";
 
 describe("context-rejection smoke diagnostics", () => {
   it("masks every digit and bounds the sentence", () => {
@@ -25,6 +30,20 @@ describe("context-rejection smoke diagnostics", () => {
     expect(providerErrorFromBody("data: {\"type\":\"error\",\"code\":\"c\",\"message\":\"m\"}\n\n"))
       .toEqual({ code: "c", message: "m", type: "error" });
     expect(providerErrorFromBody("<html>busy</html>")).toBeNull();
+  });
+
+  it("recognizes only Gemini's exact generic overflow envelope", () => {
+    const generic = { error: { code: "invalid_request", message: "Invalid input received." } };
+    expect(isGeminiGenericOverflowEnvelope(400, JSON.stringify(generic))).toBe(true);
+    expect(isGeminiGenericOverflowEnvelope(400, JSON.stringify([generic]))).toBe(true);
+    for (const [status, body] of [
+      [500, generic],
+      [null, generic],
+      [400, { error: { code: "invalid_request", message: "Invalid input received. Unknown name \"maxItems\"." } }],
+      [400, { error: { code: "parameter_unknown", message: "Invalid input received." } }],
+      [400, { error: { code: 400, message: "Invalid input received.", status: "INVALID_ARGUMENT" } }]
+    ] as const) expect(isGeminiGenericOverflowEnvelope(status, JSON.stringify(body))).toBe(false);
+    expect(isGeminiGenericOverflowEnvelope(400, "")).toBe(false);
   });
 
   it("reports only the transport identity, a local code and masked provider facts", () => {
