@@ -100,6 +100,9 @@ async function withRevocationRace<T>(run: (input: Readonly<{
     }
   });
   let pause: Readonly<{ held: () => void; released: Promise<void> }> | null = null;
+  // Refresh issues its family and grant writes together; the pause signals only after the family
+  // write has settled so the paused transaction really holds that row lock.
+  let familyWrite: Promise<void> = Promise.resolve();
   const pausingClient = prisma.$extends({
     query: {
       inboundMcpOAuthGrant: {
@@ -107,10 +110,22 @@ async function withRevocationRace<T>(run: (input: Readonly<{
           const current = pause;
           pause = null;
           if (current) {
+            await familyWrite;
             current.held();
             await current.released;
           }
           return query(args);
+        }
+      },
+      inboundMcpOAuthTokenFamily: {
+        async update({ args, query }) {
+          const settled = deferred();
+          familyWrite = settled.promise;
+          try {
+            return await query(args);
+          } finally {
+            settled.resolve();
+          }
         }
       }
     }
