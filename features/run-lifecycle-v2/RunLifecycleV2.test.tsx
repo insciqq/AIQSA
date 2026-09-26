@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   RunAnswerV2,
   RunComposerActionV2,
@@ -479,107 +479,182 @@ describe("Run lifecycle v2", () => {
     expect(screen.getByRole("button", { name: "Send message" }))
       .toHaveAccessibleDescription("Type a message.");
   });
+});
 
-  it("announces only a continuously selected source and never replays historical terminal state", async () => {
-    const working = presentation({
-      activity: { kind: "search", label: "Searching the web…" },
-      kind: "activity",
-      runId: "run-a"
+describe("Run lifecycle v2 announcer", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const WORKING = "Working on the answer…";
+  const READY = "Answer ready. The message field is available.";
+  const running = (cycle = 1) => makeContextCompactionStatus({ beforeTokens: 1_200, cycle, outcome: "pending", state: "running" });
+  const compacted = (cycle = 1, outcome: "masking_applied" | "summary_applied" = "summary_applied") =>
+    makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, cycle, outcome, state: "complete" });
+  const activity = (label: string, overrides: Partial<RunPresentationV2> = {}) => presentation({
+    activity: { kind: "provider", label }, kind: "activity", runId: "run-a", ...overrides
+  });
+
+  /** Records every distinct non-empty text the polite region shows, sampled every 100 ms. */
+  function followAnnouncer(first: RunPresentationV2, activeChatId = "chat-a") {
+    const spoken: string[] = [];
+    let last = "";
+    const sample = () => {
+      const text = screen.getByTestId("run-lifecycle-announcer").textContent ?? "";
+      if (text !== last && text) spoken.push(text);
+      last = text;
+    };
+    const element = (value: RunPresentationV2, chatId: string) =>
+      <RunLifecycleAnnouncerV2 activeChatId={chatId} presentation={value} sourceChatId="chat-a" />;
+    const view = render(element(first, activeChatId));
+    sample();
+    const advance = (elapsedMs: number) => {
+      for (let elapsed = 0; elapsed < elapsedMs; elapsed += 100) {
+        act(() => {
+          vi.advanceTimersByTime(100);
+        });
+        sample();
+      }
+    };
+    return {
+      advance,
+      show(value: RunPresentationV2, elapsedMs = 200, chatId = "chat-a") {
+        view.rerender(element(value, chatId));
+        sample();
+        advance(elapsedMs);
+      },
+      spoken,
+      text: () => last,
+      unmount: view.unmount
+    };
+  }
+
+  it("speaks one working announcement for a whole PDF page-counter sequence", () => {
+    const pages = (completed: number) => presentation({
+      activity: { kind: "preparing", label: `Preparing document · ${completed} of 40 pages…` }, kind: "activity", runId: "run-a"
     });
-    const complete = presentation({ kind: "complete", runId: "run-a" });
-    const { rerender } = render(
-      <RunLifecycleAnnouncerV2
-        activeChatId="chat-a"
-        presentation={working}
-        sourceChatId="chat-a"
-      />
-    );
-
-    await waitFor(() => expect(screen.getByTestId("run-lifecycle-announcer")).toHaveTextContent(
-      "Searching the web…"
-    ));
-    rerender(
-      <RunLifecycleAnnouncerV2
-        activeChatId="chat-a"
-        presentation={complete}
-        sourceChatId="chat-a"
-      />
-    );
-    await waitFor(() => expect(screen.getByTestId("run-lifecycle-announcer")).toHaveTextContent(
-      "Answer ready. The message field is available."
-    ));
-
-    rerender(
-      <RunLifecycleAnnouncerV2
-        activeChatId="chat-b"
-        presentation={complete}
-        sourceChatId="chat-a"
-      />
-    );
-    await waitFor(() => expect(screen.getByTestId("run-lifecycle-announcer")).toBeEmptyDOMElement());
-    rerender(
-      <RunLifecycleAnnouncerV2
-        activeChatId="chat-a"
-        presentation={complete}
-        sourceChatId="chat-a"
-      />
-    );
-    await waitFor(() => expect(screen.getByTestId("run-lifecycle-announcer")).toBeEmptyDOMElement());
+    const announcer = followAnnouncer(pages(0));
+    for (let page = 1; page <= 40; page += 1) announcer.show(pages(page));
+    announcer.show(activity("Thinking…"));
+    announcer.show(presentation({ kind: "streaming", runId: "run-a" }), 2_000);
+    expect(announcer.spoken).toEqual([WORKING]);
   });
 
-  it("announces each server-settled compaction outcome once, with its reason", async () => {
-    const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
-    const complete = makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" });
-    const announcer = () => screen.getByTestId("run-lifecycle-announcer");
-    const announce = (value: RunPresentationV2) => <RunLifecycleAnnouncerV2 activeChatId="chat-a" presentation={value} sourceChatId="chat-a" />;
-    const { rerender } = render(announce(presentation({
-      activity: { kind: "compaction", label: "Compacting context…" }, compaction: running, kind: "activity", runId: "run-a"
-    })));
-    await waitFor(() => expect(announcer()).toHaveTextContent("Compacting context…"));
-    rerender(announce(presentation({
-      activity: { kind: "provider", label: "Thinking…" }, compaction: complete, kind: "activity", runId: "run-a"
-    })));
-    await waitFor(() => expect(announcer()).toHaveTextContent("Context compacted. Thinking…"));
-    rerender(announce(presentation({ compaction: complete, kind: "streaming", runId: "run-a" })));
-    await waitFor(() => expect(announcer()).toHaveTextContent(/^Answering…$/u));
-    rerender(announce(presentation({ compaction: complete, kind: "complete", runId: "run-a" })));
-    await waitFor(() => expect(announcer()).toHaveTextContent(/^Answer ready\. The message field is available\.$/u));
-
-    // A different run starts fresh: its failure carries the bounded reason.
-    rerender(announce(presentation({
-      activity: { kind: "compaction", label: "Compacting context…" }, compaction: running, kind: "activity", runId: "run-b"
-    })));
-    await waitFor(() => expect(announcer()).toHaveTextContent("Compacting context…"));
-    rerender(announce(presentation({
-      compaction: makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "source_unavailable", state: "failed" }),
-      failure: { code: "context_compaction_source_unavailable", message: "Unavailable.", recovery: "retry" },
-      kind: "terminal_error", runId: "run-b"
-    })));
-    await waitFor(() => expect(announcer()).toHaveTextContent(
-      "Context source unavailable. Run failed. The message field is available."
-    ));
+  it("speaks one compaction success for an eight-round tool run that masks every round", () => {
+    const announcer = followAnnouncer(activity("Thinking…"));
+    for (let round = 1; round <= 8; round += 1) {
+      const previous = round > 1 ? compacted(round - 1, "masking_applied") : undefined;
+      announcer.show(presentation({
+        activity: { kind: "tool", label: `Using Docs: read page ${round}…`, serverName: "Docs", toolName: `read_page_${round}` },
+        compaction: previous, kind: "activity", runId: "run-a"
+      }));
+      announcer.show(activity("Thinking…", { compaction: compacted(round, "masking_applied") }));
+      announcer.show(presentation({ compaction: compacted(round, "masking_applied"), kind: "streaming", runId: "run-a" }));
+    }
+    announcer.show(presentation({ compaction: compacted(8, "masking_applied"), kind: "complete", runId: "run-a" }), 2_000);
+    expect(announcer.spoken).toEqual([WORKING, "Context compacted.", READY]);
   });
 
-  it("announces a lost connection during compaction and a resumed outcome after the refresh", async () => {
-    const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
-    const announcer = () => screen.getByTestId("run-lifecycle-announcer");
-    const announce = (value: RunPresentationV2) => <RunLifecycleAnnouncerV2 activeChatId="chat-a" presentation={value} sourceChatId="chat-a" />;
-    const { rerender } = render(announce(presentation({
-      activity: { kind: "compaction", label: "Compacting context…" }, compaction: running, kind: "activity", runId: "run-a"
-    })));
-    await waitFor(() => expect(announcer()).toHaveTextContent("Compacting context…"));
-    rerender(announce(presentation({ compaction: running, kind: "connection_lost", runId: "run-a" })));
-    await waitFor(() => expect(announcer()).toHaveTextContent(
-      "Connection lost while compacting context. Refresh the run state."
-    ));
-    rerender(announce(presentation({ kind: "complete", runId: "run-a" })));
-    await waitFor(() => expect(announcer()).toHaveTextContent(/^Answer ready\. The message field is available\.$/u));
-    rerender(announce(presentation({
-      compaction: makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, outcome: "summary_applied", state: "complete" }),
-      kind: "complete", runId: "run-a"
-    })));
-    await waitFor(() => expect(announcer()).toHaveTextContent(/^Context compacted\.$/u));
-    expect(announcer().textContent).not.toMatch(/unavailable/u);
+  it("speaks the compaction start once and every failed cycle with its reason", () => {
+    const announcer = followAnnouncer(activity("Thinking…"));
+    announcer.show(activity("Compacting context…", { compaction: running(1) }), 1_000);
+    announcer.show(activity("Thinking…", {
+      compaction: makeContextCompactionStatus({ beforeTokens: 1_200, cycle: 1, outcome: "provider_failed", state: "failed" })
+    }), 1_000);
+    announcer.show(activity("Compacting context…", { compaction: running(2) }), 1_000);
+    announcer.show(presentation({
+      compaction: makeContextCompactionStatus({ beforeTokens: 1_200, cycle: 2, outcome: "source_unavailable", state: "failed" }),
+      failure: { code: "context_compaction_source_unavailable", message: "The earlier messages could not be read", recovery: "retry" },
+      kind: "terminal_error", runId: "run-a"
+    }), 2_000);
+    expect(announcer.spoken).toEqual([
+      WORKING,
+      "Compacting context…",
+      "Provider could not compact the context.",
+      "Context source unavailable. Run failed. The earlier messages could not be read. The message field is available."
+    ]);
+  });
+
+  it("speaks a repeated identical failure again", () => {
+    const failed = (cycle: number) => makeContextCompactionStatus({ beforeTokens: 1_200, cycle, outcome: "summary_failed", state: "failed" });
+    const announcer = followAnnouncer(activity("Thinking…", { compaction: undefined }));
+    announcer.show(activity("Thinking…", { compaction: failed(1) }), 1_000);
+    announcer.show(activity("Thinking…", { compaction: failed(2) }), 1_000);
+    expect(announcer.spoken.map((text) => text.trim())).toEqual([
+      WORKING, "Context compaction failed.", "Context compaction failed."
+    ]);
+  });
+
+  it("folds a compaction success that settles after the terminal state into one terminal announcement", () => {
+    const announcer = followAnnouncer(activity("Compacting context…", { compaction: running(1) }));
+    // Resume marks the answer complete one round trip before the settled cycle arrives.
+    announcer.show(presentation({ kind: "complete", runId: "run-a" }), 300);
+    announcer.show(presentation({ compaction: compacted(1), kind: "complete", runId: "run-a" }), 2_000);
+    expect(announcer.spoken).toEqual(["Compacting context…", `Context compacted. ${READY}`]);
+
+    // Settling after the terminal sentence was already spoken still folds into it.
+    announcer.unmount();
+    const late = followAnnouncer(activity("Thinking…", { runId: "run-b" }), "chat-a");
+    late.show(presentation({ kind: "complete", runId: "run-b" }), 2_000);
+    late.show(presentation({ compaction: compacted(1), kind: "complete", runId: "run-b" }), 2_000);
+    expect(late.spoken).toEqual([WORKING, READY, `Context compacted. ${READY}`]);
+    expect(late.spoken.filter((text) => text === "Context compacted.")).toEqual([]);
+  });
+
+  it("speaks a lost connection once and the refreshed outcome in the terminal sentence", () => {
+    const announcer = followAnnouncer(activity("Compacting context…", { compaction: running(1) }));
+    for (let render = 0; render < 5; render += 1) {
+      announcer.show(presentation({ compaction: running(1), kind: "connection_lost", runId: "run-a" }));
+    }
+    announcer.show(presentation({ kind: "complete", runId: "run-a" }), 300);
+    announcer.show(presentation({ compaction: compacted(1), kind: "complete", runId: "run-a" }), 2_000);
+    expect(announcer.spoken).toEqual([
+      "Compacting context…",
+      "Connection lost while compacting context. Refresh the run state.",
+      `Context compacted. ${READY}`
+    ]);
+    expect(announcer.spoken.join(" ")).not.toMatch(/unavailable/u);
+  });
+
+  it("coalesces updates inside the window instead of replacing an unread one", () => {
+    const announcer = followAnnouncer(activity("Thinking…"));
+    announcer.show(activity("Compacting context…", { compaction: running(1) }), 100);
+    announcer.show(activity("Thinking…", { compaction: compacted(1) }), 2_000);
+    expect(announcer.spoken).toEqual([WORKING, "Compacting context… Context compacted."]);
+  });
+
+  it("announces only a continuously selected source and never replays history", () => {
+    const announcer = followAnnouncer(activity("Searching the web…"));
+    announcer.show(presentation({ kind: "complete", runId: "run-a" }), 2_000);
+    expect(announcer.text()).toBe(READY);
+
+    announcer.show(presentation({ kind: "complete", runId: "run-a" }), 2_000, "chat-b");
+    expect(announcer.text()).toBe("");
+    announcer.show(presentation({ kind: "complete", runId: "run-a" }), 2_000);
+    announcer.show(presentation({ compaction: compacted(1), kind: "complete", runId: "run-a" }), 2_000);
+    expect(announcer.text()).toBe("");
+    expect(announcer.spoken).toEqual([WORKING, READY]);
+
+    // A settled tail that loads after an empty chat is history too.
+    announcer.unmount();
+    const loaded = followAnnouncer(presentation({ kind: "idle", runId: null }));
+    loaded.show(presentation({ kind: "complete", runId: "run-old" }), 2_000);
+    expect(loaded.spoken).toEqual([]);
+  });
+
+  it("follows an optimistic answer into its durable run id and then a new run", () => {
+    const announcer = followAnnouncer(activity("Thinking…", { runId: null }));
+    announcer.show(activity("Thinking…"), 2_000);
+    announcer.show(presentation({ kind: "complete", runId: "run-a" }), 2_000);
+    announcer.show(activity("Thinking…", { runId: null }), 2_000);
+    announcer.show(presentation({ failure: { code: null, message: "Provider timed out.", recovery: "retry" },
+      kind: "recoverable_error", runId: "run-b" }), 2_000);
+    expect(announcer.spoken).toEqual([
+      WORKING, READY, WORKING, "Run failed. Provider timed out. The message field is available."
+    ]);
   });
 });
 

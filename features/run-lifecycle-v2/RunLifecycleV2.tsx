@@ -22,10 +22,11 @@ import {
   type ReactNode
 } from "react";
 import {
-  contextCompactionCopyV2,
   describeToolCallV2,
   settledRunPresentationV2,
   stepDurationSumV2,
+  stepRunAnnouncementV2,
+  type RunAnnouncerMemoryV2,
   type RunPresentationV2
 } from "./runPresentation";
 
@@ -418,38 +419,17 @@ export function RunComposerActionV2({
   );
 }
 
-function lifecycleAnnouncement(presentation: RunPresentationV2): string {
-  switch (presentation.kind) {
-    case "activity":
-      return presentation.activity?.label ?? "";
-    case "streaming":
-      return "Answering…";
-    case "connection_lost":
-      return presentation.compaction?.state === "running"
-        ? "Connection lost while compacting context. Refresh the run state."
-        : "Connection lost. Refresh the run state.";
-    case "complete":
-      return "Answer ready. The message field is available.";
-    case "cancelled":
-      return "Run stopped. The message field is available.";
-    case "recoverable_error":
-    case "terminal_error":
-      return "Run failed. The message field is available.";
-    case "idle":
-      return "";
-  }
-}
+/** Minimum spacing between spoken updates, and how long a terminal sentence
+ * waits for a trailing compaction settlement to fold into it. */
+const RUN_ANNOUNCEMENT_WINDOW_MS = 1_000;
 
-/** A server-settled compaction cycle, with its whole bounded reason. */
-function compactionAnnouncement(presentation: RunPresentationV2): string {
-  const status = presentation.compaction;
-  return status && status.state !== "running" ? `${contextCompactionCopyV2(status).label}.` : "";
-}
+type PendingAnnouncement = { notBefore: number; parts: string[]; terminal: string | null };
 
 /**
- * Announces transitions of one continuously selected answer: its lifecycle
- * and, once per server-settled compaction cycle, that cycle's outcome. A
- * different chat or run never replays historical terminal state.
+ * Speaks the phase transitions of one continuously selected answer under the
+ * `stepRunAnnouncementV2` policy. Updates arriving within the window are
+ * coalesced into one atomic sentence instead of replacing the previous one
+ * before it is read. A different chat never replays historical state.
  */
 export function RunLifecycleAnnouncerV2({
   activeChatId,
@@ -460,46 +440,71 @@ export function RunLifecycleAnnouncerV2({
   presentation: RunPresentationV2;
   sourceChatId: string;
 }) {
-  const [announcement, setAnnouncement] = useState("");
-  const previousRef = useRef<{
-    activeChatId: string | null;
-    compaction: string;
-    lifecycle: string;
-    runId: string | null;
-    selected: boolean;
-    sourceChatId: string;
-  } | null>(null);
+  // The polite region is an external system: its text is written directly so
+  // an update never costs a render of the surrounding workspace.
+  const regionRef = useRef<HTMLParagraphElement>(null);
+  const memoryRef = useRef<RunAnnouncerMemoryV2 | null>(null);
+  const pendingRef = useRef<PendingAnnouncement | null>(null);
+  const spokenAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selected = activeChatId === sourceChatId;
-  const lifecycle = `${presentation.kind}:${presentation.activity?.label ?? ""}`;
-  const compaction = presentation.compaction
-    ? `${presentation.compaction.cycle}:${presentation.compaction.state}:${presentation.compaction.outcome}`
-    : "";
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }, []);
 
   useEffect(() => {
-    const previous = previousRef.current;
-    const continuouslySelected = Boolean(
-      selected &&
-      previous?.selected &&
-      previous.activeChatId === activeChatId &&
-      previous.sourceChatId === sourceChatId &&
-      previous.runId === presentation.runId
-    );
-
-    if (!selected || (settledRunPresentationV2(presentation) && !continuouslySelected)) {
-      setAnnouncement("");
-    } else if (!continuouslySelected) {
-      setAnnouncement(lifecycleAnnouncement(presentation));
-    } else {
-      const lifecycleChanged = previous!.lifecycle !== lifecycle;
-      const compactionText = previous!.compaction !== compaction ? compactionAnnouncement(presentation) : "";
-      if (lifecycleChanged || compactionText) {
-        setAnnouncement([compactionText, lifecycleChanged ? lifecycleAnnouncement(presentation) : ""]
-          .filter(Boolean).join(" "));
-      }
+    const announce = (text: string) => {
+      const region = regionRef.current;
+      if (!region) return;
+      // A repeated sentence (two identical failures) must still change the
+      // atomic region to be spoken again; a trailing no-break space is silent.
+      region.textContent = text && region.textContent === text ? `${text}\u00a0` : text;
+    };
+    const cancelPending = () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+      pendingRef.current = null;
+    };
+    if (!selected) {
+      memoryRef.current = null;
+      cancelPending();
+      spokenAtRef.current = Number.NEGATIVE_INFINITY;
+      announce("");
+      return;
     }
+    const step = stepRunAnnouncementV2(memoryRef.current, sourceChatId, presentation);
+    memoryRef.current = step.memory;
+    if (step.chatChanged) {
+      cancelPending();
+      spokenAtRef.current = Number.NEGATIVE_INFINITY;
+      announce("");
+    }
+    const now = Date.now();
+    if (step.parts.length > 0 || step.terminal) {
+      const pending = pendingRef.current ?? { notBefore: now, parts: [], terminal: null };
+      pending.parts.push(...step.parts);
+      if (step.terminal) pending.terminal = step.terminal;
+      if (step.terminalFirst) pending.notBefore = Math.max(pending.notBefore, now + RUN_ANNOUNCEMENT_WINDOW_MS);
+      pendingRef.current = pending;
+    }
+    const pending = pendingRef.current;
+    if (!pending) return;
 
-    previousRef.current = { activeChatId, compaction, lifecycle, runId: presentation.runId, selected, sourceChatId };
-  }, [activeChatId, compaction, lifecycle, presentation, selected, sourceChatId]);
+    const speak = () => {
+      timerRef.current = null;
+      const next = pendingRef.current;
+      pendingRef.current = null;
+      if (!next) return;
+      spokenAtRef.current = Date.now();
+      announce([...next.parts, next.terminal].filter(Boolean).join(" "));
+    };
+    if (timerRef.current) clearTimeout(timerRef.current);
+    const delay = Math.max(pending.notBefore, spokenAtRef.current + RUN_ANNOUNCEMENT_WINDOW_MS) - now;
+    if (delay <= 0) speak();
+    else timerRef.current = setTimeout(speak, delay);
+  }, [presentation, selected, sourceChatId]);
 
   return (
     <p
@@ -507,8 +512,7 @@ export function RunLifecycleAnnouncerV2({
       data-testid="run-lifecycle-announcer"
       aria-atomic="true"
       aria-live="polite"
-    >
-      {announcement}
-    </p>
+      ref={regionRef}
+    />
   );
 }

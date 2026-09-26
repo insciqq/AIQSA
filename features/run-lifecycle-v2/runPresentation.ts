@@ -424,7 +424,7 @@ export function contextCompactionCopyV2(
           label: "Context compaction · connection lost"
         }
       : {
-          detail: "Summarizing earlier messages to fit the working context. The answer continues after this step.",
+          detail: "Summarizing earlier messages to fit the working context. The answer starts after this step.",
           label: "Compacting context…"
         };
   }
@@ -448,6 +448,146 @@ export function contextCompactionCopyV2(
     default:
       return { detail: null, label: "Context compaction outcome unavailable" };
   }
+}
+
+/** What the run announcer remembers about the one answer it follows. */
+export type RunAnnouncerMemoryV2 = Readonly<{
+  chatId: string;
+  runId: string | null;
+  /** Settled when first observed: history is never announced. */
+  historical: boolean;
+  started: boolean;
+  connectionLost: boolean;
+  compactionStarted: boolean;
+  compactionSucceeded: boolean;
+  /** Highest server-settled compaction cycle already accounted for. */
+  settledCycle: number;
+  /** The terminal sentence once the run settled while followed. */
+  terminal: string | null;
+}>;
+
+export type RunAnnouncementStepV2 = Readonly<{
+  memory: RunAnnouncerMemoryV2;
+  /** A different chat (or the first observation): pending speech is stale. */
+  chatChanged: boolean;
+  /** Phase sentences, in order, to speak before any terminal sentence. */
+  parts: readonly string[];
+  /** Terminal sentence to speak last; repeated only to fold a later compaction settlement into it. */
+  terminal: string | null;
+  /** True when `terminal` is first observed for this run. */
+  terminalFirst: boolean;
+}>;
+
+const RUN_ANNOUNCEMENT_WORKING_V2 = "Working on the answer…";
+
+function sentence(text: string): string {
+  return /[.!?…]$/u.test(text) ? text : `${text}.`;
+}
+
+function terminalAnnouncement(presentation: RunPresentationV2): string {
+  if (presentation.kind === "complete") return "Answer ready. The message field is available.";
+  if (presentation.kind === "cancelled") return "Run stopped. The message field is available.";
+  const reason = presentation.failure?.message ? ` ${sentence(presentation.failure.message)}` : "";
+  return `Run failed.${reason} The message field is available.`;
+}
+
+function connectionLostAnnouncement(presentation: RunPresentationV2): string {
+  return presentation.compaction?.state === "running"
+    ? "Connection lost while compacting context. Refresh the run state."
+    : "Connection lost. Refresh the run state.";
+}
+
+/**
+ * Announcer policy: only phase kinds are spoken, never counters, tool labels
+ * or streaming/tool flips. Per followed run: started once; connection lost
+ * once per loss; compaction start once, every failed cycle with its reason,
+ * success at most once; the terminal sentence with its reason once. A
+ * compaction settlement after the terminal sentence folds into it. A run
+ * already settled when first observed (chat switch, history load) stays
+ * silent.
+ */
+export function stepRunAnnouncementV2(
+  previous: RunAnnouncerMemoryV2 | null,
+  chatId: string,
+  presentation: RunPresentationV2
+): RunAnnouncementStepV2 {
+  const chatChanged = !previous || previous.chatId !== chatId;
+  const compaction = presentation.compaction;
+  const settled = settledRunPresentationV2(presentation);
+  const previousSettled = Boolean(previous && (previous.historical || previous.terminal !== null));
+  // A settled run never becomes live again; an unsettled answer adopts its
+  // durable run id without becoming a new run.
+  const sameRun = !chatChanged && !(previousSettled && !settled) && (previous.runId === presentation.runId ||
+    (previous.runId === null && previous.started && !previousSettled));
+  if (!sameRun || !previous) {
+    const settledCycle = compaction && compaction.state !== "running" ? compaction.cycle : 0;
+    const base = {
+      chatId,
+      compactionStarted: Boolean(compaction),
+      compactionSucceeded: compaction?.state === "complete",
+      connectionLost: false,
+      historical: settled,
+      runId: presentation.runId,
+      settledCycle,
+      started: false,
+      terminal: settled ? terminalAnnouncement(presentation) : null
+    };
+    if (settled || presentation.kind === "idle") {
+      return { chatChanged, memory: base, parts: [], terminal: null, terminalFirst: false };
+    }
+    const lost = presentation.kind === "connection_lost";
+    const compacting = !lost && compaction?.state === "running";
+    return {
+      chatChanged,
+      memory: { ...base, connectionLost: lost, started: true },
+      parts: [lost ? connectionLostAnnouncement(presentation)
+        : compacting ? contextCompactionCopyV2(compaction).label : RUN_ANNOUNCEMENT_WORKING_V2],
+      terminal: null,
+      terminalFirst: false
+    };
+  }
+
+  const memory: { -readonly [Key in keyof RunAnnouncerMemoryV2]: RunAnnouncerMemoryV2[Key] } = {
+    ...previous,
+    runId: presentation.runId
+  };
+  if (memory.historical) {
+    return { chatChanged: false, memory, parts: [], terminal: null, terminalFirst: false };
+  }
+  const parts: string[] = [];
+  if (!settled && presentation.kind !== "idle") {
+    const lost = presentation.kind === "connection_lost";
+    if (lost && !memory.connectionLost) parts.push(connectionLostAnnouncement(presentation));
+    if (lost) {
+      memory.compactionStarted ||= compaction?.state === "running";
+    } else if (compaction?.state === "running" && !memory.compactionStarted) {
+      parts.push(contextCompactionCopyV2(compaction).label);
+      memory.compactionStarted = true;
+    } else if (!memory.started) {
+      parts.push(RUN_ANNOUNCEMENT_WORKING_V2);
+    }
+    memory.connectionLost = lost;
+    memory.started = true;
+  }
+  if (compaction && compaction.state !== "running" && compaction.cycle > memory.settledCycle) {
+    const text = `${contextCompactionCopyV2(compaction).label}.`;
+    if (compaction.state === "failed") parts.push(text);
+    else if (!memory.compactionSucceeded) parts.push(text);
+    memory.compactionStarted = true;
+    memory.compactionSucceeded ||= compaction.state === "complete";
+    memory.settledCycle = compaction.cycle;
+  }
+  if (settled && memory.terminal === null) {
+    memory.terminal = terminalAnnouncement(presentation);
+    return { chatChanged: false, memory, parts, terminal: memory.terminal, terminalFirst: true };
+  }
+  return {
+    chatChanged: false,
+    memory,
+    parts,
+    terminal: memory.terminal !== null && parts.length > 0 ? memory.terminal : null,
+    terminalFirst: false
+  };
 }
 
 /** Merges safe live call facts into an existing persisted projection. */

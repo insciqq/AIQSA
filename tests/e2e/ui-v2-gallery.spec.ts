@@ -93,7 +93,7 @@ test("v2 run lifecycle refreshes only on request and isolates its live source", 
   await expect(durableStop).toBeEnabled();
 
   const announcer = page.getByTestId("run-lifecycle-announcer");
-  await expect(announcer).toHaveText("Searching the web…");
+  await expect(announcer).toHaveText("Working on the answer…");
   await page.getByRole("treeitem", { exact: true, name: "Settled answer" }).click();
   await expect(announcer).toHaveText("");
 
