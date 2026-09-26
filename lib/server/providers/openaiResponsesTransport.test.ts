@@ -228,6 +228,48 @@ describe("OpenAI Responses transport", () => {
     expect(openAIRetryableErrorPayload({ retryable: true, status: 503 })).toBeNull();
   });
 
+  describe("context-length rejection", () => {
+    const sentinel = "PRIVATE_PROVIDER_MESSAGE_CANARY";
+
+    it.each([
+      // OpenAI Responses and codex-lb: explicit code, no stated counts.
+      [{ code: "context_length_exceeded", message: `Your input exceeds the context window of this model. ${sentinel}` }, {}],
+      [{ code: "context_length_exceeded", param: "input", type: "invalid_request_error",
+        message: `Input tokens exceed the configured limit of 272000 tokens. Your messages resulted in 300000 tokens. ${sentinel}` },
+      { reportedMaximumTokens: 272_000, reportedPromptTokens: 300_000 }]
+    ])("classifies HTTP 400 %# for create and stream, without provider text", async (error, counts) => {
+      const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ error }, { status: 400 }));
+      const client = createFetchOpenAIResponsesClient({ apiKey: "key", fetchFn, initialRequestRetry: { maxAttempts: 3 } });
+      for (const send of [() => client.create({}), () => client.stream!({})]) {
+        const failure = await send().catch((value: unknown) => value);
+        expect(failure).toMatchObject({ code: "provider_context_length_exceeded", status: 400,
+          message: "OpenAI request failed with status 400" });
+        expect(failure).toEqual(expect.objectContaining(counts));
+        if (!("reportedPromptTokens" in counts)) expect(failure).not.toHaveProperty("reportedPromptTokens");
+        expect(JSON.stringify(failure)).not.toContain(sentinel);
+        expect(String(failure)).not.toContain(sentinel);
+        expect(openAIRetryableErrorPayload(failure)).toBeNull();
+      }
+      // A refusal is never replayed by the transport's own retry.
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    });
+
+    it("classifies a streamed create's error event and ignores unrelated 400s", async () => {
+      const streamed = createFetchOpenAIResponsesClient({ apiKey: "key", acceptStreamedCreate: true, fetchFn: async () => new Response(
+        `data: ${JSON.stringify({ type: "error", code: "context_length_exceeded", message: sentinel })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } }) });
+      const failure = await streamed.create({ stream: false }).catch((value: unknown) => value);
+      expect(failure).toMatchObject({ code: "provider_context_length_exceeded", message: "openai_response_stream_failed" });
+      expect(JSON.stringify(failure)).not.toContain(sentinel);
+
+      const unrelated = createFetchOpenAIResponsesClient({ apiKey: "key", fetchFn: async () => Response.json({
+        error: { code: "invalid_value", message: `maximum length of the name ${sentinel}` } }, { status: 400 }) });
+      const other = await unrelated.create({}).catch((value: unknown) => value);
+      expect(other).not.toHaveProperty("code", "provider_context_length_exceeded");
+      expect(other).not.toHaveProperty("reportedPromptTokens");
+    });
+  });
+
   it("bounded-retries only opted-in transient failures before a Responses request is accepted", async () => {
     const calls: Array<{ body: string; url: string }> = [];
     const sleeps: number[] = [];

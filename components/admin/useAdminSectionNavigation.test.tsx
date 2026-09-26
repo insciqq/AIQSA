@@ -119,6 +119,35 @@ describe("useAdminSectionNavigation", () => {
     expect(screen.getByTestId("active-panel")).toHaveTextContent("Groups");
   });
 
+  it("keeps the origin chat return across section, resource and filter changes for the Chats links", async () => {
+    stubViewport(390);
+    window.history.replaceState(null, "", "/admin?return=%2Fp%2Fproject-1%2Fc%2Fchat-1&section=users");
+    const view = renderNavigation();
+    await waitFor(() => expect(view.navigation.activeSection).toBe("users"));
+    const chatsLinks = () => screen.getAllByRole("link", { name: "Chats" });
+    await waitFor(() => expect(chatsLinks()[0]).toHaveAttribute("href", "/p/project-1/c/chat-1"));
+    expect(chatsLinks().every((link) => link.getAttribute("href") === "/p/project-1/c/chat-1")).toBe(true);
+
+    act(() => { view.navigation.selectFilter("pending"); });
+    act(() => { view.navigation.selectSection("providers", "conn-1"); });
+    act(() => { view.navigation.selectResource(null); });
+    expect(new URLSearchParams(window.location.search).get("return")).toBe("/p/project-1/c/chat-1");
+    expect(chatsLinks()[0]).toHaveAttribute("href", "/p/project-1/c/chat-1");
+    act(() => window.history.back());
+    await waitFor(() => expect(view.navigation.activeResource).toBe("conn-1"));
+    expect(new URLSearchParams(window.location.search).get("return")).toBe("/p/project-1/c/chat-1");
+  });
+
+  it.each(["/admin", "/admin?return=https%3A%2F%2Fevil.example%2Fc%2Fx", "/admin?return=%2Fadmin%3Fsection%3Dusers"])(
+    "returns Chats to the new chat from %s",
+    async (address) => {
+      stubViewport(1440);
+      window.history.replaceState(null, "", address);
+      renderNavigation();
+      await waitFor(() => expect(screen.getAllByRole("link", { name: "Chats" })[0]).toHaveAttribute("href", "/"));
+    }
+  );
+
   it("opens a resource page inside a section, keeps section links resource-free, and returns with Back", async () => {
     window.history.replaceState({ nextRouter: { marker: "keep" } }, "", "/admin?section=providers&resource=conn-1#top");
     const view = renderNavigation();

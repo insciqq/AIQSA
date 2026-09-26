@@ -1,7 +1,6 @@
 import type { ComposerSessionKey } from "@/components/app-shell/composerSessionStore";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 
-const AIQSA_ACTIVE_CHAT_STORAGE_KEY = "aiqsa.activeChatId";
 export const AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY = "aiqsa.sessionExpiredDraft.v1";
 const SESSION_EXPIRED_DRAFT_MAX_AGE_MS = 30 * 60 * 1000;
 const STUDIO_SECTION_KEY = "aiqsa.studio.section";
@@ -129,25 +128,5 @@ export function storedSessionExpiredDraft(
   } catch {
     clearSessionExpiredDraft();
     return null;
-  }
-}
-
-export function storedActiveChatId(): string | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  return window.localStorage.getItem(AIQSA_ACTIVE_CHAT_STORAGE_KEY);
-}
-
-export function rememberActiveChatId(chatId: string | null) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  if (chatId) {
-    window.localStorage.setItem(AIQSA_ACTIVE_CHAT_STORAGE_KEY, chatId);
-  } else {
-    window.localStorage.removeItem(AIQSA_ACTIVE_CHAT_STORAGE_KEY);
   }
 }

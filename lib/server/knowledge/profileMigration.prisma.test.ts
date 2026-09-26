@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { createPrismaKnowledgeSourceIngestionRepository } from "./prismaSourceIngestionRepository";
 import {
@@ -10,6 +10,65 @@ import { materializeKnowledgeBaseSnapshot } from "./sourcePersistence";
 
 const checksum = "a".repeat(64);
 const normalizedChecksum = "b".repeat(64);
+// Profile revisions are immutable (no purge bypass) and pin their embedding
+// model and connection, so these installation rows are stable, idempotently
+// created fixtures rather than per-run rows. Bump the suffix when their
+// content changes.
+const connectionId = "knowledge-profile-migration-test-connection-v1";
+const providerModelId = "knowledge-profile-migration-test-model-v1";
+const profileId = "knowledge-profile-migration-test-profile-v1";
+const oldProfileRevisionId = "knowledge-profile-migration-test-revision-old-v1";
+const targetProfileRevisionId = "knowledge-profile-migration-test-revision-target-v1";
+
+// Deletes every owner-scoped row this test or the migration code under test
+// creates, in foreign-key order. Each step is a filtered deleteMany or
+// updateMany so a fixture abandoned at any point mid-test is still removed.
+async function cleanupOwnedFixture(ownerUserId: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL aiqsa.knowledge_purge = 'on'`;
+    const baseIds = (await tx.knowledgeBase.findMany({
+      select: { id: true },
+      where: { ownerUserId }
+    })).map((base) => base.id);
+    await tx.knowledgeBase.updateMany({
+      data: { activeIndexGenerationId: null },
+      where: { ownerUserId }
+    });
+    await tx.knowledgeBaseSnapshotSource.deleteMany({ where: { ownerUserId } });
+    await tx.knowledgeBaseSnapshot.deleteMany({ where: { ownerUserId } });
+    await tx.knowledgeBaseSource.deleteMany({ where: { ownerUserId } });
+    // A rollback generation references the generation it was derived from,
+    // so remove underived generations first until none remain.
+    for (;;) {
+      const deleted = await tx.knowledgeIndexGeneration.deleteMany({
+        where: { derivedIndexGenerations: { none: {} }, knowledgeBaseId: { in: baseIds } }
+      });
+      if (deleted.count === 0) break;
+    }
+    await tx.knowledgeBase.deleteMany({ where: { ownerUserId } });
+    await tx.knowledgeSource.updateMany({
+      data: { currentVersionId: null, pendingVersionId: null },
+      where: { ownerUserId }
+    });
+    await tx.knowledgeHierarchicalIndexArtifact.deleteMany({
+      where: { sourceArtifact: { sourceVersion: { ownerUserId } } }
+    });
+    await tx.knowledgeSourceIndexArtifact.deleteMany({
+      where: { sourceVersion: { ownerUserId } }
+    });
+    await tx.knowledgeSourceVersion.deleteMany({ where: { ownerUserId } });
+    await tx.knowledgeSource.deleteMany({ where: { ownerUserId } });
+    // The running application's Memory coordinator may enqueue work for the
+    // active owner; those rows cascade with the user, the outbox restricts it.
+    await tx.memoryDeletionOutbox.deleteMany({ where: { userId: ownerUserId } });
+    await tx.memoryJob.deleteMany({ where: { userId: ownerUserId } });
+    await tx.user.deleteMany({ where: { id: ownerUserId } });
+    await tx.documentProcessingFairnessCursor.updateMany({
+      data: { lastGrantedOwnerUserId: null },
+      where: { lastGrantedOwnerUserId: ownerUserId, pipeline: "knowledge" }
+    });
+  });
+}
 
 async function createReadyHierarchy(input: Readonly<{
   artifactId: string;
@@ -34,6 +93,14 @@ async function createReadyHierarchy(input: Readonly<{
 }
 
 describe("Knowledge profile shadow migration", () => {
+  let ownedOwnerUserId: string | null = null;
+
+  afterEach(async () => {
+    const ownerUserId = ownedOwnerUserId;
+    ownedOwnerUserId = null;
+    if (ownerUserId) await cleanupOwnedFixture(ownerUserId);
+  });
+
   afterAll(async () => {
     await prisma.$disconnect();
   });
@@ -42,16 +109,12 @@ describe("Knowledge profile shadow migration", () => {
     const suffix = randomUUID();
     const now = new Date("2026-08-19T03:00:00.000Z");
     const ownerUserId = `000-profile-shadow-owner-${suffix}`;
-    const connectionId = `profile-shadow-connection-${suffix}`;
-    const providerModelId = `profile-shadow-model-${suffix}`;
-    const profileId = `profile-shadow-profile-${suffix}`;
-    const oldProfileRevisionId = `profile-shadow-old-${suffix}`;
-    const targetProfileRevisionId = `profile-shadow-target-${suffix}`;
+    ownedOwnerUserId = ownerUserId;
     const pdfSnapshot = (effort: string) => ({
       connection: { allowPrivateNetwork: false, apiRoot: "https://api.openai.com/v1", authenticationMode: "bearer", responseTimeoutMs: 300_000 },
-      connectionDisplayName: "Synthetic reader", connectionId, credentialId: `reader-key-${suffix}`,
-      credentialVersionId: `reader-key-version-${suffix}`, modelDisplayName: "Synthetic reader", providerFamily: "openai",
-      providerModelId: `reader-${suffix}`, version: 1,
+      connectionDisplayName: "Synthetic reader", connectionId, credentialId: "reader-key-v1",
+      credentialVersionId: "reader-key-version-v1", modelDisplayName: "Synthetic reader", providerFamily: "openai",
+      providerModelId: "reader-v1", version: 1,
       model: { adapterKind: "openai_responses_native", answerSelectable: true, modelClass: "answer", upstreamModelId: "reader",
         capabilities: { nativePdfInput: true, nativeSearch: false, pdf: true, reasoning: true, vision: true },
         defaultParams: { reasoning: { effort } } }
@@ -60,23 +123,32 @@ describe("Knowledge profile shadow migration", () => {
     await prisma.user.create({
       data: { displayName: "Profile shadow owner", id: ownerUserId, status: "active" }
     });
-    await prisma.providerConnection.create({
-      data: { displayName: "Profile shadow provider", family: "test", id: connectionId }
+    await prisma.providerConnection.upsert({
+      create: { displayName: "Profile shadow provider", family: "test", id: connectionId },
+      update: {},
+      where: { id: connectionId }
     });
-    await prisma.providerModel.create({
-      data: {
+    await prisma.providerModel.upsert({
+      create: {
         capabilities: {},
         connectionId,
         defaultParams: {},
         displayName: "Profile shadow embedding model",
         id: providerModelId,
         modelClass: "embedding",
-        modelId: `embedding-${suffix}`,
+        modelId: "knowledge-profile-migration-test-embedding-v1",
         provider: "test"
-      }
+      },
+      update: {},
+      where: { id: providerModelId }
     });
-    await prisma.knowledgeIndexProfile.create({ data: { id: profileId } });
+    await prisma.knowledgeIndexProfile.upsert({
+      create: { id: profileId },
+      update: {},
+      where: { id: profileId }
+    });
     await prisma.knowledgeIndexProfileRevision.createMany({
+      skipDuplicates: true,
       data: [{
         activatedAt: now,
         chunkingProfileVersion: 1,

@@ -11,11 +11,8 @@ import {
   exportFileBaseName,
   responseErrorMessage
 } from "@/components/app-shell/shellFormatting";
-import {
-  clearSessionExpiredDraftForSession,
-  rememberActiveChatId,
-  storedActiveChatId
-} from "@/components/app-shell/shellStorage";
+import { chatRouteForChat, writeChatRoute } from "@/components/app-shell/chatRoute";
+import { clearSessionExpiredDraftForSession } from "@/components/app-shell/shellStorage";
 import type {
   Catalog,
   CatalogModel,
@@ -586,13 +583,16 @@ export function useWorkspaceActions({
   function applyActiveChat(chat: WorkspaceChatSummary, options: ActivateChatOptions = {}) {
     activeChatIdRef.current = chat.id;
     useWorkspaceStore.getState().setPendingChatFolderId(null);
-    rememberActiveChatId(chat.id);
     useWorkspaceStore.getState().setActiveChatId(chat.id);
     useThreadStore.getState().touchThread(chat.id);
     pruneThreadCache();
     const sessionStore = useComposerSessionStore.getState();
     const sessionKey = composerSessionKey(chat.id);
     sessionStore.activateSession(sessionKey);
+    writeChatRoute(chatRouteForChat(
+      chat,
+      Boolean(selectComposerSession(useComposerSessionStore.getState(), sessionKey).pendingSend)
+    ));
     if (chat.workspace) {
       useComposerSessionStore.getState().updateSession(sessionKey, {
         workspaceEnabled: chat.workspace.enabled
@@ -683,17 +683,37 @@ export function useWorkspaceActions({
     return summary ? activateChat(summary) : null;
   }
 
+  /**
+   * The Project of a chat the viewer can read there, without admitting it to
+   * the personal workspace. Invisible and missing chats both answer null.
+   */
+  async function resolveChatProjectId(chatId: string): Promise<string | null> {
+    try {
+      const response = await shellFetch(`/api/chats/${encodeURIComponent(chatId)}`);
+      if (!response.ok) return null;
+      const detail = chatDetailBodyFromUnknown(await response.json());
+      return detail?.id === chatId ? detail.projectId ?? null : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The pending folder of a personal blank chat stays browser state; a
+   * Project's blank chat is addressed by its Project.
+   */
   function activateBlankWorkspace(
     folderId: string | null = null,
-    memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY" = "NORMAL"
+    memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY" = "NORMAL",
+    routeProjectId: string | null = null
   ) {
     activeChatIdRef.current = null;
     loadingChatDetailIdRef.current = null;
     useWorkspaceStore.getState().setPendingChatFolderId(folderId);
     useWorkspaceStore.getState().setActiveChatDetailError(null);
     useWorkspaceStore.getState().setActiveChatDetailLoading(false);
-    rememberActiveChatId(null);
     useWorkspaceStore.getState().setActiveChatId(null);
+    writeChatRoute({ chatId: null, projectId: routeProjectId });
     useComposerSessionStore.getState().activateSession(
       composerSessionKey(null, folderId, memoryMode)
     );
@@ -835,9 +855,21 @@ export function useWorkspaceActions({
     return detail;
   }
 
+  /**
+   * Reloads the personal workspace and activates `nextActiveChatId`, falling
+   * back to the blank chat. `isCurrent` lets an address resolution drop a
+   * result that another navigation superseded; `onTargetUnavailable` reports
+   * a target that is neither listed nor a recoverable Temporary chat.
+   */
   function refreshWorkspace(
     nextActiveChatId: string | null = useWorkspaceStore.getState().activeChatId,
-    options: { catalogOverride?: Catalog | null; preserveControls?: boolean; resumeRuns?: boolean } = {}
+    options: {
+      catalogOverride?: Catalog | null;
+      isCurrent?(): boolean;
+      onTargetUnavailable?(): void;
+      preserveControls?: boolean;
+      resumeRuns?: boolean;
+    } = {}
   ): Promise<ChatDetail | null> {
     if (workspaceRefreshPromiseRef.current) {
       return workspaceRefreshPromiseRef.current;
@@ -860,7 +892,7 @@ export function useWorkspaceActions({
         }
 
         const nextChats = body.chats.map(chatSummaryFromApi);
-        const targetActiveChatId = nextActiveChatId ?? storedActiveChatId();
+        const targetActiveChatId = nextActiveChatId;
         let recoveredTemporaryDetail: ChatDetail | null = null;
         let recoveredTemporarySummary: WorkspaceChatSummary | null = null;
         if (targetActiveChatId && !nextChats.some((chat) => chat.id === targetActiveChatId)) {
@@ -885,8 +917,8 @@ export function useWorkspaceActions({
               };
             }
           } catch {
-            // A remembered hidden chat is optional recovery state. Archived,
-            // expired, deleted, or inaccessible targets fall back to a blank workspace.
+            // Archived, expired, deleted, or inaccessible hidden targets fall
+            // back to a blank workspace like any unknown chat.
           }
         }
         const ownedChats = recoveredTemporarySummary
@@ -935,7 +967,7 @@ export function useWorkspaceActions({
         useWorkspaceStore.getState().setWorkspaceError(null);
         useWorkspaceStore.getState().setWorkspaceReady(true);
 
-        if (selectionChanged) return null;
+        if (selectionChanged || options.isCurrent?.() === false) return null;
 
         const activationCatalog = options.catalogOverride ?? useWorkspaceStore.getState().catalog;
 
@@ -951,6 +983,7 @@ export function useWorkspaceActions({
               resumeRuns: options.resumeRuns
             });
           }
+          options.onTargetUnavailable?.();
         }
 
         activateBlankWorkspace();
@@ -1338,15 +1371,6 @@ export function useWorkspaceActions({
       if (useComposerSessionStore.getState().moveUnsentInputIfTargetEmpty(sourceKey, composerSessionKey(chat.id))) {
         clearSessionExpiredDraftForSession(sourceKey);
       }
-      // A continued chat opened from an artifact/message link must also
-      // survive refresh without reopening the source conversation.
-      const url = new URL(window.location.href);
-      if (url.searchParams.has("chat")) {
-        url.searchParams.set("chat", chat.id);
-        url.searchParams.delete("message");
-        for (const key of ["artifactEdit", "artifactId", "versionId"]) url.searchParams.delete(key);
-        window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-      }
       return true;
     },
     activateBlankWorkspace,
@@ -1365,6 +1389,7 @@ export function useWorkspaceActions({
     refreshActiveChat,
     refreshWorkspace,
     renameChat,
+    resolveChatProjectId,
     setChatKnowledgeDefault,
     toggleChatFavorite,
     updateChatFolder

@@ -8,6 +8,7 @@ import {
   CONTEXT_SUMMARY_REFS_INCOMPLETE,
   contextSummaryReuseCandidates,
   conversationContextPolicy,
+  decodeContextRejectionRebuild,
   decodeConversationContextPolicy,
   summaryBindingDigest,
   type BranchContextCheckpoint
@@ -173,6 +174,26 @@ function reordered<T>(value: T): T {
   }
   return value;
 }
+
+describe("context rejection rebuild record", () => {
+  const rebuild = { version: 1 as const, round: 3, budgetTokens: 2_000 };
+
+  it("is carried from the round request into its checkpoint and omitted when absent", () => {
+    const base = { ownerId: "user-1", runId: "run-1" };
+    expect(contextCompactionCheckpoint({ ...base, request: { ...request(), contextCompactionRebuild: rebuild } }).rebuild).toEqual(rebuild);
+    expect(contextCompactionCheckpoint({ ...base, request: request(), rebuild }).rebuild).toEqual(rebuild);
+    expect(contextCompactionCheckpoint({ ...base, request: request() })).not.toHaveProperty("rebuild");
+  });
+
+  it("decodes only the exact versioned content-free record", () => {
+    expect(decodeContextRejectionRebuild(rebuild)).toEqual(rebuild);
+    expect(decodeContextRejectionRebuild({ ...rebuild, budgetTokens: 0 })).toEqual({ ...rebuild, budgetTokens: 0 });
+    for (const invalid of [undefined, [], { ...rebuild, version: 2 }, { ...rebuild, round: 0 }, { ...rebuild, round: 2 ** 31 },
+      { ...rebuild, budgetTokens: -1 }, { version: 1, round: 3 }, { ...rebuild, note: "extra" }]) {
+      expect(decodeContextRejectionRebuild(invalid)).toBeNull();
+    }
+  });
+});
 
 describe("canonical compaction digests", () => {
   it("stay equal across a jsonb key reorder of the request and transcript", () => {

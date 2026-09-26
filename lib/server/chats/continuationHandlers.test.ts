@@ -1,5 +1,10 @@
+import type { PrismaClient } from "@prisma/client";
 import { expect, it, vi } from "vitest";
 import { createChatContinuationHandler, createContinuationSourceHandler } from "./continuationHandlers";
+import { continuationSourceHref } from "./continuationRepository";
+
+const access = vi.hoisted(() => ({ resolveChatAccess: vi.fn() }));
+vi.mock("../projects/access", () => ({ resolveChatAccess: access.resolveChatAccess }));
 
 const session = { id: "session", userId: "owner", expiresAt: new Date(),
   user: { id: "owner", displayName: "Owner", email: null, role: "user", status: "active" } };
@@ -33,12 +38,25 @@ it("returns truthful progress and a bounded neutral error", async () => {
 });
 
 it("resolves source links through current authorization and never exposes inaccessible IDs", async () => {
-  const sourceHref = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce("/?chat=old&project=project");
+  const sourceHref = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce("/p/project/c/old");
   const handler = createContinuationSourceHandler({ sourceHref, resolveAuth: async () => session });
   expect((await handler(new Request("http://localhost/api/chats/source/continuation-source"), context)).status).toBe(404);
   const response = await handler(new Request("http://localhost/api/chats/source/continuation-source"), context);
   expect(response.status).toBe(303);
-  expect(response.headers.get("location")).toBe("http://localhost/?chat=old&project=project");
+  expect(response.headers.get("location")).toBe("http://localhost/p/project/c/old");
+});
+
+it("links a continuation to its source chat address in personal and Project form", async () => {
+  const findUnique = vi.fn(async () => ({ sourceChatId: "source chat" }));
+  const client = { chatContinuation: { findUnique } } as unknown as PrismaClient;
+  access.resolveChatAccess.mockReset()
+    .mockResolvedValueOnce({ project: null }).mockResolvedValueOnce({ project: null })
+    .mockResolvedValueOnce({ project: null }).mockResolvedValueOnce({ project: { projectId: "project-1" } })
+    .mockResolvedValueOnce({ project: null }).mockResolvedValueOnce(null);
+  expect(await continuationSourceHref(client, "continued", "owner")).toBe("/c/source%20chat");
+  expect(await continuationSourceHref(client, "continued", "owner")).toBe("/p/project-1/c/source%20chat");
+  expect(await continuationSourceHref(client, "continued", "member")).toBeNull();
+  expect(findUnique).toHaveBeenCalledWith({ where: { newChatId: "continued" }, select: { sourceChatId: true } });
 });
 
 it("authenticates explicit cancellation and bounds its authority to the current actor", async () => {

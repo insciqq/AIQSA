@@ -6,6 +6,7 @@ import type {
   ContextCompactionCheckpoint,
   ContextPlanMeasurement,
   ContextPlanOutcome,
+  ContextRejectionRebuild,
   ContextSummary,
   ContextSummaryAttempt,
   ContextSummaryReuse,
@@ -15,6 +16,7 @@ export type {
   ContextCompactionCheckpoint,
   ContextPlanMeasurement,
   ContextPlanOutcome,
+  ContextRejectionRebuild,
   ContextSummaryReuse,
   ConversationContextPolicy
 } from "../../contracts/contextCompaction";
@@ -52,7 +54,10 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
   summarySourceRefs: 512,
   /** Newest answers of a branch whose checkpoints preparation may consider
    * for carried notes. */
-  reuseCandidateAnswers: 64
+  reuseCandidateAnswers: 64,
+  /** Share of a rejected request's estimate a context-rejection rebuild keeps
+   * when the provider stated no usable prompt and maximum token counts. */
+  rejectionRebuildRatio: 0.75
 });
 
 const CONTEXT_SUMMARY_MESSAGE_PREFIX = "__context-summary-";
@@ -273,6 +278,13 @@ export function decodeContextSummary(value: unknown): ContextSummary | null {
   return value as ContextSummary;
 }
 
+/** Old checkpoints omit the record; a present one must be exact. */
+export function decodeContextRejectionRebuild(value: unknown): ContextRejectionRebuild | null {
+  return record(value) && exactKeys(value, ["budgetTokens", "round", "version"]) && value.version === 1 &&
+    Number.isSafeInteger(value.round) && Number(value.round) >= 1 && Number(value.round) <= 2_147_483_647 &&
+    index(value.budgetTokens) ? value as ContextRejectionRebuild : null;
+}
+
 export function decodeContextSummaryAttempt(value: unknown): ContextSummaryAttempt | null {
   if (!record(value) ||
     !["attempt", "bindingDigest", "errorCode", "id", "state", "sourceDigest", "usage"].every((key) =>
@@ -300,16 +312,19 @@ export function contextPinsDigest(request: NormalizedRunRequest): string {
 export function contextCompactionCheckpoint(input: Readonly<{
   ownerId: string;
   runId: string;
-  request: NormalizedRunRequest;
+  /** A round request carries the run's rebuild record into every checkpoint. */
+  request: NormalizedRunRequest & Readonly<{ contextCompactionRebuild?: ContextRejectionRebuild }>;
   followupRevision?: number;
   followupTexts?: readonly string[];
   observationRefs?: readonly string[];
   recentTailCallIds?: readonly string[];
   measurement?: ContextPlanMeasurement;
+  rebuild?: ContextRejectionRebuild;
   summary?: ContextSummary;
   summaryAttempts?: readonly ContextSummaryAttempt[];
 }>): ContextCompactionCheckpoint {
   const source = input.request.context?.messages ?? [];
+  const rebuild = input.rebuild ?? input.request.contextCompactionRebuild;
   return {
     branchId: input.request.contextCompactionPolicy?.source.leafMessageId ?? source.at(-1)?.id ?? input.request.chatId,
     followupDigest: contextDigest(input.followupTexts ?? []),
@@ -325,6 +340,7 @@ export function contextCompactionCheckpoint(input: Readonly<{
     runId: input.runId,
     sourceDigest: input.request.contextCompactionPolicy?.source.digest ?? contextDigest(source),
     version: 1,
+    ...(rebuild ? { rebuild } : {}),
     ...(input.summary ? { summary: input.summary } : {}),
     ...(input.summaryAttempts?.length ? {
       summaryAttempts: input.summaryAttempts.slice(-CONTEXT_COMPACTION_LIMITS.summaryReceipts)

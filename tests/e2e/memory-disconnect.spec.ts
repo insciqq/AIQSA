@@ -110,7 +110,7 @@ test("accepted Memory survives closing its tab, reconnects once, and still honor
     await page.close();
     const observer = await context.newPage();
     // A real authenticated read also races the repository's recovery entry point.
-    await observer.goto(`/?chat=${run.chatId}`);
+    await observer.goto(`/c/${run.chatId}`);
     await expect(observer.getByTestId("app-shell")).toBeVisible();
     expect((await prisma.modelRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("preparing");
     expect((await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: controlBinding.id } })).state).toBe("RUNNING");
@@ -149,7 +149,7 @@ test("accepted Memory survives closing its tab, reconnects once, and still honor
     })).state).toBe("OUTCOME_UNKNOWN");
     expect(await prisma.memoryOperationReceipt.count({ where: { userId, modelRunId: stopped.id } })).toBe(0);
     expect(await prisma.memoryFactVersion.count({ where: { userId, state: "ACTIVE" } })).toBe(1);
-    await observer.goto(`/?chat=${stopped.chatId}`);
+    await observer.goto(`/c/${stopped.chatId}`);
     await expect(observer.getByTestId("app-shell")).toBeVisible();
     expect(controlCalls).toBe(2);
   } finally {
