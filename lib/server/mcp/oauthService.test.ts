@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import type {
+  FetchLike,
   OAuthClientInformationMixed,
   OAuthClientMetadata,
   OAuthTokens
@@ -118,10 +119,12 @@ class MemoryOAuthRepository implements McpOAuthRepository {
     return { kind: "ok", value };
   }
 
-  async finalizeDisconnected(connectionId: string): Promise<boolean> {
-    const connection = this.connections.get(connectionId);
-    if (!connection || connection.state !== "disconnecting" || this.activeBindings) return false;
-    this.connections.set(connectionId, { ...connection, state: "disconnected" });
+  async finalizeDisconnected(input: Parameters<McpOAuthRepository["finalizeDisconnected"]>[0]):
+    Promise<boolean> {
+    const connection = this.connections.get(input.connectionId);
+    if (!connection || connection.state !== "disconnecting" || this.activeBindings ||
+      connection.tokenVersion !== input.tokenVersion) return false;
+    this.connections.set(input.connectionId, { ...connection, state: "disconnected" });
     return true;
   }
 
@@ -159,7 +162,10 @@ class MemoryOAuthRepository implements McpOAuthRepository {
   }
 
   async loadConnection(connectionId: string): Promise<McpOAuthStoredConnection | null> {
-    return this.connections.get(connectionId) ?? null;
+    const connection = this.connections.get(connectionId);
+    // Finalization clears the encrypted tokens, so the durable repository no
+    // longer serializes a disconnected connection.
+    return connection && connection.state !== "disconnected" ? connection : null;
   }
 
   async prepareValidationPolicy(input: { redirectUri: string; serverId: string; userId: string }):
@@ -214,9 +220,10 @@ class MemoryOAuthRepository implements McpOAuthRepository {
 
   async rotateTokens(input: Parameters<McpOAuthRepository["rotateTokens"]>[0]):
     Promise<McpOAuthStoredConnection | null> {
-    const connection = this.connections.get(input.connectionId);
-    if (!connection || connection.tokenVersion !== input.expectedTokenVersion) {
-      return connection ?? null;
+    const connection = await this.loadConnection(input.connectionId);
+    if (!connection || connection.tokenVersion !== input.expectedTokenVersion ||
+      !["ready", "disconnecting"].includes(connection.state)) {
+      return connection;
     }
     const version = Number(connection.tokenVersion.split("-")[1] ?? "1") + 1;
     const tokens = {
@@ -1382,5 +1389,313 @@ describe("generic MCP OAuth service", () => {
     expect(started.flow.clientId).toBe(clientDocument);
     expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe(clientDocument);
     expect(fixture.dcrCalls).toBe(0);
+  });
+});
+
+type DisposableTokenMode = "hang" | "hold" | "ok" | "oversized";
+
+// A real loopback token endpoint: the reviewed HTTPS policy URL is mapped onto
+// it below the policy fetch, so the SDK refresh path, abort propagation and
+// socket teardown run without external services.
+async function startDisposableTokenServer() {
+  const held: (() => void)[] = [];
+  const requests: { closed: Promise<void>; refreshToken: string | null }[] = [];
+  const state: { mode: DisposableTokenMode } = { mode: "ok" };
+  let issued = 0;
+  const server = createServer((request, response) => {
+    response.on("error", () => undefined);
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    request.on("end", () => {
+      const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+      const closed = new Promise<void>((resolve) => response.once("close", () => resolve()));
+      requests.push({ closed, refreshToken: body.get("refresh_token") });
+      const respond = () => {
+        if (response.destroyed) return;
+        issued += 1;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          access_token: `disposable-access-${issued}`,
+          expires_in: 3_600,
+          refresh_token: `disposable-refresh-${issued}`,
+          scope: "mcp.read mcp.write",
+          token_type: "Bearer"
+        } satisfies OAuthTokens));
+      };
+      if (state.mode === "hang") return;
+      if (state.mode === "hold") {
+        held.push(respond);
+        return;
+      }
+      if (state.mode === "oversized") {
+        response.writeHead(200, { "content-type": "application/json" });
+        const filler = Buffer.alloc(64 * 1_024, 0x20);
+        for (let index = 0; index < 10; index += 1) response.write(filler);
+        response.end("{}");
+        return;
+      }
+      respond();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    async close() {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    },
+    held,
+    origin: `http://127.0.0.1:${address.port}`,
+    requests,
+    state
+  };
+}
+
+function fetchedUrl(input: Parameters<FetchLike>[0]): string {
+  return new URL(input instanceof Request ? input.url : input.toString()).toString();
+}
+
+function isRefreshRequest(input: Parameters<FetchLike>[0], init?: RequestInit): boolean {
+  return fetchedUrl(input) === `${AUTH_ORIGIN}/token` &&
+    new URLSearchParams(String(init?.body)).get("grant_type") === "refresh_token";
+}
+
+function disposableAuthorizationFetch(
+  fixture: StandardsOAuthFixture,
+  tokenOrigin: string | null,
+  revokedTokens: string[],
+  onRevoke?: () => Promise<void>
+): FetchLike {
+  return async (input, init) => {
+    if (tokenOrigin && isRefreshRequest(input, init)) return fetch(`${tokenOrigin}/token`, init);
+    if (fetchedUrl(input) === `${AUTH_ORIGIN}/revoke`) {
+      revokedTokens.push(new URLSearchParams(String(init?.body)).get("token") ?? "");
+      await onRevoke?.();
+    }
+    return fixture.fetch(fetchedUrl(input), init);
+  };
+}
+
+async function connectedHttpsService(input: Readonly<{
+  fetchFn: FetchLike;
+  fixture: StandardsOAuthFixture;
+  repository?: MemoryOAuthRepository;
+  requestTimeoutMs: number;
+}>) {
+  const repository = input.repository ?? new MemoryOAuthRepository();
+  const service = new McpOAuthService({
+    fetchForPolicy: () => input.fetchFn,
+    now: () => repository.now,
+    repository,
+    requestTimeoutMs: input.requestTimeoutMs
+  });
+  const started = await service.startAuthorization({
+    forceReconnect: true,
+    purpose: "user",
+    redirectUri: REDIRECT_URI,
+    serverId: "server-1",
+    state: "deadline-state",
+    userId: "user-1"
+  });
+  if (started.kind !== "redirect") throw new Error("expected redirect");
+  input.fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+  const connection = await service.completeAuthorization({
+    authorizationCode: "fixture-code",
+    flow: started.flow
+  });
+  repository.now = new Date(connection.expiresAt!.getTime() - 30_000);
+  return { connection, repository, service };
+}
+
+const USER_DISCONNECT = { purpose: "user", serverId: "server-1", userId: "user-1" } as const;
+
+describe("bounded MCP OAuth refresh and revocation", () => {
+  it("fails a stalled HTTPS token endpoint within the deadline and starts the next refresh afresh", async () => {
+    const tokenServer = await startDisposableTokenServer();
+    try {
+      const fixture = new StandardsOAuthFixture();
+      const { connection, repository, service } = await connectedHttpsService({
+        fetchFn: disposableAuthorizationFetch(fixture, tokenServer.origin, []),
+        fixture,
+        requestTimeoutMs: 200
+      });
+      tokenServer.state.mode = "hang";
+      const startedAt = Date.now();
+      const stalled = await Promise.allSettled(
+        Array.from({ length: 4 }, () => service.tokensForConnection(connection.id))
+      );
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(stalled).toEqual(Array.from({ length: 4 }, () => ({
+        reason: expect.objectContaining({ code: "mcp_oauth_authorization_failed" }),
+        status: "rejected"
+      })));
+      expect(tokenServer.requests).toHaveLength(1);
+      // The deadline aborts the socket instead of abandoning it.
+      await tokenServer.requests[0]!.closed;
+      expect(repository.connections.get(connection.id)).toMatchObject({
+        state: "ready",
+        tokenVersion: connection.tokenVersion
+      });
+
+      tokenServer.state.mode = "ok";
+      await expect(service.tokensForConnection(connection.id)).resolves.toMatchObject({
+        access_token: "disposable-access-1",
+        refresh_token: "disposable-refresh-1"
+      });
+      expect(tokenServer.requests.map((request) => request.refreshToken))
+        .toEqual(["refresh-1", "refresh-1"]);
+    } finally {
+      await tokenServer.close();
+    }
+  });
+
+  it("settles the refresh singleflight even when a transport ignores its abort signal", async () => {
+    const fixture = new StandardsOAuthFixture();
+    let stalls = 0;
+    const { connection, service } = await connectedHttpsService({
+      fetchFn: async (input, init) => {
+        if (isRefreshRequest(input, init) && stalls === 0) {
+          stalls += 1;
+          return new Promise<Response>(() => undefined);
+        }
+        return fixture.fetch(fetchedUrl(input), init);
+      },
+      fixture,
+      requestTimeoutMs: 100
+    });
+    await expect(service.tokensForConnection(connection.id)).rejects.toMatchObject({
+      code: "mcp_oauth_authorization_failed"
+    } satisfies Partial<McpOAuthError>);
+    await expect(service.tokensForConnection(connection.id)).resolves.toMatchObject({
+      access_token: "access-refresh-1"
+    });
+    expect(stalls).toBe(1);
+    expect(fixture.refreshCalls).toBe(1);
+  });
+
+  it("rejects an oversized HTTPS token response without rotating the stored generation", async () => {
+    const tokenServer = await startDisposableTokenServer();
+    try {
+      const fixture = new StandardsOAuthFixture();
+      const { connection, repository, service } = await connectedHttpsService({
+        fetchFn: disposableAuthorizationFetch(fixture, tokenServer.origin, []),
+        fixture,
+        requestTimeoutMs: 5_000
+      });
+      tokenServer.state.mode = "oversized";
+      await expect(service.tokensForConnection(connection.id)).rejects.toMatchObject({
+        code: "mcp_oauth_authorization_failed"
+      } satisfies Partial<McpOAuthError>);
+      expect(repository.connections.get(connection.id)).toMatchObject({
+        state: "ready",
+        tokenVersion: connection.tokenVersion,
+        tokens: { access_token: "access-1", refresh_token: "refresh-1" }
+      });
+    } finally {
+      await tokenServer.close();
+    }
+  });
+
+  it("stops a local refresh when a drained disconnect revokes the connection", async () => {
+    const tokenServer = await startDisposableTokenServer();
+    try {
+      const fixture = new StandardsOAuthFixture();
+      const revoked: string[] = [];
+      const { connection, repository, service } = await connectedHttpsService({
+        fetchFn: disposableAuthorizationFetch(fixture, tokenServer.origin, revoked),
+        fixture,
+        requestTimeoutMs: 30_000
+      });
+      tokenServer.state.mode = "hold";
+      const refreshing = service.tokensForConnection(connection.id);
+      await vi.waitFor(() => expect(tokenServer.requests).toHaveLength(1));
+
+      await expect(service.disconnect(USER_DISCONNECT)).resolves.toBe("disconnected");
+      await expect(refreshing).rejects.toMatchObject({
+        code: "mcp_oauth_authorization_failed"
+      } satisfies Partial<McpOAuthError>);
+      await tokenServer.requests[0]!.closed;
+      tokenServer.held.splice(0).forEach((respond) => respond());
+      expect(revoked).toEqual(["access-1", "refresh-1"]);
+      expect(repository.connections.get(connection.id)?.state).toBe("disconnected");
+    } finally {
+      await tokenServer.close();
+    }
+  });
+
+  it("revokes a generation rotated after revocation before clearing the connection", async () => {
+    const fixture = new StandardsOAuthFixture();
+    const repository = new MemoryOAuthRepository();
+    const revoked: string[] = [];
+    let connectionId = "";
+    let lateRotation = false;
+    const { connection, service } = await connectedHttpsService({
+      fetchFn: disposableAuthorizationFetch(fixture, null, revoked, async () => {
+        if (lateRotation) return;
+        lateRotation = true;
+        // Another process stores its refresh result while this revocation runs.
+        const current = await repository.loadConnection(connectionId);
+        await repository.rotateTokens({
+          connectionId,
+          expectedTokenVersion: current!.tokenVersion,
+          tokens: { access_token: "late-access", refresh_token: "late-refresh", token_type: "Bearer" }
+        });
+      }),
+      fixture,
+      repository,
+      requestTimeoutMs: 5_000
+    });
+    connectionId = connection.id;
+
+    await expect(service.disconnect(USER_DISCONNECT)).resolves.toBe("disconnected");
+    expect(revoked).toEqual(["access-1", "refresh-1", "late-access", "late-refresh"]);
+    expect(repository.connections.get(connection.id)?.state).toBe("disconnected");
+  });
+
+  it("revokes tokens from a refresh that completes after another process finalized the disconnect", async () => {
+    const tokenServer = await startDisposableTokenServer();
+    try {
+      const fixture = new StandardsOAuthFixture();
+      const repository = new MemoryOAuthRepository();
+      const revoked: string[] = [];
+      const fetchFn = disposableAuthorizationFetch(fixture, tokenServer.origin, revoked);
+      const { connection, service: refresher } = await connectedHttpsService({
+        fetchFn,
+        fixture,
+        repository,
+        requestTimeoutMs: 30_000
+      });
+      const disconnector = new McpOAuthService({
+        fetchForPolicy: () => fetchFn,
+        now: () => repository.now,
+        repository
+      });
+      tokenServer.state.mode = "hold";
+      const refreshing = refresher.tokensForConnection(connection.id);
+      await vi.waitFor(() => expect(tokenServer.requests).toHaveLength(1));
+
+      await expect(disconnector.disconnect(USER_DISCONNECT)).resolves.toBe("disconnected");
+      tokenServer.held.splice(0).forEach((respond) => respond());
+      await expect(refreshing).rejects.toMatchObject({
+        code: "mcp_oauth_reauthorization_required"
+      } satisfies Partial<McpOAuthError>);
+      expect(revoked).toEqual([
+        "access-1",
+        "refresh-1",
+        "disposable-access-1",
+        "disposable-refresh-1"
+      ]);
+      expect(repository.connections.get(connection.id)).toMatchObject({
+        state: "disconnected",
+        tokens: { access_token: "access-1" }
+      });
+    } finally {
+      await tokenServer.close();
+    }
   });
 });

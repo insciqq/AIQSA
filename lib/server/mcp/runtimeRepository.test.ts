@@ -17,6 +17,7 @@ import {
   localRuntimeCandidate,
   remoteRuntimeCandidate
 } from "./runtimeRepository";
+import { mcpEndpointBinding, type McpEndpointBinding } from "./definitions";
 
 const KEY = Buffer.alloc(32, 0x4d);
 const NOW = new Date("2026-07-22T19:00:00.000Z");
@@ -41,10 +42,12 @@ type RecordOptions = {
   enabled?: boolean;
   grants?: GrantFixture[];
   groupIds?: string[];
+  personalEndpoints?: Record<string, McpEndpointBinding>;
   personalValues?: Record<string, McpSlotValue>;
   personalVersion?: number;
   resolvedArtifact?: Record<string, unknown> | null;
   serverEnabled?: boolean;
+  sharedEndpoints?: Record<string, McpEndpointBinding>;
   sharedValues?: Record<string, McpSlotValue>;
   sharedVersion?: number;
 };
@@ -191,7 +194,11 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
     enabled: options.enabled ?? true,
     id: USER_SERVER_ID,
     personalConfigEnvelope: encryptMcpEnvelope(
-      { values: personalValues, version: 1 },
+      {
+        ...(options.personalEndpoints ? { endpoints: options.personalEndpoints } : {}),
+        values: personalValues,
+        version: 1
+      },
       KEY,
       mcpPersonalConfigEnvelopeContext(USER_SERVER_ID, personalVersion)
     ),
@@ -219,7 +226,11 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
       id: SERVER_ID,
       namespace: "remote-mcp",
       sharedConfigEnvelope: encryptMcpEnvelope(
-        { values: sharedValues, version: 1 },
+        {
+          ...(options.sharedEndpoints ? { endpoints: options.sharedEndpoints } : {}),
+          values: sharedValues,
+          version: 1
+        },
         KEY,
         mcpSharedConfigEnvelopeContext(SERVER_ID, sharedVersion)
       ),
@@ -466,6 +477,48 @@ describe("remote MCP runtime candidates", () => {
     expect(remoteRuntimeCandidate({
       key: KEY,
       record: runtimeRecord(overrides)
+    })).toBeNull();
+  });
+
+  it("launches only values entered for the active revision's origin", () => {
+    const active = mcpEndpointBinding(configuration);
+    const samePath = mcpEndpointBinding({
+      ...configuration,
+      source: { kind: "remote", url: "https://mcp.example.test/previous-path" }
+    });
+    const foreign = mcpEndpointBinding({
+      ...configuration,
+      source: { kind: "remote", url: "https://previous-origin.example.test/rpc" }
+    });
+
+    expect(remoteRuntimeCandidate({
+      key: KEY,
+      record: runtimeRecord({ personalEndpoints: { authorization: foreign, workspace: foreign } })
+    })).toBeNull();
+
+    const candidate = remoteRuntimeCandidate({
+      key: KEY,
+      record: runtimeRecord({
+        personalEndpoints: { authorization: foreign, workspace: samePath },
+        sharedEndpoints: { authorization: active }
+      })
+    });
+    expect(candidate?.headers).toEqual({
+      Authorization: "Bearer shared-secret",
+      "X-Mode": "sync",
+      "X-Tenant": "42",
+      "X-Workspace": "workspace-a"
+    });
+    expect(JSON.stringify(candidate)).not.toContain("personal-secret");
+
+    // Required shared values entered for another origin block launch until
+    // the administrator enters them again.
+    expect(remoteRuntimeCandidate({
+      key: KEY,
+      record: runtimeRecord({
+        personalEndpoints: { authorization: foreign },
+        sharedEndpoints: { authorization: foreign, tenant: foreign }
+      })
     })).toBeNull();
   });
 
