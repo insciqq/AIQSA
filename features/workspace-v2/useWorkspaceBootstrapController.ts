@@ -1,8 +1,10 @@
 "use client";
 
+import type { ChatRoute } from "@/components/app-shell/chatRoute";
 import {
   chatIdFromComposerSessionKey,
   folderIdFromComposerSessionKey,
+  projectIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
@@ -84,6 +86,7 @@ export function useWorkspaceBootstrapController({
   applyControlDefaults,
   reapplyActiveChatDefaults,
   refreshWorkspace,
+  resolveInitialRoute,
   setCatalog,
   setCatalogError,
   setSelectedModelId,
@@ -99,6 +102,12 @@ export function useWorkspaceBootstrapController({
   applyControlDefaults: ComposerControlState["applyControlDefaults"];
   reapplyActiveChatDefaults: WorkspaceActions["reapplyActiveChatDefaults"];
   refreshWorkspace: WorkspaceActions["refreshWorkspace"];
+  /**
+   * Loads the workspace and resolves the address the page was opened at into
+   * state, returning the route it settled on (null when loading failed). It
+   * holds the address from the call on, so pass a catalog still loading.
+   */
+  resolveInitialRoute(catalog: Catalog | null | Promise<Catalog | null>): Promise<ChatRoute | null>;
   setCatalog: WorkspaceState["setCatalog"];
   setCatalogError: WorkspaceState["setCatalogError"];
   setSelectedModelId: ComposerControlState["setSelectedModelId"];
@@ -170,11 +179,14 @@ export function useWorkspaceBootstrapController({
     });
   });
   const refreshWorkspaceEvent = useEventCallback(refreshWorkspace);
+  const resolveInitialRouteEvent = useEventCallback(resolveInitialRoute);
   const activateBlankWorkspaceEvent = useEventCallback(activateBlankWorkspace);
-  const retryWorkspace = useEventCallback(() =>
-    refreshWorkspaceEvent(useWorkspaceStore.getState().activeChatId, {
-      catalogOverride: useWorkspaceStore.getState().catalog
-    })
+  // Until the workspace first loads, the address is still unresolved.
+  const retryWorkspace = useEventCallback(() => useWorkspaceStore.getState().workspaceReady
+    ? refreshWorkspaceEvent(useWorkspaceStore.getState().activeChatId, {
+        catalogOverride: useWorkspaceStore.getState().catalog
+      })
+    : resolveInitialRouteEvent(useWorkspaceStore.getState().catalog)
   );
   const retryCatalog = useEventCallback(async () => {
     if (currentCatalog()) {
@@ -189,9 +201,13 @@ export function useWorkspaceBootstrapController({
     const activeChatIdBeforeRefresh = useWorkspaceStore.getState().activeChatId;
     const controlsBeforeRefresh = workspaceDefaultControlsFingerprint(useComposerControlStore.getState());
     const pendingWorkspaceRefresh = workspaceRefreshPromiseRef.current;
-    await refreshWorkspaceEvent(activeChatIdBeforeRefresh, {
-      catalogOverride: loadedCatalog
-    });
+    if (useWorkspaceStore.getState().workspaceReady) {
+      await refreshWorkspaceEvent(activeChatIdBeforeRefresh, {
+        catalogOverride: loadedCatalog
+      });
+    } else {
+      await resolveInitialRouteEvent(loadedCatalog);
+    }
     if (
       pendingWorkspaceRefresh &&
       activeScopeRef.current === scope.token &&
@@ -214,38 +230,44 @@ export function useWorkspaceBootstrapController({
       if (recoveredDraft && !ownedRecoveredDraft) {
         clearSessionExpiredDraft();
       }
-      const recoveredChatId = ownedRecoveredDraft
-        ? chatIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey)
-        : null;
-      const loadedCatalog = await loadCatalog();
-      if (activeScopeRef.current === scope.token) {
-        await refreshWorkspaceEvent(
-          recoveredChatId ?? useWorkspaceStore.getState().activeChatId,
-          {
-            catalogOverride: loadedCatalog
-          }
-        );
-      }
+      // The address decides the active chat; `/` never restores one. A newer
+      // bootstrap supersedes this resolution.
+      const settledRoute = await resolveInitialRouteEvent(loadCatalog());
       if (activeScopeRef.current !== scope.token || !ownedRecoveredDraft) {
         return;
       }
 
+      // The draft returns to its own session key whatever the address shows.
+      const recoveredChatId = chatIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey);
       const recoveredFolderId = folderIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey);
-      if (recoveredFolderId) {
-        if (!useWorkspaceStore.getState().folders.some((folder) => folder.id === recoveredFolderId)) {
-          clearSessionExpiredDraft();
-          return;
-        }
-        activateBlankWorkspaceEvent(recoveredFolderId);
-      } else if (!recoveredChatId) {
-        activateBlankWorkspaceEvent();
-      } else if (!useWorkspaceStore.getState().chats.some((chat) => chat.id === recoveredChatId)) {
+      if (
+        (recoveredChatId && !useWorkspaceStore.getState().chats.some((chat) => chat.id === recoveredChatId)) ||
+        (recoveredFolderId && !useWorkspaceStore.getState().folders.some((folder) => folder.id === recoveredFolderId))
+      ) {
         clearSessionExpiredDraft();
         return;
       }
+      // A personal blank draft keeps its folder while the address is the new chat.
+      if (
+        !recoveredChatId &&
+        !projectIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey) &&
+        settledRoute?.chatId === null &&
+        settledRoute.projectId === null
+      ) {
+        activateBlankWorkspaceEvent(recoveredFolderId);
+      }
 
       const composerState = useComposerSessionStore.getState();
-      const target = selectComposerSession(composerState, ownedRecoveredDraft.sessionKey);
+      if (!composerState.sessionsByKey[ownedRecoveredDraft.sessionKey]) {
+        // Create the draft's session without changing the one the address shows.
+        const shownSessionKey = composerState.activeSessionKey;
+        composerState.activateSession(ownedRecoveredDraft.sessionKey);
+        composerState.activateSession(shownSessionKey);
+      }
+      const target = selectComposerSession(
+        useComposerSessionStore.getState(),
+        ownedRecoveredDraft.sessionKey
+      );
       if (!target.draft && !target.pendingSend && !target.pendingEdit) {
         composerState.updateSession(ownedRecoveredDraft.sessionKey, {
           draft: ownedRecoveredDraft.draft
@@ -259,7 +281,7 @@ export function useWorkspaceBootstrapController({
     return () => {
       activeScopeRef.current = null;
     };
-  }, [accountEmail, accountId, activateBlankWorkspaceEvent, loadCatalog, refreshWorkspaceEvent, scope, setCatalog]);
+  }, [accountEmail, accountId, activateBlankWorkspaceEvent, loadCatalog, resolveInitialRouteEvent, scope, setCatalog]);
 
   return { activateBlankWorkspaceEvent, retryCatalog, retryWorkspace };
 }

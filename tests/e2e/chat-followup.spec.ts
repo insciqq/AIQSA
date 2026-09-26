@@ -83,7 +83,7 @@ test("Follow-up stays on the accepted run, survives another tab and reload, and 
     await page.setViewportSize({ width: 390, height: 844 });
     const secondTab = await context.newPage();
     try {
-      await secondTab.goto(`/?chat=${chatId}`);
+      await secondTab.goto(`/c/${chatId}`);
       await expect(secondTab.getByLabel("Follow-ups")).toContainText("First clarification", { timeout: 30_000 });
       await expect(secondTab.getByLabel("Follow-ups")).toContainText("Second clarification");
     } finally { await secondTab.close(); }

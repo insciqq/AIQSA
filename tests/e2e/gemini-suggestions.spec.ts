@@ -27,9 +27,6 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
   page
 }) => {
   await page.setViewportSize({ height: 844, width: 390 });
-  await page.addInitScript((activeChatId) => {
-    window.localStorage.setItem("aiqsa.activeChatId", activeChatId);
-  }, chatId);
   await suggestionStream.install(page, chatId);
   await installMatrixCatalogFixture(page, {
     chats: [{
@@ -49,7 +46,7 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
     folders: []
   });
 
-  await signIn(page);
+  await signIn(page, `/c/${chatId}`);
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Show grounded suggestions");
   await composer.press("Enter");

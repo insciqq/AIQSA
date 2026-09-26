@@ -95,7 +95,8 @@ export function proxyWithEnv(
   env: Record<string, string | undefined>
 ) {
   const { pathname } = request.nextUrl;
-  const artifactViewer = pathname === "/" || ["/a", "/artifacts"].some(
+  // Every chat address (`/`, `/c/…`, `/p/…`) hosts the artifact side panel.
+  const artifactViewer = pathname === "/" || ["/a", "/artifacts", "/c", "/p"].some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
   );
   const artifactContent = /^\/api\/artifacts\/[^/]+\/versions\/[^/]+\/content\/?$/u.test(pathname) ||

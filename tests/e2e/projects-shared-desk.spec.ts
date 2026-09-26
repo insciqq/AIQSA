@@ -20,7 +20,7 @@ async function loginWithPassword(
   page: Page,
   user: Readonly<{ email: string; password: string }>
 ): Promise<void> {
-  await page.addInitScript(() => window.localStorage.removeItem("aiqsa.activeChatId"));
+  // Sign-in lands on `/`, which always opens a new chat.
   await page.goto("/login");
   await page.getByLabel("Email").fill(user.email);
   await page.getByLabel("Password", { exact: true }).fill(user.password);
@@ -344,8 +344,10 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     await ownerPage.getByRole("menuitem", { name: "Copy link to chat" }).click();
     await expect(ownerPage.getByText("Project chat link copied.")).toBeVisible();
     const copiedLink = await ownerPage.evaluate(() => navigator.clipboard.readText());
-    expect(copiedLink).toContain(`project=${projectId}`);
-    expect(copiedLink).toMatch(/chat=[0-9a-f-]+/u);
+    const copied = new URL(copiedLink);
+    expect(copied.pathname).toMatch(new RegExp(`^/p/${projectId}/c/[0-9a-f-]+$`, "u"));
+    expect(copied.search).toBe("");
+    await expect(ownerPage).toHaveURL(copied.href);
 
     // Keep the smoke bounded to its two named users: discard the owner's old
     // browser state before proving that the copied destination works from a
@@ -358,6 +360,7 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     await ownerPage.goto(copiedLink);
     await expect(ownerPage.getByRole("complementary", { name: "Shared project context" }))
       .toContainText(projectName, { timeout: 12_000 });
+    await expect(ownerPage).toHaveURL(copied.href);
     await expect(ownerPage.getByRole("article", {
       name: `Question from ${LOCAL_RESTRICTED_MEMBER.displayName}`
     })).toContainText(followUp, { timeout: 20_000 });
@@ -368,6 +371,8 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     )).toBeVisible({ timeout: 8_000 });
     await expect(contributorPage.getByRole("complementary", { name: "Shared project context" }))
       .toHaveCount(0);
+    // The address stops naming the Project chat the contributor lost.
+    await expect(contributorPage).toHaveURL(/\/$/u);
     await expect(projectRow(contributorPage, projectName)).toHaveCount(0);
     const unavailable = await contributorPage.request.get(`/api/projects/${projectId}`);
     expect(unavailable.status()).toBe(404);
