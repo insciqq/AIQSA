@@ -117,7 +117,7 @@ import {
 } from "../knowledge/automaticEvidence";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { requestWithRunFollowups } from "./runFollowupExecution";
-import { followupRequestHeadroom, followupTokenCost, type RunFollowupAdmission, type RegenerationFollowups } from "./runFollowups";
+import { followupAdmissionBudgetTokens, followupTokenCost, type RunFollowupAdmission, type RegenerationFollowups } from "./runFollowups";
 import {
   getRunAttachmentLimits,
   type RunAttachmentLimits
@@ -2224,7 +2224,7 @@ export async function prepareRun(
   // executor appends them; the temporary request above budgets them once.
   if (inheritedFollowups?.entries.length) delete providerRequest.providerToolMessages;
   const followupAdmission: RunFollowupAdmission = {
-    budgetTokens: Math.min(8_192, Math.floor(followupRequestHeadroom(providerBudget.request, toolBridge) / 2)),
+    budgetTokens: followupAdmissionBudgetTokens(providerBudget.request, toolBridge),
     ...(inheritedFollowups ? { inherited: { messageId: inheritedFollowups.messageId, revision: inheritedFollowups.revision } } : {})
   };
   if (followupAdmission) {

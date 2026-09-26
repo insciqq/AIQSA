@@ -2055,6 +2055,86 @@ describe("run execution", () => {
       { followups: { available: true, entries: [] } }] } });
   });
 
+  it("records no answer-round usage or operation for a tool round refused before dispatch", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    const repository = createRepository();
+    const loadEntitlements = repository.repository.loadEntitlements;
+    let revoked = false;
+    repository.repository.loadEntitlements = async (...args) => revoked
+      ? { modelKeys: new Set<string>(), providerKeys: new Set<string>(), searchStrategies: new Set<string>() }
+      : loadEntitlements(...args);
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      // Access is revoked while the first round's tool runs.
+      revoked = true;
+      return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "status-call", name: "get_session_status" }],
+        usage: usage(2, 1, 0) });
+    });
+    parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text());
+    expect(requests).toHaveLength(1);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toHaveLength(1);
+    expect(repository.recordedRunUsageEvents.flatMap((entry) => entry.answerRoundUsage ? [entry.answerRoundUsage.roundIndex] : []))
+      .toEqual([1]);
+    expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual([expect.objectContaining({
+      operationCount: 1, usage: expect.objectContaining({ completeness: "complete", inputTokens: 2, outputTokens: 1 }) })]);
+  });
+
+  it.each(["refused_replacement", "failed_interrupted_usage_write"] as const)("accounts an interrupted Follow-up generation once: %s", async mode => {
+    const repository = createRepository();
+    const entries: RunFollowup[] = [];
+    repository.repository.followups = {
+      accept: vi.fn(), beginKnowledge: vi.fn(async () => 0),
+      load: async () => ({ revision: entries.length, entries: entries.map(entry => ({ ...entry })) }),
+      deliver: async ({ revision }) => {
+        if (revision !== entries.length) return false;
+        entries.forEach((entry, index) => { if (entry.delivery === "accepted") entries[index] = { ...entry, delivery: "delivered" }; });
+        return true;
+      },
+      close: async ({ revision }) => revision === entries.length
+    };
+    const loadEntitlements = repository.repository.loadEntitlements;
+    let revoked = false;
+    repository.repository.loadEntitlements = async (...args) => revoked
+      ? { modelKeys: new Set<string>(), providerKeys: new Set<string>(), searchStrategies: new Set<string>() }
+      : loadEntitlements(...args);
+    const recordRunUsageEvents = repository.repository.recordRunUsageEvents;
+    let failNextUsageWrite = false;
+    repository.repository.recordRunUsageEvents = async (input) => {
+      if (failNextUsageWrite) { failNextUsageWrite = false; throw new Error("synthetic_accounting_unavailable"); }
+      return recordRunUsageEvents(input);
+    };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        yield { type: "token", data: { delta: "Old partial" } };
+        yield { type: "usage", data: { inputTokens: 11, outputTokens: 2, totalTokens: 13, completeness: "partial" } };
+        if (mode === "refused_replacement") revoked = true;
+        else failNextUsageWrite = true;
+        entries.push({ id: "clarification", ordinal: 1, text: "Use a table", author: "Author", createdAt: new Date().toISOString(), delivery: "accepted" });
+        notifyRunFollowup("run-1", entries.length);
+        throw new DOMException("Generation interrupted", "AbortError");
+      }
+      yield { type: "token", data: { delta: "Updated answer" } };
+      return providerResult({ finalText: "Updated answer", usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10, completeness: "complete" } });
+    });
+    const prepared = preparedData({ provider: "openai", modelId: "gpt-test" });
+    parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text());
+    expect(requests).toHaveLength(1);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toHaveLength(1);
+    // The interrupted generation once; a refused replacement is no operation.
+    expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual([expect.objectContaining({
+      operationCount: 1, usage: expect.objectContaining({ completeness: "partial", inputTokens: 11, outputTokens: 2 }) })]);
+  });
+
   it.each([false, true])("projects pending and ready artifact states with argument streaming=%s", async streaming => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
     const artifactToolDescription = "Frozen artifact policy at admission";

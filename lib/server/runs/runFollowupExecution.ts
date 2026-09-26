@@ -8,7 +8,16 @@ import type { ContextObservation } from "./contextCompactionContract";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { subscribeRunFollowup } from "./runFollowupRegistry";
 import { followupRequestHeadroom, type RunFollowupOperations } from "./runFollowups";
-import { beforeAnswerDispatch } from "./providerToolLoop";
+import { answerDispatchStarted, beforeAnswerDispatch } from "./providerToolLoop";
+
+const unsettledUsage = new WeakMap<object, ModelRunUsage>();
+
+/** The owner could not persist an interrupted generation's usage and kept none
+ * of it: the round's failure path accounts exactly this usage, once. */
+export function unsettledInterruptedUsage<T>(error: T, usage: ModelRunUsage): T {
+  if (typeof error === "object" && error !== null) unsettledUsage.set(error, usage);
+  return error;
+}
 
 export class RunFollowupChanged extends Error {
   constructor() { super("run_followup_changed"); this.name = "RunFollowupChanged"; }
@@ -181,10 +190,10 @@ export function createRunFollowupExecution(input: {
               if (!current.signal.aborted && !parent.aborted) await options.onToolArguments!(event);
             } } : {})
           });
-          dispatched = true;
           // Always await the old iterator's termination. A late result is fenced
           // before it reaches the caller; there is never a parallel replacement.
           let next = await iterator.next();
+          dispatched = true;
           while (!next.done) {
             if (next.value.type === "artifact" && next.value.data.artifactType === "summary") {
               const summary = next.value.data.payload;
@@ -206,13 +215,18 @@ export function createRunFollowupExecution(input: {
           return result;
         } catch (error) {
           const steering = !parent.aborted && (current.signal.aborted || error instanceof RunFollowupChanged);
+          // The answer request counts as sent once the provider stream
+          // produced anything, or when it failed without the owner marking
+          // the failure as raised before dispatch (a pre-dispatch refusal).
+          dispatched ||= iterator !== null && answerDispatchStarted(error);
           if (dispatched) {
             const usage = normalizeTokenUsage({ ...reported, ...(completed ? {} : { completeness: "partial" as const }) });
             if (steering) {
               try { await input.onInterruptedUsage(usage, prepared, { completed, providerResponseId }); }
               catch (settlementError) {
                 dispatchFailed = true;
-                yield { type: "usage", data: usage };
+                yield { type: "usage", data: typeof settlementError === "object" && settlementError !== null
+                  ? unsettledUsage.get(settlementError) ?? usage : usage };
                 throw settlementError;
               }
             } else {

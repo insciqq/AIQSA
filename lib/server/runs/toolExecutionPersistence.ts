@@ -221,9 +221,11 @@ function toolResultPersistenceFailure(result: ToolExecutionResult, maxBytes: num
 }
 
 /** The bounded, content-free outcome of a call whose executed result cannot be
- * kept. It says the call ran, so the model has no reason to replay it. */
+ * kept. It says the call ran, so the model has no reason to replay it. The
+ * result's own output events (a settled Workspace activity entry) and preview
+ * metadata are not model content and survive when given. */
 export function unpersistableToolExecutionResult(
-  result: Pick<ToolExecutionResult, "callId" | "name" | "usage">,
+  result: Pick<ToolExecutionResult, "artifacts" | "callId" | "name" | "rawPreview" | "usage">,
   failure: ToolResultPersistenceFailure
 ): ToolExecutionResult {
   const message = failure.code === "tool_result_too_large"
@@ -236,10 +238,11 @@ export function unpersistableToolExecutionResult(
     stage: failure.stage
   };
   return {
+    ...(result.artifacts?.length ? { artifacts: result.artifacts } : {}),
     callId: result.callId,
     content: [{ text: JSON.stringify({ ok: false, error: { ...error, message } }), type: "text" }],
     name: result.name,
-    rawPreview: { finalProviderResponsePreview: { error } },
+    rawPreview: { ...result.rawPreview, finalProviderResponsePreview: { error } },
     status: "error",
     ...(result.usage ? { usage: result.usage } : {})
   };
@@ -249,7 +252,8 @@ export function unpersistableToolExecutionResult(
  * The result a tool call settles with. An executed result without a durable
  * snapshot (oversized, unserializable or failing its codec) settles as a
  * bounded error carrying only its code, refusing step, observed size and
- * limit, so the batch advances and nothing replays the call. Null only when
+ * limit, beside the result's keepable output events, preview metadata and
+ * usage, so the batch advances and nothing replays the call. Null only when
  * even that bounded outcome cannot be persisted.
  */
 export function settleableToolExecutionResult(
@@ -264,11 +268,20 @@ export function settleableToolExecutionResult(
   const snapshot = snapshotToolExecutionResult(result, maxBytes);
   if (snapshot) return { failure: null, result, snapshot };
   const failure = toolResultPersistenceFailure(result, maxBytes);
-  let refused = unpersistableToolExecutionResult(result, failure);
-  let refusedSnapshot = snapshotToolExecutionResult(refused, maxBytes);
-  if (!refusedSnapshot && refused.usage) {
-    refused = unpersistableToolExecutionResult({ callId: result.callId, name: result.name }, failure);
+  const { callId, name } = result;
+  // Whatever of the result's metadata cannot be kept either is dropped, the
+  // preview first, then the output events, then the usage.
+  let refused!: ToolExecutionResult;
+  let refusedSnapshot: ToolLoopJsonValue | null = null;
+  for (const kept of [
+    { artifacts: result.artifacts, rawPreview: result.rawPreview, usage: result.usage },
+    { artifacts: result.artifacts, usage: result.usage },
+    { usage: result.usage },
+    {}
+  ]) {
+    refused = unpersistableToolExecutionResult({ callId, name, ...kept }, failure);
     refusedSnapshot = snapshotToolExecutionResult(refused, maxBytes);
+    if (refusedSnapshot) break;
   }
   if (!refusedSnapshot) return null;
   if (toolKind) {

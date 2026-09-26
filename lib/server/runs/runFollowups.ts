@@ -5,7 +5,8 @@ import {
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
-import { measureSessionContext } from "./runContextBudget";
+import { CONTEXT_COMPACTION_LIMITS } from "./contextCompactionContract";
+import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
 
 export type RunFollowupAdmission = Readonly<{
   budgetTokens: number;
@@ -58,6 +59,29 @@ export function followupRequestHeadroom(request: ProviderRunRequest, bridge?: Pr
   const context = measureSessionContext({ bridge, request });
   return context.contextWindow === null ? RUN_FOLLOWUP_MAX_TOTAL_CHARS : Math.max(0,
     context.contextWindow - context.maxOutputTokens - context.safetyMarginTokens - context.approximateInputTokens);
+}
+
+function followupBudgetTokens(headroom: number): number {
+  return Math.min(8_192, Math.floor(Math.max(0, headroom) / 2));
+}
+
+/** Clarification budget admitted with a run, before its first dispatch. A
+ * hybrid request that needs a summary is never dispatched uncompacted, so its
+ * room is measured at the planner's target instead of on the admitted branch;
+ * the budget is kept only while that reserve neither makes the request
+ * irreducible nor pushes a fitting request over its budget. */
+export function followupAdmissionBudgetTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+  const measured = followupBudgetTokens(followupRequestHeadroom(request, bridge));
+  const plan = request.contextCompaction;
+  if (request.contextCompactionPolicy?.mode !== "hybrid" || plan?.outcome !== "needs_summary" ||
+    plan.budgetTokens === null) return measured;
+  const planned = followupBudgetTokens(
+    plan.budgetTokens - Math.ceil(plan.budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio));
+  if (planned <= measured) return measured;
+  const reserved = applyProviderRequestContextBudget({ bridge, request: { ...request, followupContextReserveTokens: planned } });
+  const fitting = plan.afterTokens <= plan.budgetTokens;
+  return reserved.ok && (!fitting || (reserved.request.contextCompaction?.afterTokens ?? Number.POSITIVE_INFINITY) <= plan.budgetTokens)
+    ? planned : measured;
 }
 
 export type AcceptRunFollowupResult =

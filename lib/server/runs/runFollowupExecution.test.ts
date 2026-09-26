@@ -17,8 +17,8 @@ import { conversationContextPolicy, type ContextObservation } from "./contextCom
 import { contextObservationsFromResults } from "./contextCompactionPlanner";
 import { prepareCompactedProviderRequest } from "./contextCompactionConsumer";
 import { createContextCompactionPublisher } from "./contextCompactionEvents";
-import { runProviderToolLoop } from "./providerToolLoop";
-import { createRunFollowupExecution, requestWithoutRunFollowups, requestWithRunFollowups, RunFollowupChanged } from "./runFollowupExecution";
+import { beforeAnswerDispatch, runProviderToolLoop } from "./providerToolLoop";
+import { createRunFollowupExecution, requestWithoutRunFollowups, requestWithRunFollowups, RunFollowupChanged, unsettledInterruptedUsage } from "./runFollowupExecution";
 import { notifyRunFollowup } from "./runFollowupRegistry";
 import type { RunFollowupOperations } from "./runFollowups";
 
@@ -381,6 +381,84 @@ describe("in-run clarification execution", () => {
     expect(onUsage).toHaveBeenCalledOnce();
     expect(onUsage.mock.calls[0]?.[0]).toMatchObject({ inputTokens: 9, completeness: "partial" });
     expect(onUsage.mock.calls[0]?.[2]).toEqual({ completeness: "partial", round: 1 });
+  });
+
+  it("records no answer-round usage when the owner refuses a steering replacement before dispatch", async () => {
+    const f = fixture(), emitted = deferred();
+    let calls = 0;
+    const raw: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(_next, options) {
+      calls++;
+      if (calls === 1) {
+        yield { type: "usage", data: { inputTokens: 9, outputTokens: 1 } };
+        emitted.resolve();
+        await new Promise<never>((_resolve, reject) => {
+          options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true });
+        });
+      }
+      // The owner's authority recheck refuses the replacement before any provider I/O.
+      throw beforeAnswerDispatch(Object.assign(new Error("The selected model is no longer available"), { code: "model_not_available" }));
+    } };
+    const onUsage = vi.fn();
+    const outcome = runProviderToolLoop({
+      adapter: { ...raw, stream: (next, options) => f.execution.stream(next, {
+        adapter: raw, signal: options!.signal!, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }) },
+      bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool: vi.fn(), initialRequest: request(), onUsage, parallelToolCalls: false, tools: []
+    });
+    await emitted.promise;
+    f.accept("Clarified during the generation");
+    await expect(outcome).resolves.toMatchObject({ status: "failed" });
+    expect(calls).toBe(2);
+    // The interrupted generation is accounted once by the owner; the refused replacement is no round.
+    expect(f.onInterruptedUsage).toHaveBeenCalledOnce();
+    expect(onUsage).not.toHaveBeenCalled();
+  });
+
+  it("still counts an unmarked failure before any provider event as a dispatched round", async () => {
+    const f = fixture();
+    const raw: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream() {
+      throw Object.assign(new Error("upstream"), { status: 503 });
+    } };
+    const onUsage = vi.fn();
+    const outcome = await runProviderToolLoop({
+      adapter: { ...raw, stream: (next, options) => f.execution.stream(next, {
+        adapter: raw, signal: options!.signal!, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }) },
+      bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool: vi.fn(), initialRequest: request(), onUsage, parallelToolCalls: false, tools: []
+    });
+    expect(outcome).toMatchObject({ status: "failed" });
+    expect(onUsage).toHaveBeenCalledOnce();
+    expect(onUsage.mock.calls[0]?.[0]).toMatchObject({ completeness: "unavailable" });
+    expect(onUsage.mock.calls[0]?.[2]).toEqual({ completeness: "partial", round: 1 });
+  });
+
+  it("forwards the owner's reported interrupted usage once when its persistence fails", async () => {
+    const f = fixture(), emitted = deferred();
+    const cancelled = { inputTokens: 11, outputTokens: 2, totalTokens: 13 };
+    f.onInterruptedUsage.mockImplementationOnce(async () => {
+      throw unsettledInterruptedUsage(new Error("accounting_write_failed"), { ...cancelled, completeness: "partial" });
+    });
+    const raw: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(_next, options) {
+      yield { type: "usage", data: { inputTokens: 9 } };
+      emitted.resolve();
+      await new Promise<never>((_resolve, reject) => {
+        options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true });
+      });
+      return result("unreachable");
+    } };
+    const onUsage = vi.fn();
+    const outcome = runProviderToolLoop({
+      adapter: { ...raw, stream: (next, options) => f.execution.stream(next, {
+        adapter: raw, signal: options!.signal!, timeoutMs: 10_000, closeOnFinal: true, compact: f.compact }) },
+      bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool: vi.fn(), initialRequest: request(), onUsage, parallelToolCalls: false, tools: []
+    });
+    await emitted.promise;
+    f.accept("Clarified during the generation");
+    await expect(outcome).resolves.toMatchObject({ status: "failed" });
+    expect(f.onInterruptedUsage).toHaveBeenCalledOnce();
+    expect(onUsage).toHaveBeenCalledOnce();
+    expect(onUsage.mock.calls[0]?.[0]).toMatchObject({ ...cancelled, completeness: "partial" });
   });
 
   it("retains a typed provider deadline before headers without retrying the request", async () => {
