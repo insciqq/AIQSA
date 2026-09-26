@@ -11,6 +11,7 @@ import { createPasswordLoginHandler, createPasswordResetRequestHandler } from ".
 import { hashPassword, verifyPassword } from "./password";
 import { createPrismaPasswordAuthRepository } from "./passwordRepository";
 import { provisionActiveUser } from "./provisioning";
+import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { hashToken } from "./token";
 
@@ -134,6 +135,7 @@ async function expectNoPasswordAuthority(input: { email: string; userId: string 
   const passwordRepository = createPrismaPasswordAuthRepository(prisma);
   const login = createPasswordLoginHandler({
     getConfig: () => passwordAuthConfig,
+    loginRateLimiter: createFixedWindowLoginRateLimiter(),
     repository: passwordRepository,
     verifyPassword: async () => true
   });
@@ -142,6 +144,7 @@ async function expectNoPasswordAuthority(input: { email: string; userId: string 
     getConfig: () => passwordAuthConfig,
     mailer,
     repository: passwordRepository,
+    resetRateLimiter: createFixedWindowLoginRateLimiter(),
     responseFloorMs: 0
   });
 
