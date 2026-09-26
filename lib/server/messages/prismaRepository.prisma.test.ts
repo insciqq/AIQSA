@@ -12,6 +12,10 @@ import { createPrismaMemoryHistoryIndexHandler } from "../memory/history/handler
 import { withLockedMemoryTransaction } from "../memory/persistence/transaction";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sourceState";
+import {
+  MEMORY_TEMPORARY_DELETION_GENERATION,
+  MEMORY_TEMPORARY_DELETION_TARGET_TYPE
+} from "../memory/temporaryRetention";
 import { prisma } from "../prisma";
 import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -1721,14 +1725,28 @@ describe("Prisma-backed message branch repository", () => {
   it("keeps Temporary sources unbranchable and Project branches outside Personal Memory", async () => {
     await withMemoryBranchOwner(async (userId) => {
       const repository = createPrismaMessageBranchRepository(prisma);
-      const temporaryChat = await prisma.chat.create({
-        data: {
-          memoryMode: "TEMPORARY",
-          temporaryRetentionDeadline: new Date(Date.now() + 3_600_000),
-          temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-          title: "Temporary source",
-          userId
-        }
+      const deadline = new Date(Date.now() + 3_600_000);
+      const temporaryChat = await prisma.$transaction(async (tx) => {
+        const chat = await tx.chat.create({
+          data: {
+            memoryMode: "TEMPORARY",
+            temporaryRetentionDeadline: deadline,
+            temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
+            title: "Temporary source",
+            userId
+          }
+        });
+        await tx.memoryDeletionOutbox.create({
+          data: {
+            memoryGeneration: MEMORY_TEMPORARY_DELETION_GENERATION,
+            nextAttemptAt: deadline,
+            operation: "TEMPORARY_DELETE",
+            targetId: chat.id,
+            targetType: MEMORY_TEMPORARY_DELETION_TARGET_TYPE,
+            userId
+          }
+        });
+        return chat;
       });
       const temporaryTurn = await createSettledTurn({
         chatId: temporaryChat.id,
