@@ -220,7 +220,8 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
 test("renders a safe OAuth callback outcome without exposing provider details", async ({ page }) => {
   await page.goto("/login?oauth=not_allowed&provider=yandex&next=https://evil.example/steal");
 
-  await expect(page.getByRole("alert")).toHaveText(
+  // The framework's route announcer is a second, empty alert once the page hydrates.
+  await expect(page.getByRole("alert").filter({ hasText: "oauth_not_allowed" })).toHaveText(
     "This Yandex account is not allowed to access AIQSA. (oauth_not_allowed)"
   );
   await expect(page.getByText("evil.example")).toHaveCount(0);

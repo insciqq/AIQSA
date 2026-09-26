@@ -163,7 +163,8 @@ test("runtime repair carries details through tab storage, and duplicate thumbnai
     await expect(page.getByRole("tabpanel", { name: "Preview", exact: true }).getByRole("alert")).toContainText("notebookCounter is not defined");
     await page.getByRole("button", { name: "Fix with AI", exact: true }).click();
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
-    await expect(composer).toHaveValue(/Fix the runtime error.*notebookCounter is not defined/);
+    // The page prepares the edit, then the chat address mounts the shell and loads the chat.
+    await expect(composer).toHaveValue(/Fix the runtime error.*notebookCounter is not defined/, { timeout: 20_000 });
     expect(page.url()).not.toContain("notebookCounter");
     expect(await page.evaluate(versionId => sessionStorage.getItem(`aiqsa.artifactFix.${versionId}`), value.artifact.versionId)).toBeNull();
     await page.getByRole("button", { name: "Remove artifact edit" }).click();

@@ -175,7 +175,7 @@ import {
   resolveChatRoute,
   settleChatRouteResolution,
   useChatRouteHistory,
-  writeChatRoute,
+  useShownChatRoute,
   type ChatRoute,
   type ChatRouteResolution,
   type ChatRouteTargets
@@ -867,7 +867,6 @@ export function PowerAppShellV2({
     refreshActiveChat,
     refreshWorkspace,
     renameChat,
-    resolveChatProjectId,
     toggleChatFavorite,
     updateChatFolder
   } = useWorkspaceActions({
@@ -946,12 +945,7 @@ export function PowerAppShellV2({
   // A local draft chat is addressable only while its first send is under
   // way and after the server admitted it: a failed or stopped first send
   // returns the address to the blank route it came from.
-  const activeDraftRouteKey = activeChat?.pendingPersonalDraft || activeChat?.pendingProjectDraft
-    ? `${activeChat.id}\u0000${composerSession.pendingSend ? "sending" : "idle"}`
-    : null;
-  useEffect(() => {
-    if (activeDraftRouteKey) writeChatRoute(chatRouteForState());
-  }, [activeDraftRouteKey]);
+  useShownChatRoute();
 
   useEffect(() => {
     pruneThreadCacheEvent();
@@ -1290,20 +1284,18 @@ export function PowerAppShellV2({
         }
         const pending = workspaceRefreshPromiseRef.current;
         if (pending) await pending;
-        let missing = false;
+        // A readable Project chat opens in its Project; invisible and missing
+        // chats stay indistinguishable.
+        const target: { outcome: "missing" | Readonly<{ projectId: string }> | null } = { outcome: null };
         await refreshWorkspace(chatId, {
           catalogOverride,
           isCurrent,
-          onTargetUnavailable: () => {
-            missing = true;
+          onTargetUnavailable: (projectId) => {
+            target.outcome = projectId ? { projectId } : "missing";
           }
         });
         if (useWorkspaceStore.getState().activeChatId === chatId) return "opened";
-        if (!missing) return "failed";
-        // A readable Project chat opens in its Project; invisible and missing
-        // chats stay indistinguishable.
-        const projectId = await resolveChatProjectId(chatId);
-        return projectId ? { projectId } : "missing";
+        return target.outcome ?? "failed";
       },
       openBlank() {
         projectWorkspace.actions.leave();
