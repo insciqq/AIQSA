@@ -6,6 +6,7 @@
 
 node_modules/
 .next/
+/next-env.d.ts
 .aiqsa/
 tsconfig.tsbuildinfo
 coverage/
