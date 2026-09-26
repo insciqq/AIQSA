@@ -129,7 +129,6 @@ for (const viewport of [
         test.setTimeout(60_000);
         await page.setViewportSize(viewport);
         await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
-        await page.addInitScript(id => localStorage.setItem("aiqsa.activeChatId", id), chatId);
         await installChat(page);
         await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
         await page.route(`**/api/chats/${chatId}/workspace`, route => route.fulfill({ json: { workspace } }));
@@ -187,7 +186,7 @@ for (const viewport of [
             return original(input, init);
           };
         }, { chatId, runId });
-        await signInWithLocalToken(page);
+        await signInWithLocalToken(page, `/c/${chatId}`);
         // Install after navigation: multiple addInitScript callbacks have no ordering guarantee.
         await installDispatchGuard();
         const composer = page.getByRole("textbox", { name: "Message" });

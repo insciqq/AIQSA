@@ -109,6 +109,18 @@ describe("AdminPage", () => {
     expect(adminPageMocks.adminPanel).not.toHaveBeenCalled();
   });
 
+  it("returns a stale session to the same Control Center address, including its chat return", async () => {
+    adminPageMocks.resolveAuthToken.mockResolvedValue(null);
+
+    await expect(AdminPage({
+      searchParams: Promise.resolve({ return: "/c/chat-1", section: "mcp" })
+    })).rejects.toBe(redirectSignal);
+
+    const location = new URL(adminPageMocks.redirect.mock.calls[0]![0] as string, "https://aiqsa.invalid");
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("next")).toBe("/admin?return=%2Fc%2Fchat-1&section=mcp");
+  });
+
   it("redirects an authenticated user whose account is inactive", async () => {
     adminPageMocks.findUnique.mockResolvedValue({
       displayName: "Disabled User",

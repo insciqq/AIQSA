@@ -87,8 +87,7 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
     const created = await page.request.post("/api/chats", { data: { memoryMode: "EXCLUDED", workspaceEnabled: false } });
     expect(created.ok()).toBe(true);
     createdChatId = (await created.json()).chat.id;
-    await page.evaluate((id) => localStorage.setItem("aiqsa.activeChatId", id!), createdChatId);
-    await page.reload();
+    await page.goto(`/c/${createdChatId}`);
     await expect(async () => selectModel(page, connectionId, "Browser Chat")).toPass({ timeout: 30_000 });
     const send = async (text: string, count: number) => {
       await page.getByRole("textbox", { name: "Message", exact: true }).fill(text);

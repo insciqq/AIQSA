@@ -351,7 +351,7 @@ it("serves one visible summary from the active branch, preserving source, scope,
   const child = await prisma.chat.findUniqueOrThrow({ where: { id: result.chatId } });
   expect(child).toMatchObject({ userId, projectId: null, memoryMode: "NORMAL", workspaceEnabled: false });
   expect(await prisma.chat.findUnique({ where: { id: chatId } })).toEqual(before);
-  expect(await continuationSourceHref(prisma, result.chatId, userId)).toBe(`/?chat=${chatId}`);
+  expect(await continuationSourceHref(prisma, result.chatId, userId)).toBe(`/c/${chatId}`);
   expect(await continuationSourceHref(prisma, result.chatId, randomUUID())).toBeNull();
   expect(await prisma.usageEvent.findMany({ where: { chatId } })).toEqual([
     expect.objectContaining({ userId, inputTokens: 50, outputTokens: 12, reasoningTokens: 0, totalTokens: 62, modelId: "summary-test-model", estimatedCostMicros: null })
@@ -480,7 +480,7 @@ it("keeps Project ownership and rejects membership loss before commit", () => fi
   if (result.status !== "complete") throw new Error("summary missing");
   expect(await prisma.chat.findUnique({ where: { id: result.chatId } })).toMatchObject({ projectId, userId: null, memoryMode: "EXCLUDED", workspaceEnabled: false });
   expect(await prisma.projectAuditEvent.count({ where: { projectId: projectId!, eventType: "project_chat_created", metadata: { path: ["chatId"], equals: result.chatId } } })).toBe(1);
-  expect(await continuationSourceHref(prisma, result.chatId, userId)).toBe(`/?chat=${chatId}&project=${projectId}`);
+  expect(await continuationSourceHref(prisma, result.chatId, userId)).toBe(`/p/${projectId}/c/${chatId}`);
   const memberId = randomUUID();
   await prisma.user.create({ data: { id: memberId, displayName: "Contributor", status: "active" } });
   try {

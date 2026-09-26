@@ -67,13 +67,9 @@ test.describe("oversized submitted-question reading anchor", () => {
         usageStats: null
       };
 
-      await page.addInitScript(
-        ({ activeChatId }) => window.localStorage.setItem("aiqsa.activeChatId", activeChatId),
-        { activeChatId: chatId }
-      );
       await oversizedQuestionStream.install(page, chatId);
       await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
-      await signIn(page);
+      await signIn(page, `/c/${chatId}`);
 
       if (viewport.label === "mobile") {
         await expect

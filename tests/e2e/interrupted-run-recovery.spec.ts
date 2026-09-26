@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { chooseSearchStrategy } from "./shell/composer";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
-import { selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
+import { activeChatId, selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
 
 test("a disconnected accepted answer can be stopped through the real cancellation endpoint", async ({ page, context }, testInfo) => {
   test.setTimeout(180_000);
@@ -44,7 +44,7 @@ test("a disconnected accepted answer can be stopped through the real cancellatio
   await page.getByRole("button", { name: "Send message" }).click();
   const strip = page.getByTestId("run-connection-lost");
   await expect(strip).toBeVisible();
-  const chatId = await page.evaluate(() => localStorage.getItem("aiqsa.activeChatId"));
+  const chatId = await activeChatId(page);
   expect(chatId).toBeTruthy();
 
   let release!: () => void;

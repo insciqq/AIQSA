@@ -22,7 +22,6 @@ for (const viewport of [
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.emulateMedia({ colorScheme: viewport.theme });
     await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: "http://127.0.0.1:3000" }]);
-    await page.addInitScript((id) => window.localStorage.setItem("aiqsa.activeChatId", id), chatId);
     const stream = createGatedRunStreamFixture({
       abortMessage: "Synthetic tool-budget stream stopped",
       key: "tool-budget-synthesis", notReadyError: "synthetic_stream_not_ready"
@@ -54,7 +53,7 @@ for (const viewport of [
       });
     }
 
-    await signInWithLocalToken(page);
+    await signInWithLocalToken(page, `/c/${chatId}`);
     const composer = page.getByRole("textbox", { name: "Message" });
     await composer.fill(question);
     await composer.press("Enter");

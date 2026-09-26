@@ -14,11 +14,29 @@ export const metadata: Metadata = {
   title: "Control Center"
 };
 
-export default async function AdminPage() {
+type AdminPageProps = Readonly<{
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}>;
+
+/** Sign-in returns to the same Control Center address, including its `return` chat route. */
+async function adminLoginHref(searchParams: AdminPageProps["searchParams"]): Promise<string> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries((await searchParams) ?? {})) {
+    for (const entry of Array.isArray(value) ? value : value === undefined ? [] : [value]) {
+      query.append(key, entry);
+    }
+  }
+  return query.size > 0
+    ? `/login?${new URLSearchParams({ next: `/admin?${query}` })}`
+    : "/login?next=/admin";
+}
+
+export default async function AdminPage({ searchParams }: AdminPageProps = {}) {
   const config = getAuthConfig();
+  const loginHref = await adminLoginHref(searchParams);
 
   if (!config.configured) {
-    redirect("/login?next=/admin");
+    redirect(loginHref);
   }
 
   const cookieStore = await cookies();
@@ -27,7 +45,7 @@ export default async function AdminPage() {
   });
 
   if (!session) {
-    redirect("/login?next=/admin");
+    redirect(loginHref);
   }
 
   const user = await prisma.user.findUnique({
@@ -43,7 +61,7 @@ export default async function AdminPage() {
   });
 
   if (!user || user.status !== "active") {
-    redirect("/login?next=/admin");
+    redirect(loginHref);
   }
 
   if (user.role !== "admin") {

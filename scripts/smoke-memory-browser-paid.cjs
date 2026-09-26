@@ -97,6 +97,17 @@ function fail(code) {
   throw error;
 }
 
+/** Mirrors lib/domain/chatRoute.ts: `/c/<id>` and `/p/<project>/c/<id>` name the open chat. */
+function chatIdFromPathname(pathname) {
+  const match = /^\/(?:p\/[^/]+\/)?c\/([^/]+)$/u.exec(pathname);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
 function ensure(value, code) {
   if (!value) fail(code);
 }
@@ -209,7 +220,7 @@ async function configureLuna(page) {
 
 async function activeChatId(page) {
   return poll(
-    () => page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId")),
+    async () => chatIdFromPathname(await page.evaluate(() => window.location.pathname)),
     (value) => typeof value === "string" && value.length > 0,
     { code: "active_chat_missing", timeoutMs: 30_000 }
   );
@@ -1138,7 +1149,6 @@ async function main() {
       existingMemory.rows[0]?.count === 0,
       "memory_browser_paid_smoke_clean_owner_required"
     );
-    await page.addInitScript(() => window.localStorage.removeItem("aiqsa.activeChatId"));
     await page.goto("/");
     await page.getByTestId("app-shell").waitFor({ state: "visible" });
 
