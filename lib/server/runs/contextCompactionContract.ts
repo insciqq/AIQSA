@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { estimateApproxTokens } from "../../domain/contextBudget";
-import { TOOL_OBSERVATION_LIMITS, type ToolObservationDescriptor } from "../toolObservations/contract";
+import type { ToolObservationDescriptor } from "../toolObservations/contract";
 import type { ProviderConversationMessage, NormalizedRunRequest } from "../providers/types";
 import type {
   ContextCompactionCheckpoint,
@@ -32,7 +32,8 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
    * the history older than that tail exceeds this share of the budget: less
    * cannot release meaningful room once replaced by notes. */
   summaryMinimumReleaseRatio: 0.1,
-  references: TOOL_OBSERVATION_LIMITS.runCount,
+  /** Handles one committed summary may keep; never a store admission bound. */
+  references: 512,
   metadataBytes: 512 * 1024,
   /** Paid summary calls (chunks, reductions and repairs) for one source
    * digest, counted from durable receipts so a restart cannot reset it. */

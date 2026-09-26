@@ -13,7 +13,7 @@ import { createFileSystemStorageAdapter, createS3StorageAdapter } from "../uploa
 import { measureObservationJson } from "./codec";
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { createToolObservationRepository, ObservationStoreError, type ObservationActor } from "./repository";
-import { TOOL_OBSERVATION_LIMITS } from "./contract";
+import { mcpObservationMaximumBytes, observationFailure, TOOL_OBSERVATION_LIMITS } from "./contract";
 import { createToolObservationService } from "./service";
 import { createObservationAdmission } from "./admission";
 import { createObservationSourceOwners } from "./sourceOwners";
@@ -273,6 +273,9 @@ describe("durable tool observation ownership", () => {
   });
 
   it("reserves one producer under competing claims and enforces aggregate space before dispatch", async () => {
+    // At the default wire cap the run bound is exactly its 64 MiB budget.
+    vi.stubEnv("AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES", String(8 * 1024 * 1024));
+    cleanups.push(async () => { vi.unstubAllEnvs(); });
     const f = await fixture();
     const producer = await f.call();
     const claims = await Promise.all([f.repository.reserve(producer, "mcp", 32 * 1024 * 1024),
@@ -536,6 +539,80 @@ describe("durable tool observation ownership", () => {
     await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "complete" } });
     const next = await f.makeRun(f.run.assistantMessageId);
     expect((await f.repository.reserve(await f.call(next.actor), "search", 8 * 1024 * 1024)).claimed).toBe(true);
+  });
+
+  it("admits new calls on a branch of 5000 small inline results while externalized bytes stay bounded", async () => {
+    vi.stubEnv("AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES", String(8 * 1024 * 1024));
+    cleanups.push(async () => { vi.unstubAllEnvs(); });
+    const f = await fixture();
+    const MiB = 1024 * 1024;
+    let round = 10;
+    const inline = async (runId: string, count: number) => {
+      const roundIndex = round++;
+      const calls = Array.from({ length: count }, (_, index) => ({ id: randomUUID(), modelRunId: runId, roundIndex,
+        ordinal: index, providerCallId: randomUUID(), toolName: "synthetic_tool", arguments: {}, state: "complete" as const }));
+      await prisma.modelRunToolCall.createMany({ data: calls });
+      const identity = measureObservationJson({ small: "inline result" }, 8192, 8192);
+      await prisma.toolObservation.createMany({ data: calls.map(call => ({ id: randomUUID().replaceAll("-", ""), modelRunId: runId,
+        toolCallId: call.id, sourceKind: "mcp", state: "READY", executionOutcome: "complete", reservedBytes: identity.byteSize,
+        byteSize: identity.byteSize, checksum: identity.checksum, storageMode: "INLINE", inlineText: identity.inline })) });
+    };
+    // Beyond the former 512-per-run and 4096-per-branch row limits.
+    await inline(f.run.id, 2500);
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "complete" } });
+    const next = await f.makeRun(f.run.assistantMessageId);
+    await inline(next.id, 2500);
+    for (const source of ["mcp", "workspace", "search"] as const) {
+      expect((await f.repository.reserve(await f.call(next.actor), source, mcpObservationMaximumBytes())).claimed).toBe(true);
+    }
+    // Retained objects of the branch still consume its byte budget.
+    const objects = Array.from({ length: 7 }, (_, index) => ({ id: randomUUID(), modelRunId: f.run.id, roundIndex: round,
+      ordinal: index, providerCallId: randomUUID(), toolName: "synthetic_tool", arguments: {}, state: "complete" as const }));
+    await prisma.modelRunToolCall.createMany({ data: objects });
+    await prisma.toolObservation.createMany({ data: objects.map(call => {
+      const id = randomUUID().replaceAll("-", "");
+      return { id, modelRunId: f.run.id, toolCallId: call.id, sourceKind: "mcp", state: "READY", executionOutcome: "complete",
+        reservedBytes: 32 * MiB, byteSize: 32 * MiB, checksum: "d".repeat(64), storageMode: "OBJECT",
+        storageKey: `tool-observations/v1/${id}/${"e".repeat(32)}` };
+    }) });
+    await expect(f.repository.reserve(await f.call(next.actor), "mcp", mcpObservationMaximumBytes()))
+      .rejects.toThrow("tool_observation_limit_exceeded");
+    expect((await f.repository.reserve(await f.call(next.actor), "mcp", MiB)).claimed).toBe(true);
+  });
+
+  it("admits a full parallel MCP batch at the 16 MiB wire cap with nothing retained", async () => {
+    vi.stubEnv("AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES", String(16 * 1024 * 1024));
+    cleanups.push(async () => { vi.unstubAllEnvs(); });
+    const f = await fixture();
+    const ceiling = mcpObservationMaximumBytes();
+    expect(ceiling).toBe(16 * 1024 * 1024 + 64 * 1024);
+    const producers = await Promise.all(Array.from({ length: TOOL_OBSERVATION_LIMITS.concurrentCalls }, () => f.call()));
+    const claims = await Promise.all(producers.map(producer => f.repository.reserve(producer, "mcp", ceiling)));
+    expect(claims.every(claim => claim.claimed)).toBe(true);
+    // A call beyond the accepted concurrency waits for a publication.
+    await expect(f.repository.reserve(await f.call(), "mcp", ceiling)).rejects.toThrow("tool_observation_limit_exceeded");
+    // Publication releases the ceiling down to the exact inline size.
+    await f.repository.recordOutcome(producers[0]!, "complete");
+    const identity = measureObservationJson({ accepted: "small" }, ceiling, 8192);
+    await f.repository.beginWrite(producers[0]!, { byteSize: identity.byteSize, checksum: identity.checksum,
+      inlineText: identity.inline, storageMode: "INLINE", projection: null, sourceTruncated: false, maskable: true });
+    expect((await f.repository.reserve(await f.call(), "mcp", ceiling)).claimed).toBe(true);
+  });
+
+  it("reports a reservation refused by run or call authority as not started", async () => {
+    const f = await fixture();
+    const settled = await f.call();
+    await prisma.modelRunToolCall.update({ where: { id: settled.toolCallId }, data: { state: "complete" } });
+    await expect(f.repository.reserve(settled, "mcp", 4096)).rejects.toMatchObject({ code: "tool_observation_not_started" });
+    const pending = await f.call();
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "cancelled" } });
+    const business = vi.fn();
+    const refused = await f.service.withReservation({ producer: pending, source: "mcp", maximumBytes: 4096 }, business)
+      .catch((error: unknown) => error);
+    expect(refused).toMatchObject({ code: "tool_observation_not_started" });
+    expect(business).not.toHaveBeenCalled();
+    expect(observationFailure(refused)?.message).not.toMatch(/may have completed/iu);
+    expect(await prisma.toolObservation.count({ where: { modelRunId: f.run.id } })).toBe(0);
   });
 
   it("reads and restores without waiting for settlement row locks", async () => {
