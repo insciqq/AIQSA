@@ -6138,8 +6138,10 @@ describe("run execution", () => {
     const modelCapabilities = { ...base.normalizedRequest.modelCapabilities, contextWindow: 128_000 };
     const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, modelCapabilities, toolObservationVersion: 1 as const },
       providerRequest: { ...base.providerRequest, modelCapabilities, toolObservationVersion: 1 as const } };
-    // About two fifths of the batch share each: two fit whole, the rest keep previews.
-    const bytes = Math.floor(observationWholeResultTokens(prepared.providerRequest) * 4 * 0.4);
+    // About two fifths of the batch share each, measured like the share: two fit whole, the rest keep previews.
+    const share = observationWholeResultTokens(prepared.providerRequest);
+    const sample = Array.from({ length: 128 }, (_, index) => createHash("sha256").update(`density:${index}`).digest("hex")).join("");
+    const bytes = Math.floor(share.tokens * 0.4 * sample.length / share.estimateTokens(sample));
     let dispatched = 0;
     const callTool = vi.fn(async () => {
       dispatched += 1;

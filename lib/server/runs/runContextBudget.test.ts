@@ -1,9 +1,9 @@
 import { workspaceImageTokenReserve } from "../workspace/directImageEvidence";
+import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  calculateContextBudgetLimits,
-  estimateApproxTokens
-} from "../../domain/contextBudget";
+import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
+import { contextTokenEstimator } from "../../domain/tokenEstimate";
+import { TOKEN_ESTIMATE_FIXTURES } from "../../domain/tokenEstimate.testFixtures";
 import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import {
   MEMORY_ACTION_NO_COMMIT_RESULT,
@@ -77,9 +77,9 @@ describe("provider request context budget", () => {
   it("gives one whole observed result a quarter of the admitted input budget, and no share for an unknown window", () => {
     const capabilities = { ...request().modelCapabilities, contextWindow: 160_000, defaultMaxOutputTokens: 8_000 };
     const { budgetTokens } = calculateContextBudgetLimits({ contextWindow: 160_000, maxOutputTokens: 8_000, provider: "openai" });
-    expect(observationWholeResultTokens(request({ modelCapabilities: capabilities }))).toBe(Math.floor(budgetTokens / 4));
+    expect(observationWholeResultTokens(request({ modelCapabilities: capabilities })).tokens).toBe(Math.floor(budgetTokens / 4));
     const { contextWindow: _window, ...unknownWindow } = capabilities;
-    expect(observationWholeResultTokens(request({ modelCapabilities: unknownWindow }))).toBe(Number.POSITIVE_INFINITY);
+    expect(observationWholeResultTokens(request({ modelCapabilities: unknownWindow })).tokens).toBe(Number.POSITIVE_INFINITY);
   });
 
   it("reserves visual tokens for durable references before admitting the next provider request", () => {
@@ -130,7 +130,7 @@ describe("provider request context budget", () => {
     expect(input).toEqual(before);
     expect(executeSessionStatus({ arguments: { chatId: "other-owner" }, id: "bad", name: sessionStatusTool.name }, input).status).toBe("error");
     const finished = measureSessionContext({ answerText: "finished answer", request: input, bridge: openAIResponsesToolBridge });
-    expect(finished.approximateInputTokens - status.approximateInputTokens).toBe(estimateApproxTokens("finished answer"));
+    expect(finished.approximateInputTokens - status.approximateInputTokens).toBe(contextTokenEstimator(input)("finished answer"));
     expect(sessionContextCapacity({ ...status, contextWindow: null }).percent).toBeNull();
   });
 
@@ -153,14 +153,15 @@ describe("provider request context budget", () => {
       prompt: { developer: "trusted developer", system: "trusted system" }
     });
     const limits = calculateContextBudgetLimits({ contextWindow: 10_000 });
+    const estimate = contextTokenEstimator(input);
     const expected = Math.max(0,
       limits.budgetTokens -
-      estimateApproxTokens("trusted system") -
-      estimateApproxTokens("trusted developer") -
-      estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT) -
-      estimateApproxTokens(MEMORY_READER_FINALIZATION_CONTRACT_V1) -
-      estimateApproxTokens({ blocks: [{ text: "private skill context", type: "text" }] }) -
-      estimateApproxTokens({ blocks: [{ text: "current question", type: "text" }] })
+      estimate("trusted system") -
+      estimate("trusted developer") -
+      estimate(MEMORY_READER_CONTRACT_CURRENT) -
+      estimate(MEMORY_READER_FINALIZATION_CONTRACT_V1) -
+      estimate({ blocks: [{ text: "private skill context", type: "text" }] }) -
+      estimate({ blocks: [{ text: "current question", type: "text" }] })
     );
 
     expect(normalizedRequestPersonalContextTokenLimit(input)).toBe(expected);
@@ -195,9 +196,10 @@ describe("provider request context budget", () => {
       version: 1
     } as const;
     const text = "ordinary-answer-canary";
-    const requiredTokens = estimateApproxTokens(memoryActionAnswerContract(
+    const estimate = contextTokenEstimator(request());
+    const requiredTokens = estimate(memoryActionAnswerContract(
       MEMORY_ACTION_NO_COMMIT_RESULT
-    )) + estimateApproxTokens(text) + 2 * estimateApproxTokens([]);
+    )) + estimate(text) + 2 * estimate([]);
     let contextWindow = 1;
     while (calculateContextBudgetLimits({ contextWindow }).budgetTokens < requiredTokens) {
       contextWindow += 1;
@@ -230,8 +232,8 @@ describe("provider request context budget", () => {
 
     expect(calculateContextBudgetLimits({ contextWindow }).budgetTokens - requiredTokens)
       .toBeLessThanOrEqual(1);
-    expect(estimateApproxTokens(memoryActionAnswerContract(committed))).toBe(
-      estimateApproxTokens(memoryActionAnswerContract(MEMORY_ACTION_NO_COMMIT_RESULT))
+    expect(estimate(memoryActionAnswerContract(committed))).toBe(
+      estimate(memoryActionAnswerContract(MEMORY_ACTION_NO_COMMIT_RESULT))
     );
     expect(applyProviderRequestContextBudget({ request: base })).toMatchObject({ ok: true });
     expect(applyProviderRequestContextBudget({
@@ -330,7 +332,8 @@ describe("provider request context budget", () => {
     });
     const projected = (id: string, seed: string) => projectObservationForProvider({
       callId: id,
-      content: [{ text: `rare-${id}-${"x".repeat(6600)}`, type: "text" as const }],
+      // o200k encodes the "x" fill at eight characters per token.
+      content: [{ text: `rare-${id}-${"x".repeat(13_200)}`, type: "text" as const }],
       name: "read_record",
       observation: descriptor(seed),
       status: "complete" as const
@@ -603,6 +606,7 @@ describe("provider request context budget", () => {
       );
       expect(providerAttachmentBudgetTokens({
         attachments: budgeted.request.attachments,
+        estimateTokens: contextTokenEstimator(request()),
         modelCapabilities: capabilities
       })).toBeLessThanOrEqual(UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS);
     }
@@ -635,14 +639,16 @@ describe("provider request context budget", () => {
       Boolean(attachment.extractedText?.length))).toBe(true);
     expect(providerAttachmentBudgetTokens({
       attachments: budgeted.request.attachments,
+      estimateTokens: contextTokenEstimator(request()),
       modelCapabilities: capabilities
     })).toBeLessThanOrEqual(UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS);
   });
 
   it("fits non-ASCII attachment text by estimated tokens rather than raw characters", () => {
+    const text = "Пользователь просит подготовить отчёт о продажах за третий квартал, учесть возвраты и не включать тестовые заказы. ".repeat(80);
     const attachment = {
-      byteSize: 10_000,
-      extractedText: "Ж".repeat(2_000),
+      byteSize: 20_000,
+      extractedText: text,
       fileName: "notes.txt",
       id: "attachment-1",
       kind: "document",
@@ -660,13 +666,14 @@ describe("provider request context budget", () => {
 
     expect(budgeted.ok).toBe(true);
     if (!budgeted.ok) throw new Error("unexpected budget rejection");
-    // Cyrillic is estimated at half a token per character: the text is cut by
-    // its estimate (never above the 900-token budget of a 1,000-token window
-    // with no output reservation), not by raw characters.
+    // Cyrillic prose packs several characters into an o200k token: the text is
+    // cut by its estimate (never above the 900-token budget of a 1,000-token
+    // window with no output reservation), not by raw characters or the
+    // half-token-per-character weight.
     const fitted = budgeted.request.attachments[0]!.extractedText!;
-    expect(fitted.length).toBeLessThan(2_000);
-    expect(fitted.length).toBeGreaterThan(1_000);
-    expect(estimateApproxTokens(fitted)).toBeLessThanOrEqual(900);
+    expect(fitted.length).toBeLessThan(text.length);
+    expect(fitted.length).toBeGreaterThan(2_700);
+    expect(contextTokenEstimator(request())(fitted)).toBeLessThanOrEqual(900);
   });
 
   it("honors the reduction-only operator clamp without restoring a fixed provider cap", () => {
@@ -731,7 +738,9 @@ describe("hybrid context budget boundaries", () => {
   };
   const assembled = (input: ProviderRunRequest) =>
     measureSessionContext({ bridge: openAIResponsesToolBridge, request: input }).approximateInputTokens;
-  const summaryFor = (source: ProviderRunRequest, notes = "n".repeat(2_000)): ContextSummary => ({
+  // Fills use "h", which o200k encodes at four characters per token like the
+  // character weights these reproductions were measured with.
+  const summaryFor = (source: ProviderRunRequest, notes = "h".repeat(2_000)): ContextSummary => ({
     formatVersion: 1, id: `cs1_${"c".repeat(32)}`, notes, sourceDigest: "d".repeat(64),
     sourceRefs: [contextSummarySourceRevision(source)]
   });
@@ -929,5 +938,75 @@ describe("hybrid context budget boundaries", () => {
     expect(summaryNeedsProvider(answer.request)).toBe(false);
     expect(assembled(answer.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
     expect(budgetOf(legacyOf(summarized)).ok).toBe(true);
+  });
+});
+
+describe("provider-aware context estimate in the run budget", () => {
+  const o200k = (text: string) => countTokens(text, { disallowedSpecial: new Set() });
+  const fixture = (name: string) => TOKEN_ESTIMATE_FIXTURES.find((entry) => entry.name === name)!.text;
+
+  it("estimates three ~99 KB MCP JSON results on a 128k window at or above their o200k count", () => {
+    const records = (JSON.parse(fixture("mcp_json")) as { structuredContent: { records: Record<string, unknown>[] } })
+      .structuredContent.records;
+    const mcpResult = (batch: number) => {
+      const page: Record<string, unknown>[] = [];
+      for (let index = 0; page.length < 230; index += 1) page.push({ ...records[index % records.length], key: `OPS-${batch}-${index}` });
+      return JSON.stringify({ content: [{ type: "text", text: JSON.stringify({ records: page }) }], isError: false });
+    };
+    const transcript = [1, 2, 3].flatMap((batch) => [
+      { arguments: "{\"status\":\"open\"}", call_id: `mcp-${batch}`, name: "mcp_tracker_search", type: "function_call" },
+      { call_id: `mcp-${batch}`, output: mcpResult(batch), type: "function_call_output" }
+    ]);
+    for (const entry of transcript) if (entry.type === "function_call_output") expect(entry.output!.length).toBeGreaterThan(95_000);
+    const reference = o200k(JSON.stringify(transcript));
+    const input = request({
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: 128_000, defaultMaxOutputTokens: 16_000, toolCalling: true },
+      modelId: "gpt-5.4", provider: "openai_compatible", providerToolMessages: transcript
+    });
+    // The character weights counted about 0.6 of the real tokens and let the provider reject the request.
+    expect(estimateApproxTokens(transcript)).toBeLessThan(reference);
+    expect(measureSessionContext({ bridge: openAIResponsesToolBridge, request: input }).approximateInputTokens)
+      .toBeGreaterThanOrEqual(reference);
+    expect(reference).toBeGreaterThan(calculateContextBudgetLimits({ contextWindow: 128_000, maxOutputTokens: 16_000 }).budgetTokens);
+    expect(applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: input }))
+      .toMatchObject({ ok: false, error: { code: "context_too_large" } });
+    for (const provider of ["anthropic", "gemini", "deepseek", "openrouter"]) {
+      expect(measureSessionContext({ bridge: openAIResponsesToolBridge, request: { ...input, provider } }).approximateInputTokens)
+        .toBeGreaterThanOrEqual(reference);
+    }
+  });
+
+  it("measures a Russian chat by the admitted family: codex-lb stays below the trigger where Anthropic needs notes", () => {
+    const capabilities = { ...request().modelCapabilities, contextWindow: 20_000, defaultMaxOutputTokens: 512, toolCalling: true };
+    const budgetTokens = calculateContextBudgetLimits({ contextWindow: 20_000, maxOutputTokens: 512 }).budgetTokens;
+    const russian = fixture("russian_prose");
+    const messages: ProviderConversationMessage[] = [
+      ...Array.from({ length: 14 }, (_, index): ProviderConversationMessage => ({
+        content: { blocks: [{ text: russian, type: "text" }] }, id: `h${index}`, role: index % 2 ? "assistant" : "user"
+      })),
+      { content: { blocks: [{ text: "Продолжим?", type: "text" }] }, id: "current", role: "user" }
+    ];
+    const chat = (provider: string, modelId: string) => request({
+      content: messages.at(-1)!.content,
+      context: { messages, mode: "branch_path" },
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages, mode: "hybrid" }),
+      modelCapabilities: capabilities, modelId, provider, toolObservationVersion: 1, tools: [readToolResultTool]
+    });
+    const planned = (input: ProviderRunRequest) => {
+      const result = applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: input });
+      if (!result.ok) throw new Error(`unexpected ${result.error.code}`);
+      return result.request.contextCompaction!;
+    };
+    const codexLb = planned(chat("openai_compatible", "gpt-5.4"));
+    // About 60% of the real o200k budget: no notes are bought on the OpenAI family.
+    expect(codexLb.beforeTokens).toBeGreaterThan(budgetTokens * 0.5);
+    expect(codexLb.beforeTokens).toBeLessThan(budgetTokens * 0.8);
+    expect(codexLb.outcome).toBe("already_fits");
+    // The character weights (half a token per Cyrillic character) measured the same chat over the budget.
+    expect(messages.reduce((total, message) => total + estimateApproxTokens(message.content), 0)).toBeGreaterThan(budgetTokens);
+    // Anthropic's tokenizer spends more on Cyrillic: the same history needs notes there.
+    const anthropic = planned(chat("anthropic", "claude-sonnet-5"));
+    expect(anthropic.beforeTokens).toBeGreaterThan(codexLb.beforeTokens);
+    expect(anthropic.outcome).toBe("needs_summary");
   });
 });

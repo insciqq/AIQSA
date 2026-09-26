@@ -81,12 +81,14 @@ export function isContextSummaryMessage(message: Pick<ProviderConversationMessag
 }
 
 /** The exact prior messages a summary keeps: the newest contiguous suffix
- * within both the message ceiling and the tail's token share. The planner and
- * the summarizer use this one rule, so "older than the tail" means the same
- * history in both. An unknown budget keeps only the message ceiling. */
+ * within both the message ceiling and the tail's token share, measured with the
+ * budget's own estimate. The planner and the summarizer use this one rule, so
+ * "older than the tail" means the same history in both. An unknown budget
+ * keeps only the message ceiling. */
 export function contextSummaryTail(
   prior: readonly ProviderConversationMessage[],
-  budgetTokens: number | null
+  budgetTokens: number | null,
+  estimate: (value: unknown) => number = estimateApproxTokens
 ): readonly ProviderConversationMessage[] {
   const limit = budgetTokens === null ? Infinity : Math.floor(budgetTokens * CONTEXT_COMPACTION_LIMITS.summaryTailRatio);
   let used = 0;
@@ -94,7 +96,7 @@ export function contextSummaryTail(
   while (start > 0 && prior.length - start < CONTEXT_COMPACTION_LIMITS.summaryRecentMessages) {
     const candidate = prior[start - 1]!;
     if (isContextSummaryMessage(candidate)) break;
-    const tokens = estimateApproxTokens(candidate.content);
+    const tokens = estimate(candidate.content);
     if (used + tokens > limit) break;
     used += tokens;
     start -= 1;
