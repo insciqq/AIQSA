@@ -11,7 +11,7 @@ import {
   exportFileBaseName,
   responseErrorMessage
 } from "@/components/app-shell/shellFormatting";
-import { chatRouteForChat, writeChatRoute } from "@/components/app-shell/chatRoute";
+import { chatRouteForChat, chatSendUnderWay, writeChatRoute } from "@/components/app-shell/chatRoute";
 import { clearSessionExpiredDraftForSession } from "@/components/app-shell/shellStorage";
 import type {
   Catalog,
@@ -589,10 +589,7 @@ export function useWorkspaceActions({
     const sessionStore = useComposerSessionStore.getState();
     const sessionKey = composerSessionKey(chat.id);
     sessionStore.activateSession(sessionKey);
-    writeChatRoute(chatRouteForChat(
-      chat,
-      Boolean(selectComposerSession(useComposerSessionStore.getState(), sessionKey).pendingSend)
-    ));
+    writeChatRoute(chatRouteForChat(chat, chatSendUnderWay(chat.id)));
     if (chat.workspace) {
       useComposerSessionStore.getState().updateSession(sessionKey, {
         workspaceEnabled: chat.workspace.enabled

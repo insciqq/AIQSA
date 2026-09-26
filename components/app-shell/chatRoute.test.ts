@@ -4,6 +4,7 @@ import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resetComposerSessionStoreForTest,
+  resetRunLifecycleStoreForTest,
   resetWorkspaceStoreForTest
 } from "@/tests/support/appShellStores";
 import {
@@ -11,6 +12,7 @@ import {
   cancelChatRouteResolution,
   chatRouteForChat,
   chatRouteForState,
+  chatSendUnderWay,
   isCurrentChatRouteResolution,
   navigateChatRoute,
   resolveChatRoute,
@@ -18,6 +20,7 @@ import {
   useChatRouteHistory,
   useChatRoutePath,
   useControlCenterHref,
+  useShownChatRoute,
   writeChatRoute,
   type ChatRoute,
   type ChatRouteTargets
@@ -27,6 +30,7 @@ import {
   projectComposerSessionKey,
   useComposerSessionStore
 } from "./composerSessionStore";
+import { useRunLifecycleStore } from "./runLifecycleStore";
 import type { WorkspaceChatSummary } from "./types";
 import { useWorkspaceStore } from "./workspaceStore";
 
@@ -72,6 +76,7 @@ afterEach(() => {
   cleanup();
   cancelChatRouteResolution(beginChatRouteResolution());
   resetComposerSessionStoreForTest();
+  resetRunLifecycleStoreForTest();
   resetWorkspaceStoreForTest();
   window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
@@ -165,6 +170,60 @@ describe("chat routes of state", () => {
     useWorkspaceStore.setState({ activeChatId: "chat-1", chats: [summary({ id: "chat-1", projectId: "project-1" })] });
     useComposerSessionStore.getState().activateSession(composerSessionKey("chat-1"));
     expect(chatRouteForState()).toEqual({ chatId: "chat-1", projectId: "project-1" });
+  });
+
+  it("counts an answer stream without a composer send, such as an Assistant starter prompt", () => {
+    expect(chatSendUnderWay("draft-1")).toBe(false);
+    useRunLifecycleStore.getState().streamStarted({ assistantMessageId: "assistant-1", chatId: "draft-1" });
+    expect(chatSendUnderWay("draft-1")).toBe(true);
+    useRunLifecycleStore.getState().streamFinished({ chatId: "draft-1" });
+    expect(chatSendUnderWay("draft-1")).toBe(false);
+  });
+});
+
+describe("the shown chat's own route", () => {
+  function showDraft(draft: WorkspaceChatSummary) {
+    useWorkspaceStore.setState({ activeChatId: draft.id, chats: [draft] });
+    useComposerSessionStore.getState().activateSession(composerSessionKey(draft.id));
+  }
+
+  it("addresses a starter-prompt first send while it streams and keeps the address after admission", () => {
+    const draft = summary({ id: "draft-1", pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" } });
+    showDraft(draft);
+    const length = window.history.length;
+    renderHook(() => useShownChatRoute(), { wrapper: StrictMode });
+    expect(address()).toBe("/");
+
+    act(() => useRunLifecycleStore.getState().streamStarted({ assistantMessageId: "assistant-1", chatId: "draft-1" }));
+    expect(address()).toBe("/c/draft-1");
+    act(() => useWorkspaceStore.setState({ chats: [{ ...draft, pendingPersonalDraft: undefined }] }));
+    act(() => useRunLifecycleStore.getState().streamFinished({ chatId: "draft-1" }));
+    expect(address()).toBe("/c/draft-1");
+    expect(window.history.length).toBe(length);
+  });
+
+  it("returns a failed first send to the blank route it came from", () => {
+    const draft = summary({
+      id: "draft-2",
+      pendingProjectDraft: { folderId: null, projectId: "project-1" },
+      projectId: "project-1"
+    });
+    showDraft(draft);
+    window.history.replaceState(null, "", "/p/project-1");
+    renderHook(() => useShownChatRoute());
+    act(() => useRunLifecycleStore.getState().streamStarted({ assistantMessageId: "assistant-2", chatId: "draft-2" }));
+    expect(address()).toBe("/p/project-1/c/draft-2");
+    act(() => useRunLifecycleStore.getState().streamFinished({ chatId: "draft-2" }));
+    expect(address()).toBe("/p/project-1");
+  });
+
+  it("leaves the address alone while it is being resolved", () => {
+    window.history.replaceState(null, "", "/c/chat-9");
+    const resolution = beginChatRouteResolution();
+    useWorkspaceStore.setState({ activeChatId: "chat-1", chats: [summary({ id: "chat-1" })] });
+    renderHook(() => useShownChatRoute());
+    expect(address()).toBe("/c/chat-9");
+    cancelChatRouteResolution(resolution);
   });
 });
 
