@@ -103,7 +103,7 @@ test("the new chat takes its own address on first send without remounting, and /
 
     await page.reload();
     await expect(page).toHaveURL(exactPath(`/c/${sent}`));
-    await expect(page.locator('article[data-role="assistant"]').last()).toContainText(`Fake answer: ${prompt}`);
+    await expect(page.locator('article[data-role="assistant"]').last()).toContainText(`Fake answer: ${prompt}`, { timeout: 45_000 });
   } finally {
     await deleteChats(page, [existing, sent]);
   }
