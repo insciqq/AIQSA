@@ -12,6 +12,16 @@
  * anything other than `provider_context_length_exceeded`; a provider that
  * accepts the request (and bills its input) is reported as `accepted`.
  *
+ * Gemini Interactions answers an oversized input with its generic HTTP 400
+ * `invalid_request` "Invalid input received." envelope (observed 2026-09-27),
+ * the same answer as a rejected tool schema, so it is not classifiable and
+ * Gemini gets no rebuild on this API. That exact envelope, recognized from a
+ * bounded in-memory copy of Gemini's body, is reported as
+ * `{"provider":"gemini","status":"unclassifiable_generic_envelope","httpStatus":400}`
+ * without failing the run; any other unclassified shape still fails. The
+ * reviewed Gemini sentence patterns stay in the classifier for other Google
+ * endpoints and wordings.
+ *
  * Environment (also read from a local .env):
  * - OPENAI_API_KEY, AIQSA_CONTEXT_REJECTION_OPENAI_MODEL (default gpt-5.5)
  * - ANTHROPIC_API_KEY, AIQSA_CONTEXT_REJECTION_ANTHROPIC_MODEL (default claude-sonnet-5)
@@ -39,7 +49,11 @@ import { createFetchGeminiInteractionsClient, createGeminiInteractionsAdapter } 
 import { createFetchOpenAIResponsesClient, createOpenAIResponsesAdapter } from "../lib/server/providers/openaiResponses";
 import { observedFailure, providerContextRejection } from "../lib/server/providers/providerObservability";
 import type { ProviderAdapter, ProviderRunRequest } from "../lib/server/providers/types";
-import { contextRejectionDiagnostics, type ContextRejectionDiagnostics } from "./context-rejection-smoke-support";
+import {
+  contextRejectionDiagnostics,
+  isGeminiGenericOverflowEnvelope,
+  type ContextRejectionDiagnostics
+} from "./context-rejection-smoke-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
 
 function unquoteEnvValue(value: string): string {
@@ -206,13 +220,18 @@ async function settledCapture(capture: Promise<string> | undefined): Promise<str
 async function check(provider: ProviderName): Promise<Readonly<{
   diagnostics?: ContextRejectionDiagnostics;
   evidence: Evidence;
+  /** Gemini's documented generic overflow envelope: reported, never a failure. */
+  genericEnvelope?: true;
 }> | null> {
   let httpStatus: number | null = null;
   const capture: { body?: Promise<string> } = {};
+  // Bounded and in memory only: Gemini's body identifies its generic
+  // envelope; the debug flag reduces any body to masked diagnostics.
+  const captures = debug || provider === "gemini";
   const fetchFn: typeof fetch = async (...args) => {
     const response = await fetch(...args);
     httpStatus = response.status;
-    if (debug) capture.body = capturedText(response.clone());
+    if (captures) capture.body = capturedText(response.clone());
     return response;
   };
   const target = configured(provider, fetchFn);
@@ -233,8 +252,10 @@ async function check(provider: ProviderName): Promise<Readonly<{
       promptTokensExtracted: rejection?.promptTokens !== undefined,
       provider
     };
-    if (!debug || evidence.code === "provider_context_length_exceeded") return { evidence };
-    return { diagnostics: contextRejectionDiagnostics(error, await settledCapture(capture.body)), evidence };
+    if (!captures || evidence.code === "provider_context_length_exceeded") return { evidence };
+    const body = await settledCapture(capture.body);
+    if (provider === "gemini" && isGeminiGenericOverflowEnvelope(httpStatus, body)) return { evidence, genericEnvelope: true };
+    return debug ? { diagnostics: contextRejectionDiagnostics(error, body), evidence } : { evidence };
   }
 }
 
@@ -252,6 +273,10 @@ async function main(): Promise<void> {
     }
     if (!result) {
       console.log(JSON.stringify({ provider, status: "skipped" }));
+      continue;
+    }
+    if (result.genericEnvelope) {
+      console.log(JSON.stringify({ provider, status: "unclassifiable_generic_envelope", httpStatus: result.evidence.httpStatus }));
       continue;
     }
     console.log(JSON.stringify(result.evidence));

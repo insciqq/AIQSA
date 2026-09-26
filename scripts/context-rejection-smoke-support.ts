@@ -39,6 +39,20 @@ export function providerErrorFromBody(body: string): Record<string, unknown> | n
   return null;
 }
 
+/**
+ * Gemini Interactions answers an oversized input with its generic envelope
+ * (observed 2026-09-27): HTTP 400 `{"error":{"code":"invalid_request",
+ * "message":"Invalid input received."}}`, without status, details or counts.
+ * A rejected tool schema gets the same answer, so the transport never
+ * classifies it as a context-length rejection and Gemini gets no rebuild on
+ * this API; the check reports it as unclassifiable instead of failing.
+ */
+export function isGeminiGenericOverflowEnvelope(httpStatus: number | null, body: string): boolean {
+  if (httpStatus !== 400) return false;
+  const error = providerErrorFromBody(body);
+  return error?.code === "invalid_request" && error.message === "Invalid input received.";
+}
+
 export type ContextRejectionDiagnostics = Readonly<{
   /** The transport's reviewed identity or code on the thrown error. */
   identity: string | null;

@@ -13,7 +13,11 @@ export type GeminiInteractionObject = Record<string, unknown>;
 const GEMINI_HTTP_ERROR_CODES = [
   "malformed_tool_call", "malformed_function_call", "invalid_request", "parameter_unknown",
   // Derived from the reviewed context-length classification of a 400 (its
-  // message names the input token count exceeding the maximum).
+  // message names the input token count exceeding the maximum). The
+  // Interactions API's own answer to an oversized input, observed 2026-09-27,
+  // is the generic `invalid_request` "Invalid input received." envelope, the
+  // same as for a rejected tool schema, so this identity triggers only on the
+  // reviewed sentences and Gemini gets no rebuild on this API.
   "context_length_exceeded"
 ] as const;
 export type GeminiHttpErrorCode = (typeof GEMINI_HTTP_ERROR_CODES)[number];
