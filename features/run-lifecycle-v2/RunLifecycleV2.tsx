@@ -268,6 +268,7 @@ export function RunAnswerV2({
     <AnswerProcessV2
       connectionLost={presentation.kind === "connection_lost"}
       contextCompaction={presentation.compaction}
+      contextCompactionFailures={presentation.compactionFailures}
       disclosureId={processDisclosureId ?? anchorId}
       liveLabel={liveLabel}
       onPinSkill={onPinSkill}

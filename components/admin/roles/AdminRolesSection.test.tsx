@@ -739,6 +739,51 @@ describe("AdminRolesSection", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true");
   });
 
+  it("saves the kill switch alone while the saved reasoning effort is no longer offered", async () => {
+    const model = modelCatalog();
+    const calls = server(rolesCatalog(), knowledgeSettings(), { ...model, policy: { ...model.policy, reasoningEffort: "xhigh" } });
+    renderSection();
+    const toggle = await screen.findByRole("switch", { name: "Tool result store and context compaction" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(screen.getByRole("option", { name: "Reasoning: xhigh (unavailable)" })).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save" });
+    fireEvent.click(toggle);
+    expect(screen.getByText("1 unsaved change")).toBeInTheDocument();
+    expect(save).toBeEnabled();
+    expect(save).not.toHaveAccessibleDescription();
+
+    // An invalid changed limit blocks Save with a visible reason; restoring it unblocks.
+    const rounds = screen.getByRole("spinbutton", { name: "Rounds" });
+    fireEvent.change(rounds, { target: { value: "0" } });
+    expect(save).toBeDisabled();
+    expect(screen.getByText("Enter a valid Rounds to save.")).toBeVisible();
+    expect(save).toHaveAccessibleDescription("Enter a valid Rounds to save.");
+    fireEvent.change(rounds, { target: { value: "8" } });
+    expect(screen.queryByText(/to save\.$/u)).not.toBeInTheDocument();
+    expect(save).toBeEnabled();
+
+    fireEvent.click(save);
+    await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeInTheDocument());
+    expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{ expectedVersion: 4, toolObservationPolicy: "off" }]);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("names every invalid changed limit while Save stays disabled", async () => {
+    server();
+    renderSection();
+    const rounds = await screen.findByRole("spinbutton", { name: "Rounds" });
+    await waitFor(() => expect(rounds).toHaveValue(8));
+    fireEvent.change(rounds, { target: { value: "0" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Calls" }), { target: { value: "" } });
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();
+    expect(screen.getByText("Enter a valid Rounds and Calls to save.")).toBeVisible();
+    expect(save).toHaveAccessibleDescription("Enter a valid Rounds and Calls to save.");
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(screen.queryByText(/to save\.$/u)).not.toBeInTheDocument();
+    expect(save).toBeDisabled();
+  });
+
   it("says the observation setting is loading while the chat defaults load", async () => {
     server();
     renderSection();

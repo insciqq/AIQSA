@@ -91,6 +91,34 @@ describe("run lifecycle v2 presentation", () => {
       .toMatchObject({ compaction: { outcome: "summary_applied", state: "complete" }, kind: "complete" });
   });
 
+  it("keeps every server-settled failed cycle that a later cycle superseded, once each", () => {
+    const cycle = (status: ReturnType<typeof makeContextCompactionStatus>) =>
+      ({ type: "artifact", data: { artifactType: "context_compaction", payload: status } }) satisfies RunEventView;
+    const running = (number: number) => makeContextCompactionStatus({ beforeTokens: 1_200, cycle: number, outcome: "pending", state: "running" });
+    const failed = (number: number, outcome: "provider_failed" | "summary_failed" = "summary_failed") =>
+      makeContextCompactionStatus({ beforeTokens: 1_200, cycle: number, outcome, state: "failed" });
+    const masked = makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, cycle: 3, outcome: "masking_applied", state: "complete" });
+    const batch = presentRunLifecycleV2(state({
+      events: [cycle(running(1)), cycle(failed(1)), cycle(running(1)), cycle(running(2)), cycle(failed(2, "provider_failed")), cycle(masked)],
+      runId: "run-1", status: "streaming"
+    }));
+    expect(batch.compaction).toEqual(masked);
+    expect(batch.compactionFailures).toEqual([failed(1), failed(2, "provider_failed")]);
+    // The saved fallback and the replayed feed describe one cycle once.
+    expect(presentRunLifecycleV2(state({ contextCompaction: failed(1), events: [cycle(failed(1)), cycle(masked)], runId: "run-1" }))
+      .compactionFailures).toEqual([failed(1)]);
+    // The latest failure is the presented cycle, never listed twice; a settled answer keeps no superseded list.
+    expect(presentRunLifecycleV2(state({ events: [cycle(failed(1))], runId: "run-1" }))).toEqual({
+      compaction: failed(1), kind: "idle", runId: "run-1"
+    });
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", contextCompaction: masked, runId: "run-1" })))
+      .toEqual({ compaction: masked, kind: "complete", runId: "run-1" });
+    // A terminal run hides its unsettled cycle but keeps the failures the server settled before it.
+    const orphaned = presentRunLifecycleV2(state({ authoritativeMessageStatus: "error", events: [cycle(failed(1)), cycle(running(2))], runId: "run-1" }));
+    expect(orphaned).toMatchObject({ compactionFailures: [failed(1)], kind: "terminal_error" });
+    expect(orphaned.compaction).toBeUndefined();
+  });
+
   it("keeps a running cycle under a lost connection without presenting live compaction", () => {
     const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
     const presentation = presentRunLifecycleV2(state({ connectionLost: true, contextCompaction: running, runId: "run-1" }));
@@ -582,6 +610,51 @@ describe("run announcer policy", () => {
       { kind: "streaming", runId: null },
       { kind: "cancelled", runId: null }
     ])).toEqual(["Working on the answer…", "Run stopped. The message field is available."]);
+  });
+
+  it("keeps history silent when a settled tail without a run id loads after an empty chat", () => {
+    const idle: RunPresentationV2 = { kind: "idle", runId: null };
+    expect(speak([idle, { kind: "complete", runId: null }])).toEqual([]);
+    expect(speak([idle, idle, { kind: "complete", runId: null }, { kind: "complete", runId: null }])).toEqual([]);
+    expect(speak([idle, { kind: "cancelled", runId: null }])).toEqual([]);
+    // Control: a settled tail with a run id is history as before.
+    expect(speak([idle, { kind: "complete", runId: "run-old" }])).toEqual([]);
+    // An answer that was followed while running still announces its end once.
+    expect(speak([idle, thinking(null), { kind: "complete", runId: null }, { kind: "complete", runId: null }]))
+      .toEqual(["Working on the answer…", "Answer ready. The message field is available."]);
+    expect(speak([idle, thinking("run-a"), { kind: "complete", runId: "run-a" }]))
+      .toEqual(["Working on the answer…", "Answer ready. The message field is available."]);
+  });
+
+  it("speaks a failed cycle superseded before a render once with its reason, and never again on reconnect", () => {
+    const cycle = (status: ReturnType<typeof makeContextCompactionStatus>) =>
+      ({ type: "artifact", data: { artifactType: "context_compaction", payload: status } }) satisfies RunEventView;
+    const running = makeContextCompactionStatus({ beforeTokens: 9_000, cycle: 1, outcome: "pending", state: "running" });
+    const failed = makeContextCompactionStatus({ beforeTokens: 9_000, cycle: 1, outcome: "provider_failed", state: "failed" });
+    const masked = makeContextCompactionStatus({ afterTokens: 4_000, beforeTokens: 9_000, cycle: 2, outcome: "masking_applied", state: "complete" });
+    const live = (events: RunEventView[], extra: Partial<RunLifecycleStateV2> = {}) =>
+      presentRunLifecycleV2(state({ events, runId: "run-a", status: "streaming", ...extra }));
+    const replay = [cycle(running), cycle(failed), cycle(masked)];
+    expect(speak([
+      live([]),
+      live([cycle(running)]),
+      live(replay),
+      live(replay),
+      // Connection loss, then Refresh replays the same server cycles or reads the saved one.
+      live(replay, { connectionLost: true }),
+      live(replay),
+      live([], { contextCompaction: masked }),
+      live(replay),
+      presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", contextCompaction: masked, runId: "run-a" }))
+    ])).toEqual([
+      "Working on the answer…",
+      "Compacting context…",
+      "Provider could not compact the context. Context compacted.",
+      "Connection lost. Refresh the run state.",
+      "Answer ready. The message field is available."
+    ]);
+    // A replay first observed mid-run counts its settled cycles as already seen.
+    expect(speak([live(replay), live(replay)])).toEqual(["Working on the answer…"]);
   });
 
   it("does not count a cycle already settled when the run was first observed", () => {

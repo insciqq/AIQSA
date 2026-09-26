@@ -57,6 +57,10 @@ export type RunPresentationV2 = Readonly<{
     toolName?: string;
   }>;
   compaction?: ContextCompactionStatus;
+  /** Server-settled failed cycles that a later cycle superseded before this
+   * projection, oldest first. The saved answer keeps only its latest cycle,
+   * so these come from the live or replayed event feed. */
+  compactionFailures?: readonly ContextCompactionStatus[];
   failure?: Readonly<{
     code: string | null;
     message: string;
@@ -145,19 +149,24 @@ function eventPayload(event: RunEventView): Record<string, unknown> | null {
   return isRecord(event.data.payload) ? event.data.payload : null;
 }
 
-function contextCompactionFromEvents(
+/** Every server-published cycle once, oldest first. Within one cycle a
+ * settlement wins over progress, and the saved fallback is the earliest source. */
+function contextCompactionCycles(
   events: readonly RunEventView[],
   fallback: ContextCompactionStatus | null | undefined
-): ContextCompactionStatus | null {
-  let latest: ContextCompactionStatus | null = null;
+): ContextCompactionStatus[] {
+  const cycles = new Map<number, ContextCompactionStatus>();
+  const observe = (status: ContextCompactionStatus) => {
+    cycles.set(status.cycle, mergeContextCompactionStatus(cycles.get(status.cycle), status) ?? status);
+  };
+  if (fallback) observe(fallback);
   for (const event of events) {
     if (event.type !== "artifact" || !isRecord(event.data) ||
       event.data.artifactType !== "context_compaction") continue;
     const status = decodeContextCompactionStatus(event.data.payload);
-    if (!status) continue;
-    latest = mergeContextCompactionStatus(latest, status);
+    if (status) observe(status);
   }
-  return mergeContextCompactionStatus(fallback, latest);
+  return [...cycles.values()].sort((left, right) => left.cycle - right.cycle);
 }
 
 function activityFromEvent(event: RunEventView, index: number): ActivitySignal | null {
@@ -500,11 +509,12 @@ function connectionLostAnnouncement(presentation: RunPresentationV2): string {
 /**
  * Announcer policy: only phase kinds are spoken, never counters, tool labels
  * or streaming/tool flips. Per followed run: started once; connection lost
- * once per loss; compaction start once, every failed cycle with its reason,
- * success at most once; the terminal sentence with its reason once. A
- * compaction settlement after the terminal sentence folds into it. A run
- * already settled when first observed (chat switch, history load) stays
- * silent.
+ * once per loss; compaction start once, every failed cycle with its reason
+ * (also one superseded by a later cycle before it was observed), success at
+ * most once; the terminal sentence with its reason once. A compaction
+ * settlement after the terminal sentence folds into it. A run already settled
+ * when first observed (chat switch, history load) stays silent; an answer
+ * without a run id continues the followed one only after it had started.
  */
 export function stepRunAnnouncementV2(
   previous: RunAnnouncerMemoryV2 | null,
@@ -517,13 +527,20 @@ export function stepRunAnnouncementV2(
   const previousSettled = Boolean(previous && (previous.historical || previous.terminal !== null));
   // A settled run never becomes live again; an unsettled answer adopts its
   // durable run id without becoming a new run.
-  const sameRun = !chatChanged && !(previousSettled && !settled) && (previous.runId === presentation.runId ||
+  // Two missing run ids are no evidence of one answer: an empty or loading
+  // chat followed by a settled tail without a run id is history.
+  const sameRun = !chatChanged && !(previousSettled && !settled) && (
+    (previous.runId === presentation.runId && (presentation.runId !== null || previous.started)) ||
     (previous.runId === null && previous.started && !previousSettled));
+  const failures = presentation.compactionFailures ?? [];
   if (!sameRun || !previous) {
-    const settledCycle = compaction && compaction.state !== "running" ? compaction.cycle : 0;
+    const settledCycle = Math.max(
+      compaction && compaction.state !== "running" ? compaction.cycle : 0,
+      ...failures.map((status) => status.cycle)
+    );
     const base = {
       chatId,
-      compactionStarted: Boolean(compaction),
+      compactionStarted: Boolean(compaction) || failures.length > 0,
       compactionSucceeded: compaction?.state === "complete",
       connectionLost: false,
       historical: settled,
@@ -568,6 +585,12 @@ export function stepRunAnnouncementV2(
     }
     memory.connectionLost = lost;
     memory.started = true;
+  }
+  for (const failure of failures) {
+    if (failure.cycle <= memory.settledCycle) continue;
+    parts.push(`${contextCompactionCopyV2(failure).label}.`);
+    memory.compactionStarted = true;
+    memory.settledCycle = failure.cycle;
   }
   if (compaction && compaction.state !== "running" && compaction.cycle > memory.settledCycle) {
     const text = `${contextCompactionCopyV2(compaction).label}.`;
@@ -686,7 +709,11 @@ export function settledRunPresentationV2(presentation: RunPresentationV2): boole
 export function presentRunLifecycleV2(
   state: RunLifecycleStateV2
 ): RunPresentationV2 {
-  let compaction = contextCompactionFromEvents(state.events, state.contextCompaction);
+  const compactionCycles = contextCompactionCycles(state.events, state.contextCompaction);
+  let compaction = compactionCycles.at(-1) ?? null;
+  const latestCycle = compaction?.cycle ?? 0;
+  const compactionFailures = compactionCycles.filter((status) =>
+    status.state === "failed" && status.cycle < latestCycle);
   let terminal: TerminalSignal | null = terminalStatus(
     state.authoritativeMessageStatus
   );
@@ -727,8 +754,11 @@ export function presentRunLifecycleV2(
   // marks the message complete before the chat refresh): nothing is shown
   // until the server's settled cycle arrives, never a guessed outcome.
   if (terminal) compaction = terminalContextCompactionStatus(compaction);
-  const present = (value: RunPresentationV2): RunPresentationV2 =>
-    compaction ? { ...value, compaction } : value;
+  const present = (value: RunPresentationV2): RunPresentationV2 => ({
+    ...value,
+    ...(compaction ? { compaction } : {}),
+    ...(compactionFailures.length > 0 ? { compactionFailures } : {})
+  });
 
   if (terminal === "complete") {
     return present({ kind: "complete", runId: state.runId });

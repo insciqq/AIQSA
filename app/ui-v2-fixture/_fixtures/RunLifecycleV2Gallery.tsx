@@ -317,6 +317,22 @@ export function RunLifecycleV2Gallery() {
                 />
               </StateSpec>
 
+              <StateSpec label="Complete · earlier compaction failure replayed">
+                <RunAnswerV2
+                  content="Ответ продолжен: сводка не удалась, а следующий раунд сократил контекст скрытием результатов."
+                  presentation={presentRunLifecycleV2(runState({
+                    authoritativeMessageStatus: "complete",
+                    events: [
+                      makeContextCompactionStatus({ beforeTokens: 9_000, cycle: 1, outcome: "summary_failed", state: "failed" }),
+                      makeContextCompactionStatus({
+                        afterTokens: 4_000, beforeTokens: 9_000, cycle: 2, outcome: "masking_applied", state: "complete"
+                      })
+                    ].map((payload): RunEventView => ({ data: { artifactType: "context_compaction", payload }, type: "artifact" })),
+                    runId: "run-compaction-superseded"
+                  }))}
+                />
+              </StateSpec>
+
               <StateSpec label="Connection lost · compaction was running">
                 <RunAnswerV2
                   content="Частичный ответ ждёт подтверждённого состояния после обновления."
