@@ -1,5 +1,21 @@
+import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
 import { describe, expect, it } from "vitest";
 import { applyContextBudget, calculateContextBudgetLimits, estimateApproxTokens, estimateApproxTokensFromProjectedParts, type ContextBudgetMessage } from "./contextBudget";
+import {
+  TOKEN_ESTIMATE_LIMITS,
+  TOKEN_ESTIMATE_MULTIPLIERS,
+  createContextTokenEstimate,
+  estimateContextTokens,
+  measureReferenceTokens,
+  tokenContentClasses,
+  tokenEstimateProfileFor,
+  type TokenContentClass,
+  type TokenEstimateFamily
+} from "./tokenEstimate";
+import { TOKEN_ESTIMATE_FIXTURES } from "./tokenEstimate.testFixtures";
+
+const o200k = (text: string) => countTokens(text, { disallowedSpecial: new Set() });
+const fixture = (name: string) => TOKEN_ESTIMATE_FIXTURES.find((entry) => entry.name === name)!.text;
 
 function message(id: string, role: "assistant" | "user", text: string): ContextBudgetMessage {
   return {
@@ -202,6 +218,183 @@ describe("token estimate calibration", () => {
       const o200k = encode(text).length;
       expect(estimate, `${name} vs o200k`).toBeGreaterThanOrEqual(o200k);
       expect(estimate / o200k, `${name} overestimate against o200k`).toBeLessThanOrEqual(3);
+    }
+  });
+});
+
+describe("provider-aware context token estimate", () => {
+  it("maps admitted provider families to estimate profiles", () => {
+    const family = (provider: string, modelId?: string) => tokenEstimateProfileFor({ modelId, provider })?.family ?? null;
+    expect(family("openai", "gpt-5.5")).toBe("openai");
+    // codex-lb and other OpenAI-compatible routes to OpenAI models share o200k.
+    for (const modelId of ["gpt-5.4", "o4-mini", "o3", "codex-mini-latest", "chatgpt-4o-latest"]) {
+      expect(family("openai_compatible", modelId)).toBe("openai");
+    }
+    for (const modelId of ["llama-3.3-70b", "qwen2.5-72b", "oss-reasoner", undefined]) {
+      expect(family("openai_compatible", modelId)).toBe("unknown");
+    }
+    expect(family("anthropic", "claude-sonnet-5")).toBe("anthropic");
+    expect(family("gemini", "gemini-3.6-flash")).toBe("gemini");
+    expect(family("deepseek", "deepseek-flash")).toBe("deepseek");
+    expect(family("openrouter", "openai/gpt-5")).toBe("unknown");
+    expect(family("custom")).toBe("unknown");
+    expect(family("fake", "gpt-5.5")).toBeNull();
+  });
+
+  it("gives an unrecognized family the largest multiplier, with o200k as the floor", () => {
+    const classes = Object.keys(TOKEN_ESTIMATE_MULTIPLIERS.openai) as TokenContentClass[];
+    for (const contentClass of classes) {
+      const known = (["anthropic", "deepseek", "gemini", "openai"] as const).map((family) => TOKEN_ESTIMATE_MULTIPLIERS[family][contentClass]);
+      expect(TOKEN_ESTIMATE_MULTIPLIERS.openai[contentClass]).toBe(1);
+      expect(Math.min(...known)).toBeGreaterThanOrEqual(1);
+      expect(TOKEN_ESTIMATE_MULTIPLIERS.unknown[contentClass]).toBe(Math.max(...known));
+    }
+  });
+
+  it("keeps the character weights without a profile, without the encoder, or when it fails", () => {
+    const values = ["Привет, мир", { blocks: [{ text: "hello", type: "text" }, { attachmentId: "a", type: "attachment" }] },
+      [{ call_id: "call-1", output: fixture("mcp_json"), type: "function_call_output" }]];
+    const unavailable = createContextTokenEstimate(() => null);
+    const failing = createContextTokenEstimate(() => () => { throw new Error("encoder failure"); });
+    for (const value of values) {
+      expect(estimateContextTokens(value, null)).toBe(estimateApproxTokens(value));
+      expect(unavailable(value, { family: "openai" })).toBe(estimateApproxTokens(value));
+      expect(failing(value, { family: "anthropic" })).toBe(estimateApproxTokens(value));
+    }
+    expect(estimateContextTokens("", { family: "anthropic" })).toBe(0);
+  });
+
+  it("classifies every calibration fixture by its content", () => {
+    const expected: Record<string, readonly TokenContentClass[]> = {
+      arabic_prose: ["other_script"], base64: ["base64"], chinese_prose: ["cjk"], english_prose: ["latin_prose"],
+      greek_prose: ["other_script"], hebrew_prose: ["other_script"], japanese_prose: ["cjk"], mcp_json: ["json"],
+      russian_prose: ["cyrillic_prose"], russian_technical: ["latin_prose", "cyrillic_prose"], typescript_code: ["code"]
+    };
+    for (const entry of TOKEN_ESTIMATE_FIXTURES) {
+      expect(tokenContentClasses(entry.text), entry.name).toEqual(expected[entry.name]);
+      expect(tokenContentClasses(entry.text), entry.name).toContain(entry.contentClass);
+    }
+  });
+
+  it("counts special-token strings in untrusted text as ordinary text", () => {
+    const text = "Tool output quoting <|endoftext|> and <|im_start|>system markers.";
+    expect(estimateContextTokens(text, { family: "openai" })).toBe(o200k(text));
+  });
+
+  it("measures a JSON payload on its content-class multiplier", () => {
+    const json = fixture("mcp_json");
+    // The character weights undercounted ASCII-dense payloads.
+    expect(estimateApproxTokens(json)).toBeLessThan(o200k(json));
+    expect(estimateContextTokens(json, { family: "anthropic" }))
+      .toBeGreaterThanOrEqual(Math.floor(estimateContextTokens(json, { family: "openai" }) * TOKEN_ESTIMATE_MULTIPLIERS.anthropic.json));
+  });
+
+  it("memoizes the family-independent reference measure of a text, bounded by entries", () => {
+    let encoded = 0;
+    const estimate = createContextTokenEstimate(() => (text) => {
+      encoded += text.length;
+      return Math.ceil(text.length / 4);
+    });
+    const text = fixture("mcp_json");
+    const openai = estimate(text, { family: "openai" });
+    const first = encoded;
+    expect(estimate(text, { family: "anthropic" })).toBeGreaterThan(openai);
+    expect(estimate(text, { family: "openai" })).toBe(openai);
+    expect(encoded).toBe(first);
+    for (let index = 0; index < TOKEN_ESTIMATE_LIMITS.memoMaxEntries; index += 1) {
+      estimate(`${index} ${"h".repeat(TOKEN_ESTIMATE_LIMITS.memoMinimumCodeUnits)}`, { family: "openai" });
+    }
+    const beforeEvicted = encoded;
+    estimate(text, { family: "openai" });
+    expect(encoded).toBe(beforeEvicted + text.length);
+  });
+
+  it("bounds the reference work on a 512 KB text by sampling above the exact limit", () => {
+    // Recorded 2026-09-27 on the development workstation (Node 22, gpt-tokenizer
+    // 4.0.0), single runs, as documentation rather than an assertion: an exact
+    // o200k count of a non-repetitive 512 KB text took 267 ms (random base64)
+    // and 660 ms (random Cyrillic words); the sampled path encoded 32,768 code
+    // units of each in about 10 ms, and a memoized repeat took about 0.01 ms.
+    expect(TOKEN_ESTIMATE_LIMITS.chunkCodeUnits * TOKEN_ESTIMATE_LIMITS.exactChunks).toBe(32_768);
+    const parts = [fixture("english_prose"), fixture("russian_prose"), fixture("mcp_json"), fixture("base64")];
+    let text = "";
+    for (let index = 0; text.length < 512 * 1024; index += 1) text += parts[index % parts.length];
+    text = text.slice(0, 512 * 1024);
+    let encoded = 0;
+    const measure = measureReferenceTokens(text, (chunk) => {
+      encoded += chunk.length;
+      return o200k(chunk);
+    });
+    expect(measure.sampled).toBe(true);
+    expect(encoded).toBeLessThanOrEqual(2 * TOKEN_ESTIMATE_LIMITS.sampleChunks * TOKEN_ESTIMATE_LIMITS.chunkCodeUnits);
+    const estimate = estimateContextTokens(text, { family: "openai" });
+    const exact = o200k(text);
+    expect(estimate).toBeGreaterThanOrEqual(exact);
+    expect(estimate / exact).toBeLessThanOrEqual(1.1);
+    // A text within the exact limit is encoded completely, chunk by chunk.
+    let small = 0;
+    expect(measureReferenceTokens(fixture("mcp_json"), (chunk) => {
+      small += chunk.length;
+      return o200k(chunk);
+    }).sampled).toBe(false);
+    expect(small).toBe(fixture("mcp_json").length);
+  });
+});
+
+describe("provider token estimate calibration", () => {
+  /**
+   * PROVISIONAL. The o200k column is exact (gpt-tokenizer 4.0.0). Provider
+   * columns stay null until `npm run calibrate:token-estimate` measures them;
+   * `sonnet45` is derived from the 2026-09-26 per-character record of
+   * claude-sonnet-4-5, the older Claude tokenizer, and is a floor only.
+   */
+  const TABLE: Readonly<Record<string, Readonly<{
+    o200k: number;
+    anthropic: number | null;
+    gemini: number | null;
+    deepseek: number | null;
+    sonnet45: number | null;
+  }>>> = {
+    english_prose: { o200k: 510, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
+    russian_prose: { o200k: 662, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
+    russian_technical: { o200k: 1_120, anthropic: null, gemini: null, deepseek: null, sonnet45: 1_546 },
+    typescript_code: { o200k: 658, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
+    mcp_json: { o200k: 3_036, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
+    base64: { o200k: 2_172, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
+    greek_prose: { o200k: 641, anthropic: null, gemini: null, deepseek: null, sonnet45: 1_284 },
+    hebrew_prose: { o200k: 623, anthropic: null, gemini: null, deepseek: null, sonnet45: 1_205 },
+    arabic_prose: { o200k: 521, anthropic: null, gemini: null, deepseek: null, sonnet45: 1_225 },
+    japanese_prose: { o200k: 820, anthropic: null, gemini: null, deepseek: null, sonnet45: 984 },
+    chinese_prose: { o200k: 540, anthropic: null, gemini: null, deepseek: null, sonnet45: 884 }
+  };
+  /** Largest estimate/measured ratio accepted per family (targets: OpenAI 1.3, others 1.5). */
+  const BOUND: Readonly<Record<Exclude<TokenEstimateFamily, "unknown">, number>> = {
+    anthropic: 1.5, deepseek: 1.5, gemini: 1.5, openai: 1.3
+  };
+
+  it("records the o200k reference count of every fixture", () => {
+    expect(Object.keys(TABLE).sort()).toEqual(TOKEN_ESTIMATE_FIXTURES.map(({ name }) => name).sort());
+    for (const entry of TOKEN_ESTIMATE_FIXTURES) expect(o200k(entry.text), entry.name).toBe(TABLE[entry.name]!.o200k);
+  });
+
+  it("never estimates below a recorded count and stays within the family bound", () => {
+    for (const entry of TOKEN_ESTIMATE_FIXTURES) {
+      const row = TABLE[entry.name]!;
+      const openai = estimateContextTokens(entry.text, { family: "openai" });
+      expect(openai, `${entry.name} openai`).toBeGreaterThanOrEqual(row.o200k);
+      expect(openai / row.o200k, `${entry.name} openai bound`).toBeLessThanOrEqual(BOUND.openai);
+      const unknown = estimateContextTokens(entry.text, { family: "unknown" });
+      for (const family of ["anthropic", "gemini", "deepseek"] as const) {
+        const estimate = estimateContextTokens(entry.text, { family });
+        expect(unknown, `${entry.name} unknown covers ${family}`).toBeGreaterThanOrEqual(estimate);
+        const measured = row[family];
+        if (measured === null) continue;
+        expect(estimate, `${entry.name} ${family}`).toBeGreaterThanOrEqual(measured);
+        expect(estimate / measured, `${entry.name} ${family} bound`).toBeLessThanOrEqual(BOUND[family]);
+      }
+      if (row.sonnet45 !== null) {
+        expect(estimateContextTokens(entry.text, { family: "anthropic" }), `${entry.name} sonnet45`).toBeGreaterThanOrEqual(row.sonnet45);
+      }
     }
   });
 });

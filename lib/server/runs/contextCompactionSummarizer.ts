@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import type { ContextSummary, ContextSummaryAttempt, ContextSummaryUsage } from "../../contracts/contextCompaction";
 import { EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
-import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
+import { calculateContextBudgetLimits } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { maxOutputTokenParamKeys } from "../../domain/providerParams";
+import { contextTokenEstimator } from "../../domain/tokenEstimate";
 import { normalizeTokenUsage, type NormalizedTokenUsage } from "../../domain/usage";
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import { MIN_UTILITY_OUTPUT_TOKENS, UNKNOWN_MODEL_OUTPUT_ALLOWANCE } from "../providers/modelOutputAllowance";
@@ -242,8 +243,10 @@ export type ContextSummarySource = Readonly<{
   units: readonly SourceUnit[];
 }>;
 
-function unit(text: string, notes?: true): SourceUnit {
-  return { ...(notes ? { notes } : {}), text, tokens: estimateApproxTokens(text) };
+type Estimate = (value: unknown) => number;
+
+function unit(text: string, estimate: Estimate, notes?: true): SourceUnit {
+  return { ...(notes ? { notes } : {}), text, tokens: estimate(text) };
 }
 
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
@@ -272,13 +275,14 @@ export function contextSummarySource(request: ProviderRunRequest, observations?:
     ref !== CONTEXT_SUMMARY_REFS_INCOMPLETE && !isTranscriptCoverageRef(ref));
   const carriedHandles = carried.filter((ref) => ref.startsWith("tor1_"));
   const toolHandles = observationHandlesInProviderMessages(toolMessages, observations);
+  const estimate = contextTokenEstimator(request);
   const units: SourceUnit[] = [
-    ...(previous ? [unit(`<previous-notes refs="${carried.join(" ")}">\n${previous.notes}\n</previous-notes>`, true)] : []),
-    ...prior.map((message) => unit(`<message id="${message.id}" role="${message.role}">\n${messageText(message)}\n</message>`)),
-    ...(current ? [unit(`<message id="${current.id}" role="${current.role}" current="true">\n${messageText(current)}\n</message>`)] : []),
-    ...toolItems.map((item) => unit(`<tool-item>\n${item}\n</tool-item>`))
+    ...(previous ? [unit(`<previous-notes refs="${carried.join(" ")}">\n${previous.notes}\n</previous-notes>`, estimate, true)] : []),
+    ...prior.map((message) => unit(`<message id="${message.id}" role="${message.role}">\n${messageText(message)}\n</message>`, estimate)),
+    ...(current ? [unit(`<message id="${current.id}" role="${current.role}" current="true">\n${messageText(current)}\n</message>`, estimate)] : []),
+    ...toolItems.map((item) => unit(`<tool-item>\n${item}\n</tool-item>`, estimate))
   ];
-  const older = prior.slice(0, prior.length - contextSummaryTail(prior, request.contextCompaction?.budgetTokens ?? null).length);
+  const older = prior.slice(0, prior.length - contextSummaryTail(prior, request.contextCompaction?.budgetTokens ?? null, estimate).length);
   const replacedBytes = utf8Bytes(previous?.notes ?? "") +
     older.reduce((total, message) => total + utf8Bytes(messageText(message)), 0) +
     toolItems.reduce((total, item) => total + utf8Bytes(item), 0);
@@ -407,8 +411,9 @@ function summaryCallBudget(request: ProviderRunRequest): CallBudget {
   }
   const capacity = calculateContextBudgetLimits({ contextWindow: window }).budgetTokens;
   const reserve = Math.min(maxOutput, Math.floor(capacity / 2));
-  const overhead = estimateApproxTokens(systemPrompt("reduce", CONTEXT_COMPACTION_LIMITS.summaryNotesBytes, "json")) +
-    estimateApproxTokens(envelope(""));
+  const estimate = contextTokenEstimator(request);
+  const overhead = estimate(systemPrompt("reduce", CONTEXT_COMPACTION_LIMITS.summaryNotesBytes, "json")) +
+    estimate(envelope(""));
   const inputTokens = capacity - reserve - overhead;
   if (reserve < MIN_UTILITY_OUTPUT_TOKENS || inputTokens < MIN_UTILITY_OUTPUT_TOKENS) {
     throw new ContextSummaryError("context_compaction_summary_failed", "The admitted model window cannot hold a bounded summary call.");
@@ -417,7 +422,7 @@ function summaryCallBudget(request: ProviderRunRequest): CallBudget {
 }
 
 /** Consecutive slices covering every character, each within the bound. */
-function splitText(text: string, tokenLimit: number): string[] {
+function splitText(text: string, tokenLimit: number, estimate: Estimate): string[] {
   const parts: string[] = [];
   let rest = text;
   while (rest) {
@@ -425,7 +430,7 @@ function splitText(text: string, tokenLimit: number): string[] {
     let high = rest.length;
     while (low < high) {
       const middle = Math.ceil((low + high) / 2);
-      if (estimateApproxTokens(takeUtf16SafePrefix(rest, middle)) <= tokenLimit) low = middle;
+      if (estimate(takeUtf16SafePrefix(rest, middle)) <= tokenLimit) low = middle;
       else high = middle - 1;
     }
     const part = takeUtf16SafePrefix(rest, Math.max(low, 1)) || rest.slice(0, 2);
@@ -437,7 +442,7 @@ function splitText(text: string, tokenLimit: number): string[] {
 
 /** Oldest-first parts within the per-call bound, packed at unit boundaries;
  * only a unit larger than the bound is split, and never truncated. */
-function packParts(units: readonly SourceUnit[], tokenLimit: number): string[] {
+function packParts(units: readonly SourceUnit[], tokenLimit: number, estimate: Estimate): string[] {
   const parts: string[] = [];
   let current: string[] = [];
   let used = 0;
@@ -460,7 +465,7 @@ function packParts(units: readonly SourceUnit[], tokenLimit: number): string[] {
       used = entry.tokens;
       continue;
     }
-    parts.push(...splitText(entry.text, tokenLimit));
+    parts.push(...splitText(entry.text, tokenLimit, estimate));
   }
   flush();
   return parts;
@@ -468,7 +473,7 @@ function packParts(units: readonly SourceUnit[], tokenLimit: number): string[] {
 
 type CallPlan = Readonly<{ calls: number; notes: string | null; parts: readonly string[] }>;
 
-const PART_NOTES_WRAPPER_TOKENS = estimateApproxTokens("<part-notes>\n\n</part-notes>\n");
+const partNotesWrapperTokens = (estimate: Estimate) => estimate("<part-notes>\n\n</part-notes>\n");
 
 /** Consecutive groups of token counts within the bound. */
 function packTokens(counts: readonly number[], tokenLimit: number): number[] {
@@ -488,18 +493,19 @@ function packTokens(counts: readonly number[], tokenLimit: number): number[] {
 /** The parts of a source and an upper estimate of its paid calls: every part,
  * each reduction level (part notes are at most half their input) and the
  * final call. Earlier notes that fit one call join the reduction verbatim. */
-function planCalls(units: readonly SourceUnit[], inputTokens: number): CallPlan {
-  let parts = packParts(units, inputTokens);
+function planCalls(units: readonly SourceUnit[], inputTokens: number, estimate: Estimate): CallPlan {
+  let parts = packParts(units, inputTokens, estimate);
   const notes = parts.length > 1 && units[0]?.notes === true && units[0].tokens <= inputTokens ? units[0].text : null;
-  if (notes !== null) parts = packParts(units.slice(1), inputTokens);
+  if (notes !== null) parts = packParts(units.slice(1), inputTokens, estimate);
   if (notes === null && parts.length === 1) return { calls: 1, notes, parts };
   let calls = parts.length + 1;
+  const wrapperTokens = partNotesWrapperTokens(estimate);
   let level = [...(notes !== null ? [units[0]!.tokens] : []),
-    ...parts.map((part) => Math.ceil(estimateApproxTokens(part) / 2) + PART_NOTES_WRAPPER_TOKENS)];
+    ...parts.map((part) => Math.ceil(estimate(part) / 2) + wrapperTokens)];
   let total = level.reduce((sum, count) => sum + count, 0);
   while (total > inputTokens) {
     const groups = packTokens(level, inputTokens);
-    const next = groups.map((count) => Math.ceil(count / 2) + PART_NOTES_WRAPPER_TOKENS);
+    const next = groups.map((count) => Math.ceil(count / 2) + wrapperTokens);
     const nextTotal = next.reduce((sum, count) => sum + count, 0);
     if (nextTotal >= total) return { calls: Infinity, notes, parts };
     calls += groups.length;
@@ -528,8 +534,9 @@ type SummarySpan = Readonly<{
  */
 function summarySpan(request: ProviderRunRequest, observations: readonly ContextObservation[] | undefined,
   inputTokens: number): SummarySpan {
+  const estimate = contextTokenEstimator(request);
   const full = contextSummarySource(request, observations);
-  const fullPlan = planCalls(full.units, inputTokens);
+  const fullPlan = planCalls(full.units, inputTokens, estimate);
   if (fullPlan.calls <= CONTEXT_COMPACTION_LIMITS.summaryPlannedCalls) {
     return { dropped: [], plan: fullPlan, request, source: full };
   }
@@ -549,7 +556,7 @@ function summarySpan(request: ProviderRunRequest, observations: readonly Context
     const spanRequest: ProviderRunRequest = { ...request,
       context: { ...request.context!, messages: messages.filter((message) => !dropped.has(message)) } };
     const source = contextSummarySource(spanRequest, observations);
-    return { dropped: [...dropped], plan: planCalls(source.units, inputTokens), request: spanRequest, source };
+    return { dropped: [...dropped], plan: planCalls(source.units, inputTokens, estimate), request: spanRequest, source };
   };
   // Dropping more turns never adds calls: the smallest sufficient drop wins.
   let low = 1;
@@ -637,7 +644,7 @@ export function applyContextSummaryToRequest(
   const current = messages.at(-1);
   const pins = messages.filter((message) => message !== current && message.purpose !== undefined);
   const prior = messages.filter((message) => message !== current && message.purpose === undefined && !isContextSummaryMessage(message));
-  const tail = new Set(contextSummaryTail(prior, request.contextCompaction?.budgetTokens ?? null));
+  const tail = new Set(contextSummaryTail(prior, request.contextCompaction?.budgetTokens ?? null, contextTokenEstimator(request)));
   const { covered, uncovered } = contextSummaryCoverage(request, summary, prior);
   const summaryMessage: ProviderConversationMessage = {
     content: { blocks: [{ text: `Model-derived context notes (verify against exact sources):\n${summary.notes}`, type: "text" }] },
@@ -711,11 +718,12 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
   });
   if (input.existingSummary && applied?.id === input.existingSummary.id && contextSummaryIsCurrent(input.request)) return reuse();
   const budget = summaryCallBudget(input.request);
+  const estimate = contextTokenEstimator(input.request);
   const span = summarySpan(input.request, input.observations, budget.inputTokens);
   const { source } = span;
   const omitted: ContextSummaryOmission | undefined = span.dropped.length > 0 ? {
     messages: span.dropped.length,
-    tokens: span.dropped.reduce((total, message) => total + estimateApproxTokens(message.content), 0)
+    tokens: span.dropped.reduce((total, message) => total + estimate(message.content), 0)
   } : undefined;
   if (input.existingSummary?.sourceDigest === source.digest) return reuse(omitted);
   const forSource = attempts.filter((entry) => entry.sourceDigest === source.digest);
@@ -777,7 +785,7 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
       await input.receipts?.claim(claim);
       record(claim);
       const system = systemPrompt(kind, notesBytes, repair);
-      const inputTokens = estimateApproxTokens(system) + estimateApproxTokens(envelope(text));
+      const inputTokens = estimate(system) + estimate(envelope(text));
       const request = contextSummaryRequest({
         maxOutputTokens: Math.min(budget.maxOutputTokens, budget.capacity - inputTokens),
         request: input.request, system, text
@@ -875,12 +883,12 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
     let reduced = partials.join("\n");
     // Each reduction level must strictly shrink its input, so the plan is
     // finite independently of the model and never pays for non-shrinking work.
-    while (estimateApproxTokens(reduced) > budget.inputTokens) {
+    while (estimate(reduced) > budget.inputTokens) {
       const next: string[] = [];
       // The level's newest call settles once the level is judged, before any
       // later claim: a level that does not shrink ends the cycle with its code.
       let last: StepOutcome | null = null;
-      for (const part of packParts(partials.map((entry) => unit(entry)), budget.inputTokens)) {
+      for (const part of packParts(partials.map((entry) => unit(entry, estimate)), budget.inputTokens, estimate)) {
         await last?.settle("settled");
         last = await step("reduce", part, partialNotes(part));
         next.push(`<part-notes>\n${last.notes}\n</part-notes>`);

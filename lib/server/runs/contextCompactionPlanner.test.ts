@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { ContextSummary } from "../../contracts/contextCompaction";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
+import { contextTokenEstimator } from "../../domain/tokenEstimate";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
   anthropicMessagesToolBridge,
@@ -146,14 +147,15 @@ describe("context compaction planner", () => {
     };
     const isWhole = (result: ToolExecutionResult) => result.content.some(part => part.type === "text");
 
+    // Hex encodes at about 1.76 characters per o200k token.
     it.each([
-      { contextWindow: 16_384, bytes: 14 * 1024, whole: 1 },
+      { contextWindow: 16_384, bytes: 5_632, whole: 1 },
       { contextWindow: 8_192, bytes: 8 * 1024, whole: 0 }
     ])("stays reducible on a $contextWindow-token window with four $bytes-byte results", async ({ contextWindow, bytes, whole }) => {
       const base = windowRequest(contextWindow);
       const share = observationWholeResultTokens(base);
       const { budgetTokens } = calculateContextBudgetLimits({ contextWindow, maxOutputTokens: 0, provider: "openai" });
-      expect(share).toBe(Math.floor(budgetTokens / 4));
+      expect(share.tokens).toBe(Math.floor(budgetTokens / 4));
       const calls = [1, 2, 3, 4].map(index => ({ id: `parallel-${index}`, name: "mcp_records", arguments: {} }));
       const capture = (allowance: () => ReturnType<typeof wholeDeliveryAllowance>) => {
         const observations = memoryToolObservations();
@@ -169,14 +171,14 @@ describe("context compaction planner", () => {
           contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages: base.context!.messages, mode: "hybrid" }) };
         // The system prompt, tools and current turn keep a fifth of the budget.
         return planContextCompaction({ bridge: openAIResponsesToolBridge, budgetTokens, request: hybrid,
-          assembledTokens: estimateApproxTokens(messages) + Math.floor(budgetTokens / 5),
+          assembledTokens: contextTokenEstimator(hybrid)(messages) + Math.floor(budgetTokens / 5),
           observations: contextObservationsFromResults(results) });
       };
       const batch = observationWholeDeliveryBatches();
       const shared = await capture(() => batch.allowance(1, share));
       expect(shared.filter(isWhole)).toHaveLength(whole);
       expect(shared.filter(isWhole).reduce((sum, result) =>
-        sum + estimateApproxTokens(projectObservationForProvider(result).content), 0)).toBeLessThanOrEqual(share);
+        sum + share.estimateTokens(projectObservationForProvider(result).content), 0)).toBeLessThanOrEqual(share.tokens);
       expect(plan(shared).measurement.outcome).not.toBe("irreducible_overflow");
       // Each result judged alone (and every inline-sized one) was whole, which
       // left the same newest batch irreducible after every tool had executed.
@@ -185,8 +187,8 @@ describe("context compaction planner", () => {
       expect(plan(alone).measurement.outcome).toBe("irreducible_overflow");
     });
 
-    it("still delivers a single 100 KiB result whole on a 128,000-token window", async () => {
-      const share = observationWholeResultTokens(windowRequest(128_000));
+    it("still delivers a single 100 KiB result whole on a 400,000-token window", async () => {
+      const share = observationWholeResultTokens(windowRequest(400_000));
       const call = { id: "single", name: "mcp_records", arguments: {} };
       const result = await captureMcpObservation({ service: memoryToolObservations().service(),
         producer: { runId: "single-run", userId: "single-owner", toolCallId: call.id },
@@ -588,9 +590,10 @@ describe("context compaction planner", () => {
     const policy = conversationContextPolicy({ leafMessageId: "a4", messages, mode: "hybrid" });
     const carried: ProviderRunRequest = { ...base, context: { messages, mode: "branch_path" }, contextCompactionSummary: notes,
       contextCompactionPolicy: { ...policy, reuse: { coveredMessageId: "u2", runId: "run-2", summary: notes } } };
-    const prior = messages.slice(0, -1).reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+    const estimate = contextTokenEstimator(base);
+    const prior = messages.slice(0, -1).reduce((total, message) => total + estimate(message.content), 0);
     const assembledTokens = prior + 100;
-    const covered = estimateApproxTokens(messages[1]!.content);
+    const covered = estimate(messages[1]!.content);
     const plan = (input: ProviderRunRequest, budgetTokens: number) =>
       planContextCompaction({ assembledTokens, budgetTokens, bridge: openAIResponsesToolBridge, request: input });
 
@@ -604,7 +607,7 @@ describe("context compaction planner", () => {
     // Uncovered history must still leave: new notes, never a legacy trim of it.
     expect(plan(carried, assembledTokens - covered - 200).measurement.outcome).toBe("needs_summary");
     // Fits above the trigger with uncovered history older than the exact tail: headroom notes.
-    expect(plan(carried, Math.floor(assembledTokens / 0.8)).measurement.outcome).toBe("needs_summary");
+    expect(plan(carried, Math.ceil(assembledTokens / 0.8) - 1).measurement.outcome).toBe("needs_summary");
     expect(plan(carried, assembledTokens * 2).measurement.outcome).toBe("already_fits");
     // Notes bought in this run cover every prior message: covered turns leave instead.
     const { reuse: _reuse, ...own } = carried.contextCompactionPolicy!;
