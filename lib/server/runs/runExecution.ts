@@ -10,7 +10,7 @@ import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
 import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import { createArtifactGeneration } from "../artifacts/generation";
-import { createRunFollowupExecution, requestWithoutRunFollowups, RunFollowupChanged } from "./runFollowupExecution";
+import { createRunFollowupExecution, requestWithoutRunFollowups, RunFollowupChanged, unsettledInterruptedUsage } from "./runFollowupExecution";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { knowledgeLifecycleAfterFollowup } from "../knowledge/followupExecution";
 import { effectiveFollowupQuestion } from "../../domain/runFollowupContext";
@@ -184,7 +184,7 @@ import type {
   RunUsageAttribution
 } from "./runRepositoryContract";
 import { UNAVAILABLE_CHAT_WORKSPACE_STATE } from "../../contracts/workspace";
-import { runProviderToolLoop as continueProviderToolLoop } from "./providerToolLoop";
+import { answerDispatchStarted, beforeAnswerDispatch, runProviderToolLoop as continueProviderToolLoop } from "./providerToolLoop";
 import {
   parsePersistedToolExecutionResult,
   settleableToolExecutionResult,
@@ -794,7 +794,17 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 if (!stopped) throw new RunPipelineError("followup_generation_unconfirmed", "The previous background response could not be confirmed as stopped.");
               }
               rememberReportedUsage(request.provider, request.modelId, reported);
-              await persistReportedUsageForIncompleteRun();
+              const remembered = reportedUsageAttributions.at(-1)!;
+              try {
+                await persistReportedUsageForIncompleteRun();
+              } catch (error) {
+                // The round's failure path accounts this usage once, from
+                // what the follow-up executor forwards; keeping it here too
+                // would persist it twice.
+                const index = reportedUsageAttributions.lastIndexOf(remembered);
+                if (index >= 0) reportedUsageAttributions.splice(index, 1);
+                throw unsettledInterruptedUsage(error, reported);
+              }
             }
           }) : null;
 
@@ -968,8 +978,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           rememberReportedUsage(request.provider, request.modelId, usage);
           return { ...next.value, usage };
         } catch (error) {
-          rememberReportedUsage(request.provider, request.modelId,
-            normalizeTokenUsage({ ...(lastReportedUsage ?? {}), completeness: "partial" }));
+          // A request refused before dispatch is no operation.
+          if (lastReportedUsage !== null || answerDispatchStarted(error)) {
+            rememberReportedUsage(request.provider, request.modelId,
+              normalizeTokenUsage({ ...(lastReportedUsage ?? {}), completeness: "partial" }));
+          }
           throw error;
         } finally {
           await providerStream.return(undefined as never).catch(() => undefined);
@@ -1834,44 +1847,47 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           preview ??= input.adapter.buildRequestPreview(request);
           return preview;
         };
-        await assertProjectRunAccessCurrent(true);
-        if (!(await currentAnswerDispatchAllowed())) {
-          throw new RunPipelineError(
-            "model_not_available",
-            "The selected model is no longer available"
-          );
-        }
-        if (egressReceiptRequired && !input.memoryEgress &&
-          process.env.NODE_ENV === "production") {
-          throw new RunPipelineError(
-            "memory_egress_receipt_unavailable",
-            "Memory egress evidence is unavailable."
-          );
-        }
-        if (requestHasHostedSearchCapability(request) &&
-          !(await currentSearchDispatchAllowed())) {
-          await input.memoryEgress?.recordBlockedDispatch({
-            destinationKind: "answer_provider",
-            destinationSnapshot: {
-              modelId: request.modelId,
-              provider: request.provider,
-              searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
-              version: 1
-            },
-            errorCode: "memory_egress_search_revoked",
-            mode: "PROVIDER_REQUEST",
-            requestEvidence: memoryEgressRequestEvidence(request),
-            requestPreview: requestPreview(),
-            runId,
-            userId: input.userId
-          });
-          throw new RunPipelineError(
-            "search_strategy_not_available",
-            "The selected search destination is no longer available."
-          );
-        }
         let receipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
+        // Nothing reached the provider before its stream opens: a refusal or
+        // local failure until then is not a dispatched answer round.
+        let dispatchStarted = false;
         try {
+          await assertProjectRunAccessCurrent(true);
+          if (!(await currentAnswerDispatchAllowed())) {
+            throw new RunPipelineError(
+              "model_not_available",
+              "The selected model is no longer available"
+            );
+          }
+          if (egressReceiptRequired && !input.memoryEgress &&
+            process.env.NODE_ENV === "production") {
+            throw new RunPipelineError(
+              "memory_egress_receipt_unavailable",
+              "Memory egress evidence is unavailable."
+            );
+          }
+          if (requestHasHostedSearchCapability(request) &&
+            !(await currentSearchDispatchAllowed())) {
+            await input.memoryEgress?.recordBlockedDispatch({
+              destinationKind: "answer_provider",
+              destinationSnapshot: {
+                modelId: request.modelId,
+                provider: request.provider,
+                searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
+                version: 1
+              },
+              errorCode: "memory_egress_search_revoked",
+              mode: "PROVIDER_REQUEST",
+              requestEvidence: memoryEgressRequestEvidence(request),
+              requestPreview: requestPreview(),
+              runId,
+              userId: input.userId
+            });
+            throw new RunPipelineError(
+              "search_strategy_not_available",
+              "The selected search destination is no longer available."
+            );
+          }
           receipt = input.memoryEgress && egressReceiptRequired
             ? await input.memoryEgress.beginDispatch({
                 destinationKind: "answer_provider",
@@ -1893,6 +1909,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           const wireRequest = request.workspaceImageView
             ? await (await defaultWorkspaceImageViewer()).materialize(request, runId, input.userId, dispatchSignal) : request;
           await beforeDispatch?.();
+          dispatchStarted = true;
           const stream = input.adapter.stream(wireRequest, { signal: dispatchSignal, onToolArguments, ...(timeoutMs ? { timeoutMs } : {}) });
           try {
             let next = await stream.next();
@@ -1921,7 +1938,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               error instanceof RunPipelineError ? error.code : "provider_dispatch_failed"
             ).catch(() => undefined);
           }
-          throw error;
+          throw dispatchStarted ? error : beforeAnswerDispatch(error);
         }
       }
 

@@ -119,7 +119,8 @@ export function beforeAnswerDispatch<T>(error: T): T {
   return error;
 }
 
-function answerDispatchStarted(error: unknown): boolean {
+/** False only for a failure marked by `beforeAnswerDispatch`. */
+export function answerDispatchStarted(error: unknown): boolean {
   return typeof error !== "object" || error === null || !undispatchedRoundFailures.has(error);
 }
 

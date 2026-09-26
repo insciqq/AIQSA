@@ -185,6 +185,7 @@ import {
   usageAttributionsWithEstimatedCost
 } from "./runFinalization";
 import {
+  beforeAnswerDispatch,
   providerToolLoopContinuationAfterResult,
   runProviderToolLoop,
   type ProviderToolLoopContinuation
@@ -686,6 +687,39 @@ function hasTokenUsage(usage: ModelRunUsage): boolean {
 
 function hasValidUsageEvidence(usage: ModelRunUsage): boolean {
   return decodeTokenUsage(usage) !== null;
+}
+
+/** A summary call the lost executor left unsettled. A bare claim never
+ * passed its pre-dispatch checks, so nothing was sent: it settles as not
+ * dispatched, counts no operation and a later claim may buy the summary. A
+ * dispatched call has an unknown outcome: one operation, never repeated. */
+function lostSummaryAttempt(checkpoint: CheckpointedToolLoopRun["checkpoint"]): Readonly<{
+  settled?: ContextSummaryAttempt;
+  unsettled?: ContextSummaryAttempt;
+}> {
+  const unsettled = checkpoint.contextCompaction?.summaryAttempts?.find((attempt) =>
+    attempt.state === "claim" || attempt.state === "dispatched");
+  if (!unsettled) return {};
+  return {
+    settled: unsettled.state === "claim"
+      ? { ...unsettled, errorCode: CONTEXT_SUMMARY_NOT_DISPATCHED, state: "failed" }
+      : { ...unsettled, state: "unknown" },
+    unsettled
+  };
+}
+
+/** The round being prepared when the executor was lost may have dispatched
+ * its answer request, unless the loss happened while summarizing for that
+ * round (no answer request is sent before its summary settles). Usage the
+ * round already reported stands for it. */
+function lostAnswerRoundOutcomeUnknown(
+  checkpoint: CheckpointedToolLoopRun["checkpoint"],
+  providerResponseId: string | null
+): boolean {
+  const round = checkpoint.roundIndex;
+  return checkpoint.phase === "provider_running" && round >= 1 &&
+    !(lostSummaryAttempt(checkpoint).unsettled && !providerResponseId) &&
+    !checkpoint.answerRoundUsage.some((entry) => entry.roundIndex === round);
 }
 
 function usageAttributionsWithoutAnswerRounds(
@@ -2162,16 +2196,7 @@ async function recoverCheckpointedToolLoop(
         "A run attachment is no longer available for tool-loop recovery."
       );
     }
-    // A summary call the lost executor left unsettled. A bare claim never
-    // passed its pre-dispatch checks, so nothing was sent: it settles as not
-    // dispatched, counts no operation and a later claim may buy the summary.
-    // A dispatched call has an unknown outcome: one operation, never repeated.
-    const unsettledSummaryClaim = run.checkpoint.contextCompaction?.summaryAttempts?.find((attempt) =>
-      attempt.state === "claim" || attempt.state === "dispatched");
-    const settledSummaryClaim: ContextSummaryAttempt | undefined = unsettledSummaryClaim && (
-      unsettledSummaryClaim.state === "claim"
-        ? { ...unsettledSummaryClaim, errorCode: CONTEXT_SUMMARY_NOT_DISPATCHED, state: "failed" }
-        : { ...unsettledSummaryClaim, state: "unknown" });
+    const { settled: settledSummaryClaim, unsettled: unsettledSummaryClaim } = lostSummaryAttempt(run.checkpoint);
     const summaryAttempts = run.checkpoint.contextCompaction?.summaryAttempts?.map((attempt) =>
       attempt === unsettledSummaryClaim ? settledSummaryClaim! : attempt);
     let providerRequest: ProviderRunRequest = {
@@ -2384,6 +2409,9 @@ async function recoverCheckpointedToolLoop(
         preview ??= adapter!.buildRequestPreview(request);
         return preview;
       };
+      // Nothing reached the provider before its stream opens: a refusal or
+      // local failure until then is not a dispatched answer round.
+      let dispatchStarted = false;
       try {
         if (egressReceiptRequired && !deps.memoryEgress && process.env.NODE_ENV === "production") {
           throw new ToolLoopRecoveryError(
@@ -2442,6 +2470,7 @@ async function recoverCheckpointedToolLoop(
         const wireRequest = request.workspaceImageView
           ? await (await defaultWorkspaceImageViewer()).materialize(request, run.id, run.userId, dispatchSignal) : request;
         await beforeDispatch?.();
+        dispatchStarted = true;
         const stream = adapter!.stream(wireRequest, { signal: dispatchSignal });
         let next = await stream.next();
         while (!next.done) {
@@ -2466,7 +2495,7 @@ async function recoverCheckpointedToolLoop(
               : "provider_dispatch_failed"
           ).catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "fail"));
         }
-        throw error;
+        throw dispatchStarted ? error : beforeAnswerDispatch(error);
       }
     }
 
@@ -2979,6 +3008,14 @@ async function recoverCheckpointedToolLoop(
         );
       }
       if (!refreshed.result) {
+        // A failed or incomplete response still bills what it reported; with
+        // no report the round is one operation whose usage stays unknown.
+        await recordAnswerRoundUsage(
+          reportedUsage(refreshed) ?? normalizeTokenUsage({ completeness: "unavailable" }),
+          run,
+          "partial",
+          round
+        );
         await settleToolLoopRecoveryError(
           deps,
           run,
@@ -4273,6 +4310,56 @@ async function recoverKnowledgeAnswerGrounding(
   });
 }
 
+/** A lost executor's checkpoint that is not resumed still settles its paid
+ * work exactly as a resumed checkpoint would: an unsettled summary call (a
+ * bare claim as never sent, a dispatched call as unknown with one operation)
+ * and a round whose answer may have been dispatched (one operation with
+ * unknown usage). Nothing is replayed and no token count is invented. */
+async function accountLostExecutorCheckpoint(deps: RunRecoveryDeps, runId: string, userId: string): Promise<void> {
+  const run = await deps.repository.loadCheckpointedToolLoopRun({ runId, userId });
+  if (!run || run.status === "cancelled") return;
+  const { checkpoint } = run;
+  const summary = lostSummaryAttempt(checkpoint);
+  const unknownRound = lostAnswerRoundOutcomeUnknown(checkpoint, run.providerResponseId);
+  if (!(summary.settled && checkpoint.contextCompaction) && !unknownRound) return;
+  const persisted = await deps.repository.loadRunUsageAttributions({ runId, userId });
+  const attributions = usageAttributionsWithoutAnswerRounds(
+    persisted.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
+    run,
+    checkpoint.answerRoundUsage
+  );
+  // Totals inconsistent with the saved rounds cannot be rewritten truthfully.
+  if (!attributions) return;
+  let answerRounds = checkpoint.answerRoundUsage;
+  const unknownUsage = normalizeTokenUsage({ completeness: "unavailable" });
+  const record = async (write: Readonly<{
+    answerRoundUsage?: PersistedAnswerRoundUsage;
+    contextSummaryReceipt?: ContextSummaryReceiptWrite;
+  }>) => deps.repository.recordRunUsageEvents({
+    ...write,
+    chatId: run.chatId,
+    runId,
+    usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
+      ...attributions,
+      ...answerRounds.map((entry) => ({ modelId: run.modelId, operationCount: 1, provider: run.provider, usage: entry.usage }))
+    ])),
+    userId
+  });
+  if (summary.settled && checkpoint.contextCompaction) {
+    if (summary.settled.state === "unknown") {
+      attributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider, usage: unknownUsage });
+    }
+    if (!(await record({ contextSummaryReceipt: { attempt: summary.settled,
+      compaction: checkpoint.contextCompaction, roundIndex: checkpoint.roundIndex } }))) return;
+  }
+  if (!unknownRound) return;
+  const entry: PersistedAnswerRoundUsage = { completeness: "partial", roundIndex: checkpoint.roundIndex, usage: unknownUsage };
+  const merged = mergeAnswerRoundUsage(answerRounds, entry, checkpoint.roundIndex);
+  if (!merged) return;
+  answerRounds = merged;
+  await record({ answerRoundUsage: entry });
+}
+
 async function refreshProviderRunOnceRegistered(
   deps: RunRecoveryDeps,
   runId: string,
@@ -4327,6 +4414,7 @@ async function refreshProviderRunOnceRegistered(
       const runtime = await resolveAnswerRuntime(deps, runId, control.provider).catch(() => null);
       await runtime?.adapter.cancel?.(control.providerResponseId).catch(() => undefined);
     }
+    await accountLostExecutorCheckpoint(deps, runId, userId);
     if (control.assistantMessageId) await failRecoveredRun(deps.repository, runId, control.assistantMessageId, {
       code: "followup_executor_lost",
       message: "This task was interrupted before it could finish with your follow-ups. Your question and clarifications are saved; regenerate to try again."

@@ -5535,6 +5535,28 @@ describe("run recovery", () => {
       })]);
     });
 
+    it.each([
+      ["dispatched", 2, "unknown"],
+      ["claim", 1, "failed"]
+    ] as const)("settles a %s summary receipt of a lost executor with clarifications before failing it", async (state, operations, settled) => {
+      const attempt = { attempt: 1, bindingDigest: "f".repeat(64), id: `csa1_${state}`, sourceDigest: "e".repeat(64), state };
+      const recovery = crashedDuringSummary(attempt);
+      recovery.harness.repository.followups = { accept: vi.fn(), deliver: vi.fn(), close: vi.fn(), beginKnowledge: vi.fn(),
+        load: async () => ({ revision: 1, entries: [{ id: "f", ordinal: 1, text: "Clarification", author: "Author",
+          createdAt: new Date().toISOString(), delivery: "delivered" }] }) };
+      await recovery.recover();
+      expect(recovery.summaries).toHaveLength(0);
+      expect(recovery.answers).toHaveLength(0);
+      expect(recovery.harness.state.failed).toMatchObject([{ error: { code: "followup_executor_lost" } }]);
+      expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual([state === "claim"
+        ? { ...attempt, errorCode: "context_compaction_not_dispatched", state: settled } : { ...attempt, state: settled }]);
+      // The round's answer was never sent while summarizing: no answer-round operation.
+      expect(recovery.installed.checkpoint().answerRoundUsage.map((entry) => entry.roundIndex)).toEqual([1]);
+      // A dispatched call is one more operation with unknown usage; a bare claim counts nothing.
+      expect(recovery.harness.state.usageAttributions.at(-1)).toEqual([expect.objectContaining({ operationCount: operations,
+        usage: expect.objectContaining({ completeness: state === "claim" ? "complete" : "partial" }) })]);
+    });
+
     it("settles an unsettled claim as never sent, counting no operation, so a later claim may buy the summary", async () => {
       const claim = { attempt: 1, bindingDigest: "f".repeat(64), id: "csa1_claimed", sourceDigest: "e".repeat(64), state: "claim" as const };
       const recovery = crashedDuringSummary(claim);
@@ -7167,7 +7189,7 @@ describe("run recovery", () => {
       ...persistedRecoveryCall("complete"),
       result: settledResult
     };
-    installCheckpointState(harness, {
+    const installed = installCheckpointState(harness, {
       ...checkpointedRun({
         calls: [settledCall],
         phase: "tools_pending"
@@ -7187,9 +7209,13 @@ describe("run recovery", () => {
     ]);
     expect(harness.state.recoveredErrors).toEqual([
       expect.objectContaining({
-        error: expect.objectContaining({ code: "search_strategy_not_available" })
+        error: expect.objectContaining({ code: "search_strategy_not_available" }),
+        // Only the settled first round: the refused round was never sent.
+        usageAttributions: [expect.objectContaining({ operationCount: 1,
+          usage: expect.objectContaining({ completeness: "complete" }) })]
       })
     ]);
+    expect(installed.checkpoint().answerRoundUsage.map((entry) => entry.roundIndex)).toEqual([1]);
   });
 
   it("terminally fails a Project recovery after initiator access loss without provider or tool I/O", async () => {
@@ -8984,6 +9010,72 @@ describe("run recovery", () => {
           usage: expect.objectContaining({ completeness: "unavailable", inputTokens: null, totalTokens: null }) })]
       })
     ]);
+  });
+
+  it("records the reported usage of a terminal failed provider round once before settling it", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      error: { code: "provider_terminal_error", message: "Provider stopped" },
+      events: [{ type: "usage", data: { inputTokens: 40, outputTokens: 5, totalTokens: 45 } }],
+      status: "failed",
+      terminal: true
+    }));
+    const harness = createHarness({
+      controls: [control({ providerResponseId: "response-tool-1" })],
+      providers: { openai: providerWithRefresh(refresh) }
+    });
+    const installed = installCheckpointState(harness, checkpointedRun({ phase: "provider_running", providerResponseId: "response-tool-1" }));
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(installed.checkpoint().answerRoundUsage).toEqual([{ completeness: "partial", roundIndex: 1,
+      usage: normalizeTokenUsage({ completeness: "partial", inputTokens: 40, outputTokens: 5, totalTokens: 45 }) }]);
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "provider_terminal_error" }),
+      usageAttributions: [expect.objectContaining({ modelId: "gpt-test", operationCount: 1, provider: "openai",
+        usage: expect.objectContaining({ completeness: "partial", inputTokens: 40, outputTokens: 5, totalTokens: 45 }) })]
+    })]);
+  });
+
+  it("keeps a terminal failed round without reported usage as one operation with unknown usage", async () => {
+    const harness = createHarness({
+      controls: [control({ providerResponseId: "response-tool-1" })],
+      providers: { openai: providerWithRefresh(async () => ({
+        error: { code: "provider_terminal_error", message: "Provider stopped" }, events: [], status: "failed", terminal: true })) }
+    });
+    const installed = installCheckpointState(harness, checkpointedRun({ phase: "provider_running", providerResponseId: "response-tool-1" }));
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(installed.checkpoint().answerRoundUsage).toEqual([
+      { completeness: "partial", roundIndex: 1, usage: normalizeTokenUsage({ completeness: "unavailable" }) }]);
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      usageAttributions: [expect.objectContaining({ operationCount: 1, usage: expect.objectContaining({ completeness: "unavailable" }) })]
+    })]);
+  });
+
+  it("accounts an unknown answer round of a lost executor with clarifications once before failing it", async () => {
+    const stream = vi.fn();
+    const harness = createHarness({
+      controls: [control({ providerResponseId: null })],
+      providers: { openai: { buildRequestPreview: () => ({}), stream: stream as ProviderAdapter["stream"] } }
+    });
+    harness.repository.followups = { accept: vi.fn(), deliver: vi.fn(), close: vi.fn(), beginKnowledge: vi.fn(),
+      load: async () => ({ revision: 1, entries: [{ id: "f", ordinal: 1, text: "Clarification", author: "Author",
+        createdAt: new Date().toISOString(), delivery: "delivered" }] }) };
+    const installed = installCheckpointState(harness, checkpointedRun({ phase: "provider_running", providerResponseId: null, roundIndex: 2,
+      answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: normalizeTokenUsage({ inputTokens: 5, outputTokens: 1, totalTokens: 6 }) }] }));
+    const unknownRound = { completeness: "partial", roundIndex: 2, usage: normalizeTokenUsage({ completeness: "unavailable" }) };
+    // The first pass accounts the round but loses the terminal write.
+    const failRun = harness.repository.failRun;
+    harness.repository.failRun = vi.fn(async () => false);
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    harness.repository.failRun = failRun;
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.failed).toMatchObject([{ error: { code: "followup_executor_lost" } }]);
+    expect(installed.checkpoint().answerRoundUsage).toEqual([
+      { completeness: "terminal", roundIndex: 1, usage: normalizeTokenUsage({ inputTokens: 5, outputTokens: 1, totalTokens: 6 }) },
+      unknownRound]);
+    // Round 1 and one operation whose usage is unknown, never counted twice: not COMPLETE.
+    expect(harness.state.usageAttributions.at(-1)).toEqual([expect.objectContaining({ modelId: "gpt-test", operationCount: 2,
+      usage: expect.objectContaining({ completeness: "partial", inputTokens: 5 }) })]);
   });
 });
 

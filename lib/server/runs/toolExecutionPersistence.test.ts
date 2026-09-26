@@ -311,6 +311,26 @@ describe("settleable tool execution result", () => {
       error: { code, stage, limitBytes: 8192, message: expect.stringContaining("do not repeat the same call") } });
   });
 
+  it("keeps a Workspace result's settled activity entry and runtime metadata in the bounded error", () => {
+    const activity = { type: "artifact" as const, data: { artifactType: "workspace_activity" as const, payload: {
+      id: "activity-1", kind: "tool", status: "settled", title: "run_command" } } };
+    const settleable = settleableToolExecutionResult({ callId: "workspace-call", name: "workspace_run_command",
+      artifacts: [activity], rawPreview: { exitCode: 0, truncated: false },
+      status: "complete", content: [{ type: "text", text: `${"x".repeat(9000)} ${marker}` }] }, 8192);
+    expect(settleable?.failure).toMatchObject({ code: "tool_result_too_large", stage: "size" });
+    expect(settleable?.result).toMatchObject({ status: "error", artifacts: [activity],
+      rawPreview: { exitCode: 0, truncated: false, finalProviderResponsePreview: { error: { code: "tool_result_too_large" } } } });
+    expect(parsePersistedToolExecutionResult({ id: "workspace-call", name: "workspace_run_command" }, settleable!.snapshot))
+      .toEqual(settleable!.result);
+    expect(JSON.stringify(settleable)).not.toContain(marker);
+    // Output events that cannot be kept either are dropped, never the bounded error itself.
+    const invalid = settleableToolExecutionResult({ callId: "workspace-call", name: "workspace_run_command",
+      artifacts: [{ type: "artifact", data: { artifactType: "not_an_artifact", payload: {} } } as never],
+      status: "complete", content: [{ type: "text", text: "x".repeat(9000) }] }, 8192);
+    expect(invalid?.result).toMatchObject({ status: "error" });
+    expect(invalid?.result).not.toHaveProperty("artifacts");
+  });
+
   it("refuses to settle only when even the bounded error cannot be kept", () => {
     expect(settleableToolExecutionResult({ callId: mcpCall.id, name: mcpCall.name, status: "complete",
       content: [{ type: "text", text: "x".repeat(2048) }] }, 64)).toBeNull();

@@ -35,6 +35,7 @@ import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { openAIResponsesToolBridge } from "../tools/bridges";
+import { followupRequestHeadroom, followupTokenCost } from "./runFollowups";
 import { prepareCompactedProviderRequest } from "./contextCompactionConsumer";
 import { contextCompactionCheckpoint, type BranchContextCheckpoint } from "./contextCompactionContract";
 import { createContextCompactionPublisher } from "./contextCompactionEvents";
@@ -4830,6 +4831,24 @@ describe("cross-turn compaction reuse", () => {
     expect(smaller.loadBranchContextCheckpoints).toHaveBeenCalled();
     expect(smaller.prepared.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
     expect(smaller.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
+  });
+
+  it("admits clarifications at the planner target for a hybrid branch over its budget; legacy admission is unchanged", async () => {
+    const history = Array.from({ length: 10 }, (_, index) => exchange(index + 1)).flat();
+    const clarification = "Use the corrected quantity 23 and answer in a table.";
+    const hybrid = materializePreparedRunData((await admit({ history })).prepared);
+    const plan = hybrid.providerRequest.contextCompaction!;
+    expect(plan).toMatchObject({ outcome: "needs_summary" });
+    expect(plan.afterTokens).toBeGreaterThan(plan.budgetTokens!);
+    // Measured on the uncompacted branch there is no room at all.
+    expect(followupRequestHeadroom({ ...hybrid.providerRequest, followupContextReserveTokens: 0 }, openAIResponsesToolBridge)).toBe(0);
+    // The summary that precedes the first dispatch brings the request to half its budget.
+    expect(hybrid.followupAdmission?.budgetTokens).toBe(Math.min(8_192, Math.floor((plan.budgetTokens! - Math.ceil(plan.budgetTokens! / 2)) / 2)));
+    expect(hybrid.followupAdmission!.budgetTokens).toBeGreaterThanOrEqual(followupTokenCost(clarification));
+    expect(hybrid.normalizedRequest.followupContextReserveTokens).toBe(hybrid.followupAdmission?.budgetTokens);
+    const legacy = materializePreparedRunData((await admit({ history, policy: "off" })).prepared);
+    expect(legacy.followupAdmission?.budgetTokens).toBe(Math.min(8_192, Math.floor(followupRequestHeadroom(
+      { ...legacy.providerRequest, followupContextReserveTokens: 0 }, openAIResponsesToolBridge) / 2)));
   });
 
   it("keeps Off and accepted legacy admissions free of carried notes", async () => {
