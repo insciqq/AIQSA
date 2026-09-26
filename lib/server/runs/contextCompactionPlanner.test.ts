@@ -18,6 +18,7 @@ import { conversationContextPolicy, contextCompactionCheckpoint } from "./contex
 import {
   contextCompactionMeasurementWithBudget,
   contextObservationsFromResults,
+  maskedObservationHandlesInProviderMessages,
   observationCallIdsInProviderMessages,
   observationHandlesInProviderMessages,
   planContextCompaction
@@ -385,6 +386,24 @@ describe("context compaction planner", () => {
     });
     expect(checkpoint.observationRefs).not.toContain(foreign.handle);
     expect(contextSummarySource(planned.request).refs).not.toContain(foreign.handle);
+  });
+
+  it("keeps the newest 512 handles, oldest first, when a transcript names more", () => {
+    const settled = Array.from({ length: 600 }, (_, index) => result(`call-${index}`, `cap-${index}`));
+    const masked = settled.flatMap((entry) => [
+      { call_id: entry.callId, name: "read_record", type: "function_call" },
+      reference(openAIResponsesToolBridge, entry)
+    ]);
+    const observations = contextObservationsFromResults(settled);
+    const newest = settled.slice(-512).map((entry) => entry.observation!.handle);
+    expect(observationHandlesInProviderMessages(masked, observations)).toEqual(newest);
+    expect(maskedObservationHandlesInProviderMessages(masked, observations)).toEqual(newest);
+    // A handle read again later counts at its newest occurrence.
+    const reread = [...masked, { call_id: "reread", name: "read_record", type: "function_call" },
+      openAIResponsesToolBridge.appendToolResult(undefined, { ...settled[0]!, callId: "reread" })];
+    const rereadObservations = [...observations, { ...observations[0]!, callId: "reread" }];
+    expect(observationHandlesInProviderMessages(reread, rereadObservations).at(-1)).toBe(settled[0]!.observation!.handle);
+    expect(observationHandlesInProviderMessages(reread, rereadObservations)).toHaveLength(512);
   });
 
   it("names a result only by its nearest preceding call item", () => {

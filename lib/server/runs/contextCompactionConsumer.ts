@@ -1,4 +1,4 @@
-import type { ContextPlanMeasurement } from "../../contracts/contextCompaction";
+import type { ContextPlanMeasurement, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ObservationActor } from "../toolObservations/repository";
@@ -12,7 +12,8 @@ import {
   executeContextSummary,
   summaryNeedsProvider,
   type ContextSummaryAdapter,
-  type ContextSummaryReceipts
+  type ContextSummaryReceipts,
+  type ContextSummaryRejection
 } from "./contextCompactionSummarizer";
 import {
   applyProviderRequestContextBudget,
@@ -28,13 +29,22 @@ function failureCode(error: unknown): string | null {
 }
 
 /** Summary failures with known outcomes and no committed notes: the cycle
- * failed, but nothing it left behind stands in the way of the request. */
+ * failed, but nothing it left behind stands in the way of the request. A call
+ * budget or a transient source check is as harmless as a failed provider call
+ * to a request that already fits. */
 const HEADROOM_TOLERATED_FAILURES: ReadonlySet<string> = new Set([
   "context_compaction_provider_failed",
+  "context_compaction_source_check_failed",
   "context_compaction_source_unavailable",
+  "context_compaction_summary_failed",
   "context_compaction_summary_invalid",
   "context_compaction_summary_no_progress"
 ]);
+
+const NO_PROGRESS: ContextSummaryRejection = {
+  code: "context_compaction_summary_no_progress",
+  message: "The new notes do not reduce the context estimate."
+};
 
 /** A summary bought only for headroom: the measured request (after masking)
  * and the exact request as dispatched both already fit the budget. */
@@ -42,6 +52,46 @@ function fitsWithoutSummary(request: ProviderRunRequest, bridge: ProviderToolBri
   const measurement = request.contextCompaction;
   if (!measurement || measurement.budgetTokens === null) return false;
   return measurement.afterTokens <= measurement.budgetTokens && providerRequestFitsContextBudget(request, bridge);
+}
+
+/**
+ * True when a headroom summary of this run failed with a tolerated class and
+ * no summary was committed after it. It is derived only from the run's durable
+ * receipts, which the checkpoint keeps and every request the consumer returns
+ * carries, so later rounds, follow-up deliveries and recovery cannot reset it:
+ * the run buys no further headroom-only summary. A request over its budget
+ * still buys within the existing caps, and a committed summary clears it.
+ */
+export function headroomSummaryDeclined(attempts: readonly ContextSummaryAttempt[] | undefined): boolean {
+  let declined = false;
+  for (const attempt of attempts ?? []) {
+    if (attempt.state === "committed") declined = false;
+    else if ((attempt.state === "failed" || attempt.state === "invalid") && attempt.errorCode !== undefined &&
+      HEADROOM_TOLERATED_FAILURES.has(attempt.errorCode)) declined = true;
+  }
+  return declined;
+}
+
+/** The request dispatched without the headroom summary its measurement asked
+ * for: it reports what this round did (masking, or nothing) instead. */
+function withoutHeadroomSummary(request: ProviderRunRequest): ProviderRunRequest {
+  const measurement = request.contextCompaction!;
+  return { ...request, contextCompaction: { ...measurement,
+    outcome: measurement.maskedObservations > 0 ? "masking_applied" : "already_fits" } };
+}
+
+/** The consumer's release check of new notes: the summarized request must
+ * fit and lower the estimate. Notes that would push a request that fits
+ * without them over its budget made no progress either. */
+function summaryRejection(
+  source: ProviderRunRequest,
+  next: ProviderRequestContextBudgetResult,
+  headroom: boolean
+): ContextSummaryRejection | null {
+  if (!next.ok) return headroom ? NO_PROGRESS : { code: "context_too_large", message: next.error.message };
+  const before = source.contextCompaction?.afterTokens;
+  const after = next.request.contextCompaction?.afterTokens;
+  return before !== undefined && after !== undefined && after >= before ? NO_PROGRESS : null;
 }
 
 /** Notes this run bought (not notes carried from an earlier turn) are applied. */
@@ -116,8 +166,11 @@ export type CompactedProviderRequestInput = Readonly<{
  * so the planner never asks again, and a request that still does not fit fails
  * as irreducible overflow instead of falling back to legacy trimming. The
  * published outcome and the thrown code always agree. A summary bought only
- * for headroom (the request already fits) whose cycle fails before any notes
- * are committed publishes the failed cycle, and the fitting request continues.
+ * for headroom (the request already fits) whose cycle fails with a tolerated
+ * class, including notes that do not lower the estimate (never committed),
+ * publishes the failed cycle; the fitting request continues unchanged with the
+ * cycle's settled receipts, and the run buys no further headroom-only summary
+ * (`headroomSummaryDeclined`).
  */
 export async function prepareCompactedProviderRequest(
   input: CompactedProviderRequestInput
@@ -145,9 +198,14 @@ export async function prepareCompactedProviderRequest(
   const cycleMeasurement = (measurement: ContextPlanMeasurement | undefined) =>
     carried && measurement ? { ...measurement, beforeTokens: carried.beforeTokens } : measurement;
   let prepared: BudgetedRequest = measured;
-  if (summaryNeedsProvider(measured.request)) {
+  if (summaryNeedsProvider(measured.request) && fitsWithoutSummary(measured.request, input.bridge) &&
+    headroomSummaryDeclined(measured.request.contextCompactionSummaryAttempts)) {
+    prepared = { ...measured, request: withoutHeadroomSummary(measured.request) };
+  }
+  if (summaryNeedsProvider(prepared.request)) {
     input.signal.throwIfAborted();
-    const source = measured.request;
+    const source = prepared.request;
+    const headroom = fitsWithoutSummary(source, input.bridge);
     await publisher.begin(cycleMeasurement(source.contextCompaction));
     try {
       await input.authorize?.();
@@ -156,9 +214,19 @@ export async function prepareCompactedProviderRequest(
       await publisher.settle(code ? contextCompactionFailureOutcome(code) : "unknown");
       throw error;
     }
+    // A failed cycle: a request that fits without the summary continues
+    // unchanged, without notes or trimming, carrying the cycle's settled
+    // receipts so every later checkpoint keeps them.
+    const failed = async (rejection: ContextSummaryRejection, attempts: readonly ContextSummaryAttempt[]) => {
+      await publisher.settle(contextCompactionFailureOutcome(rejection.code));
+      if (!headroom || !HEADROOM_TOLERATED_FAILURES.has(rejection.code)) throw input.failure(rejection.code, rejection.message);
+      if (prepared.contextTruncation) await input.onTruncation?.(prepared.contextTruncation);
+      return attempts.length > 0 ? { ...source, contextCompactionSummaryAttempts: attempts } : source;
+    };
     let summarized: Awaited<ReturnType<typeof executeContextSummary>>;
     try {
       summarized = await executeContextSummary({
+        accept: (request) => summaryRejection(source, budget(request), headroom),
         adapter: input.summaryAdapter,
         existingAttempts: source.contextCompactionSummaryAttempts,
         existingSummary: source.contextCompactionSummary,
@@ -171,17 +239,7 @@ export async function prepareCompactedProviderRequest(
     } catch (error) {
       // Stop: the run's cancellation settles the open cycle as unknown.
       if (input.signal.aborted) throw error;
-      if (error instanceof ContextSummaryError) {
-        await publisher.settle(contextCompactionFailureOutcome(error.code));
-        // A failed headroom summary keeps its failed cycle and settled
-        // receipts as evidence; the request that already fits continues
-        // unchanged, without notes and without any trimming.
-        if (HEADROOM_TOLERATED_FAILURES.has(error.code) && fitsWithoutSummary(source, input.bridge)) {
-          if (prepared.contextTruncation) await input.onTruncation?.(prepared.contextTruncation);
-          return source;
-        }
-        throw input.failure(error.code, error.message);
-      }
+      if (error instanceof ContextSummaryError) return failed(error, error.attempts);
       const code = failureCode(error);
       await publisher.settle(code ? contextCompactionFailureOutcome(code) : "unknown");
       throw error;
@@ -189,19 +247,13 @@ export async function prepareCompactedProviderRequest(
     // Stop that lands as the last call completes: nothing is applied or
     // reported as success; the run's cancellation settles the open cycle.
     input.signal.throwIfAborted();
-    const next = budget(summarized.request);
-    if (!next.ok) {
-      await publisher.settle(contextCompactionFailureOutcome("context_too_large"));
-      throw input.failure("context_too_large", next.error.message);
-    }
     // The notes (with the covered history they allow to leave) must lower
-    // the estimate; a cycle that does not is never kept or bought again.
-    const before = source.contextCompaction?.afterTokens;
-    const after = next.request.contextCompaction?.afterTokens;
-    if (before !== undefined && after !== undefined && after >= before) {
-      await publisher.settle(contextCompactionFailureOutcome("context_compaction_summary_no_progress"));
-      throw input.failure("context_compaction_summary_no_progress", "The new notes do not reduce the context estimate.");
-    }
+    // the estimate. Bought notes met this check before their commit; notes
+    // reused without a call meet it here, and a cycle that fails it is never
+    // kept.
+    const next = budget(summarized.request);
+    const rejection = summaryRejection(source, next, headroom);
+    if (rejection || !next.ok) return failed(rejection ?? NO_PROGRESS, summarized.attempts);
     // History older than the span a bounded summary could cover leaves as
     // whole-turn truncation evidence, as the legacy guard would drop it.
     prepared = summarized.omitted

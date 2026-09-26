@@ -44,6 +44,9 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
   /** Receipts retained in the checkpoint; never fewer than `summaryCalls`. */
   summaryReceipts: 24,
   summaryNotesBytes: 64 * 1024,
+  /** Floor of the final notes allowance, however little history a summary
+   * replaces: room for the conversation's rules, corrections and open work. */
+  summaryMinimumNotesBytes: 4 * 1024,
   summarySourceRefs: 512,
   /** Newest answers of a branch whose checkpoints preparation may consider
    * for carried notes. */

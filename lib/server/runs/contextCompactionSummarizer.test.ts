@@ -2,9 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
 import type { NormalizedTokenUsage } from "../../domain/usage";
+import { buildAnthropicMessagesRequest } from "../providers/anthropicMessages";
 import { ProviderRequestTimeoutError } from "../providers/network";
 import type { NormalizedSearchPlanOption, ProviderAdapter, ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
-import { openAIResponsesToolBridge } from "../tools/bridges";
+import {
+  anthropicMessagesToolBridge,
+  geminiInteractionsToolBridge,
+  openAIResponsesToolBridge,
+  openRouterChatToolBridge
+} from "../tools/bridges";
 import { readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import {
@@ -186,14 +192,17 @@ describe("context compaction summarizer", () => {
   it("fails after a second output that is not the JSON object, each call settled invalid with its usage", async () => {
     const calls: ProviderRunRequest[] = [];
     const recorded = receipts();
-    await expect(executeContextSummary({
+    const failure = await executeContextSummary({
       adapter: adapter(["not json", "{\"notes\":\"missing refs\"}"], calls),
       receipts: recorded.hooks,
       request: request()
-    })).rejects.toMatchObject({ code: "context_compaction_summary_invalid" });
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "context_compaction_summary_invalid" });
     expect(calls).toHaveLength(2);
     expect(recorded.settled.map(({ attempt, usage }) => [attempt.state, usage?.inputTokens]))
       .toEqual([["invalid", 10], ["invalid", 10]]);
+    // The failure carries the receipts the cycle settled, for a request that continues.
+    expect((failure as ContextSummaryError).attempts).toEqual(recorded.settled.map(({ attempt }) => attempt));
   });
 
   it("drops model-cited references that name no source instead of repairing the notes", async () => {
@@ -458,14 +467,24 @@ describe("context compaction summarizer", () => {
       content: [{ type: "json", value: { observation: settled[0]!.observation, reader: "read_tool_result" } }] });
     const calls: ProviderRunRequest[] = [];
     const checked: string[][] = [];
-    await expect(executeContextSummary({
+    const recorded = receipts();
+    const failure = await executeContextSummary({
       adapter: adapter([json("never")], calls),
       observations: contextObservationsFromResults(settled),
+      receipts: recorded.hooks,
       request: request({ overrides: { providerToolMessages: [{ call_id: "older", name: "read_record", type: "function_call" }, masked] } }),
       sourceAvailable: async handles => { checked.push([...handles]); return false; }
-    })).rejects.toMatchObject({ code: "context_compaction_source_unavailable" });
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "context_compaction_source_unavailable" });
     expect(checked).toEqual([[`tor1_${"a".repeat(32)}`]]);
     expect(calls).toHaveLength(0);
+    // The refused cycle leaves durable evidence: one claim never sent, settled
+    // failed with its code and no operation.
+    expect(recorded.dispatched).toHaveLength(0);
+    expect(recorded.settled).toEqual([{ attempt: expect.objectContaining({ attempt: 1, errorCode: "context_compaction_source_unavailable",
+      state: "failed" }), usage: null }]);
+    expect(recorded.settled[0]!.attempt).not.toHaveProperty("usage");
+    expect((failure as ContextSummaryError).attempts).toEqual([recorded.settled[0]!.attempt]);
   });
 
   it("summarizes an oversized source in bounded parts oldest first, then one reduction", async () => {
@@ -695,5 +714,168 @@ describe("context compaction summarizer", () => {
       expect(applyContextSummaryToRequest({ ...reused(), contextCompaction: projected.contextCompaction },
         summarized.summary, summarized.attempts).context).toEqual(summarized.request.context);
     });
+  });
+
+  describe("final notes allowance", () => {
+    const allowance = (next: ProviderRunRequest) => Number(/under (\d+) UTF-8 bytes/u.exec(next.prompt.system!)?.[1]);
+    /** A diligent model: its notes fill every allowance it is given. */
+    const filling: Output = (next) => json("n".repeat(allowance(next)));
+
+    it("gives a summary of little history the recorded floor", async () => {
+      const calls: ProviderRunRequest[] = [];
+      await executeContextSummary({ adapter: adapter([json("bounded notes")], calls), request: request() });
+      expect(allowance(calls[0]!)).toBe(CONTEXT_COMPACTION_LIMITS.summaryMinimumNotesBytes);
+      expect(CONTEXT_COMPACTION_LIMITS.summaryMinimumNotesBytes).toBeGreaterThanOrEqual(4 * 1024);
+    });
+
+    it("never falls below the previous notes or the floor across eight incremental summaries of a 50-turn run", async () => {
+      const turns = Array.from({ length: 50 }, (_, index) =>
+        text(`TURN_${index} rule ${index}: ${"r".repeat(1_000)}`, `turn-${index}`, index % 2 ? "assistant" : "user"));
+      let round = 0;
+      /** Tool rounds the run adds after each summary: none of them is covered yet. */
+      const rounds = (count: number) => Array.from({ length: count }, () => {
+        round += 1;
+        return [
+          { arguments: JSON.stringify({ content: `ARGS_${round} ${"w".repeat(2_000)}` }), call_id: `call_${round}`, name: "write_file",
+            type: "function_call" },
+          { call_id: `call_${round}`, output: `RESULT_${round} ${"x".repeat(2_000)}`, type: "function_call_output" }
+        ];
+      }).flat();
+      const calls: ProviderRunRequest[] = [];
+      const allowances: number[] = [];
+      const notes: number[] = [];
+      let next = request({ maxOutputTokens: 4_096, window: 32_000, messages: [...turns, text("Run the migration.", "current")],
+        overrides: { providerToolMessages: rounds(3) } });
+      let previous: Awaited<ReturnType<typeof executeContextSummary>> | undefined;
+      for (let cycle = 1; cycle <= 8; cycle += 1) {
+        const summarized = await executeContextSummary({ adapter: adapter([filling], calls), request: next,
+          ...(previous ? { existingAttempts: previous.attempts, existingSummary: previous.summary } : {}) });
+        allowances.push(allowance(calls.at(-1)!));
+        notes.push(Buffer.byteLength(summarized.summary.notes, "utf8"));
+        previous = summarized;
+        next = { ...summarized.request, providerToolMessages: [...summarized.request.providerToolMessages!, ...rounds(3)] };
+      }
+      // Every later summary is incremental: the earlier notes plus the uncovered delta.
+      expect(calls.map(envelopeText).slice(1).every((body) => body.includes("<previous-notes") && !body.includes("TURN_0 "))).toBe(true);
+      // The first summary stands for 50 turns: half of what it replaces.
+      expect(allowances[0]).toBeGreaterThan(20_000);
+      for (let index = 1; index < allowances.length; index += 1) {
+        expect(allowances[index]).toBeGreaterThanOrEqual(allowances[index - 1]!);
+        expect(allowances[index]).toBeGreaterThanOrEqual(notes[index - 1]!);
+      }
+      expect(Math.min(...allowances)).toBeGreaterThanOrEqual(CONTEXT_COMPACTION_LIMITS.summaryMinimumNotesBytes);
+      expect(Math.max(...allowances)).toBeLessThanOrEqual(CONTEXT_COMPACTION_LIMITS.summaryNotesBytes);
+    });
+
+    it("counts the uncovered tool transcript it replaces", async () => {
+      const calls: ProviderRunRequest[] = [];
+      const transcript = Array.from({ length: 4 }, (_, index) => [
+        { arguments: JSON.stringify({ content: "w".repeat(6_000) }), call_id: `call_${index}`, name: "write_file", type: "function_call" },
+        { call_id: `call_${index}`, output: "x".repeat(6_000), type: "function_call_output" }
+      ]).flat();
+      await executeContextSummary({ adapter: adapter([json("bounded notes")], calls), request: request({ overrides: { providerToolMessages: transcript } }) });
+      // The final call's allowance: half of the old message plus about 48 KB of calls and results.
+      expect(allowance(calls.at(-1)!)).toBeGreaterThan(24_000);
+    });
+  });
+
+  it("never sends provider reasoning, signatures, encrypted state or attachment identifiers to the summarizer", async () => {
+    const result = (callId: string, value: string) => ({ callId, content: [{ text: value, type: "text" as const }], name: "read_record",
+      status: "complete" as const });
+    const transcripts: Record<string, unknown[]> = {
+      anthropic: [
+        { content: [{ signature: "SIG_ANTHROPIC", thinking: "PRIVATE_THINKING", type: "thinking" },
+          { data: "REDACTED_DATA", type: "redacted_thinking" },
+          { id: "toolu_1", input: { path: "ARG_ANTHROPIC" }, name: "read_record", type: "tool_use" }], role: "assistant" },
+        anthropicMessagesToolBridge.appendToolResult(undefined, result("toolu_1", "RESULT_ANTHROPIC"))
+      ],
+      gemini: [
+        { signature: "SIG_GEMINI_THOUGHT", summary: [{ text: "PRIVATE_GEMINI", type: "text" }], type: "thought" },
+        { arguments: { path: "ARG_GEMINI" }, id: "fc_1", name: "read_record", signature: "SIG_GEMINI_CALL",
+          thoughtSignature: "SIG_GEMINI_PART", thought_signature: "SIG_GEMINI_SNAKE", type: "function_call" },
+        geminiInteractionsToolBridge.appendToolResult(undefined, result("fc_1", "RESULT_GEMINI"))
+      ],
+      openai: [
+        { encrypted_content: "ENC_OPENAI", id: "rs_1", summary: [{ text: "PRIVATE_SUMMARY", type: "summary_text" }], type: "reasoning" },
+        { arguments: JSON.stringify({ path: "ARG_OPENAI" }), call_id: "call_1", name: "read_record", status: "completed", type: "function_call" },
+        openAIResponsesToolBridge.appendToolResult(undefined, result("call_1", "RESULT_OPENAI"))
+      ],
+      openrouter: [
+        { content: null, reasoning: "PRIVATE_CHAT_REASONING", reasoning_content: "PRIVATE_CHAT_CONTENT",
+          reasoning_details: [{ data: "ENC_CHAT", signature: "SIG_CHAT", type: "reasoning.encrypted" }], role: "assistant",
+          tool_calls: [{ function: { arguments: JSON.stringify({ path: "ARG_CHAT" }), name: "read_record" }, id: "call_c1", type: "function" }] },
+        openRouterChatToolBridge.appendToolResult(undefined, result("call_c1", "RESULT_CHAT"))
+      ]
+    };
+    const attached: ProviderConversationMessage = { content: { blocks: [{ text: "See the attached photo and contract.", type: "text" },
+      { attachmentId: "att_PRIVATE_IMAGE", label: "photo-PRIVATE.png", type: "image" },
+      { attachmentId: "att_PRIVATE_FILE", fileName: "contract-PRIVATE.pdf", type: "file" }] }, id: "with-attachments", role: "user" };
+    for (const [provider, providerToolMessages] of Object.entries(transcripts)) {
+      const source = request({ messages: [attached, text("Noted.", "reply", "assistant"),
+        { ...attached, id: "current-with-attachments" }], overrides: { provider, providerToolMessages } });
+      const calls: ProviderRunRequest[] = [];
+      await executeContextSummary({ adapter: adapter([json("bounded notes")], calls), request: source });
+      for (const sent of [contextSummarySource(source).units.map((unit) => unit.text).join("\n"), envelopeText(calls[0]!)]) {
+        expect(sent).not.toMatch(/PRIVATE|SIG_|ENC_|REDACTED|att_|\.png|\.pdf|encrypted_content|reasoning|signature|thinking|thought/u);
+        expect(sent).toContain(`ARG_${provider === "openrouter" ? "CHAT" : provider.toUpperCase()}`);
+        expect(sent).toContain(`RESULT_${provider === "openrouter" ? "CHAT" : provider.toUpperCase()}`);
+        expect(sent).toContain("read_record");
+        expect(sent).toContain("See the attached photo and contract.\n[image attachment]\n[file attachment]");
+      }
+    }
+  });
+
+  it("keeps the newest handles of 600 masked results in the refs and the availability check", async () => {
+    const handle = (index: number) => `tor1_${index.toString(16).padStart(32, "0")}`;
+    const results = Array.from({ length: 600 }, (_, index) => projectObservationForProvider({ callId: `call-${index}`,
+      content: [{ text: `result ${index}`, type: "text" }], name: "read_record", status: "complete",
+      observation: { byteSize: 20, checksum: "a".repeat(64), encoding: "json-utf8-v1", handle: handle(index),
+        maskable: true, source: "mcp", sourceTruncated: false, version: 1 } }));
+    const masked = results.flatMap((settled) => [
+      { call_id: settled.callId, name: "read_record", type: "function_call" },
+      openAIResponsesToolBridge.appendToolResult(undefined, { callId: settled.callId, name: "read_record", status: "complete",
+        content: [{ type: "json", value: { observation: settled.observation, reader: "read_tool_result" } }] })
+    ]);
+    const observations = contextObservationsFromResults(results);
+    const source = request({ window: 128_000, overrides: { providerToolMessages: masked } });
+    const built = contextSummarySource(source, observations);
+    expect(built.refs.filter((ref) => ref.startsWith("tor1_"))[0]).toBe(handle(599));
+    expect(built.refs).toContain(CONTEXT_SUMMARY_REFS_INCOMPLETE);
+    const newest = Array.from({ length: CONTEXT_COMPACTION_LIMITS.references }, (_, index) => handle(600 - CONTEXT_COMPACTION_LIMITS.references + index));
+    expect(built.referencedHandles).toEqual(newest);
+    const checked: string[][] = [];
+    await executeContextSummary({ adapter: adapter([json("bounded notes")], []), observations, request: source,
+      sourceAvailable: async (handles) => { checked.push([...handles]); return true; } });
+    expect(checked).toEqual([newest]);
+  });
+
+  it("bounds an Anthropic manual thinking budget by the summary call's output allowance and keeps every other binding", async () => {
+    const calls: ProviderRunRequest[] = [];
+    const thinking = { budgetTokens: 32_000, enabled: true, type: "enabled" };
+    const anthropic = (overrides: Partial<ProviderRunRequest>) => request({ maxOutputTokens: 64_000,
+      overrides: { modelId: "claude-test", provider: "anthropic", reasoningEffort: "high", ...overrides } });
+    await executeContextSummary({ adapter: adapter([json("bounded notes")], calls),
+      request: anthropic({ params: { maxOutputTokens: 64_000, outputConfig: { effort: "high" }, thinking } }) });
+    const summary = calls[0]!;
+    const maxOutputTokens = Number(summary.params.maxOutputTokens);
+    expect(maxOutputTokens).toBeLessThan(thinking.budgetTokens);
+    expect(summary.params).toEqual({ maxOutputTokens, outputConfig: { effort: "high" },
+      thinking: { ...thinking, budgetTokens: Math.floor(maxOutputTokens / 2) } });
+    expect(summary.reasoningEffort).toBe("high");
+    const body = buildAnthropicMessagesRequest(summary);
+    expect(body).toMatchObject({ max_tokens: maxOutputTokens, thinking: { budget_tokens: Math.floor(maxOutputTokens / 2), type: "enabled" } });
+
+    // A call that cannot hold the provider minimum below its allowance runs without thinking.
+    await executeContextSummary({ adapter: adapter([json("bounded notes")], calls), request: anthropic({
+      generationBudget: { contextWindow: 16_000, maxOutputTokens: 1_000, timeoutMs: 30_000, version: 1 }, params: { thinking } }) });
+    expect(calls[1]!.params.thinking).toEqual({ ...thinking, enabled: false });
+    expect(buildAnthropicMessagesRequest(calls[1]!)).not.toHaveProperty("thinking");
+
+    // A budget that already fits and adaptive thinking stay as admitted.
+    for (const admitted of [{ ...thinking, budgetTokens: 2_048 }, { enabled: true, type: "adaptive" }]) {
+      await executeContextSummary({ adapter: adapter([json("bounded notes")], calls), request: anthropic({ params: { thinking: admitted } }) });
+      expect(calls.at(-1)!.params.thinking).toEqual(admitted);
+      expect(() => buildAnthropicMessagesRequest(calls.at(-1)!)).not.toThrow();
+    }
   });
 });

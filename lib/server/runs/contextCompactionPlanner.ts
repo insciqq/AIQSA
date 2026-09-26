@@ -661,19 +661,23 @@ function recognizedObservations(
     located.observation ? [located.observation] : []);
 }
 
+/** Distinct handles ordered by their newest occurrence, oldest first; a cap
+ * keeps the newest `references`, so the latest results are never the ones
+ * left out. */
+function newestHandles(handles: Iterable<string>): readonly string[] {
+  const ordered = new Set<string>();
+  for (const handle of handles) {
+    ordered.delete(handle);
+    ordered.add(handle);
+  }
+  return [...ordered].slice(-CONTEXT_COMPACTION_LIMITS.references);
+}
+
 export function observationHandlesInProviderMessages(
   messages: readonly unknown[],
   observations?: readonly ContextObservation[]
 ): readonly string[] {
-  const handles: string[] = [];
-  const seen = new Set<string>();
-  for (const candidate of recognizedObservations(messages, observations)) {
-    if (!seen.has(candidate.descriptor.handle)) {
-      seen.add(candidate.descriptor.handle);
-      handles.push(candidate.descriptor.handle);
-    }
-  }
-  return handles.slice(0, CONTEXT_COMPACTION_LIMITS.references);
+  return newestHandles(recognizedObservations(messages, observations).map((candidate) => candidate.descriptor.handle));
 }
 
 /** Handles of results currently replaced by their reader reference: the
@@ -682,9 +686,8 @@ export function maskedObservationHandlesInProviderMessages(
   messages: readonly unknown[],
   observations?: readonly ContextObservation[]
 ): readonly string[] {
-  return [...new Set(locatedResults(messages, observationIndex(observations)).flatMap((located) =>
-    located.masked && located.observation ? [located.observation.descriptor.handle] : []))]
-    .slice(0, CONTEXT_COMPACTION_LIMITS.references);
+  return newestHandles(locatedResults(messages, observationIndex(observations)).flatMap((located) =>
+    located.masked && located.observation ? [located.observation.descriptor.handle] : []));
 }
 
 export function observationCallIdsInProviderMessages(
