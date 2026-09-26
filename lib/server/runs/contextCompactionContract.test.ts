@@ -96,6 +96,33 @@ describe("carried compaction notes", () => {
       .toEqual([{ coveredMessageId: "u1", runId: "run-a3", summary: carried.compaction.summary }]);
   });
 
+  it("offers the committed notes of an answer that failed afterwards: the ancestry, not the context, holds it", () => {
+    // u3's answer a3 failed after committing its notes (a later summary attempt
+    // may even be unknown); the errored answer is left out of the provider
+    // context but is the parent of the next question on the branch.
+    const failed = checkpoint({ answer: "a3", seed: "f", userMessageId: "u3" });
+    const withUnknown: BranchContextCheckpoint = { ...failed, compaction: { ...failed.compaction,
+      summaryAttempts: [...failed.compaction.summaryAttempts!, { attempt: 2, bindingDigest: digest("b"),
+        id: "csa1_later", sourceDigest: digest("z"), state: "unknown" as const }] } };
+    const older = checkpoint({ answer: "a1", seed: "a", userMessageId: "u1" });
+    const context = branch.filter((id) => id !== "a3");
+    expect(contextSummaryReuseCandidates({ checkpoints: [older, failed], priorMessageIds: context, userId: "user-1" }))
+      .toEqual([{ coveredMessageId: "u1", runId: "run-a1", summary: older.compaction.summary }]);
+    for (const candidate of [failed, withUnknown]) {
+      expect(contextSummaryReuseCandidates({ checkpoints: [older, candidate], priorMessageIds: branch, userId: "user-1" }))
+        .toEqual([
+          { coveredMessageId: "u3", runId: "run-a3", summary: candidate.compaction.summary },
+          { coveredMessageId: "u1", runId: "run-a1", summary: older.compaction.summary }
+        ]);
+    }
+    // Without a committed receipt the failed run's notes are not final.
+    const unproven = checkpoint({ answer: "a3", bought: false, seed: "g", userMessageId: "u3" });
+    expect(contextSummaryReuseCandidates({ checkpoints: [unproven], priorMessageIds: branch, userId: "user-1" })).toEqual([]);
+    // A failed sibling answer (an edit or retry of u3) is not an ancestor.
+    const sibling = checkpoint({ answer: "a3-retry", seed: "h", userMessageId: "u3" });
+    expect(contextSummaryReuseCandidates({ checkpoints: [sibling], priorMessageIds: branch, userId: "user-1" })).toEqual([]);
+  });
+
   it("never carries sibling, foreign, legacy or unproven notes", () => {
     const candidates = contextSummaryReuseCandidates({
       checkpoints: [

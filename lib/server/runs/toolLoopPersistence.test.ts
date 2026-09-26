@@ -150,6 +150,22 @@ describe("tool-loop persistence values", () => {
     }, 2)).toBeNull();
   });
 
+  it("keeps an answer round with an unknown outcome as evidence without token counts", () => {
+    // Recovery's record of a dispatched round whose outcome is unknown.
+    const unknown = { completeness: "partial" as const, roundIndex: 2, usage: { completeness: "unavailable" as const,
+      cachedInputTokens: null, cacheWriteInputTokens: null, inputTokens: null, outputTokens: null,
+      reasoningTokens: null, totalTokens: null } };
+    const round1 = { completeness: "terminal" as const, roundIndex: 1, usage: { completeness: "complete" as const,
+      cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 5, outputTokens: 1, reasoningTokens: 0, totalTokens: 6 } };
+    const merged = mergeAnswerRoundUsage([round1], unknown, 2);
+    expect(merged).toEqual([round1, unknown]);
+    // A repeated record of the same round changes nothing; no counts appear.
+    expect(mergeAnswerRoundUsage(merged!, unknown, 2)).toEqual([round1, unknown]);
+    const checkpoint = { answerRoundUsage: merged, phase: "provider_running", providerContinuation: null,
+      providerCursor: null, roundIndex: 2, version: 2 };
+    expect(parseToolLoopCheckpoint(checkpoint)?.answerRoundUsage).toEqual([round1, unknown]);
+  });
+
   it("rejects malformed, duplicate, and out-of-bound round usage evidence", () => {
     const usage = { completeness: "complete" as const,
       cachedInputTokens: 0,

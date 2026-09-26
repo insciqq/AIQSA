@@ -2931,6 +2931,14 @@ async function recoverCheckpointedToolLoop(
         );
       }
       if (!currentProviderResponseId) {
+        // The round's answer request may have been dispatched, so its outcome
+        // and billing are unknown: one operation without invented usage,
+        // recorded as this round's usage evidence so a later pass cannot count
+        // it again. Usage the round reported before the loss already stands
+        // for it; a committed summary receipt keeps its own usage.
+        if (round >= 1 && !answerRoundUsage.some((entry) => entry.roundIndex === round)) {
+          await recordAnswerRoundUsage(normalizeTokenUsage({ completeness: "unavailable" }), run, "partial", round);
+        }
         throw new ToolLoopRecoveryError(
           "tool_loop_provider_round_outcome_unknown",
           "The model round stopped before a durable provider response ID was saved and was not repeated."

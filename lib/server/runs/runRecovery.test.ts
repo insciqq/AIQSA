@@ -151,6 +151,7 @@ import {
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import { decodeContextCompactionStatus, type ContextPlanMeasurement, type ContextSummary, type ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { openAIResponsesToolBridge } from "../tools/bridges";
+import { normalizeTokenUsage } from "../../domain/usage";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import { contextCompactionCheckpoint, conversationContextPolicy } from "./contextCompactionContract";
 import { measureSessionContext } from "./runContextBudget";
@@ -5554,6 +5555,80 @@ describe("run recovery", () => {
         ?.contextCompaction?.summaryAttempts).toEqual([notSent, later]);
     });
 
+    /** The lost executor committed round 2's summary (receipt and usage in one
+     * write), then dispatched the answer request and stopped before its
+     * provider response id was saved. */
+    const committedSummary: ContextSummaryAttempt = { attempt: 1, bindingDigest: "f".repeat(64), id: "csa1_committed",
+      sourceDigest: summary.sourceDigest, state: "committed", usage: { inputTokens: 900, outputTokens: 40, totalTokens: 940 } };
+    const summaryUsage = { ...zeroUsage, inputTokens: 900, outputTokens: 40, totalTokens: 940 };
+    const unknownRound: PersistedAnswerRoundUsage = { completeness: "partial", roundIndex: 2,
+      usage: normalizeTokenUsage({ completeness: "unavailable" }) };
+    const crashedAfterSummary = (input: Readonly<{
+      answerRoundUsage: readonly PersistedAnswerRoundUsage[];
+      persistedUsage: PersistedRunUsageAttribution["usage"];
+      operationCount: number;
+    }>) => fixture({
+      answerRoundUsage: input.answerRoundUsage,
+      calls: [{ ...persistedRecoveryCall("complete"), result: toolResult(1) as unknown as ToolLoopJsonValue }],
+      compaction: { measurement: measurement("needs_summary"), summary, summaryAttempts: [committedSummary] },
+      historyChars: 30_000,
+      persistedUsage: [{ modelId: "gpt-test", operationCount: input.operationCount, provider: "openai",
+        recordedAt: "2026-07-12T09:00:00.000Z", usage: input.persistedUsage }],
+      phase: "provider_running",
+      providerToolMessages: [],
+      roundIndex: 2,
+      toolCallsBeforeFinal: 0
+    });
+
+    it("records a dispatched answer round with an unknown outcome as one operation with unknown usage", async () => {
+      const recovery = crashedAfterSummary({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: zeroUsage }],
+        operationCount: 2, persistedUsage: summaryUsage });
+      await recovery.recover();
+      expect(recovery.summaries).toHaveLength(0);
+      expect(recovery.answers).toHaveLength(0);
+      // Durable evidence for round 2 without invented token counts.
+      expect(recovery.installed.checkpoint().answerRoundUsage).toEqual([
+        { completeness: "terminal", roundIndex: 1, usage: zeroUsage }, unknownRound]);
+      expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual([committedSummary]);
+      // The summary usage once, round 1 and one more operation whose usage is unknown.
+      expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }),
+        usageAttributions: [expect.objectContaining({ modelId: "gpt-test", operationCount: 3, provider: "openai",
+          usage: expect.objectContaining({ completeness: "partial", inputTokens: 900, outputTokens: 40, totalTokens: 940 }) })]
+      })]);
+    });
+
+    it("never counts the unknown answer round again on a repeated recovery", async () => {
+      // The first pass recorded the round, then was lost before settling the run.
+      const recovery = crashedAfterSummary({
+        answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: zeroUsage }, unknownRound],
+        operationCount: 3, persistedUsage: { ...summaryUsage, completeness: "partial" } });
+      await recovery.recover();
+      expect(recovery.installed.checkpoint().answerRoundUsage).toEqual([
+        { completeness: "terminal", roundIndex: 1, usage: zeroUsage }, unknownRound]);
+      expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }),
+        usageAttributions: [expect.objectContaining({ operationCount: 3,
+          usage: expect.objectContaining({ completeness: "partial", inputTokens: 900, totalTokens: 940 }) })]
+      })]);
+    });
+
+    it("keeps partial usage the unknown answer round reported before the loss instead of adding an operation", async () => {
+      const reported: PersistedAnswerRoundUsage = { completeness: "partial", roundIndex: 2,
+        usage: normalizeTokenUsage({ completeness: "partial", inputTokens: 300 }) };
+      const recovery = crashedAfterSummary({
+        answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: zeroUsage }, reported],
+        operationCount: 3, persistedUsage: { ...summaryUsage, completeness: "partial", inputTokens: 1_200 } });
+      await recovery.recover();
+      expect(recovery.installed.checkpoint().answerRoundUsage).toEqual([
+        { completeness: "terminal", roundIndex: 1, usage: zeroUsage }, reported]);
+      expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }),
+        usageAttributions: [expect.objectContaining({ operationCount: 3,
+          usage: expect.objectContaining({ completeness: "partial", inputTokens: 1_200, outputTokens: 40 }) })]
+      })]);
+    });
+
     it("measures a refreshed round without buying a summary for a request already dispatched", async () => {
       const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({ events: [], status: "completed", terminal: true,
         result: { ...providerResult, finalText: "Refreshed.", providerResponseId: "response-tool-1" } }));
@@ -8887,7 +8962,7 @@ describe("run recovery", () => {
         }
       }
     });
-    installCheckpointState(
+    const installed = installCheckpointState(
       harness,
       checkpointedRun({ phase: "provider_running", providerResponseId: null })
     );
@@ -8895,12 +8970,18 @@ describe("run recovery", () => {
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
     expect(stream).not.toHaveBeenCalled();
+    // The round may have been dispatched: one operation whose usage stays unknown.
+    expect(installed.checkpoint().answerRoundUsage).toEqual([
+      { completeness: "partial", roundIndex: 1, usage: normalizeTokenUsage({ completeness: "unavailable" }) }
+    ]);
     expect(harness.state.recoveredErrors).toEqual([
       expect.objectContaining({
         error: {
           code: "tool_loop_provider_round_outcome_unknown",
           message: "The model round stopped before a durable provider response ID was saved and was not repeated."
-        }
+        },
+        usageAttributions: [expect.objectContaining({ modelId: "gpt-test", operationCount: 1, provider: "openai",
+          usage: expect.objectContaining({ completeness: "unavailable", inputTokens: null, totalTokens: null }) })]
       })
     ]);
   });
