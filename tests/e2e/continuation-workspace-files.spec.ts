@@ -117,9 +117,9 @@ test("continues a Workspace chat with its project files and runs in the new chat
     await dialog.getByRole("button", { name: "Summarize and open new chat" }).click();
     expect((await continuationResponse).status()).toBe(200);
 
-    await expect.poll(async () => page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId")), {
+    await expect.poll(async () => page.evaluate(() => window.location.pathname), {
       timeout: 90_000
-    }).not.toBe(sourceChatId);
+    }).not.toBe(`/c/${sourceChatId}`);
     destinationChatId = await activeChatId(page);
     expect(destinationChatId).not.toBe(sourceChatId);
     await expect(page.getByRole("link", { name: "Previous chat" })).toBeVisible({ timeout: 30_000 });
@@ -170,6 +170,14 @@ test("continues a Workspace chat with its project files and runs in the new chat
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       }
     }
+
+    // The continuation's source link opens the source chat's own address.
+    await page.unroute(`**/api/chats/${destinationChatId}`);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/c/${destinationChatId}`);
+    await page.getByRole("link", { name: "Previous chat" }).click();
+    await expect(page).toHaveURL(new RegExp(`/c/${sourceChatId}$`, "u"), { timeout: 30_000 });
+    expect(await activeChatId(page)).toBe(sourceChatId);
   } finally {
     const chatIds = [sourceChatId, destinationChatId].filter((id): id is string => Boolean(id));
     if (chatIds.length) {

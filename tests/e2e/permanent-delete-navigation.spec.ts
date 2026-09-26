@@ -13,8 +13,7 @@ for (const filtered of [false, true]) {
         owned.push((await response.json()).chat.id);
       }
       const [survivor, target] = owned;
-      await page.evaluate((id) => localStorage.setItem("aiqsa.activeChatId", id), target!);
-      await page.reload();
+      await page.goto(`/c/${target}`);
       const row = page.locator(`[data-navigation-chat-id="${target}"]`);
       await expect(row.getByRole("treeitem")).toHaveAttribute("aria-current", "page");
       const filter = page.getByRole("searchbox", { name: "Filter chats" });
@@ -33,7 +32,8 @@ for (const filtered of [false, true]) {
       const status = page.getByRole("dialog", { name: "Permanent deletion", exact: true });
       await status.getByRole("button", { name: "Close", exact: true }).last().click();
       await expect(row).toHaveCount(0);
-      await expect.poll(() => page.evaluate(() => localStorage.getItem("aiqsa.activeChatId"))).toBe(survivor);
+      // The deletion fallback replaces the address instead of adding history.
+      await expect.poll(() => page.evaluate(() => window.location.pathname)).toBe(`/c/${survivor}`);
       await expect(filter).toHaveValue(filtered ? "Queue" : "");
       if (filtered) {
         await filter.fill("");

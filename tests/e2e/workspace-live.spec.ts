@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type Download, type Page } from "@playwright/test";
+import { parseChatRoutePath } from "../../lib/domain/chatRoute";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { createWorkspaceRuntime } from "../../lib/server/workspace/defaultRuntime";
 import { runWorkspaceMaintenance } from "../../lib/server/workspace/cleanup";
@@ -65,7 +66,7 @@ async function downloadBytes(download: Download): Promise<Buffer> {
 }
 
 async function login(page: Page): Promise<void> {
-  await page.addInitScript(() => window.localStorage.removeItem("aiqsa.activeChatId"));
+  // Sign-in lands on `/`, which always opens a new chat.
   await page.goto("/login");
   await page.getByLabel("Email").fill(LOCAL_MCP_MEMBER.email);
   await page.getByLabel("Password", { exact: true }).fill(LOCAL_MCP_MEMBER.password);
@@ -125,7 +126,7 @@ async function sendAndExpect(
 async function activeChatId(page: Page): Promise<string> {
   let chatId: string | null = null;
   await expect.poll(async () => {
-    chatId = await page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId"));
+    chatId = parseChatRoutePath(await page.evaluate(() => window.location.pathname))?.chatId ?? null;
     return chatId;
   }, { timeout: 30_000 }).not.toBeNull();
   return chatId!;
