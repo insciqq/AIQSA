@@ -796,6 +796,8 @@
   "tool_observation_not_started",
   "tool_observation_store_failed",
   "tool_observation_waiting",
+  "tool_result_too_large",
+  "tool_result_unpersistable",
   "tool_synthesis_failed",
   "tool_unavailable",
   "toolhive_artifact_missing",

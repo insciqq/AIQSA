@@ -59,6 +59,7 @@ import {
 } from "./toolLoopPersistence";
 import {
   parsePersistedToolExecutionResult,
+  settleableToolExecutionResult,
   snapshotToolExecutionResult
 } from "./toolExecutionPersistence";
 import {
@@ -5639,6 +5640,67 @@ describe("run recovery", () => {
     expect(installed.calls()[0]?.result).not.toHaveProperty("observation");
     expect(observations.rows.size).toBe(0);
     expect(harness.state.completed).toMatchObject({ finalText: "legacy-recovered" });
+  });
+
+  describe("an executed result that cannot be kept under Off", () => {
+    const marker = "rare-tail-271828";
+    const oversized = () => ({ isError: false, structuredContent: null, unsupportedContentTypes: [],
+      text: [`${Array.from({ length: 5_120 }, (_, index) => createHash("sha256").update(`unkept:${index}`).digest("hex")).join("")} ${marker}`] });
+    function offHarness(calls: PersistedToolLoopCall[], phase: "tools_pending" | "tools_running") {
+      const runtimeCall = vi.fn(async () => oversized());
+      const requests: ProviderRunRequest[] = [];
+      const harness = createHarness({
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true },
+        providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
+          requests.push(request);
+          return { ...providerResult, finalText: "continued" };
+        } } }
+      });
+      const base = checkpointedRun({ calls, phase });
+      const normalizedRequest = { ...base.normalizedRequest, toolObservationVersion: 0 as const };
+      const installed = installCheckpointState(harness, { ...base, normalizedRequest });
+      harness.repository.loadProviderDispatchRecoveryRequest = async () => normalizedRequest;
+      return { harness, installed, requests, runtimeCall };
+    }
+
+    it("settles a pending call it dispatches as a bounded error and continues without a replay", async () => {
+      const { harness, installed, requests, runtimeCall } = offHarness([persistedRecoveryCall()], "tools_pending");
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(runtimeCall).toHaveBeenCalledOnce();
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(harness.state.completed).toMatchObject({ finalText: "continued" });
+      const [settled] = installed.calls();
+      expect(settled).toMatchObject({ state: "error" });
+      const text = (settled?.result as unknown as { content: Array<{ text: string }> }).content[0]!.text;
+      expect(JSON.parse(text)).toMatchObject({ ok: false, error: { code: "tool_result_too_large", stage: "size", limitBytes: 256 * 1024 } });
+      const transcript = JSON.stringify(requests[0]?.providerToolMessages);
+      expect(transcript).toContain("tool_result_too_large");
+      for (const value of [JSON.stringify(installed.calls()), transcript]) expect(value).not.toContain(marker);
+    });
+
+    it("never repeats a call a restart interrupted between execution and settlement", async () => {
+      const { harness, installed, requests, runtimeCall } = offHarness([persistedRecoveryCall("running")], "tools_running");
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(runtimeCall).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(0);
+      expect(harness.state.completed).toBeNull();
+      expect(harness.state.recoveredErrors[0]?.error.code).toBe("tool_call_outcome_unknown");
+      expect(installed.calls()[0]).toMatchObject({ state: "running", result: null });
+    });
+
+    it("reuses a settled bounded error after a restart before the batch advanced", async () => {
+      const failure = settleableToolExecutionResult({ callId: "provider-call-1", name: recoveryToolName, status: "complete",
+        content: oversized().text.map(text => ({ type: "text" as const, text })) }, 256 * 1024);
+      expect(failure?.failure).toMatchObject({ code: "tool_result_too_large" });
+      const { harness, installed, requests, runtimeCall } = offHarness([{ ...persistedRecoveryCall("error"),
+        result: failure!.snapshot }], "tools_running");
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(runtimeCall).not.toHaveBeenCalled();
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(harness.state.completed).toMatchObject({ finalText: "continued" });
+      expect(installed.calls()[0]).toMatchObject({ state: "error", result: failure!.snapshot });
+      expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("tool_result_too_large");
+    });
   });
 
   it("keeps the v1 reader available when a restarted provider requests it", async () => {

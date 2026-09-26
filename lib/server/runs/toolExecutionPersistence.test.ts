@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parsePersistedToolExecutionResult,
+  settleableToolExecutionResult,
   snapshotToolExecutionResult
 } from "./toolExecutionPersistence";
 import {
@@ -13,6 +14,7 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
+import type { ToolExecutionResult } from "../tools/types";
 import {
   KNOWLEDGE_RESULT_VERSION,
   type KnowledgeRetrievalEvidence
@@ -270,5 +272,47 @@ describe("persisted tool execution result codec", () => {
     const snapshot = snapshotToolExecutionResult(result, 32_000);
     expect(snapshot).not.toBeNull();
     expect(parsePersistedToolExecutionResult(call, snapshot)).toEqual(result);
+  });
+});
+
+describe("settleable tool execution result", () => {
+  const mcpCall = { id: "call-1", name: "mcp_synthetic_records" };
+  const marker = "rare-tail-271828";
+
+  it("keeps a result that has a durable snapshot unchanged", () => {
+    const result = { callId: mcpCall.id, name: mcpCall.name, status: "complete" as const,
+      content: [{ type: "text" as const, text: "bounded" }] };
+    const settleable = settleableToolExecutionResult(result, 8192);
+    expect(settleable).toEqual({ failure: null, result, snapshot: snapshotToolExecutionResult(result, 8192) });
+  });
+
+  it.each<[string, string, Pick<ToolExecutionResult, "content" | "rawPreview" | "status">]>([
+    ["size", "tool_result_too_large", { status: "complete",
+      content: [{ type: "text", text: `${"x".repeat(9000)} ${marker}` }] }],
+    ["serialization", "tool_result_unpersistable", { status: "complete",
+      content: [{ type: "json", value: { marker, count: 1n } }] }],
+    ["validation", "tool_result_unpersistable", { status: "complete", content: [] }],
+    ["projection", "tool_result_unpersistable", { status: "complete",
+      content: [{ type: "text", text: marker }], rawPreview: { searchResultVersion: -1 } }]
+  ])("settles an executed result refused at %s as a bounded, content-free error", (stage, code, shape) => {
+    const settleable = settleableToolExecutionResult({ callId: mcpCall.id, name: mcpCall.name, ...shape,
+      usage: { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 } }, 8192);
+    expect(settleable?.failure).toEqual({ code, stage, limitBytes: 8192,
+      observedBytes: stage === "size" ? expect.any(Number) : stage === "validation" ? expect.any(Number) : null });
+    if (stage === "size") expect(settleable!.failure!.observedBytes).toBeGreaterThan(8192);
+    expect(settleable?.result).toMatchObject({ callId: mcpCall.id, name: mcpCall.name, status: "error",
+      usage: expect.objectContaining({ totalTokens: 3 }) });
+    expect(parsePersistedToolExecutionResult(mcpCall, settleable!.snapshot)).toEqual({ ...settleable!.result,
+      usage: expect.objectContaining({ totalTokens: 3 }) });
+    const text = JSON.stringify(settleable);
+    expect(text).not.toContain(marker);
+    expect(text).toContain(code);
+    expect(JSON.parse((settleable!.result.content[0] as { text: string }).text)).toMatchObject({ ok: false,
+      error: { code, stage, limitBytes: 8192, message: expect.stringContaining("do not repeat the same call") } });
+  });
+
+  it("refuses to settle only when even the bounded error cannot be kept", () => {
+    expect(settleableToolExecutionResult({ callId: mcpCall.id, name: mcpCall.name, status: "complete",
+      content: [{ type: "text", text: "x".repeat(2048) }] }, 64)).toBeNull();
   });
 });
