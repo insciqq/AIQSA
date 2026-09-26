@@ -4,6 +4,7 @@ import {
   selectComposerSession,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
+import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import type { WorkspaceChatSummary } from "@/components/app-shell/types";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import {
@@ -47,17 +48,28 @@ export function chatRouteForChat(
   };
 }
 
+/**
+ * A send is under way from the composer (its pending send) or from any other
+ * path that streams an answer into the chat, such as an Assistant starter prompt.
+ */
+export function chatSendUnderWay(chatId: string): boolean {
+  return Boolean(
+    selectComposerSession(useComposerSessionStore.getState(), composerSessionKey(chatId)).pendingSend ||
+    useRunLifecycleStore.getState().activeStreams[chatId]
+  );
+}
+
 /** The route of what the workspace and composer owners show right now. */
 export function chatRouteForState(): ChatRoute {
   const { activeChatId, chats } = useWorkspaceStore.getState();
-  const sessions = useComposerSessionStore.getState();
   const chat = activeChatId ? chats.find((candidate) => candidate.id === activeChatId) : undefined;
-  if (chat) {
-    return chatRouteForChat(chat, Boolean(selectComposerSession(sessions, composerSessionKey(chat.id)).pendingSend));
-  }
+  if (chat) return chatRouteForChat(chat, chatSendUnderWay(chat.id));
   return activeChatId
     ? { chatId: activeChatId, projectId: null }
-    : { chatId: null, projectId: projectIdFromComposerSessionKey(sessions.activeSessionKey) };
+    : {
+        chatId: null,
+        projectId: projectIdFromComposerSessionKey(useComposerSessionStore.getState().activeSessionKey)
+      };
 }
 
 /** The route the address names; null outside the chat pages or for a malformed id. */
@@ -206,6 +218,26 @@ export async function resolveChatRoute(
   } finally {
     settleChatRouteResolution(resolution, settled);
   }
+}
+
+/**
+ * Keeps the address on the shown chat while that chat's own route changes in
+ * place: a draft becomes addressable once its first send is under way, keeps
+ * the address after the server admits it, and returns to its blank route when
+ * the first send fails.
+ */
+export function useShownChatRoute(): void {
+  const chat = useWorkspaceStore((state) => state.activeChatId
+    ? state.chats.find((candidate) => candidate.id === state.activeChatId) ?? null
+    : null);
+  const chatId = chat?.id ?? null;
+  const composing = useComposerSessionStore((state) =>
+    chatId !== null && Boolean(selectComposerSession(state, composerSessionKey(chatId)).pendingSend));
+  const streaming = useRunLifecycleStore((state) => chatId !== null && Boolean(state.activeStreams[chatId]));
+  const path = chat ? formatChatRoutePath(chatRouteForChat(chat, composing || streaming)) : null;
+  useEffect(() => {
+    if (path !== null) writeChatRoute(chatRouteForState());
+  }, [path]);
 }
 
 /**

@@ -175,7 +175,7 @@ import {
   resolveChatRoute,
   settleChatRouteResolution,
   useChatRouteHistory,
-  writeChatRoute,
+  useShownChatRoute,
   type ChatRoute,
   type ChatRouteResolution,
   type ChatRouteTargets
@@ -945,12 +945,7 @@ export function PowerAppShellV2({
   // A local draft chat is addressable only while its first send is under
   // way and after the server admitted it: a failed or stopped first send
   // returns the address to the blank route it came from.
-  const activeDraftRouteKey = activeChat?.pendingPersonalDraft || activeChat?.pendingProjectDraft
-    ? `${activeChat.id}\u0000${composerSession.pendingSend ? "sending" : "idle"}`
-    : null;
-  useEffect(() => {
-    if (activeDraftRouteKey) writeChatRoute(chatRouteForState());
-  }, [activeDraftRouteKey]);
+  useShownChatRoute();
 
   useEffect(() => {
     pruneThreadCacheEvent();
