@@ -5578,6 +5578,37 @@ describe("run recovery", () => {
         ?.contextCompaction?.summaryAttempts).toEqual([notSent, later]);
     });
 
+    it.each([
+      ["claim", "failed", 1, "The summary was not sent"],
+      ["dispatched", "unknown", 2, "The summary was not repeated"]
+    ] as const)("fails a second pass after a settled lost %s summary call without a phantom answer round",
+      async (state, settled, operations, message) => {
+        const attempt = { attempt: 1, bindingDigest: "f".repeat(64), id: `csa1_${state}`, sourceDigest: "e".repeat(64), state };
+        const recovery = crashedDuringSummary(attempt);
+        // The first pass settles the lost call durably, then its run failure write is lost.
+        vi.spyOn(recovery.harness.repository, "settleRecoveredRunError")
+          .mockRejectedValueOnce(new Error("simulated crash before the run failure"));
+        await expect(recovery.recover()).rejects.toThrow("simulated crash before the run failure");
+        expect(recovery.harness.state.recoveredErrors).toEqual([]);
+        const receipts = recovery.installed.checkpoint().contextCompaction?.summaryAttempts;
+        expect(receipts?.map((entry) => entry.state)).toEqual([settled]);
+        const firstPassUsage = recovery.harness.state.usageAttributions.at(-1)!;
+        recovery.harness.repository.loadRunUsageAttributions = async () =>
+          firstPassUsage.map((attribution) => ({ ...attribution, recordedAt: "2026-07-12T09:01:00.000Z" }));
+
+        // The second pass finds no unsettled claim and no provider response id.
+        await recovery.recover();
+        expect(recovery.summaries).toHaveLength(0);
+        expect(recovery.answers).toHaveLength(0);
+        expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual(receipts);
+        // The round's answer request was never sent: no answer-round operation.
+        expect(recovery.installed.checkpoint().answerRoundUsage.map((entry) => entry.roundIndex)).toEqual([1]);
+        expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
+          error: expect.objectContaining({ code: "context_compaction_outcome_unknown", message: expect.stringContaining(message) }),
+          usageAttributions: [expect.objectContaining({ operationCount: operations })]
+        })]);
+      });
+
     /** The lost executor committed round 2's summary (receipt and usage in one
      * write), then dispatched the answer request and stopped before its
      * provider response id was saved. */
