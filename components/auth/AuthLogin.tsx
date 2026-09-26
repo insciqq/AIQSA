@@ -7,7 +7,7 @@ import {
   LoaderCircle,
   Mail
 } from "lucide-react";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { safeInternalPath } from "@/lib/auth/internalPath";
 import type { OAuthLoginOutcome, OAuthProviderId } from "@/lib/auth/oauth";
 
@@ -24,6 +24,12 @@ type AuthLoginProps = {
 };
 
 type Mode = "check-email" | "password" | "register" | "reset-request" | "reset-complete" | "verify-email";
+
+// False for the server markup and the hydration render; true from the first
+// client render after hydration, once the forms submit through their handlers.
+const subscribeToHydration = () => () => undefined;
+const hydratedSnapshot = () => true;
+const serverSnapshot = () => false;
 
 type ActiveAuthProof =
   | { kind: "invite"; token: string }
@@ -464,6 +470,11 @@ export function AuthLogin({
   const [proofSessionGeneration, setProofSessionGeneration] = useState(0);
   const [registrationOutcome, setRegistrationOutcome] = useState<RegistrationOutcome>("request-received");
   const submitting = pendingAction !== null;
+  // Before hydration a submit would be the browser's native GET of the server
+  // markup; the forms say when they are interactive.
+  const hydratedForm = useSyncExternalStore(subscribeToHydration, hydratedSnapshot, serverSnapshot)
+    ? "true"
+    : undefined;
   const firstFieldRef = useRef<HTMLInputElement>(null);
   const modeHeadingRef = useRef<HTMLHeadingElement>(null);
   const previousModeRef = useRef<Mode | null>(mode === "password" ? mode : null);
@@ -961,7 +972,7 @@ export function AuthLogin({
             ) : null}
 
           {mode === "password" ? (
-            <form aria-busy={submitting} className={formClassName} noValidate onSubmit={submitPassword}>
+            <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} noValidate onSubmit={submitPassword}>
               <div>
                 <label className="mb-2 block text-sm font-medium text-ink" htmlFor="email">
                   Email
@@ -1067,6 +1078,7 @@ export function AuthLogin({
             <form
               aria-busy={submitting}
               className={`${formClassName} sm:[@media(max-height:45rem)]:mt-3 sm:[@media(max-height:45rem)]:grid sm:[@media(max-height:45rem)]:grid-cols-2 sm:[@media(max-height:45rem)]:gap-x-3 sm:[@media(max-height:45rem)]:gap-y-3 sm:[@media(max-height:45rem)]:space-y-0`}
+              data-hydrated={hydratedForm}
               data-testid="register-form"
               key={activeInviteToken ? `auth-proof-${proofSessionGeneration}` : "access-request"}
               noValidate
@@ -1192,6 +1204,7 @@ export function AuthLogin({
             <form
               aria-busy={submitting}
               className={formClassName}
+              data-hydrated={hydratedForm}
               key={`auth-proof-${proofSessionGeneration}`}
               noValidate
               onSubmit={submitEmailVerification}
@@ -1241,7 +1254,7 @@ export function AuthLogin({
           ) : null}
 
           {mode === "reset-request" ? (
-            <form aria-busy={submitting} className={formClassName} noValidate onSubmit={submitResetRequest}>
+            <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} noValidate onSubmit={submitResetRequest}>
               <div>
                 <label className="mb-2 block text-sm font-medium text-ink" htmlFor="reset-email">
                   Email
@@ -1286,6 +1299,7 @@ export function AuthLogin({
             <form
               aria-busy={submitting}
               className={formClassName}
+              data-hydrated={hydratedForm}
               key={`auth-proof-${proofSessionGeneration}`}
               noValidate
               onSubmit={submitResetComplete}

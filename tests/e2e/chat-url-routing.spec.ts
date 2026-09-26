@@ -13,7 +13,7 @@ import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 import { startOAuthMcpEndpoint } from "./support/oauthMcpEndpoint";
-import { selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
+import { selectFakeModel, setWorkspaceEnabled, submitPasswordSignIn } from "./support/workspace";
 
 type Viewport = Readonly<{ width: number; height: number }>;
 type Credentials = Readonly<{ email: string; password: string }>;
@@ -42,15 +42,9 @@ async function deleteChats(page: Page, chatIds: readonly (string | null | undefi
   }
 }
 
-async function submitLogin(page: Page, user: Credentials): Promise<void> {
-  await page.getByLabel("Email").fill(user.email);
-  await page.getByLabel("Password", { exact: true }).fill(user.password);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-}
-
 async function signInWithPassword(page: Page, user: Credentials): Promise<void> {
   await page.goto("/login");
-  await submitLogin(page, user);
+  await submitPasswordSignIn(page, user);
   // Password verification alone can take most of this on a cold development server.
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 60_000 });
 }
@@ -323,7 +317,7 @@ test("sign-in and an expired session return to the chat address with its draft",
     await composer.fill("Keep this question through sign-in");
     await composer.press("Enter");
     await expect(page).toHaveURL(new RegExp(`/login\\?next=%2Fc%2F${chatId}&reason=`, "u"), { timeout: 30_000 });
-    await submitLogin(page, LOCAL_MCP_MEMBER);
+    await submitPasswordSignIn(page, LOCAL_MCP_MEMBER);
     await expect(page).toHaveURL(exactPath(`/c/${chatId}`), { timeout: 30_000 });
     await expect(page).toHaveTitle(`${title} · AIQSA`);
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Keep this question through sign-in");
@@ -332,7 +326,7 @@ test("sign-in and an expired session return to the chat address with its draft",
     await context.clearCookies();
     await page.goto(`/c/${chatId}`);
     await expect(page).toHaveURL(new RegExp(`/login\\?next=%2Fc%2F${chatId}$`, "u"));
-    await submitLogin(page, LOCAL_MCP_MEMBER);
+    await submitPasswordSignIn(page, LOCAL_MCP_MEMBER);
     await expect(page).toHaveURL(exactPath(`/c/${chatId}`), { timeout: 30_000 });
     await expect(page).toHaveTitle(`${title} · AIQSA`);
 
@@ -341,7 +335,7 @@ test("sign-in and an expired session return to the chat address with its draft",
     await context.addCookies([{ name: SESSION_COOKIE_NAME, value: "stale-routing-session", url: baseURL! }]);
     await page.goto(`/c/${chatId}`);
     await expect(page).toHaveURL(new RegExp(`/login\\?next=%2Fc%2F${chatId}$`, "u"));
-    await submitLogin(page, LOCAL_MCP_MEMBER);
+    await submitPasswordSignIn(page, LOCAL_MCP_MEMBER);
     await expect(page).toHaveURL(exactPath(`/c/${chatId}`), { timeout: 30_000 });
     await expectNoHorizontalOverflow(page);
   } finally {
