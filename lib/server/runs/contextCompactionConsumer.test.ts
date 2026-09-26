@@ -1,16 +1,41 @@
 import { describe, expect, it, vi } from "vitest";
-import { makeContextCompactionStatus, type ContextCompactionStatus, type ContextPlanMeasurement, type ContextSummary } from "../../contracts/contextCompaction";
+import {
+  makeContextCompactionStatus,
+  type ContextCompactionStatus,
+  type ContextPlanMeasurement,
+  type ContextSummary,
+  type ContextSummaryAttempt
+} from "../../contracts/contextCompaction";
 import type { ProviderAdapter, ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import { ObservationStoreError } from "../toolObservations/contract";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import { createToolObservationService } from "../toolObservations/service";
-import { CONTEXT_SUMMARY_REFS_INCOMPLETE, conversationContextPolicy, type ContextObservation } from "./contextCompactionContract";
+import {
+  CONTEXT_COMPACTION_LIMITS,
+  CONTEXT_SUMMARY_REFS_INCOMPLETE,
+  contextCompactionCheckpoint,
+  conversationContextPolicy,
+  type ContextObservation
+} from "./contextCompactionContract";
 import { contextObservationsFromResults } from "./contextCompactionPlanner";
-import { applyKnowledgeAnswerContextBudget, observationSourceAvailability, prepareCompactedProviderRequest } from "./contextCompactionConsumer";
+import {
+  applyKnowledgeAnswerContextBudget,
+  headroomSummaryDeclined,
+  observationSourceAvailability,
+  prepareCompactedProviderRequest
+} from "./contextCompactionConsumer";
 import { contextCompactionFailureOutcome, createContextCompactionPublisher } from "./contextCompactionEvents";
-import { contextSummarySourceRevision, type ContextSummaryReceipts } from "./contextCompactionSummarizer";
+import { contextSummarySource, contextSummarySourceRevision, type ContextSummaryReceipts } from "./contextCompactionSummarizer";
+import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { requestWithRunFollowups } from "./runFollowupExecution";
+import {
+  checkpointWithContextSummaryReceipt,
+  mergeContextCompactionReceipts,
+  parseToolLoopCheckpoint,
+  type ToolLoopCheckpoint
+} from "./toolLoopPersistence";
 
 const measured = (beforeTokens: number, afterTokens: number): ContextPlanMeasurement => ({
   afterTokens, beforeTokens, budgetTokens: 1_000, legacyFallback: false,
@@ -79,9 +104,11 @@ function consumer(request: ProviderRunRequest, options: Readonly<{
   initial?: ContextCompactionStatus;
   observations?: readonly ContextObservation[];
   output?: string | ((request: ProviderRunRequest) => string);
+  /** Durable receipt writes, observed through the spies below. */
+  receipts?: ContextSummaryReceipts;
   summarize?: Summarize;
   signal?: AbortSignal;
-  sourceAvailable?: (handles: readonly string[]) => Promise<boolean>;
+  sourceAvailable?: (handles: readonly string[], signal?: AbortSignal) => Promise<boolean>;
 }> = {}) {
   const events: ContextCompactionStatus[] = [];
   const summaryRequests: ProviderRunRequest[] = [];
@@ -95,9 +122,9 @@ function consumer(request: ProviderRunRequest, options: Readonly<{
     if (!options.summarize) yield { type: "token", data: { delta: output } };
     return { finalProviderResponsePreview: {}, finalText: output, usage: { inputTokens: 5, outputTokens: 2 } };
   } };
-  const settle = vi.fn<ContextSummaryReceipts["settle"]>(async () => undefined);
-  const claim = vi.fn<ContextSummaryReceipts["claim"]>(async () => undefined);
-  const dispatch = vi.fn<ContextSummaryReceipts["dispatch"]>(async () => undefined);
+  const settle = vi.fn<ContextSummaryReceipts["settle"]>(options.receipts?.settle ?? (async () => undefined));
+  const claim = vi.fn<ContextSummaryReceipts["claim"]>(options.receipts?.claim ?? (async () => undefined));
+  const dispatch = vi.fn<ContextSummaryReceipts["dispatch"]>(options.receipts?.dispatch ?? (async () => undefined));
   const onTruncation = vi.fn();
   const run = () => prepareCompactedProviderRequest({
     bridge,
@@ -116,6 +143,21 @@ function consumer(request: ProviderRunRequest, options: Readonly<{
 
 async function failureOf(promise: Promise<unknown>): Promise<{ code?: string }> {
   return promise.then(() => { throw new Error("expected a failure"); }, (error: { code?: string }) => error);
+}
+
+/** The run's tool-loop checkpoint as the repository keeps it: every receipt
+ * write passes the same guarded transition, and the stored JSON is what a
+ * recovery reads back. */
+function durableCheckpoint(request: ProviderRunRequest) {
+  let checkpoint: ToolLoopCheckpoint | null = null;
+  const write = async (attempt: ContextSummaryAttempt, summary?: ContextSummary) => {
+    const next = checkpointWithContextSummaryReceipt(checkpoint, { attempt, roundIndex: 1, ...(summary ? { summary } : {}),
+      compaction: contextCompactionCheckpoint({ ownerId: "user-1", request, runId: "run-1" }) });
+    if (!next) throw new Error("summary_receipt_conflict");
+    checkpoint = next;
+  };
+  const receipts: ContextSummaryReceipts = { claim: write, dispatch: write, settle: (attempt, _usage, summary) => write(attempt, summary) };
+  return { receipts, stored: () => parseToolLoopCheckpoint(JSON.parse(JSON.stringify(checkpoint))) };
 }
 
 describe("single compaction consumer", () => {
@@ -260,21 +302,7 @@ describe("single compaction consumer", () => {
       expect(compaction.summaryRequests).toHaveLength(0);
     });
 
-    it("notes that do not lower the estimate are no_progress", async () => {
-      // A request that fits above the trigger, whose older history is barely
-      // above the release floor; non-ASCII notes within their byte bound cost
-      // more estimated tokens than the history they replace.
-      const compaction = consumer(hybridRequest({ history: 340, current: 2_300 }), {
-        output: JSON.stringify({ notes: "ж".repeat(500), sourceRefs: [] })
-      });
-      const failure = await failureOf(compaction.run());
-      expect(compaction.summaryRequests).toHaveLength(1);
-      expect(failure.code).toBe("context_compaction_summary_no_progress");
-      expect(published(compaction.events)).toBe("summary_failed");
-      expect(contextCompactionFailureOutcome(failure.code!)).toBe(published(compaction.events));
-    });
-
-    it("overflow after the summary is irreducible_overflow with context_too_large", async () => {
+    it("overflow after the summary is irreducible_overflow with context_too_large, and its notes are never committed", async () => {
       const compaction = consumer(hybridRequest({ history: 3_000, current: 2_900 }), {
         // Short part notes; a final note that no longer fits beside the minimum.
         output: next => JSON.stringify({ notes: next.prompt.system!.includes("notes of consecutive parts") ? "n".repeat(1_000) : "part",
@@ -285,6 +313,10 @@ describe("single compaction consumer", () => {
       expect(failure.code).toBe("context_too_large");
       expect(published(compaction.events)).toBe("irreducible_overflow");
       expect(contextCompactionFailureOutcome(failure.code!)).toBe(published(compaction.events));
+      // The rejected final call settles invalid with its usage; no receipt commits notes.
+      expect(compaction.settle).toHaveBeenLastCalledWith(
+        expect.objectContaining({ errorCode: "context_too_large", state: "invalid" }), expect.objectContaining({ inputTokens: 5 }), undefined);
+      expect(compaction.settle.mock.calls.some(([attempt, , summary]) => attempt.state === "committed" || summary)).toBe(false);
     });
 
     it("Stop during the summary leaves the cycle for the run's cancellation", async () => {
@@ -376,6 +408,11 @@ describe("single compaction consumer", () => {
       const transcript = JSON.stringify(prepared.providerToolMessages);
       expect(transcript).not.toContain("x".repeat(2_000));
       expect(transcript).toContain("call_three-" + "x".repeat(1_000));
+      // The request carries the cycle's settled receipts into every later checkpoint.
+      expect(prepared.contextCompactionSummaryAttempts?.map(({ errorCode, state }) => [state, errorCode])).toEqual([
+        ["invalid", "context_compaction_summary_invalid"], ["invalid", "context_compaction_summary_invalid"]
+      ]);
+      expect(headroomSummaryDeclined(prepared.contextCompactionSummaryAttempts)).toBe(true);
     });
 
     it.each([
@@ -388,6 +425,138 @@ describe("single compaction consumer", () => {
       expect(compaction.events.map(({ outcome: published, state }) => [state, published])).toEqual([
         ["running", "pending"], ["failed", outcome]
       ]);
+      expect(headroomSummaryDeclined(prepared.contextCompactionSummaryAttempts)).toBe(true);
+    });
+
+    /** Earlier receipts that leave the call budget of the source this request
+     * summarizes one call short of any multi-call plan. */
+    function spentCallBudget(request: ProviderRunRequest): ContextSummaryAttempt[] {
+      const measured = applyProviderRequestContextBudget({ bridge, observations, request });
+      if (!measured.ok) throw new Error("the headroom fixture must fit");
+      const sourceDigest = contextSummarySource(measured.request, observations).digest;
+      return Array.from({ length: CONTEXT_COMPACTION_LIMITS.summaryCalls - 1 }, (_, index) => ({
+        attempt: index + 1, bindingDigest: "b".repeat(64), id: `csa1_spent_${index}`, sourceDigest, state: "settled" as const
+      }));
+    }
+
+    it.each([
+      ["valid notes that do not lower the estimate", "context_compaction_summary_no_progress", true,
+        // Final non-ASCII notes within their byte bound cost more estimated
+        // tokens than the older history they would replace.
+        () => ({ request: headroomRequest(), options: { output: (next: ProviderRunRequest) => JSON.stringify({ sourceRefs: [],
+          notes: next.prompt.system!.includes("one consecutive part") ? "part" : "ж".repeat(500) }) } })],
+      ["an exhausted call budget", "context_compaction_summary_failed", false,
+        () => ({ request: { ...headroomRequest(), contextCompactionSummaryAttempts: spentCallBudget(headroomRequest()) }, options: {} })],
+      ["a transient source check failure", "context_compaction_source_check_failed", false,
+        () => ({ request: headroomRequest(), options: { sourceAvailable: observationSourceAvailability(
+          async () => { throw new Error("connection reset"); }, { runId: "run-1", userId: "user-1" }) } })]
+    ] as const)("continues without trimming after %s, publishing the failed cycle", async (_label, code, paid, fixture) => {
+      const { options, request } = fixture();
+      const compaction = consumer(request, { observations, ...options });
+      const prepared = await compaction.run();
+      expect(compaction.summaryRequests.length > 0).toBe(paid);
+      expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
+        ["running", "pending"], ["failed", contextCompactionFailureOutcome(code)]
+      ]);
+      expect(contextCompactionFailureOutcome(code)).toBe("summary_failed");
+      // The request that already fits continues exactly: no notes, no trimming.
+      expect(prepared.contextCompactionSummary).toBeUndefined();
+      expect(prepared.context?.messages.map((message) => message.id)).toEqual(request.context!.messages.map((message) => message.id));
+      expect(prepared.context?.summary).toBeUndefined();
+      expect(compaction.onTruncation).not.toHaveBeenCalled();
+      // No receipt ever commits notes; the cycle's last receipt names its failure.
+      expect(compaction.settle.mock.calls.some(([attempt, , summary]) => attempt.state === "committed" || summary)).toBe(false);
+      const [last, usage, summary] = compaction.settle.mock.lastCall!;
+      expect(last).toMatchObject({ errorCode: code, state: paid ? "invalid" : "failed" });
+      expect(summary).toBeUndefined();
+      // A paid call keeps its usage; a refusal before any call counts no operation.
+      if (paid) expect(usage).toMatchObject({ inputTokens: 5 });
+      else expect(usage).toBeNull();
+      expect(prepared.contextCompactionSummaryAttempts?.at(-1)).toMatchObject({ errorCode: code });
+      expect(headroomSummaryDeclined(prepared.contextCompactionSummaryAttempts)).toBe(true);
+      // The next round buys nothing more for headroom.
+      const next = consumer(prepared, { observations, ...options });
+      await next.run();
+      expect(next.summaryRequests).toHaveLength(0);
+      expect(next.claim).not.toHaveBeenCalled();
+    });
+
+    it("buys one failed headroom cycle per run: later rounds, a follow-up and recovery decline it from durable receipts", async () => {
+      const durable = durableCheckpoint(headroomRequest());
+      const smallBatch = (round: number) => [
+        { arguments: "{}", call_id: `call_small_${round}`, name: "read_record", type: "function_call" },
+        { call_id: `call_small_${round}`, output: `ok ${round}`, type: "function_call_output" }
+      ];
+      let paid = 0;
+      const published: string[][] = [];
+      const run = async (request: ProviderRunRequest) => {
+        // Measured alone, every one of these requests fits and asks for headroom notes.
+        const measured = applyProviderRequestContextBudget({ bridge, observations, request });
+        expect(measured).toMatchObject({ ok: true, request: { contextCompaction: { outcome: "needs_summary" } } });
+        const compaction = consumer(request, { observations, output: invalidJson, receipts: durable.receipts });
+        const prepared = await compaction.run();
+        paid += compaction.summaryRequests.length;
+        published.push(compaction.events.map(({ outcome, state }) => `${state}:${outcome}`));
+        expect(prepared.contextCompactionSummary).toBeUndefined();
+        return prepared;
+      };
+      let request = headroomRequest();
+      for (let round = 1; round <= 6; round += 1) {
+        request = await run(request);
+        // The model answers with one small tool call; the next round carries it.
+        request = { ...request, providerToolMessages: [...request.providerToolMessages!, ...smallBatch(round)] };
+      }
+      // One cycle in round one (an invalid reply and its repair); later rounds
+      // only report the masking they did.
+      expect(paid).toBe(2);
+      expect(published[0]).toEqual(["running:pending", "failed:summary_failed"]);
+      expect(published.slice(1).flat()).toEqual(["complete:masking_applied"]);
+
+      // A delivered clarification re-enters the consumer with the round's request.
+      const delivered = await run(requestWithRunFollowups(request, [{ author: "user-1", createdAt: "2026-09-26T00:00:00.000Z",
+        delivery: "delivered", id: "followup-1", ordinal: 1, text: "Also keep the README." }]));
+      expect(paid).toBe(2);
+
+      // The failed receipts are durable, and every later checkpoint keeps them.
+      const stored = durable.stored()!.contextCompaction!;
+      expect(stored.summaryAttempts?.map(({ errorCode, state, usage }) => [state, errorCode, usage?.inputTokens])).toEqual([
+        ["invalid", "context_compaction_summary_invalid", 5], ["invalid", "context_compaction_summary_invalid", 5]
+      ]);
+      expect(delivered.contextCompactionSummaryAttempts).toEqual(stored.summaryAttempts);
+      const later = contextCompactionCheckpoint({ ownerId: "user-1", request: delivered, runId: "run-1",
+        summaryAttempts: delivered.contextCompactionSummaryAttempts });
+      expect(mergeContextCompactionReceipts(stored, later)?.summaryAttempts).toEqual(stored.summaryAttempts);
+
+      // Recovery rebuilds the round from the accepted request and the stored checkpoint.
+      await run({ ...headroomRequest(), contextCompaction: stored.measurement,
+        contextCompactionSummaryAttempts: stored.summaryAttempts!, providerToolMessages: request.providerToolMessages! });
+      expect(paid).toBe(2);
+      expect(published.slice(1).flat()).toEqual(["complete:masking_applied"]);
+
+      // A request over its budget still buys within the caps, and still fails precisely.
+      const overBudget: ProviderRunRequest = { ...request, providerToolMessages: [...request.providerToolMessages!,
+        { arguments: "{}", call_id: "call_large", name: "read_record", type: "function_call" },
+        { call_id: "call_large", output: `LARGE ${"l".repeat(8_000)}`, type: "function_call_output" }, ...smallBatch(7)] };
+      const buying = consumer(overBudget, { observations, output: invalidJson, receipts: durable.receipts });
+      const failure = await failureOf(buying.run());
+      expect(failure.code).toBe("context_compaction_summary_invalid");
+      expect(buying.summaryRequests).toHaveLength(2);
+      expect(buying.events.map(({ outcome, state }) => `${state}:${outcome}`)).toEqual(["running:pending", "failed:summary_failed"]);
+      expect(durable.stored()!.contextCompaction!.summaryAttempts).toHaveLength(4);
+    });
+
+    it("clears the decline once a later summary commits", () => {
+      const receipt = (attempt: number, state: ContextSummaryAttempt["state"], errorCode?: string): ContextSummaryAttempt => ({
+        attempt, bindingDigest: "b".repeat(64), id: `csa1_${attempt}`, sourceDigest: "d".repeat(64), state,
+        ...(errorCode ? { errorCode } : {})
+      });
+      expect(headroomSummaryDeclined(undefined)).toBe(false);
+      // A repaired reply inside a committed cycle is no failed cycle.
+      expect(headroomSummaryDeclined([receipt(1, "invalid", "context_compaction_summary_invalid"), receipt(2, "committed")])).toBe(false);
+      expect(headroomSummaryDeclined([receipt(1, "committed"), receipt(2, "failed", "context_compaction_provider_failed")])).toBe(true);
+      // Owner refusals and receipts recovery found never sent fail the run instead.
+      expect(headroomSummaryDeclined([receipt(1, "failed", "model_not_available")])).toBe(false);
+      expect(headroomSummaryDeclined([receipt(1, "failed", "context_compaction_not_dispatched")])).toBe(false);
     });
 
     it("still fails an over-budget request whose summary is invalid twice", async () => {

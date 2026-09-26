@@ -105,9 +105,17 @@ export type ContextSummaryInput = Readonly<{
   receipts?: ContextSummaryReceipts;
   /** Real availability of originals whose content the source only references:
    * false only for an authorization or row-state refusal; an infrastructure
-   * failure throws `context_compaction_source_check_failed`. */
+   * failure throws `context_compaction_source_check_failed`. Either refusal
+   * leaves a failed receipt with its code and no operation. */
   sourceAvailable?(handles: readonly string[], signal?: AbortSignal): Promise<boolean>;
+  /** The owner's release check before notes are committed: the classified
+   * failure of notes whose application does not serve the request, or null
+   * to commit them. Rejected notes settle their final call as invalid with
+   * that code and are never committed, applied or carried. */
+  accept?(request: ProviderRunRequest): ContextSummaryRejection | null;
 }>;
+
+export type ContextSummaryRejection = Readonly<{ code: ContextSummaryErrorCode; message: string }>;
 
 /** Oldest prior history the bounded call plan could not cover. */
 export type ContextSummaryOmission = Readonly<{ messages: number; tokens: number }>;
@@ -133,6 +141,10 @@ export type ContextSummaryErrorCode =
 
 export class ContextSummaryError extends Error {
   readonly code: ContextSummaryErrorCode;
+  /** The run's summary receipts as the failed cycle left them (earlier
+   * receipts plus this cycle's settled calls), set by `executeContextSummary`
+   * before it rethrows, so a request that continues carries them. */
+  attempts: readonly ContextSummaryAttempt[] = [];
 
   constructor(code: ContextSummaryErrorCode, message: string, options?: ErrorOptions) {
     super(message, options);
@@ -167,12 +179,46 @@ function appliedSummary(request: ProviderRunRequest): ContextSummary | null {
     ? summary : null;
 }
 
+/** A non-text block is named by its kind only: attachment ids, file names and
+ * labels are private identifiers, never summary input. */
 function blockText(block: unknown): string {
-  return isRecord(block) && block.type === "text" && typeof block.text === "string" ? block.text : canonicalJsonText(block);
+  if (isRecord(block) && block.type === "text" && typeof block.text === "string") return block.text;
+  if (isRecord(block) && block.type === "image") return "[image attachment]";
+  return isRecord(block) && block.type === "file" ? "[file attachment]" : "[non-text content]";
 }
 
 function messageText(message: ProviderConversationMessage): string {
   return message.content.blocks.map(blockText).join("\n");
+}
+
+/** Provider reasoning items and blocks (hidden chain of thought, signed or
+ * encrypted), and the Gemini part form of a thought. */
+const REASONING_TYPES: ReadonlySet<unknown> = new Set(["reasoning", "redacted_thinking", "thinking", "thought"]);
+/** Opaque continuation state and reasoning carried beside a call. */
+const OPAQUE_FIELDS: ReadonlySet<string> = new Set(["encrypted_content", "encrypted_index", "reasoning",
+  "reasoning_content", "reasoning_details", "signature", "thoughtSignature", "thought_signature"]);
+/** Call arguments and result bodies stay exactly as the tool received or returned them. */
+const PAYLOAD_FIELDS: ReadonlySet<string> = new Set(["arguments", "input", "output", "result"]);
+const RESULT_TYPES: ReadonlySet<unknown> = new Set(["fake_tool_result", "function_call_output", "function_result", "tool_result"]);
+
+function reasoningEntry(value: unknown): boolean {
+  return isRecord(value) && (REASONING_TYPES.has(value.type) || value.thought === true);
+}
+
+/** One provider transcript value as summary input: call names, arguments and
+ * results stay; reasoning items and opaque signed or encrypted fields of the
+ * provider envelopes are removed at every envelope level. */
+function summaryToolValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.filter((entry) => !reasoningEntry(entry)).map(summaryToolValue);
+  if (!isRecord(value)) return value;
+  const result = RESULT_TYPES.has(value.type) || value.role === "tool";
+  return Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => OPAQUE_FIELDS.has(key) ? []
+    : [[key, PAYLOAD_FIELDS.has(key) || result && key === "content" ? entry : summaryToolValue(entry)]]));
+}
+
+/** Tool transcript items as the summarizer reads them, oldest first. */
+function summaryToolItems(messages: readonly unknown[]): string[] {
+  return messages.filter((item) => !reasoningEntry(item)).map((item) => canonicalJsonText(summaryToolValue(item)));
 }
 
 type SourceUnit = Readonly<{ notes?: true; text: string; tokens: number }>;
@@ -188,6 +234,10 @@ export type ContextSummarySource = Readonly<{
    * instead of silently dropping one, and the notes are never carried to a
    * later turn. */
   refs: readonly string[];
+  /** UTF-8 bytes of the history a summary of these units replaces: earlier
+   * notes, prior messages older than the exact tail and the uncovered tool
+   * transcript (which leaves as covered units once the request needs room). */
+  replacedBytes: number;
   revision: string;
   units: readonly SourceUnit[];
 }>;
@@ -196,14 +246,18 @@ function unit(text: string, notes?: true): SourceUnit {
   return { ...(notes ? { notes } : {}), text, tokens: estimateApproxTokens(text) };
 }
 
+const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
+
 /**
  * The summary source, oldest first: earlier notes (when a summary is applied),
  * every prior branch message outside the pins, the current message and the
  * provider tool transcript. Tool rounds an applied summary of this run already
  * covers are represented by its notes and refs, so an incremental summary
- * reads the notes plus the uncovered delta. Nothing else is cut; oversized
- * input is split across bounded calls. The digest and references describe
- * exactly these units; the coverage ref names the newest call they include.
+ * reads the notes plus the uncovered delta. Provider reasoning, signatures,
+ * encrypted state and attachment identifiers are never part of it; nothing
+ * else is cut, and oversized input is split across bounded calls. The digest
+ * and references describe exactly these units; the coverage ref names the
+ * newest call they include.
  */
 export function contextSummarySource(request: ProviderRunRequest, observations?: readonly ContextObservation[]): ContextSummarySource {
   const revision = contextSummarySourceRevision(request);
@@ -212,6 +266,7 @@ export function contextSummarySource(request: ProviderRunRequest, observations?:
   const previous = appliedSummary(request);
   const prior = messages.filter((message) => message !== current && message.purpose === undefined && !isContextSummaryMessage(message));
   const toolMessages = uncoveredToolTranscript(request);
+  const toolItems = summaryToolItems(toolMessages);
   const coverage = transcriptCoverageMarker(request.providerToolMessages ?? []);
   const carried = (previous?.sourceRefs ?? []).filter((ref) => !ref.startsWith("ctxr1_") &&
     ref !== CONTEXT_SUMMARY_REFS_INCOMPLETE && !isTranscriptCoverageRef(ref));
@@ -221,8 +276,12 @@ export function contextSummarySource(request: ProviderRunRequest, observations?:
     ...(previous ? [unit(`<previous-notes refs="${carried.join(" ")}">\n${previous.notes}\n</previous-notes>`, true)] : []),
     ...prior.map((message) => unit(`<message id="${message.id}" role="${message.role}">\n${messageText(message)}\n</message>`)),
     ...(current ? [unit(`<message id="${current.id}" role="${current.role}" current="true">\n${messageText(current)}\n</message>`)] : []),
-    ...toolMessages.map((item) => unit(`<tool-item>\n${canonicalJsonText(item)}\n</tool-item>`))
+    ...toolItems.map((item) => unit(`<tool-item>\n${item}\n</tool-item>`))
   ];
+  const older = prior.slice(0, prior.length - contextSummaryTail(prior, request.contextCompaction?.budgetTokens ?? null).length);
+  const replacedBytes = utf8Bytes(previous?.notes ?? "") +
+    older.reduce((total, message) => total + utf8Bytes(messageText(message)), 0) +
+    toolItems.reduce((total, item) => total + utf8Bytes(item), 0);
   const messageIds = [...(current ? [current.id] : []), ...prior.map((message) => message.id).reverse(),
     ...carried.filter((ref) => !ref.startsWith("tor1_"))];
   // Newest tool results first: a cap can never push the latest handles out.
@@ -236,6 +295,7 @@ export function contextSummarySource(request: ProviderRunRequest, observations?:
     digest: contextDigest({ version: 2, units: units.map((entry) => entry.text) }),
     referencedHandles: [...new Set([...carriedHandles, ...maskedObservationHandlesInProviderMessages(toolMessages, observations)])],
     refs: refs.slice(0, CONTEXT_COMPACTION_LIMITS.summarySourceRefs),
+    replacedBytes,
     revision,
     units
   };
@@ -273,13 +333,28 @@ function envelope(text: string): string {
   return `<context-source>\n${text}\n</context-source>`;
 }
 
+/** Anthropic's smallest manual extended-thinking budget. */
+const ANTHROPIC_MIN_THINKING_BUDGET_TOKENS = 1_024;
+
 /** Answer params with one canonical output allowance. The admitted reasoning
  * directive is carried as frozen at acceptance; nothing falls back to a
- * provider or installation default that the answer did not already use. */
-function summaryParams(params: Readonly<Record<string, unknown>>, maxOutputTokens: number): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...params };
+ * provider or installation default that the answer did not already use. Only
+ * an Anthropic manual thinking budget is bounded by the call: it shares the
+ * summary's output allowance, so it keeps at most half of it (never below the
+ * provider minimum), and thinking is off for a call that cannot hold that. */
+function summaryParams(request: ProviderRunRequest, maxOutputTokens: number): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...request.params };
   for (const key of maxOutputTokenParamKeys) delete next[key];
   next.maxOutputTokens = maxOutputTokens;
+  const admitted = request.params.thinking;
+  const thinking = request.provider === "anthropic" && isRecord(admitted) ? admitted : null;
+  const budgetTokens = thinking?.budgetTokens;
+  if (thinking?.enabled === true && thinking.type === "enabled" && typeof budgetTokens === "number" && budgetTokens > 0) {
+    const limit = Math.max(ANTHROPIC_MIN_THINKING_BUDGET_TOKENS, Math.floor(maxOutputTokens / 2));
+    next.thinking = limit < maxOutputTokens
+      ? { ...thinking, budgetTokens: Math.min(budgetTokens, limit) }
+      : { ...thinking, enabled: false };
+  }
   return next;
 }
 
@@ -308,7 +383,7 @@ function contextSummaryRequest(input: Readonly<{
     knowledgePlan: EMPTY_KNOWLEDGE_SELECTION,
     modelCapabilities: request.modelCapabilities,
     modelId: request.modelId,
-    params: summaryParams(request.params, input.maxOutputTokens),
+    params: summaryParams(request, input.maxOutputTokens),
     prompt: { developer: null, system: input.system },
     provider: request.provider,
     ...(request.reasoningEffort !== undefined ? { reasoningEffort: request.reasoningEffort } : {}),
@@ -529,18 +604,15 @@ function providerFailure(error: unknown): boolean {
   return failure.code === "unknown" || ["network", "http", "deadline", "invalid_response", "safety_limit"].includes(failure.reason);
 }
 
-const MIN_FINAL_NOTES_BYTES = 1024;
 const MIN_PARTIAL_NOTES_BYTES = 256;
 
-/** Bytes a summary replaces: earlier notes and prior messages older than the
- * exact tail that stays verbatim. */
-function replacedHistoryBytes(request: ProviderRunRequest): number {
-  const messages = request.context?.messages ?? [];
-  const current = messages.at(-1);
-  const prior = messages.filter((message) => message !== current && message.purpose === undefined && !isContextSummaryMessage(message));
-  const replaced = prior.slice(0, prior.length - contextSummaryTail(prior, request.contextCompaction?.budgetTokens ?? null).length);
-  return Buffer.byteLength(appliedSummary(request)?.notes ?? "", "utf8") +
-    replaced.reduce((total, message) => total + Buffer.byteLength(messageText(message), "utf8"), 0);
+/** The final notes allowance: half of everything the summary replaces, never
+ * below the notes it supersedes (an incremental summary carries them forward)
+ * or the recorded floor, and never above the notes bound. Whether the notes
+ * release room stays the consumer's release check. */
+function finalNotesBytes(request: ProviderRunRequest, source: ContextSummarySource): number {
+  return Math.min(CONTEXT_COMPACTION_LIMITS.summaryNotesBytes, Math.max(CONTEXT_COMPACTION_LIMITS.summaryMinimumNotesBytes,
+    utf8Bytes(appliedSummary(request)?.notes ?? ""), Math.floor(source.replacedBytes / 2)));
 }
 
 /** Notes carried from an earlier turn describe that turn's request, never this
@@ -617,8 +689,19 @@ type StepOutcome = Readonly<{
  * unknown call for this source is never repeated automatically. A source that
  * needs more calls than a plan may use is summarized from its newest span; the
  * older turns are returned as `omitted` for whole-turn truncation evidence.
+ * A classified failure carries the run's receipts as the cycle left them.
  */
 export async function executeContextSummary(input: ContextSummaryInput): Promise<ContextSummaryResult> {
+  const attempts = [...(input.existingAttempts ?? [])];
+  try {
+    return await summarize(input, attempts);
+  } catch (error) {
+    if (error instanceof ContextSummaryError) error.attempts = attempts.slice(-CONTEXT_COMPACTION_LIMITS.summaryReceipts);
+    throw error;
+  }
+}
+
+async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAttempt[]): Promise<ContextSummaryResult> {
   const applied = appliedSummary(input.request);
   const reuse = (omitted?: ContextSummaryOmission): ContextSummaryResult => ({
     attempts: input.existingAttempts ?? [],
@@ -635,7 +718,6 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
     tokens: span.dropped.reduce((total, message) => total + estimateApproxTokens(message.content), 0)
   } : undefined;
   if (input.existingSummary?.sourceDigest === source.digest) return reuse(omitted);
-  const attempts = [...(input.existingAttempts ?? [])];
   const forSource = attempts.filter((entry) => entry.sourceDigest === source.digest);
   if (forSource.some((entry) => entry.state === "claim" || entry.state === "dispatched" || entry.state === "unknown")) {
     throw new ContextSummaryError("context_compaction_outcome_unknown",
@@ -644,20 +726,42 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
   const bindingDigest = summaryBindingDigest(input.request);
   let used = forSource.length;
   const { notes, parts } = span.plan;
-  // Only earlier receipts for this same source can exhaust the cap here.
-  if (used + span.plan.calls > CONTEXT_COMPACTION_LIMITS.summaryCalls) {
-    throw new ContextSummaryError("context_compaction_summary_failed", "The source needs more summary calls than its bounded budget allows.");
-  }
-  if (input.sourceAvailable && source.referencedHandles.length > 0 &&
-    !(await input.sourceAvailable(source.referencedHandles, input.signal))) {
-    throw new ContextSummaryError("context_compaction_source_unavailable", "A referenced source of this context is no longer available.");
-  }
-
   const record = (entry: ContextSummaryAttempt) => {
     const index = attempts.findIndex((candidate) => candidate.id === entry.id);
     if (index >= 0) attempts[index] = entry;
     else attempts.push(entry);
   };
+  /** A cycle refused before its first call leaves one failed receipt with the
+   * refusal's code and no operation (a claim never sent), while the call cap
+   * still has a number for it: the durable evidence of a failed cycle. */
+  const refuse = async (code: ContextSummaryErrorCode) => {
+    if (used >= CONTEXT_COMPACTION_LIMITS.summaryCalls) return;
+    used += 1;
+    const claim = receipt({ bindingDigest, number: used, sourceDigest: source.digest, state: "claim" });
+    await input.receipts?.claim(claim);
+    record(claim);
+    const failed = receipt({ bindingDigest, errorCode: code, number: used, sourceDigest: source.digest, state: "failed" });
+    await input.receipts?.settle(failed, null);
+    record(failed);
+  };
+  // Only earlier receipts for this same source can exhaust the cap here.
+  if (used + span.plan.calls > CONTEXT_COMPACTION_LIMITS.summaryCalls) {
+    await refuse("context_compaction_summary_failed");
+    throw new ContextSummaryError("context_compaction_summary_failed", "The source needs more summary calls than its bounded budget allows.");
+  }
+  if (input.sourceAvailable && source.referencedHandles.length > 0) {
+    let available: boolean;
+    try {
+      available = await input.sourceAvailable(source.referencedHandles, input.signal);
+    } catch (error) {
+      if (error instanceof ContextSummaryError) await refuse(error.code);
+      throw error;
+    }
+    if (!available) {
+      await refuse("context_compaction_source_unavailable");
+      throw new ContextSummaryError("context_compaction_source_unavailable", "A referenced source of this context is no longer available.");
+    }
+  }
 
   /** One bounded step with at most one repair; every try is one paid call. */
   async function step(kind: SummaryStep, text: string, notesBytes: number): Promise<StepOutcome> {
@@ -755,11 +859,7 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
     throw new ContextSummaryError("context_compaction_summary_invalid", "The summary provider returned an invalid bounded object.");
   }
 
-  // Final notes stay under half of the history they replace (earlier notes
-  // plus prior messages older than the exact tail), so a valid summary always
-  // releases room; the consumer still verifies the released estimate.
-  const finalNotes = Math.min(CONTEXT_COMPACTION_LIMITS.summaryNotesBytes,
-    Math.max(MIN_FINAL_NOTES_BYTES, Math.floor(replacedHistoryBytes(span.request) / 2)));
+  const finalNotes = finalNotesBytes(span.request, source);
   const partialNotes = (part: string) =>
     Math.min(CONTEXT_COMPACTION_LIMITS.summaryNotesBytes, Math.max(MIN_PARTIAL_NOTES_BYTES, Math.floor(Buffer.byteLength(part, "utf8") / 2)));
   let final: StepOutcome;
@@ -777,15 +877,20 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
     // finite independently of the model and never pays for non-shrinking work.
     while (estimateApproxTokens(reduced) > budget.inputTokens) {
       const next: string[] = [];
+      // The level's newest call settles once the level is judged, before any
+      // later claim: a level that does not shrink ends the cycle with its code.
+      let last: StepOutcome | null = null;
       for (const part of packParts(partials.map((entry) => unit(entry)), budget.inputTokens)) {
-        const partial = await step("reduce", part, partialNotes(part));
-        await partial.settle("settled");
-        next.push(`<part-notes>\n${partial.notes}\n</part-notes>`);
+        await last?.settle("settled");
+        last = await step("reduce", part, partialNotes(part));
+        next.push(`<part-notes>\n${last.notes}\n</part-notes>`);
       }
       const shrunk = next.join("\n");
       if (shrunk.length >= reduced.length) {
+        await last?.settle("invalid", undefined, "context_compaction_summary_no_progress");
         throw new ContextSummaryError("context_compaction_summary_no_progress", "The summary reduction did not shrink its input.");
       }
+      await last?.settle("settled");
       partials = next;
       reduced = shrunk;
     }
@@ -797,6 +902,20 @@ export async function executeContextSummary(input: ContextSummaryInput): Promise
   } catch (error) {
     await final.settle("invalid", undefined, "context_compaction_summary_invalid");
     throw error;
+  }
+  // Notes the owner's release check rejects are never committed: a later
+  // round, turn or recovery can neither apply nor carry them. The paid call
+  // settles with its usage whatever the check does.
+  let rejection: ContextSummaryRejection | null;
+  try {
+    rejection = input.accept?.(applyContextSummaryToRequest(input.request, summary, attempts)) ?? null;
+  } catch (error) {
+    await final.settle("invalid", undefined, observedFailure(error).code);
+    throw error;
+  }
+  if (rejection) {
+    await final.settle("invalid", undefined, rejection.code);
+    throw new ContextSummaryError(rejection.code, rejection.message);
   }
   await final.settle("committed", summary);
   return {

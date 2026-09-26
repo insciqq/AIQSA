@@ -13,7 +13,9 @@ export function contextCompactionArtifact(status: ContextCompactionStatus): RunO
 export function contextCompactionFailureOutcome(code: string): ContextCompactionStatus["outcome"] {
   if (code === "context_compaction_source_unavailable") return "source_unavailable";
   if (code === "context_too_large") return "irreducible_overflow";
-  if (code.startsWith("context_compaction_summary_")) return "summary_failed";
+  // A transient availability check failed: the cycle's outcome is known, and
+  // no source was found unavailable.
+  if (code.startsWith("context_compaction_summary_") || code === "context_compaction_source_check_failed") return "summary_failed";
   if (code === "context_compaction_provider_failed" || code.startsWith("provider_") || code === "model_not_available") {
     return "provider_failed";
   }

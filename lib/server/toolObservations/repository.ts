@@ -19,8 +19,8 @@ const notStarted = () => new ObservationStoreError("tool_observation_not_started
 const identifier = () => randomUUID().replaceAll("-", "");
 
 /** Handles one availability check may cover: a summary source references at
- * most its carried refs (fewer than the 512 summary refs) plus the masked
- * handles of one run (at most the 512-observation run cap). */
+ * most its carried refs (fewer than the 512 summary refs) plus the newest 512
+ * masked handles of its transcript (the compaction planner's reference cap). */
 export const OBSERVATION_AVAILABILITY_HANDLES = 1024;
 
 /** An authorization or row-state refusal of recall, as opposed to a database

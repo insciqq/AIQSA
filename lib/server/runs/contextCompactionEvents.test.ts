@@ -61,6 +61,8 @@ describe("compaction failure outcome", () => {
     ["context_compaction_source_unavailable", "source_unavailable"],
     ["context_compaction_summary_no_progress", "summary_failed"],
     ["context_compaction_summary_invalid", "summary_failed"],
+    ["context_compaction_summary_failed", "summary_failed"],
+    ["context_compaction_source_check_failed", "summary_failed"],
     ["context_too_large", "irreducible_overflow"],
     ["context_compaction_outcome_unknown", "unknown"],
     ["project_access_changed", "unknown"]
