@@ -4,6 +4,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { formatChatRoutePath } from "../../domain/chatRoute";
 import { resolveChatAccess } from "../projects/access";
 import { notifyProjectEvent } from "../projects/events";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sourceState";
@@ -55,9 +56,10 @@ export async function continuationSourceHref(client: PrismaClient, chatId: strin
   if (!operation) return null;
   const source = await resolveChatAccess(client, { chatId: operation.sourceChatId, userId });
   if (!source) return null;
-  const params = new URLSearchParams({ chat: operation.sourceChatId });
-  if (source.project) params.set("project", source.project.projectId);
-  return `/?${params}`;
+  return formatChatRoutePath({
+    chatId: operation.sourceChatId,
+    projectId: source.project?.projectId ?? null
+  });
 }
 
 export function createChatContinuationRepository(client: PrismaClient, deps: Readonly<{

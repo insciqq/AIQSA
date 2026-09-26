@@ -37,6 +37,15 @@ describe("MCP OAuth return lifecycle", () => {
     expect(open).toHaveBeenCalledOnce();
   });
 
+  it.each(["/c/chat-1", "/p/project-1/c/chat-1"])("opens the MCP tab over the chat %s the authorization returned to", async (pathname) => {
+    window.history.replaceState(null, "", `${pathname}?library=mcp&oauth=cancelled&server=server-1&message=m1`);
+    const open = vi.fn();
+    renderHook(() => useShellReturn("account-1", open), { wrapper: StrictMode });
+    await waitFor(() => expect(useMcpSettingsStore.getState().oauthOutcome).toEqual({ kind: "cancelled", serverId: "server-1" }));
+    expect(open).toHaveBeenCalledOnce();
+    expect(`${window.location.pathname}${window.location.search}`).toBe(`${pathname}?message=m1`);
+  });
+
   it("leaves a return untouched when its shell unmounts before handling it", async () => {
     window.history.replaceState(null, "", "/?settings=mcp&oauth=connected&server=server-1");
     const open = vi.fn();

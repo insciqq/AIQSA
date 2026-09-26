@@ -36,6 +36,22 @@ describe("Document title v2", () => {
     })).toBe("New chat · AIQSA");
   });
 
+  it("keeps the neutral page title while the address names a chat still being opened", () => {
+    expect(documentTitleV2({
+      activeChatId: null,
+      activeChatTitle: "New Chat",
+      libraryOpen: false,
+      routeChatId: "chat-1"
+    })).toBe("Chat · AIQSA");
+
+    expect(documentTitleV2({
+      activeChatId: "chat-1",
+      activeChatTitle: "Release checklist",
+      libraryOpen: false,
+      routeChatId: "chat-1"
+    })).toBe("Release checklist · AIQSA");
+  });
+
   it("lets the Library replace the title while it owns the workspace", () => {
     expect(documentTitleV2({
       activeChatId: "chat-1",

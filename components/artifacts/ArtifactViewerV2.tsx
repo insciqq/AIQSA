@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import Link from "next/link";
 import type { ArtifactDetail } from "@/lib/contracts/artifacts";
+import { formatChatRoutePath } from "@/lib/domain/chatRoute";
 import type { ArtifactRuntimeError } from "@/lib/contracts/artifactRuntime";
 import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2MenuItem, UiV2MenuLink } from "@/components/ui-v2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
@@ -74,7 +75,7 @@ function MoreMenu({ artifactId, busy, host, onOpenSourceChat, onReset, sourceCha
       {host !== "page" ? <UiV2MenuLink href={`/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}`} icon="external" onClick={closeForAction} rel="noreferrer" role="menuitem" target="_blank">Open in new tab</UiV2MenuLink> : null}
       {host !== "chat" && sourceChatId ? onOpenSourceChat
         ? <UiV2MenuItem disabled={busy} icon="chat" onClick={() => { closeForAction(); onOpenSourceChat(sourceChatId); }} type="button">Open source chat</UiV2MenuItem>
-        : <UiV2MenuLink href={`/?chat=${encodeURIComponent(sourceChatId)}`} icon="chat" onClick={closeForAction} role="menuitem">Open source chat</UiV2MenuLink> : null}
+        : <UiV2MenuLink href={formatChatRoutePath({ chatId: sourceChatId, projectId: null })} icon="chat" onClick={closeForAction} role="menuitem">Open source chat</UiV2MenuLink> : null}
     </UiV2ResponsiveMenu> : null}
   </div>;
 }

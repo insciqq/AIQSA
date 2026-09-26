@@ -10,12 +10,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { DiscardChangesConfirmationDialog } from "./ConfirmationDialog";
 import { useBeforeUnloadGuard } from "./useBeforeUnloadGuard";
+import { useChatRoutePath } from "./chatRoute";
 import { McpHubConnection } from "./McpHubConnection";
 import {
   disconnectUserMcpServer,
   McpSettingsApiError,
   updateUserMcpServer,
-  userMcpOAuthAction
+  userMcpOAuthAction,
+  withMcpOAuthReturn
 } from "./mcpSettingsApi";
 import {
   isMcpOAuthAuthorizing,
@@ -190,6 +192,8 @@ function OAuthLink({
   onCancel(): void;
   tone?: "ghost" | "primary";
 }>) {
+  // The authorization outcome returns to the chat route it started from.
+  const returnPath = useChatRoutePath();
   return (
     <a
       role="link"
@@ -198,7 +202,7 @@ function OAuthLink({
       aria-label={props["aria-label"]}
       className="v2-button v2-focusable"
       data-tone={tone}
-      href={disabled ? undefined : href}
+      href={disabled ? undefined : withMcpOAuthReturn(href, returnPath)}
       tabIndex={authorizing || disabled ? -1 : undefined}
       onClick={(event) => {
         if (authorizing || disabled) {

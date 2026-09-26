@@ -3,7 +3,8 @@ import {
   disconnectUserMcpServer,
   loadUserMcpServers,
   updateUserMcpServer,
-  userMcpOAuthAction
+  userMcpOAuthAction,
+  withMcpOAuthReturn
 } from "./mcpSettingsApi";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -88,5 +89,10 @@ describe("MCP settings API", () => {
     });
     expect(userMcpOAuthAction("server/1", false)).toBe("/api/me/mcp/server%2F1/oauth/connect");
     expect(userMcpOAuthAction("server/1", true)).toBe("/api/me/mcp/server%2F1/oauth/reconnect");
+    expect(withMcpOAuthReturn(userMcpOAuthAction("server/1", false), "/p/project-1/c/chat-1"))
+      .toBe("/api/me/mcp/server%2F1/oauth/connect?return=%2Fp%2Fproject-1%2Fc%2Fchat-1");
+    expect(withMcpOAuthReturn("/api/me/mcp/server/oauth/connect?return=%2Fold", "/c/chat-2"))
+      .toBe("/api/me/mcp/server/oauth/connect?return=%2Fc%2Fchat-2");
+    expect(withMcpOAuthReturn("/api/me/mcp/server/oauth/connect", "/")).toBe("/api/me/mcp/server/oauth/connect");
   });
 });
