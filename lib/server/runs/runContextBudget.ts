@@ -308,6 +308,13 @@ function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: 
     providerAttachmentBudgetTokens({ attachments: request.attachments, modelCapabilities: request.modelCapabilities });
 }
 
+/** Whether the exact request, as it would be dispatched (attachment text at
+ * its fitted length, not its hybrid minimum share), fits its known budget. */
+export function providerRequestFitsContextBudget(request: ProviderRunRequest, bridge?: ProviderToolBridge): boolean {
+  const limits = contextCompactionBudgetLimits(request);
+  return limits !== null && approximateProviderRequestTokens(request, bridge) <= limits.budgetTokens;
+}
+
 type TextAttachmentCandidate = Readonly<{
   index: number;
   labelTokens: number;

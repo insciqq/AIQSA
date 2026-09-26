@@ -318,6 +318,90 @@ describe("single compaction consumer", () => {
     });
   });
 
+  describe("a summary bought only for headroom", () => {
+    // Three settled rounds: the older two are masked, the newest stays whole.
+    // The masked request fits the 3,200 budget but stays above the 75% trigger.
+    const results = [observedResult("call_one", "a", 6_000), observedResult("call_two", "b", 6_000),
+      observedResult("call_three", "c", 1_200)];
+    const headroomRequest = () => hybridRequest({ history: 340, current: 1_900, providerToolMessages: [
+      ...observationBatch("call_one", "a", 6_000), ...observationBatch("call_two", "b", 6_000),
+      ...observationBatch("call_three", "c", 1_200)
+    ] });
+    const observations = contextObservationsFromResults(results);
+    const invalidJson = "not a JSON object";
+
+    it("accepts notes citing provider call ids on the first reply and applies them", async () => {
+      const compaction = consumer(headroomRequest(), {
+        observations,
+        output: JSON.stringify({ notes: "The old fact remains binding.", sourceRefs: ["current", "call_abc", "call_two"] })
+      });
+      const prepared = await compaction.run();
+      // Every reply is accepted as it came: no repair call and no invalid receipt.
+      expect(compaction.summaryRequests.some((next) => next.prompt.system?.includes("did not satisfy"))).toBe(false);
+      expect(compaction.settle.mock.calls.map(([attempt]) => attempt.state)).toEqual([
+        ...Array.from({ length: compaction.summaryRequests.length - 1 }, () => "settled"), "committed"
+      ]);
+      expect(compaction.settle).toHaveBeenLastCalledWith(expect.objectContaining({ state: "committed" }),
+        expect.objectContaining({ inputTokens: 5, outputTokens: 2 }), prepared.contextCompactionSummary);
+      expect(prepared.contextCompactionSummary?.notes).toBe("The old fact remains binding.");
+      expect(prepared.contextCompactionSummary?.sourceRefs).not.toContain("call_abc");
+      expect(prepared.contextCompactionSummary?.sourceRefs).not.toContain("call_two");
+      expect(JSON.stringify(prepared.context)).not.toContain("o".repeat(64));
+      expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
+        ["running", "pending"], ["complete", "summary_applied"]
+      ]);
+    });
+
+    it("continues with the masked request after an invalid summary twice, keeping the failed cycle and receipts", async () => {
+      const compaction = consumer(headroomRequest(), { observations, output: invalidJson });
+      const prepared = await compaction.run();
+      expect(compaction.summaryRequests).toHaveLength(2);
+      expect(compaction.settle.mock.calls.map(([attempt, usage]) => [attempt.state, attempt.errorCode, usage?.inputTokens]))
+        .toEqual([["invalid", "context_compaction_summary_invalid", 5], ["invalid", "context_compaction_summary_invalid", 5]]);
+      expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
+        ["running", "pending"], ["failed", "summary_failed"]
+      ]);
+      // The exact masked request: no notes, no trimmed history, no truncation.
+      expect(prepared.contextCompactionSummary).toBeUndefined();
+      expect(prepared.context?.messages.map((message) => message.id)).toEqual(
+        headroomRequest().context!.messages.map((message) => message.id));
+      expect(JSON.stringify(prepared.context)).toContain("o".repeat(64));
+      expect(prepared.context?.summary).toBeUndefined();
+      expect(compaction.onTruncation).not.toHaveBeenCalled();
+      // Masked, fitting and above the trigger: the summary was for headroom only.
+      expect(prepared.contextCompaction).toMatchObject({ budgetTokens: 3_200, legacyFallback: false, maskedObservations: 2,
+        outcome: "needs_summary" });
+      expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(3_200);
+      expect(prepared.contextCompaction!.beforeTokens).toBeGreaterThan(3_200 * 0.75);
+      const transcript = JSON.stringify(prepared.providerToolMessages);
+      expect(transcript).not.toContain("x".repeat(2_000));
+      expect(transcript).toContain("call_three-" + "x".repeat(1_000));
+    });
+
+    it.each([
+      ["provider_failed", { summarize: async function* () { throw Object.assign(new Error("upstream"), { status: 503 }); } }],
+      ["source_unavailable", { sourceAvailable: async () => false }]
+    ] as const)("continues after a %s summary", async (outcome, options) => {
+      const compaction = consumer(headroomRequest(), { observations, ...options });
+      const prepared = await compaction.run();
+      expect(prepared.contextCompactionSummary).toBeUndefined();
+      expect(compaction.events.map(({ outcome: published, state }) => [state, published])).toEqual([
+        ["running", "pending"], ["failed", outcome]
+      ]);
+    });
+
+    it("still fails an over-budget request whose summary is invalid twice", async () => {
+      const compaction = consumer(hybridRequest({ history: 3_400 }), { output: invalidJson });
+      const failure = await failureOf(compaction.run());
+      expect(failure.code).toBe("context_compaction_summary_invalid");
+      expect(compaction.summaryRequests).toHaveLength(2);
+      expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
+        ["running", "pending"], ["failed", "summary_failed"]
+      ]);
+      expect(compaction.onTruncation).not.toHaveBeenCalled();
+    });
+  });
+
   describe("notes carried from an earlier turn's checkpoint", () => {
     const handle = `tor1_${"e".repeat(32)}`;
     const carriedNotes = (notes = "Carried turn-one notes.", sourceRefs: readonly string[] = ["u1", handle]): ContextSummary => ({

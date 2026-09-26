@@ -16,6 +16,7 @@ import {
 } from "./contextCompactionSummarizer";
 import {
   applyProviderRequestContextBudget,
+  providerRequestFitsContextBudget,
   withSummaryHistoryOmission,
   type ProviderRequestContextBudgetResult
 } from "./runContextBudget";
@@ -24,6 +25,23 @@ function failureCode(error: unknown): string | null {
   return error !== null && typeof error === "object" && "code" in error && typeof error.code === "string"
     ? error.code
     : null;
+}
+
+/** Summary failures with known outcomes and no committed notes: the cycle
+ * failed, but nothing it left behind stands in the way of the request. */
+const HEADROOM_TOLERATED_FAILURES: ReadonlySet<string> = new Set([
+  "context_compaction_provider_failed",
+  "context_compaction_source_unavailable",
+  "context_compaction_summary_invalid",
+  "context_compaction_summary_no_progress"
+]);
+
+/** A summary bought only for headroom: the measured request (after masking)
+ * and the exact request as dispatched both already fit the budget. */
+function fitsWithoutSummary(request: ProviderRunRequest, bridge: ProviderToolBridge | undefined): boolean {
+  const measurement = request.contextCompaction;
+  if (!measurement || measurement.budgetTokens === null) return false;
+  return measurement.afterTokens <= measurement.budgetTokens && providerRequestFitsContextBudget(request, bridge);
 }
 
 /** Notes this run bought (not notes carried from an earlier turn) are applied. */
@@ -97,7 +115,9 @@ export type CompactedProviderRequestInput = Readonly<{
  * cover all prior history (carried notes plus the exact messages after them),
  * so the planner never asks again, and a request that still does not fit fails
  * as irreducible overflow instead of falling back to legacy trimming. The
- * published outcome and the thrown code always agree.
+ * published outcome and the thrown code always agree. A summary bought only
+ * for headroom (the request already fits) whose cycle fails before any notes
+ * are committed publishes the failed cycle, and the fitting request continues.
  */
 export async function prepareCompactedProviderRequest(
   input: CompactedProviderRequestInput
@@ -153,6 +173,13 @@ export async function prepareCompactedProviderRequest(
       if (input.signal.aborted) throw error;
       if (error instanceof ContextSummaryError) {
         await publisher.settle(contextCompactionFailureOutcome(error.code));
+        // A failed headroom summary keeps its failed cycle and settled
+        // receipts as evidence; the request that already fits continues
+        // unchanged, without notes and without any trimming.
+        if (HEADROOM_TOLERATED_FAILURES.has(error.code) && fitsWithoutSummary(source, input.bridge)) {
+          if (prepared.contextTruncation) await input.onTruncation?.(prepared.contextTruncation);
+          return source;
+        }
         throw input.failure(error.code, error.message);
       }
       const code = failureCode(error);
