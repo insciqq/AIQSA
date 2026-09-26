@@ -28,6 +28,8 @@ export type LibraryNavigationGuardV2 = (
 ) => void;
 
 export type LibraryTabV2 = Readonly<{
+  /** The section's owner reports something the user must act on; the tab shows a warn signal. */
+  attention?: boolean;
   content: ReactNode;
   id: LibraryTabIdV2;
   label: string;

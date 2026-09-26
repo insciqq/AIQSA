@@ -336,7 +336,10 @@ function ServerRow({
       data-resource-availability-row={server.enabled ? "enabled" : "disabled"}
     >
       <div className="v2-settings-server-head">
-        <UiV2Monogram className="v2-settings-server-mark" label={server.name} />
+        <span className="v2-settings-server-mark-slot">
+          <UiV2Monogram className="v2-settings-server-mark" label={server.name} />
+          {mcpSetupAttention(server) ? <span aria-hidden="true" className="v2-settings-server-signal" data-signal="attention" /> : null}
+        </span>
         <div className="v2-settings-server-copy">
           <h4 id={`mcp-server-${server.id}`}>{server.name}</h4>
           {server.description ? <p className="v2-settings-server-description">{server.description}</p> : null}

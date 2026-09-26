@@ -74,6 +74,8 @@ import { ChatDefaultsPanelV2 } from "@/features/library-v2/ChatDefaultsPanelV2";
 import { InstructionsSettingsPanel } from "@/features/settings-v2/InstructionsSettingsPanel";
 import { WorkspaceSecretsPanel } from "@/features/settings-v2/WorkspaceSecretsPanel";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
+import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
+import { observeMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
 import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
 
 function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: Readonly<{
@@ -107,6 +109,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
   const skillsMode = useComposerControlStore(state => state.skillsMode);
+  const mcpAttention = useStudioMcpAttentionV2(session.accountId);
   const assistantView = settings.library;
   const knowledgeView = settings.knowledge;
   const knowledgeExit = useKnowledgeLibraryExit(knowledgeView ?? null, true);
@@ -288,7 +291,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
     { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onSubviewChange={setInstructionsSubview} onRequestExit={requestInstructionsClose} /> },
     { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy} /> },
-    { id: "mcp", label: "MCP servers", content: <McpSettingsSection key={session.accountId} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
+    { id: "mcp", label: "MCP servers", attention: mcpAttention, content: <McpSettingsSection key={session.accountId} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
     {
       content: (
         assistantView && assistantView.task !== "list" ? (
@@ -590,6 +593,17 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       <span className="v2-sr-only">Account {session.accountId}</span>
     </>
   );
+}
+
+/**
+ * Studio observes the shared MCP catalog for its lifetime so the MCP servers
+ * tab flags setup, authorization and runtime problems before it is opened.
+ * The observer is ref-counted with the chat shell's, reads the catalog only
+ * and never wakes idle servers; the rule is the chat chip's.
+ */
+export function useStudioMcpAttentionV2(accountId: string): boolean {
+  useEffect(() => observeMcpSettings(), [accountId]);
+  return useMcpSettingsStore((state) => state.servers.some((server) => mcpSetupAttention(server) !== null));
 }
 
 export function dispatchAssistantUnavailableActionV2(input: Readonly<{
