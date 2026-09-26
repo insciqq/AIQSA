@@ -2,10 +2,10 @@ import { workspaceImageTokenReserve } from "../workspace/directImageEvidence";
 import {
   applyContextBudget,
   calculateContextBudgetLimits,
-  estimateApproxTokens,
   type ContextTruncationSummary
 } from "../../domain/contextBudget";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
+import { contextTokenEstimator } from "../../domain/tokenEstimate";
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import {
   usesNativePdfInput,
@@ -32,6 +32,7 @@ import type {
   ProviderRunRequest
 } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
+import type { WholeDeliveryShare } from "../toolObservations/sourceAdapters";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 import type { SkillBudgetFacts } from "../../contracts/skills";
@@ -45,9 +46,9 @@ import {
   type ContextOverflow
 } from "./contextCompactionPlanner";
 
-// Matches the former 20,000-character ASCII ceiling under the shared
-// estimator, but applies once across every selected text attachment and is
-// therefore conservative for multilingual text and multi-file requests.
+// The former 20,000-character ASCII ceiling under the character weights, now
+// measured with the request's context estimate and applied once across every
+// selected text attachment.
 export const UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS = 5_000;
 
 function knowledgeAnswerDraftContractText(version: 7 | 8 | undefined): string | null {
@@ -116,10 +117,12 @@ export function applyRunContextBudget(input: Readonly<{
   contextMessages: ProviderConversationMessage[];
   messageExtraTokens?: Record<string, number>;
   modelCapabilities: ProviderModelCapabilities;
+  modelId?: string;
   params: Readonly<Record<string, unknown>>;
   prompt: NormalizedRunRequest["prompt"];
   provider: string;
 }>): RunContextBudgetResult {
+  const estimate = contextTokenEstimator(input);
   const internalContextMessages = input.contextMessages.filter(
     (message) => message.purpose !== undefined
   );
@@ -129,7 +132,7 @@ export function applyRunContextBudget(input: Readonly<{
   const currentMessage = budgetMessages.at(-1);
   const internalContextTokens = internalContextMessages.reduce((total, message) => {
     const extra = input.messageExtraTokens?.[message.id] ?? 0;
-    return total + estimateApproxTokens(message.content) +
+    return total + estimate(message.content) +
       (Number.isFinite(extra) && extra > 0 ? Math.ceil(extra) : 0);
   }, 0);
   const messageExtraTokens = currentMessage && internalContextTokens > 0
@@ -144,6 +147,7 @@ export function applyRunContextBudget(input: Readonly<{
     : input.messageExtraTokens;
   const budget = applyContextBudget({
     contextWindow: input.modelCapabilities.contextWindow ?? 0,
+    estimateTokens: estimate,
     maxOutputTokens: maxOutputTokensForBudget(input.params, input.modelCapabilities, input.provider),
     messageExtraTokens,
     messages: budgetMessages,
@@ -212,32 +216,33 @@ export function normalizedRequestPersonalContextTokenLimit(
     ),
     provider: request.provider
   });
-  const promptTokens = estimateApproxTokens(request.prompt.system ?? "") +
-    estimateApproxTokens(request.prompt.developer ?? "") +
-    estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT) +
-    estimateApproxTokens(MEMORY_READER_FINALIZATION_CONTRACT_V1) +
+  const estimate = contextTokenEstimator(request);
+  const promptTokens = estimate(request.prompt.system ?? "") +
+    estimate(request.prompt.developer ?? "") +
+    estimate(MEMORY_READER_CONTRACT_CURRENT) +
+    estimate(MEMORY_READER_FINALIZATION_CONTRACT_V1) +
     (request.prompt.memoryActionAnswerResult
-      ? estimateApproxTokens(memoryActionAnswerContract(
+      ? estimate(memoryActionAnswerContract(
           request.prompt.memoryActionAnswerResult
         ))
       : 0) +
     (request.prompt.knowledgeAnswerContract === 1
-      ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
+      ? estimate(KNOWLEDGE_ANSWER_CONTRACT_V1)
       : 0) +
-    estimateApproxTokens(
+    estimate(
       knowledgeAnswerDraftContractText(request.prompt.knowledgeAnswerDraftContract) ?? ""
     ) +
     (request.knowledgePlan.mode !== "none"
-      ? estimateApproxTokens(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2)
+      ? estimate(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2)
       : 0);
   const contextMessages = request.context?.messages ?? [];
   const internalTokens = contextMessages
     .filter((message) => message.purpose !== undefined)
-    .reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+    .reduce((total, message) => total + estimate(message.content), 0);
   const currentMessage = contextMessages
     .filter((message) => message.purpose === undefined)
     .at(-1);
-  const currentTokens = estimateApproxTokens(currentMessage?.content ?? request.content);
+  const currentTokens = estimate(currentMessage?.content ?? request.content);
   return Math.max(0, limits.budgetTokens - promptTokens - internalTokens - currentTokens - (request.followupContextReserveTokens ?? 0));
 }
 
@@ -266,13 +271,14 @@ export function providerFacingSerializedTools(
 }
 
 function providerRequestFixedExtraTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
-  return (request.followupContextReserveTokens ?? 0) + estimateApproxTokens(providerFacingSerializedTools(request, bridge)) +
-    estimateApproxTokens(request.providerToolMessages ?? []) + workspaceImageTokenReserve(request.providerToolMessages) +
-    estimateApproxTokens(request.personalContext?.text ?? "") +
+  const estimate = contextTokenEstimator(request);
+  return (request.followupContextReserveTokens ?? 0) + estimate(providerFacingSerializedTools(request, bridge)) +
+    estimate(request.providerToolMessages ?? []) + workspaceImageTokenReserve(request.providerToolMessages) +
+    estimate(request.personalContext?.text ?? "") +
     (request.personalContext
-      ? estimateApproxTokens(MEMORY_READER_CONTRACT_CURRENT) +
-        estimateApproxTokens(MEMORY_READER_FINALIZATION_CONTRACT_V1) : 0) +
-    estimateApproxTokens(knowledgeToolLoopContract(request) ?? "");
+      ? estimate(MEMORY_READER_CONTRACT_CURRENT) +
+        estimate(MEMORY_READER_FINALIZATION_CONTRACT_V1) : 0) +
+    estimate(knowledgeToolLoopContract(request) ?? "");
 }
 
 function modelContextBudgetLimits(request: ProviderRunRequest) {
@@ -335,22 +341,33 @@ export function providerRequestContextRebuild(input: Readonly<{
  * which masking never replaces, irreducible; the rest keep bounded previews. */
 const OBSERVATION_WHOLE_RESULT_BUDGET_SHARE = 0.25;
 
-/** Estimated tokens for that share. An unknown window has no budget that
- * masking could apply, so only the ordinary persisted result bound (Off) applies. */
-export function observationWholeResultTokens(request: ProviderRunRequest): number {
+/** Estimated tokens for that share, with the request's estimate that measures
+ * the results against it. An unknown window has no budget that masking could
+ * apply, so only the ordinary persisted result bound (Off) applies. */
+export function observationWholeResultTokens(request: ProviderRunRequest): Extract<WholeDeliveryShare, object> {
   const limits = modelContextBudgetLimits(request);
-  return limits ? Math.floor(limits.budgetTokens * OBSERVATION_WHOLE_RESULT_BUDGET_SHARE) : Number.POSITIVE_INFINITY;
+  return {
+    estimateTokens: contextTokenEstimator(request),
+    tokens: limits ? Math.floor(limits.budgetTokens * OBSERVATION_WHOLE_RESULT_BUDGET_SHARE) : Number.POSITIVE_INFINITY
+  };
 }
 
 function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+  const estimate = contextTokenEstimator(request);
   const messages = request.context?.messages;
   const contextTokens = messages?.length
-    ? messages.reduce((total, message) => total + estimateApproxTokens(message.content), 0)
-    : estimateApproxTokens(request.content);
+    ? messages.reduce((total, message) => total + estimate(message.content), 0)
+    : estimate(request.content);
   const prompt = contextBudgetPrompt(request.prompt);
-  return contextTokens + estimateApproxTokens(prompt.system ?? "") + estimateApproxTokens(prompt.developer ?? "") +
+  return contextTokens + estimate(prompt.system ?? "") + estimate(prompt.developer ?? "") +
     providerRequestFixedExtraTokens(request, bridge) +
-    providerAttachmentBudgetTokens({ attachments: request.attachments, modelCapabilities: request.modelCapabilities });
+    providerAttachmentBudgetTokens({ attachments: request.attachments, estimateTokens: estimate,
+      modelCapabilities: request.modelCapabilities });
+}
+
+/** The budget's estimate of an exact provider request, for observability. */
+export function providerRequestTokenEstimate(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+  return approximateProviderRequestTokens(request, bridge);
 }
 
 /** Whether the exact request, as it would be dispatched (attachment text at
@@ -362,9 +379,13 @@ export function providerRequestFitsContextBudget(request: ProviderRunRequest, br
 
 type TextAttachmentCandidate = Readonly<{
   index: number;
+  /** The provider line prefix, measured together with the text. */
+  label: string;
   labelTokens: number;
   minimumTokens: number;
   source: string;
+  /** What the whole text adds to its label line: token estimates are not
+   * additive, so text is always measured as the provider receives it. */
   sourceTokens: number;
 }>;
 
@@ -380,16 +401,20 @@ function clampedProviderAttachments(request: ProviderRunRequest): ProviderRunReq
 
 function textAttachmentCandidates(
   attachments: ProviderRunRequest["attachments"],
-  capabilities: ProviderModelCapabilities
+  capabilities: ProviderModelCapabilities,
+  estimate: (value: unknown) => number
 ): TextAttachmentCandidate[] {
   return attachments.flatMap((attachment, index) => {
     if (!textModeAttachment(attachment, capabilities) || !attachment.extractedText?.trim()) return [];
+    const label = `[${providerAttachmentTextLabel(attachment)}]\n`;
+    const labelTokens = estimate(label);
     return [{
       index,
-      labelTokens: estimateApproxTokens(`[${providerAttachmentTextLabel(attachment)}]\n`),
-      minimumTokens: estimateApproxTokens(String.fromCodePoint(attachment.extractedText.codePointAt(0)!)),
+      label,
+      labelTokens,
+      minimumTokens: estimate(String.fromCodePoint(attachment.extractedText.codePointAt(0)!)),
       source: attachment.extractedText,
-      sourceTokens: estimateApproxTokens(attachment.extractedText)
+      sourceTokens: Math.max(0, estimate(`${label}${attachment.extractedText}`) - labelTokens)
     }];
   });
 }
@@ -403,7 +428,8 @@ function withoutAttachmentText(request: ProviderRunRequest): ProviderRunRequest 
  * elastic and receives only the room left after exact context and history.
  * It cannot by itself trigger masking, a summary purchase, or overflow. */
 function hybridRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
-  const text = textAttachmentCandidates(clampedProviderAttachments(request), request.modelCapabilities);
+  const text = textAttachmentCandidates(clampedProviderAttachments(request), request.modelCapabilities,
+    contextTokenEstimator(request));
   return approximateProviderRequestTokens(withoutAttachmentText(request), bridge) +
     text.reduce((total, candidate) => total + candidate.labelTokens + candidate.minimumTokens, 0);
 }
@@ -443,11 +469,12 @@ export function measureSessionContext(input: Readonly<{
 }>): SessionContextStatus {
   const { limits, planned } = planProviderRequestContext(input);
   const { request } = planned;
+  const estimate = contextTokenEstimator(request);
   const prompt = contextBudgetPrompt(request.prompt);
   const messages = request.context?.messages;
   const contextTokens = messages?.length
-    ? messages.reduce((total, message) => total + estimateApproxTokens(message.content), 0)
-    : estimateApproxTokens(request.content);
+    ? messages.reduce((total, message) => total + estimate(message.content), 0)
+    : estimate(request.content);
   const contextWindow = request.modelCapabilities.contextWindow;
   const measuredLimits = limits ?? calculateContextBudgetLimits({
     contextWindow: contextWindow ?? 0,
@@ -456,10 +483,11 @@ export function measureSessionContext(input: Readonly<{
   });
   return {
     approximateInputTokens: contextTokens +
-      estimateApproxTokens(prompt.system ?? "") + estimateApproxTokens(prompt.developer ?? "") +
+      estimate(prompt.system ?? "") + estimate(prompt.developer ?? "") +
       providerRequestFixedExtraTokens(request, input.bridge) +
-      providerAttachmentBudgetTokens({ attachments: request.attachments, modelCapabilities: request.modelCapabilities }) +
-      estimateApproxTokens(input.answerText ?? ""),
+      providerAttachmentBudgetTokens({ attachments: request.attachments, estimateTokens: estimate,
+        modelCapabilities: request.modelCapabilities }) +
+      estimate(input.answerText ?? ""),
     contextWindow: Number.isFinite(contextWindow) && Number(contextWindow) > 0 ? Math.floor(contextWindow!) : null,
     droppedMessages: request.context?.summary?.truncation?.droppedMessages ?? 0,
     loadedTools: providerFacingSerializedTools(request, input.bridge).length,
@@ -492,18 +520,21 @@ function textModeAttachment(
     (attachment.kind === "pdf" && !usesNativePdfInput(attachment, capabilities));
 }
 
-function fitTextToTokenBudget(text: string, tokenBudget: number): string {
-  if (estimateApproxTokens(text) <= tokenBudget) return text;
+/** The longest prefix of `text` whose provider line (label, prefix and, when
+ * cut, the marker) fits the budget, measured as one string exactly like the
+ * request guard measures it. */
+function fitTextToTokenBudget(text: string, tokenBudget: number, estimate: (value: unknown) => number, label = ""): string {
+  if (estimate(`${label}${text}`) <= tokenBudget) return text;
   const marker = "\n[truncated for model context]";
   const firstCharacter = String.fromCodePoint(text.codePointAt(0)!);
   const candidate = (length: number, withMarker: boolean) =>
     `${takeUtf16SafePrefix(text, length)}${withMarker ? marker : ""}`;
-  const useMarker = estimateApproxTokens(`${firstCharacter}${marker}`) <= tokenBudget;
+  const useMarker = estimate(`${label}${firstCharacter}${marker}`) <= tokenBudget;
   let low = firstCharacter.length;
   let high = text.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (estimateApproxTokens(candidate(middle, useMarker)) <= tokenBudget) {
+    if (estimate(`${label}${candidate(middle, useMarker)}`) <= tokenBudget) {
       low = middle;
     } else {
       high = middle - 1;
@@ -523,8 +554,9 @@ function fitProviderAttachmentText(input: Readonly<{
   fixedExtraTokens: number;
   request: ProviderRunRequest;
 }>): AttachmentTextFitResult {
+  const estimate = contextTokenEstimator(input.request);
   const attachments = clampedProviderAttachments(input.request);
-  const textCandidates = textAttachmentCandidates(attachments, input.request.modelCapabilities);
+  const textCandidates = textAttachmentCandidates(attachments, input.request.modelCapabilities, estimate);
   if (textCandidates.length === 0) return { attachments, ok: true };
 
   const contextWindow = input.request.modelCapabilities.contextWindow ?? 0;
@@ -545,35 +577,24 @@ function fitProviderAttachmentText(input: Readonly<{
       provider: input.request.provider
     });
     const currentContent = input.request.context?.messages.at(-1)?.content ?? input.request.content;
-    const promptTokens = estimateApproxTokens(input.request.prompt.system ?? "") +
-      estimateApproxTokens(input.request.prompt.developer ?? "") +
-      (input.request.prompt.memoryActionAnswerResult
-        ? estimateApproxTokens(memoryActionAnswerContract(
-            input.request.prompt.memoryActionAnswerResult
-          ))
-        : 0) +
-      (input.request.prompt.knowledgeAnswerContract === 1
-        ? estimateApproxTokens(KNOWLEDGE_ANSWER_CONTRACT_V1)
-        : 0) +
-      estimateApproxTokens(
-        knowledgeAnswerDraftContractText(
-          input.request.prompt.knowledgeAnswerDraftContract
-        ) ?? ""
-      );
+    // The same joined prompt strings the request guard measures.
+    const prompt = contextBudgetPrompt(input.request.prompt);
+    const promptTokens = estimate(prompt.system ?? "") + estimate(prompt.developer ?? "");
     const internalContextTokens = (input.request.context?.messages ?? [])
       .filter((message) => message.purpose !== undefined)
-      .reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+      .reduce((total, message) => total + estimate(message.content), 0);
     const fixedAttachments = attachments.map((attachment) =>
       textModeAttachment(attachment, input.request.modelCapabilities)
         ? { ...attachment, extractedText: null }
         : attachment
     );
     const fixedTokens = promptTokens +
-      estimateApproxTokens(currentContent) +
+      estimate(currentContent) +
       internalContextTokens +
       input.fixedExtraTokens +
       providerAttachmentBudgetTokens({
         attachments: fixedAttachments,
+        estimateTokens: estimate,
         modelCapabilities: input.request.modelCapabilities
       });
     availableTextTokens = limits.budgetTokens - fixedTokens - labelTokens;
@@ -612,12 +633,15 @@ function fitProviderAttachmentText(input: Readonly<{
     active = active.filter((candidate) => !completedIndexes.has(candidate.index));
   }
 
+  const candidates = new Map(textCandidates.map((candidate) => [candidate.index, candidate]));
   return {
     attachments: attachments.map((attachment, index) => {
       const allocated = allocations.get(index);
-      return allocated === undefined || !attachment.extractedText
+      const candidate = candidates.get(index);
+      return allocated === undefined || !candidate || !attachment.extractedText
         ? attachment
-        : { ...attachment, extractedText: fitTextToTokenBudget(attachment.extractedText, allocated) };
+        : { ...attachment, extractedText: fitTextToTokenBudget(attachment.extractedText,
+          candidate.labelTokens + allocated, estimate, candidate.label) };
     }),
     ok: true
   };
@@ -641,10 +665,11 @@ function skillsBudgetExceeded(
     maxOutputTokens: maxOutputTokensForBudget(request.params, request.modelCapabilities, request.provider),
     provider: request.provider
   });
+  const estimate = contextTokenEstimator(request);
   return { ok: false, status: 400, error: {
     code: "skills_budget_exceeded", message: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window.",
-    skillBudget: { pinnedTokens: pinned.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0),
-      catalogTokens: catalog.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0), budgetTokens: skillLimits.budgetTokens }
+    skillBudget: { pinnedTokens: pinned.reduce((sum, message) => sum + estimate(message.content), 0),
+      catalogTokens: catalog.reduce((sum, message) => sum + estimate(message.content), 0), budgetTokens: skillLimits.budgetTokens }
   } };
 }
 
@@ -730,7 +755,8 @@ function applyHybridProviderRequestContextBudget(input: ProviderRequestBudgetInp
     };
   }
   const request = planned.request;
-  const text = textAttachmentCandidates(clampedProviderAttachments(request), request.modelCapabilities);
+  const text = textAttachmentCandidates(clampedProviderAttachments(request), request.modelCapabilities,
+    contextTokenEstimator(request));
   // A pending summary replaces prior history before any answer request, and
   // truncated text cannot grow back, so reserve the text's pre-summary share.
   const releasedHistoryTokens = planned.measurement.outcome === "needs_summary" ? contextHistory(request).priorTokens : 0;
@@ -847,6 +873,7 @@ function applyProviderRequestContextBudgetCore(input: Readonly<{
   const providerExtras =
     providerAttachmentBudgetTokens({
       attachments: fittedRequest.attachments,
+      estimateTokens: contextTokenEstimator(fittedRequest),
       modelCapabilities: fittedRequest.modelCapabilities
     }) + fixedExtraTokens;
   const budget = applyRunContextBudget({
@@ -856,6 +883,7 @@ function applyProviderRequestContextBudgetCore(input: Readonly<{
         ? { [currentMessageId]: providerExtras }
         : undefined,
     modelCapabilities: fittedRequest.modelCapabilities,
+    modelId: fittedRequest.modelId,
     params: fittedRequest.params,
     prompt: fittedRequest.prompt,
     provider: fittedRequest.provider

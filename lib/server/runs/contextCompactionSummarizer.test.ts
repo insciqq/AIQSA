@@ -103,8 +103,9 @@ describe("context compaction summarizer", () => {
   it("keeps the summary as derived context with the current input and a token-bounded tail", async () => {
     const calls: ProviderRunRequest[] = [];
     const pin = text("exact pinned evidence", "knowledge-evidence:v1", "user", "knowledge_evidence");
+    // About 1,000 tokens, beyond the 640-token tail share ("h" fills four characters per o200k token).
     const source = request({ messages: [
-      text(`old rare fact ${"o".repeat(4_000)}`, "message-old"), text("Acknowledged.", "reply-old", "assistant"),
+      text(`old rare fact ${"h".repeat(4_000)}`, "message-old"), text("Acknowledged.", "reply-old", "assistant"),
       pin, text("current request", "message-current")
     ] });
     const summarized = await executeContextSummary({
