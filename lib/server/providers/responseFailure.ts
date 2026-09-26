@@ -62,7 +62,9 @@ function contextLengthMessage(message: string): ProviderContextLengthCounts | nu
   if (match) return contextLengthCounts(match[1], match[2]);
   // Gemini: "The input token count (P) exceeds the maximum number of tokens
   // allowed (M)"; Vertex: "... the input token count is P but model only
-  // supports up to M".
+  // supports up to M". Kept for other Google endpoints and wordings: the
+  // Gemini Interactions API answers an oversized input with its generic
+  // `invalid_request` envelope instead (see geminiInteractionsTransport.ts).
   if (/\binput token count\b[^.]{0,120}?\b(?:exceeds the maximum number of tokens|only supports up to)\b/iu.test(message)) {
     return contextLengthCounts(/\binput token count\s*(?:is\s*)?\(?(\d{1,9})\)?/iu.exec(message)?.[1],
       /\b(?:tokens allowed|supports up to)\s*\(?(\d{1,9})\)?/iu.exec(message)?.[1]);

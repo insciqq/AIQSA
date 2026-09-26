@@ -74,6 +74,18 @@ describe("Gemini Interactions transport", () => {
     }
   });
 
+  it("keeps the Interactions API's generic overflow envelope an ordinary invalid_request", async () => {
+    // Observed 2026-09-27 for an oversized input; a rejected tool schema gets the same answer.
+    const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn: async () => Response.json({ error: {
+      code: "invalid_request", message: "Invalid input received." } }, { status: 400 }) });
+    for (const send of [client.createInteraction, client.streamInteraction]) {
+      const failure = await send({}).catch((value: unknown) => value);
+      expect(failure).toMatchObject({ code: "invalid_request", httpStatus: 400 });
+      expect(failure).not.toHaveProperty("reportedPromptTokens");
+      expect(failure).not.toHaveProperty("reportedMaximumTokens");
+    }
+  });
+
   it("recovers the ordinary identity from a streaming array envelope", async () => {
     const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn: async () => Response.json([{ error: {
       code: "invalid_request", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } }], { status: 400 }) });
