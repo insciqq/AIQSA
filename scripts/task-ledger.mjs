@@ -2,12 +2,12 @@
 
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
   statSync,
-  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -21,6 +21,7 @@ const TASK_DRAFT_DIRECTORY = `${TASK_ROOT_DIRECTORY}/drafts`;
 const TASK_FILE = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const TASK_STEM = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const TASK_ID = /^\d{17}$/;
+const GROUP_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ALLOWED_STATUSES = new Set(["backlog", "ready", "in_progress", "blocked"]);
 const DURABLE_RATIONALE_PREFIX = "moved to ";
 const REQUIRED_SECTIONS = [
@@ -143,90 +144,66 @@ export function parseDependencies(value) {
   return dependencies;
 }
 
-function discoverTasks(root) {
-  const directory = path.join(root, TASK_DIRECTORY);
-  if (!existsSync(directory)) return { directory, invalidFiles: [], records: [] };
-
-  const invalidFiles = [];
-  const records = [];
-  for (const filename of readdirSync(directory).sort()) {
-    if (filename === "README.md") continue;
-    const absolutePath = path.join(directory, filename);
-    const match = TASK_FILE.exec(filename);
-    if (!match) {
-      invalidFiles.push(portable(path.join(TASK_DIRECTORY, filename)));
-      continue;
-    }
-    const body = readFileSync(absolutePath, "utf8");
-    records.push({
-      blockedBy: field(body, "Blocked by"),
-      body,
-      dependencies: null,
-      durableRationale: field(body, "Durable rationale"),
-      filename,
-      id: match[1],
-      path: absolutePath,
-      relativePath: portable(path.join(TASK_DIRECTORY, filename)),
-      status: field(body, "Status"),
-      stem: filename.slice(0, -3)
-    });
+function assertGroup(group) {
+  if (group !== null && (typeof group !== "string" || !GROUP_NAME.test(group))) {
+    throw new Error("--group must be one lowercase kebab-case directory name");
   }
-  records.sort(taskOrder);
-  return { directory, invalidFiles, records };
 }
 
-function discoverArchivedTasks(root) {
-  const directory = path.join(root, TASK_ARCHIVE_DIRECTORY);
-  if (!existsSync(directory)) return { directory, invalidFiles: [], records: [] };
-
-  const invalidFiles = [];
-  const records = [];
-  for (const filename of readdirSync(directory).sort()) {
-    if (filename === "README.md") continue;
-    const absolutePath = path.join(directory, filename);
-    const match = TASK_FILE.exec(filename);
-    if (!match || !statSync(absolutePath).isFile()) {
-      invalidFiles.push(portable(path.join(TASK_ARCHIVE_DIRECTORY, filename)));
-      continue;
-    }
-    const body = readFileSync(absolutePath, "utf8");
-    records.push({
-      body,
-      filename,
-      id: match[1],
-      path: absolutePath,
-      relativePath: portable(path.join(TASK_ARCHIVE_DIRECTORY, filename)),
-      status: field(body, "Status"),
-      stem: filename.slice(0, -3)
-    });
+function groupDirectory(directory, group) {
+  assertGroup(group);
+  if (group === null) return directory;
+  const destination = path.join(directory, group);
+  const entry = lstatSync(destination, { throwIfNoEntry: false });
+  if (entry && !entry.isDirectory()) {
+    throw new Error(`task group ${group} must be a real directory, not a file or symlink`);
   }
-  records.sort(taskOrder);
-  return { directory, invalidFiles, records };
+  return destination;
 }
 
-function discoverDraftTasks(root) {
-  const directory = path.join(root, TASK_DRAFT_DIRECTORY);
-  if (!existsSync(directory)) return { directory, records: [] };
-
+function discoverNamespace(root, relativeDirectory) {
+  const directory = path.join(root, relativeDirectory);
+  const invalidFiles = [];
   const records = [];
-  for (const filename of readdirSync(directory).sort()) {
-    if (filename === "README.md") continue;
-    const absolutePath = path.join(directory, filename);
-    const match = TASK_FILE.exec(filename);
-    if (!match || !statSync(absolutePath).isFile()) continue;
-    const body = readFileSync(absolutePath, "utf8");
-    records.push({
-      body,
-      filename,
-      id: match[1],
-      path: absolutePath,
-      relativePath: portable(path.join(TASK_DRAFT_DIRECTORY, filename)),
-      status: field(body, "Status"),
-      stem: filename.slice(0, -3)
-    });
+
+  function visit(currentDirectory, group = null) {
+    if (!existsSync(currentDirectory)) return;
+    for (const entry of readdirSync(currentDirectory, { withFileTypes: true }).sort(
+      (left, right) => left.name.localeCompare(right.name)
+    )) {
+      const absolutePath = path.join(currentDirectory, entry.name);
+      const relativePath = portable(path.relative(root, absolutePath));
+      if (entry.isDirectory() && group === null && GROUP_NAME.test(entry.name)) {
+        visit(absolutePath, entry.name);
+        continue;
+      }
+      // Follow neither directory nor file symlinks outside the local namespace.
+      if (entry.isFile() && entry.name === "README.md") continue;
+      const match = entry.isFile() && TASK_FILE.exec(entry.name);
+      if (!match) {
+        invalidFiles.push(relativePath);
+        continue;
+      }
+      const body = readFileSync(absolutePath, "utf8");
+      records.push({
+        blockedBy: field(body, "Blocked by"),
+        body,
+        dependencies: null,
+        durableRationale: field(body, "Durable rationale"),
+        filename: entry.name,
+        group,
+        id: match[1],
+        path: absolutePath,
+        relativePath,
+        status: field(body, "Status"),
+        stem: entry.name.slice(0, -3)
+      });
+    }
   }
+
+  visit(directory);
   records.sort(taskOrder);
-  return { directory, records };
+  return { directory, invalidFiles, records };
 }
 
 function indexRecords(records) {
@@ -246,9 +223,9 @@ function indexRecords(records) {
 
 export function readTaskLedger(root = process.cwd()) {
   root = path.resolve(root);
-  const tasks = discoverTasks(root);
-  const archive = discoverArchivedTasks(root);
-  const drafts = discoverDraftTasks(root);
+  const tasks = discoverNamespace(root, TASK_DIRECTORY);
+  const archive = discoverNamespace(root, TASK_ARCHIVE_DIRECTORY);
+  const drafts = discoverNamespace(root, TASK_DRAFT_DIRECTORY);
   const { byId, byStem } = indexRecords(tasks.records);
   const archiveIndex = indexRecords(archive.records);
   const draftIndex = indexRecords(drafts.records);
@@ -497,28 +474,22 @@ function assertValid(root) {
   return result.ledger;
 }
 
-function resolveTask(ledger, reference) {
-  const exact = ledger.tasks.records.find((record) => record.stem === reference);
-  if (exact) return exact;
-  if (!TASK_ID.test(reference ?? "")) throw new Error(`task ${reference} was not found`);
-  const matches = ledger.byId.get(reference) ?? [];
+function resolveRecord(records, reference, group, label) {
+  assertGroup(group);
+  const matches = records.filter((record) => record.group === group && (
+    record.stem === reference || (TASK_ID.test(reference ?? "") && record.id === reference)
+  ));
   if (matches.length === 1) return matches[0];
-  if (matches.length > 1) {
-    throw new Error(`task ${reference} is ambiguous; use one of: ${matches.map((record) => record.stem).join(", ")}`);
-  }
-  throw new Error(`task ${reference} was not found`);
+  if (matches.length > 1) throw new Error(`${label} ${reference} is ambiguous`);
+  throw new Error(`${label} ${reference} was not found in ${group ? `group ${group}` : "the default queue"}; use --group for a named group`);
 }
 
-function resolveDraftTask(ledger, reference) {
-  const exact = ledger.drafts.records.find((record) => record.stem === reference);
-  if (exact) return exact;
-  if (!TASK_ID.test(reference ?? "")) throw new Error(`draft task ${reference} was not found`);
-  const matches = ledger.drafts.byId.get(reference) ?? [];
-  if (matches.length === 1) return matches[0];
-  if (matches.length > 1) {
-    throw new Error(`draft task ${reference} is ambiguous; use one of: ${matches.map((record) => record.stem).join(", ")}`);
-  }
-  throw new Error(`draft task ${reference} was not found`);
+function resolveTask(ledger, reference, group) {
+  return resolveRecord(ledger.tasks.records, reference, group, "task");
+}
+
+function resolveDraftTask(ledger, reference, group) {
+  return resolveRecord(ledger.drafts.records, reference, group, "draft task");
 }
 
 function noOpenDependencies(record) {
@@ -536,7 +507,8 @@ function nextTaskId(ledger, date = new Date()) {
   throw new Error("could not allocate a unique task timestamp within ten seconds");
 }
 
-export function createTask({ root = process.cwd(), slug, summary, date = new Date() }) {
+export function createTask({ root = process.cwd(), slug, summary, date = new Date(), group = null }) {
+  assertGroup(group);
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug ?? "")) {
     throw new Error("slug must be lowercase kebab-case");
   }
@@ -547,20 +519,19 @@ export function createTask({ root = process.cwd(), slug, summary, date = new Dat
   const ledger = assertValid(root);
   const id = nextTaskId(ledger, date);
   const stem = `${id}-${slug}`;
-  const destination = path.join(ledger.tasks.directory, `${stem}.md`);
-  mkdirSync(ledger.tasks.directory, { recursive: true });
-  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Plan\n\n- [ ] Replace this scaffold with concrete implementation milestones.\n\n## Progress\n\n- Not started.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, "utf8");
+  const destination = path.join(groupDirectory(ledger.tasks.directory, group), `${stem}.md`);
   const relativePath = portable(path.relative(ledger.root, destination));
   if (!isIgnoredTask(ledger.root, relativePath)) {
-    unlinkSync(destination);
     throw new Error(`${relativePath} must be ignored before local task creation`);
   }
+  mkdirSync(path.dirname(destination), { recursive: true });
+  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Plan\n\n- [ ] Replace this scaffold with concrete implementation milestones.\n\n## Progress\n\n- Not started.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, { encoding: "utf8", flag: "wx" });
   return stem;
 }
 
-export function promoteTask({ root = process.cwd(), reference }) {
+export function promoteTask({ root = process.cwd(), reference, group = null }) {
   const ledger = assertValid(root);
-  const record = resolveTask(ledger, reference);
+  const record = resolveTask(ledger, reference, group);
   if (!["backlog", "blocked"].includes(record.status)) {
     throw new Error(`${record.stem} is ${record.status}, not eligible for promotion`);
   }
@@ -574,19 +545,19 @@ export function promoteTask({ root = process.cwd(), reference }) {
   return record.stem;
 }
 
-export function startTask({ root = process.cwd(), reference }) {
+export function startTask({ root = process.cwd(), reference, group = null }) {
   const ledger = assertValid(root);
-  const record = resolveTask(ledger, reference);
+  const record = resolveTask(ledger, reference, group);
   if (record.status !== "ready") throw new Error(`${record.stem} is ${record.status}, not ready to start`);
   noOpenDependencies(record);
   writeFileSync(record.path, replaceField(record.body, "Status", "in_progress"), "utf8");
   return record.stem;
 }
 
-export function blockTask({ root = process.cwd(), reference, reason }) {
+export function blockTask({ root = process.cwd(), reference, reason, group = null }) {
   if (!reason?.trim() || /[\r\n]/u.test(reason)) throw new Error("--reason must be one non-empty line");
   const ledger = assertValid(root);
-  const record = resolveTask(ledger, reference);
+  const record = resolveTask(ledger, reference, group);
   if (!["ready", "in_progress", "blocked"].includes(record.status)) {
     throw new Error(`${record.stem} is ${record.status}, not eligible to block`);
   }
@@ -596,9 +567,9 @@ export function blockTask({ root = process.cwd(), reference, reason }) {
   return record.stem;
 }
 
-export function parkTask({ root = process.cwd(), reference }) {
+export function parkTask({ root = process.cwd(), reference, group = null }) {
   const ledger = assertValid(root);
-  const record = resolveTask(ledger, reference);
+  const record = resolveTask(ledger, reference, group);
   if (record.status === "in_progress") {
     throw new Error(`${record.stem} is in_progress; block or otherwise reconcile it before parking`);
   }
@@ -615,20 +586,20 @@ export function parkTask({ root = process.cwd(), reference }) {
     throw new Error(`${record.stem} conflicts with an existing draft task`);
   }
 
-  const destination = path.join(ledger.drafts.directory, record.filename);
+  const destination = path.join(groupDirectory(ledger.drafts.directory, record.group), record.filename);
   const relativePath = portable(path.relative(ledger.root, destination));
   if (existsSync(destination)) throw new Error(`${relativePath} already exists; refusing to overwrite a draft task`);
   if (!isIgnoredTask(ledger.root, relativePath)) {
     throw new Error(`${relativePath} must be ignored before parking a task`);
   }
-  mkdirSync(ledger.drafts.directory, { recursive: true });
+  mkdirSync(path.dirname(destination), { recursive: true });
   renameSync(record.path, destination);
   return { relativePath, stem: record.stem };
 }
 
-export function restoreTask({ root = process.cwd(), reference }) {
+export function restoreTask({ root = process.cwd(), reference, group = null }) {
   const ledger = assertValid(root);
-  const record = resolveDraftTask(ledger, reference);
+  const record = resolveDraftTask(ledger, reference, group);
   if (!ALLOWED_STATUSES.has(record.status)) {
     throw new Error(`${record.stem} has Status: ${record.status ?? "missing"}; only unfinished tasks can be restored`);
   }
@@ -639,13 +610,13 @@ export function restoreTask({ root = process.cwd(), reference }) {
     throw new Error(`${record.id} already exists in the queue or archive`);
   }
 
-  const destination = path.join(ledger.tasks.directory, record.filename);
+  const destination = path.join(groupDirectory(ledger.tasks.directory, record.group), record.filename);
   const relativePath = portable(path.relative(ledger.root, destination));
   if (existsSync(destination)) throw new Error(`${relativePath} already exists; refusing to overwrite a queued task`);
   if (!isIgnoredTask(ledger.root, relativePath)) {
     throw new Error(`${relativePath} must be ignored before restoring a task`);
   }
-  mkdirSync(ledger.tasks.directory, { recursive: true });
+  mkdirSync(path.dirname(destination), { recursive: true });
   renameSync(record.path, destination);
   const validation = validateTaskLedger(ledger.root);
   if (validation.errors.length) {
@@ -662,9 +633,9 @@ function removeDependency(body, dependency) {
   return replaceField(body, "Depends on", remaining.length ? remaining.join(", ") : "none");
 }
 
-export function completeTask({ root = process.cwd(), reference }) {
+export function completeTask({ root = process.cwd(), reference, group = null }) {
   const ledger = assertValid(root);
-  const record = resolveTask(ledger, reference);
+  const record = resolveTask(ledger, reference, group);
   if (record.status !== "in_progress") {
     throw new Error(`${record.stem} is ${record.status}, not completable`);
   }
@@ -675,7 +646,7 @@ export function completeTask({ root = process.cwd(), reference }) {
   if (evidence.unavailableOnly) {
     throw new Error("Unavailable-only verification cannot complete a task; block it or add passed evidence");
   }
-  const archivePath = path.join(ledger.archive.directory, record.filename);
+  const archivePath = path.join(groupDirectory(ledger.archive.directory, record.group), record.filename);
   const archiveRelativePath = portable(path.relative(ledger.root, archivePath));
   if (existsSync(archivePath)) {
     throw new Error(`${archiveRelativePath} already exists; refusing to overwrite archived task evidence`);
@@ -693,16 +664,21 @@ export function completeTask({ root = process.cwd(), reference }) {
       cleared += 1;
     }
   }
-  mkdirSync(ledger.archive.directory, { recursive: true });
+  mkdirSync(path.dirname(archivePath), { recursive: true });
   writeFileSync(record.path, replaceField(record.body, "Status", "completed"), "utf8");
   renameSync(record.path, archivePath);
   return { archiveRelativePath, cleared, stem: record.stem };
 }
 
-export function listTasks(root = process.cwd()) {
+export function listTasks(root = process.cwd(), { group = null, all = false } = {}) {
+  assertGroup(group);
+  if (all && group !== null) throw new Error("choose either --all or --group");
   const ledger = assertValid(root);
-  if (ledger.tasks.records.length === 0) return "No open tasks.";
-  return ledger.tasks.records.map((record) => `${record.status.padEnd(11)} ${record.stem}`).join("\n");
+  const records = ledger.tasks.records.filter((record) => all || record.group === group);
+  if (records.length === 0) return group ? `No open tasks in group ${group}.` : "No open tasks.";
+  return records.map((record) =>
+    `${record.status.padEnd(11)} ${record.group ? `${record.group}/` : ""}${record.stem}`
+  ).join("\n");
 }
 
 function takeOption(arguments_, name) {
@@ -720,7 +696,7 @@ function takeOption(arguments_, name) {
 function oneReference(arguments_, command) {
   const reference = arguments_.shift();
   if (!reference || arguments_.length) {
-    throw new Error(`usage: task-ledger ${command} <task-id-or-stem> [--root <path>]`);
+    throw new Error(`usage: task-ledger ${command} <task-id-or-stem> [--group <name>] [--root <path>]`);
   }
   return reference;
 }
@@ -728,45 +704,49 @@ function oneReference(arguments_, command) {
 export function runTaskCli(argv = process.argv.slice(2)) {
   const arguments_ = [...argv];
   const root = path.resolve(takeOption(arguments_, "--root") ?? process.cwd());
+  const group = takeOption(arguments_, "--group");
+  assertGroup(group);
   const command = arguments_.shift();
 
   if (command === "new") {
     const summary = takeOption(arguments_, "--summary");
     const slug = arguments_.shift();
     if (arguments_.length) throw new Error(`unexpected arguments: ${arguments_.join(" ")}`);
-    return `Created ${createTask({ root, slug, summary })} with Status: backlog.`;
+    return `Created ${createTask({ root, slug, summary, group })} with Status: backlog.`;
   }
   if (command === "list") {
-    if (arguments_.length) throw new Error("usage: task-ledger list [--root <path>]");
-    return listTasks(root);
+    const all = arguments_[0] === "--all";
+    if (all) arguments_.shift();
+    if (arguments_.length) throw new Error("usage: task-ledger list [--group <name> | --all] [--root <path>]");
+    return listTasks(root, { group, all });
   }
   if (command === "check") {
-    if (arguments_.length) throw new Error("usage: task-ledger check [--root <path>]");
+    if (arguments_.length || group !== null) throw new Error("usage: task-ledger check [--root <path>]; check validates every group");
     assertValid(root);
     return "Task ledger is valid.";
   }
   if (command === "block") {
     const reason = takeOption(arguments_, "--reason");
     const reference = oneReference(arguments_, command);
-    return `Blocked ${blockTask({ root, reference, reason })}.`;
+    return `Blocked ${blockTask({ root, reference, reason, group })}.`;
   }
   if (["park", "restore"].includes(command)) {
     const reference = oneReference(arguments_, command);
     if (command === "park") {
-      const result = parkTask({ root, reference });
+      const result = parkTask({ root, reference, group });
       return `Parked ${result.stem} at ${result.relativePath}.`;
     }
-    const result = restoreTask({ root, reference });
+    const result = restoreTask({ root, reference, group });
     return `Restored ${result.stem} at ${result.relativePath}.`;
   }
   if (["promote", "start"].includes(command)) {
     const reference = oneReference(arguments_, command);
-    if (command === "promote") return `Promoted ${promoteTask({ root, reference })} to ready.`;
-    return `Started ${startTask({ root, reference })}.`;
+    if (command === "promote") return `Promoted ${promoteTask({ root, reference, group })} to ready.`;
+    return `Started ${startTask({ root, reference, group })}.`;
   }
   if (command === "complete") {
     const reference = oneReference(arguments_, command);
-    const result = completeTask({ root, reference });
+    const result = completeTask({ root, reference, group });
     return `Completed and archived ${result.stem} at ${result.archiveRelativePath}; cleared ${result.cleared} dependency reference(s).`;
   }
   throw new Error("usage: task-ledger <check|new|promote|start|block|park|restore|complete|list> ...");

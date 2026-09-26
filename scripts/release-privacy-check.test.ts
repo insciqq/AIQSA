@@ -27,7 +27,7 @@ function fixture() {
   writeFileSync(path.join(root, "agent_docs/tasks/README.md"), "# TASKS\n");
   writeFileSync(
     path.join(root, ".gitignore"),
-    "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n" +
+    "/agent_docs/tasks/queue/*\n!/agent_docs/tasks/queue/README.md\n" +
       "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n" +
       "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n" +
       "/agent_docs/PRD/**\n/DEV_SERVER.md\n/AGENTS.override.md\n"
@@ -66,10 +66,11 @@ describe("release privacy command", () => {
     expect(result.stdout).toContain("release privacy check passed");
   });
 
-  it("rejects a private task in both the current tree and later history", () => {
+  it.each(["archive", "queue/maintenance"])("rejects a private task in %s in both the current tree and later history", (directory) => {
     const root = fixture();
     const baseline = git(root, "rev-parse", "HEAD").stdout.trim();
-    const relative = "agent_docs/tasks/archive/20260801120000001-private-task.md";
+    const relative = `agent_docs/tasks/${directory}/20260801120000001-private-task.md`;
+    mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
     writeFileSync(path.join(root, relative), "private task\n");
     git(root, "add", "-f", relative);
     git(root, "-c", "user.name=AIQSA Test", "-c", "user.email=test@aiqsa.local", "commit", "-q", "-m", "unsafe task");
