@@ -20,7 +20,6 @@ test("background continuation shows progress and cancels without losing the curr
       content: "Your source conversation is preserved.", createdAt: timestamp, errorMessage: null,
       citationMessageId: null, modelId: null, modelRunId: null, provider: null }]
   };
-  await page.addInitScript(() => localStorage.setItem("aiqsa.activeChatId", "source"));
   await installMatrixCatalogFixture(page, { chats: [source], folders: [] });
   await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
   await page.route("**/api/me/chats/*/memory-mode", (route) => route.fulfill({ json: {
@@ -39,7 +38,7 @@ test("background continuation shows progress and cancels without losing the curr
       await route.fulfill({ status: 202, json: { status: "running", progress: { completedParts: 9, stage: "summarizing" } } });
     }
   });
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/source");
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Keep this unsent draft");
   await page.getByTestId("header-context-indicator").click();
@@ -87,7 +86,6 @@ for (const width of [1440, 390]) {
     }
     const source = chat("source", "The source conversation stays here.");
     const target = chat("continued", "Conversation summary ready.");
-    await page.addInitScript(() => localStorage.setItem("aiqsa.activeChatId", "source"));
     await installMatrixCatalogFixture(page, { chats: [source, target], folders: [] }, { catalog });
     await page.route("**/api/chats/source", async route => {
       if (route.request().method() !== "PATCH") return route.fallback();
@@ -115,7 +113,7 @@ for (const width of [1440, 390]) {
       await summaryGate;
       await route.fulfill({ json: { status: "complete", chatId: target.id, projectId: null } });
     });
-    await signInWithLocalToken(page);
+    await signInWithLocalToken(page, "/c/source");
     const composer = page.getByRole("textbox", { name: "Message" });
     await selectModel(page, chosen.provider, chosen.displayName);
     await chooseSearchStrategy(page, "Perplexity");

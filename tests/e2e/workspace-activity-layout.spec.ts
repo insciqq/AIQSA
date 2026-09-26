@@ -34,7 +34,6 @@ for (const viewport of [
   test(`Workspace activity keeps its width and scrolls long history at ${viewport.width}px`, async ({ page, context }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
-    await page.addInitScript((id) => window.localStorage.setItem("aiqsa.activeChatId", id), chatId);
     await installMatrixCatalogFixture(page, { folders: [], chats: [{
       id: chatId, title: "Workspace activity layout", activeLeafMessageId: null,
       createdAt: timestamp, updatedAt: timestamp, defaultProvider: "openai", defaultModelId: "gpt-5.5",
@@ -51,7 +50,7 @@ for (const viewport of [
     // Any send that escapes the synthetic stream must never reach a provider.
     await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
       ? route.fulfill({ status: 409, json: { error: "unexpected_layout_run" } }) : route.fallback());
-    await signInWithLocalToken(page);
+    await signInWithLocalToken(page, `/c/${chatId}`);
     const composer = page.getByRole("textbox", { name: "Message" });
     await composer.fill("Inspect the synthetic project files.");
     await composer.press("Enter");

@@ -107,7 +107,8 @@ for (const separateContext of [false, true]) {
       if (separateContext) senderContext = await browser.newContext({ storageState: await context.storageState() });
       const sender = senderContext ? await senderContext.newPage() : page;
       if (senderContext) {
-        await sender.goto("/");
+        // A second browser opens the same chat through its address.
+        await sender.goto(`/c/${chatId}`);
         await expect(sender.getByTestId("app-shell")).toBeVisible();
         expect(await activeChatId(sender)).toBe(chatId);
       }

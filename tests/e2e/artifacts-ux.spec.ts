@@ -72,9 +72,6 @@ async function installChat(page: Page, fixture: Fixture, nextArtifact?: ThreadGe
       provider: message.role === "assistant" ? "openai" : null,
       artifactSummary: message.role === "assistant" ? { citations: [], sources: [], reasoningText: [],
         generatedArtifacts: [message.id === "artifact-next-answer" ? nextArtifact! : fixture.artifact] } : null }));
-  await page.addInitScript(id => {
-    if (window === window.top) localStorage.setItem("aiqsa.activeChatId", id);
-  }, fixture.chatId);
   const chat = { id: fixture.chatId, title: "Artifact UX fixture", messages,
     activeLeafMessageId: nextArtifact ? "artifact-next-answer" : "artifact-answer", createdAt: timestamp, updatedAt: timestamp, defaultModelId: "gpt-5.5",
     defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length, usageStats: null,
@@ -162,7 +159,7 @@ test("chat editing keeps the draft and exact target, with a docked panel or comp
   try {
     await installChat(page, fixture);
     await page.setViewportSize({ width: 1440, height: 900 });
-    const response = await page.goto("/");
+    const response = await page.goto(`/c/${fixture.chatId}`);
     expect(response?.headers()["content-security-policy"]).toContain("frame-src 'none'");
     await expect(page.locator("[data-artifact-panel]")).toHaveCount(0);
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
@@ -254,7 +251,7 @@ test("one artifact card per answer survives updates, replay and reload while his
       json: { version: 1, run: { id: "artifact-fixture-run", status: finished ? "complete" : "streaming" } }
     }));
     await page.route(`**/api/chats/${fixture.chatId}/active-leaf`, route => route.fulfill({ json: { ok: true } }));
-    await page.goto("/");
+    await page.goto(`/c/${fixture.chatId}`);
     await page.getByRole("button", { name: `Open artifact: ${title}`, exact: true }).click();
     const panel = page.locator("[data-artifact-panel]");
     await expect(panel.getByRole("button", { name: "Version v1", exact: true })).toBeEnabled({ timeout: 30_000 });
@@ -356,7 +353,7 @@ test("Library artifact rows support preview, rename, archive confirmation, resto
     const publication = await page.request.post(`/api/artifacts/${fixture.artifact.artifactId}/publish`, { data: { versionId: fixture.artifact.versionId } });
     expect(publication.ok()).toBe(true);
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto("/");
+    await page.goto(`/c/${fixture.chatId}`);
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
     await composer.fill("Keep the draft while I inspect the library");
     let documentRequests = 0;
@@ -433,7 +430,7 @@ test("touch previews preserve game state and reachable controls across phone and
     const page = await context.newPage();
     fixture = await createFixture(page);
     await installChat(page, fixture);
-    await page.goto("/");
+    await page.goto(`/c/${fixture.chatId}`);
     expect(await page.evaluate(() => ({ touch: navigator.maxTouchPoints > 0,
       coarse: matchMedia("(pointer: coarse)").matches, hoverNone: matchMedia("(hover: none)").matches })))
       .toEqual({ touch: true, coarse: true, hoverNone: true });
