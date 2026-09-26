@@ -982,7 +982,7 @@ describe("workspace actions", () => {
       : Response.json({ error: "not_found" }, { status: 404 })));
     const onTargetUnavailable = vi.fn();
     await state.actions.refreshWorkspace("missing-chat", { onTargetUnavailable });
-    expect(onTargetUnavailable).toHaveBeenCalledOnce();
+    expect(onTargetUnavailable).toHaveBeenCalledExactlyOnceWith(null);
     expect(useWorkspaceStore.getState().activeChatId).toBeNull();
 
     await state.actions.refreshWorkspace(state.chatA.id, { isCurrent: () => false, onTargetUnavailable });
@@ -992,18 +992,76 @@ describe("workspace actions", () => {
     expect(useWorkspaceStore.getState().activeChatId).toBe(state.chatA.id);
   });
 
-  it("finds a readable chat's Project without admitting it to the personal workspace", async () => {
-    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
-    const project = chat({ activeLeafMessageId: "project-message", id: "project-chat", messageCount: 1, projectId: "project-1", title: "Project" });
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats/project-chat"
-      ? Response.json({ chat: { ...apiChatDetail(project, [message({ id: "project-message" })]), projectId: "project-1" } })
-      : String(input) === "/api/chats/chat-b"
-        ? Response.json({ chat: apiChatDetail(state.chatB, []) })
-        : Response.json({ error: "not_found" }, { status: 404 })));
-    await expect(state.actions.resolveChatProjectId("project-chat")).resolves.toBe("project-1");
-    await expect(state.actions.resolveChatProjectId("chat-b")).resolves.toBeNull();
-    await expect(state.actions.resolveChatProjectId("foreign-chat")).resolves.toBeNull();
+  it("reports a readable Project chat's Project from one detail read, without admitting it", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    const workspace = {
+      agentAvailable: false,
+      available: false,
+      enabled: false,
+      internetEnabled: true,
+      sessionState: null,
+      unavailableReason: "model_tools_required"
+    };
+    const requests: string[] = [];
+    // The shapes the server answers a Project member with: the personal list
+    // never carries Project chats, the personal memory state does not exist
+    // for them, and the chat detail names the Project.
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      requests.push(path);
+      if (path === "/api/chats") {
+        return Response.json({
+          chats: [{ ...apiChatSummary(state.chatA), projectId: null, workspace }],
+          contentMatches: [],
+          folders: []
+        });
+      }
+      if (path === "/api/chats/project-chat") {
+        return Response.json({
+          chat: {
+            activeLeafMessageId: null,
+            contextStats: { approximateActiveBranchInputTokens: 0 },
+            createdAt: "2026-09-26T21:52:47.737Z",
+            defaultKnowledgePlan: null,
+            defaultModelId: "00000000-0000-4000-8000-000000001201",
+            defaultProvider: "00000000-0000-4000-8000-000000001101",
+            folderId: null,
+            id: "project-chat",
+            messageCount: 0,
+            messages: [],
+            pageInfo: {
+              activeLeafMessageId: null,
+              beforeCursor: null,
+              hasOlder: false,
+              snapshotUpdatedAt: "2026-09-26T21:52:47.737Z"
+            },
+            pinned: false,
+            projectId: "project-1",
+            title: "Routing Project chat",
+            updatedAt: "2026-09-26T21:52:47.737Z",
+            usageStats: null,
+            workspace
+          }
+        });
+      }
+      if (path.endsWith("/memory-mode")) {
+        return Response.json({ error: "memory_not_found" }, { status: 404 });
+      }
+      return Response.json({ error: "chat_not_found" }, { status: 404 });
+    }));
+    const onTargetUnavailable = vi.fn();
+
+    await state.actions.refreshWorkspace("project-chat", { onTargetUnavailable });
+    expect(onTargetUnavailable).toHaveBeenCalledExactlyOnceWith("project-1");
+    expect(requests).toEqual(["/api/chats", "/api/chats/project-chat"]);
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
     expect(state.chats().map((candidate) => candidate.id)).not.toContain("project-chat");
+
+    requests.length = 0;
+    onTargetUnavailable.mockClear();
+    await state.actions.refreshWorkspace("foreign-chat", { onTargetUnavailable });
+    expect(onTargetUnavailable).toHaveBeenCalledExactlyOnceWith(null);
+    expect(requests).toEqual(["/api/chats", "/api/chats/foreign-chat"]);
   });
 
   it("activates a blank workspace without creating a persisted chat", () => {

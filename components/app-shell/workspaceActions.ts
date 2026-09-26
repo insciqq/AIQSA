@@ -684,21 +684,6 @@ export function useWorkspaceActions({
   }
 
   /**
-   * The Project of a chat the viewer can read there, without admitting it to
-   * the personal workspace. Invisible and missing chats both answer null.
-   */
-  async function resolveChatProjectId(chatId: string): Promise<string | null> {
-    try {
-      const response = await shellFetch(`/api/chats/${encodeURIComponent(chatId)}`);
-      if (!response.ok) return null;
-      const detail = chatDetailBodyFromUnknown(await response.json());
-      return detail?.id === chatId ? detail.projectId ?? null : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
    * The pending folder of a personal blank chat stays browser state; a
    * Project's blank chat is addressed by its Project.
    */
@@ -859,14 +844,15 @@ export function useWorkspaceActions({
    * Reloads the personal workspace and activates `nextActiveChatId`, falling
    * back to the blank chat. `isCurrent` lets an address resolution drop a
    * result that another navigation superseded; `onTargetUnavailable` reports
-   * a target that is neither listed nor a recoverable Temporary chat.
+   * a target that is neither listed nor a recoverable Temporary chat, with
+   * the Project of a readable Project chat and `null` for any other target.
    */
   function refreshWorkspace(
     nextActiveChatId: string | null = useWorkspaceStore.getState().activeChatId,
     options: {
       catalogOverride?: Catalog | null;
       isCurrent?(): boolean;
-      onTargetUnavailable?(): void;
+      onTargetUnavailable?(projectId: string | null): void;
       preserveControls?: boolean;
       resumeRuns?: boolean;
     } = {}
@@ -895,26 +881,33 @@ export function useWorkspaceActions({
         const targetActiveChatId = nextActiveChatId;
         let recoveredTemporaryDetail: ChatDetail | null = null;
         let recoveredTemporarySummary: WorkspaceChatSummary | null = null;
+        let targetProjectId: string | null = null;
         if (targetActiveChatId && !nextChats.some((chat) => chat.id === targetActiveChatId)) {
           try {
-            const memoryState = await loadChatMemoryState(targetActiveChatId);
-            if (memoryState.mode === "TEMPORARY" && !memoryState.archived) {
-              const detailResponse = await shellFetch(
-                `/api/chats/${encodeURIComponent(targetActiveChatId)}`
-              );
-              if (!detailResponse.ok) {
-                throw new Error(`chat_detail_failed_${detailResponse.status}`);
+            // One detail read separates a readable Project chat, which is never
+            // admitted here, from a hidden personal one.
+            const detailResponse = await shellFetch(
+              `/api/chats/${encodeURIComponent(targetActiveChatId)}`
+            );
+            if (!detailResponse.ok) {
+              throw new Error(`chat_detail_failed_${detailResponse.status}`);
+            }
+            const wireDetail = chatDetailBodyFromUnknown(await detailResponse.json());
+            if (!wireDetail || wireDetail.id !== targetActiveChatId) {
+              throw new Error("chat_detail_malformed");
+            }
+            if (wireDetail.projectId) {
+              targetProjectId = wireDetail.projectId;
+            } else {
+              const memoryState = await loadChatMemoryState(targetActiveChatId);
+              if (memoryState.mode === "TEMPORARY" && !memoryState.archived) {
+                recoveredTemporaryDetail = chatDetailFromApi(wireDetail);
+                recoveredTemporarySummary = {
+                  ...summaryFromDetail(recoveredTemporaryDetail),
+                  memoryMode: "TEMPORARY",
+                  temporaryRetentionDeadline: memoryState.temporaryRetentionDeadline
+                };
               }
-              const wireDetail = chatDetailBodyFromUnknown(await detailResponse.json());
-              if (!wireDetail || wireDetail.id !== targetActiveChatId) {
-                throw new Error("chat_detail_malformed");
-              }
-              recoveredTemporaryDetail = chatDetailFromApi(wireDetail);
-              recoveredTemporarySummary = {
-                ...summaryFromDetail(recoveredTemporaryDetail),
-                memoryMode: "TEMPORARY",
-                temporaryRetentionDeadline: memoryState.temporaryRetentionDeadline
-              };
             }
           } catch {
             // Archived, expired, deleted, or inaccessible hidden targets fall
@@ -983,7 +976,7 @@ export function useWorkspaceActions({
               resumeRuns: options.resumeRuns
             });
           }
-          options.onTargetUnavailable?.();
+          options.onTargetUnavailable?.(targetProjectId);
         }
 
         activateBlankWorkspace();
@@ -1389,7 +1382,6 @@ export function useWorkspaceActions({
     refreshActiveChat,
     refreshWorkspace,
     renameChat,
-    resolveChatProjectId,
     setChatKnowledgeDefault,
     toggleChatFavorite,
     updateChatFolder
