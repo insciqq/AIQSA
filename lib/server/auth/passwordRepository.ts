@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
 import type { CreateAuthSessionInput } from "./requestAuth";
 import { lockAuthIdentity } from "./transactionLocks";
 
@@ -170,6 +171,11 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
             revokedAt: null,
             userId: flowToken.identity.userId
           }
+        });
+        await revokeInboundMcpGrantsForUser(tx, {
+          now: input.now,
+          reason: "password_reset",
+          userId: flowToken.identity.userId
         });
 
         return {

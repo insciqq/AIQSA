@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
 import type { AccountProfileRepository, PasswordChangeRepository } from "./accountHandlers";
 import type { SafeUserWithGroups } from "./handlers";
 import { lockAuthIdentity } from "./transactionLocks";
@@ -141,6 +142,13 @@ export function createPrismaPasswordChangeRepository(
             revokedAt: null,
             userId: identity.userId
           }
+        });
+        // Like the other sessions, an inbound MCP grant may have been minted by whoever held the
+        // old password; the kept session can consent again.
+        await revokeInboundMcpGrantsForUser(tx, {
+          now: input.now,
+          reason: "password_change",
+          userId: identity.userId
         });
         return true;
       });

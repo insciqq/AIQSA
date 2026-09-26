@@ -1,11 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
+import {
+  createInboundMcpTestClient,
+  INBOUND_MCP_TEST_AUTHORITIES,
+  liveInboundMcpFamilyCount,
+  type InboundMcpTestClient
+} from "@/tests/support/inboundMcpOAuth";
 import { prisma } from "../prisma";
+import { createPrismaPasswordChangeRepository } from "./accountRepository";
 import { getAuthConfig } from "./config";
 import { createPasswordLoginHandler } from "./handlers";
 import { hashPassword, verifyPassword } from "./password";
 import { createPrismaPasswordAuthRepository } from "./passwordRepository";
+import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { hashToken } from "./token";
 
 const resetNow = new Date("2026-07-14T00:00:00.000Z");
@@ -83,6 +91,113 @@ function deferred() {
   return { promise, resolve };
 }
 
+/** One ACTIVE global Memory fact; account-security revocation must leave it untouched. */
+async function seedMemoryFact(userId: string): Promise<Readonly<{ factId: string; versionId: string }>> {
+  const scope = await prisma.memoryScope.create({
+    data: { scopeType: "GLOBAL_USER", userId }
+  });
+  const factId = randomUUID();
+  const versionId = randomUUID();
+  const eventId = randomUUID();
+  const statement = "Synthetic account-security fact.";
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryFact.create({
+      data: {
+        canonicalKey: `account-security.${factId}`,
+        category: "about_you",
+        id: factId,
+        scopeId: scope.id,
+        state: "ORPHANED",
+        userId
+      }
+    });
+    await tx.memoryEvent.create({
+      data: {
+        actorType: "USER",
+        actorUserId: userId,
+        factId,
+        factVersionId: versionId,
+        id: eventId,
+        operation: "EXPLICIT_SAVE",
+        userId
+      }
+    });
+    await tx.memoryFactVersion.create({
+      data: {
+        category: "about_you",
+        confidence: 1,
+        createdByEventId: eventId,
+        directness: "DIRECT",
+        displayText: statement,
+        factId,
+        id: versionId,
+        importance: 1,
+        languageCode: "en",
+        modality: "STATE",
+        normalizedSearchText: statement.toLowerCase(),
+        pipelineVersion: "account-security-test-v1",
+        safetyClassificationState: "PENDING",
+        sensitivityClass: "NORMAL",
+        sourceMode: "EXPLICIT",
+        state: "ACTIVE",
+        structuredValue: { statement },
+        userId
+      }
+    });
+    await tx.memoryFact.update({
+      data: { currentVersionId: versionId, state: "ACTIVE" },
+      where: { id: factId }
+    });
+  });
+  return { factId, versionId };
+}
+
+async function expectMemoryFactIntact(fact: Readonly<{ factId: string; versionId: string }>) {
+  await expect(prisma.memoryFact.findUniqueOrThrow({
+    select: { currentVersionId: true, state: true },
+    where: { id: fact.factId }
+  })).resolves.toEqual({ currentVersionId: fact.versionId, state: "ACTIVE" });
+  await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+    select: { contentPurgedAt: true, displayText: true, state: true },
+    where: { id: fact.versionId }
+  })).resolves.toEqual({
+    contentPurgedAt: null,
+    displayText: "Synthetic account-security fact.",
+    state: "ACTIVE"
+  });
+}
+
+/** Old Memory and Hub tokens are dead, and a new consent works again. */
+async function expectInboundMcpRevokedAndReconsentable(input: Readonly<{
+  connections: Awaited<ReturnType<InboundMcpTestClient["connect"]>>[];
+  mcp: InboundMcpTestClient;
+  reason: string;
+  revokedAt: Date;
+  userId: string;
+}>) {
+  for (const connection of input.connections) {
+    await expect(input.mcp.access(connection)).resolves.toBe(false);
+    await expect(input.mcp.refresh(connection)).resolves.toMatchObject({ outcome: "invalid" });
+  }
+  const grants = await prisma.inboundMcpOAuthGrant.findMany({
+    select: { resourcePath: true, revokedAt: true, state: true },
+    where: { userId: input.userId }
+  });
+  expect(new Set(grants.map((grant) => grant.resourcePath))).toEqual(new Set(["/mcp", "/mcp/hub"]));
+  expect(grants.every((grant) =>
+    grant.state === "REVOKED" && grant.revokedAt?.getTime() === input.revokedAt.getTime()
+  )).toBe(true);
+  await expect(prisma.inboundMcpOAuthTokenFamily.findMany({
+    distinct: ["revocationReason"],
+    select: { revocationReason: true },
+    where: { grant: { userId: input.userId } }
+  })).resolves.toEqual([{ revocationReason: input.reason }]);
+  await expect(liveInboundMcpFamilyCount(prisma, input.userId)).resolves.toBe(0);
+
+  const reconnected = await input.mcp.connect(input.userId, INBOUND_MCP_TEST_AUTHORITIES.hub);
+  await expect(input.mcp.access(reconnected)).resolves.toBe(true);
+}
+
 async function deleteFixtures(...fixtures: ResetFixture[]): Promise<void> {
   await prisma.user.deleteMany({
     where: {
@@ -147,6 +262,94 @@ describe("Prisma-backed password reset completion", () => {
     }
   });
 
+  it("revokes Memory and Hub inbound MCP grants with the reset while keeping Memory facts", async () => {
+    const target = await createResetFixture({ tokenCount: 1 });
+    const other = await createResetFixture({ tokenCount: 0 });
+    const mcp = await createInboundMcpTestClient(prisma, resetNow);
+    const pendingClient = await createInboundMcpTestClient(prisma, resetNow);
+    const repository = createPrismaPasswordAuthRepository(prisma);
+
+    try {
+      const fact = await seedMemoryFact(target.userId);
+      const memory = await mcp.connect(target.userId, INBOUND_MCP_TEST_AUTHORITIES.memory);
+      const hub = await mcp.connect(target.userId, INBOUND_MCP_TEST_AUTHORITIES.hub);
+      // A consent approved before the reset must not be exchangeable after it.
+      const pendingMemoryCode = await pendingClient.approve(target.userId, INBOUND_MCP_TEST_AUTHORITIES.memory);
+      const bystander = await mcp.connect(other.userId, INBOUND_MCP_TEST_AUTHORITIES.hub);
+      await expect(mcp.access(hub)).resolves.toBe(true);
+
+      await expect(
+        repository.completePasswordReset({
+          now: resetNow,
+          passwordHash: await hashPassword("reset-revokes-inbound-grants"),
+          tokenHash: hashToken(target.rawTokens[0]!)
+        })
+      ).resolves.toEqual({ userId: target.userId });
+
+      await expect(pendingClient.exchange(pendingMemoryCode)).resolves.toBeNull();
+      await expectInboundMcpRevokedAndReconsentable({
+        connections: [memory, hub],
+        mcp,
+        reason: "password_reset",
+        revokedAt: resetNow,
+        userId: target.userId
+      });
+      await expect(mcp.access(bystander)).resolves.toBe(true);
+      await expectMemoryFactIntact(fact);
+    } finally {
+      await deleteFixtures(target, other);
+      await mcp.cleanup();
+      await pendingClient.cleanup();
+    }
+  });
+
+  it("revokes inbound MCP grants on a self-service password change and keeps the current session", async () => {
+    const fixture = await createResetFixture({ tokenCount: 0 });
+    const mcp = await createInboundMcpTestClient(prisma, resetNow);
+    const repository = createPrismaPasswordChangeRepository(prisma);
+
+    try {
+      const fact = await seedMemoryFact(fixture.userId);
+      const connections = [
+        await mcp.connect(fixture.userId, INBOUND_MCP_TEST_AUTHORITIES.memory),
+        await mcp.connect(fixture.userId, INBOUND_MCP_TEST_AUTHORITIES.hub)
+      ];
+      const identity = await prisma.authIdentity.findUniqueOrThrow({ where: { id: fixture.identityId } });
+      const [kept, other] = await prisma.authSession.findMany({
+        orderBy: { tokenHash: "asc" },
+        where: { userId: fixture.userId }
+      });
+
+      await expect(repository.changePassword({
+        expectedPasswordHash: identity.passwordHash!,
+        identityId: fixture.identityId,
+        keepSessionId: kept!.id,
+        now: resetNow,
+        passwordHash: await hashPassword("changed-password-revokes-grants")
+      })).resolves.toBe(true);
+
+      await expect(prisma.authSession.findMany({
+        orderBy: { tokenHash: "asc" },
+        select: { id: true, revokedReason: true },
+        where: { userId: fixture.userId }
+      })).resolves.toEqual([
+        { id: kept!.id, revokedReason: null },
+        { id: other!.id, revokedReason: "password_change" }
+      ]);
+      await expectInboundMcpRevokedAndReconsentable({
+        connections,
+        mcp,
+        reason: "password_change",
+        revokedAt: resetNow,
+        userId: fixture.userId
+      });
+      await expectMemoryFactIntact(fact);
+    } finally {
+      await deleteFixtures(fixture);
+      await mcp.cleanup();
+    }
+  });
+
   it("rejects an old-password login whose verification finishes after reset commits", async () => {
     const fixture = await createResetFixture({ tokenCount: 1 });
     const repository = createPrismaPasswordAuthRepository(prisma);
@@ -158,6 +361,7 @@ describe("Prisma-backed password reset completion", () => {
           AIQSA_APP_BASE_URL: "http://localhost:3000",
           AIQSA_AUTH_SESSION_SECRET: "password-race-test-secret"
         }),
+      loginRateLimiter: createFixedWindowLoginRateLimiter(),
       repository,
       verifyPassword: async () => {
         verificationStarted.resolve();

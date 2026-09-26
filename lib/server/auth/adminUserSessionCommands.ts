@@ -17,6 +17,10 @@ import {
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
 import type { AccountMemoryDeletionHook } from "../memory/accountDeletion/integration";
+import {
+  revokeAllInboundMcpGrants,
+  revokeInboundMcpGrantsForUser
+} from "../memoryMcp/oauth/repository";
 
 export type AdminUserSessionCommands = Pick<
   AdminRepository,
@@ -275,21 +279,27 @@ export function createAdminUserSessionCommands(
       });
     },
     async revokeAllSessions(input) {
-      const result = await prisma.authSession.updateMany({
-        data: {
-          revokedAt: new Date(),
-          revokedByUserId: input.revokedByUserId,
-          revokedReason: "admin_revoke_all"
-        },
-        where: {
-          revokedAt: null
-        }
-      });
+      // The installation-wide response to a suspected compromise also ends inbound MCP grants: a
+      // stolen session could have minted one that would otherwise outlive every revoked session.
+      return prisma.$transaction(async (tx) => {
+        const now = new Date();
+        const result = await tx.authSession.updateMany({
+          data: {
+            revokedAt: now,
+            revokedByUserId: input.revokedByUserId,
+            revokedReason: "admin_revoke_all"
+          },
+          where: {
+            revokedAt: null
+          }
+        });
+        await revokeAllInboundMcpGrants(tx, { now, reason: "admin_revoke_all" });
 
-      return result.count;
+        return result.count;
+      });
     },
     async revokeUserSessions(input) {
-      return revokeUserSessions(prisma, input);
+      return prisma.$transaction((tx) => revokeUserSessions(tx, input));
     }
   };
 }
@@ -423,13 +433,15 @@ async function lockActiveAdmins(tx: Prisma.TransactionClient): Promise<{ id: str
   `;
 }
 
+/** Ends the account's sessions and inbound MCP grants; disable and reject inherit both. */
 async function revokeUserSessions(
-  prisma: PrismaClient | Prisma.TransactionClient,
+  tx: Prisma.TransactionClient,
   input: AdminRevokeUserSessionsInput
 ): Promise<number> {
-  const result = await prisma.authSession.updateMany({
+  const now = new Date();
+  const result = await tx.authSession.updateMany({
     data: {
-      revokedAt: new Date(),
+      revokedAt: now,
       revokedByUserId: input.revokedByUserId,
       revokedReason: "admin_revoke_user"
     },
@@ -437,6 +449,11 @@ async function revokeUserSessions(
       revokedAt: null,
       userId: input.userId
     }
+  });
+  await revokeInboundMcpGrantsForUser(tx, {
+    now,
+    reason: "admin_revoke_user",
+    userId: input.userId
   });
 
   return result.count;
