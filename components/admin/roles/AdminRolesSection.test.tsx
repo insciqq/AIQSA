@@ -721,8 +721,9 @@ describe("AdminRolesSection", () => {
     const calls = server();
     const { reportNotice } = renderSection();
     const toggle = await screen.findByRole("switch", { name: "Tool result store and context compaction" });
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
     expect(screen.getByText(/Off is a kill switch/)).toBeVisible();
+    expect(toggle).toHaveAccessibleDescription(expect.stringMatching(/^On by default\..*Off is a kill switch/u));
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-checked", "false");
     expect(screen.getByText("1 unsaved change")).toBeInTheDocument();
@@ -738,6 +739,16 @@ describe("AdminRolesSection", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true");
   });
 
+  it("says the observation setting is loading while the chat defaults load", async () => {
+    server();
+    renderSection();
+    const toggle = screen.getByRole("switch", { name: "Tool result store and context compaction" });
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAccessibleDescription("Loading the saved setting…");
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(toggle).toBeEnabled();
+  });
+
   it("disables the observation switch with an explanation while its saved setting is unknown", async () => {
     const model = modelCatalog();
     const { toolObservationPolicy: _unknown, ...policy } = model.policy;
@@ -746,7 +757,7 @@ describe("AdminRolesSection", () => {
     renderSection();
     const toggle = await screen.findByRole("switch", { name: "Tool result store and context compaction" });
     expect(toggle).toBeDisabled();
-    expect(screen.getByText("The saved setting is unavailable. Reload to change it.")).toBeInTheDocument();
+    await waitFor(() => expect(toggle).toHaveAccessibleDescription("The saved setting is unavailable. Reload to change it."));
     expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
   });
 

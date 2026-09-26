@@ -135,8 +135,9 @@ export function mergeContextCompactionStatus(
 }
 
 /** A terminal run cannot still be compacting, and the browser never invents
- * the outcome: an unsettled cycle stays unshown until the server publishes
- * its settlement (the server settles every open cycle at run terminal). */
+ * the outcome: an unsettled cycle stays unshown unless the server publishes
+ * its settlement. Not every open cycle is settled (the boot orphan sweep
+ * leaves it running), so a terminal run may keep a hidden running cycle. */
 export function terminalContextCompactionStatus(status: ContextCompactionStatus | null | undefined): ContextCompactionStatus | null {
   return status?.state === "running" ? null : status ?? null;
 }

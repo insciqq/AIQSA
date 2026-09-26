@@ -11,7 +11,10 @@ import {
   presentRunLifecycleV2,
   presentToolActivityV2,
   stepDurationSumV2,
+  stepRunAnnouncementV2,
   toolActivityOriginV2,
+  type RunAnnouncerMemoryV2,
+  type RunPresentationV2,
   type RunLifecycleStateV2,
   type RunLifecycleStatusV2
 } from "./runPresentation";
@@ -98,7 +101,8 @@ describe("run lifecycle v2 presentation", () => {
   it("describes only server-published compaction states, with each whole reason", () => {
     const running = makeContextCompactionStatus({ beforeTokens: 1_200, outcome: "pending", state: "running" });
     expect(contextCompactionCopyV2(running).label).toBe("Compacting context…");
-    expect(contextCompactionCopyV2(running).detail).toMatch(/Summarizing earlier messages/u);
+    expect(contextCompactionCopyV2(running).detail)
+      .toBe("Summarizing earlier messages to fit the working context. The answer starts after this step.");
     expect(contextCompactionCopyV2(running, { connectionLost: true })).toEqual({
       detail: "The connection was lost while the context was being compacted. Refresh to see the confirmed outcome.",
       label: "Context compaction · connection lost"
@@ -553,5 +557,39 @@ describe("PDF preparation presentation", () => {
         route: "selected_model_vision", limitedReadingQuality: false, longDocument: false }] })).toMatchObject({
       kind: "recoverable_error", failure: { recovery: "retry", message: "Document preparation could not finish." }
     });
+  });
+});
+
+describe("run announcer policy", () => {
+  function speak(sequence: readonly RunPresentationV2[]) {
+    let memory: RunAnnouncerMemoryV2 | null = null;
+    const spoken: string[] = [];
+    for (const presentation of sequence) {
+      const step = stepRunAnnouncementV2(memory, "chat-a", presentation);
+      memory = step.memory;
+      const text = [...step.parts, step.terminal].filter(Boolean).join(" ");
+      if (text) spoken.push(text);
+    }
+    return spoken;
+  }
+  const thinking = (runId: string | null): RunPresentationV2 =>
+    ({ activity: { kind: "provider", label: "Thinking…" }, kind: "activity", runId });
+
+  it("treats a new answer after a settled one as a new run even without run ids", () => {
+    expect(speak([
+      { kind: "complete", runId: null },
+      thinking(null),
+      { kind: "streaming", runId: null },
+      { kind: "cancelled", runId: null }
+    ])).toEqual(["Working on the answer…", "Run stopped. The message field is available."]);
+  });
+
+  it("does not count a cycle already settled when the run was first observed", () => {
+    const settled = makeContextCompactionStatus({ afterTokens: 1, beforeTokens: 2, cycle: 3, outcome: "masking_applied", state: "complete" });
+    expect(speak([
+      { ...thinking("run-a"), compaction: settled },
+      { ...thinking("run-a"), compaction: { ...settled, cycle: 4 } },
+      { ...thinking("run-a"), compaction: makeContextCompactionStatus({ cycle: 5, outcome: "irreducible_overflow", state: "failed" }) }
+    ])).toEqual(["Working on the answer…", "Context is still too large."]);
   });
 });

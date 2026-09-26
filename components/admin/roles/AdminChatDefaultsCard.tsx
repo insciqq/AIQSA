@@ -8,7 +8,7 @@ import type { AdminDefaultAnswerModelCandidate, AdminModelPolicyCatalog } from "
 import { MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS, MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS, isMcpAutoDiscoveryOutputTokens, MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import type { ToolObservationPolicy } from "@/lib/contracts/toolObservationPolicy";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 
 type Draft = Readonly<{
   calls: string;
@@ -91,6 +91,7 @@ export function AdminChatDefaultsCard({
 }>) {
   const [edits, setEdits] = useState<Partial<Draft>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const observationHelpId = useId();
   const current = draftFor(catalog);
   const draft = { ...current, ...edits };
   const reachable = useMemo(
@@ -288,13 +289,14 @@ export function AdminChatDefaultsCard({
         <div className="flex min-w-0 items-center justify-between gap-6 border-t border-trace-subtle px-5 py-4">
           <span className="min-w-0">
             <span className="block text-sm font-medium text-ink">{OBSERVATION_POLICY_LABEL}</span>
-            <span className="mt-0.5 block text-xs leading-5 text-ink-muted">
+            <span className="mt-0.5 block text-xs leading-5 text-ink-muted" id={observationHelpId}>
               {draft.observation === ""
-                ? "The saved setting is unavailable. Reload to change it."
+                ? !catalog && !error ? "Loading the saved setting…" : "The saved setting is unavailable. Reload to change it."
                 : "On by default. Keeps full tool results readable on request and compacts long chats with summaries from the answer model. Off is a kill switch: new answers use the previous trimming. Answers already started keep their mode."}
             </span>
           </span>
           <UiV2Switch
+            aria-describedby={observationHelpId}
             checked={draft.observation === "v1"}
             className="shrink-0"
             disabled={!catalog || busy || draft.observation === ""}
