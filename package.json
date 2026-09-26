@@ -64,6 +64,7 @@
     "prune": "tsx scripts/prune.ts",
     "security:deps": "npm audit --audit-level=high",
     "smoke:anthropic": "tsx scripts/smoke-anthropic-messages.ts",
+    "smoke:context-rejection": "tsx scripts/smoke-context-rejection.ts",
     "smoke:custom-openai-compatible": "tsx scripts/smoke-custom-openai-compatible.ts",
     "smoke:deepseek": "tsx scripts/smoke-deepseek-responses.ts",
     "smoke:deepseek-browser-paid": "node scripts/smoke-deepseek-browser-paid.cjs",

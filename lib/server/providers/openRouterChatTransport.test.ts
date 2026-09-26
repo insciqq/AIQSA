@@ -66,6 +66,20 @@ describe("OpenRouter Chat transport", () => {
     if (!code?.startsWith("openrouter_")) expect((failure as Error).message).toBe(`OpenRouter request failed with status ${status}`);
   });
 
+  // Documented envelope only: OpenRouter text models have no standing real-call
+  // permission, so this shape is unverified against the live service.
+  it("classifies the documented OpenRouter context-length 400 envelope (unverified live)", async () => {
+    const client = createFetchOpenRouterChatClient({ apiKey: "key", fetchFn: async () => Response.json({
+      error: { code: 400, message: `This endpoint's maximum context length is 200000 tokens. However, you requested about 250000 tokens (240000 of text input, 10000 in the output). Please reduce the length of either one, or use the "middle-out" transform to compress your prompt automatically. ${remoteSecret}`,
+        metadata: { provider_name: remoteSecret } }
+    }, { status: 400 }) });
+    const failure = await client.createChatCompletion({}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "provider_context_length_exceeded", httpStatus: 400,
+      reportedMaximumTokens: 200_000, reportedPromptTokens: 240_000, message: "OpenRouter request failed with status 400" });
+    expect(JSON.stringify(failure)).not.toContain(remoteSecret);
+    expect(failure).not.toHaveProperty("metadata");
+  });
+
   it("does not classify malformed or oversized routing errors from a partial body", async () => {
     const previousMaxBytes = process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES;
     process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES = "128";

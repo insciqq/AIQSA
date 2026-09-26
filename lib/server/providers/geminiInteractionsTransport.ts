@@ -6,29 +6,43 @@ import {
   readBoundedResponseText,
   withTimeoutSignal
 } from "./network";
+import { providerContextLengthRejection, type ProviderContextLengthCounts } from "./responseFailure";
 
 export type GeminiInteractionObject = Record<string, unknown>;
 
 const GEMINI_HTTP_ERROR_CODES = [
-  "malformed_tool_call", "malformed_function_call", "invalid_request", "parameter_unknown"
+  "malformed_tool_call", "malformed_function_call", "invalid_request", "parameter_unknown",
+  // Derived from the reviewed context-length classification of a 400 (its
+  // message names the input token count exceeding the maximum).
+  "context_length_exceeded"
 ] as const;
 export type GeminiHttpErrorCode = (typeof GEMINI_HTTP_ERROR_CODES)[number];
 
 /** Only reviewed error identities cross the transport boundary; never retain
- * provider messages, arguments or the error envelope. */
+ * provider messages, arguments or the error envelope. A context-length
+ * identity also carries the token counts the provider stated. */
 export class GeminiHttpError extends Error {
-  constructor(readonly httpStatus: number, readonly code?: GeminiHttpErrorCode) {
+  declare readonly reportedMaximumTokens?: number;
+  declare readonly reportedPromptTokens?: number;
+
+  constructor(readonly httpStatus: number, readonly code?: GeminiHttpErrorCode, counts?: ProviderContextLengthCounts) {
     super(providerHttpErrorMessage("Gemini", httpStatus));
     this.name = "GeminiHttpError";
+    if (code === "context_length_exceeded" && counts) Object.assign(this, counts);
   }
 }
 
-function geminiHttpErrorCode(text: string): GeminiHttpErrorCode | undefined {
+function geminiHttpErrorIdentity(text: string, httpStatus: number): Readonly<{
+  code?: GeminiHttpErrorCode;
+  counts?: ProviderContextLengthCounts;
+}> {
   let value: unknown;
-  try { value = JSON.parse(text); } catch { return undefined; }
-  if (!isRecord(value) || !isRecord(value.error)) return undefined;
+  try { value = JSON.parse(text); } catch { return {}; }
+  if (!isRecord(value) || !isRecord(value.error)) return {};
+  const counts = httpStatus === 400 ? providerContextLengthRejection(value.error) : null;
+  if (counts) return { code: "context_length_exceeded", counts };
   const candidate = value.error.code;
-  return GEMINI_HTTP_ERROR_CODES.find((code) => code === candidate);
+  return { code: GEMINI_HTTP_ERROR_CODES.find((code) => code !== "context_length_exceeded" && code === candidate) };
 }
 
 export type GeminiInteractionsClientRequestOptions = Readonly<{
@@ -106,18 +120,18 @@ async function parseJsonResponse(
 }
 
 async function throwHttpError(response: Response, signal: AbortSignal): Promise<never> {
-  let code: GeminiHttpErrorCode | undefined;
+  let identity: ReturnType<typeof geminiHttpErrorIdentity> = {};
   try {
-    code = geminiHttpErrorCode(await readBoundedResponseText(response, {
+    identity = geminiHttpErrorIdentity(await readBoundedResponseText(response, {
       signal, maxBytes: Math.min(providerResponseMaxBytes(), 16_384)
-    }));
+    }), response.status);
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
       throw error;
     }
   }
 
-  throw new GeminiHttpError(response.status, code);
+  throw new GeminiHttpError(response.status, identity.code, identity.counts);
 }
 
 export function createFetchGeminiInteractionsClient(input: Readonly<{
