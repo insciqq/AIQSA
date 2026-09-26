@@ -57,6 +57,16 @@ describe("Anthropic context-length rejection", () => {
     }
   });
 
+  it("classifies the sentence without stated counts", async () => {
+    const client = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () =>
+      Response.json({ type: "error", error: { type: "invalid_request_error", message: `prompt is too long ${sentinel}` } }, { status: 400 }) });
+    const failure = await client.createMessage({}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "provider_context_length_exceeded", httpStatus: 400 });
+    expect(failure).not.toHaveProperty("reportedPromptTokens");
+    expect(failure).not.toHaveProperty("reportedMaximumTokens");
+    expect(JSON.stringify(failure)).not.toContain(sentinel);
+  });
+
   it("keeps other invalid requests and non-400 statuses unclassified", async () => {
     for (const [status, type] of [[400, "invalid_request_error"], [413, "request_too_large"], [500, "api_error"]] as const) {
       const client = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () =>

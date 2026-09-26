@@ -49,16 +49,21 @@ function contextLengthCounts(prompt: unknown, maximum: unknown): ProviderContext
   };
 }
 
-/** Reviewed rejection sentences, each naming the prompt and the maximum. */
+/** Reviewed rejection sentences; the prompt and maximum counts are taken
+ * only where the sentence states them. */
 function contextLengthMessage(message: string): ProviderContextLengthCounts | null {
   // Anthropic Messages: "prompt is too long: P tokens > M maximum"; older
   // models: "input length and `max_tokens` exceed context limit: P + O > M".
-  let match = /^prompt is too long: (\d{1,9}) tokens > (\d{1,9}) maximum/iu.exec(message) ??
-    /^input length and `?max_tokens`? exceed context limit: (\d{1,9}) \+ \d{1,9} > (\d{1,9})/iu.exec(message);
+  if (/^prompt is too long\b/iu.test(message)) {
+    const counts = /^prompt is too long: (\d{1,9}) tokens > (\d{1,9}) maximum/iu.exec(message);
+    return contextLengthCounts(counts?.[1], counts?.[2]);
+  }
+  let match = /^input length and `?max_tokens`? exceed context limit: (\d{1,9}) \+ \d{1,9} > (\d{1,9})/iu.exec(message);
   if (match) return contextLengthCounts(match[1], match[2]);
   // Gemini: "The input token count (P) exceeds the maximum number of tokens allowed (M)."
-  match = /\binput token count \(?(\d{1,9})\)? exceeds the maximum number of tokens allowed \(?(\d{1,9})\)?/iu.exec(message);
-  if (match) return contextLengthCounts(match[1], match[2]);
+  match = /\binput token count\s*(?:\((\d{1,9})\)|(\d{1,9}))?\s*exceeds the maximum number of tokens allowed(?:\s*(?:\((\d{1,9})\)|(\d{1,9})))?/iu
+    .exec(message);
+  if (match) return contextLengthCounts(match[1] ?? match[2], match[3] ?? match[4]);
   // OpenAI-style (Chat Completions, DeepSeek, OpenRouter): "maximum context
   // length is M tokens. However, you requested T tokens (P in the messages,
   // O in the completion)", "your messages resulted in P tokens" or
