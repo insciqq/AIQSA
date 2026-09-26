@@ -60,10 +60,13 @@ function contextLengthMessage(message: string): ProviderContextLengthCounts | nu
   }
   let match = /^input length and `?max_tokens`? exceed context limit: (\d{1,9}) \+ \d{1,9} > (\d{1,9})/iu.exec(message);
   if (match) return contextLengthCounts(match[1], match[2]);
-  // Gemini: "The input token count (P) exceeds the maximum number of tokens allowed (M)."
-  match = /\binput token count\s*(?:\((\d{1,9})\)|(\d{1,9}))?\s*exceeds the maximum number of tokens allowed(?:\s*(?:\((\d{1,9})\)|(\d{1,9})))?/iu
-    .exec(message);
-  if (match) return contextLengthCounts(match[1] ?? match[2], match[3] ?? match[4]);
+  // Gemini: "The input token count (P) exceeds the maximum number of tokens
+  // allowed (M)"; Vertex: "... the input token count is P but model only
+  // supports up to M".
+  if (/\binput token count\b[^.]{0,120}?\b(?:exceeds the maximum number of tokens|only supports up to)\b/iu.test(message)) {
+    return contextLengthCounts(/\binput token count\s*(?:is\s*)?\(?(\d{1,9})\)?/iu.exec(message)?.[1],
+      /\b(?:tokens allowed|supports up to)\s*\(?(\d{1,9})\)?/iu.exec(message)?.[1]);
+  }
   // OpenAI-style (Chat Completions, DeepSeek, OpenRouter): "maximum context
   // length is M tokens. However, you requested T tokens (P in the messages,
   // O in the completion)", "your messages resulted in P tokens" or

@@ -48,6 +48,40 @@ describe("Gemini Interactions transport", () => {
     expect(failure).not.toHaveProperty("reportedPromptTokens");
   });
 
+  it.each([
+    ["the Interactions envelope without status or details",
+      { error: { code: "invalid_request", message: "The input token count (1200000) exceeds the maximum number of tokens allowed (1048576)." } },
+      { reportedMaximumTokens: 1_048_576, reportedPromptTokens: 1_200_000 }],
+    ["a Google standard envelope",
+      { error: { code: 400, message: "The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).",
+        status: "INVALID_ARGUMENT" } },
+      { reportedMaximumTokens: 1_048_576, reportedPromptTokens: 1_200_000 }],
+    ["a streaming array envelope",
+      [{ error: { code: 400, message: "The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).",
+        status: "INVALID_ARGUMENT" } }],
+      { reportedMaximumTokens: 1_048_576, reportedPromptTokens: 1_200_000 }],
+    ["the Vertex wording",
+      { error: { code: 400, message: "Unable to submit request because the input token count is 1234567 but model only supports up to 1048576. Reduce the input token count and try again.",
+        status: "INVALID_ARGUMENT" } },
+      { reportedMaximumTokens: 1_048_576, reportedPromptTokens: 1_234_567 }]
+  ])("reaches the classifier before any identity reduction for %s", async (_case, envelope, counts) => {
+    const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn: async () => Response.json(envelope, { status: 400 }) });
+    for (const send of [client.createInteraction, client.streamInteraction]) {
+      const failure = await send({}).catch((value: unknown) => value);
+      expect(failure).toBeInstanceOf(GeminiHttpError);
+      expect(failure).toMatchObject({ code: "context_length_exceeded", httpStatus: 400, ...counts });
+      expect(JSON.stringify(failure)).not.toMatch(/token count|INVALID_ARGUMENT/u);
+    }
+  });
+
+  it("recovers the ordinary identity from a streaming array envelope", async () => {
+    const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn: async () => Response.json([{ error: {
+      code: "invalid_request", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } }], { status: 400 }) });
+    const failure = await client.createInteraction({}).catch((value: unknown) => value);
+    expect(failure).toMatchObject({ code: "invalid_request", httpStatus: 400 });
+    expect(JSON.stringify(failure)).not.toContain("PRIVATE_");
+  });
+
   it("keeps other 400s and a non-400 status out of the context-length identity", async () => {
     for (const [status, error, code] of [
       [400, { code: "invalid_request", message: "Unknown name \"maxItems\": Cannot find field. PRIVATE_PROVIDER_MESSAGE_CANARY" }, "invalid_request"],
