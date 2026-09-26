@@ -31,19 +31,18 @@ const CONTENT_CLASSES = [
   "latin_prose", "cyrillic_prose", "code", "json", "base64", "cjk", "other_script"
 ] as const satisfies readonly TokenContentClass[];
 
-/** PROVISIONAL (2026-09-26): public tokenizer knowledge, Claude's newer
- * tokenizer (about 30% above the recorded claude-sonnet-4-5 ratios) and the
- * recorded multilingual counts, pending the scripts/calibrate-token-estimate.ts
- * table recorded in contextBudget.test.ts. o200k itself is the floor. */
+/** Calibrated 2026-09-26 with scripts/calibrate-token-estimate.ts (the table
+ * is in contextBudget.test.ts): the largest official count to o200k ratio of
+ * the class plus at least 2%, rounded up to 0.05. o200k itself is the floor. */
 const MEASURED_FAMILY_MULTIPLIERS: Readonly<Record<Exclude<TokenEstimateFamily, "unknown">, MultiplierTable>> = {
   anthropic: {
-    base64: 1.6, cjk: 2.15, code: 1.6, cyrillic_prose: 2.05, json: 1.6, latin_prose: 1.55, other_script: 3.1
+    base64: 1.45, cjk: 1.7, code: 1.65, cyrillic_prose: 1.6, json: 1.65, latin_prose: 1.55, other_script: 2.4
   },
   deepseek: {
-    base64: 1.25, cjk: 1.1, code: 1.15, cyrillic_prose: 1.35, json: 1.2, latin_prose: 1.15, other_script: 1.6
+    base64: 1.05, cjk: 1, code: 1.1, cyrillic_prose: 1.2, json: 1.15, latin_prose: 1.05, other_script: 1.4
   },
   gemini: {
-    base64: 1.45, cjk: 1.15, code: 1.25, cyrillic_prose: 1.15, json: 1.35, latin_prose: 1.15, other_script: 1.3
+    base64: 1.1, cjk: 1, code: 1.3, cyrillic_prose: 1.1, json: 1.2, latin_prose: 1.05, other_script: 1.3
   },
   openai: {
     base64: 1, cjk: 1, code: 1, cyrillic_prose: 1, json: 1, latin_prose: 1, other_script: 1

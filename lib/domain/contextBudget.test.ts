@@ -9,8 +9,7 @@ import {
   measureReferenceTokens,
   tokenContentClasses,
   tokenEstimateProfileFor,
-  type TokenContentClass,
-  type TokenEstimateFamily
+  type TokenContentClass
 } from "./tokenEstimate";
 import { TOKEN_ESTIMATE_FIXTURES } from "./tokenEstimate.testFixtures";
 
@@ -343,57 +342,75 @@ describe("provider-aware context token estimate", () => {
 
 describe("provider token estimate calibration", () => {
   /**
-   * PROVISIONAL. The o200k column is exact (gpt-tokenizer 4.0.0). Provider
-   * columns stay null until `npm run calibrate:token-estimate` measures them;
-   * `sonnet45` is derived from the 2026-09-26 per-character record of
-   * claude-sonnet-4-5, the older Claude tokenizer, and is a floor only.
+   * Measured 2026-09-26T21:20:44Z with scripts/calibrate-token-estimate.ts:
+   * Anthropic count_tokens (claude-sonnet-5, claude-opus-5), Gemini
+   * countTokens (gemini-3.6-flash) and DeepSeek usage.prompt_tokens
+   * (deepseek-flash); reference o200k_base from gpt-tokenizer 4.0.0. Counts
+   * are net of a one-character baseline request (Anthropic 7, Gemini 2,
+   * DeepSeek 31): net = raw - baseline + 1. Ratios are net / o200k.
    */
-  const TABLE: Readonly<Record<string, Readonly<{
-    o200k: number;
-    anthropic: number | null;
-    gemini: number | null;
-    deepseek: number | null;
-    sonnet45: number | null;
-  }>>> = {
-    english_prose: { o200k: 510, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
-    russian_prose: { o200k: 662, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
-    russian_technical: { o200k: 1_120, anthropic: null, gemini: null, deepseek: null, sonnet45: 1_546 },
-    typescript_code: { o200k: 658, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
-    mcp_json: { o200k: 3_036, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
-    base64: { o200k: 2_172, anthropic: null, gemini: null, deepseek: null, sonnet45: null },
-    greek_prose: { o200k: 641, anthropic: null, gemini: null, deepseek: null, sonnet45: 1_284 },
-    hebrew_prose: { o200k: 623, anthropic: null, gemini: null, deepseek: null, sonnet45: 1_205 },
-    arabic_prose: { o200k: 521, anthropic: null, gemini: null, deepseek: null, sonnet45: 1_225 },
-    japanese_prose: { o200k: 820, anthropic: null, gemini: null, deepseek: null, sonnet45: 984 },
-    chinese_prose: { o200k: 540, anthropic: null, gemini: null, deepseek: null, sonnet45: 884 }
+  const MODELS = {
+    "claude-opus-5": "anthropic", "claude-sonnet-5": "anthropic", "deepseek-flash": "deepseek", "gemini-3.6-flash": "gemini"
+  } as const;
+  type Model = keyof typeof MODELS;
+  const TABLE: Readonly<Record<string, Readonly<{ o200k: number; net: Readonly<Record<Model, number>> }>>> = {
+    english_prose: { o200k: 510, net: { "claude-sonnet-5": 762, "claude-opus-5": 762, "gemini-3.6-flash": 516, "deepseek-flash": 512 } },
+    russian_prose: { o200k: 662, net: { "claude-sonnet-5": 1_022, "claude-opus-5": 1_022, "gemini-3.6-flash": 647, "deepseek-flash": 777 } },
+    russian_technical: { o200k: 1_120, net: { "claude-sonnet-5": 1_581, "claude-opus-5": 1_580, "gemini-3.6-flash": 1_180, "deepseek-flash": 1_261 } },
+    typescript_code: { o200k: 658, net: { "claude-sonnet-5": 1_060, "claude-opus-5": 1_060, "gemini-3.6-flash": 823, "deepseek-flash": 696 } },
+    mcp_json: { o200k: 3_036, net: { "claude-sonnet-5": 4_814, "claude-opus-5": 4_814, "gemini-3.6-flash": 3_530, "deepseek-flash": 3_388 } },
+    base64: { o200k: 2_172, net: { "claude-sonnet-5": 3_010, "claude-opus-5": 3_010, "gemini-3.6-flash": 2_242, "deepseek-flash": 2_199 } },
+    greek_prose: { o200k: 641, net: { "claude-sonnet-5": 1_281, "claude-opus-5": 1_280, "gemini-3.6-flash": 681, "deepseek-flash": 861 } },
+    hebrew_prose: { o200k: 623, net: { "claude-sonnet-5": 1_201, "claude-opus-5": 1_200, "gemini-3.6-flash": 782, "deepseek-flash": 743 } },
+    arabic_prose: { o200k: 521, net: { "claude-sonnet-5": 1_221, "claude-opus-5": 1_220, "gemini-3.6-flash": 601, "deepseek-flash": 661 } },
+    japanese_prose: { o200k: 820, net: { "claude-sonnet-5": 980, "claude-opus-5": 980, "gemini-3.6-flash": 620, "deepseek-flash": 740 } },
+    chinese_prose: { o200k: 540, net: { "claude-sonnet-5": 880, "claude-opus-5": 880, "gemini-3.6-flash": 520, "deepseek-flash": 480 } }
   };
-  /** Largest estimate/measured ratio accepted per family (targets: OpenAI 1.3, others 1.5). */
-  const BOUND: Readonly<Record<Exclude<TokenEstimateFamily, "unknown">, number>> = {
-    anthropic: 1.5, deepseek: 1.5, gemini: 1.5, openai: 1.3
+  /** Largest estimate / measured count per class for Anthropic, Gemini and
+   * DeepSeek (targets: at most 1.5); the OpenAI family stays within 1.05 of
+   * o200k (target: at most 1.3). CJK is widest: Japanese on the Chinese-driven
+   * Anthropic multiplier and o200k's floor on Gemini. */
+  const BOUND: Readonly<Record<TokenContentClass, number>> = {
+    base64: 1.1, cjk: 1.45, code: 1.05, cyrillic_prose: 1.15, json: 1.05, latin_prose: 1.1, other_script: 1.3
   };
+  const OPENAI_BOUND = 1.05;
+  const fixtureClass = (name: string) => TOKEN_ESTIMATE_FIXTURES.find((entry) => entry.name === name)!.contentClass;
 
   it("records the o200k reference count of every fixture", () => {
     expect(Object.keys(TABLE).sort()).toEqual(TOKEN_ESTIMATE_FIXTURES.map(({ name }) => name).sort());
     for (const entry of TOKEN_ESTIMATE_FIXTURES) expect(o200k(entry.text), entry.name).toBe(TABLE[entry.name]!.o200k);
   });
 
-  it("never estimates below a recorded count and stays within the family bound", () => {
+  it("sets each multiplier just above the largest measured ratio of its class", () => {
+    for (const family of ["anthropic", "deepseek", "gemini"] as const) {
+      for (const contentClass of Object.keys(BOUND) as TokenContentClass[]) {
+        const ratios = Object.entries(TABLE).filter(([name]) => fixtureClass(name) === contentClass)
+          .flatMap(([, row]) => (Object.keys(MODELS) as Model[]).filter((model) => MODELS[model] === family)
+            .map((model) => row.net[model] / row.o200k));
+        const floor = Math.max(1, ...ratios);
+        const multiplier = TOKEN_ESTIMATE_MULTIPLIERS[family][contentClass];
+        expect(multiplier, `${family} ${contentClass}`).toBeGreaterThanOrEqual(floor);
+        expect(multiplier, `${family} ${contentClass}`).toBeLessThanOrEqual(Math.max(1, floor * 1.02) + 0.05);
+      }
+    }
+  });
+
+  it("never estimates below a measured count and stays within the recorded class bound", () => {
+    for (const bound of Object.values(BOUND)) expect(bound).toBeLessThanOrEqual(1.5);
+    expect(OPENAI_BOUND).toBeLessThanOrEqual(1.3);
     for (const entry of TOKEN_ESTIMATE_FIXTURES) {
       const row = TABLE[entry.name]!;
       const openai = estimateContextTokens(entry.text, { family: "openai" });
       expect(openai, `${entry.name} openai`).toBeGreaterThanOrEqual(row.o200k);
-      expect(openai / row.o200k, `${entry.name} openai bound`).toBeLessThanOrEqual(BOUND.openai);
+      expect(openai / row.o200k, `${entry.name} openai bound`).toBeLessThanOrEqual(OPENAI_BOUND);
       const unknown = estimateContextTokens(entry.text, { family: "unknown" });
-      for (const family of ["anthropic", "gemini", "deepseek"] as const) {
+      for (const model of Object.keys(MODELS) as Model[]) {
+        const family = MODELS[model];
         const estimate = estimateContextTokens(entry.text, { family });
+        const measured = row.net[model];
+        expect(estimate, `${entry.name} ${model}`).toBeGreaterThanOrEqual(measured);
+        expect(estimate / measured, `${entry.name} ${model} bound`).toBeLessThanOrEqual(BOUND[entry.contentClass]);
         expect(unknown, `${entry.name} unknown covers ${family}`).toBeGreaterThanOrEqual(estimate);
-        const measured = row[family];
-        if (measured === null) continue;
-        expect(estimate, `${entry.name} ${family}`).toBeGreaterThanOrEqual(measured);
-        expect(estimate / measured, `${entry.name} ${family} bound`).toBeLessThanOrEqual(BOUND[family]);
-      }
-      if (row.sonnet45 !== null) {
-        expect(estimateContextTokens(entry.text, { family: "anthropic" }), `${entry.name} sonnet45`).toBeGreaterThanOrEqual(row.sonnet45);
       }
     }
   });
