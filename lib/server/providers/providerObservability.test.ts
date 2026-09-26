@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithContext } from "../observability";
-import { observedFailure, observeProviderFetch, observeProviderOperation, observeProviderStream } from "./providerObservability";
+import { observedFailure, observeProviderFetch, observeProviderOperation, observeProviderStream, providerHttpFailureMessage } from "./providerObservability";
+import { createFetchGeminiInteractionsClient, GeminiHttpError } from "./geminiInteractionsTransport";
 import { executeWithProviderRetry } from "./providerRetry";
 import { ProviderRequestTimeoutError, withTimeoutSignal } from "./network";
 import { ProviderSearchExecutionError } from "./types";
@@ -65,6 +66,36 @@ describe("provider diagnostics", () => {
       { connectionId: "connection-a", trace_id: "a".repeat(32), reason: "deadline", abort_source: "provider_deadline" },
       { connectionId: "connection-b", trace_id: "b".repeat(32), reason: "deadline", abort_source: "provider_deadline" }
     ]);
+  });
+
+  it("logs the reviewed Gemini HTTP identity without the provider envelope", async () => {
+    const records = capture();
+    const client = createFetchGeminiInteractionsClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn: observeProviderFetch(async () =>
+      Response.json({ error: { code: "invalid_request", message: "PRIVATE_PROVIDER_MESSAGE_CANARY",
+        details: [{ fieldViolations: [{ field: "PRIVATE_FIELD_CANARY" }] }] } }, { status: 400 })) });
+    const error = await observeProviderOperation({ ...identity, adapterKind: "gemini_interactions_native", providerFamily: "gemini" },
+      "answer", () => client.createInteraction({ input: "PRIVATE_PROMPT_CANARY" })).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(GeminiHttpError);
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
+      code: "provider_http_invalid_request", httpStatus: 400, reason: "http" }));
+    expect(providerHttpFailureMessage(error)).toBe("The model provider rejected the request (Gemini HTTP 400: invalid_request).");
+    expect(JSON.stringify(records())).not.toMatch(/PRIVATE_|fieldViolations/u);
+  });
+
+  it.each([
+    ["parameter_unknown", "provider_http_parameter_unknown"],
+    ["malformed_tool_call", "provider_http_malformed_tool_call"],
+    ["malformed_function_call", "provider_http_malformed_function_call"]
+  ] as const)("maps the Gemini transport identity %s to a bounded code", (identityCode, code) => {
+    expect(observedFailure(new GeminiHttpError(400, identityCode))).toEqual({ code, httpStatus: 400, reason: "http" });
+  });
+
+  it("keeps unreviewed or look-alike HTTP failures without a transport identity", () => {
+    expect(observedFailure(new GeminiHttpError(400))).toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
+    expect(providerHttpFailureMessage(new GeminiHttpError(400))).toBeNull();
+    const lookalike = Object.assign(new Error("PRIVATE_MESSAGE_CANARY"), { code: "invalid_request", httpStatus: 400 });
+    expect(observedFailure(lookalike)).toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
+    expect(providerHttpFailureMessage(lookalike)).toBeNull();
   });
 
   it("does not invoke untrusted error getters or infer codes from exception text", () => {

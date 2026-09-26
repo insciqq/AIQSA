@@ -3103,6 +3103,7 @@ describe("run preparation", () => {
       expect.objectContaining({ id: "knowledge-evidence:v2", purpose: "knowledge_evidence" })
     ]));
     expect(prepared.providerRequest.toolChoice).toBeUndefined();
+    expect(prepared.providerRequest).not.toHaveProperty("forcedToolName");
     expect(prepared.knowledgeAdmissionPlan?.answeringPlan?.route).toBe("full_context_v1");
   });
 
@@ -3193,6 +3194,8 @@ describe("run preparation", () => {
       "search_knowledge"
     );
     expect(prepared.providerRequest.toolChoice).toBe("required");
+    expect(prepared.providerRequest.forcedToolName).toBe("search_knowledge");
+    expect(prepared.normalizedRequest).not.toHaveProperty("forcedToolName");
   });
 
   it("does not synthesize a hidden Knowledge query from conversation history", async () => {

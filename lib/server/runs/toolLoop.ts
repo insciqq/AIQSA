@@ -4,7 +4,7 @@ import {
   type ProviderStreamSafetyReport
 } from "../providers/streamSafety";
 import { bindContext, logEvent, runWithContext, type ToolKind } from "../observability";
-import { observedFailure } from "../providers/providerObservability";
+import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
 
 export type ToolLoopObservation = Readonly<{
@@ -582,6 +582,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
           ? "tool_loop_signal_failed"
           : settlement?.code ?? providerErrorCode ?? "provider_round_failed",
         message: streamSafetyReport?.message ??
+          providerHttpFailureMessage(providerRound.error) ??
           errorMessage(providerRound.error, `Provider round ${round} failed.`),
         round,
         stage: signalFailure ? "signal" : settlement || providerErrorCode && isRunPersistenceFailureCode(providerErrorCode) ? "persistence" : "provider",

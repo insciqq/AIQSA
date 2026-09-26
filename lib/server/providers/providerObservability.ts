@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { bindContext, logEvent, type EventFields } from "../observability";
 import { isProviderDeadlineExceededError } from "./network";
+import { GeminiHttpError, type GeminiHttpErrorCode } from "./geminiInteractionsTransport";
 import { isProviderSearchExecutionError } from "./types";
 import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import { ProviderStreamSafetyError } from "./streamSafety";
@@ -217,6 +218,36 @@ function transportTypeError(value: unknown): boolean {
   try { return value instanceof TypeError; } catch { return false; }
 }
 
+// The Gemini transport already reduced the envelope to one reviewed identity.
+// Only that identity and the numeric status cross; never its message or body.
+const geminiHttpFailureCodes: Readonly<Record<GeminiHttpErrorCode, ObservedFailureCode>> = {
+  invalid_request: "provider_http_invalid_request",
+  malformed_function_call: "provider_http_malformed_function_call",
+  malformed_tool_call: "provider_http_malformed_tool_call",
+  parameter_unknown: "provider_http_parameter_unknown"
+};
+
+function geminiHttpFailure(value: unknown): Readonly<{ code: ObservedFailureCode; identity: GeminiHttpErrorCode; httpStatus: number }> | null {
+  try {
+    if (!(value instanceof GeminiHttpError)) return null;
+    const identity = ownValue(value, "code");
+    const httpStatus = ownValue(value, "httpStatus");
+    if (typeof identity !== "string" || !Object.hasOwn(geminiHttpFailureCodes, identity) ||
+      typeof httpStatus !== "number" || !Number.isInteger(httpStatus) || httpStatus < 400 || httpStatus > 599) return null;
+    const code = geminiHttpFailureCodes[identity as GeminiHttpErrorCode];
+    return codeSet.has(code) ? { code, identity: identity as GeminiHttpErrorCode, httpStatus } : null;
+  } catch { return null; }
+}
+
+/** Safe user-facing wording for a reviewed provider HTTP identity, or null.
+ * It names only the provider, status and allow-listed code. */
+export function providerHttpFailureMessage(value: unknown): string | null {
+  const failure = geminiHttpFailure(value);
+  return failure
+    ? `The model provider rejected the request (Gemini HTTP ${failure.httpStatus}: ${failure.identity}).`
+    : null;
+}
+
 export function observedFailureCode(value: unknown): ObservedFailureCode {
   const code = ownValue(value, "code");
   return typeof code === "string" && codeSet.has(code) ? code as ObservedFailureCode : "unknown";
@@ -263,7 +294,8 @@ export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<
     if (signal?.aborted) return { code: "model_run_cancelled", reason: "cancelled", abort_source: "parent_signal" };
     const capabilityReason = ownValue(value, "capabilityFailureReason");
     const code = capabilityReason === "refusal" ? "provider_refused"
-      : capabilityReason === "budget_exhausted" ? "provider_budget_exhausted" : observedFailureCode(value);
+      : capabilityReason === "budget_exhausted" ? "provider_budget_exhausted"
+      : geminiHttpFailure(value)?.code ?? observedFailureCode(value);
     // Search owns these typed fields. Only its closed status and cause values
     // cross this boundary; artifacts, usage and arbitrary reason text do not.
     const searchFailure = isProviderSearchExecutionError(value);

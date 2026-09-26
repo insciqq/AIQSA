@@ -53,7 +53,7 @@ import {
   type ProviderStreamSafetyReport
 } from "../providers/streamSafety";
 import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservability";
-import { observedFailure } from "../providers/providerObservability";
+import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { logEvent, runWithContext } from "../observability";
 import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
 import { logRunPersistence, runDatabaseFailureCode } from "./runObservability";
@@ -3474,7 +3474,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 : pipelineError?.message ?? (isWorkspaceOperationFailureCode(failureCode)
                   ? workspaceOperationFailureMessage(failureCode)
                   : deadlineExceeded ? "The provider request timed out. Its outcome may be unknown."
-                    : "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."))
+                    : providerHttpFailureMessage(failure) ??
+                      "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."))
             };
         if (streamSafetyReport) {
           const snapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
