@@ -250,6 +250,19 @@ describe("resolving an address", () => {
     }
   });
 
+  it("lands an unavailable address on the new chat in place, without a document navigation or history entry", async () => {
+    window.history.replaceState(null, "", "/c/gone");
+    const length = window.history.length;
+    const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
+    const fake = targets({ openChat: vi.fn(async () => "missing" as const) });
+    await resolveChatRoute({ chatId: "gone", projectId: null }, beginChatRouteResolution(), fake);
+    expect(replace).toHaveBeenCalledExactlyOnceWith(null, "", "/");
+    expect(push).not.toHaveBeenCalled();
+    expect(window.history.length).toBe(length);
+    expect(address()).toBe("/");
+  });
+
   it("keeps the address when loading failed so a retry can resolve it", async () => {
     window.history.replaceState(null, "", "/c/chat-1");
     const fake = targets({ openChat: vi.fn(async () => "failed" as const) });
