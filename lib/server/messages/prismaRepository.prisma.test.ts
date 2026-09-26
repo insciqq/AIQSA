@@ -136,6 +136,7 @@ async function withMemoryBranchOwner<T>(run: (userId: string) => Promise<T>): Pr
 
 async function createSettledTurn(input: Readonly<{
   assistantDelayMs?: number;
+  author?: Readonly<{ displayName: string; projectRole: "OWNER" }>;
   chatId: string;
   createdAt: Date;
   parentMessageId: string | null;
@@ -144,6 +145,13 @@ async function createSettledTurn(input: Readonly<{
 }>) {
   const userMessage = await prisma.message.create({
     data: {
+      ...(input.author
+        ? {
+            authorDisplayName: input.author.displayName,
+            authorProjectRole: input.author.projectRole,
+            authorUserId: input.userId
+          }
+        : {}),
       chatId: input.chatId,
       content: textMessageContent(input.userText),
       createdAt: input.createdAt,
@@ -167,7 +175,8 @@ async function createSettledTurn(input: Readonly<{
       updatedAt: assistantAt
     }
   });
-  await prisma.modelRun.create({
+  // Project fixtures need no run; a branch tolerates a missing answer binding.
+  if (!input.author) await prisma.modelRun.create({
     data: {
       assistantMessageId: assistantMessage.id,
       chatId: input.chatId,
@@ -1799,6 +1808,7 @@ describe("Prisma-backed message branch repository", () => {
           }
         });
         const projectTurn = await createSettledTurn({
+          author: { displayName: "Message Branch Memory User", projectRole: "OWNER" },
           chatId: projectChat.id,
           createdAt: new Date(Date.now() - 60_000),
           parentMessageId: null,
