@@ -36,8 +36,10 @@ function geminiHttpErrorIdentity(text: string, httpStatus: number): Readonly<{
   code?: GeminiHttpErrorCode;
   counts?: ProviderContextLengthCounts;
 }> {
-  let value: unknown;
-  try { value = JSON.parse(text); } catch { return {}; }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return {}; }
+  // Google streaming endpoints may wrap the one error envelope in an array.
+  const value = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
   if (!isRecord(value) || !isRecord(value.error)) return {};
   const counts = httpStatus === 400 ? providerContextLengthRejection(value.error) : null;
   if (counts) return { code: "context_length_exceeded", counts };

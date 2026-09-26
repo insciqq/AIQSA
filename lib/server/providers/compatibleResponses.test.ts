@@ -3,7 +3,8 @@ import {
   buildCompatibleResponsesRequest,
   createCompatibleResponsesAdapter
 } from "./compatibleResponses";
-import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
+import { createFetchOpenAIResponsesClient, type OpenAIResponsesClient } from "./openaiResponsesTransport";
+import { observedFailure } from "./providerObservability";
 import type { NormalizedSearchPlanOption, ProviderRunRequest } from "./types";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
@@ -330,5 +331,79 @@ describe("compatible Responses adapter", () => {
     expect(next.value.finalProviderResponsePreview).toMatchObject({
       provider: "openai-compatible"
     });
+  });
+});
+
+describe("compatible Responses context-length refusal (codex-lb shapes)", () => {
+  const sentinel = "PRIVATE_PROVIDER_MESSAGE_CANARY";
+  const error = { message: `Your input exceeds the context window of this model. Please adjust your input and try again. ${sentinel}`,
+    type: "invalid_request_error", code: "context_length_exceeded", param: "input" };
+  // codex-lb re-issues the failure as its own minimal response object.
+  const failed = (id: string, extra: Record<string, unknown> = {}) => ({ type: "response.failed", response: { object: "response",
+    status: "failed", error, incomplete_details: null, id, created_at: 1_790_000_000, ...extra }, sequence_number: 3 });
+  const opened = (type: string, id: string) => ({ type, response: { id, object: "response", status: "in_progress",
+    created_at: 1_790_000_000 }, sequence_number: type === "response.created" ? 1 : 2 });
+  const frames = (events: readonly Record<string, unknown>[]) => events.map((event) =>
+    `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join("");
+  const streamed = (body: string) => createCompatibleResponsesAdapter({ client: createFetchOpenAIResponsesClient({
+    acceptStreamedCreate: true, apiKey: "synthetic", baseUrl: "https://lb.example.test/v1",
+    fetchFn: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }) }) });
+  const run = async (adapter: ReturnType<typeof createCompatibleResponsesAdapter>, input: ProviderRunRequest) => {
+    const events: unknown[] = [];
+    const stream = adapter.stream(input);
+    try {
+      let next = await stream.next();
+      while (!next.done) {
+        events.push(next.value);
+        next = await stream.next();
+      }
+      return { events, failure: null };
+    } catch (failure) {
+      return { events, failure };
+    }
+  };
+  const streamingRequest = request({ params: { maxOutputTokens: 16, stream: true } });
+
+  it.each([
+    ["the created identity", frames([opened("response.created", "resp_1"), opened("response.in_progress", "resp_1"), failed("resp_1")])],
+    ["an identity re-issued by the proxy", frames([opened("response.created", "resp_1"), opened("response.in_progress", "resp_1"),
+      failed("resp_lb")])],
+    ["empty keepalive frames", `data: \n\n${frames([opened("response.created", "resp_1")])}event: keepalive\ndata:\n\n${
+      frames([failed("resp_1")])}`]
+  ])("classifies a streamed response.failed terminal under %s (HTTP 200)", async (_case, body) => {
+    const { events, failure } = await run(streamed(body), streamingRequest);
+    expect(failure).toMatchObject({ code: "provider_context_length_exceeded", message: "openai_response_failed" });
+    expect(observedFailure(failure)).toEqual({ code: "provider_context_length_exceeded", reason: "safety_limit" });
+    // No usage and no output before the refusal: only the lifecycle summary.
+    expect(events).toEqual([expect.objectContaining({ data: expect.objectContaining({ artifactType: "summary" }), type: "artifact" })]);
+    expect(JSON.stringify(failure)).not.toContain(sentinel);
+  });
+
+  it("reports usage a failed context-length terminal states before the refusal", async () => {
+    const { events, failure } = await run(streamed(frames([opened("response.created", "resp_1"),
+      failed("resp_lb", { usage: { input_tokens: 900, output_tokens: 0, total_tokens: 900 } })])), streamingRequest);
+    expect(failure).toMatchObject({ code: "provider_context_length_exceeded" });
+    expect(events).toContainEqual({ data: expect.objectContaining({ inputTokens: 900 }), type: "usage" });
+  });
+
+  it("keeps the identity check for other failures under a re-issued identity", async () => {
+    const { failure } = await run(streamed(frames([opened("response.created", "resp_1"), { type: "response.failed",
+      response: { object: "response", status: "failed", error: { code: "server_error", message: sentinel }, id: "resp_lb" } }])),
+    streamingRequest);
+    expect(failure).toMatchObject({ message: "openai_response_identity_mismatch" });
+    expect(failure).not.toHaveProperty("code");
+  });
+
+  it("classifies the non-streamed HTTP 400 body with its status", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ error }, { status: 400 }));
+    const adapter = createCompatibleResponsesAdapter({ client: createFetchOpenAIResponsesClient({ acceptStreamedCreate: true,
+      apiKey: "synthetic", baseUrl: "https://lb.example.test/v1", fetchFn, initialRequestRetry: { maxAttempts: 3 } }) });
+    const { events, failure } = await run(adapter, request({ params: { maxOutputTokens: 16, stream: false } }));
+    expect(failure).toMatchObject({ code: "provider_context_length_exceeded", status: 400,
+      message: "OpenAI request failed with status 400" });
+    expect(observedFailure(failure)).toEqual({ code: "provider_context_length_exceeded", httpStatus: 400, reason: "http" });
+    expect(events).toEqual([]);
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(JSON.stringify(failure)).not.toContain(sentinel);
   });
 });

@@ -23,6 +23,11 @@
  *   check to openai, anthropic, gemini, deepseek and/or codex-lb
  * - AIQSA_CONTEXT_REJECTION_FILLER_TOKENS: filler tokens for every provider
  *   (defaults: 2,200,000 for Gemini, 1,200,000 otherwise)
+ * - AIQSA_CONTEXT_REJECTION_DEBUG=1: for an unclassified outcome only, one
+ *   extra line with the transport identity, a local failure code and the
+ *   provider's own code, status and message (at most 240 characters, every
+ *   digit replaced by "#"), read from a bounded in-memory copy of the body
+ *   the fetch wrapper captured. Nothing is persisted or printed without it.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -34,6 +39,7 @@ import { createFetchGeminiInteractionsClient, createGeminiInteractionsAdapter } 
 import { createFetchOpenAIResponsesClient, createOpenAIResponsesAdapter } from "../lib/server/providers/openaiResponses";
 import { observedFailure, providerContextRejection } from "../lib/server/providers/providerObservability";
 import type { ProviderAdapter, ProviderRunRequest } from "../lib/server/providers/types";
+import { contextRejectionDiagnostics, type ContextRejectionDiagnostics } from "./context-rejection-smoke-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
 
 function unquoteEnvValue(value: string): string {
@@ -66,6 +72,9 @@ const FILLER = " the";
 const env = (name: string) => process.env[name]?.trim() ?? "";
 const selected = new Set(env("AIQSA_CONTEXT_REJECTION_PROVIDERS").split(",").map((value) => value.trim()).filter(Boolean));
 const fillerOverride = Number(env("AIQSA_CONTEXT_REJECTION_FILLER_TOKENS"));
+const debug = env("AIQSA_CONTEXT_REJECTION_DEBUG") === "1";
+const CAPTURE_BYTES = 65_536;
+const CAPTURE_WAIT_MS = 5_000;
 
 function fillerTokens(provider: ProviderName): number {
   if (Number.isSafeInteger(fillerOverride) && fillerOverride > 0) return fillerOverride;
@@ -159,11 +168,51 @@ type Evidence = Readonly<{
   provider: ProviderName;
 }>;
 
-async function check(provider: ProviderName): Promise<Evidence | null> {
+/** Debug only: a bounded in-memory copy of a response body, never persisted. */
+async function capturedText(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  try {
+    while (bytes < CAPTURE_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch {
+    // The capture never changes the checked outcome.
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return text.slice(0, CAPTURE_BYTES);
+}
+
+/** The captured body, or nothing once the bounded wait elapses. */
+async function settledCapture(capture: Promise<string> | undefined): Promise<string> {
+  if (!capture) return "";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([capture, new Promise<string>((resolve) => {
+      timer = setTimeout(() => resolve(""), CAPTURE_WAIT_MS);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function check(provider: ProviderName): Promise<Readonly<{
+  diagnostics?: ContextRejectionDiagnostics;
+  evidence: Evidence;
+}> | null> {
   let httpStatus: number | null = null;
+  const capture: { body?: Promise<string> } = {};
   const fetchFn: typeof fetch = async (...args) => {
     const response = await fetch(...args);
     httpStatus = response.status;
+    if (debug) capture.body = capturedText(response.clone());
     return response;
   };
   const target = configured(provider, fetchFn);
@@ -172,18 +221,20 @@ async function check(provider: ProviderName): Promise<Evidence | null> {
     const stream = target.adapter.stream(target.request, { timeoutMs: REQUEST_TIMEOUT_MS });
     let next = await stream.next();
     while (!next.done) next = await stream.next();
-    return { code: "accepted", httpStatus, maximumTokensExtracted: false, promptTokensExtracted: false, provider };
+    return { evidence: { code: "accepted", httpStatus, maximumTokensExtracted: false, promptTokensExtracted: false, provider } };
   } catch (error) {
     // Only the reviewed stable code and the presence of the two bounded
     // counts are reported; provider messages and bodies never are.
     const rejection = providerContextRejection(error);
-    return {
+    const evidence: Evidence = {
       code: observedFailure(error).code,
       httpStatus,
       maximumTokensExtracted: rejection?.maximumTokens !== undefined,
       promptTokensExtracted: rejection?.promptTokens !== undefined,
       provider
     };
+    if (!debug || evidence.code === "provider_context_length_exceeded") return { evidence };
+    return { diagnostics: contextRejectionDiagnostics(error, await settledCapture(capture.body)), evidence };
   }
 }
 
@@ -191,20 +242,21 @@ async function main(): Promise<void> {
   let failed = false;
   for (const provider of PROVIDERS) {
     if (selected.size > 0 && !selected.has(provider)) continue;
-    let evidence: Evidence | null;
+    let result: Awaited<ReturnType<typeof check>>;
     try {
-      evidence = await check(provider);
+      result = await check(provider);
     } catch {
       // A local configuration failure (for example an invalid codex-lb profile).
-      evidence = { code: "smoke_configuration_invalid", httpStatus: null, maximumTokensExtracted: false,
-        promptTokensExtracted: false, provider };
+      result = { evidence: { code: "smoke_configuration_invalid", httpStatus: null, maximumTokensExtracted: false,
+        promptTokensExtracted: false, provider } };
     }
-    if (!evidence) {
+    if (!result) {
       console.log(JSON.stringify({ provider, status: "skipped" }));
       continue;
     }
-    console.log(JSON.stringify(evidence));
-    if (evidence.code !== "provider_context_length_exceeded") failed = true;
+    console.log(JSON.stringify(result.evidence));
+    if (result.diagnostics) console.log(JSON.stringify({ diagnostics: result.diagnostics, provider }));
+    if (result.evidence.code !== "provider_context_length_exceeded") failed = true;
   }
   process.exitCode = failed ? 1 : 0;
 }
