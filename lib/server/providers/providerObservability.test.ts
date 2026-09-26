@@ -1,8 +1,16 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithContext } from "../observability";
-import { observedFailure, observeProviderFetch, observeProviderOperation, observeProviderStream, providerHttpFailureMessage } from "./providerObservability";
+import {
+  observedFailure,
+  observeProviderFetch,
+  observeProviderOperation,
+  observeProviderStream,
+  providerContextRejection,
+  providerHttpFailureMessage
+} from "./providerObservability";
 import { createFetchGeminiInteractionsClient, GeminiHttpError } from "./geminiInteractionsTransport";
+import { createFetchOpenAIResponsesClient } from "./openaiResponsesTransport";
 import { executeWithProviderRetry } from "./providerRetry";
 import { ProviderRequestTimeoutError, withTimeoutSignal } from "./network";
 import { ProviderSearchExecutionError } from "./types";
@@ -88,6 +96,35 @@ describe("provider diagnostics", () => {
     ["malformed_function_call", "provider_http_malformed_function_call"]
   ] as const)("maps the Gemini transport identity %s to a bounded code", (identityCode, code) => {
     expect(observedFailure(new GeminiHttpError(400, identityCode))).toEqual({ code, httpStatus: 400, reason: "http" });
+  });
+
+  it("logs a classified context-length rejection with its status only, never the provider message", async () => {
+    const records = capture();
+    const client = createFetchOpenAIResponsesClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn: observeProviderFetch(async () =>
+      Response.json({ error: { code: "context_length_exceeded", param: "input", type: "invalid_request_error",
+        message: "Input tokens exceed the configured limit of 272000 tokens. Your messages resulted in 300000 tokens. PRIVATE_PROVIDER_MESSAGE_CANARY" } },
+      { status: 400 })) });
+    const error = await observeProviderOperation(identity, "answer", () => client.create({ input: "PRIVATE_PROMPT_CANARY" }))
+      .catch((failure: unknown) => failure);
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
+      code: "provider_context_length_exceeded", httpStatus: 400, reason: "http" }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+    expect(providerContextRejection(error)).toEqual({ httpStatus: 400, maximumTokens: 272_000, promptTokens: 300_000 });
+    expect(providerHttpFailureMessage(error)).toBe("The model provider rejected the request as too long for the model's context window (HTTP 400). Reduce the context or choose a model with a larger context window.");
+  });
+
+  it("maps the Gemini context-length identity and a generation-time window without a status", () => {
+    const gemini = new GeminiHttpError(400, "context_length_exceeded", { reportedMaximumTokens: 1_048_576, reportedPromptTokens: 1_200_000 });
+    expect(observedFailure(gemini)).toEqual({ code: "provider_context_length_exceeded", httpStatus: 400, reason: "http" });
+    expect(providerContextRejection(gemini)).toEqual({ httpStatus: 400, maximumTokens: 1_048_576, promptTokens: 1_200_000 });
+    const stopReason = Object.assign(new Error("anthropic_message_model_context_window_exceeded"), { code: "provider_context_length_exceeded" });
+    expect(observedFailure(stopReason)).toEqual({ code: "provider_context_length_exceeded", reason: "safety_limit" });
+    expect(providerContextRejection(stopReason)).toEqual({});
+    expect(providerHttpFailureMessage(stopReason)).toBe("The request exceeded the model's context window. Reduce the context or choose a model with a larger context window.");
+    // Counts outside the reviewed bound never cross; other codes are no rejection.
+    expect(providerContextRejection(Object.assign(new Error("x"), { code: "provider_context_length_exceeded", status: 400,
+      reportedPromptTokens: 1e12, reportedMaximumTokens: -1 }))).toEqual({ httpStatus: 400 });
+    expect(providerContextRejection(new GeminiHttpError(400, "invalid_request"))).toBeNull();
   });
 
   it("keeps unreviewed or look-alike HTTP failures without a transport identity", () => {

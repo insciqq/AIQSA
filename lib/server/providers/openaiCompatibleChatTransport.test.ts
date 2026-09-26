@@ -22,6 +22,24 @@ describe("OpenAI-compatible Chat Completions transport", () => {
     expect(failure).toMatchObject({ httpStatus: 404, message: "OpenAI-compatible request failed with status 404" });
   });
 
+  it.each([
+    [`This model's maximum context length is 16385 tokens. However, you requested 17000 tokens (12000 in the messages, 5000 in the completion). Please reduce the length of the messages or completion. ${remoteSecret}`,
+      { reportedMaximumTokens: 16_385, reportedPromptTokens: 12_000 }],
+    [`This model's maximum context length is 128000 tokens. However, your messages resulted in 130532 tokens. ${remoteSecret}`,
+      { reportedMaximumTokens: 128_000, reportedPromptTokens: 130_532 }]
+  ])("classifies an OpenAI-style context-length 400 %# with its stated counts only", async (message, counts) => {
+    const client = createFetchOpenAICompatibleChatClient({ apiRoot: "https://llm.example.test/v1", bearerToken: "key",
+      fetchFn: async () => Response.json({ error: { code: "context_length_exceeded", message, param: "messages",
+        type: "invalid_request_error" } }, { status: 400 }) });
+    for (const send of [client.createChatCompletion, client.streamChatCompletion]) {
+      const failure = await send({}).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: "provider_context_length_exceeded", httpStatus: 400, ...counts,
+        message: "OpenAI-compatible request failed with status 400" });
+      expect(JSON.stringify(failure)).not.toContain(remoteSecret);
+      expect(String(failure)).not.toContain(remoteSecret);
+    }
+  });
+
   it("posts to the derived endpoint with only explicit bearer JSON headers", async () => {
     const calls: Array<{ init?: RequestInit; url: string }> = [];
     const client = createFetchOpenAICompatibleChatClient({
