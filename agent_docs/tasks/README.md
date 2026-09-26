@@ -6,14 +6,12 @@ This namespace contains all checkout-local task state:
 - `drafts/` parks unfinished task files outside ledger selection, validation, and dependency resolution.
 - `archive/` is the sole completion archive.
 
-Task instances in all three directories are ignored local state because the repository remote is public. A task file is the single artifact for its specification, implementation plan, inter-session progress, task-local decisions, and verification plan. The tracked README files define the directory contract and are not task instances.
-
-This state is intentionally checkout-local. It is not a durable roadmap or a cross-machine/worktree handoff, so irreplaceable product commitments must not exist only here.
+Task instances are ignored checkout-local state, never public Git or a cross-machine handoff. Each task owns its specification, plan, progress, decisions and verification. Tracked READMEs define the directory contract. Irreplaceable product commitments must also reach their durable owner.
 
 ## Queue And Selection
 
 1. Reconcile existing `in_progress` tasks in `queue/` before claiming new work.
-2. For sequential work, select the first `ready` queue task in natural filename order unless the operator named another scope.
+2. For sequential work, select the first `ready` task in natural filename order within the operator-selected queue; the default queue contains only files directly in `queue/`.
 3. For a requested parallel wave, select up to five dependency-free `ready` queue tasks with non-overlapping expected write sets and stateful checks.
 4. Never start `backlog` or `blocked` work implicitly, and never enumerate or select `drafts/`.
 
@@ -26,13 +24,15 @@ The queue statuses are:
 
 There is no human-review or `done` status in the queue. `node scripts/task-ledger.mjs complete <task>` moves a verified local task to `archive/` with `Status: completed` and removes its stem from remaining queue dependency fields. Never force-add a task instance; only the task-namespace README files are tracked.
 
+Named queues use one lowercase kebab-case subdirectory, `queue/<group>/`. They require explicit operator scope and `--group <name>` for creation, listing and lifecycle commands; ordinary `list` and selection exclude them. `list --all` is an inspection view, not permission to execute another group. `check` validates every group, and task stems/dependencies remain globally unique. Parking, restoration and completion preserve the group under `drafts/` and `archive/`; completion clears dependency references across queues. Group README files, like tasks, are ignored private state. Nested groups and symlinks are unsupported.
+
 ## Parking In Drafts
 
 Use `Status: backlog` when a task should stay visible to ledger validation and dependency resolution but must not start automatically. Use `drafts/` when the operator wants the task excluded from the ledger entirely.
 
 `node scripts/task-ledger.mjs park <task>` preserves the file and its status while moving it from `queue/` to `drafts/`. It refuses to hide an `in_progress` task or a task still required by another queued task; park dependents first. `node scripts/task-ledger.mjs restore <task>` moves it back only when the resulting queue is valid. Restore prerequisites before their dependents. Prefer these commands to manual moves because they prevent overwrites and broken queue dependencies.
 
-Draft files are not listed, selected, content-validated, or accepted as dependency targets. A restored `ready` task is immediately eligible for normal selection.
+Drafts are neither listed nor content-validated and cannot satisfy dependencies. Restored `ready` tasks become selectable within their queue.
 
 ## Task Shape
 
@@ -54,9 +54,12 @@ node scripts/task-ledger.mjs park <task-id-or-stem>
 node scripts/task-ledger.mjs restore <task-id-or-stem>
 node scripts/task-ledger.mjs complete <task-id-or-stem>
 node scripts/task-ledger.mjs list
+node scripts/task-ledger.mjs new <slug> --summary "<outcome>" --group <name>
+node scripts/task-ledger.mjs list --group <name>
+node scripts/task-ledger.mjs list --all
 ```
 
-`task:check` explicitly validates current queue/archive privacy, structure, statuses, and dependencies; documentation checks do not inspect local task state. `new` creates an ignored local queue task with `Status: backlog`. `promote` requires a complete executable specification and no open dependencies. `start` claims one ready task and permits other tasks to remain `in_progress`. `block` records the exact unavailable condition. `park` and `restore` cross the queue/draft boundary without changing status. `complete` requires settled durable rationale and completed verification.
+`task:check` validates queue/archive privacy, structure, statuses and dependencies independently of documentation checks. `new` creates `backlog`; `promote` requires a complete specification without open dependencies; `start` claims ready work; `block` records an unavailable condition. `park`/`restore` preserve status; `complete` requires settled rationale and verification.
 
 Task filenames use a 17-digit local timestamp including milliseconds followed by a lowercase kebab-case slug, for example `20260801143025123-search-quota-guard.md`. CLI allocation prevents identifier reuse across the queue, drafts, and completion archive without a separate sequence ledger.
 
@@ -64,8 +67,8 @@ Before completion, `Plan` has no unchecked items, `Progress` and `Decisions` no 
 
 ## Completion Archive
 
-`archive/` retains completed task files and does not participate in queue selection or dependency resolution. Its size never blocks ledger validation or task completion. `complete` only adds the newly completed task: it never deletes, rotates, or overwrites archived evidence. Cleanup happens only after an explicit operator request and removes only the files the operator selected. Archived task files remain ignored local state and must not be staged, committed, shipped, or treated as a durable contract.
+`archive/` is excluded from selection and dependencies; its size never blocks validation or completion. `complete` only adds evidence, never deletes or overwrites it. Cleanup requires an explicit operator request naming its scope. Archives remain private local state, never publication artifacts or durable contracts.
 
 ## Parallel Ownership
 
-The integrating agent is the only queue task-file writer. It may claim up to five independent tasks and assign one isolated worker per task while keeping metadata in the primary checkout. Each worker returns inspectable changes and verification evidence; the integrating agent owns conflicts, combined verification, automated final inspection, and completion.
+Only the integrating agent writes task state. It may claim five independent tasks with isolated workers; metadata stays in the primary checkout. Workers return changes and evidence; the integrator owns conflicts, combined verification, final inspection and completion.

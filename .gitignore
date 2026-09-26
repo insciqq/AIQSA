@@ -12,7 +12,7 @@ coverage/
 playwright-report/
 test-results/
 # Queued, parked, and completed task instances are local-only; directory contracts remain tracked.
-/agent_docs/tasks/queue/*.md
+/agent_docs/tasks/queue/*
 !/agent_docs/tasks/queue/README.md
 /agent_docs/tasks/archive/*
 !/agent_docs/tasks/archive/README.md

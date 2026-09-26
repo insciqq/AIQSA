@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -17,7 +17,7 @@ function fixture() {
   writeFileSync(path.join(root, "agent_docs/SECURITY.md"), "# SECURITY\n");
   writeFileSync(
     path.join(root, ".gitignore"),
-    "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n" +
+    "/agent_docs/tasks/queue/*\n!/agent_docs/tasks/queue/README.md\n" +
       "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n" +
       "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n"
   );
@@ -28,14 +28,17 @@ function fixture() {
 
 type TaskOptions = {
   dependencies?: string;
+  group?: string;
   plan?: string;
   rationale?: string;
   verification?: string;
 };
 
 function task(root: string, stem: string, status: string, options: TaskOptions = {}) {
+  const directory = path.join(root, "agent_docs/tasks/queue", options.group ?? "");
+  mkdirSync(directory, { recursive: true });
   writeFileSync(
-    path.join(root, "agent_docs/tasks/queue", `${stem}.md`),
+    path.join(directory, `${stem}.md`),
     `# ${stem}
 
 Status: ${status}
@@ -102,6 +105,107 @@ afterEach(() => {
 });
 
 describe("local task ledger command", () => {
+  it("keeps named groups out of the default queue and requires explicit selection", () => {
+    const root = fixture();
+    const ordinary = "20260801120000001-ordinary";
+    const grouped = "20260801120000002-grouped";
+    task(root, ordinary, "ready");
+    task(root, grouped, "ready", { group: "maintenance" });
+
+    expect(run(root, "list").stdout).toContain(ordinary);
+    expect(run(root, "list").stdout).not.toContain(grouped);
+    expect(run(root, "list", "--group", "maintenance").stdout)
+      .toContain(`ready       maintenance/${grouped}`);
+    expect(run(root, "list", "--group", "maintenance").stdout).not.toContain(ordinary);
+    expect(run(root, "list", "--all").stdout).toContain(`maintenance/${grouped}`);
+    expect(run(root, "list", "--all", "--group", "maintenance").status).toBe(1);
+    expect(run(root, "start", grouped).status).toBe(1);
+    expect(run(root, "start", grouped, "--group", "maintenance").status).toBe(0);
+    expect(run(root, "block", grouped, "--group", "maintenance", "--reason", "Fixture service unavailable").status).toBe(0);
+    expect(run(root, "check").status).toBe(0);
+  });
+
+  it("creates private grouped scaffolds and refuses an insufficient flat ignore rule", () => {
+    const root = fixture();
+    const created = run(root, "new", "next-task", "--summary", "Grouped slice", "--group", "maintenance");
+    expect(created.status).toBe(0);
+    const directory = path.join(root, "agent_docs/tasks/queue/maintenance");
+    const [filename] = readdirSync(directory);
+    expect(filename).toMatch(/^\d{17}-next-task\.md$/);
+    expect(readFileSync(path.join(directory, filename!), "utf8")).toContain("Status: backlog");
+    expect(run(root, "list").stdout).toBe("No open tasks.\n");
+
+    const unsafeRoot = fixture();
+    writeFileSync(path.join(unsafeRoot, ".gitignore"), "/agent_docs/tasks/queue/*.md\n");
+    const refused = run(unsafeRoot, "new", "next-task", "--summary", "Grouped slice", "--group", "maintenance");
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain("must be ignored before local task creation");
+    expect(existsSync(path.join(unsafeRoot, "agent_docs/tasks/queue/maintenance"))).toBe(false);
+  });
+
+  it("preserves groups through archive and drafts while resolving dependencies across groups", () => {
+    const root = fixture();
+    const foundation = "20260801120000001-foundation";
+    const dependent = "20260801120000002-dependent";
+    const ordinary = "20260801120000003-ordinary";
+    task(root, foundation, "backlog", { group: "maintenance" });
+    task(root, dependent, "backlog", { group: "maintenance", dependencies: foundation });
+    task(root, ordinary, "backlog", { dependencies: foundation });
+    expect(run(root, "promote", dependent, "--group", "maintenance").status).toBe(1);
+    expect(run(root, "park", foundation, "--group", "maintenance").status).toBe(1);
+    expect(run(root, "promote", foundation, "--group", "maintenance").status).toBe(0);
+    expect(run(root, "start", foundation, "--group", "maintenance").status).toBe(0);
+    expect(run(root, "complete", foundation, "--group", "maintenance").status).toBe(0);
+    expect(readFileSync(path.join(root, "agent_docs/tasks/archive/maintenance", `${foundation}.md`), "utf8"))
+      .toContain("Status: completed");
+    for (const filename of [`maintenance/${dependent}.md`, `${ordinary}.md`]) {
+      expect(readFileSync(path.join(root, "agent_docs/tasks/queue", filename), "utf8"))
+        .toContain("Depends on: none");
+    }
+    expect(run(root, "park", dependent, "--group", "maintenance").status).toBe(0);
+    expect(existsSync(path.join(root, "agent_docs/tasks/drafts/maintenance", `${dependent}.md`))).toBe(true);
+    expect(run(root, "restore", dependent).status).toBe(1);
+    expect(run(root, "restore", dependent, "--group", "maintenance").status).toBe(0);
+    expect(run(root, "check").status).toBe(0);
+  });
+
+  it("validates every group and rejects traversal, nested groups and symlinks", () => {
+    const root = fixture();
+    expect(run(root, "new", "escape", "--summary", "Escape", "--group", "../outside").status).toBe(1);
+    expect(run(root, "list", "--group", "maintenance/nested").status).toBe(1);
+    const directory = path.join(root, "agent_docs/tasks/queue/maintenance");
+    mkdirSync(path.join(directory, "nested"), { recursive: true });
+    expect(run(root, "check").stderr).toContain("maintenance/nested");
+    rmSync(path.join(directory, "nested"), { recursive: true });
+    const target = path.join(root, "outside");
+    mkdirSync(target);
+    symlinkSync(target, path.join(directory, "linked"));
+    expect(run(root, "check").stderr).toContain("maintenance/linked");
+    unlinkSync(path.join(directory, "linked"));
+    writeFileSync(path.join(directory, "bad.md"), "Malformed private task\n");
+    expect(run(root, "list").status).toBe(1);
+    expect(run(root, "check").stderr).toContain("maintenance/bad.md");
+    unlinkSync(path.join(directory, "bad.md"));
+    const stem = "20260801120000001-parked";
+    task(root, stem, "backlog", { group: "maintenance" });
+    symlinkSync(target, path.join(root, "agent_docs/tasks/drafts/maintenance"));
+    expect(run(root, "park", stem, "--group", "maintenance").stderr).toContain("not a file or symlink");
+    expect(existsSync(path.join(directory, `${stem}.md`))).toBe(true);
+    expect(readdirSync(target)).toEqual([]);
+  });
+
+  it("keeps task identifiers globally unique across named queues and their archives", () => {
+    const root = fixture();
+    task(root, "20260801120000001-ordinary", "backlog");
+    task(root, "20260801120000001-grouped", "backlog", { group: "maintenance" });
+    expect(run(root, "check").stderr).toContain("duplicate task id");
+    rmSync(path.join(root, "agent_docs/tasks/queue/20260801120000001-ordinary.md"));
+    const directory = path.join(root, "agent_docs/tasks/archive/older");
+    mkdirSync(directory);
+    writeFileSync(path.join(directory, "20260801120000001-prior.md"), "Status: completed\n");
+    expect(run(root, "check").stderr).toContain("task id exists in both the open queue and completion archive");
+  });
+
   it("creates ignored local tasks and fails closed without the ignore guard", () => {
     const root = fixture();
     expect(run(root, "check").stdout).toContain("Task ledger is valid");
