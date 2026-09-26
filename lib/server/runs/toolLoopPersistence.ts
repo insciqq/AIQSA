@@ -14,7 +14,13 @@ import type {
   ContextSummary,
   ContextSummaryAttempt
 } from "../../contracts/contextCompaction";
-import { canonicalJsonText, CONTEXT_COMPACTION_LIMITS, decodeContextSummary, decodeContextSummaryAttempt } from "./contextCompactionContract";
+import {
+  canonicalJsonText,
+  CONTEXT_COMPACTION_LIMITS,
+  decodeContextRejectionRebuild,
+  decodeContextSummary,
+  decodeContextSummaryAttempt
+} from "./contextCompactionContract";
 
 export type ToolLoopJsonValue =
   | boolean
@@ -252,7 +258,7 @@ function validContextCompactionMeasurement(value: unknown): value is ContextPlan
 }
 
 function validContextCompactionCheckpoint(value: unknown): value is ContextCompactionCheckpoint {
-  if (!isRecord(value) || Object.keys(value).filter((key) => !["summary", "summaryAttempts"].includes(key)).sort().join(",") !==
+  if (!isRecord(value) || Object.keys(value).filter((key) => !["rebuild", "summary", "summaryAttempts"].includes(key)).sort().join(",") !==
       "branchId,followupDigest,followupRevision,measurement,observationRefs,ownerId,pinDigest,policyRevision,providerProjectionRevision,recentTailCallIds,runId,sourceDigest,version" ||
     value.version !== 1 || value.policyRevision !== "legacy-compatible-v1" && value.policyRevision !== "hybrid-v1" ||
     !["ownerId", "runId", "branchId"].every(key => typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 256) ||
@@ -263,6 +269,7 @@ function validContextCompactionCheckpoint(value: unknown): value is ContextCompa
     value.observationRefs.some(entry => typeof entry !== "string" || !/^tor1_[a-f0-9]{32}$/u.test(entry)) ||
     !Array.isArray(value.recentTailCallIds) || value.recentTailCallIds.length > 64 ||
     value.recentTailCallIds.some(entry => typeof entry !== "string" || entry.length === 0 || entry.length > 1024) ||
+    value.rebuild !== undefined && !decodeContextRejectionRebuild(value.rebuild) ||
     value.summary !== undefined && !decodeContextSummary(value.summary) ||
     value.summaryAttempts !== undefined && (!Array.isArray(value.summaryAttempts) ||
       value.summaryAttempts.length > CONTEXT_COMPACTION_LIMITS.summaryReceipts ||

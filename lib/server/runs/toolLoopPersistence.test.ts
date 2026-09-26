@@ -363,6 +363,20 @@ describe("context summary receipts", () => {
         reasoningTokens: 0, totalTokens: 2 } }] }, begin)).toBeNull();
   });
 
+  it("round-trips the versioned rebuild record, keeps it through receipts and rejects malformed records", () => {
+    const rebuild = { version: 1 as const, round: 2, budgetTokens: 150 };
+    const rebuilt = round(2, "provider_running", { ...compaction, rebuild });
+    expect(parseToolLoopCheckpoint(rebuilt)?.contextCompaction?.rebuild).toEqual(rebuild);
+    expect(write(rebuilt, attempt(1, "claim"))?.contextCompaction).toMatchObject({ rebuild, summaryAttempts: [attempt(1, "claim")] });
+    // Checkpoints written before the record existed stay readable.
+    expect(parseToolLoopCheckpoint(round(2, "provider_running", compaction))?.contextCompaction).not.toHaveProperty("rebuild");
+    for (const invalid of [{ ...rebuild, version: 2 }, { ...rebuild, round: 0 }, { ...rebuild, budgetTokens: -1 },
+      { ...rebuild, budgetTokens: 1.5 }, { ...rebuild, reason: "PRIVATE_PROVIDER_MESSAGE_CANARY" }, null]) {
+      expect(toolLoopCheckpoint({ contextCompaction: { ...compaction, rebuild: invalid as typeof rebuild }, phase: "provider_running",
+        providerContinuation: null, roundIndex: 2 })).toBeNull();
+    }
+  });
+
   it("keeps a dispatch outside the tool loop out of checkpoint state", () => {
     const current = round(2);
     expect(checkpointWithContextSummaryReceipt(current, { attempt: attempt(1, "claim"), compaction, roundIndex: null })).toBe(current);
