@@ -159,4 +159,53 @@ describe("durable conversational images", () => {
     expect(await f.db.usageEvent.count({ where: { modelRunId: f.runId, imageGeneration: true } })).toBe(1);
     expect(fetchFn).toHaveBeenCalledTimes(1);
   }));
+  it("settles provider usage before storage and never re-dispatches a lost upload", async () => fixture(async (f) => {
+    const { call, context } = await f.call();
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(imageResponse);
+    const put = vi.fn<NonNullable<typeof f.storage.putObjectStream>>(async () => { throw new Error("storage_unavailable"); });
+    const failing = createPrismaImageGenerationService(f.db, { ...f.storage, putObjectStream: put }, { encryptionKey: () => key, fetchFn });
+    await expect(failing.execute(call, context)).rejects.toThrow("storage_unavailable");
+    const where = { imageToolCallId: context.persistedToolCallId! };
+    expect(await f.db.usageEvent.findMany({ where })).toEqual([expect.objectContaining({ imageGeneration: true, modelRunId: f.runId,
+      inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: null })]);
+    expect(await f.db.attachment.count({ where })).toBe(0);
+    const { storageKey } = put.mock.calls[0]![0];
+    expect(f.storage.objects.has(storageKey)).toBe(false);
+    expect(await f.db.attachmentDeletionJob.findUnique({ where: { storageKey } })).toMatchObject({ claimToken: null, claimedAt: null });
+    const healthy = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
+    await expect(healthy.execute(call, context)).rejects.toThrow("image_dispatch_claimed");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(await f.db.usageEvent.count({ where })).toBe(1);
+    expect(await f.db.attachment.count({ where })).toBe(0);
+  }));
+  it("retains settled usage without publishing when access is lost after dispatch", async () => fixture(async (f) => {
+    const { call, context } = await f.call();
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const response = await imageResponse();
+      const chat = await f.db.chat.findUniqueOrThrow({ where: { id: f.request.chatId }, select: { memorySourceRevision: true } });
+      const deletion = await f.db.memoryDeletionOutbox.create({ data: { userId: f.userId, operation: "SOURCE_PURGE",
+        targetType: "CHAT@memory-chat-delete-v1", targetId: f.request.chatId, memoryGeneration: 0,
+        admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: chat.memorySourceRevision, alsoForgetOriginMemories: false } });
+      await f.db.chat.update({ where: { id: f.request.chatId }, data: { archived: true, memoryMode: "EXCLUDED",
+        permanentDeletionAt: new Date(), permanentDeletionOperationId: deletion.id } });
+      return response;
+    });
+    const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
+    await expect(service.execute(call, context)).rejects.toThrow("image_access_revoked");
+    const where = { imageToolCallId: context.persistedToolCallId! };
+    expect(await f.db.usageEvent.findMany({ where })).toEqual([expect.objectContaining({ inputTokens: 3, outputTokens: 11, totalTokens: 14 })]);
+    expect(await f.db.attachment.count({ where })).toBe(0);
+    const [storageKey] = [...f.storage.objects.keys()].filter((entry) => entry.startsWith("generated-images/"));
+    expect(await f.db.attachmentDeletionJob.findUnique({ where: { storageKey: storageKey! } })).toMatchObject({ claimToken: null });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  }));
+  it("never estimates usage when the provider call fails", async () => fixture(async (f) => {
+    const { call, context } = await f.call();
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { message: "synthetic failure" } }, { status: 500 }));
+    const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
+    await expect(service.execute(call, context)).rejects.toThrow("image_provider_http_error");
+    const where = { imageToolCallId: context.persistedToolCallId! };
+    expect(await f.db.usageEvent.count({ where })).toBe(0);
+    expect(await f.db.attachment.count({ where })).toBe(0);
+  }));
 });

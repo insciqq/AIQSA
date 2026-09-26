@@ -149,7 +149,20 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       signal?.throwIfAborted();
       await execution?.beforeDispatch?.();
       signal?.throwIfAborted();
+      // Image usage rows are immutable once written. A receipt for this tool
+      // call proves an earlier paid dispatch, so a lost upload is never
+      // regenerated.
+      if (await prisma.usageEvent.findUnique({ where: { imageToolCallId: toolCallId }, select: { id: true } })) throw new Error("image_dispatch_claimed");
       const generated = await adapter.generate({ prompt: args.prompt, images, parameters, signal });
+      // Provider-reported accounting is recorded before any storage work, so
+      // publication failure, access loss or a stale claim cannot lose it.
+      // Nothing is estimated from pixels.
+      const micros = generated.usage.costUsd === null ? null : Math.round(generated.usage.costUsd * 1_000_000);
+      await prisma.usageEvent.create({ data: { imageGeneration: true, imageToolCallId: toolCallId, modelRunId: runId, userId, chatId: request.chatId,
+        projectId: access.project?.projectId, provider: snapshot.providerFamily,
+        providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId,
+        inputTokens: generated.usage.inputTokens, outputTokens: generated.usage.outputTokens, totalTokens: generated.usage.totalTokens,
+        estimatedCostMicros: micros !== null && micros <= 2_147_483_647 ? micros : null } });
       const attachmentId = randomUUID();
       const token = randomUUID();
       const storageKey = `generated-images/${attachmentId}`;
@@ -168,8 +181,8 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             } }) });
         } else await storage.putObject({ storageKey, contentType: generated.mimeType, body: Buffer.from(generated.bytes) });
         await prisma.$transaction(async (tx) => {
-          // Already received pixels retain the ordinary image settlement rules,
-          // including accounting after Stop. This grants no new execution.
+          // Already received pixels retain the ordinary image publication rules
+          // after Stop; usage is already settled. This grants no new execution.
           await execution?.beforeSettlement?.(tx);
           await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE`;
           const jobs = await tx.$queryRaw<Array<{ claimToken: string | null }>>`SELECT "claimToken" FROM "AttachmentDeletionJob" WHERE "storageKey" = ${storageKey} FOR UPDATE`;
@@ -184,12 +197,6 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             ...(access.kind === "project" ? { projectId: access.project.projectId, uploaderUserId: userId, uploaderDisplayName: uploader?.displayName } : { userId }),
             metadata: { image, providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId, parameters } as Prisma.InputJsonValue
           } });
-          const micros = generated.usage.costUsd === null ? null : Math.round(generated.usage.costUsd * 1_000_000);
-          await tx.usageEvent.create({ data: { imageGeneration: true, imageToolCallId: toolCallId, modelRunId: runId, userId, chatId: request.chatId,
-            projectId: access.project?.projectId, provider: snapshot.providerFamily,
-            providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId,
-            inputTokens: generated.usage.inputTokens, outputTokens: generated.usage.outputTokens, totalTokens: generated.usage.totalTokens,
-            estimatedCostMicros: micros !== null && micros <= 2_147_483_647 ? micros : null } });
           await tx.attachmentDeletionJob.delete({ where: { storageKey } });
           await execution?.onResult?.(tx, result(call, image));
         });
