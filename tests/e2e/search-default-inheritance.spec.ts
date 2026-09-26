@@ -71,7 +71,7 @@ test("Search defaults and saved personal and Project choices survive navigation,
     const created = await page.request.post("/api/chats", { data: { title: "Saved Search choices" } });
     expect(created.ok()).toBe(true);
     const chatId = (await created.json()).chat.id;
-    await page.goto(`/?chat=${chatId}`);
+    await page.goto(`/c/${chatId}`);
     await chooseSearchStrategy(page, "Off");
     await expect.poll(async () => (await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).defaultSearchPlan).toEqual(off);
     expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toBeNull();
@@ -101,7 +101,7 @@ test("Search defaults and saved personal and Project choices survive navigation,
     await startNewChat(page);
     await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Google");
     expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "personal", searchPlan: google });
-    await page.goto(`/?chat=${chatId}`);
+    await page.goto(`/c/${chatId}`);
     await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
     await runAccountMenuAction(page, "Chat defaults");
     settings = page.getByTestId("library-v2");

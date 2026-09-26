@@ -5,6 +5,13 @@ import type { McpOAuthFlowBinding } from "./oauthService";
 
 export const MCP_OAUTH_FLOW_COOKIE_NAME = "aiqsa_mcp_oauth_flow";
 export const MCP_OAUTH_FLOW_MAX_AGE_SECONDS = 10 * 60;
+const RETURN_PATH_MAX_LENGTH = 2_048;
+
+/** A verified flow and the chat route its browser outcome returns to. */
+export type McpOAuthFlowState = Readonly<{
+  flow: McpOAuthFlowBinding;
+  returnPath: string | null;
+}>;
 
 const FLOW_STRING_LIMITS: Record<keyof McpOAuthFlowBinding, number> = {
   clientId: 2_048,
@@ -56,9 +63,10 @@ export function exactMcpOAuthState(actual: string, expected: string): boolean {
 export async function signMcpOAuthFlow(input: Readonly<{
   flow: McpOAuthFlowBinding;
   now: Date;
+  returnPath?: string;
   sessionSecret: string;
 }>): Promise<string> {
-  return new SignJWT({ ...input.flow })
+  return new SignJWT({ ...input.flow, ...(input.returnPath ? { returnPath: input.returnPath } : {}) })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setIssuedAt(Math.floor(input.now.getTime() / 1_000))
     .setExpirationTime(Math.floor(input.now.getTime() / 1_000) + MCP_OAUTH_FLOW_MAX_AGE_SECONDS)
@@ -69,7 +77,7 @@ export async function readMcpOAuthFlow(input: Readonly<{
   now: Date;
   request: Request;
   sessionSecret: string;
-}>): Promise<McpOAuthFlowBinding | null> {
+}>): Promise<McpOAuthFlowState | null> {
   const token = readCookie(input.request.headers.get("cookie"), MCP_OAUTH_FLOW_COOKIE_NAME);
   if (!token) return null;
   try {
@@ -78,7 +86,14 @@ export async function readMcpOAuthFlow(input: Readonly<{
       currentDate: input.now,
       maxTokenAge: `${MCP_OAUTH_FLOW_MAX_AGE_SECONDS}s`
     });
-    return validFlow(verified.payload) ? exactFlow(verified.payload) : null;
+    const returnPath = verified.payload.returnPath;
+    if (!validFlow(verified.payload)) return null;
+    return {
+      flow: exactFlow(verified.payload),
+      returnPath: typeof returnPath === "string" && returnPath.length <= RETURN_PATH_MAX_LENGTH
+        ? returnPath
+        : null
+    };
   } catch {
     return null;
   }

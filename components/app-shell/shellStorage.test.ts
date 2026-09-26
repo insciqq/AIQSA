@@ -1,23 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY, clearSessionExpiredDraft, clearSessionExpiredDraftForSession, rememberActiveChatId, rememberSessionExpiredDraft, storedActiveChatId, storedSessionExpiredDraft } from "./shellStorage";
-
-describe("shell storage", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-  });
-
-  it("stores and removes the active chat id", () => {
-    expect(storedActiveChatId()).toBeNull();
-
-    rememberActiveChatId("chat-1");
-    expect(storedActiveChatId()).toBe("chat-1");
-
-    rememberActiveChatId(null);
-    expect(storedActiveChatId()).toBeNull();
-  });
-});
+import { AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY, clearSessionExpiredDraft, clearSessionExpiredDraftForSession, rememberSessionExpiredDraft, storedSessionExpiredDraft } from "./shellStorage";
 
 describe("session-expired draft handoff", () => {
   it("clears only the transferred session's handoff", () => {

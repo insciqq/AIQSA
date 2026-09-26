@@ -13,6 +13,8 @@ import { closeArtifactPanel, openArtifactPanel, useArtifactPanelStore } from "@/
 import { activateArtifactLibraryAccount } from "@/components/app-shell/artifactLibraryStore";
 import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
+import { navigateChatRoute, useChatRoutePath, useControlCenterHref } from "@/components/app-shell/chatRoute";
+import { parseChatRoutePath } from "@/lib/domain/chatRoute";
 import { cancelWorkspaceUpload, retryWorkspaceUpload, useWorkspaceUploadProgress } from "@/components/app-shell/workspaceUploadClient";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 
@@ -470,7 +472,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const url = new URL(window.location.href);
     const intent = url.searchParams.get("artifactEdit");
     if (intent !== "edit" && intent !== "runtime_error") return;
-    const chatId = url.searchParams.get("chat");
+    // The edit intent belongs to the chat its address names, once that chat is shown.
+    const chatId = parseChatRoutePath(url.pathname)?.chatId ?? null;
     if (!chatId || session.activeChatId !== chatId || thread.activeChatDetailLoading) return;
     const artifactId = url.searchParams.get("artifactId")?.trim() ?? "";
     const versionId = url.searchParams.get("versionId")?.trim() ?? "";
@@ -490,7 +493,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-testid="composer-v2"] textarea')?.focus({ preventScroll: true }));
       const currentUrl = new URL(window.location.href);
       for (const key of ["artifactEdit", "artifactId", "versionId"]) currentUrl.searchParams.delete(key);
-      window.history.replaceState(window.history.state, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
+      window.history.replaceState(null, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
     }).catch((error: unknown) => {
       if (!active) return;
       useComposerSessionStore.getState().updateSession(composerSessionKey(chatId), {
@@ -549,6 +552,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const personalMemoryOpen = settings.memory.open;
   const closePersonalMemory = settings.closeMemory;
   const libraryOpen = Boolean(settings.library || settings.knowledge || personalMemoryOpen);
+  const routeChatId = parseChatRoutePath(useChatRoutePath())?.chatId ?? null;
 
   const closeDataSubview = () => {
     setDataSubview(null);
@@ -776,7 +780,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const desired = documentTitleV2({
       activeChatId: session.activeChatId,
       activeChatTitle: session.activeChatTitle,
-      libraryOpen
+      libraryOpen,
+      routeChatId
     });
     if (document.title !== desired) document.title = desired;
     const titleNode = document.head.querySelector("title");
@@ -786,7 +791,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     });
     observer.observe(titleNode, { characterData: true, childList: true, subtree: true });
     return () => observer.disconnect();
-  }, [libraryOpen, session.activeChatId, session.activeChatTitle]);
+  }, [libraryOpen, routeChatId, session.activeChatId, session.activeChatTitle]);
   useEffect(() => {
     // A personal Memory overlay must not survive navigation into a shared
     // Project. Apart from hiding the surface, this prevents a stale overlay
@@ -1286,23 +1291,24 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     );
   };
 
-  const selectNavigationChat = (chat: ChatNavigationSummaryWire) => {
+  // Choosing a chat or a new chat in navigation adds one history entry.
+  const selectNavigationChat = (chat: ChatNavigationSummaryWire) => navigateChatRoute(() => {
     const full = currentWorkspaceChat(chat.id);
     if (full) {
       workspace.projects.actions.leave();
       workspace.pane.actions.activateChat(full);
     }
     else void workspace.pane.actions.retry();
-  };
+  });
   const setNavigationMemoryMode = (chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL") => {
     const full = currentWorkspaceChat(chat.id);
     if (full && full.memoryMode !== mode) {
       void workspace.pane.actions.toggleChatMemorySource(full, mode);
     }
   };
-  const createNavigationChat = (mode: NewChatMode) => {
+  const createNavigationChat = (mode: NewChatMode) => navigateChatRoute(() => {
     void workspace.pane.actions.createChat(null, mode);
-  };
+  });
   const navigationChatState = (chat: ChatNavigationSummaryWire): NavigationChatRowState | null => {
     const full = currentWorkspaceChat(chat.id);
     return full
@@ -2007,6 +2013,7 @@ function SettingsAccountPanelV2({
   const [signingOut, setSigningOut] = useState(false);
   const [saving, setSaving] = useState(false);
   const [signOutError, setSignOutError] = useState(false);
+  const controlCenterHref = useControlCenterHref();
   useEffect(() => { onBusyChange(saving || signingOut); return () => onBusyChange(false); }, [onBusyChange, saving, signingOut]);
   return (
     <>
@@ -2017,7 +2024,7 @@ function SettingsAccountPanelV2({
           description="Installation resources, providers, users and policies."
           title="Control Center"
         >
-          <a className="v2-button v2-focusable" data-tone="ghost" href="/admin">
+          <a className="v2-button v2-focusable" data-tone="ghost" href={controlCenterHref}>
             <UiV2Icon name="shield" />
             <span>Open</span>
           </a>

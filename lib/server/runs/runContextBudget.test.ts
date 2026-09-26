@@ -34,6 +34,7 @@ import {
   normalizedRequestPersonalContextTokenLimit,
   observationWholeResultTokens,
   providerFacingSerializedTools,
+  providerRequestContextRebuild,
   UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS
 } from "./runContextBudget";
 import { executeSessionStatus, sessionStatusTool } from "../tools/sessionStatus";
@@ -762,6 +763,59 @@ describe("hybrid context budget boundaries", () => {
   it("uses the reviewed 17 488-token budget", () => {
     expect(calculateContextBudgetLimits({ contextWindow: 20_000, maxOutputTokens: 512, provider: "openai" }).budgetTokens)
       .toBe(HYBRID_BUDGET);
+  });
+
+  describe("after a provider context rejection", () => {
+    // About half the budget: the planner judged it fitting with no work to do.
+    const history = () => [...Array.from({ length: 6 }, (_, index) => turn(`h${index}`, index % 2 ? "assistant" : "user", 5_000)),
+      turn("current", "user", 200)];
+
+    it("derives one tightened budget from the stated counts, else the recorded ratio, only for eligible requests", () => {
+      const input = hybrid(history());
+      const estimate = assembled(input);
+      const reported = calculateContextBudgetLimits({ contextWindow: 12_000, maxOutputTokens: 512, provider: "openai" }).budgetTokens;
+      expect(providerRequestContextRebuild({ bridge: openAIResponsesToolBridge, request: input, round: 2,
+        rejection: { maximumTokens: 12_000, promptTokens: 15_000 } }))
+        .toEqual({ version: 1, round: 2, budgetTokens: Math.floor(reported * estimate / 15_000) });
+      expect(providerRequestContextRebuild({ bridge: openAIResponsesToolBridge, request: input, round: 1, rejection: {} }))
+        .toEqual({ version: 1, round: 1, budgetTokens: Math.floor(estimate * 0.75) });
+      const rebuild = { version: 1 as const, round: 1, budgetTokens: 1_000 };
+      for (const ineligible of [
+        { ...input, contextCompactionRebuild: rebuild },
+        { ...input, toolObservationVersion: 0 as const },
+        { ...input, modelCapabilities: { ...capabilities, contextWindow: undefined } }
+      ]) expect(providerRequestContextRebuild({ bridge: openAIResponsesToolBridge, request: ineligible, round: 1, rejection: {} })).toBeNull();
+    });
+
+    it("re-plans a fitting hybrid request under the tightened budget without changing the whole-result share", () => {
+      const input = hybrid(history());
+      const fitting = accepted(budgetOf(input));
+      expect(fitting.request.contextCompaction).toMatchObject({ budgetTokens: HYBRID_BUDGET, outcome: "already_fits" });
+      const budgetTokens = Math.floor(assembled(input) * 0.75);
+      const rebuilt = accepted(budgetOf({ ...input, contextCompactionRebuild: { version: 1, round: 1, budgetTokens } }));
+      // Over the tighter budget with uncovered history: a summary the hybrid policy buys anyway.
+      expect(rebuilt.request.contextCompaction).toMatchObject({ budgetTokens, outcome: "needs_summary" });
+      expect(summaryNeedsProvider(rebuilt.request)).toBe(true);
+      expect(rebuilt.request.contextCompactionRebuild).toEqual({ version: 1, round: 1, budgetTokens });
+      expect(observationWholeResultTokens({ ...input, contextCompactionRebuild: { version: 1, round: 1, budgetTokens } }).tokens)
+        .toBe(observationWholeResultTokens(input).tokens);
+    });
+
+    it("trims older legacy turns to the tightened budget and never loosens it", () => {
+      const input = legacyOf(hybrid(history()));
+      const fitting = accepted(budgetOf(input));
+      expect(fitting.contextTruncation).toBeNull();
+      const budgetTokens = Math.floor(assembled(input) * 0.75);
+      const rebuilt = accepted(budgetOf({ ...input, contextCompactionRebuild: { version: 1, round: 1, budgetTokens } }));
+      expect(rebuilt.contextTruncation?.droppedMessages).toBeGreaterThan(0);
+      expect(rebuilt.request.context?.messages.at(-1)?.id).toBe("current");
+      expect(assembled(rebuilt.request)).toBeLessThanOrEqual(budgetTokens);
+      expect(rebuilt.request.contextCompaction?.budgetTokens).toBe(budgetTokens);
+      // A record above the admitted budget is ignored rather than widening it.
+      const loose = accepted(budgetOf({ ...input, contextCompactionRebuild: { version: 1, round: 1, budgetTokens: HYBRID_BUDGET * 2 } }));
+      expect(loose.request.contextCompaction?.budgetTokens).toBe(HYBRID_BUDGET);
+      expect(loose.contextTruncation).toBeNull();
+    });
   });
 
   it("rejects an irreducible current message before a run exists, exactly like legacy", () => {

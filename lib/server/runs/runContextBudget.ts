@@ -36,10 +36,11 @@ import type { WholeDeliveryShare } from "../toolObservations/sourceAdapters";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 import type { SkillBudgetFacts } from "../../contracts/skills";
-import type { ContextObservation } from "./contextCompactionContract";
+import type { ContextObservation, ContextRejectionRebuild } from "./contextCompactionContract";
 import {
   contextCompactionMeasurementWithBudget,
   contextHistory,
+  contextRejectionRebuild,
   planContextCompaction,
   type ContextCompactionPlan,
   type ContextOverflow
@@ -280,7 +281,7 @@ function providerRequestFixedExtraTokens(request: ProviderRunRequest, bridge?: P
     estimate(knowledgeToolLoopContract(request) ?? "");
 }
 
-function contextCompactionBudgetLimits(request: ProviderRunRequest) {
+function modelContextBudgetLimits(request: ProviderRunRequest) {
   const contextWindow = request.modelCapabilities.contextWindow;
   return Number.isFinite(contextWindow) && Number(contextWindow) > 0
     ? calculateContextBudgetLimits({
@@ -289,6 +290,50 @@ function contextCompactionBudgetLimits(request: ProviderRunRequest) {
         provider: request.provider
       })
     : null;
+}
+
+/** The limits the planner and every fit check apply. After a provider
+ * context rejection the run's rebuild record tightens the budget for the
+ * rebuilt round and every later one; it never loosens it. */
+function contextCompactionBudgetLimits(request: ProviderRunRequest) {
+  const limits = modelContextBudgetLimits(request);
+  const rebuilt = request.contextCompactionRebuild?.budgetTokens;
+  return limits && rebuilt !== undefined && rebuilt < limits.budgetTokens ? { ...limits, budgetTokens: rebuilt } : limits;
+}
+
+/** The legacy whole-turn guard sees a rebuild's tighter budget as a fixed reserve. */
+function contextRebuildReserveTokens(request: ProviderRunRequest): number {
+  const model = modelContextBudgetLimits(request);
+  const planned = contextCompactionBudgetLimits(request);
+  return model && planned ? model.budgetTokens - planned.budgetTokens : 0;
+}
+
+/**
+ * The one bounded rebuild of a round the provider rejected for context length
+ * (see `contextRejectionRebuild`), from the rejected request's estimate as
+ * dispatched and its admitted limits. Only runs whose tool-loop checkpoints
+ * carry the record qualify: v1 observation, non-Agent, a known window and no
+ * earlier rebuild.
+ */
+export function providerRequestContextRebuild(input: Readonly<{
+  bridge?: ProviderToolBridge;
+  rejection: Readonly<{ maximumTokens?: number; promptTokens?: number }>;
+  request: ProviderRunRequest;
+  round: number;
+}>): ContextRejectionRebuild | null {
+  const { request } = input;
+  const limits = modelContextBudgetLimits(request);
+  if (!limits || request.agent || request.toolObservationVersion !== 1 || request.contextCompactionRebuild) return null;
+  const maximumTokens = input.rejection.maximumTokens;
+  return contextRejectionRebuild({
+    budgetTokens: limits.budgetTokens,
+    ...(input.rejection.promptTokens !== undefined ? { promptTokens: input.rejection.promptTokens } : {}),
+    ...(maximumTokens !== undefined ? { reportedBudgetTokens: calculateContextBudgetLimits({
+      contextWindow: maximumTokens, maxOutputTokens: limits.maxOutputTokens, provider: request.provider
+    }).budgetTokens } : {}),
+    requestTokens: approximateProviderRequestTokens(request, input.bridge),
+    round: input.round
+  });
 }
 
 /** Share of the admitted input budget the observed MCP/Workspace results of
@@ -300,7 +345,7 @@ const OBSERVATION_WHOLE_RESULT_BUDGET_SHARE = 0.25;
  * the results against it. An unknown window has no budget that masking could
  * apply, so only the ordinary persisted result bound (Off) applies. */
 export function observationWholeResultTokens(request: ProviderRunRequest): Extract<WholeDeliveryShare, object> {
-  const limits = contextCompactionBudgetLimits(request);
+  const limits = modelContextBudgetLimits(request);
   return {
     estimateTokens: contextTokenEstimator(request),
     tokens: limits ? Math.floor(limits.budgetTokens * OBSERVATION_WHOLE_RESULT_BUDGET_SHARE) : Number.POSITIVE_INFINITY
@@ -811,7 +856,8 @@ function applyProviderRequestContextBudgetCore(input: Readonly<{
         role: "user" as const
       }];
   const currentMessageId = budgetMessages.at(-1)?.id;
-  const fixedExtraTokens = providerRequestFixedExtraTokens(input.request, input.bridge);
+  const fixedExtraTokens = providerRequestFixedExtraTokens(input.request, input.bridge) +
+    contextRebuildReserveTokens(input.request);
   const attachmentFit = fitProviderAttachmentText({ fixedExtraTokens, request: input.request });
   if (!attachmentFit.ok) {
     return {

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { chooseSearchStrategy, selectModel } from "./shell/composer";
+import { activeChatId } from "./support/workspace";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(60_000);
@@ -37,12 +38,7 @@ type RunBody = {
 const testTitlePrefix = "E2E unmocked";
 
 async function signIn(page: Page) {
-  await page.addInitScript(() => {
-    const clearedKey = "aiqsa.e2e.activeChatCleared";
-    if (window.sessionStorage.getItem(clearedKey) === "1") return;
-    window.localStorage.removeItem("aiqsa.activeChatId");
-    window.sessionStorage.setItem(clearedKey, "1");
-  });
+  // `/` always opens a new chat.
   await page.goto("/");
   await expect(page).toHaveURL(/\/login/);
   const response = await page.request.post("/api/auth/token", {
@@ -76,18 +72,6 @@ async function prepareFakeBlankChat(page: Page) {
   await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
   await chooseSearchStrategy(page, "Off");
   await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
-}
-
-async function waitForActiveChatId(page: Page): Promise<string> {
-  let chatId: string | null = null;
-  await expect
-    .poll(async () => {
-      chatId = await page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId"));
-      return chatId;
-    })
-    .not.toBeNull();
-
-  return chatId!;
 }
 
 async function latestRunForChat(page: Page, chatId: string): Promise<RunBody["run"] | null> {
@@ -173,7 +157,7 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and answer out
     await prepareFakeBlankChat(page);
     await page.getByRole("textbox", { name: "Message" }).fill(prompt);
     await page.getByRole("textbox", { name: "Message" }).press("Enter");
-    chatId = await waitForActiveChatId(page);
+    chatId = await activeChatId(page);
 
     await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${prompt}`, {
       timeout: 20_000
@@ -212,7 +196,7 @@ test("streams a new answer on the branch created by editing an answered question
     await prepareFakeBlankChat(page);
     await page.getByRole("textbox", { name: "Message" }).fill(prompt);
     await page.getByRole("textbox", { name: "Message" }).press("Enter");
-    chatId = await waitForActiveChatId(page);
+    chatId = await activeChatId(page);
     await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${prompt}`, {
       timeout: 20_000
     });
@@ -270,7 +254,7 @@ test("cancels an in-flight fake-provider stream without leaving the shell stuck"
     await prepareFakeBlankChat(page);
     await page.getByRole("textbox", { name: "Message" }).fill(prompt);
     await page.getByRole("textbox", { name: "Message" }).press("Enter");
-    chatId = await waitForActiveChatId(page);
+    chatId = await activeChatId(page);
     const stopButton = page.getByRole("button", { name: "Stop answer" });
     await expect(stopButton).toBeVisible({ timeout: 10_000 });
     await expect(stopButton).toBeEnabled({ timeout: 10_000 });
@@ -320,7 +304,7 @@ test("shows a rejected send once at the composer with a Retry action", async ({ 
     await prepareFakeBlankChat(page);
     await page.getByRole("textbox", { name: "Message" }).fill(prompt);
     await page.getByRole("textbox", { name: "Message" }).press("Enter");
-    chatId = await waitForActiveChatId(page);
+    chatId = await activeChatId(page);
 
     const composerError = page.locator(".v2-live-composer-error");
     await expect(composerError).toHaveCount(1);

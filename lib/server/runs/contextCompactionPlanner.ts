@@ -1,5 +1,5 @@
 import { contextTokenEstimator } from "../../domain/tokenEstimate";
-import type { ContextPlanMeasurement } from "../../contracts/contextCompaction";
+import type { ContextPlanMeasurement, ContextRejectionRebuild } from "../../contracts/contextCompaction";
 import { decodeToolObservationDescriptor, type ToolObservationDescriptor } from "../toolObservations/contract";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
@@ -707,6 +707,35 @@ export function observationCallIdsInProviderMessages(
     }
   }
   return callIds.slice(-64);
+}
+
+/**
+ * The one bounded rebuild a provider context rejection allows. The provider
+ * counted `promptTokens` real tokens for a request estimated at
+ * `requestTokens`; scaling by that ratio lets the reported prompt fit under
+ * `reportedBudgetTokens` (its stated maximum after the output reservation and
+ * the existing safety margin). Without both counts, or when they would not
+ * shrink the request, the recorded `rejectionRebuildRatio` applies instead.
+ * The budget stays below the rejected estimate and the admitted budget, so
+ * the re-planned request is smaller or refused locally, never resent as is.
+ */
+export function contextRejectionRebuild(input: Readonly<{
+  /** The budget the rejected request was planned under. */
+  budgetTokens: number;
+  promptTokens?: number;
+  reportedBudgetTokens?: number;
+  /** The rejected request's estimate as dispatched. */
+  requestTokens: number;
+  round: number;
+}>): ContextRejectionRebuild | null {
+  const count = (value: number | undefined) => value !== undefined && Number.isSafeInteger(value) && value >= 0;
+  if (!Number.isSafeInteger(input.round) || input.round < 1 || !count(input.budgetTokens) ||
+    !count(input.requestTokens) || input.requestTokens === 0) return null;
+  const scaled = count(input.promptTokens) && input.promptTokens! > 0 && count(input.reportedBudgetTokens)
+    ? Math.floor(input.reportedBudgetTokens! * input.requestTokens / input.promptTokens!) : null;
+  const tightened = scaled !== null && scaled < input.requestTokens ? scaled
+    : Math.floor(input.requestTokens * CONTEXT_COMPACTION_LIMITS.rejectionRebuildRatio);
+  return { version: 1, round: input.round, budgetTokens: Math.min(tightened, input.budgetTokens) };
 }
 
 /** Legacy-compatible budget outcome. The planner already reports overflow as
