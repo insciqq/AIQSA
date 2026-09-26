@@ -1,3 +1,4 @@
+import { normalizeDisplayName } from "@/lib/contracts/account";
 import type { AuthConfig } from "./config";
 import {
   resolveLoginRateLimitIdentity,
@@ -75,8 +76,21 @@ function requireJsonContentType(request: Request): Response | null {
   return json({ error: "json_required" }, { status: 415 });
 }
 
+/**
+ * The name is optional: an absent or blank name keeps the email-derived default. A provided name
+ * follows the account profile contract and is rejected, not truncated, when it violates it. The
+ * decision depends only on the request body, so it reveals nothing about the email.
+ */
+function optionalDisplayName(value: unknown): string | null {
+  if (value === undefined || value === null || (typeof value === "string" && !value.trim())) {
+    return "";
+  }
+
+  return normalizeDisplayName(value);
+}
+
 function registerBody(body: unknown): {
-  displayName: string;
+  displayName: string | null;
   email: string;
   inviteToken: string | null;
 } | null {
@@ -93,7 +107,7 @@ function registerBody(body: unknown): {
   }
 
   return {
-    displayName: typeof displayName === "string" ? displayName.trim() : "",
+    displayName: optionalDisplayName(displayName),
     email,
     inviteToken: typeof inviteToken === "string" && inviteToken.trim() ? inviteToken.trim() : null
   };
@@ -110,13 +124,13 @@ function verifyBody(body: unknown): { password: string; token: string } | null {
   };
 }
 
-function inviteAcceptanceBody(body: unknown): { displayName: string; password: string; token: string } | null {
+function inviteAcceptanceBody(body: unknown): { displayName: string | null; password: string; token: string } | null {
   if (!body || typeof body !== "object") {
     return null;
   }
 
   return {
-    displayName: "displayName" in body && typeof body.displayName === "string" ? body.displayName.trim() : "",
+    displayName: optionalDisplayName("displayName" in body ? body.displayName : undefined),
     password: "password" in body && typeof body.password === "string" ? body.password : "",
     token: "token" in body && typeof body.token === "string" ? body.token.trim() : ""
   };
@@ -165,6 +179,10 @@ function rateLimitedResponse(rateLimit: { retryAfterSeconds: number }): Response
       status: 429
     }
   );
+}
+
+function displayNameInvalid(): Response {
+  return json({ error: "display_name_invalid" }, { status: 400 });
 }
 
 function authAdmissionUnavailable(): Response {
@@ -253,6 +271,11 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
       return json({ error: passwordError }, { status: 400 });
     }
 
+    if (body.displayName === null) {
+      return displayNameInvalid();
+    }
+
+    const displayName = body.displayName;
     const tokenRateLimitKey = inviteTokenRateLimitKey(body.token);
 
     const tokenRateLimit = await rateLimiter.check(tokenRateLimitKey);
@@ -264,7 +287,7 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
     const now = deps.now?.() ?? new Date();
     const sessionToken = createSessionToken();
     const result = await deps.repository.acceptInvite({
-      displayName: body.displayName,
+      displayName,
       inviteTokenHash: hashToken(body.token),
       now,
       passwordHash: await hashPasswordDefault(body.password),
@@ -355,6 +378,11 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
       return json({ error: "email_invalid" }, { status: 400 });
     }
 
+    if (body.displayName === null) {
+      return displayNameInvalid();
+    }
+
+    const displayName = body.displayName;
     const rateLimitKey = credentialRateLimitKey({
       email: normalizedEmail,
       prefix: "registration"
@@ -370,7 +398,7 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
     const now = deps.now?.() ?? new Date();
     const token = createSessionToken();
     const result = await deps.repository.registerPasswordUser({
-      displayName: body.displayName,
+      displayName,
       email: body.email.trim(),
       expiresAt: verificationExpiresAt(now),
       inviteTokenHash: body.inviteToken ? hashToken(body.inviteToken) : null,
