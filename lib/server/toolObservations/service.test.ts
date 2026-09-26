@@ -15,15 +15,16 @@ import { ObservationStoreError } from "./repository";
 import { createToolObservationService, type ToolObservationRepository } from "./service";
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider,
   observationRestoreRefused, observationWholeDeliveryBatches, restoreObservedResult, wholeDeliveryAllowance } from "./sourceAdapters";
-import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { settleableToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { boundedRenderedSearchToolResultText, boundedRetainedSearchToolResultText, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultText,
   type SearchExecutionEvidence } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
-import { SearchToolCancelledError } from "../search/toolExecutor";
+import { fitDurableSearchToolResult, SearchToolCancelledError } from "../search/toolExecutor";
 import { decodeSearchObservationReceipt, SEARCH_OBSERVATION_RECEIPT_BYTES, searchObservationReceipt } from "./searchReceipt";
 import type { ToolExecutionResult } from "../tools/types";
 import { ObservationReadError } from "./byteReader";
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
+import * as observability from "../observability";
 
 const producer = { runId: "synthetic-run", userId: "synthetic-owner", toolCallId: "synthetic-call" };
 const cleanups: Array<() => Promise<void>> = [];
@@ -74,7 +75,14 @@ function fixture(storage: StorageAdapter = createMemoryStorageAdapter()) {
   const write = (original: unknown, extra: { maximumBytes?: number; signal?: AbortSignal; sourceOwned?: boolean } = {}) =>
     service().withReservation({ producer, source: extra.sourceOwned ? "knowledge" : "mcp", maximumBytes: 1024 * 1024, ...extra },
       receipt => receipt.store({ original, outcome: "complete", sourceTruncated: true, maskable: true }));
-  return { repository, storage, service, write, row: () => row!, revoke: () => { allowed = false; },
+  /** The repository's next reservation when the run or branch budget cannot
+   * admit its ceiling: claimed and degraded, with a zero ceiling. */
+  const exhaust = () => {
+    const reserve = repository.reserve.getMockImplementation()!;
+    repository.reserve.mockImplementationOnce(async (context, source, _maximumBytes, binding) =>
+      ({ ...await reserve(context, source, 0, binding), degraded: true as const }));
+  };
+  return { repository, storage, service, write, exhaust, row: () => row!, revoke: () => { allowed = false; },
     setSource: (original: unknown) => { sourceOriginal = original; } };
 }
 
@@ -331,6 +339,56 @@ describe("observation admission holds storage phases, not business calls", () =>
     }).catch((error: unknown) => error);
     expect(lost).toMatchObject({ code: "tool_observation_unavailable" });
     expect(observationFailure(lost)?.message).toMatch(/may have completed/iu);
+  });
+
+  it("still dispatches a call beyond the retained-bytes budget, keeping its outcome as a receipt and retaining nothing", async () => {
+    const f = fixture();
+    f.exhaust();
+    const events: unknown[] = [];
+    const logged = vi.spyOn(observability, "logEvent").mockImplementation((event, fields) => { events.push({ event, fields }); });
+    cleanups.push(async () => { logged.mockRestore(); });
+    const business = vi.fn(async () => ({ text: "PRIVATE_RESULT ".repeat(1000) }));
+    const delivered = await f.service().withReservation({ producer, source: "mcp", maximumBytes: 1024 * 1024 }, async receipt => {
+      expect(receipt.retained).toBe(false);
+      const original = await business();
+      // Nothing can be stored: the caller delivers the result as Off does.
+      await expect(receipt.store({ original, outcome: "complete", sourceTruncated: false, maskable: true }))
+        .rejects.toMatchObject({ code: "tool_observation_conflict" });
+      await receipt.recordUnretained("complete");
+      return original;
+    });
+    expect(delivered.text).toContain("PRIVATE_RESULT");
+    expect(business).toHaveBeenCalledOnce();
+    expect(f.repository.beginWrite).not.toHaveBeenCalled();
+    expect(f.repository.unavailable).toHaveBeenCalledWith(producer, "tool_observation_budget_degraded");
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "complete", reservedBytes: 0,
+      storageMode: null, storageKey: null, inlineText: null, maskable: false });
+    // One content-free counter per degraded reservation, never a refusal.
+    expect(events).toEqual([{ event: "tool_execution", fields: { tool_kind: "mcp", stage: "admission",
+      code: "tool_observation_budget_degraded", outcome: "degraded", reason: "policy", action: "degrade" } }]);
+    // The receipt forbids a replay; there is no retained result to restore.
+    await expect(f.service().withReservation({ producer, source: "mcp", maximumBytes: 1024 * 1024 }, business))
+      .rejects.toMatchObject({ code: "tool_observation_conflict" });
+    const restore = await f.service().restore(producer).then(() => null, (error: unknown) => error);
+    expect(observationRestoreRefused(restore)).toBe(true);
+    expect(business).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an unretained call's outcome after Stop and fails closed when a callback skips its receipt", async () => {
+    const f = fixture();
+    f.exhaust();
+    const controller = new AbortController();
+    await expect(f.service().withReservation({ producer, source: "workspace", maximumBytes: 10000, signal: controller.signal },
+      async receipt => {
+        controller.abort(new Error("synthetic_stop"));
+        return receipt.recordUnretained("error");
+      })).rejects.toThrow("synthetic_stop");
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "error" });
+    const skipped = fixture();
+    skipped.exhaust();
+    await expect(skipped.service().withReservation({ producer, source: "search", maximumBytes: 10000 }, async () => "executed"))
+      .rejects.toMatchObject({ code: "tool_observation_unavailable" });
+    expect(skipped.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "unknown" });
   });
 
   it("records the executed outcome before an original waits for capacity, then publishes it", async () => {
@@ -603,6 +661,65 @@ describe("accepted observation source adapters", () => {
     const result = await captureOwnedObservation({ service: f.service(), producer }, "knowledge", undefined, async () => failure);
     expect(result).toEqual(failure);
     expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "error" });
+  });
+
+  it("delivers exactly Off's MCP result beyond the retained-bytes budget, which its caller bounds as Off's", async () => {
+    const f = fixture();
+    f.exhaust();
+    const original = { isError: false, structuredContent: { value: 42 }, text: ['{"value":42}', "Unique detail"], unsupportedContentTypes: [] };
+    const execute = vi.fn(async () => original);
+    const allowance = wholeDeliveryAllowance(1);
+    const result = await captureMcpObservation({ service: f.service(), producer, wholeDelivery: allowance }, call, binding, execute);
+    expect(result).toEqual(mcpToolExecutionResult(call, original));
+    // No descriptor: never masked, recalled or drawn from the batch allowance.
+    expect(projectObservationForProvider(result)).toEqual(result);
+    expect(allowance.remainingTokens).toBe(1);
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "complete", reservedBytes: 0 });
+    const restored = await restoreObservedResult({ service: f.service(), producer }, call).then(() => null, (error: unknown) => error);
+    expect(observationRestoreRefused(restored)).toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+    const large = fixture();
+    large.exhaust();
+    const oversized = { isError: false, structuredContent: null, text: ["m".repeat(300 * 1024)], unsupportedContentTypes: [] };
+    const bounded = await captureMcpObservation({ service: large.service(), producer }, call, binding, async () => oversized);
+    const settled = settleableToolExecutionResult(bounded, 256 * 1024);
+    expect(settled).toEqual(settleableToolExecutionResult(mcpToolExecutionResult(call, oversized), 256 * 1024));
+    expect(settled?.failure?.code).toBe("tool_result_too_large");
+  });
+
+  it("delivers Off's Workspace result with artifacts and runtime metadata beyond the retained-bytes budget", async () => {
+    const f = fixture();
+    f.exhaust();
+    const shell: ToolExecutionResult = { callId: call.id, name: call.name, status: "error", content: [{ type: "text", text: "exit 9" }],
+      rawPreview: { exitCode: 9, truncated: true },
+      artifacts: [{ type: "artifact", data: { artifactType: "workspace_activity", payload: { id: "activity-1" } } }] };
+    const result = await captureWorkspaceObservation({ service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(1) }, call,
+      async () => shell);
+    expect(result).toEqual(shell);
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "error", reservedBytes: 0 });
+  });
+
+  it("gives a Search beyond the retained-bytes budget Off's text and bound, keeping its usage in the receipt", async () => {
+    const f = fixture();
+    f.exhaust();
+    const small = searchResult();
+    const result = await captureSearchObservation({ service: f.service(), producer }, call, sources, async () => small);
+    expect(result).toEqual({ callId: call.id, name: call.name, status: "complete", content: small.content });
+    for (const field of internalSearchFields) expect(JSON.stringify(result)).not.toContain(field);
+    expect((await f.service().searchAccounting(producer)).map(execution => execution.usage.totalTokens)).toEqual([11, 22, 33]);
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "complete", reservedBytes: 0 });
+    // Above the persisted bound Off drops the largest engines' findings; no reader is promised.
+    const large = fixture();
+    large.exhaust();
+    const oversized = searchResult(true);
+    const bounded = await captureSearchObservation({ service: large.service(), producer }, call, sources, async () => oversized);
+    const off = fitDurableSearchToolResult({ call, executions: searchExecutionsFromToolResult(oversized), name: call.name });
+    expect(bounded).toEqual({ callId: call.id, name: call.name, status: off.status, content: off.content });
+    const text = JSON.stringify(bounded.content);
+    expect(text).toContain("rare-search-1");
+    expect(text).toContain("search_result_too_large");
+    expect(text).not.toMatch(/remains readable|read_tool_result/u);
+    expect(snapshotToolExecutionResult(bounded, 256 * 1024)).not.toBeNull();
   });
 });
 
