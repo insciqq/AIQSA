@@ -4677,7 +4677,7 @@ describe("cross-turn compaction reuse", () => {
       bridge: openAIResponsesToolBridge,
       failure: (code, message) => Object.assign(new Error(message), { code }),
       publisher: createContextCompactionPublisher(async () => undefined),
-      receipts: { claim: async () => undefined, settle: async () => undefined },
+      receipts: { claim: async () => undefined, dispatch: async () => undefined, settle: async () => undefined },
       request: materializePreparedRunData(prepared).providerRequest,
       signal: new AbortController().signal,
       sourceAvailable,
