@@ -1160,7 +1160,7 @@ describe("context-length rejection rebuild", () => {
   it("fails with the provider's refusal when the tightened budget cannot hold the irreducible request", async () => {
     // Nearly all of the estimate is the current message, which never leaves.
     const loop = harness(["reject", "final"], { initialRequest: initial({ context: { messages: [turn("h0", 0), turn("h1", 1),
-      { content: { blocks: [{ text: "q".repeat(40_000), type: "text" }] }, id: "current", role: "user" }], mode: "branch_path" } }) });
+      { content: { blocks: [{ text: "h".repeat(40_000), type: "text" }] }, id: "current", role: "user" }], mode: "branch_path" } }) });
     const outcome = await loop.run();
     expect(outcome).toMatchObject({ failure: { code: "provider_context_length_exceeded", stage: "provider" }, status: "failed" });
     expect(loop.requests).toHaveLength(1);

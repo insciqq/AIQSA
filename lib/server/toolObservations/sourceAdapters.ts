@@ -18,13 +18,22 @@ import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { isStoredObjectMissingError } from "../uploads/storage";
 
 export type ToolObservationService = ReturnType<typeof createToolObservationService>;
-/** The estimated tokens an MCP/Workspace tool batch may still receive whole:
- * one share of the admitted input budget (Infinity for an unknown window),
+/** One share of the admitted input budget (Infinity for an unknown window),
+ * with the request's context estimate that measures it; a bare number keeps
+ * the character-weight estimate. */
+export type WholeDeliveryShare = number | Readonly<{ estimateTokens: (value: unknown) => number; tokens: number }>;
+/** The estimated tokens an MCP/Workspace tool batch may still receive whole,
  * shared by the batch's concurrent captures, restores and replayed results. */
-export type WholeDeliveryAllowance = { remainingTokens: number };
+export type WholeDeliveryAllowance = { estimateTokens?: (value: unknown) => number; remainingTokens: number };
 
-export function wholeDeliveryAllowance(shareTokens: number): WholeDeliveryAllowance {
-  return { remainingTokens: shareTokens };
+export function wholeDeliveryAllowance(share: WholeDeliveryShare): WholeDeliveryAllowance {
+  return typeof share === "number"
+    ? { remainingTokens: share }
+    : { estimateTokens: share.estimateTokens, remainingTokens: share.tokens };
+}
+
+function allowanceTokens(allowance: WholeDeliveryAllowance, result: ToolExecutionResult): number {
+  return (allowance.estimateTokens ?? estimateApproxTokens)(projectObservationForProvider(result).content);
 }
 
 type CaptureContext = Readonly<{
@@ -67,7 +76,7 @@ function deliveredWhole(context: CaptureContext, byteSize: number, whole: () => 
   if (byteSize > OBSERVATION_WHOLE_ORIGINAL_BYTES) return null;
   const result = whole();
   if (!snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)) return null;
-  const tokens = estimateApproxTokens(projectObservationForProvider(result).content);
+  const tokens = allowanceTokens(allowance, result);
   if (tokens > allowance.remainingTokens) return null;
   allowance.remainingTokens -= tokens;
   return result;
@@ -78,19 +87,20 @@ function deliveredWhole(context: CaptureContext, byteSize: number, whole: () => 
  * delivered whole keeps its tokens counted. Batches never overlap. */
 export function observationWholeDeliveryBatches() {
   let current: Readonly<{ round: number; allowance: WholeDeliveryAllowance }> | undefined;
-  const allowance = (round: number, shareTokens: number): WholeDeliveryAllowance => {
-    if (current?.round !== round) current = { round, allowance: wholeDeliveryAllowance(shareTokens) };
+  const allowance = (round: number, share: WholeDeliveryShare): WholeDeliveryAllowance => {
+    if (current?.round !== round) current = { round, allowance: wholeDeliveryAllowance(share) };
     return current.allowance;
   };
   return {
     allowance,
-    replay(round: number, shareTokens: number, result: ToolExecutionResult): void {
+    replay(round: number, share: WholeDeliveryShare, result: ToolExecutionResult): void {
       const source = result.observation?.source;
       if (source !== "mcp" && source !== "workspace") return;
       const projected = projectObservationForProvider(result);
       // A bounded preview already carries its descriptor part.
       if (projected.content.length === result.content.length) return;
-      allowance(round, shareTokens).remainingTokens -= estimateApproxTokens(projected.content);
+      const batch = allowance(round, share);
+      batch.remainingTokens -= allowanceTokens(batch, result);
     }
   };
 }

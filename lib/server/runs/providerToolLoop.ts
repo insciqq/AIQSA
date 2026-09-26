@@ -1,5 +1,6 @@
 import { mergeTokenUsage, TOKEN_USAGE_FIELDS } from "../../domain/usage";
 import { localSettlementError } from "./settlementFailure";
+import { observeContextEstimate } from "./contextEstimateObservability";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { providerContextRejection } from "../providers/providerObservability";
@@ -368,6 +369,7 @@ export async function runProviderToolLoop(
         }
       }
       const result = { ...next.value, usage: mergeTokenUsage(lastReportedUsage ?? {}, next.value.usage) };
+      observeContextEstimate(input.bridge, roundRequest, result.usage);
       const dispatchedRequest = input.dispatchedRequest?.({ request: roundRequest, round }) ?? roundRequest;
       preparedRequest = dispatchedRequest;
       const dispatchedContinuation: ProviderToolLoopContinuation = dispatchedRequest === roundRequest ||

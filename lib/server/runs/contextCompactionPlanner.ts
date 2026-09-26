@@ -1,4 +1,4 @@
-import { estimateApproxTokens } from "../../domain/contextBudget";
+import { contextTokenEstimator } from "../../domain/tokenEstimate";
 import type { ContextPlanMeasurement, ContextRejectionRebuild } from "../../contracts/contextCompaction";
 import { decodeToolObservationDescriptor, type ToolObservationDescriptor } from "../toolObservations/contract";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
@@ -368,23 +368,24 @@ function trimCoveredTranscript(request: ProviderRunRequest, covered: readonly To
   droppedTokens: number;
   request: ProviderRunRequest;
 }> {
+  const estimate = contextTokenEstimator(request);
   const messages = request.providerToolMessages ?? [];
-  const total = estimateApproxTokens(messages);
+  const total = estimate(messages);
   const dropped: ToolTranscriptUnit[] = [];
   let estimated = 0;
   let remaining = messages;
   for (const unit of covered) {
     if (estimated >= excessTokens) {
       remaining = withoutUnits(messages, dropped);
-      estimated = total - estimateApproxTokens(remaining);
+      estimated = total - estimate(remaining);
       if (estimated >= excessTokens) break;
     }
     dropped.push(unit);
-    estimated += estimateApproxTokens(messages.slice(unit.start, unit.end));
+    estimated += estimate(messages.slice(unit.start, unit.end));
   }
   remaining = withoutUnits(messages, dropped);
   return dropped.length > 0
-    ? { droppedTokens: total - estimateApproxTokens(remaining), request: { ...request, providerToolMessages: remaining } }
+    ? { droppedTokens: total - estimate(remaining), request: { ...request, providerToolMessages: remaining } }
     : { droppedTokens: 0, request };
 }
 
@@ -436,11 +437,12 @@ export function contextHistory(request: ProviderRunRequest, budgetTokens: number
   const rest = prior.filter((message) => message !== summaryMessage);
   const { covered, uncovered } = summary && summaryMessage
     ? contextSummaryCoverage(request, summary, rest) : { covered: [], uncovered: rest };
+  const estimate = contextTokenEstimator(request);
   return {
     covered,
-    older: uncovered.slice(0, uncovered.length - contextSummaryTail(uncovered, budgetTokens).length),
+    older: uncovered.slice(0, uncovered.length - contextSummaryTail(uncovered, budgetTokens, estimate).length),
     prior,
-    priorTokens: prior.reduce((total, message) => total + estimateApproxTokens(message.content), 0),
+    priorTokens: prior.reduce((total, message) => total + estimate(message.content), 0),
     summaryMessage,
     uncovered
   };
@@ -471,13 +473,14 @@ function trimCoveredHistory(request: ProviderRunRequest, history: ContextHistory
   droppedTokens: number;
   request: ProviderRunRequest;
 }> {
+  const estimate = contextTokenEstimator(request);
   const dropped = new Set<ProviderConversationMessage>();
   let droppedTokens = 0;
   for (const turn of contextTurns(history.covered)) {
     if (droppedTokens >= excessTokens) break;
     for (const message of turn) {
       dropped.add(message);
-      droppedTokens += estimateApproxTokens(message.content);
+      droppedTokens += estimate(message.content);
     }
   }
   return {
@@ -529,10 +532,11 @@ export function planContextCompaction(input: Readonly<{
   request: ProviderRunRequest;
 }>): ContextCompactionPlan {
   const request = input.request;
+  const estimate = contextTokenEstimator(request);
   const budgetTokens = typeof input.budgetTokens === "number" && Number.isFinite(input.budgetTokens)
     ? input.budgetTokens : null;
   const original = request.providerToolMessages ?? [];
-  const providerMessageTokens = estimateApproxTokens(original);
+  const providerMessageTokens = estimate(original);
   const beforeTokens = input.assembledTokens === undefined || input.assembledTokens === null
     ? providerMessageTokens
     : Math.max(providerMessageTokens, Math.ceil(input.assembledTokens));
@@ -566,7 +570,7 @@ export function planContextCompaction(input: Readonly<{
         const candidate = byIndex.get(index);
         return candidate ? maskResult(input.bridge!, candidate) : value;
       });
-      const maskedTokens = Math.max(0, beforeTokens - providerMessageTokens) + estimateApproxTokens(masked);
+      const maskedTokens = Math.max(0, beforeTokens - providerMessageTokens) + estimate(masked);
       if (maskedTokens < beforeTokens) {
         planned = { ...request, providerToolMessages: masked };
         afterTokens = maskedTokens;
@@ -605,14 +609,14 @@ export function planContextCompaction(input: Readonly<{
 
   const history = contextHistory(planned, budgetTokens);
   // The exact minimum keeps an applied summary note: it is never traded away.
-  const summaryTokens = history.summaryMessage ? estimateApproxTokens(history.summaryMessage.content) : 0;
+  const summaryTokens = history.summaryMessage ? estimate(history.summaryMessage.content) : 0;
   // Older settled tool rounds are history too: a summary can stand for them,
   // after which they leave as whole protocol units. The newest batch stays.
   const transcript = toolTranscriptReduction(planned);
   const transcriptMessages = planned.providerToolMessages ?? [];
-  const transcriptTokens = estimateApproxTokens(transcriptMessages);
+  const transcriptTokens = estimate(transcriptMessages);
   const retainedTranscriptTokens = transcript.older.length > 0
-    ? estimateApproxTokens(withoutUnits(transcriptMessages, transcript.older)) : transcriptTokens;
+    ? estimate(withoutUnits(transcriptMessages, transcript.older)) : transcriptTokens;
   const minimumTokens = afterTokens - history.priorTokens + summaryTokens - (transcriptTokens - retainedTranscriptTokens);
   const overflow = (): ContextOverflow => ({
     fixedTokens: Math.max(0, minimumTokens - retainedTranscriptTokens),
@@ -646,7 +650,7 @@ export function planContextCompaction(input: Readonly<{
   // the history older than the exact tail it keeps is large enough to release
   // room once replaced by notes, whether or not masking ran; it never turns
   // this fitting request into overflow.
-  const olderTokens = history.older.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+  const olderTokens = history.older.reduce((total, message) => total + estimate(message.content), 0);
   const headroom = beforeTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio &&
     afterTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio &&
     olderTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.summaryMinimumReleaseRatio;
