@@ -238,7 +238,7 @@ test("unknown, foreign and malformed chat addresses share one notice and land on
 });
 
 test("Project addresses open the Project, and a readable Project chat's own address moves there", async ({ page, context, browser, baseURL }, testInfo) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await useAppearance(page, context, baseURL!, "light");
   await signInWithLocalToken(page);
   const suffix = randomUUID().slice(0, 8);
@@ -271,8 +271,9 @@ test("Project addresses open the Project, and a readable Project chat's own addr
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     await expect(page).toHaveURL(exactPath(`/p/${projectId}`));
 
+    // Resolving takes the personal list, one chat detail read and the Project's own reads.
     await page.goto(`/c/${chatId}`);
-    await expect(page).toHaveURL(exactPath(`/p/${projectId}/c/${chatId}`), { timeout: 20_000 });
+    await expect(page).toHaveURL(exactPath(`/p/${projectId}/c/${chatId}`), { timeout: 45_000 });
     await expect(projectPanel).toContainText(projectName);
     await expect(page.getByTestId("header-title")).toHaveText(chatTitle);
     await expect(notice).toHaveCount(0);

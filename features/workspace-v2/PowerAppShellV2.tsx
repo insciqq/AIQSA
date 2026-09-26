@@ -867,7 +867,6 @@ export function PowerAppShellV2({
     refreshActiveChat,
     refreshWorkspace,
     renameChat,
-    resolveChatProjectId,
     toggleChatFavorite,
     updateChatFolder
   } = useWorkspaceActions({
@@ -1290,20 +1289,18 @@ export function PowerAppShellV2({
         }
         const pending = workspaceRefreshPromiseRef.current;
         if (pending) await pending;
-        let missing = false;
+        // A readable Project chat opens in its Project; invisible and missing
+        // chats stay indistinguishable.
+        const target: { outcome: "missing" | Readonly<{ projectId: string }> | null } = { outcome: null };
         await refreshWorkspace(chatId, {
           catalogOverride,
           isCurrent,
-          onTargetUnavailable: () => {
-            missing = true;
+          onTargetUnavailable: (projectId) => {
+            target.outcome = projectId ? { projectId } : "missing";
           }
         });
         if (useWorkspaceStore.getState().activeChatId === chatId) return "opened";
-        if (!missing) return "failed";
-        // A readable Project chat opens in its Project; invisible and missing
-        // chats stay indistinguishable.
-        const projectId = await resolveChatProjectId(chatId);
-        return projectId ? { projectId } : "missing";
+        return target.outcome ?? "failed";
       },
       openBlank() {
         projectWorkspace.actions.leave();
