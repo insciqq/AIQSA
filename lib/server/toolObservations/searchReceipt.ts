@@ -5,19 +5,30 @@ import type { ToolExecutionResult } from "../tools/types";
 import { ObservationStoreError } from "./contract";
 
 export type SearchObservationReceipt = Readonly<{ version: 1; executions: readonly SearchExecutionEvidence[] }>;
-const RECEIPT_BYTES = 32 * 1024;
+/** PostgreSQL checks the stored receipt's jsonb text at 64 KiB. That output
+ * adds only separator spaces around the fields of at most three executions
+ * of 20 sources, far less than the remaining 4 KiB. */
+export const SEARCH_OBSERVATION_RECEIPT_BYTES = 60 * 1024;
+/** Snippet lengths (code points) tried before snippets are dropped. */
+const SNIPPET_STEPS = [300, 150] as const;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const identity = (value: unknown): value is string => typeof value === "string" && value.length > 0 &&
   value.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(value);
 const withoutSnippet = ({ snippet: _snippet, ...source }: SearchSource): SearchSource => source;
+/** A shortened snippet stays normalized: trimmed, never a split code point. */
+function shortenedSnippet(source: SearchSource, maximum: number): SearchSource {
+  const points = source.snippet === undefined ? [] : Array.from(source.snippet);
+  return points.length <= maximum ? source : { ...source, snippet: `${points.slice(0, maximum - 1).join("").trimEnd()}…` };
+}
 const sourceFields = (source: Readonly<Record<string, unknown>>) =>
   JSON.stringify([source.date ?? null, source.rank, source.snippet ?? null, source.title, source.url]);
 
 /** The sole owner of reported usage and of each engine's thread sources. It is
  * recorded before the original is stored and survives its loss. Findings stay
- * only in the model-facing original; snippets, then trailing sources, are
- * dropped deterministically before the bounded receipt could lose usage. */
+ * only in the model-facing original. Ordinary results keep every source as
+ * Off persists it; a larger one first shortens snippets, then drops them,
+ * then trailing sources, deterministically and never usage. */
 export function searchObservationReceipt(result: ToolExecutionResult): SearchObservationReceipt {
   const executions = searchExecutionsFromToolResult(result);
   if (!executions.length || executions.length !== searchExecutionPreviewCount(result)) throw new ObservationStoreError("tool_observation_unavailable");
@@ -29,11 +40,12 @@ export function searchObservationReceipt(result: ToolExecutionResult): SearchObs
     })) });
   const candidates = [
     () => build(execution => execution.sources),
+    ...SNIPPET_STEPS.map(maximum => () => build(execution => execution.sources.map(source => shortenedSnippet(source, maximum)))),
     ...Array.from({ length: 21 }, (_, index) => () => build(execution => execution.sources.slice(0, 20 - index).map(withoutSnippet)))
   ];
   for (const candidate of candidates) {
     const receipt = candidate();
-    if (receipt && Buffer.byteLength(JSON.stringify(receipt)) <= RECEIPT_BYTES) return receipt;
+    if (receipt && Buffer.byteLength(JSON.stringify(receipt)) <= SEARCH_OBSERVATION_RECEIPT_BYTES) return receipt;
   }
   throw new ObservationStoreError("tool_observation_unavailable");
 }

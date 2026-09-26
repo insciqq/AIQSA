@@ -1,9 +1,8 @@
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
-import { getMcpResponseWireLimits } from "../mcp/responseLimits";
 import type { ObservationProducer } from "./repository";
-import { TOOL_OBSERVATION_LIMITS, type ToolObservationSourceBinding } from "./contract";
+import { mcpObservationMaximumBytes, TOOL_OBSERVATION_LIMITS, type ToolObservationSourceBinding } from "./contract";
 import type { createToolObservationService, ToolObservationProjection } from "./service";
 import { boundedRenderedSearchToolResultText, boundedSearchToolResultText, searchExecutionsFromToolResult,
   shortenedSearchToolResultText, type SearchExecutionEvidence } from "../search/toolResult";
@@ -60,7 +59,7 @@ export async function captureMcpObservation(context: CaptureContext,
   execute: () => Promise<AiqsaMcpToolCallResult>): Promise<ToolExecutionResult> {
   return context.service.withReservation({ ...context, source: "mcp", sourceBinding,
     // The validated semantic result fits the wire cap plus its small envelope.
-    maximumBytes: getMcpResponseWireLimits().callToolResponseMaxBytes + 64 * 1024 }, async receipt => {
+    maximumBytes: mcpObservationMaximumBytes() }, async receipt => {
     const original = await execute();
     const projection = await receipt.store({ original, outcome: original.isError ? "error" : "complete",
       sourceTruncated: false, maskable: original.unsupportedContentTypes.length === 0 });

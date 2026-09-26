@@ -1,10 +1,11 @@
-import { decodeSearchObservationReceipt, type SearchObservationReceipt } from "./searchReceipt";
+import { decodeSearchObservationReceipt, SEARCH_OBSERVATION_RECEIPT_BYTES, type SearchObservationReceipt } from "./searchReceipt";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type ToolObservation } from "@prisma/client";
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { resolveChatAccess } from "../projects/access";
 import { activeToolLoopRun, activeToolLoopRunSql, lockRunSettlementScope } from "../runs/prismaRepositoryShared";
-import { decodeToolObservationSourceBinding, ObservationStoreError, TOOL_OBSERVATION_LIMITS, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
+import { admitsToolObservationReservation, decodeToolObservationSourceBinding, ObservationStoreError, TOOL_OBSERVATION_LIMITS,
+  type ToolObservationBudgetUsage, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
 import { OBSERVATION_READ_LIMITS } from "./byteReader";
 import { measureObservationJson } from "./codec";
 
@@ -13,6 +14,8 @@ export type ObservationProducer = ObservationActor & Readonly<{ toolCallId: stri
 export { ObservationStoreError } from "./contract";
 const unavailable = () => new ObservationStoreError("tool_observation_unavailable");
 const conflict = () => new ObservationStoreError("tool_observation_conflict");
+/** A reservation refused by run/call authority precedes every dispatch. */
+const notStarted = () => new ObservationStoreError("tool_observation_not_started");
 const identifier = () => randomUUID().replaceAll("-", "");
 
 /** Handles one availability check may cover: a summary source references at
@@ -94,7 +97,9 @@ export function createToolObservationRepository(input: Readonly<{
       if (sourceBinding && (!decodeToolObservationSourceBinding(sourceBinding, sourceKind) ||
         Buffer.byteLength(JSON.stringify(sourceBinding)) > 4096)) throw conflict();
       return prisma.$transaction(async tx => {
-        const run = await authority(tx, context, true);
+        const run = await authority(tx, context, true).catch((error: unknown) => {
+          throw error instanceof ObservationStoreError && error.code === "tool_observation_unavailable" ? notStarted() : error;
+        });
         const existing = await tx.toolObservation.findUnique({ where: { toolCallId: context.toolCallId } });
         if (existing) {
           if (existing.modelRunId !== run.id || existing.sourceKind !== sourceKind) throw conflict();
@@ -106,7 +111,7 @@ export function createToolObservationRepository(input: Readonly<{
         }
         const call = await tx.modelRunToolCall.findFirst({ where: { id: context.toolCallId, modelRunId: run.id,
           state: { in: ["pending", "running"] } }, select: { id: true } });
-        if (!call) throw unavailable();
+        if (!call) throw notStarted();
         // A dead producer cannot consume every future branch reservation.
         // Retain its identity/outcome as no-replay evidence, and let the
         // already-created deletion job retire any abandoned object. A run is
@@ -122,22 +127,21 @@ export function createToolObservationRepository(input: Readonly<{
         // Source-owned producers (Skill/Knowledge) keep their bytes in their
         // owner: they neither consume nor are refused by the store budget.
         if (sourceKind !== "skill" && sourceKind !== "knowledge") {
-          // Only retained or in-flight store bytes count. An in-flight ceiling
-          // becomes the exact size at publication, or zero once UNAVAILABLE.
-          const [budget] = await tx.$queryRaw<Array<{ runBytes: bigint; branchBytes: bigint; runCount: bigint; branchCount: bigint }>>`
+          // Only externalized bytes and in-flight ceilings count: a ceiling
+          // becomes the exact size of an object at publication, and nothing
+          // once the original is inline or UNAVAILABLE. Rows are not counted.
+          const [budget] = await tx.$queryRaw<ToolObservationBudgetUsage[]>`
             WITH RECURSIVE path AS (
               SELECT "id", "parentMessageId" FROM "Message" WHERE "chatId" = ${run.chatId} AND "id" = ${run.assistantMessageId}
               UNION SELECT p."id", p."parentMessageId" FROM "Message" p JOIN path c ON p."id" = c."parentMessageId"
                 WHERE p."chatId" = ${run.chatId}
             ) SELECT COALESCE(SUM(o."reservedBytes") FILTER (WHERE o."modelRunId" = ${run.id}), 0)::bigint AS "runBytes",
-              COALESCE(SUM(o."reservedBytes"), 0)::bigint AS "branchBytes",
-              COUNT(*) FILTER (WHERE o."modelRunId" = ${run.id})::bigint AS "runCount", COUNT(*)::bigint AS "branchCount"
+              COALESCE(SUM(o."reservedBytes"), 0)::bigint AS "branchBytes"
             FROM "ToolObservation" o JOIN "ModelRun" r ON r."id" = o."modelRunId"
             WHERE r."chatId" = ${run.chatId} AND (r."id" = ${run.id} OR r."assistantMessageId" IN (SELECT "id" FROM path))
-              AND o."state" <> 'UNAVAILABLE' AND o."sourceKind" IN ('mcp', 'workspace', 'search')`;
-          if (!budget || budget.runBytes + BigInt(maximumBytes) > BigInt(TOOL_OBSERVATION_LIMITS.runBytes) ||
-            budget.branchBytes + BigInt(maximumBytes) > BigInt(TOOL_OBSERVATION_LIMITS.branchBytes) ||
-            budget.runCount >= BigInt(TOOL_OBSERVATION_LIMITS.runCount) || budget.branchCount >= BigInt(TOOL_OBSERVATION_LIMITS.branchCount)) {
+              AND o."sourceKind" IN ('mcp', 'workspace', 'search')
+              AND (o."state" = 'RESERVED' OR o."state" IN ('STORING', 'READY') AND o."storageMode" = 'OBJECT')`;
+          if (!budget || !admitsToolObservationReservation(budget, maximumBytes)) {
             throw new ObservationStoreError("tool_observation_limit_exceeded");
           }
         }
@@ -158,7 +162,7 @@ export function createToolObservationRepository(input: Readonly<{
     },
 
     async recordSearchReceipt(context: ObservationProducer, receipt: SearchObservationReceipt) {
-      if (!decodeSearchObservationReceipt(receipt) || Buffer.byteLength(JSON.stringify(receipt)) > 32 * 1024) throw conflict();
+      if (!decodeSearchObservationReceipt(receipt) || Buffer.byteLength(JSON.stringify(receipt)) > SEARCH_OBSERVATION_RECEIPT_BYTES) throw conflict();
       await prisma.$transaction(async tx => {
         await lockRunSettlementScope(tx, context.runId);
         await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${context.runId} FOR UPDATE`;

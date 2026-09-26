@@ -16,11 +16,11 @@ import { createToolObservationService, type ToolObservationRepository } from "./
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider,
   restoreObservedResult } from "./sourceAdapters";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
-import { boundedRenderedSearchToolResultText, searchToolResultContent, searchToolResultText,
+import { boundedRenderedSearchToolResultText, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultText,
   type SearchExecutionEvidence } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 import { SearchToolCancelledError } from "../search/toolExecutor";
-import { decodeSearchObservationReceipt, searchObservationReceipt } from "./searchReceipt";
+import { decodeSearchObservationReceipt, SEARCH_OBSERVATION_RECEIPT_BYTES, searchObservationReceipt } from "./searchReceipt";
 import type { ToolExecutionResult } from "../tools/types";
 
 const producer = { runId: "synthetic-run", userId: "synthetic-owner", toolCallId: "synthetic-call" };
@@ -312,6 +312,25 @@ describe("observation admission holds storage phases, not business calls", () =>
     expect((await service.read(actor, { handle: saved.observation.handle })).fragment).toContain("zzzz");
   });
 
+  it("reports a reservation refused by run or call authority as not started, never as a lost result", async () => {
+    const f = fixture();
+    f.repository.reserve.mockRejectedValueOnce(new ObservationStoreError("tool_observation_not_started"));
+    const business = vi.fn();
+    const refused = await f.service().withReservation({ producer, source: "mcp", maximumBytes: 1024 * 1024 }, business)
+      .catch((error: unknown) => error);
+    expect(refused).toMatchObject({ code: "tool_observation_not_started" });
+    expect(business).not.toHaveBeenCalled();
+    expect(f.repository.unavailable).not.toHaveBeenCalled();
+    expect(f.repository.recordOutcome).not.toHaveBeenCalled();
+    expect(observationFailure(refused)?.message).not.toMatch(/may have completed|retr(y|ied)/iu);
+    // A failure after dispatch keeps its no-replay unavailability.
+    const lost = await f.service().withReservation({ producer, source: "mcp", maximumBytes: 1024 * 1024 }, async () => {
+      throw new ObservationStoreError("tool_observation_unavailable");
+    }).catch((error: unknown) => error);
+    expect(lost).toMatchObject({ code: "tool_observation_unavailable" });
+    expect(observationFailure(lost)?.message).toMatch(/may have completed/iu);
+  });
+
   it("records the executed outcome before an original waits for capacity, then publishes it", async () => {
     const observations = memoryToolObservations();
     const admission = createObservationAdmission(1024 * 1024, 1);
@@ -418,6 +437,25 @@ describe("accepted observation source adapters", () => {
     expect(await restoreObservedResult({ service: f.service(), producer }, call)).toEqual(result);
   });
 
+  it("accounts an ordinary three-engine Search with the same thread sources and snippets Off persists", async () => {
+    const f = fixture();
+    const executions: SearchExecutionEvidence[] = [1, 2, 3].map(index => ({ displayName: `Source ${index}`,
+      invocationId: `invocation-${index}`, modelId: "model", optionId: `option-${index}`, provider: "provider",
+      revisionId: `revision-${index}`, findings: `Synthetic findings ${index}`, status: "complete",
+      sources: Array.from({ length: 20 }, (_, rank) => {
+        const url = `https://example.com/${index}/${rank}/`;
+        return { rank: rank + 1, title: `Title ${index}-${rank}`, url: url + "p".repeat(400 - url.length), snippet: `${rank}`.padEnd(300, "s") };
+      }),
+      usage: { inputTokens: 10 * index, outputTokens: index, totalTokens: 11 * index } }));
+    const off: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
+      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+    await captureSearchObservation({ service: f.service(), producer }, call, sources, async () => off);
+    // Both paths persist one SearchRun per execution from these sources.
+    const accounted = await f.service().searchAccounting(producer);
+    expect(accounted.map(execution => execution.sources)).toEqual(searchExecutionsFromToolResult(off).map(execution => execution.sources));
+    expect(accounted.flatMap(execution => execution.sources).every(source => source.snippet?.length === 300)).toBe(true);
+  });
+
   it("externalizes canonical Search once and keeps usage and thread sources in the receipt when its object is lost", async () => {
     const f = fixture();
     const execute = vi.fn(async () => searchResult(true));
@@ -467,7 +505,7 @@ describe("accepted observation source adapters", () => {
       usage: { inputTokens: index, outputTokens: 1, totalTokens: index + 1 } }));
     const receipt = searchObservationReceipt({ callId: call.id, name: call.name, status: "complete",
       content: searchToolResultContent(executions), rawPreview: { searchResultVersion: 2, searchExecutions: executions } });
-    expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(32 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(SEARCH_OBSERVATION_RECEIPT_BYTES);
     expect(receipt.executions.map(execution => execution.usage.totalTokens)).toEqual([2, 3, 4]);
     expect(receipt.executions.every(execution => execution.sources.every(source => source.snippet === undefined))).toBe(true);
     expect(receipt.executions[0]!.sources.length).toBeGreaterThan(0);

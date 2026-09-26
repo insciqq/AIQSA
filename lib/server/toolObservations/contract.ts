@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { OBSERVATION_ENCODING } from "./codec";
 import { OBSERVATION_READ_LIMITS, ObservationReadError, type ObservationByteSelector } from "./byteReader";
+import { getMcpResponseWireLimits, type McpResponseWireLimits } from "../mcp/responseLimits";
 
 export const TOOL_OBSERVATION_POLICY_VERSION = 1 as const;
 export const TOOL_OBSERVATION_SOURCES = ["mcp", "workspace", "search", "skill", "knowledge"] as const;
@@ -16,7 +17,8 @@ export type ToolObservationSourceBinding = Readonly<{ version: 1 }> & (
 
 export class ObservationStoreError extends Error {
   constructor(readonly code: "tool_observation_unavailable" | "tool_observation_limit_exceeded" |
-    "tool_observation_conflict" | "tool_observation_storage_unavailable" | "tool_observation_busy") {
+    "tool_observation_conflict" | "tool_observation_storage_unavailable" | "tool_observation_busy" |
+    "tool_observation_not_started") {
     super(code);
     this.name = "ObservationStoreError";
   }
@@ -30,7 +32,9 @@ export function observationFailure(error: unknown): Readonly<{ code: string; mes
       ? "The budget for retained tool results is exhausted. This new operation was not dispatched; existing results remain readable."
       : error.code === "tool_observation_busy"
         ? "Saved tool results are temporarily busy. This new operation was not dispatched; it may be retried later."
-        : "The original operation may have completed, but its saved result is unavailable. Do not execute it again to recover the result." };
+        : error.code === "tool_observation_not_started"
+          ? "This operation was not started: the run can no longer accept tool results. Nothing was executed."
+          : "The original operation may have completed, but its saved result is unavailable. Do not execute it again to recover the result." };
 }
 
 /** Storage location, actor/run IDs, credentials and source bindings stay in
@@ -52,10 +56,14 @@ export const TOOL_OBSERVATION_LIMITS = Object.freeze({
   projectionBytes: 8 * 1024,
   readerEstimatedTokens: 4096,
   readerBytes: 16 * 1024,
+  /** Externalized originals (exact size) plus in-flight reservation ceilings
+   * of one run and of its branch. Inline rows are bounded database values,
+   * like a persisted Off result, and count toward neither budget: every
+   * counted original exceeds `inlineBytes`, so the bytes also bound objects. */
   runBytes: 64 * 1024 * 1024,
   branchBytes: 256 * 1024 * 1024,
-  runCount: 512,
-  branchCount: 4096,
+  /** The tool loop's accepted parallel calls (`maxConcurrency`). */
+  concurrentCalls: 4,
   /** Process-wide bytes of originals being encoded, uploaded or read in full.
    * This bounds storage streams and transient buffers, never business calls. */
   inFlightBytes: 32 * 1024 * 1024,
@@ -65,6 +73,29 @@ export const TOOL_OBSERVATION_LIMITS = Object.freeze({
   storageTimeoutMs: 60_000,
   storageLeaseMs: 120_000
 });
+
+/** The MCP adapter's reservation ceiling: the configured wire cap plus the
+ * original's small versioned envelope. */
+export function mcpObservationMaximumBytes(limits: McpResponseWireLimits = getMcpResponseWireLimits()): number {
+  return limits.callToolResponseMaxBytes + 64 * 1024;
+}
+
+/** Store usage of the reserving run and its branch: retained externalized
+ * bytes plus in-flight ceilings of reservations not yet published. */
+export type ToolObservationBudgetUsage = Readonly<{ runBytes: bigint; branchBytes: bigint }>;
+
+/** The per-run ceiling never refuses a full parallel batch at the configured
+ * wire cap when nothing is retained. Search (8 MiB) and Workspace (6 MiB and
+ * an envelope) ceilings stay below `runBytes / concurrentCalls`. */
+export function toolObservationRunBytes(limits: McpResponseWireLimits = getMcpResponseWireLimits()): number {
+  return Math.max(TOOL_OBSERVATION_LIMITS.runBytes, TOOL_OBSERVATION_LIMITS.concurrentCalls * mcpObservationMaximumBytes(limits));
+}
+
+export function admitsToolObservationReservation(usage: ToolObservationBudgetUsage, maximumBytes: number,
+  limits: McpResponseWireLimits = getMcpResponseWireLimits()): boolean {
+  return usage.runBytes + BigInt(maximumBytes) <= BigInt(toolObservationRunBytes(limits)) &&
+    usage.branchBytes + BigInt(maximumBytes) <= BigInt(TOOL_OBSERVATION_LIMITS.branchBytes);
+}
 
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
