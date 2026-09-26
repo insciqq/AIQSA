@@ -65,7 +65,7 @@ MCP Auto, Load all and Off require explicit user action. Auto freezes authorized
 
 Normalize only proven whole-result duplicates before provider projection; preserve unique content, ambiguity, errors, Hub results and receipts.
 
-V1 retains originals; recall reauthorizes source/branch access and preserves truncation/instruction/citation authority, never proving delivery. Results within the result bound and a quarter of the budget reach the model whole; larger ones as previews. V1 Search text equals Off; usage and sources stay in receipts.
+V1 retains originals; recall reauthorizes source/branch access and preserves truncation/instruction/citation authority, never proving delivery. Within the result bound, results reach the model whole until their batch's quarter-budget share is spent; others as previews. V1 Search text equals Off; usage and sources stay in receipts.
 
 Workspace admission freezes ready runtime/image, official catalog, network, paths, authority and secret revisions. Server controls sandbox identity, VM lifecycle, host-copy/networking; execution/export is chat-exclusive. Guests receive verified run-visible originals and restored personal secrets under [Security](SECURITY.md). Relevance follows current-message/branch references independently of staging. Check authorized inbox index before repeat uploads; entries cannot prove surviving guest bytes.
 

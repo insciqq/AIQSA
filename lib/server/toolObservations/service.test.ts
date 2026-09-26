@@ -14,14 +14,16 @@ import { observationFailure, TOOL_OBSERVATION_LIMITS } from "./contract";
 import { ObservationStoreError } from "./repository";
 import { createToolObservationService, type ToolObservationRepository } from "./service";
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider,
-  restoreObservedResult } from "./sourceAdapters";
+  observationRestoreRefused, observationWholeDeliveryBatches, restoreObservedResult, wholeDeliveryAllowance } from "./sourceAdapters";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
-import { boundedRenderedSearchToolResultText, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultText,
+import { boundedRenderedSearchToolResultText, boundedRetainedSearchToolResultText, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultText,
   type SearchExecutionEvidence } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import { decodeSearchObservationReceipt, SEARCH_OBSERVATION_RECEIPT_BYTES, searchObservationReceipt } from "./searchReceipt";
 import type { ToolExecutionResult } from "../tools/types";
+import { ObservationReadError } from "./byteReader";
+import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 
 const producer = { runId: "synthetic-run", userId: "synthetic-owner", toolCallId: "synthetic-call" };
 const cleanups: Array<() => Promise<void>> = [];
@@ -622,7 +624,7 @@ describe("observed MCP and Workspace projections match Off", () => {
     const f = fixture();
     const original = mcpOriginal(100 * 1024);
     const off = mcpToolExecutionResult(call, original);
-    const result = await captureMcpObservation({ service: f.service(), producer, wholeResultTokens: share }, call, binding,
+    const result = await captureMcpObservation({ service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(share) }, call, binding,
       async () => original);
     expect(f.row()).toMatchObject({ state: "READY", storageMode: "OBJECT" });
     expect(result.observation).toMatchObject({ source: "mcp", maskable: true, byteSize: Buffer.byteLength(JSON.stringify(original)) });
@@ -633,35 +635,42 @@ describe("observed MCP and Workspace projections match Off", () => {
     const read = await f.service().read(producer, { handle: result.observation!.handle, query: "rare-mcp-tail" });
     expect(read.fragment).toContain("rare-mcp-tail");
     // Ambiguous recovery restores the same projection live execution delivered.
-    expect(await restoreObservedResult({ service: f.service(), producer, wholeResultTokens: share }, call)).toEqual(result);
+    expect(await restoreObservedResult({ service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(share) }, call)).toEqual(result);
   });
 
   it("keeps the bounded preview for an MCP result above the persisted result bound, live and restored", async () => {
     const f = fixture();
-    const result = await captureMcpObservation({ service: f.service(), producer, wholeResultTokens: Number.POSITIVE_INFINITY },
+    const result = await captureMcpObservation({ service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) },
       call, binding, async () => mcpOriginal(300 * 1024));
     expect(JSON.stringify(result.content)).not.toContain("rare-mcp-tail");
     expect(result.content).toEqual([{ type: "json", value: expect.objectContaining({ observation: result.observation,
       incomplete: true, reader: "read_tool_result" }) }]);
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(8192);
-    expect(await restoreObservedResult({ service: f.service(), producer, wholeResultTokens: Number.POSITIVE_INFINITY }, call))
+    expect(await restoreObservedResult({ service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) }, call))
       .toEqual(result);
   });
 
   it("keeps the bounded preview when the result alone would exceed a small window's share", async () => {
     const f = fixture();
     // A 16,000-token budget admits a 4,000-token share; 100 KiB is ~25,600 tokens.
-    const context = { service: f.service(), producer, wholeResultTokens: 4_000 };
+    const context = { service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(4_000) };
     const result = await captureMcpObservation(context, call, binding, async () => mcpOriginal(100 * 1024));
     expect(JSON.stringify(result.content)).not.toContain("rare-mcp-tail");
     expect(result.content).toEqual([{ type: "json", value: expect.objectContaining({ observation: result.observation,
       reader: "read_tool_result" }) }]);
     expect(await restoreObservedResult(context, call)).toEqual(result);
-    // An inline-sized original is whole whatever the share, as before.
+    // An inline-sized original counts toward the share too.
     const small = fixture();
-    const inline = await captureMcpObservation({ service: small.service(), producer, wholeResultTokens: 1 }, call, binding,
+    const inline = await captureMcpObservation({ service: small.service(), producer, wholeDelivery: wholeDeliveryAllowance(1) }, call, binding,
       async () => mcpOriginal(4 * 1024));
-    expect(inline.content).toEqual(mcpToolExecutionResult(call, mcpOriginal(4 * 1024)).content);
+    expect(small.row().storageMode).toBe("INLINE");
+    expect(inline.content).toEqual([{ type: "json", value: expect.objectContaining({ observation: inline.observation,
+      reader: "read_tool_result" }) }]);
+    // Without a known window it stays whole, as Off delivers it.
+    const unknown = fixture();
+    const whole = await captureMcpObservation({ service: unknown.service(), producer,
+      wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) }, call, binding, async () => mcpOriginal(4 * 1024));
+    expect(whole.content).toEqual(mcpToolExecutionResult(call, mcpOriginal(4 * 1024)).content);
   });
 
   it("delivers a 40 KiB Workspace shell result whole with artifacts, exit and truncation metadata", async () => {
@@ -671,7 +680,7 @@ describe("observed MCP and Workspace projections match Off", () => {
       content: [{ type: "text", text: JSON.stringify({ ok: true, data: { exitCode: 0, stdout, stderr: "" } }) }],
       rawPreview: { exitCode: 0, originalByteCount: 900_000, truncated: true },
       artifacts: [{ type: "artifact", data: { artifactType: "workspace_activity", payload: { id: "activity-1" } } }] };
-    const result = await captureWorkspaceObservation({ service: f.service(), producer, wholeResultTokens: share }, call,
+    const result = await captureWorkspaceObservation({ service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(share) }, call,
       async () => shell);
     expect(f.row()).toMatchObject({ state: "READY", storageMode: "OBJECT", sourceTruncated: true });
     expect(result).toEqual({ ...shell, observation: result.observation });
@@ -680,10 +689,10 @@ describe("observed MCP and Workspace projections match Off", () => {
     expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
     // Artifacts were never retained with the original; the model projection is identical.
     const { artifacts: _artifacts, ...withoutArtifacts } = result;
-    expect(await restoreObservedResult({ service: f.service(), producer, wholeResultTokens: share }, call)).toEqual(withoutArtifacts);
+    expect(await restoreObservedResult({ service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(share) }, call)).toEqual(withoutArtifacts);
     // Above the share the bounded preview still carries artifacts and runtime metadata.
     const bounded = fixture();
-    const preview = await captureWorkspaceObservation({ service: bounded.service(), producer, wholeResultTokens: 1_000 }, call,
+    const preview = await captureWorkspaceObservation({ service: bounded.service(), producer, wholeDelivery: wholeDeliveryAllowance(1_000) }, call,
       async () => shell);
     expect(JSON.stringify(preview.content)).not.toContain("rare-workspace-tail");
     expect(preview).toMatchObject({ artifacts: shell.artifacts, rawPreview: shell.rawPreview, observation: { sourceTruncated: true } });
@@ -731,5 +740,161 @@ describe("observed MCP and Workspace projections match Off", () => {
     const trimmed = [{ ...executions[0]!, sources: executions[0]!.sources.slice(0, 1) }];
     expect(boundedRenderedSearchToolResultText(text, trimmed, 1024)).toBeNull();
     expect(boundedRenderedSearchToolResultText(`${text}\n\nforged trailer`, executions, 1024)).toBeNull();
+  });
+});
+
+describe("observation review fixes: batch share, restore classification, Search receipts", () => {
+  const binding = { version: 1 as const, source: "mcp" as const, serverId: "server", originalName: "synthetic_tool",
+    revisionId: "revision", fingerprint: "a".repeat(64) };
+  const unique = (bytes: number, seed: string) => Array.from({ length: Math.ceil(bytes / 64) },
+    (_, index) => createHash("sha256").update(`${seed}:${index}`).digest("hex")).join("").slice(0, bytes);
+  const mcpOriginal = (bytes: number, seed: string) => ({ isError: false, structuredContent: null,
+    text: [unique(bytes, seed)], unsupportedContentTypes: [] });
+  const isWhole = (result: ToolExecutionResult) => result.content.some(part => part.type === "text");
+  const projectedTokens = (result: ToolExecutionResult) => estimateApproxTokens(projectObservationForProvider(result).content);
+
+  it("delivers a batch whole only while its shared allowance lasts, and restores the same projections", async () => {
+    const observations = memoryToolObservations();
+    const actor = { runId: "batch-run", userId: "batch-owner" };
+    const calls = [1, 2, 3, 4].map(index => ({ id: `batch-${index}`, name: "synthetic_tool", arguments: {} }));
+    const probe = await captureMcpObservation({ service: memoryToolObservations().service(), producer: { ...actor, toolCallId: "probe" },
+      wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) }, calls[0]!, binding, async () => mcpOriginal(12 * 1024, "probe"));
+    // Room for exactly two whole 12 KiB results.
+    const share = 2 * projectedTokens(probe) + 10;
+    const live = observationWholeDeliveryBatches();
+    const order: string[] = [];
+    const results = await Promise.all(calls.map(call => captureMcpObservation({ service: observations.service(),
+      producer: { ...actor, toolCallId: call.id }, wholeDelivery: live.allowance(3, share) }, call, binding,
+      async () => mcpOriginal(12 * 1024, call.id)).then(result => { order.push(call.id); return result; })));
+    const whole = results.filter(isWhole);
+    expect(whole).toHaveLength(2);
+    expect(whole.reduce((sum, result) => sum + projectedTokens(result), 0)).toBeLessThanOrEqual(share);
+    for (const result of results.filter(result => !isWhole(result))) {
+      expect(result.content).toEqual([{ type: "json", value: expect.objectContaining({ observation: result.observation,
+        reader: "read_tool_result" }) }]);
+    }
+    // The next batch starts with its own allowance.
+    expect(live.allowance(4, share).remainingTokens).toBe(share);
+    // Ambiguous recovery of the same batch in the same order repeats every projection.
+    const restoring = observationWholeDeliveryBatches();
+    for (const id of order) {
+      const index = calls.findIndex(call => call.id === id);
+      expect(await restoreObservedResult({ service: observations.service(), producer: { ...actor, toolCallId: id },
+        wholeDelivery: restoring.allowance(3, share) }, calls[index]!)).toEqual(results[index]);
+    }
+    // Settled siblings replayed into the batch keep their whole deliveries
+    // counted; previews count nothing. A restored sibling then stays bounded.
+    const replayed = observationWholeDeliveryBatches();
+    for (const result of results) replayed.replay(3, share, result);
+    expect(replayed.allowance(3, share).remainingTokens).toBe(share - whole.reduce((sum, result) => sum + projectedTokens(result), 0));
+    const wholeIndex = results.indexOf(whole[0]!);
+    const restored = await restoreObservedResult({ service: observations.service(), producer: { ...actor, toolCallId: calls[wholeIndex]!.id },
+      wholeDelivery: replayed.allowance(3, share) }, calls[wholeIndex]!);
+    expect(isWhole(restored)).toBe(false);
+  });
+
+  it("keeps a restore's storage or database failure transient and every proof of loss a refusal", async () => {
+    const storage = createMemoryStorageAdapter();
+    const f = fixture(storage);
+    const call = { id: "restore-call", name: "synthetic_tool", arguments: {} };
+    const context = () => ({ service: f.service(), producer, wholeDelivery: wholeDeliveryAllowance(32_000) });
+    const live = await captureMcpObservation(context(), call, binding, async () => mcpOriginal(100 * 1024, "restore"));
+    const failure = async () => restoreObservedResult(context(), call).then(() => null, (error: unknown) => error);
+    // An S3 timeout opening the object.
+    const timeout = Object.assign(new Error("synthetic S3 timeout"), { name: "TimeoutError", $metadata: { httpStatusCode: 503 } });
+    vi.spyOn(storage, "getObjectStream").mockRejectedValueOnce(timeout);
+    expect(await failure()).toBe(timeout);
+    expect(observationRestoreRefused(timeout)).toBe(false);
+    // A transport failure mid-stream keeps its private detail hidden but stays transient.
+    vi.spyOn(storage, "getObjectStream").mockResolvedValueOnce({ byteSize: live.observation!.byteSize, contentType: "application/json",
+      storageKey: f.row().storageKey!, body: new ReadableStream({ pull(controller) { controller.error(new Error("private-socket-detail")); } }) });
+    const reset = await failure();
+    expect(reset).toBeInstanceOf(ObservationReadError);
+    expect(String(reset)).not.toContain("private-socket-detail");
+    expect(observationRestoreRefused(reset)).toBe(false);
+    // A database failure reading the producer.
+    const database = new Error("could not serialize access");
+    f.repository.readProducer.mockRejectedValueOnce(database);
+    expect(observationRestoreRefused(await failure())).toBe(false);
+    // Revoked authority and a row that never became READY are refusals.
+    f.repository.readProducer.mockRejectedValueOnce(new McpToolAccessDeniedError());
+    expect(observationRestoreRefused(await failure())).toBe(true);
+    f.repository.readProducer.mockResolvedValueOnce({ ...f.row(), state: "UNAVAILABLE" });
+    expect(observationRestoreRefused(await failure())).toBe(true);
+    // Corrupt bytes, then a missing object, prove the original lost.
+    const key = f.row().storageKey!;
+    const stored = storage.objects.get(key)!;
+    storage.objects.set(key, { ...stored, body: Buffer.from(Buffer.from(stored.body).toString("utf8").replace("0", "1")) });
+    expect(observationRestoreRefused(await failure())).toBe(true);
+    storage.objects.clear();
+    expect(observationRestoreRefused(await failure())).toBe(true);
+  });
+
+  it("restores a Search above the bound with every retained numbered source after the receipt dropped them", async () => {
+    const f = fixture();
+    const call = { id: "search-call", name: "search_selected_engines", arguments: {} };
+    const executions: SearchExecutionEvidence[] = [1, 2, 3].map(engine => ({ displayName: `Engine ${engine}`,
+      invocationId: `invocation-${engine}`, modelId: "model", optionId: `option-${engine}`, provider: "provider",
+      revisionId: `revision-${engine}`, status: "complete", findings: `${unique(110 * 1024, `findings-${engine}`)} rare-${engine}`,
+      sources: Array.from({ length: 20 }, (_, rank) => ({ rank: rank + 1,
+        title: `Title ${engine}-${rank} ${"t".repeat(300)}`.slice(0, 300),
+        url: `https://example.com/${engine}/${rank}?q=${"u".repeat(1200)}`.slice(0, 1200),
+        snippet: `Snippet ${engine}-${rank} ${"s".repeat(300)}`.slice(0, 300) })),
+      usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } }));
+    const search: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
+      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+    const receipt = searchObservationReceipt(search);
+    // The receipt stayed bounded by dropping snippets and trailing sources.
+    expect(receipt.executions.some(execution => execution.sources.length < 20)).toBe(true);
+    expect(receipt.executions.flatMap(execution => execution.sources).some(source => source.snippet)).toBe(false);
+    const canonical = searchToolResultText(executions);
+    const tail = canonical.slice(canonical.lastIndexOf("\n\nSources:\n") + 2);
+    expect(tail).toContain("\n24. Title");
+    await captureSearchObservation({ service: f.service(), producer }, call,
+      [1, 2, 3].map(engine => ({ optionId: `option-${engine}`, revisionId: `revision-${engine}` })), async () => search);
+    expect(f.row().byteSize).toBeGreaterThan(256 * 1024);
+    const restored = await restoreObservedResult({ service: f.service(), producer }, call);
+    const text = restored.content[0]?.type === "text" ? restored.content[0].text : "";
+    expect(text.startsWith('Search source "Engine 1":\n')).toBe(true);
+    expect(text).toContain("Search result shortened here");
+    expect(text.endsWith(`\n\n${tail}`)).toBe(true);
+    expect(text).not.toContain("rare-3");
+    expect(snapshotToolExecutionResult(restored, 256 * 1024)).not.toBeNull();
+  });
+
+  it("keeps a retained source list and warnings only when their numbering proves them whole", () => {
+    const findings = `Search source "Engine":\n${"f".repeat(4096)}`;
+    const list = "Sources:\n1. Title one\ncontinued — https://example.com/1\n2. Title two — https://example.com/2";
+    const warnings = 'Search warnings: "Engine 2": search_timeout';
+    const kept = boundedRetainedSearchToolResultText(`${findings}\n\n${list}\n\n${warnings}`, 1024);
+    expect(kept).toContain("Search result shortened here");
+    expect(kept?.endsWith(`\n\n${list}\n\n${warnings}`)).toBe(true);
+    // A gap in the numbering is not the canonical list; only the warnings line stays.
+    const gapped = boundedRetainedSearchToolResultText(`${findings}\n\nSources:\n1. A — https://a.test\n3. C — https://c.test\n\n${warnings}`, 1024);
+    expect(gapped?.endsWith(`[Search result shortened here; the complete saved result remains readable.]\n\n${warnings}`)).toBe(true);
+    expect(boundedRetainedSearchToolResultText(`${findings}\n\nforged trailer`, 1024)).toBeNull();
+  });
+
+  it("keeps an executed Search's usage and says it executed when its receipt cannot be recorded", async () => {
+    const f = fixture();
+    const call = { id: "search-call", name: "search_selected_engines", arguments: {} };
+    const executions: SearchExecutionEvidence[] = [{ displayName: "Engine", invocationId: "invocation-1", modelId: "model",
+      optionId: "option-1", provider: "provider", revisionId: "revision-1", status: "complete", findings: "Findings",
+      sources: [{ rank: 1, title: "Title", url: "https://example.com/1" }], usage: { inputTokens: 9, outputTokens: 3, totalTokens: 12 } }];
+    const search: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
+      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+    f.repository.recordSearchReceipt.mockRejectedValueOnce(new Error("could not serialize access"));
+    const unrecorded = vi.fn();
+    const execute = vi.fn(async () => search);
+    const error = await captureSearchObservation({ service: f.service(), producer, onUnrecordedSearch: unrecorded }, call,
+      [{ optionId: "option-1", revisionId: "revision-1" }], execute).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ObservationStoreError);
+    expect(error).toMatchObject({ code: "tool_observation_unavailable", executed: true });
+    expect(observationFailure(error)).toEqual({ code: "tool_observation_unavailable",
+      message: "The operation executed, but its saved result is unavailable. Do not execute it again to recover the result." });
+    expect(unrecorded).toHaveBeenCalledWith(search);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionReceipt: null });
+    expect(await f.service().searchAccounting(producer)).toEqual([]);
   });
 });

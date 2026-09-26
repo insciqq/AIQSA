@@ -1,5 +1,6 @@
 import { defaultToolObservations } from "../toolObservations/defaultService";
-import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, restoreObservedResult, projectObservationForProvider, type ToolObservationService } from "../toolObservations/sourceAdapters";
+import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, restoreObservedResult, projectObservationForProvider,
+  OBSERVATION_RESTORE_FAILURE, observationRestoreRefused, observationWholeDeliveryBatches, type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
@@ -2033,10 +2034,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
         const observationUsageCollected = new Set<string>();
+        /** Executed Searches whose accounting receipt could not be recorded. */
+        const unrecordedSearches = new Map<string, ToolExecutionResult>();
+        const observationBatches = observationWholeDeliveryBatches();
         const accountObservedSearch = async (persisted: Pick<PersistedToolLoopCall, "id" | "usageAccountedAt">) => {
           if (observationUsageCollected.has(persisted.id)) return;
-          const executions = await (await observationService()).searchAccounting({
+          const receipt = await (await observationService()).searchAccounting({
             runId, userId: input.userId, toolCallId: persisted.id });
+          // Without a receipt, an executed Search keeps its reported usage as Off does.
+          const unrecorded = unrecordedSearches.get(persisted.id);
+          const executions = receipt.length === 0 && unrecorded ? searchExecutionsFromToolResult(unrecorded) : receipt;
           for (const execution of executions) {
             if (persisted.usageAccountedAt == null) rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
             await persistPlanSearchExecution({ execution, modelRunId: runId, repository: input.repository });
@@ -2286,7 +2293,17 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 (isWorkspaceCall(call.name) || isSearchCall(call.name) || resolveMcpRunTool(activeMcpSnapshot, call.name))) {
                 const restored = await restoreObservedResult({ service: await observationService(),
                   producer: { runId, userId: input.userId, toolCallId: persisted.id }, signal: context.signal,
-                  wholeResultTokens: observationWholeResultTokens(request) }, call).catch(() => null);
+                  wholeDelivery: observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request)) }, call)
+                  .catch((error: unknown) => {
+                    if (context.signal.aborted) throw error;
+                    // Only a refusal proves the retained result lost.
+                    return observationRestoreRefused(error) ? null : "failed" as const;
+                  });
+                if (restored === "failed") {
+                  // A storage or database failure neither settles the call as
+                  // an unknown outcome nor repeats it.
+                  return { error: { ...OBSERVATION_RESTORE_FAILURE, fatal: true }, status: "error" };
+                }
                 if (restored) {
                   const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
                   const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot,
@@ -2328,6 +2345,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   if (saved) stored = { ...stored, observation: saved.projection.observation };
                 }
                 if (stored) skillResultBudget.restore(stored);
+                if (stored) observationBatches.replay(persisted.roundIndex, observationWholeResultTokens(request), stored);
                 if (stored && isKnowledgeCall(call.name) &&
                   knowledgeEvidenceFromToolResult(stored) && input.memoryEgress &&
                   !(await input.memoryEgress.settleRecoveredToolDispatch({
@@ -2621,7 +2639,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     { signal: context.signal, ...(observed ? { retainOriginal: true as const } : {}) });
                   const selected = searchPlanRouter.optionIdsForTool(call.name);
                   result = observed ? await captureSearchObservation({ service: await observationService(),
-                    producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, call,
+                    producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal,
+                    onUnrecordedSearch: executed => { unrecordedSearches.set(claim.call.id, executed); } }, call,
                     normalizedRequest.searchPlan.options.filter(option => selected.includes(option.optionId))
                       .map(({ optionId, revisionId }) => ({ optionId, revisionId })), execute) : await execute();
                 } else if (isKnowledgeCall(call.name)) {
@@ -2647,7 +2666,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   result = normalizedRequest.toolObservationVersion === 1
                     ? await captureWorkspaceObservation({ service: await observationService(),
                         producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal,
-                        wholeResultTokens: observationWholeResultTokens(request) }, call, execute)
+                        wholeDelivery: observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request)) }, call, execute)
                     : await execute();
                 } else {
                   const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
@@ -2671,7 +2690,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   result = normalizedRequest.toolObservationVersion === 1
                     ? await captureMcpObservation({ service: await observationService(),
                         producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal,
-                        wholeResultTokens: observationWholeResultTokens(request) }, call,
+                        wholeDelivery: observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request)) }, call,
                       { version: 1, source: "mcp", serverId: route.serverId, originalName: route.originalName,
                         fingerprint: route.fingerprint, revisionId: activeMcpSnapshot!.servers.find(server => server.serverId === route.serverId)!.revisionId }, execute)
                     : mcpToolExecutionResult(call, await execute());

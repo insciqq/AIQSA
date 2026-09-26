@@ -299,6 +299,33 @@ export function boundedRenderedSearchToolResultText(
     : `${shortenedSearchToolResultText(text.slice(0, start - 2), maxFindingsBytes)}\n\n${text.slice(start)}`;
 }
 
+/** The merged list never numbers more sources; titles may span lines. */
+const RETAINED_SOURCE_ENTRIES = 24;
+/** Far above a canonical list and warnings line, far below a tool result. */
+const RETAINED_TAIL_BYTES = 128 * 1024;
+
+/** Bound retained canonical text by itself, for a restore whose receipt no
+ * longer lists the rendered sources (it dropped snippets or trailing sources
+ * to stay bounded). The trailing numbered source list, validated by its
+ * consecutive numbering from 1, and the warnings line after it stay whole;
+ * only the findings before them are shortened. Null when the text ends with
+ * neither. */
+export function boundedRetainedSearchToolResultText(text: string, maxFindingsBytes: number): string | null {
+  const warnings = text.lastIndexOf("\n\nSearch warnings: ");
+  const end = warnings >= 0 && !text.includes("\n", warnings + 2) ? warnings
+    : text.startsWith("Search warnings: ") && !text.includes("\n") ? 0 : text.length;
+  const body = text.slice(0, end);
+  const found = body.lastIndexOf("\n\nSources:\n");
+  const sources = found >= 0 ? found + 2 : body.startsWith("Sources:\n") ? 0 : -1;
+  const entries = sources >= 0 ? body.slice(sources + "Sources:\n".length).split(/\n(?=\d+\. )/u) : [];
+  const numbered = entries.length > 0 && entries.length <= RETAINED_SOURCE_ENTRIES &&
+    entries.every((entry, index) => entry.startsWith(`${index + 1}. `) && entry.includes(" — "));
+  const start = numbered ? sources : end < text.length ? end + (end > 0 ? 2 : 0) : -1;
+  if (start < 0 || Buffer.byteLength(text.slice(start), "utf8") > RETAINED_TAIL_BYTES) return null;
+  return start === 0 ? text
+    : `${shortenedSearchToolResultText(text.slice(0, start - 2), maxFindingsBytes)}\n\n${text.slice(start)}`;
+}
+
 export function searchToolResultContent(
   executions: readonly SearchExecutionEvidence[]
 ): ToolExecutionResult["content"] {

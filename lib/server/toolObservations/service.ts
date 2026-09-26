@@ -176,6 +176,7 @@ export function createToolObservationService(input: Readonly<{
       const publishable = reservation.claimed;
       let stored = false;
       let attempted = false;
+      let receiptFailed = false;
       let token: string | undefined;
       const store = async (value: Readonly<{ original: unknown; outcome: "complete" | "error";
         sourceTruncated: boolean; maskable: boolean }>): Promise<ToolObservationProjection> => {
@@ -227,8 +228,15 @@ export function createToolObservationService(input: Readonly<{
       try {
         const result = await work({ store, async recordSearch(result) {
           if (options.source !== "search" || !publishable) throw unavailable();
-          await repository.recordSearchReceipt(producer, searchObservationReceipt(result));
-          await repository.recordOutcome(producer, result.status);
+          try {
+            await repository.recordSearchReceipt(producer, searchObservationReceipt(result));
+            await repository.recordOutcome(producer, result.status);
+          } catch {
+            // The Search has executed: never report this as a failure that
+            // prevented dispatch or invites a repeat.
+            receiptFailed = true;
+            throw new ObservationStoreError("tool_observation_unavailable", { executed: true });
+          }
         }, async storeSource(value) {
           if (!options.sourceOwned) throw unavailable();
           if (!publishable) return null;
@@ -256,7 +264,7 @@ export function createToolObservationService(input: Readonly<{
         if (signal?.aborted) throw signal.reason;
         // The source keeps its precise transport/validation failure. Once
         // store() starts, never claim a storage preflight prevented dispatch.
-        if (!attempted) throw error;
+        if (!attempted && !receiptFailed) throw error;
         observe(options.source, "store_failed");
         throw error instanceof ObservationStoreError &&
           (error.code === "tool_observation_conflict" || error.code === "tool_observation_unavailable") ? error : unavailable();

@@ -285,9 +285,9 @@ function contextCompactionBudgetLimits(request: ProviderRunRequest) {
     : null;
 }
 
-/** Share of the admitted input budget one observed MCP/Workspace result may
- * take whole. A larger result would leave the newest batch, which masking
- * never replaces, irreducible on a small window; it keeps its bounded preview. */
+/** Share of the admitted input budget the observed MCP/Workspace results of
+ * one tool batch may take whole together. More would leave the newest batch,
+ * which masking never replaces, irreducible; the rest keep bounded previews. */
 const OBSERVATION_WHOLE_RESULT_BUDGET_SHARE = 0.25;
 
 /** Estimated tokens for that share. An unknown window has no budget that

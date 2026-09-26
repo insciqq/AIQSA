@@ -1,6 +1,7 @@
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { defaultToolObservations } from "../toolObservations/defaultService";
-import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, restoreObservedResult, projectObservationForProvider, type ToolObservationService } from "../toolObservations/sourceAdapters";
+import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, restoreObservedResult, projectObservationForProvider,
+  OBSERVATION_RESTORE_FAILURE, observationRestoreRefused, observationWholeDeliveryBatches, type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
@@ -870,6 +871,8 @@ type RecoveryToolContext = {
   tools: RunTool[];
   usageAccountedToolCallIds: Set<string>;
   usageAttributions: RunUsageAttribution[];
+  /** Whole-delivery allowances of the recovered and later tool batches. */
+  wholeDelivery: ReturnType<typeof observationWholeDeliveryBatches>;
 };
 
 function persistedContextObservations(calls: readonly PersistedToolLoopCall[]): Map<string, ContextObservation> {
@@ -1168,11 +1171,15 @@ async function recordRecoveredSearchResult(input: Readonly<{
   context: RecoveryToolContext;
   includeUsage: boolean;
   result: ToolExecutionResult;
+  /** The executed Search when its accounting receipt could not be recorded. */
+  unrecorded?: ToolExecutionResult;
 }>): Promise<void> {
-  const executions = input.context.run.normalizedRequest.toolObservationVersion === 1
+  const receipt = input.context.run.normalizedRequest.toolObservationVersion === 1
     ? await (await recoveredObservations(input.context)).searchAccounting({ runId: input.context.run.id,
         userId: input.context.run.userId, toolCallId: input.modelRunToolCallId })
-    : searchExecutionsFromToolResult(input.result);
+    : null;
+  const executions = receipt === null ? searchExecutionsFromToolResult(input.result)
+    : receipt.length === 0 && input.unrecorded ? searchExecutionsFromToolResult(input.unrecorded) : receipt;
   const previewCount = input.context.run.normalizedRequest.toolObservationVersion === 1 ? null : searchExecutionPreviewCount(input.result);
   if (previewCount !== null && executions.length !== previewCount) {
     throw new ToolLoopRecoveryError(
@@ -1520,9 +1527,15 @@ async function executePersistedToolCallInContext(
   }
   if (claim.kind === "ambiguous" && context.run.normalizedRequest.toolObservationVersion === 1 &&
     (isRecoveredWorkspaceCall(context, call.name) || isRecoveredSearchCall(context, call.name) || resolveMcpRunTool(context.activeMcpSnapshot, call.name))) {
-    const restored = await restoreObservedResult({ service: await recoveredObservations(context),
+    const restore = await restoreObservedResult({ service: await recoveredObservations(context),
       producer: { runId: context.run.id, userId: context.run.userId, toolCallId: persisted.id }, signal,
-      wholeResultTokens: observationWholeResultTokens(context.providerRequest) }, call).catch(() => null);
+      wholeDelivery: context.wholeDelivery.allowance(persisted.roundIndex, observationWholeResultTokens(context.providerRequest)) }, call)
+      // Only a refusal proves the retained result lost. A storage or database
+      // failure neither settles the call as an unknown outcome nor repeats
+      // it; it fails this recovery attempt below.
+      .then(result => ({ result }), (error: unknown) => observationRestoreRefused(error)
+        ? { result: null } : { result: null, failure: true });
+    const restored = restore.result;
     if (restored) {
       const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
       const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot,
@@ -1540,6 +1553,10 @@ async function executePersistedToolCallInContext(
       await recordRecoveredSearchResult({ context, includeUsage: persisted.usageAccountedAt == null,
         modelRunToolCallId: persisted.id, result: { callId: call.id, name: call.name, status: "error", content: [] } })
         .catch(() => undefined);
+    }
+    if ("failure" in restore) {
+      if (signal.aborted) throw new ToolLoopRecoveryStopped();
+      throw new ToolLoopRecoveryError(OBSERVATION_RESTORE_FAILURE.code, OBSERVATION_RESTORE_FAILURE.message);
     }
   }
   if (claim.kind === "ambiguous") {
@@ -1572,6 +1589,7 @@ async function executePersistedToolCallInContext(
       );
     }
     context.skillResultBudget.restore(result);
+    context.wholeDelivery.replay(persisted.roundIndex, observationWholeResultTokens(context.providerRequest), result);
     if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       await recordRecoveredSearchResult({
         context,
@@ -1651,6 +1669,7 @@ async function executePersistedToolCallInContext(
     return result;
   };
   let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
+  const unrecorded: { search?: ToolExecutionResult } = {};
   try {
     if (hasInvalidProviderToolArguments(call.arguments)) {
       throw new Error("provider_tool_arguments_invalid");
@@ -1828,7 +1847,8 @@ async function executePersistedToolCallInContext(
       const selected = context.searchExecutor.optionIdsForTool(call.name);
       result = context.run.normalizedRequest.toolObservationVersion === 1
         ? await captureSearchObservation({ service: await recoveredObservations(context),
-            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, call,
+            producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal,
+            onUnrecordedSearch: executed => { unrecorded.search = executed; } }, call,
             context.run.normalizedRequest.searchPlan.options.filter(option => selected.includes(option.optionId))
               .map(({ optionId, revisionId }) => ({ optionId, revisionId })), execute) : await execute();
       await recordRecoveredSearchResult({
@@ -1873,7 +1893,7 @@ async function executePersistedToolCallInContext(
       result = context.run.normalizedRequest.toolObservationVersion === 1
         ? await captureWorkspaceObservation({ service: await recoveredObservations(context),
             producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal,
-            wholeResultTokens: observationWholeResultTokens(context.providerRequest) }, call, execute)
+            wholeDelivery: context.wholeDelivery.allowance(persisted.roundIndex, observationWholeResultTokens(context.providerRequest)) }, call, execute)
         : await execute();
     } else {
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
@@ -1897,7 +1917,7 @@ async function executePersistedToolCallInContext(
       result = context.run.normalizedRequest.toolObservationVersion === 1
         ? await captureMcpObservation({ service: await recoveredObservations(context),
             producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal,
-            wholeResultTokens: observationWholeResultTokens(context.providerRequest) }, call,
+            wholeDelivery: context.wholeDelivery.allowance(persisted.roundIndex, observationWholeResultTokens(context.providerRequest)) }, call,
           { version: 1, source: "mcp", serverId: route.serverId, originalName: route.originalName,
             fingerprint: route.fingerprint, revisionId: context.activeMcpSnapshot!.servers.find(server => server.serverId === route.serverId)!.revisionId }, execute)
         : mcpToolExecutionResult(call, await execute());
@@ -1914,7 +1934,7 @@ async function executePersistedToolCallInContext(
         result: snapshot, runId: context.run.id, state: "error", userId: context.run.userId });
       if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Search outcome could not be settled.");
       await recordRecoveredSearchResult({ context, includeUsage: claim.call.usageAccountedAt == null,
-        modelRunToolCallId: claim.call.id, result: failed });
+        modelRunToolCallId: claim.call.id, result: failed, ...(unrecorded.search ? { unrecorded: unrecorded.search } : {}) });
     } else if (error instanceof SearchToolCancelledError) {
       // Accounting requires a settled call even when Stop has already won
       // the run's terminal state. Only already observed Search evidence is saved.
@@ -2367,7 +2387,8 @@ async function recoverCheckpointedToolLoop(
       searchExecutor,
       tools,
       usageAccountedToolCallIds: new Set(),
-      usageAttributions
+      usageAttributions,
+      wholeDelivery: observationWholeDeliveryBatches()
     };
     async function finalizeRecoveredWorkspace(): Promise<void> {
       if (!workspace) return;
