@@ -2,7 +2,7 @@ import type { AuthIdentityProvider, Prisma, PrismaClient } from "@prisma/client"
 import type { OAuthProviderId } from "../../auth/oauth";
 import { normalizeAuthEmail } from "./password";
 import { provisionActiveUser } from "./provisioning";
-import { findEnabledAccessRuleMatch } from "./registrationRepository";
+import { findEnabledAccessRuleMatch, replaceProvisionalDisplayName } from "./registrationRepository";
 import { lockAuthIdentity, lockAuthRegistrationEmail, lockAuthUser } from "./transactionLocks";
 
 export type OAuthIdentitySettlementInput = {
@@ -194,6 +194,13 @@ export function createPrismaOAuthIdentityRepository(prisma: PrismaClient): OAuth
           return {
             status: "not_allowed"
           };
+        }
+
+        if (user) {
+          await replaceProvisionalDisplayName(tx, {
+            displayName: fallbackDisplayName(input, normalizedEmail),
+            userId: user.id
+          });
         }
 
         user ??= await tx.user.create({
