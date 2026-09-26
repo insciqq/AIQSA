@@ -189,6 +189,7 @@ import {
   beforeAnswerDispatch,
   providerToolLoopContinuationAfterResult,
   runProviderToolLoop,
+  withRoundForcedTool,
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
 import { applyProviderRequestContextBudget, measureSessionContext, observationWholeResultTokens } from "./runContextBudget";
@@ -2953,13 +2954,13 @@ async function recoverCheckpointedToolLoop(
         priorToolCalls >= toolBudgets.maxToolCalls || providerRequest.toolChoice === "none"
         ? "none"
         : completedToolRounds === 0 && providerRequest.toolChoice === "required" ? "required" : "auto";
-      const prepared = await prepareRecoveredProviderRequest({
+      const prepared = await prepareRecoveredProviderRequest(withRoundForcedTool({
         ...providerRequest,
         parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
         providerToolMessages,
         toolChoice,
         tools
-      }, round, "measure");
+      }, providerRequest.forcedToolName), round, "measure");
       return toolChoice === "none" ? { ...prepared, toolChoice } : prepared;
     }
 

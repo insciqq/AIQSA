@@ -502,7 +502,7 @@ describe("provider tool loop", () => {
           status: "complete"
         }
       }),
-      initialRequest: request({ toolChoice: "required" }),
+      initialRequest: request({ forcedToolName: "alpha", toolChoice: "required" }),
       parallelToolCalls: false,
       tools: [{
         capability: "mcp",
@@ -514,6 +514,9 @@ describe("provider tool loop", () => {
 
     expect(outcome).toMatchObject({ final: { finalText: "grounded answer" }, status: "complete" });
     expect(requests.map((candidate) => candidate.toolChoice)).toEqual(["required", "auto"]);
+    // Only the forced round names its tool; the next round cannot inherit it.
+    expect(requests.map((candidate) => candidate.forcedToolName)).toEqual(["alpha", undefined]);
+    expect(requests[1]).not.toHaveProperty("forcedToolName");
   });
 
   it("replays the complete recovered provider transcript without a hidden provider chain", async () => {

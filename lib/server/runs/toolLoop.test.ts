@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import {
   continueToolLoop,
   type ToolLoopBudgets,
@@ -500,6 +501,29 @@ describe("provider-neutral tool loop", () => {
     });
     expect(executeTool).toHaveBeenCalledOnce();
     expect(dispatched).toEqual([call("same-id")]);
+  });
+
+  it("reports a reviewed Gemini HTTP identity instead of a generic round failure", async () => {
+    const error = Object.assign(new GeminiHttpError(400, "invalid_request"), {
+      providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY"
+    });
+    const outcome = await continueToolLoop({
+      budgets: defaultBudgets,
+      executeTool: vi.fn(),
+      initialContinuation: null,
+      runProviderRound: async () => { throw error; }
+    });
+
+    expect(outcome).toMatchObject({
+      failure: {
+        code: "provider_http_invalid_request",
+        message: "The model provider rejected the request (Gemini HTTP 400: invalid_request).",
+        round: 1,
+        stage: "provider"
+      },
+      status: "failed"
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
   });
 
   it("returns a structured provider timeout and validates budgets before starting", async () => {
