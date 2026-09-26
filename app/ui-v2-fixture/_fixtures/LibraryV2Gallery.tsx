@@ -230,7 +230,7 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
         onBack={() => setClosed(true)}
         tabs={[
           ...(state === "all-sections" ? [
-            { id: "instructions", label: "Instructions" }, { id: "mcp", label: "MCP servers" },
+            { id: "instructions", label: "Instructions" }, { id: "mcp", label: "MCP servers", attention: true },
             { id: "secrets", label: "Secrets" }, { id: "defaults", label: "Chat defaults" },
             { id: "artifacts", label: "Artifacts" }
           ].map(tab => ({ ...tab, content: <SectionHeading description="Section composition fixture">{tab.label}</SectionHeading> })) as LibraryTabV2[] : []),
