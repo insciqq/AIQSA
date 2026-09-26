@@ -11,7 +11,8 @@ import type { McpDraftValidationInput, McpDraftValidationOutcome } from "./draft
 import { createPrismaMcpRepository } from "./prismaRepository";
 import { createPrismaMcpOAuthRepository } from "./oauthRepository";
 import { McpOAuthService } from "./oauthService";
-import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
+import { createPrismaMcpRuntimeRepository, remoteRuntimeCandidate } from "./runtimeRepository";
+import { decryptMcpEnvelope, encryptMcpEnvelope, mcpPersonalConfigEnvelopeContext } from "./encryption";
 
 const userIds: string[] = [];
 const groupIds: string[] = [];
@@ -513,5 +514,94 @@ describe("MCP tool access persistence", () => {
     expect((await f.repository.updateServer({ serverId: f.serverId, expectedUpdatedAt: (await current()).updatedAt,
       toolAccess: { ...toolAccess, restricted: false } })).kind).toBe("ok");
     expect((await current()).toolAccess).toEqual([{ ...toolAccess, restricted: false }]);
+  });
+});
+
+describe("MCP stored values bound to their endpoint origin", () => {
+  const personalSlotDraft: McpDraftConfiguration = {
+    ...draft,
+    slots: [...draft.slots, {
+      label: "User token", policy: { kind: "personal", required: true }, sensitive: true,
+      slotKey: "user_token", target: { kind: "header", name: "X-User-Token" }, valueType: "secret"
+    }]
+  };
+
+  it("withholds shared and personal values from a new origin until they are entered again", async () => {
+    const userId = await admin();
+    const key = Buffer.alloc(32, 1);
+    const validate = vi.fn(async (_input: McpDraftValidationInput): Promise<McpDraftValidationOutcome> => valid);
+    const repository = createPrismaMcpRepository({ prisma, draftValidator: { validate }, encryptionKey: () => key });
+    const created = await repository.createServer({
+      description: "Endpoint binding fixture", draft: personalSlotDraft, name: `Bound ${randomUUID()}`,
+      sharedValues: { api_key: "canary-shared-origin-a" }
+    });
+    if (created.kind !== "ok") throw new Error(`fixture_create_${created.kind}`);
+    const serverId = created.value.id;
+    serverIds.push(serverId);
+    expect((await repository.testDraft({ expectedUpdatedAt: created.value.updatedAt, oneTimeValues: { user_token: "one-time-a" },
+      publish: true, serverId, validationUserId: userId })).kind).toBe("ok");
+    await repository.setGrant({ serverId, userId, groupId: null, canUse: true, personalSlotKeys: ["user_token"] });
+    expect(await repository.updateUserServer({ serverId, userId, enabled: true, values: { user_token: "canary-personal-origin-a" } }))
+      .toMatchObject({ kind: "ok" });
+    // Upgrade scenario: this personal value was stored before bindings existed.
+    const preference = await prisma.mcpUserServer.findFirstOrThrow({ where: { serverId, userId } });
+    const personalContext = mcpPersonalConfigEnvelopeContext(preference.id, preference.personalConfigVersion);
+    const legacy = decryptMcpEnvelope<Record<string, unknown>>(preference.personalConfigEnvelope!, key, personalContext);
+    delete legacy.endpoints;
+    await prisma.mcpUserServer.update({ where: { id: preference.id },
+      data: { personalConfigEnvelope: encryptMcpEnvelope(legacy, key, personalContext) } });
+    const launch = async () => remoteRuntimeCandidate({ key, record: await prisma.mcpUserServer.findFirstOrThrow({
+      include: {
+        server: { include: { activeRevision: true, grants: true, oauthConnections: { include: { oauthClient: { select: { clientId: true } } } } } },
+        user: { select: { groups: { select: { groupId: true } }, id: true } }
+      },
+      where: { serverId, userId }
+    }) });
+    expect((await launch())?.headers).toMatchObject({ "X-Api-Key": "canary-shared-origin-a", "X-User-Token": "canary-personal-origin-a" });
+
+    const moved: McpDraftConfiguration = { ...personalSlotDraft, source: { kind: "remote", url: "https://moved.example.test/mcp" } };
+    const updated = await repository.updateServer({ serverId, draft: moved });
+    if (updated.kind !== "ok") throw new Error(updated.kind);
+    expect(updated.value.sharedValues.api_key).toEqual({ configured: false, updatedAt: null });
+    // The published origin keeps its values until the move is published.
+    expect((await launch())?.headers).toMatchObject({ "X-Api-Key": "canary-shared-origin-a", "X-User-Token": "canary-personal-origin-a" });
+
+    validate.mockClear();
+    expect(await repository.testDraft({ oneTimeValues: { user_token: "one-time-b" }, publish: false, serverId }))
+      .toMatchObject({ kind: "invalid_values", issues: [{ code: "slot_value_required", path: "oneTimeValues.api_key" }] });
+    expect(validate).not.toHaveBeenCalled();
+    expect((await repository.testDraft({ expectedUpdatedAt: updated.value.updatedAt, oneTimeValues: { user_token: "one-time-b" },
+      publish: true, serverId, sharedValues: { api_key: "canary-shared-origin-b" }, validationUserId: userId })).kind).toBe("ok");
+    const dispatched = JSON.stringify(validate.mock.calls);
+    expect(dispatched).toContain("canary-shared-origin-b");
+    expect(dispatched).not.toContain("origin-a");
+
+    // Publication pinned the legacy personal value to the previous origin without a version change.
+    const pinned = await prisma.mcpUserServer.findFirstOrThrow({ where: { serverId, userId } });
+    expect(pinned.personalConfigVersion).toBe(preference.personalConfigVersion);
+    expect(decryptMcpEnvelope(pinned.personalConfigEnvelope!, key, personalContext))
+      .toMatchObject({ endpoints: { user_token: { origin: "https://mcp.example.test" } } });
+    const listed = (await repository.listUserServers(userId)).find(({ id }) => id === serverId);
+    expect(listed?.fields.find(({ slotKey }) => slotKey === "user_token")).toMatchObject({ configured: false });
+    expect(await launch()).toBeNull();
+
+    expect(await repository.updateUserServer({ serverId, userId, values: { user_token: "canary-personal-origin-b" } }))
+      .toMatchObject({ kind: "ok" });
+    const launched = await launch();
+    expect(launched).toMatchObject({ url: "https://moved.example.test/mcp",
+      headers: { "X-Api-Key": "canary-shared-origin-b", "X-User-Token": "canary-personal-origin-b" } });
+    expect(JSON.stringify(launched)).not.toContain("origin-a");
+  });
+
+  it("keeps values entered for the same origin across a path change", async () => {
+    const f = await fixture();
+    const updated = await f.repository.updateServer({ serverId: f.serverId,
+      draft: { ...draft, source: { kind: "remote", url: "https://mcp.example.test/v2/mcp" } } });
+    if (updated.kind !== "ok") throw new Error(updated.kind);
+    expect(updated.value.sharedValues.api_key).toMatchObject({ configured: true });
+    f.validate.mockClear();
+    expect((await f.repository.testDraft({ expectedUpdatedAt: updated.value.updatedAt, oneTimeValues: {}, publish: true,
+      serverId: f.serverId, validationUserId: f.userId })).kind).toBe("ok");
+    expect(f.validate.mock.calls[0]![0].values).toEqual({ api_key: "fixture-initial-key" });
   });
 });

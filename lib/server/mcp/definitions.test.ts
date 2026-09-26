@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalMcpJson,
   hashCanonicalMcpValue,
+  mcpEndpointBinding,
+  mcpValuesForEndpoint,
+  parseMcpEndpointBindings,
   validateMcpDraft,
   validateMcpSlotIdentityLineage,
   validateMcpSlotValue
@@ -408,5 +411,60 @@ describe("MCP definition helpers", () => {
       ...semanticChanges[0]!,
       slots: semanticChanges[0]!.slots.map((slot) => ({ ...slot, slotKey: "api-key-v2" }))
     }, [historical.value])).toEqual([]);
+  });
+});
+
+describe("MCP stored value endpoint bindings", () => {
+  function binding(url: string) {
+    const draft = validateMcpDraft(remoteDraft(url));
+    if (!draft.ok) throw new Error("fixture_draft_invalid");
+    return mcpEndpointBinding(draft.value);
+  }
+
+  it("binds remote values to the validation endpoint hash and packaged values to one local destination", () => {
+    expect(binding("https://mcp.example.test/api/mcp")).toEqual({
+      endpointHash: hashCanonicalMcpValue({ origin: "https://mcp.example.test", pathname: "/api/mcp" }),
+      origin: "https://mcp.example.test"
+    });
+    const local = validateMcpDraft(localDraft({
+      args: [],
+      kind: "npm",
+      packageName: "example-mcp",
+      versionSelector: "1.0.0"
+    }));
+    const otherLocal = validateMcpDraft(localDraft({
+      args: [],
+      image: `example.invalid/mcp@sha256:${"b".repeat(64)}`,
+      kind: "oci"
+    }));
+    if (!local.ok || !otherLocal.ok) throw new Error("fixture_draft_invalid");
+    expect(mcpEndpointBinding(local.value)).toEqual(mcpEndpointBinding(otherLocal.value));
+    expect(mcpEndpointBinding(local.value).origin).toBe("local");
+  });
+
+  it("keeps same-origin values and withholds values entered for another origin", () => {
+    const original = binding("https://mcp.example.test/");
+    const corrected = binding("https://mcp.example.test/api/v4/mcp");
+    const moved = binding("https://other.example.test/mcp");
+    const values = { corrected: "path-value", legacy: "legacy-value", original: "origin-value" };
+    const bindings = { corrected, original };
+
+    expect(mcpValuesForEndpoint({ bindings, implicit: original, target: corrected, values }))
+      .toEqual(values);
+    expect(mcpValuesForEndpoint({ bindings, implicit: original, target: moved, values })).toEqual({});
+    expect(mcpValuesForEndpoint({ bindings, implicit: moved, target: moved, values }))
+      .toEqual({ legacy: "legacy-value" });
+    // Before the first publication unbound values have no recorded destination.
+    expect(mcpValuesForEndpoint({ bindings: {}, implicit: null, target: moved, values }))
+      .toEqual(values);
+  });
+
+  it("parses only well-formed persisted bindings", () => {
+    const valid = binding("https://mcp.example.test/mcp");
+    expect(parseMcpEndpointBindings(undefined)).toEqual({});
+    expect(parseMcpEndpointBindings({ token: valid })).toEqual({ token: valid });
+    expect(parseMcpEndpointBindings([])).toBeNull();
+    expect(parseMcpEndpointBindings({ token: { ...valid, origin: "" } })).toBeNull();
+    expect(parseMcpEndpointBindings({ token: { ...valid, endpointHash: "short" } })).toBeNull();
   });
 });
