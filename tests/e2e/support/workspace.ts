@@ -11,13 +11,27 @@ export async function loginWithPassword(
 ): Promise<void> {
   // Sign-in lands on `/`, which always opens a new chat.
   await page.goto("/login");
-  await page.getByLabel("Email").fill(user.email);
-  await page.getByLabel("Password", { exact: true }).fill(user.password);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await submitPasswordSignIn(page, user);
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
   // The server shell is visible before the client composer and navigation hydrate.
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
   await disableMemoryRecall(page);
+}
+
+/**
+ * Signs in on the login page that is already open. The form is used only once
+ * it marks itself hydrated: before that, the browser would submit the server
+ * markup natively (a GET that puts the credentials in the address).
+ */
+export async function submitPasswordSignIn(
+  page: Page,
+  user: Readonly<{ email: string; password: string }>
+): Promise<void> {
+  const form = page.locator('form[data-hydrated="true"]');
+  await expect(form).toBeVisible({ timeout: 30_000 });
+  await form.getByLabel("Email").fill(user.email);
+  await form.getByLabel("Password", { exact: true }).fill(user.password);
+  await form.getByRole("button", { name: "Sign in", exact: true }).click();
 }
 
 /**
