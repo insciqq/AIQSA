@@ -11,6 +11,9 @@ export function agentPrompts(request: ProviderRunRequest) {
   const conversation: readonly ProviderConversationMessage[] = request.context?.messages.length ? request.context.messages
     : [{ id: "current", role: "user", content: request.content }];
   const messages = conversation.filter((message) => message.purpose !== "skill_catalog");
+  // find_tools exists only for a non-empty frozen Auto catalog; its connected
+  // service names arrive once, through the admitted system prompt.
+  const mcpDiscoveryAvailable = request.agent?.mcpMode === "auto" && Boolean(request.mcpDiscovery?.catalog.servers.length);
   let previousAssistantIndex = -1;
   for (let index = messages.length - 1; index >= 0; index--) {
     if (messages[index]!.role === "assistant") { previousAssistantIndex = index; break; }
@@ -30,7 +33,7 @@ export function agentPrompts(request: ProviderRunRequest) {
           ...(request.attachments.length ? { messageManifestPath: request.workspace.messageManifestPath } : {}),
           attachments: request.attachments.map(({ fileName, mimeType, byteSize }) => ({ fileName, mimeType, byteSize })) })
       ] : []),
-      ...(currentOnly && request.agent?.mcpMode === "auto" ? [
+      ...(currentOnly && mcpDiscoveryAvailable ? [
         "Previously discovered MCP definitions are usable only after server revalidation for this turn. " +
         "If call_tool reports discovery_required or tool_definition_changed before dispatch, call find_tools and use its returned version and schema. " +
         "Discovery does not repeat the business operation. Never replay a dispatched operation with an unknown outcome."
@@ -60,7 +63,7 @@ export function agentPrompts(request: ProviderRunRequest) {
       + " Cite web sources with ordinary Markdown links to their URLs; internal search reference IDs are not clickable in this chat.",
       ...(request.agent?.mcpMode && request.agent.mcpMode !== "off" ? [
         "When asked to inspect private issues, documents or repositories, try the enabled MCP tools before concluding that a resource is inaccessible from a public web page. " +
-        (request.agent.mcpMode === "auto" ? "Use find_tools to discover the relevant capabilities. " : "") +
+        (mcpDiscoveryAvailable ? "Use find_tools to discover the relevant capabilities. " : "") +
         "A tool-discovery failure is not an authorization denial by the connected service. Report the actual diagnostic and which checks were not completed."
       ] : []),
       ...(request.workspace && request.workspaceCheckpoints ? [WORKSPACE_CHECKPOINT_GUIDANCE, "Use checkpoint_outputs on the managed AIQSA MCP server even when external MCP is Off."] : []),
