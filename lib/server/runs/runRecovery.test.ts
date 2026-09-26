@@ -5558,6 +5558,39 @@ describe("run recovery", () => {
         usage: expect.objectContaining({ completeness: state === "claim" ? "complete" : "partial" }) })]);
     });
 
+    it.each([
+      ["dispatched", 2, "unknown"],
+      ["claim", 1, "failed"]
+    ] as const)("fails a lost executor with clarifications on a second pass after its settled %s summary receipt without a phantom answer round",
+      async (state, operations, settled) => {
+        const attempt = { attempt: 1, bindingDigest: "f".repeat(64), id: `csa1_${state}`, sourceDigest: "e".repeat(64), state };
+        const recovery = crashedDuringSummary(attempt);
+        recovery.harness.repository.followups = { accept: vi.fn(), deliver: vi.fn(), close: vi.fn(), beginKnowledge: vi.fn(),
+          load: async () => ({ revision: 1, entries: [{ id: "f", ordinal: 1, text: "Clarification", author: "Author",
+            createdAt: new Date().toISOString(), delivery: "delivered" }] }) };
+        // The first pass settles the lost call durably, then its run failure write is lost.
+        vi.spyOn(recovery.harness.repository, "failRun").mockRejectedValueOnce(new Error("simulated crash before the run failure"));
+        await expect(recovery.recover()).rejects.toThrow("simulated crash before the run failure");
+        expect(recovery.harness.state.failed).toEqual([]);
+        const receipts = recovery.installed.checkpoint().contextCompaction?.summaryAttempts;
+        expect(receipts?.map((entry) => entry.state)).toEqual([settled]);
+        const recordedUsage = recovery.harness.state.usageAttributions.length;
+        const firstPassUsage = recovery.harness.state.usageAttributions.at(-1)!;
+        recovery.harness.repository.loadRunUsageAttributions = async () =>
+          firstPassUsage.map((attribution) => ({ ...attribution, recordedAt: "2026-07-12T09:01:00.000Z" }));
+
+        // The second pass finds no unsettled claim and no provider response id.
+        await recovery.recover();
+        expect(recovery.summaries).toHaveLength(0);
+        expect(recovery.answers).toHaveLength(0);
+        expect(recovery.harness.state.failed).toMatchObject([{ error: { code: "followup_executor_lost" } }]);
+        expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual(receipts);
+        // The round's answer request was never sent: no answer-round operation and no new usage write.
+        expect(recovery.installed.checkpoint().answerRoundUsage.map((entry) => entry.roundIndex)).toEqual([1]);
+        expect(recovery.harness.state.usageAttributions).toHaveLength(recordedUsage);
+        expect(firstPassUsage).toEqual([expect.objectContaining({ operationCount: operations })]);
+      });
+
     it("settles an unsettled claim as never sent, counting no operation, so a later claim may buy the summary", async () => {
       const claim = { attempt: 1, bindingDigest: "f".repeat(64), id: "csa1_claimed", sourceDigest: "e".repeat(64), state: "claim" as const };
       const recovery = crashedDuringSummary(claim);

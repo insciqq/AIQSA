@@ -724,15 +724,16 @@ function recoverySettledSummaryAttempt(checkpoint: CheckpointedToolLoopRun["chec
 
 /** The round being prepared when the executor was lost may have dispatched
  * its answer request, unless the loss happened while summarizing for that
- * round (no answer request is sent before its summary settles). Usage the
- * round already reported stands for it. */
+ * round (no answer request is sent before its summary settles), including a
+ * summary call an earlier pass already settled. Usage the round already
+ * reported stands for it. */
 function lostAnswerRoundOutcomeUnknown(
   checkpoint: CheckpointedToolLoopRun["checkpoint"],
   providerResponseId: string | null
 ): boolean {
   const round = checkpoint.roundIndex;
   return checkpoint.phase === "provider_running" && round >= 1 &&
-    !(lostSummaryAttempt(checkpoint).unsettled && !providerResponseId) &&
+    !((lostSummaryAttempt(checkpoint).unsettled || recoverySettledSummaryAttempt(checkpoint)) && !providerResponseId) &&
     !checkpoint.answerRoundUsage.some((entry) => entry.roundIndex === round);
 }
 
