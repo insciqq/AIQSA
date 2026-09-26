@@ -1,6 +1,7 @@
 import { parseWorkspaceImageEvidence } from "../workspace/directImageEvidence";
 import { decodeToolObservationDescriptor } from "../toolObservations/contract";
 import { decodeTokenUsage } from "../../domain/usage";
+import { logEvent, type ToolKind } from "../observability";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import {
@@ -182,4 +183,103 @@ export function snapshotToolExecutionResult(
     { id: result.callId, name: result.name },
     snapshot
   ) ? snapshot : null;
+}
+
+export type ToolResultPersistenceFailure = Readonly<{
+  code: "tool_result_too_large" | "tool_result_unpersistable";
+  /** The durable-snapshot step that refused the executed result. */
+  stage: "projection" | "serialization" | "size" | "validation";
+  observedBytes: number | null;
+  limitBytes: number;
+}>;
+
+/** Sizes and the refusing step only; the result's content never leaves here. */
+function toolResultPersistenceFailure(result: ToolExecutionResult, maxBytes: number): ToolResultPersistenceFailure {
+  const refused = (stage: ToolResultPersistenceFailure["stage"], observedBytes: number | null = null) => ({
+    code: stage === "size" ? "tool_result_too_large" as const : "tool_result_unpersistable" as const,
+    limitBytes: maxBytes,
+    observedBytes,
+    stage
+  });
+  let durable: ToolExecutionResult | null;
+  try {
+    const knowledge = compactKnowledgeToolExecutionResult(result);
+    durable = knowledge ? compactSearchToolExecutionResult(knowledge) : null;
+  } catch {
+    durable = null;
+  }
+  if (!durable) return refused("projection");
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(durable);
+  } catch {
+    serialized = undefined;
+  }
+  if (serialized === undefined) return refused("serialization");
+  const observedBytes = Buffer.byteLength(serialized, "utf8");
+  return refused(observedBytes > maxBytes ? "size" : "validation", observedBytes);
+}
+
+/** The bounded, content-free outcome of a call whose executed result cannot be
+ * kept. It says the call ran, so the model has no reason to replay it. */
+export function unpersistableToolExecutionResult(
+  result: Pick<ToolExecutionResult, "callId" | "name" | "usage">,
+  failure: ToolResultPersistenceFailure
+): ToolExecutionResult {
+  const message = failure.code === "tool_result_too_large"
+    ? `The tool call ran and returned a result of ${failure.observedBytes} bytes, above the ${failure.limitBytes}-byte limit for a kept tool result. The result was not kept and is unavailable; do not repeat the same call to recover it.`
+    : "The tool call ran, but its result could not be kept in a durable form. The result is unavailable; do not repeat the same call to recover it.";
+  const error = {
+    code: failure.code,
+    limitBytes: failure.limitBytes,
+    observedBytes: failure.observedBytes,
+    stage: failure.stage
+  };
+  return {
+    callId: result.callId,
+    content: [{ text: JSON.stringify({ ok: false, error: { ...error, message } }), type: "text" }],
+    name: result.name,
+    rawPreview: { finalProviderResponsePreview: { error } },
+    status: "error",
+    ...(result.usage ? { usage: result.usage } : {})
+  };
+}
+
+/**
+ * The result a tool call settles with. An executed result without a durable
+ * snapshot (oversized, unserializable or failing its codec) settles as a
+ * bounded error carrying only its code, refusing step, observed size and
+ * limit, so the batch advances and nothing replays the call. Null only when
+ * even that bounded outcome cannot be persisted.
+ */
+export function settleableToolExecutionResult(
+  result: ToolExecutionResult,
+  maxBytes: number,
+  toolKind?: ToolKind
+): Readonly<{
+  failure: ToolResultPersistenceFailure | null;
+  result: ToolExecutionResult;
+  snapshot: ToolLoopJsonValue;
+}> | null {
+  const snapshot = snapshotToolExecutionResult(result, maxBytes);
+  if (snapshot) return { failure: null, result, snapshot };
+  const failure = toolResultPersistenceFailure(result, maxBytes);
+  let refused = unpersistableToolExecutionResult(result, failure);
+  let refusedSnapshot = snapshotToolExecutionResult(refused, maxBytes);
+  if (!refusedSnapshot && refused.usage) {
+    refused = unpersistableToolExecutionResult({ callId: result.callId, name: result.name }, failure);
+    refusedSnapshot = snapshotToolExecutionResult(refused, maxBytes);
+  }
+  if (!refusedSnapshot) return null;
+  if (toolKind) {
+    logEvent("tool_execution", {
+      action: "degrade",
+      code: failure.code,
+      outcome: "failed",
+      reason: failure.code === "tool_result_too_large" ? "safety_limit" : "invalid_response",
+      stage: "result",
+      tool_kind: toolKind
+    });
+  }
+  return { failure, result: refused, snapshot: refusedSnapshot };
 }

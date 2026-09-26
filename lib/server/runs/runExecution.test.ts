@@ -6035,6 +6035,120 @@ describe("run execution", () => {
       expect(callTool).toHaveBeenCalledOnce();
     });
 
+  describe("an executed result that cannot be kept", () => {
+    const name = "mcp_synthetic_records_off";
+    const mcp: McpRunPlanSnapshot = { version: 1,
+      servers: [{ fingerprint: "a".repeat(64), revisionId: "synthetic-revision", serverId: "synthetic-server", serverName: "Records" }],
+      tools: [{ definitionHash: "b".repeat(64), description: "Read records", inputSchema: { type: "object" },
+        name: "records", namespacedName: name, originalName: "records", serverId: "synthetic-server", serverName: "Records" }] };
+    const marker = "rare-tail-271828";
+    const uniqueBody = (bytes: number) => Array.from({ length: Math.ceil(bytes / 64) },
+      (_, index) => createHash("sha256").update(`unkept:${index}`).digest("hex")).join("");
+    // Like the durable repository, a batch with a running call cannot advance.
+    const strictRepository = () => {
+      const repository = createRepository();
+      repository.repository.advanceToolLoopCallBatch = async () =>
+        [...repository.toolCalls.values()].some(call => call.state === "pending" || call.state === "running")
+          ? "incomplete" : "advanced";
+      return repository;
+    };
+    const settledError = (call: PersistedToolLoopCall | undefined) => {
+      const content = (call?.result as unknown as { content?: Array<{ text?: string }> } | null)?.content;
+      return (JSON.parse(content?.[0]?.text ?? "null") as { error: Record<string, unknown> } | null)?.error;
+    };
+
+    async function runOff(output: Readonly<{ isError: boolean; structuredContent: Record<string, unknown> | null;
+      text: string[]; unsupportedContentTypes: string[] }>) {
+      const repository = strictRepository();
+      const observations = memoryToolObservations();
+      const requests: ProviderRunRequest[] = [];
+      const base = preparedData({ mcp, modelId: "synthetic-model", provider: "openai" });
+      const modelCapabilities = { ...base.normalizedRequest.modelCapabilities, contextWindow: 1_000_000 };
+      const prepared = { ...base,
+        normalizedRequest: { ...base.normalizedRequest, modelCapabilities, toolObservationVersion: 0 as const },
+        providerRequest: { ...base.providerRequest, modelCapabilities, toolObservationVersion: 0 as const } };
+      const callTool = vi.fn(async () => output);
+      const adapter = createAdapter(async function* (request) {
+        requests.push(request);
+        return requests.length === 1
+          ? providerResult({ finalText: "", toolCalls: [{ id: "original", name, arguments: {} }] })
+          : providerResult({ finalText: "continued" });
+      });
+      const events = await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+        mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } }), observations: observations.service() }).text();
+      return { callTool, events, observations, repository, requests };
+    }
+
+    it.each([
+      ["a 320 KiB unique result", () => ({ isError: false, structuredContent: null,
+        text: [`${uniqueBody(320 * 1024)} ${marker}`], unsupportedContentTypes: [] })],
+      // An unprovable text rendering of the JSON is kept, so the pair stays ~420 KiB.
+      ["a ~420 KiB text/JSON duplicate that is not a proven representation duplicate", () => {
+        const structuredContent = { records: uniqueBody(210 * 1024), tail: marker };
+        return { isError: false, structuredContent, text: [`Records:\n${JSON.stringify(structuredContent)}`], unsupportedContentTypes: [] };
+      }]
+    ] as const)("settles %s under Off as a bounded error and continues without a replay", async (_label, output) => {
+      const run = await runOff(output());
+      expect(run.callTool).toHaveBeenCalledOnce();
+      expect(run.repository.failedRuns).toEqual([]);
+      expect(run.repository.completeRuns[0]?.finalText).toBe("continued");
+      expect(run.requests).toHaveLength(2);
+      const calls = [...run.repository.toolCalls.values()];
+      expect(calls).toEqual([expect.objectContaining({ state: "error", completedAt: expect.any(String) })]);
+      const error = settledError(calls[0]);
+      expect(error).toMatchObject({ code: "tool_result_too_large", stage: "size", limitBytes: 256 * 1024 });
+      expect(error?.observedBytes).toBeGreaterThan(256 * 1024);
+      expect(error?.message).toMatch(/ran .*not kept.*do not repeat the same call/u);
+      // The result, its diagnostics and the stream carry no tool content.
+      expect(Buffer.byteLength(JSON.stringify(calls))).toBeLessThan(4 * 1024);
+      const transcript = JSON.stringify(run.requests[1]?.providerToolMessages);
+      expect(transcript).toContain("tool_result_too_large");
+      for (const text of [JSON.stringify(calls), transcript, run.events]) expect(text).not.toContain(marker);
+      expect(run.observations.rows.size).toBe(0);
+    });
+
+    it("keeps a proven ~420 KiB text/JSON duplicate under Off as its one deduplicated representation", async () => {
+      const structuredContent = { records: uniqueBody(210 * 1024), tail: marker };
+      const run = await runOff({ isError: false, structuredContent, text: [JSON.stringify(structuredContent)], unsupportedContentTypes: [] });
+      expect(run.callTool).toHaveBeenCalledOnce();
+      expect(run.repository.failedRuns).toEqual([]);
+      expect([...run.repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "complete" })]);
+      expect(JSON.stringify(run.requests[1]?.providerToolMessages).split(marker)).toHaveLength(2);
+    });
+
+    it("settles a Skill result over 256 KiB under v1 as a bounded error and continues without reloading it", async () => {
+      const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+      const { manifest } = freezeSkillManifest({ mode: "auto", pinned: [], toolsSupported: true,
+        available: [{ skillId: "skill-1", revisionId: "revision-1", name: "review", description: "Review answers", fileCount: 0 }] });
+      const modelCapabilities = { ...base.normalizedRequest.modelCapabilities, contextWindow: 1_000_000 };
+      const prepared = { ...base,
+        normalizedRequest: { ...base.normalizedRequest, modelCapabilities, skills: manifest, toolObservationVersion: 1 as const },
+        providerRequest: { ...base.providerRequest, modelCapabilities, skills: manifest, toolObservationVersion: 1 as const,
+          tools: [loadSkillTool, readSkillFileTool] } };
+      const repository = strictRepository();
+      const requests: ProviderRunRequest[] = [];
+      const skillTools = { execute: vi.fn(async (call: import("../tools/types").ModelToolCall) => ({ callId: call.id, name: call.name,
+        status: "complete" as const, content: [{ type: "json" as const, value: { skill: "review", instructions: `${uniqueBody(300 * 1024)} ${marker}` } }] })) };
+      const adapter = createAdapter(async function* (request) {
+        requests.push(request);
+        return requests.length === 1
+          ? providerResult({ finalText: "", toolCalls: [{ arguments: { skill: "review" }, id: "load", name: "load_skill" }] })
+          : providerResult({ finalText: "continued" });
+      });
+      const events = await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+        observations: memoryToolObservations().service(), skillTools }).text();
+      expect(skillTools.execute).toHaveBeenCalledOnce();
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns[0]?.finalText).toBe("continued");
+      const calls = [...repository.toolCalls.values()];
+      expect(calls).toEqual([expect.objectContaining({ state: "error" })]);
+      expect(settledError(calls[0])).toMatchObject({ code: "tool_result_too_large", stage: "size", limitBytes: 256 * 1024 });
+      const transcript = JSON.stringify(requests[1]?.providerToolMessages);
+      expect(transcript).toContain("tool_result_too_large");
+      for (const text of [JSON.stringify(calls), transcript, events]) expect(text).not.toContain(marker);
+    });
+  });
+
   it("keeps a newly accepted Off run on legacy tool execution without capture or reader registration", async () => {
     const name = "mcp_synthetic_records_off";
     const mcp: McpRunPlanSnapshot = { version: 1,

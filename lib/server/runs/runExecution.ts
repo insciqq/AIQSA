@@ -187,6 +187,7 @@ import { UNAVAILABLE_CHAT_WORKSPACE_STATE } from "../../contracts/workspace";
 import { runProviderToolLoop as continueProviderToolLoop } from "./providerToolLoop";
 import {
   parsePersistedToolExecutionResult,
+  settleableToolExecutionResult,
   snapshotToolExecutionResult
 } from "./toolExecutionPersistence";
 import {
@@ -2354,20 +2355,24 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 result = await deliverSkillWorkspaceBundle({ call, result, request: normalizedRequest,
                   coordinator: input.workspace, runId, userId: input.userId, signal: context.signal,
                   onActivity: onWorkspaceActivity });
-                skillResultBudget.restore(result);
-                const storedResult = snapshotToolExecutionResult(
-                  result,
-                  toolLoopPersistenceLimits.resultBytes
-                );
-                if (storedResult === null) {
+                // An executed result that cannot be kept settles as a bounded
+                // error: its call ran, so the batch advances without a replay.
+                const settleable = settleableToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes,
+                  searchPlanRouter?.accepts(call.name) ? "search"
+                    : isKnowledgeCall(call.name) ? "knowledge"
+                    : isWorkspaceCall(call.name) ? "workspace"
+                    : resolveMcpRunTool(activeMcpSnapshot, call.name) ? "mcp" : undefined);
+                if (settleable === null) {
                   throw new RunPipelineError(
                     "tool_call_result_invalid",
                     "Tool result is invalid or too large"
                   );
                 }
+                result = settleable.result;
+                skillResultBudget.restore(result);
                 const settled = await input.repository.settleToolLoopCall({
                   callId: claim.call.id,
-                  result: storedResult,
+                  result: settleable.snapshot,
                   runId,
                   state: result.status,
                   userId: input.userId

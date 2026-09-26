@@ -217,6 +217,7 @@ import type {
 import type { ToolLoopSettledCall } from "./toolLoop";
 import {
   parsePersistedToolExecutionResult,
+  settleableToolExecutionResult,
   snapshotToolExecutionResult
 } from "./toolExecutionPersistence";
 import {
@@ -1584,17 +1585,24 @@ async function executePersistedToolCallInContext(
       if (signal.aborted) throw new ToolLoopRecoveryStopped();
       throw error;
     }
-    context.skillResultBudget.restore(result);
-    const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
-    if (stored === null) {
+    // An executed result that cannot be kept settles as a bounded error: its
+    // call ran, so the batch advances without a replay.
+    const settleable = settleableToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes,
+      isRecoveredSearchCall(context, call.name) ? "search"
+        : isRecoveredKnowledgeCall(context, call.name) ? "knowledge"
+        : isRecoveredWorkspaceCall(context, call.name) ? "workspace"
+        : resolveMcpRunTool(context.activeMcpSnapshot, call.name) ? "mcp" : undefined);
+    if (settleable === null) {
       throw new ToolLoopRecoveryError(
         "tool_call_result_invalid",
         "A recovered tool result is invalid or too large to persist safely."
       );
     }
+    result = settleable.result;
+    context.skillResultBudget.restore(result);
     const settled = await context.deps.repository.settleToolLoopCall({
       callId: claim.call.id,
-      result: stored,
+      result: settleable.snapshot,
       runId: context.run.id,
       state: result.status,
       userId: context.run.userId
