@@ -96,6 +96,38 @@ describe("Run lifecycle v2", () => {
     expect(document.body.textContent).not.toMatch(/unavailable/u);
   });
 
+  it("lists a failed cycle that a later cycle superseded before the latest outcome in the disclosure", () => {
+    render(<RunAnswerV2 content="Answer" presentation={presentation({
+      compaction: makeContextCompactionStatus({ afterTokens: 600, beforeTokens: 1_200, cycle: 3, outcome: "masking_applied", state: "complete" }),
+      compactionFailures: [
+        makeContextCompactionStatus({ beforeTokens: 1_200, cycle: 1, outcome: "summary_failed", state: "failed" }),
+        makeContextCompactionStatus({ beforeTokens: 1_200, cycle: 2, outcome: "provider_failed", state: "failed" })
+      ],
+      kind: "complete", runId: "run-superseded"
+    })} />);
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure.querySelector(".v2-answer-process-label")).toHaveTextContent(/^Context compacted$/u);
+    fireEvent.click(disclosure.querySelector("summary")!);
+    const section = screen.getByTestId("context-compaction-status");
+    expect(section).toHaveAttribute("data-state", "complete");
+    expect(screen.getAllByTestId("context-compaction-earlier-failure").map((item) => item.textContent))
+      .toEqual(["Context compaction failed", "Provider could not compact the context"]);
+    expect(section).toHaveTextContent(/^ContextContext compaction failedProvider could not compact the contextContext compactedApprox\. 600 /u);
+  });
+
+  it("keeps a settled failure visible when a terminal run hides its unsettled later cycle", () => {
+    render(<RunAnswerV2 content="" presentation={presentation({
+      compactionFailures: [makeContextCompactionStatus({ beforeTokens: 1_200, cycle: 1, outcome: "summary_failed", state: "failed" })],
+      failure: { code: null, message: "The run stopped.", recovery: "change_parameters" },
+      kind: "terminal_error", runId: "run-orphan"
+    })} />);
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure.querySelector(".v2-answer-process-label")).toHaveTextContent("Context compaction failed");
+    fireEvent.click(disclosure.querySelector("summary")!);
+    expect(screen.getByTestId("context-compaction-status")).toHaveAttribute("data-state", "failed");
+    expect(disclosure.querySelector(".v2-spinner")).toBeNull();
+  });
+
   it("keeps the whole failure reason in the settled fold label", () => {
     render(<RunAnswerV2 content="" workDurationMs={64_000}
       toolActivity={{ calls: [{ durationMs: 800, round: 1, status: "complete", toolName: "web_search" }] }}
@@ -619,6 +651,24 @@ describe("Run lifecycle v2 announcer", () => {
     expect(announcer.spoken.join(" ")).not.toMatch(/unavailable/u);
   });
 
+  it("speaks a failed cycle superseded before a render once with its reason, without repeats on reconnect", () => {
+    const failed = makeContextCompactionStatus({ beforeTokens: 1_200, cycle: 1, outcome: "summary_failed", state: "failed" });
+    const replayed = activity("Thinking…", { compaction: compacted(2, "masking_applied"), compactionFailures: [failed] });
+    const announcer = followAnnouncer(activity("Compacting context…", { compaction: running(1) }));
+    announcer.show(replayed, 2_000);
+    announcer.show(replayed, 2_000);
+    announcer.show(presentation({ compaction: compacted(2, "masking_applied"), compactionFailures: [failed],
+      kind: "connection_lost", runId: "run-a" }), 2_000);
+    announcer.show(replayed, 2_000);
+    announcer.show(presentation({ compaction: compacted(2, "masking_applied"), kind: "complete", runId: "run-a" }), 2_000);
+    expect(announcer.spoken).toEqual([
+      "Compacting context…",
+      "Context compaction failed. Context compacted.",
+      "Connection lost. Refresh the run state.",
+      READY
+    ]);
+  });
+
   it("coalesces updates inside the window instead of replacing an unread one", () => {
     const announcer = followAnnouncer(activity("Thinking…"));
     announcer.show(activity("Compacting context…", { compaction: running(1) }), 100);
@@ -643,6 +693,14 @@ describe("Run lifecycle v2 announcer", () => {
     const loaded = followAnnouncer(presentation({ kind: "idle", runId: null }));
     loaded.show(presentation({ kind: "complete", runId: "run-old" }), 2_000);
     expect(loaded.spoken).toEqual([]);
+
+    // So is a settled tail without a run id, such as a continuation summary.
+    loaded.unmount();
+    const summary = followAnnouncer(presentation({ kind: "idle", runId: null }));
+    summary.show(presentation({ kind: "complete", runId: null }), 2_000);
+    summary.show(presentation({ kind: "complete", runId: null }), 2_000);
+    expect(summary.spoken).toEqual([]);
+    expect(summary.text()).toBe("");
   });
 
   it("follows an optimistic answer into its durable run id and then a new run", () => {

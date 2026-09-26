@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
@@ -12,6 +12,8 @@ import {
   answerIdentityV2,
   knowledgeReferenceForMessageV2,
   liveAnswerSourceV2,
+  announcedPresentationV2,
+  presentAnswerV2,
   retryAutoMcpDiscoveryV2,
   applyLoadAllAfterMcpDiscoveryFailureV2,
   blankConversationOrientationV2,
@@ -23,6 +25,8 @@ import {
 import { formatTemporaryRetentionDeadlineV2 } from "./WorkspaceHeaderV2";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
+import { RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
+import type { RunEventView, ThreadMessage } from "@/components/app-shell/types";
 
 const galleryModels = composerGalleryConfig.catalog.models;
 
@@ -294,6 +298,78 @@ describe("Live answer source v2", () => {
     expect(liveAnswerSourceV2({ artifactSummary: saved, runId: "run-older" }, {
       currentRunId: "run-live", events: [runningEvent], liveArtifactSummary
     })).toEqual({ artifact: saved, events: [], ownsLiveRun: false });
+  });
+});
+
+describe("Run announcer wiring v2", () => {
+  const READY = "Answer ready. The message field is available.";
+  const thread = (overrides: Partial<Parameters<typeof announcedPresentationV2>[1]> = {}) => ({
+    activeChatStreaming: false, currentRunId: null, events: [], interruptedRun: null, liveArtifactSummary: null, ...overrides
+  });
+  const answer = (overrides: Partial<ThreadMessage> = {}): ThreadMessage => ({
+    content: "Conversation summary", id: "message-summary", parentMessageId: null, role: "assistant",
+    runId: null, status: "complete", ...overrides
+  });
+
+  /** Follows the view's announced presentation through the real announcer and records what it speaks. */
+  function follow(steps: readonly Readonly<{ tail?: ThreadMessage; thread?: ReturnType<typeof thread> }>[]) {
+    vi.useFakeTimers();
+    try {
+      const spoken: string[] = [];
+      const element = (step: (typeof steps)[number]) => <RunLifecycleAnnouncerV2 activeChatId="chat-a"
+        presentation={announcedPresentationV2(step.tail, step.thread ?? thread())} sourceChatId="chat-a" />;
+      const view = render(element(steps[0]!));
+      const sample = () => {
+        const text = screen.getByTestId("run-lifecycle-announcer").textContent ?? "";
+        if (text && text !== spoken.at(-1)) spoken.push(text);
+      };
+      for (const step of steps) {
+        view.rerender(element(step));
+        for (let elapsed = 0; elapsed < 2_000; elapsed += 100) {
+          act(() => {
+            vi.advanceTimersByTime(100);
+          });
+          sample();
+        }
+      }
+      view.unmount();
+      return spoken;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("keeps a loaded settled tail without a run id silent after the chat was empty", () => {
+    // An uncached chat has no tail while it loads; a continuation summary answer carries no run.
+    expect(follow([{}, { tail: answer() }, { tail: answer() }])).toEqual([]);
+    // Control: the same history with a run id stays silent too.
+    expect(follow([{}, { tail: answer({ runId: "run-old" }) }])).toEqual([]);
+  });
+
+  it("still announces an answer followed from running to complete exactly once", () => {
+    const streaming = answer({ content: "", id: "message-live", runId: "run-live", status: "streaming" });
+    const live = thread({ activeChatStreaming: true, currentRunId: "run-live" });
+    expect(follow([
+      {},
+      { tail: streaming, thread: live },
+      { tail: { ...streaming, content: "Done", status: "complete" }, thread: thread({ currentRunId: "run-live" }) },
+      { tail: { ...streaming, content: "Done", status: "complete" } }
+    ])).toEqual(["Working on the answer…", READY]);
+  });
+
+  it("projects a failed cycle superseded in one replayed batch for the answer that owns the run", () => {
+    const cycle = (status: ReturnType<typeof makeContextCompactionStatus>): RunEventView =>
+      ({ data: { artifactType: "context_compaction", payload: status }, type: "artifact" });
+    const failed = makeContextCompactionStatus({ beforeTokens: 9_000, cycle: 1, outcome: "summary_failed", state: "failed" });
+    const masked = makeContextCompactionStatus({ afterTokens: 4_000, beforeTokens: 9_000, cycle: 2, outcome: "masking_applied", state: "complete" });
+    const events = [cycle(makeContextCompactionStatus({ beforeTokens: 9_000, cycle: 1, outcome: "pending", state: "running" })),
+      cycle(failed), cycle(masked)];
+    const owner = answer({ content: "", id: "message-live", runId: "run-live", status: "streaming" });
+    expect(presentAnswerV2(owner, thread({ activeChatStreaming: true, currentRunId: "run-live", events })).presentation)
+      .toMatchObject({ compaction: masked, compactionFailures: [failed] });
+    // Another answer never adopts the live failures.
+    expect(presentAnswerV2({ ...owner, id: "message-old", runId: null, status: "complete" },
+      thread({ currentRunId: "run-live", events })).presentation).toEqual({ kind: "complete", runId: null });
   });
 });
 

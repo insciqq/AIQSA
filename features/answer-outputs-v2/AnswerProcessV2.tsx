@@ -70,6 +70,8 @@ export type AnswerProcessV2Props = Readonly<{
   /** The live feed was lost: an unsettled compaction cycle reads as lost, not active. */
   connectionLost?: boolean;
   contextCompaction?: ContextCompactionStatus;
+  /** Failed cycles a later cycle superseded, oldest first; listed before the latest one. */
+  contextCompactionFailures?: readonly ContextCompactionStatus[];
   disclosureId?: string;
   /** Live status while the run works; it occupies the settled line's place. */
   liveLabel?: string | null;
@@ -93,6 +95,7 @@ export type AnswerProcessV2Props = Readonly<{
 export function AnswerProcessV2({
   connectionLost = false,
   contextCompaction,
+  contextCompactionFailures = [],
   disclosureId,
   liveLabel = null,
   onPinSkill,
@@ -118,9 +121,12 @@ export function AnswerProcessV2({
   ) : null;
 
   const compaction = contextCompaction ? contextCompactionCopyV2(contextCompaction, { connectionLost }) : null;
-  const compactionLabel = compaction?.label ?? null;
+  const earlierCompactionFailures = contextCompactionFailures.map((status) => ({
+    cycle: status.cycle, label: contextCompactionCopyV2(status).label
+  }));
+  const compactionLabel = compaction?.label ?? earlierCompactionFailures.at(-1)?.label ?? null;
 
-  if (liveLabel && !timeline && !contextCompaction) {
+  if (liveLabel && !timeline && !contextCompaction && earlierCompactionFailures.length === 0) {
     return (
       <div className="v2-answer-process" data-live="true" data-testid="run-status-line">
         <span className="v2-answer-process-slot" aria-hidden="true">
@@ -163,12 +169,16 @@ export function AnswerProcessV2({
           </span>
         </summary>
         <div className="v2-answer-process-body">
-          {contextCompaction && compaction ? (
+          {compactionLabel ? (
             <section className="v2-answer-process-section" data-testid="context-compaction-status"
-              data-state={contextCompaction.state === "running" && connectionLost ? "connection_lost" : contextCompaction.state}>
+              data-state={!contextCompaction ? "failed"
+                : contextCompaction.state === "running" && connectionLost ? "connection_lost" : contextCompaction.state}>
               <h3>Context</h3>
-              <p>{compaction.label}</p>
-              {compaction.detail ? <p className="v2-answer-process-step-meta">{compaction.detail}</p> : null}
+              {earlierCompactionFailures.map((failure) => (
+                <p data-state="failed" data-testid="context-compaction-earlier-failure" key={failure.cycle}>{failure.label}</p>
+              ))}
+              {compaction ? <p>{compaction.label}</p> : null}
+              {compaction?.detail ? <p className="v2-answer-process-step-meta">{compaction.detail}</p> : null}
             </section>
           ) : null}
           {timeline ? (

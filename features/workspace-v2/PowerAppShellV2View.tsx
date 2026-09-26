@@ -120,7 +120,8 @@ import {
 import { documentTitleV2 } from "@/features/workspace-v2/documentTitle";
 import {
   runTransportStateV2,
-  transportLostForMessageV2
+  transportLostForMessageV2,
+  type InterruptedRunV2
 } from "@/features/workspace-v2/runTransportPresentation";
 import { AccountSettingsRowsV2 } from "@/features/settings-v2/AccountSettingsRowsV2";
 import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
@@ -271,6 +272,47 @@ export function liveAnswerSourceV2(
   return ownsLiveRun
     ? { artifact: mergeLiveThreadArtifacts(message.artifactSummary, live.liveArtifactSummary), events: live.events, ownsLiveRun }
     : { artifact: message.artifactSummary ?? null, events: [], ownsLiveRun };
+}
+
+type AnswerPresentationThreadV2 = Readonly<{
+  activeChatStreaming: boolean;
+  currentRunId: string | null;
+  events: readonly RunEventView[];
+  interruptedRun: InterruptedRunV2 | null;
+  liveArtifactSummary: ThreadArtifactSummary | null;
+}>;
+
+/** One lifecycle projection per answer, shared by the answer and the announcer. */
+export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentationThreadV2) {
+  const live = liveAnswerSourceV2(source, thread);
+  // A genuinely lost stream transport (reader error / end without a
+  // terminal frame, recorded by the run-lifecycle store) presents as the
+  // honest connection-lost strip; the transport slice suppresses the
+  // locally invented post-loss "error" status until refresh reconciles.
+  const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
+  const presentation = presentRunLifecycleV2({
+    workspacePreparation: source.workspacePreparation,
+    pdfPreparation: source.pdfPreparation,
+    ...runTransportStateV2({
+      activeChatStreaming: thread.activeChatStreaming,
+      interruptedRun: thread.interruptedRun,
+      message: { errorMessage: source.errorMessage, id: source.id, runId: source.runId ?? null, status: source.status },
+      persistedRunStatus: null
+    }),
+    content: messageText(source),
+    contextCompaction: live.artifact?.contextCompaction,
+    events: live.events,
+    runId: source.runId ?? null
+  });
+  return { ...live, presentation, transportLost };
+}
+
+/** The announcer follows the tail answer; an empty or loading chat is idle without a run. */
+export function announcedPresentationV2(
+  tail: ThreadMessage | undefined,
+  thread: AnswerPresentationThreadV2
+): RunPresentationV2 {
+  return tail?.role === "assistant" ? presentAnswerV2(tail, thread).presentation : { kind: "idle", runId: null };
 }
 
 export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
@@ -1029,37 +1071,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     role: message.role,
     streaming: message.status === "streaming"
   }));
-  // One lifecycle projection per answer, shared by the answer and the announcer.
-  const presentAnswer = (source: ThreadMessage) => {
-    const live = liveAnswerSourceV2(source, {
-      currentRunId: thread.currentRunId,
-      events: thread.events,
-      liveArtifactSummary: thread.liveArtifactSummary
-    });
-    // A genuinely lost stream transport (reader error / end without a
-    // terminal frame, recorded by the run-lifecycle store) presents as the
-    // honest connection-lost strip; the transport slice suppresses the
-    // locally invented post-loss "error" status until refresh reconciles.
-    const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
-    const presentation = presentRunLifecycleV2({
-      workspacePreparation: source.workspacePreparation,
-      pdfPreparation: source.pdfPreparation,
-      ...runTransportStateV2({
-        activeChatStreaming: thread.activeChatStreaming,
-        interruptedRun: thread.interruptedRun,
-        message: { errorMessage: source.errorMessage, id: source.id, runId: source.runId ?? null, status: source.status },
-        persistedRunStatus: null
-      }),
-      content: messageText(source),
-      contextCompaction: live.artifact?.contextCompaction,
-      events: live.events,
-      runId: source.runId ?? null
-    });
-    return { ...live, presentation, transportLost };
-  };
-  const announcedPresentation: RunPresentationV2 = liveTail?.role === "assistant"
-    ? presentAnswer(liveTail).presentation
-    : { kind: "idle", runId: null };
+  const presentAnswer = (source: ThreadMessage) => presentAnswerV2(source, thread);
+  const announcedPresentation = announcedPresentationV2(liveTail, thread);
 
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
     const editMutationReason = thread.editingMessageId

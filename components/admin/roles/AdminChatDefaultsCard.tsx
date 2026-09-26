@@ -92,6 +92,7 @@ export function AdminChatDefaultsCard({
   const [edits, setEdits] = useState<Partial<Draft>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const observationHelpId = useId();
+  const saveBlockedId = useId();
   const current = draftFor(catalog);
   const draft = { ...current, ...edits };
   const reachable = useMemo(
@@ -115,17 +116,29 @@ export function AdminChatDefaultsCard({
     rounds: positiveSafeInteger(draft.rounds),
     timeout: positiveSafeInteger(draft.timeout)
   };
-  const limitsValid = parsed.calls !== null && parsed.rounds !== null &&
-    (draft.outputMode === "model" || isMcpAutoDiscoveryOutputTokens(parsed.outputTokens)) &&
-    parsed.mcpTools !== null && parsed.mcpTools <= MCP_RUN_PLAN_LIMITS.maxTools &&
-    (draft.timeout === "" || parsed.timeout !== null && parsed.timeout >= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds &&
-    parsed.timeout <= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds);
+  const invalidLimits = [
+    ...(parsed.rounds === null ? ["Rounds"] : []),
+    ...(parsed.calls === null ? ["Calls"] : []),
+    ...(parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools ? ["MCP Auto tools"] : []),
+    ...(draft.outputMode === "manual" && !isMcpAutoDiscoveryOutputTokens(parsed.outputTokens) ? ["MCP Auto output tokens"] : []),
+    ...(draft.timeout !== "" && (parsed.timeout === null || parsed.timeout < MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
+      parsed.timeout > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds) ? ["Discovery timeout"] : [])
+  ];
+  const limitsValid = invalidLimits.length === 0;
   const modelChanged = draft.modelId !== current.modelId || draft.effort !== current.effort;
   const limitsChanged = (["calls", "mcpTools", "outputMode", "outputTokens", "rounds", "timeout"] as const)
     .filter((key) => draft[key] !== current[key]).length;
   const observationChanged = draft.observation !== "" && draft.observation !== current.observation;
   const changed = (modelChanged ? 1 : 0) + limitsChanged + (observationChanged ? 1 : 0);
-  const canSave = Boolean(catalog) && changed > 0 && effortValid && limitsValid && !busy;
+  // Each field group is validated only when it is part of the request, so a
+  // saved value the client can no longer confirm never blocks another group.
+  const saveBlockedReason = modelChanged && !effortValid
+    ? "Choose an available reasoning option to save."
+    : limitsChanged > 0 && !limitsValid
+      ? `Enter a valid ${new Intl.ListFormat("en", { type: "conjunction" }).format(invalidLimits)} to save.`
+      : null;
+  const canSave = Boolean(catalog) && changed > 0 && saveBlockedReason === null && !busy;
+  const shownBlockedReason = catalog && !error && changed > 0 ? saveBlockedReason : null;
   const currentUnreachable = Boolean(catalog?.policy.defaultModel) &&
     !reachable.some((item) => item.id === catalog?.policy.defaultModel?.id);
 
@@ -311,6 +324,9 @@ export function AdminChatDefaultsCard({
               : formError ?? (changed > 0
                 ? `${changed} unsaved ${changed === 1 ? "change" : "changes"}`
                 : "No unsaved changes"))}
+            {shownBlockedReason ? (
+              <span className="block text-caution" id={saveBlockedId}>{shownBlockedReason}</span>
+            ) : null}
           </p>
           {formError ? <span className="sr-only" role="alert">{formError}</span> : null}
           <UiV2Button
@@ -323,7 +339,13 @@ export function AdminChatDefaultsCard({
           >
             Discard
           </UiV2Button>
-          <UiV2Button busy={busy && changed > 0} disabled={!canSave} onClick={() => void save()} tone="primary">
+          <UiV2Button
+            aria-describedby={shownBlockedReason ? saveBlockedId : undefined}
+            busy={busy && changed > 0}
+            disabled={!canSave}
+            onClick={() => void save()}
+            tone="primary"
+          >
             Save
           </UiV2Button>
         </div>
