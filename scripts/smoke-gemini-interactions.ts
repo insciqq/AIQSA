@@ -1,13 +1,44 @@
+/**
+ * Bounded real Gemini Interactions smoke. A missing key skips.
+ *
+ * Environment:
+ * - GEMINI_API_KEY: operator-provided key (also read from a local .env).
+ * - AIQSA_GEMINI_SMOKE_MODEL: model id, default gemini-3.6-flash.
+ * - AIQSA_GEMINI_SMOKE_SEARCH=1: hosted Google Search stream.
+ * - AIQSA_GEMINI_SMOKE_ATTACHMENT_CONTEXT=1: attachment-only history request shape.
+ * - AIQSA_GEMINI_SMOKE_FORCED_TOOLS=1: one non-streaming forced Knowledge round
+ *   built by the production request builder with search_knowledge, the ordinary
+ *   first-party tools and, when microsandbox-mcp is installed, the official
+ *   Workspace catalog. Passes on requires_action with exactly one
+ *   search_knowledge call.
+ * Without a mode flag the script runs the two-round tool-loop smoke. Output is
+ * limited to statuses, step types, counts and token usage.
+ */
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { knowledgeRetrievalToolsForRequest } from "../lib/server/knowledge/knowledgeTools";
+import { mcpFindToolsTool } from "../lib/server/mcp/discovery";
 import {
   buildGeminiInteractionsRequest,
   createFetchGeminiInteractionsClient
 } from "../lib/server/providers/geminiInteractions";
 import { extractGeminiInteractionsUsage } from "../lib/server/providers/geminiInteractionsResponse";
+import { GeminiHttpError } from "../lib/server/providers/geminiInteractionsTransport";
 import { createProviderSafeFetch } from "../lib/server/providers/providerSafeFetch";
 import { createProviderRuntimeBinding } from "../lib/server/providers/runtimeFactory";
 import type { ProviderRunRequest } from "../lib/server/providers/types";
 import { runProviderToolLoop } from "../lib/server/runs/providerToolLoop";
+import { analyzeImageTool } from "../lib/server/tools/analyzeImage";
+import { artifactTool, describeArtifactTool, readArtifactTool } from "../lib/server/tools/artifact";
+import { checkpointOutputsTool } from "../lib/server/tools/checkpointOutputs";
+import { readToolResultTool } from "../lib/server/tools/readToolResult";
+import { sessionStatusTool } from "../lib/server/tools/sessionStatus";
+import { loadSkillTool, readSkillFileTool } from "../lib/server/tools/skill";
+import type { RunTool } from "../lib/server/tools/types";
+import { viewWorkspaceImageTool } from "../lib/server/tools/viewWorkspaceImage";
+import { bindOfficialWorkspaceTools } from "../lib/server/workspace/toolCatalog";
 
 function unquoteEnvValue(value: string): string {
   const trimmed = value.trim();
@@ -47,6 +78,7 @@ const modelId = process.env.AIQSA_GEMINI_SMOKE_MODEL || "gemini-3.6-flash";
 const searchEnabled = process.env.AIQSA_GEMINI_SMOKE_SEARCH === "1";
 const attachmentContextEnabled =
   process.env.AIQSA_GEMINI_SMOKE_ATTACHMENT_CONTEXT === "1";
+const forcedToolsEnabled = process.env.AIQSA_GEMINI_SMOKE_FORCED_TOOLS === "1";
 const maxOutputTokens = searchEnabled ? 4_096 : attachmentContextEnabled ? 8 : 64;
 const connection = {
   allowPrivateNetwork: false,
@@ -254,12 +286,140 @@ async function runAttachmentContextProbe(): Promise<void> {
   }
 }
 
+/** The official catalog is local stdio metadata; no sandbox or network runs. */
+async function officialWorkspaceTools(): Promise<RunTool[] | null> {
+  const entry = join(process.cwd(), "node_modules", "microsandbox-mcp", "bin", "microsandbox-mcp.js");
+  if (!existsSync(entry)) return null;
+  const transport = new StdioClientTransport({ args: [entry], command: process.execPath, stderr: "pipe" });
+  transport.stderr?.on("data", () => undefined);
+  const client = new Client({ name: "aiqsa-gemini-smoke", version: "1" });
+  try {
+    await client.connect(transport);
+    const response = await client.listTools();
+    const version = client.getServerVersion()?.version ?? "";
+    const catalog = bindOfficialWorkspaceTools({
+      mcpVersion: version,
+      runtimeVersion: version,
+      tools: response.tools.map((tool) => ({
+        description: tool.description,
+        inputSchema: tool.inputSchema as Record<string, unknown>,
+        name: tool.name
+      }))
+    });
+    return catalog.tools.map((tool) => ({
+      capability: "workspace" as const,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      name: tool.namespacedName
+    }));
+  } catch {
+    return null;
+  } finally {
+    await transport.close().catch(() => undefined);
+  }
+}
+
+async function runForcedToolSetProbe(): Promise<void> {
+  const knowledgeTools = knowledgeRetrievalToolsForRequest({ knowledgeSearchInstructionVersion: 3 });
+  const forcedToolName = knowledgeTools.find((tool) => tool.capability === "knowledge")?.name;
+  if (!forcedToolName) throw new Error("gemini_smoke_knowledge_tool_missing");
+  const workspaceTools = await officialWorkspaceTools();
+  const tools: RunTool[] = [
+    ...knowledgeTools,
+    loadSkillTool,
+    readSkillFileTool,
+    sessionStatusTool,
+    readToolResultTool,
+    checkpointOutputsTool,
+    analyzeImageTool(),
+    viewWorkspaceImageTool,
+    artifactTool(describeArtifactTool()),
+    readArtifactTool(),
+    mcpFindToolsTool,
+    ...(workspaceTools ?? [])
+  ];
+  const forcedRequest: ProviderRunRequest = {
+    ...request,
+    content: {
+      blocks: [{ text: "What do the selected Knowledge sources say about the AIQSA smoke marker?", type: "text" }]
+    },
+    forceNonStreaming: true,
+    forcedToolName,
+    params: { maxTokens: 512, reasoning: { effort: "medium" }, stream: false },
+    prompt: {
+      developer: null,
+      system: "This is a bounded AIQSA forced Knowledge round smoke test. Search the selected Knowledge sources before answering."
+    },
+    toolChoice: "required",
+    tools
+  };
+  const body = buildGeminiInteractionsRequest(forcedRequest);
+  const toolChoice = body.generation_config.tool_choice;
+  const toolChoiceNarrowed = typeof toolChoice === "object" &&
+    toolChoice.allowed_tools.mode === "any" &&
+    toolChoice.allowed_tools.tools.length === 1 &&
+    toolChoice.allowed_tools.tools[0] === forcedToolName;
+  const summary = {
+    advertisedToolCount: body.tools?.length ?? 0,
+    mode: "forced_tool_set",
+    streaming: body.stream,
+    toolChoiceNarrowed,
+    workspaceToolCount: workspaceTools?.length ?? 0
+  };
+
+  let observedHttpStatus: number | null = null;
+  const safeFetch = createProviderSafeFetch({ configuration: connection });
+  const client = createFetchGeminiInteractionsClient({
+    apiKey,
+    apiRoot,
+    fetchFn: async (...args) => {
+      const response = await safeFetch(...args);
+      observedHttpStatus = response.status;
+      return response;
+    }
+  });
+  try {
+    const response = await client.createInteraction(body, { timeoutMs: 60_000 });
+    const steps = Array.isArray(response.steps) ? response.steps : [];
+    const stepTypes = steps.map((step) => isRecord(step) && typeof step.type === "string" ? step.type : "unknown");
+    const functionCalls = steps.filter((step) => isRecord(step) && step.type === "function_call");
+    const forcedToolCallCount = functionCalls.filter((step) => isRecord(step) && step.name === forcedToolName).length;
+    const interactionStatus = typeof response.status === "string" ? response.status : null;
+    const passed = observedHttpStatus === 200 && toolChoiceNarrowed && interactionStatus === "requires_action" &&
+      functionCalls.length === 1 && forcedToolCallCount === 1;
+    console.log(JSON.stringify({
+      ...summary,
+      forcedToolCallCount,
+      functionCallCount: functionCalls.length,
+      httpStatus: observedHttpStatus,
+      interactionStatus,
+      status: passed ? "passed" : "failed",
+      stepTypes,
+      usage: extractGeminiInteractionsUsage(response.usage)
+    }, null, 2));
+    if (!passed) process.exitCode = 1;
+  } catch (error) {
+    console.log(JSON.stringify({
+      ...summary,
+      // Only the transport's allow-listed identity; never the error envelope.
+      errorCode: error instanceof GeminiHttpError ? error.code ?? null : null,
+      httpStatus: error instanceof GeminiHttpError ? error.httpStatus : observedHttpStatus,
+      status: "failed"
+    }, null, 2));
+    process.exitCode = 1;
+  }
+}
+
 async function main(): Promise<void> {
-  if (searchEnabled && attachmentContextEnabled) {
+  if ([searchEnabled, attachmentContextEnabled, forcedToolsEnabled].filter(Boolean).length > 1) {
     throw new Error("gemini_smoke_modes_conflict");
   }
   if (attachmentContextEnabled) {
     await runAttachmentContextProbe();
+    return;
+  }
+  if (forcedToolsEnabled) {
+    await runForcedToolSetProbe();
     return;
   }
 

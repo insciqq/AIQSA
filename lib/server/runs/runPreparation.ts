@@ -2137,11 +2137,15 @@ export async function prepareRun(
     const requiresInitialKnowledgeCall = Boolean(
       plan && !fullContext && knowledgeRequested
     );
-    const clientTools = [
-          ...(baseNormalizedRequest.toolMode !== "none" && !fullContext && knowledgeRequested
-            ? knowledgeRetrievalToolsForRequest(baseNormalizedRequest) : []),
-          ...nonKnowledgeClientTools
-        ];
+    const knowledgeTools = baseNormalizedRequest.toolMode !== "none" && !fullContext && knowledgeRequested
+      ? knowledgeRetrievalToolsForRequest(baseNormalizedRequest) : [];
+    // The forced first round exists to obtain one Knowledge search. Naming it
+    // lets an adapter that can narrow a forced choice restrict it to that
+    // tool instead of forcing a choice over every advertised schema.
+    const forcedToolName = requiresInitialKnowledgeCall
+      ? knowledgeTools.find((tool) => tool.capability === "knowledge")?.name
+      : undefined;
+    const clientTools = [...knowledgeTools, ...nonKnowledgeClientTools];
     const normalized: NormalizedRunRequest = {
       ...baseNormalizedRequest,
       ...(plan ? { knowledgeAnswering: knowledgeAnsweringRequestSnapshot(plan) } : {})
@@ -2149,7 +2153,7 @@ export async function prepareRun(
     const unbudgeted: ProviderRunRequest = {
       ...normalized,
       attachments,
-      ...(requiresInitialKnowledgeCall ? { toolChoice: "required" as const } : {}),
+      ...(requiresInitialKnowledgeCall ? { toolChoice: "required" as const, ...(forcedToolName ? { forcedToolName } : {}) } : {}),
       ...(clientTools.length > 0 ? { tools: clientTools } : {})
     };
     const withEvidence = fullContext

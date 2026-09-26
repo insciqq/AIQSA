@@ -5,7 +5,8 @@ import { createArtifactService } from "./service";
 import type { ToolExecutionContext } from "../tools/types";
 import { createHash } from "node:crypto";
 import { snapshotToolLoopJson, toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
-import { normalizeArtifactOperation } from "@/lib/contracts/artifacts";
+import { ARTIFACT_LIMITS, normalizeArtifactOperation } from "@/lib/contracts/artifacts";
+import { artifactTool, describeArtifactTool } from "../tools/artifact";
 import { buildArtifactBundle, decodeArtifactBundle } from "./bundle";
 import { vendorArtifactResources } from "./vendoring";
 
@@ -104,6 +105,34 @@ describe("artifact authorized projections", () => {
     findFirst.mockRejectedValueOnce(new Error("database_unavailable"));
     await expect(service.execute(call, context)).rejects.toThrow("database_unavailable");
   });
+  it("advertises no array count bounds while execution still enforces ARTIFACT_LIMITS", async () => {
+    // Gemini compiles advertised schemas under a forced tool choice and
+    // rejects these bounded object arrays; the limits stay server-owned.
+    const properties = artifactTool(describeArtifactTool()).inputSchema.properties as Record<string, Record<string, unknown>>;
+    for (const name of ["files", "edits", "delete_paths"]) expect(properties[name]).not.toHaveProperty("maxItems");
+    expect(describeArtifactTool()).toContain(`at most ${ARTIFACT_LIMITS.maxFiles} files, ${ARTIFACT_LIMITS.maxEdits} edits`);
+    const transaction = vi.fn();
+    const putObject = vi.fn();
+    const db = { artifactVersion: { findFirst: async () => null, findUnique: async () => null }, $transaction: transaction } as unknown as PrismaClient;
+    const service = createArtifactService(db, { putObject } as unknown as StorageAdapter);
+    const result = await service.execute({ id: "call", name: "create_artifact", arguments: {
+      intent: "create", kind: "html", title: "Too many files", entrypoint: "index.html",
+      files: Array.from({ length: ARTIFACT_LIMITS.maxFiles + 1 }, (_, index) => ({
+        path: index === 0 ? "index.html" : `page-${index}.html`, mimeType: "text/html", text: "<p>x</p>" }))
+    } }, { userId: "owner", runId: "run", persistedToolCallId: "persisted", request: { chatId: "chat" } } as ToolExecutionContext);
+    expect(result).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "artifact_file_count_exceeded" } }] });
+    expect(transaction).not.toHaveBeenCalled();
+    expect(putObject).not.toHaveBeenCalled();
+    const base = normalizeArtifactOperation({ intent: "create", kind: "html", title: "Base", entrypoint: "index.html",
+      files: [{ path: "index.html", mimeType: "text/html", text: "<p>x</p>" }] });
+    expect(() => normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", edits: Array.from(
+      { length: ARTIFACT_LIMITS.maxEdits + 1 }, () => ({ path: "index.html", old_string: "x", new_string: "y" })) }, base))
+      .toThrow("artifact_edit_limit_exceeded");
+    expect(() => normalizeArtifactOperation({ intent: "update", baseVersionId: "v1",
+      delete_paths: Array.from({ length: ARTIFACT_LIMITS.maxFiles + 1 }, (_, index) => `file-${index}.txt`) }, base))
+      .toThrow("artifact_path_invalid");
+  });
+
   it.each([undefined, null, "missing.html"])("explains a missing startup file before allocating storage or a version: %s", async entrypoint => {
     const transaction = vi.fn();
     const putObject = vi.fn();

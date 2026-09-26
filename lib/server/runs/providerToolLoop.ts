@@ -124,6 +124,17 @@ export function answerDispatchStarted(error: unknown): boolean {
   return typeof error !== "object" || error === null || !undispatchedRoundFailures.has(error);
 }
 
+/** Only a `required` round names the tool it is forced to obtain; later
+ * rounds never inherit the name from the request they were derived from. */
+export function withRoundForcedTool(
+  request: ProviderRunRequest,
+  forcedToolName: string | undefined
+): ProviderRunRequest {
+  const round: ProviderRunRequest = { ...request };
+  delete round.forcedToolName;
+  return request.toolChoice === "required" && forcedToolName ? { ...round, forcedToolName } : round;
+}
+
 export function providerToolLoopContinuationAfterResult(
   bridge: ProviderToolBridge,
   continuation: ProviderToolLoopContinuation,
@@ -228,13 +239,13 @@ export async function runProviderToolLoop(
         : progress.toolRounds === 0 && input.initialRequest.toolChoice === "required"
           ? "required"
           : "auto";
-      const requestedRound: ProviderRunRequest = {
+      const requestedRound = withRoundForcedTool({
         ...preparedRequest,
         parallelToolCalls: input.parallelToolCalls,
         providerToolMessages: [...effectiveContinuation.providerToolMessages],
         toolChoice,
         tools: [...input.tools]
-      };
+      }, input.initialRequest.forcedToolName);
       const preparedRound = await input.prepareRequest?.(requestedRound, round) ?? requestedRound;
       // A planner may replace old settled observations in the provider-facing
       // projection. Carry that exact projection into the durable continuation;
