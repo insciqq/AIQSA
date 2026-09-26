@@ -710,6 +710,18 @@ function lostSummaryAttempt(checkpoint: CheckpointedToolLoopRun["checkpoint"]): 
   };
 }
 
+/** A lost summary call an earlier recovery pass already settled for the
+ * round being prepared, when that pass could not fail the run. Claims open
+ * only in that round and receipts are appended in order, so the latest
+ * receipt is the round's; a claim settled as never sent or a call of unknown
+ * outcome means the round's answer request was never sent either. */
+function recoverySettledSummaryAttempt(checkpoint: CheckpointedToolLoopRun["checkpoint"]): ContextSummaryAttempt | undefined {
+  const latest = checkpoint.contextCompaction?.summaryAttempts?.at(-1);
+  if (!latest || checkpoint.answerRoundUsage.some((entry) => entry.roundIndex === checkpoint.roundIndex)) return undefined;
+  return latest.state === "unknown" ||
+    latest.state === "failed" && latest.errorCode === CONTEXT_SUMMARY_NOT_DISPATCHED ? latest : undefined;
+}
+
 /** The round being prepared when the executor was lost may have dispatched
  * its answer request, unless the loss happened while summarizing for that
  * round (no answer request is sent before its summary settles). Usage the
@@ -2971,12 +2983,15 @@ async function recoverCheckpointedToolLoop(
       const round = run.checkpoint.roundIndex;
       const roundRequest = await providerRunningRequest(continuation, round);
       let refreshed: ProviderRunRefreshResult;
-      if (!currentProviderResponseId && unsettledSummaryClaim) {
+      // A later pass finds the claim an earlier pass settled before it could
+      // fail the run.
+      const lostSummary = unsettledSummaryClaim ?? recoverySettledSummaryAttempt(run.checkpoint);
+      if (!currentProviderResponseId && lostSummary) {
         // The executor was lost while summarizing earlier context for this
         // round, so the round's answer request was never sent.
         throw new ToolLoopRecoveryError(
           "context_compaction_outcome_unknown",
-          unsettledSummaryClaim.state === "claim"
+          lostSummary.state === "claim" || lostSummary.state === "failed"
             ? "The run stopped while preparing its context summary. The summary was not sent and no answer was produced."
             : "The run stopped while summarizing earlier context. The summary was not repeated and no answer was produced."
         );
