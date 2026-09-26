@@ -129,8 +129,6 @@ async function withMemoryBranchOwner<T>(run: (userId: string) => Promise<T>): Pr
   try {
     return await run(userId);
   } finally {
-    // A Temporary chat must keep its deletion obligation while it exists.
-    await prisma.chat.deleteMany({ where: { userId } });
     await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
   }
@@ -1750,18 +1748,37 @@ describe("Prisma-backed message branch repository", () => {
         });
         return chat;
       });
-      const temporaryTurn = await createSettledTurn({
-        chatId: temporaryChat.id,
-        createdAt: new Date(Date.now() - 60_000),
-        parentMessageId: null,
-        userId,
-        userText: "Temporary text."
-      });
-      await expect(repository.createChatBranchFromMessage({
-        sourceMessageId: temporaryTurn.assistantMessage.id,
-        userId
-      })).resolves.toBeNull();
-      await expect(prisma.chat.count({ where: { userId } })).resolves.toBe(1);
+      try {
+        const temporaryTurn = await createSettledTurn({
+          chatId: temporaryChat.id,
+          createdAt: new Date(Date.now() - 60_000),
+          parentMessageId: null,
+          userId,
+          userText: "Temporary text."
+        });
+        await expect(repository.createChatBranchFromMessage({
+          sourceMessageId: temporaryTurn.assistantMessage.id,
+          userId
+        })).resolves.toBeNull();
+        await expect(prisma.chat.count({ where: { userId } })).resolves.toBe(1);
+      } finally {
+        // A Temporary chat is deleted only through its claimed obligation.
+        await prisma.$transaction(async (tx) => {
+          await tx.memoryDeletionOutbox.updateMany({
+            data: {
+              leaseExpiresAt: new Date(Date.now() + 5 * 60_000),
+              leaseToken: "message-branch-test-cleanup",
+              nextAttemptAt: null,
+              state: "RUNNING"
+            },
+            where: { operation: "TEMPORARY_DELETE", targetId: temporaryChat.id, userId }
+          });
+          await tx.chat.delete({ where: { id: temporaryChat.id } });
+          await tx.memoryDeletionOutbox.deleteMany({
+            where: { operation: "TEMPORARY_DELETE", targetId: temporaryChat.id, userId }
+          });
+        });
+      }
 
       const project = await createPrismaProjectRepository(prisma).create({
         actorDisplayName: "Message Branch Memory User",
