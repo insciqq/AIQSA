@@ -5,6 +5,7 @@ import * as workspaceImageViewer from "../workspace/directImageView";
 import { prepareWorkspaceImages } from "../workspace/imageCapture";
 import sharp from "sharp";
 import { createHash } from "node:crypto";
+import { observationWholeResultTokens } from "./runContextBudget";
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1430,6 +1431,8 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 function compactionLoopFixture(input: Readonly<{
   historyTokens: number;
   resultChars: number;
+  /** Parallel calls each tool round requests (default 1). */
+  callsPerRound?: number;
   mutate?(request: NormalizedRunRequest): NormalizedRunRequest;
   onToolCall?(count: number): void;
   repository?: ReturnType<typeof createRepository>;
@@ -1470,7 +1473,8 @@ function compactionLoopFixture(input: Readonly<{
     }
     answers.push(request);
     if (answers.length < 3) {
-      return providerResult({ finalText: "", toolCalls: [{ id: `read-${answers.length}`, name, arguments: {} }] });
+      return providerResult({ finalText: "", toolCalls: Array.from({ length: input.callsPerRound ?? 1 }, (_, index) =>
+        ({ id: `read-${answers.length}${index ? `-${index}` : ""}`, name, arguments: {} })) });
     }
     yield { type: "token", data: { delta: "Done." } };
     return providerResult({ finalText: "Done." });
@@ -1588,9 +1592,10 @@ describe("run execution", () => {
   });
 
   it("buys one summary in the round tool results cross the budget and carries it through checkpoints", async () => {
-    // Round 1 stays below the 75% headroom trigger; round 2's inline tool
-    // result (the newest batch, never masked) pushes it over the budget.
-    const loop = compactionLoopFixture({ historyTokens: 4_600, resultChars: 7_800 });
+    // Round 1 stays below the 75% headroom trigger; round 2's batch (the
+    // newest, never masked) pushes it over the budget: one inline result
+    // whole within the batch share, the other as its bounded preview.
+    const loop = compactionLoopFixture({ historyTokens: 4_600, resultChars: 6_000, callsPerRound: 2 });
     const events = await loop.run();
     expect(loop.repository.failedRuns).toEqual([]);
     expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
@@ -1704,7 +1709,8 @@ describe("run execution", () => {
   });
 
   it("masks an older settled result live from the run's own server observations", async () => {
-    const loop = compactionLoopFixture({ historyTokens: 1_500, resultChars: 7_800 });
+    // Each result is whole within the 8k window's batch share.
+    const loop = compactionLoopFixture({ historyTokens: 2_000, resultChars: 6_000 });
     await loop.run();
     expect(loop.repository.failedRuns).toEqual([]);
     const [, second, final] = loop.answers;
@@ -6115,6 +6121,46 @@ describe("run execution", () => {
       expect(callTool).toHaveBeenCalledOnce();
     });
 
+  it("shares one whole-delivery allowance per parallel batch and starts each batch afresh", async () => {
+    const name = "mcp_synthetic_records";
+    const mcp: McpRunPlanSnapshot = { version: 1,
+      servers: [{ fingerprint: "a".repeat(64), revisionId: "synthetic-revision", serverId: "synthetic-server", serverName: "Records" }],
+      tools: [{ definitionHash: "b".repeat(64), description: "Read records", inputSchema: { type: "object" },
+        name: "records", namespacedName: name, originalName: "records", serverId: "synthetic-server", serverName: "Records" }] };
+    const repository = createRepository();
+    const observations = memoryToolObservations();
+    const base = preparedData({ mcp, modelId: "synthetic-model", provider: "openai" });
+    const modelCapabilities = { ...base.normalizedRequest.modelCapabilities, contextWindow: 128_000 };
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, modelCapabilities, toolObservationVersion: 1 as const },
+      providerRequest: { ...base.providerRequest, modelCapabilities, toolObservationVersion: 1 as const } };
+    // About two fifths of the batch share each: two fit whole, the rest keep previews.
+    const bytes = Math.floor(observationWholeResultTokens(prepared.providerRequest) * 4 * 0.4);
+    let dispatched = 0;
+    const callTool = vi.fn(async () => {
+      dispatched += 1;
+      const body = Array.from({ length: Math.ceil(bytes / 64) }, (_, index) =>
+        createHash("sha256").update(`batch:${dispatched}:${index}`).digest("hex")).join("").slice(0, bytes);
+      return { isError: false, structuredContent: null, text: [`${body} rare-tail-${dispatched}`], unsupportedContentTypes: [] };
+    });
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length > 2) return providerResult({ finalText: "done" });
+      return providerResult({ finalText: "", toolCalls: [1, 2, 3, 4].map(index =>
+        ({ id: `batch-${requests.length}-${index}`, name, arguments: { index } })) });
+    });
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } }), observations: observations.service() }).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(callTool).toHaveBeenCalledTimes(8);
+    const wholeIn = (request: ProviderRunRequest | undefined, calls: readonly number[]) => {
+      const transcript = JSON.stringify(request?.providerToolMessages);
+      return calls.filter(call => transcript.includes(`rare-tail-${call}`)).length;
+    };
+    expect(wholeIn(requests[1], [1, 2, 3, 4])).toBe(2);
+    expect(wholeIn(requests[2], [5, 6, 7, 8])).toBe(2);
+  });
+
   describe("an executed result that cannot be kept", () => {
     const name = "mcp_synthetic_records_off";
     const mcp: McpRunPlanSnapshot = { version: 1,
@@ -6623,6 +6669,41 @@ describe("run execution", () => {
         modelId: "perplexity/sonar-pro-search", provider: "openrouter", operationCount: 1,
         usage: expect.objectContaining({ inputTokens: 7, outputTokens: null, totalTokens: null, completeness: "partial" })
       })
+    ]));
+  });
+
+  it("keeps an observed Search's usage and says it executed when its receipt cannot be recorded", async () => {
+    const repository = createRepository();
+    const observations = memoryToolObservations();
+    vi.spyOn(observations.repository, "recordSearchReceipt").mockRejectedValueOnce(new Error("could not serialize access"));
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        return providerResult({ finalText: "", usage: usage(2, 1, 0),
+          toolCalls: [{ arguments: { query: "current sources" }, id: "tool-call-1", name: "search_engine_1" }] });
+      }
+      yield { type: "token", data: { delta: "Answered." } };
+      return providerResult({ finalText: "Answered." });
+    });
+    const search = vi.fn<ProviderSearchAdapter["search"]>(async () => ({ artifacts: [], finalProviderResponsePreview: {},
+      findings: "Search findings", requestPreview: {}, sources: [{ rank: 1, title: "Search source", url: "https://example.com/search" }],
+      usage: usage(3, 2, 0) }));
+    const base = preparedData({ modelId: "openai-answer-model", provider: "openai", searchPlan: perplexityClientSearchPlan() });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, toolObservationVersion: 1 as const },
+      providerRequest: { ...base.providerRequest, toolObservationVersion: 1 as const } };
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+      searchAdapter: { buildRequestPreview: () => ({}), search } }), observations: observations.service() }).text();
+    expect(search).toHaveBeenCalledOnce();
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    const [call] = [...repository.toolCalls.values()];
+    expect(call).toMatchObject({ state: "error", usageAccountedAt: expect.any(String) });
+    expect(JSON.stringify(call?.result)).toContain("The operation executed, but its saved result is unavailable.");
+    expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain("tool_observation_unavailable");
+    expect(repository.searchRuns).toHaveLength(1);
+    expect(repository.recordedRunUsageEvents.flatMap(event => event.usageAttributions ?? [])).toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: "perplexity/sonar-pro-search", usage: expect.objectContaining({ inputTokens: 3, outputTokens: 2 }) })
     ]));
   });
 

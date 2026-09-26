@@ -33,7 +33,8 @@ export function createMemoryStorageAdapter(): StorageAdapter & {
       const limit = maxBytes(options?.maxBytes);
       throwIfAborted(options?.signal);
       const object = objects.get(storageKey);
-      if (!object) throw new Error("stored_object_not_found");
+      // Like S3, a missing key is typed NoSuchKey.
+      if (!object) throw Object.assign(new Error("stored_object_not_found"), { name: "NoSuchKey" });
       if (limit !== undefined && object.body.byteLength > limit) {
         throw new StoredObjectTooLargeError({
           maxBytes: limit,
@@ -61,7 +62,8 @@ export function createMemoryStorageAdapter(): StorageAdapter & {
       const limit = maxBytes(options?.maxBytes);
       throwIfAborted(options?.signal);
       const object = objects.get(storageKey);
-      if (!object) throw new Error("stored_object_not_found");
+      // Like S3, a missing key is typed NoSuchKey.
+      if (!object) throw Object.assign(new Error("stored_object_not_found"), { name: "NoSuchKey" });
       if (limit !== undefined && object.body.byteLength > limit) {
         throw new StoredObjectTooLargeError({
           maxBytes: limit,

@@ -1,5 +1,6 @@
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as hub from "../mcp/hubService";
 import { McpSemanticRouterError } from "../mcp/router";
@@ -85,6 +86,43 @@ describe("Agent MCP discovery surface", () => {
     expect(codexModelOutput(denied).body).not.toContain("rare_tail=271828");
     expect(dispatch).toHaveBeenCalledOnce();
     expect(observations.rows.size).toBe(1);
+  });
+
+  it("delivers a 100 KiB result whole as Off does, with its descriptor, and a 300 KiB result as a preview", async () => {
+    const observations = memoryToolObservations();
+    const toolId = "fixture_records", toolVersion = "a".repeat(64);
+    const snapshot = { version: 1, servers: [{ serverId: "fixture", revisionId: "revision", fingerprint: "b".repeat(64) }],
+      tools: [{ serverId: "fixture", namespacedName: toolId, originalName: "records", definitionHash: "c".repeat(64), inputSchema: { type: "object" } }] };
+    vi.spyOn(prisma.agentMcpTool, "findUnique").mockResolvedValue({ snapshot } as never);
+    const body = (bytes: number) => Array.from({ length: Math.ceil(bytes / 64) }, (_, index) =>
+      createHash("sha256").update(`agent:${bytes}:${index}`).digest("hex")).join("").slice(0, bytes);
+    let size = 100 * 1024;
+    const dispatch = vi.fn(async () => ({ text: [`${body(size)} rare_tail=${size}`], isError: false, unsupportedContentTypes: [] }));
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: async () => ({}),
+      dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    let call = 0;
+    const store = { mcpTools: async () => [{ toolId, version: toolVersion }], admitMcpPlan: async () => {},
+      toolCall: async () => `business-call-${++call}`, settleTool: vi.fn() } as unknown as ReturnType<typeof createAgentRunStore>;
+    const gateway = (observed: boolean) => createAgentMcpGateway({
+      request: { agent: { mcpMode: "all" }, searchPlan: { mode: "all_selected", options: [] }, mcp: snapshot,
+        ...(observed ? { toolObservationVersion: 1 } : {}) } as unknown as NormalizedRunRequest,
+      ...(observed ? { observations: observations.service() } : {}), store, runId: "run", userId: "user",
+      signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const rpc = () => new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolId, arguments: {} } }) });
+    const off = await rpcResult(await (await gateway(false))(rpc()));
+    const observed = await rpcResult(await (await gateway(true))(rpc()));
+    expect(observed.isError).not.toBe(true);
+    const descriptor = JSON.parse(observed.content.at(-1).text);
+    expect(descriptor).toEqual({ observation: expect.objectContaining({ source: "mcp", maskable: true }), reader: "read_tool_result" });
+    expect(observed.content).toEqual([...off.content, { type: "text", text: JSON.stringify(descriptor) }]);
+    expect(codexModelOutput(observed).body).toContain(`rare_tail=${size}`);
+    size = 300 * 1024;
+    const preview = codexModelOutput(await rpcResult(await (await gateway(true))(rpc()))).body;
+    expect(preview).not.toContain(`rare_tail=${size}`);
+    expect(Buffer.byteLength(preview)).toBeLessThan(10 * 1024);
+    expect(JSON.parse(preview)).toMatchObject({ observation: { source: "mcp" }, reader: "read_tool_result", incomplete: true });
   });
 
   it.each(["missing", "version", "tool_unavailable", "tool_definition_changed", "upstream_unavailable", "execution_outcome_unknown"] as const)(

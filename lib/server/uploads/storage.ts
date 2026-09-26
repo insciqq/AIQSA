@@ -241,6 +241,14 @@ function boundedExactWebStream(
   });
 }
 
+/** The object does not exist (filesystem ENOENT, S3 NoSuchKey or 404), as
+ * opposed to a transport or service failure that a later read may survive. */
+export function isStoredObjectMissingError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const record = error as { code?: unknown; name?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  return record.code === "ENOENT" || record.name === "NoSuchKey" || record.$metadata?.httpStatusCode === 404;
+}
+
 export async function getStoredObjectStream(
   storage: StorageAdapter,
   storageKey: string,

@@ -1,5 +1,5 @@
 import { defaultToolObservations } from "../toolObservations/defaultService";
-import { captureMcpObservation, projectObservationForProvider, type ToolObservationService } from "../toolObservations/sourceAdapters";
+import { captureMcpObservation, projectObservationForProvider, wholeDeliveryAllowance, type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { observationFailure } from "../toolObservations/contract";
 import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { createAgentAiqsaSearch } from "./aiqsaSearchTool";
@@ -243,8 +243,11 @@ export async function createAgentMcpGateway(input: Readonly<{
           const route = resolveMcpRunTool(snapshot, toolId);
           const server = route && snapshot?.servers.find(server => server.serverId === route.serverId);
           if (!route || !server) throw new Error("agent_mcp_binding_invalid");
+          // Codex owns its context: Off parity delivers every result within the
+          // ordinary result bound whole, and the descriptor keeps it readable.
           const result = projectObservationForProvider(await captureMcpObservation({ service: await observationService(),
-            producer: { runId: input.runId, userId: input.userId, toolCallId: authority.callId }, signal },
+            producer: { runId: input.runId, userId: input.userId, toolCallId: authority.callId }, signal,
+            wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) },
             { id: authority.callId, name: toolId, arguments: args },
             { version: 1, source: "mcp", serverId: route.serverId, originalName: route.originalName,
               revisionId: server.revisionId, fingerprint: route.fingerprint }, dispatch));

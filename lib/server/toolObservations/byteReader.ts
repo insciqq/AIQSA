@@ -13,9 +13,14 @@ export const OBSERVATION_READ_LIMITS = Object.freeze({
 });
 
 export class ObservationReadError extends Error {
-  constructor(readonly code: "tool_observation_selector_invalid" | "tool_observation_unavailable") {
+  /** A storage transport failure, hidden behind the same code, rather than
+   * bytes that prove the original unavailable. */
+  readonly transient: boolean;
+  constructor(readonly code: "tool_observation_selector_invalid" | "tool_observation_unavailable",
+    options: Readonly<{ transient?: boolean }> = {}) {
     super(code);
     this.name = "ObservationReadError";
+    this.transient = options.transient === true;
   }
 }
 
@@ -122,7 +127,8 @@ export async function readObservationBytes(input: Readonly<{
     completed = true;
   } catch (error) {
     if (signal?.aborted) throw signal.reason;
-    throw error instanceof ObservationReadError ? error : unavailable();
+    throw error instanceof ObservationReadError ? error
+      : new ObservationReadError("tool_observation_unavailable", { transient: true });
   } finally {
     if (!completed) await reader.cancel().catch(() => undefined);
     reader.releaseLock();

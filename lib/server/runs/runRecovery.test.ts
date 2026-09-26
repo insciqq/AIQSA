@@ -5266,8 +5266,8 @@ describe("run recovery", () => {
         toolObservationVersion: 1 };
     }
 
-    const toolResult = (round: number) => ({ callId: `provider-call-${round}`, name: recoveryToolName, status: "complete" as const,
-      content: [{ type: "text" as const, text: `RESULT_${round} ${"r".repeat(7_000)}` }] });
+    const toolResult = (round: number, chars = 7_000) => ({ callId: `provider-call-${round}`, name: recoveryToolName, status: "complete" as const,
+      content: [{ type: "text" as const, text: `RESULT_${round} ${"r".repeat(chars)}` }] });
 
     function fixture(input: Readonly<{
       answerRoundUsage?: readonly PersistedAnswerRoundUsage[];
@@ -5293,7 +5293,8 @@ describe("run recovery", () => {
       const harness = createHarness({
         mcpRuntime: {
           callTool: async (call) => ({ isError: false, structuredContent: null, unsupportedContentTypes: [],
-            text: [toolResult(call.arguments.value === "beta" ? 2 : 1).content[0]!.text] }),
+            // Within the window's whole-delivery batch share (1,715 tokens), so it arrives whole.
+            text: [toolResult(call.arguments.value === "beta" ? 2 : 1, 6_000).content[0]!.text] }),
           ensureAcceptedGeneration: async () => true
         },
         providers: { openai: { buildRequestPreview: () => ({}), ...(input.refresh ? { refresh: input.refresh } : {}), async *stream(next) {
@@ -5708,6 +5709,67 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors[0]?.usageAttributions).toEqual(expect.arrayContaining([expect.objectContaining({
       modelId: "search-model", provider: "openai_compatible", usage: expect.objectContaining({ inputTokens: 5, outputTokens: 2 })
     })]));
+  });
+
+  it.each(["timeout", "revoked"] as const)("settles an ambiguous call as an unknown outcome only when its saved result is refused (%s)", async failure => {
+    const observations = memoryToolObservations();
+    const business = vi.fn(async () => ({ text: "x".repeat(320 * 1024), tail: "rare-tail-271828" }));
+    await observations.service().withReservation({ producer: { runId, userId, toolCallId: "stored-call-1" }, source: "mcp", maximumBytes: 1024 * 1024 },
+      async receipt => receipt.store({ original: await business(), outcome: "complete", sourceTruncated: false, maskable: true }));
+    if (failure === "timeout") {
+      vi.spyOn(observations.storage, "getObjectStream").mockRejectedValue(
+        Object.assign(new Error("synthetic S3 timeout"), { name: "TimeoutError", $metadata: { httpStatusCode: 503 } }));
+    } else observations.revoke();
+    const runtimeCall = vi.fn();
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    const base = checkpointedRun({ calls: [persistedRecoveryCall("running")], phase: "tools_running" });
+    const installed = installCheckpointState(harness, { ...base,
+      normalizedRequest: { ...base.normalizedRequest, toolObservationVersion: 1 } });
+    await refreshProviderRunIfNeeded({ ...harness.deps, observations: observations.service() }, runId, userId);
+    expect(business).toHaveBeenCalledOnce();
+    expect(runtimeCall).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+    expect(harness.state.completed).toBeNull();
+    expect(installed.calls()[0]).toMatchObject({ state: "running", result: null });
+    // A transient storage failure is a recovery failure, never a claim that the outcome is unknown.
+    expect(harness.state.recoveredErrors[0]?.error.code).toBe(failure === "timeout" ? "tool_call_recovery_failed" : "tool_call_outcome_unknown");
+    expect(JSON.stringify(harness.state.recoveredErrors)).not.toContain("synthetic S3 timeout");
+  });
+
+  it("keeps a recovered Search's usage and says it executed when its receipt cannot be recorded", async () => {
+    const observations = memoryToolObservations();
+    vi.spyOn(observations.repository, "recordSearchReceipt").mockRejectedValueOnce(new Error("could not serialize access"));
+    const requests: ProviderRunRequest[] = [];
+    const answerAdapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) {
+      requests.push(request);
+      return { finalProviderResponsePreview: {}, finalText: "Recovered.", usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 } };
+    } };
+    const search = vi.fn<ProviderSearchAdapter["search"]>(async () => ({ artifacts: [], finalProviderResponsePreview: {},
+      findings: "Fresh findings", requestPreview: {}, sources: [{ rank: 1, title: "Fresh source", url: "https://example.test/fresh" }],
+      usage: { inputTokens: 4, outputTokens: 1, reasoningTokens: 0 } }));
+    const harness = createHarness({ providers: { openai: answerAdapter, openai_compatible: answerAdapter },
+      searchProviders: { openai_compatible: { buildRequestPreview: () => ({}), search } } });
+    const storedCall: PersistedToolLoopCall = { ...persistedRecoveryCall(), arguments: { query: "current sources" },
+      mcpBinding: null, toolName: "search_engine_1" };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [storedCall], phase: "tools_pending", providerToolMessages: [{
+        arguments: JSON.stringify(storedCall.arguments), call_id: storedCall.providerCallId, name: storedCall.toolName, type: "function_call"
+      }] }),
+      normalizedRequest: { ...normalizedClientSearchRequest(), toolObservationVersion: 1 }
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+    await refreshProviderRunIfNeeded({ ...harness.deps, observations: observations.service() }, runId, userId);
+    expect(search).toHaveBeenCalledOnce();
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(installed.calls()[0]).toMatchObject({ state: "error" });
+    expect(JSON.stringify(installed.calls()[0]?.result)).toContain("The operation executed, but its saved result is unavailable.");
+    expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("tool_observation_unavailable");
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered.", usageAttributions: expect.arrayContaining([
+      expect.objectContaining({ modelId: "search-model", provider: "openai_compatible",
+        usage: expect.objectContaining({ inputTokens: 4, outputTokens: 1 }) })]) });
   });
 
   it("recovers an explicit Off run through legacy MCP dispatch without observation restore", async () => {

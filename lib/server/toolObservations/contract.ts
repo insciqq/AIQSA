@@ -16,11 +16,14 @@ export type ToolObservationSourceBinding = Readonly<{ version: 1 }> & (
 );
 
 export class ObservationStoreError extends Error {
+  /** The operation is known to have executed (an unavailable result only). */
+  readonly executed: boolean;
   constructor(readonly code: "tool_observation_unavailable" | "tool_observation_limit_exceeded" |
     "tool_observation_conflict" | "tool_observation_storage_unavailable" | "tool_observation_busy" |
-    "tool_observation_not_started") {
+    "tool_observation_not_started", options: Readonly<{ executed?: boolean }> = {}) {
     super(code);
     this.name = "ObservationStoreError";
+    this.executed = code === "tool_observation_unavailable" && options.executed === true;
   }
 }
 
@@ -34,7 +37,9 @@ export function observationFailure(error: unknown): Readonly<{ code: string; mes
         ? "Saved tool results are temporarily busy. This new operation was not dispatched; it may be retried later."
         : error.code === "tool_observation_not_started"
           ? "This operation was not started: the run can no longer accept tool results. Nothing was executed."
-          : "The original operation may have completed, but its saved result is unavailable. Do not execute it again to recover the result." };
+          : error.executed
+            ? "The operation executed, but its saved result is unavailable. Do not execute it again to recover the result."
+            : "The original operation may have completed, but its saved result is unavailable. Do not execute it again to recover the result." };
 }
 
 /** Storage location, actor/run IDs, credentials and source bindings stay in

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { ContextSummary } from "../../contracts/contextCompaction";
-import { estimateApproxTokens } from "../../domain/contextBudget";
+import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
   anthropicMessagesToolBridge,
@@ -12,7 +12,7 @@ import {
 import { projectObservationForProvider } from "../toolObservations/projection";
 import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
 import { executeReadToolResult, readToolResultTool } from "../tools/readToolResult";
-import { captureMcpObservation } from "../toolObservations/sourceAdapters";
+import { captureMcpObservation, observationWholeDeliveryBatches, wholeDeliveryAllowance } from "../toolObservations/sourceAdapters";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { conversationContextPolicy, contextCompactionCheckpoint } from "./contextCompactionContract";
 import {
@@ -23,6 +23,7 @@ import {
   planContextCompaction
 } from "./contextCompactionPlanner";
 import { contextSummarySource } from "./contextCompactionSummarizer";
+import { observationWholeResultTokens } from "./runContextBudget";
 
 const descriptor = (seed: string, source: "mcp" | "workspace" | "search" | "skill" = "mcp") => ({
   byteSize: 20_000,
@@ -132,6 +133,67 @@ describe("context compaction planner", () => {
     expect(JSON.stringify(planned.request.providerToolMessages?.[2])).toContain(saved.handle);
   });
 
+  describe("a parallel batch of whole-delivered MCP results", () => {
+    const binding = { version: 1 as const, source: "mcp" as const, serverId: "server", originalName: "records",
+      revisionId: "revision", fingerprint: "a".repeat(64) };
+    const original = (bytes: number, seed: string) => ({ isError: false, structuredContent: null, unsupportedContentTypes: [],
+      text: [Array.from({ length: Math.ceil(bytes / 64) }, (_, index) => createHash("sha256").update(`${seed}:${index}`).digest("hex"))
+        .join("").slice(0, bytes - 100)] });
+    const windowRequest = (contextWindow: number): ProviderRunRequest => {
+      const { defaultMaxOutputTokens: _default, ...capabilities } = request([]).modelCapabilities;
+      return { ...request([]), modelCapabilities: { ...capabilities, contextWindow } };
+    };
+    const isWhole = (result: ToolExecutionResult) => result.content.some(part => part.type === "text");
+
+    it.each([
+      { contextWindow: 16_384, bytes: 14 * 1024, whole: 1 },
+      { contextWindow: 8_192, bytes: 8 * 1024, whole: 0 }
+    ])("stays reducible on a $contextWindow-token window with four $bytes-byte results", async ({ contextWindow, bytes, whole }) => {
+      const base = windowRequest(contextWindow);
+      const share = observationWholeResultTokens(base);
+      const { budgetTokens } = calculateContextBudgetLimits({ contextWindow, maxOutputTokens: 0, provider: "openai" });
+      expect(share).toBe(Math.floor(budgetTokens / 4));
+      const calls = [1, 2, 3, 4].map(index => ({ id: `parallel-${index}`, name: "mcp_records", arguments: {} }));
+      const capture = (allowance: () => ReturnType<typeof wholeDeliveryAllowance>) => {
+        const observations = memoryToolObservations();
+        return Promise.all(calls.map(call => captureMcpObservation({ service: observations.service(),
+          producer: { runId: "parallel-run", userId: "parallel-owner", toolCallId: call.id }, wholeDelivery: allowance() },
+          call, binding, async () => original(bytes, call.id))));
+      };
+      const plan = (results: readonly ToolExecutionResult[]) => {
+        // One provider round's parallel calls, then their results.
+        const messages = [...results.map(result => ({ type: "function_call", call_id: result.callId, name: result.name })),
+          ...results.map(result => openAIResponsesToolBridge.appendToolResult(undefined, projectObservationForProvider(result)))];
+        const hybrid: ProviderRunRequest = { ...base, providerToolMessages: messages,
+          contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages: base.context!.messages, mode: "hybrid" }) };
+        // The system prompt, tools and current turn keep a fifth of the budget.
+        return planContextCompaction({ bridge: openAIResponsesToolBridge, budgetTokens, request: hybrid,
+          assembledTokens: estimateApproxTokens(messages) + Math.floor(budgetTokens / 5),
+          observations: contextObservationsFromResults(results) });
+      };
+      const batch = observationWholeDeliveryBatches();
+      const shared = await capture(() => batch.allowance(1, share));
+      expect(shared.filter(isWhole)).toHaveLength(whole);
+      expect(shared.filter(isWhole).reduce((sum, result) =>
+        sum + estimateApproxTokens(projectObservationForProvider(result).content), 0)).toBeLessThanOrEqual(share);
+      expect(plan(shared).measurement.outcome).not.toBe("irreducible_overflow");
+      // Each result judged alone (and every inline-sized one) was whole, which
+      // left the same newest batch irreducible after every tool had executed.
+      const alone = await capture(() => wholeDeliveryAllowance(Number.POSITIVE_INFINITY));
+      expect(alone.filter(isWhole)).toHaveLength(4);
+      expect(plan(alone).measurement.outcome).toBe("irreducible_overflow");
+    });
+
+    it("still delivers a single 100 KiB result whole on a 128,000-token window", async () => {
+      const share = observationWholeResultTokens(windowRequest(128_000));
+      const call = { id: "single", name: "mcp_records", arguments: {} };
+      const result = await captureMcpObservation({ service: memoryToolObservations().service(),
+        producer: { runId: "single-run", userId: "single-owner", toolCallId: call.id },
+        wholeDelivery: observationWholeDeliveryBatches().allowance(1, share) }, call, binding, async () => original(100 * 1024, "single"));
+      expect(isWhole(result)).toBe(true);
+    });
+  });
+
   it("masks an MCP result delivered whole once it is no longer newest, and the reader recalls its exact bytes", async () => {
     const observations = memoryToolObservations();
     const actor = { runId: "whole-run", userId: "whole-owner" };
@@ -140,7 +202,7 @@ describe("context compaction planner", () => {
     const original = { isError: false, structuredContent: null, text: [`${body} rare-whole-tail`], unsupportedContentTypes: [] };
     // 100 KiB of unique text within a quarter of a 128,000-token budget.
     const whole = await captureMcpObservation({ service: observations.service(), producer: { ...actor, toolCallId: call.id },
-      wholeResultTokens: 32_000 }, call, { version: 1, source: "mcp", serverId: "server", originalName: "records",
+      wholeDelivery: wholeDeliveryAllowance(32_000) }, call, { version: 1, source: "mcp", serverId: "server", originalName: "records",
       revisionId: "revision", fingerprint: "a".repeat(64) }, async () => original);
     expect(JSON.stringify(whole.content)).toContain("rare-whole-tail");
     const newest = result("whole-2", "whole-newest");
