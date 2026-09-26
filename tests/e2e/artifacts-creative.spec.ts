@@ -138,7 +138,8 @@ test("local state survives reload and versions while session state and publicati
     await installChat(page, fixture); await page.goto(`/c/${fixture.chatId}`);
     await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByRole("menu", { name: "Account", exact: true }).getByRole("menuitem", { name: "Sign out", exact: true }).click();
-    await expect(page).toHaveURL(/\/login/u);
+    // Sign-out itself allows the logout request 15 seconds.
+    await expect(page).toHaveURL(/\/login/u, { timeout: 15_000 });
     expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("aiqsa.artifact.state.")))).toEqual([]);
   } catch (error) { errors.push(error); } finally { await fixture.cleanup(errors); }
 });

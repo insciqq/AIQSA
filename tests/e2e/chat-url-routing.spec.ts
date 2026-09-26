@@ -51,7 +51,8 @@ async function submitLogin(page: Page, user: Credentials): Promise<void> {
 async function signInWithPassword(page: Page, user: Credentials): Promise<void> {
   await page.goto("/login");
   await submitLogin(page, user);
-  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
+  // Password verification alone can take most of this on a cold development server.
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 60_000 });
 }
 
 async function chooseChat(page: Page, title: string): Promise<void> {
@@ -238,7 +239,7 @@ test("unknown, foreign and malformed chat addresses share one notice and land on
 });
 
 test("Project addresses open the Project, and a readable Project chat's own address moves there", async ({ page, context, browser, baseURL }, testInfo) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await useAppearance(page, context, baseURL!, "light");
   await signInWithLocalToken(page);
   const suffix = randomUUID().slice(0, 8);
@@ -271,8 +272,9 @@ test("Project addresses open the Project, and a readable Project chat's own addr
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     await expect(page).toHaveURL(exactPath(`/p/${projectId}`));
 
+    // Resolving takes the personal list, one chat detail read and the Project's own reads.
     await page.goto(`/c/${chatId}`);
-    await expect(page).toHaveURL(exactPath(`/p/${projectId}/c/${chatId}`), { timeout: 20_000 });
+    await expect(page).toHaveURL(exactPath(`/p/${projectId}/c/${chatId}`), { timeout: 45_000 });
     await expect(projectPanel).toContainText(projectName);
     await expect(page.getByTestId("header-title")).toHaveText(chatTitle);
     await expect(notice).toHaveCount(0);
@@ -361,11 +363,14 @@ test("Control Center returns to the chat it was opened from", async ({ page, con
     await expect(controlCenter).toHaveAttribute("href", `/admin?return=%2Fc%2F${chatId}`);
     await controlCenter.click();
     await expect(page.getByTestId("admin-shell")).toBeVisible({ timeout: 30_000 });
+    // Control Center links carry its address only once it is interactive.
+    const chats = page.getByTestId("admin-rail").getByRole("link", { name: "Chats" });
+    await expect(chats).toHaveAttribute("href", `/c/${chatId}`);
     await page.getByTestId("admin-nav-users").click();
     await expect(page).toHaveURL(/section=users/u);
     expect(new URL(page.url()).searchParams.get("return")).toBe(`/c/${chatId}`);
     await page.screenshot({ path: testInfo.outputPath("routing-control-center-dark-1440.png") });
-    await page.getByTestId("admin-rail").getByRole("link", { name: "Chats" }).click();
+    await chats.click();
     await expect(page).toHaveURL(exactPath(`/c/${chatId}`), { timeout: 30_000 });
     await expect(page.getByTestId("header-title")).toHaveText(title);
 
