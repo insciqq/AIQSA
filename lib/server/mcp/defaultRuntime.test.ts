@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { getContext, runWithContext, type ObservabilityContext } from "../observability";
 import { defaultMcpRunPlan, getDefaultMcpRuntimeCoordinator, kickDefaultMcpRuntime } from "./defaultRuntime";
 import type { McpRunPlanRecord } from "./runPlan";
+import { namespacedMcpToolName } from "./runPlan";
+import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import {
   McpRuntimeCoordinator,
   type McpRuntimeGenerationLaunch,
@@ -23,6 +25,7 @@ const repository = vi.hoisted(() => ({
 }));
 const sessions = vi.hoisted(() => ({ create: vi.fn() }));
 const projectLoader = vi.hoisted(() => vi.fn(async (_userId: string, _serverIds: readonly string[]): Promise<unknown[]> => []));
+const personalLoader = vi.hoisted(() => vi.fn(async (_userId: string, _serverIds: readonly string[]): Promise<unknown[]> => []));
 
 vi.mock("./runtimeRepository", () => ({ createPrismaMcpRuntimeRepository: () => repository }));
 vi.mock("./defaultToolHive", () => ({
@@ -33,7 +36,7 @@ vi.mock("./toolhiveSessionFactory", () => ({ createToolHiveMcpSessionFactory: ()
 vi.mock("./runPlanRepository", () => ({
   createPrismaMcpCapabilityCatalogLoader: () => vi.fn(),
   createPrismaMcpProjectRunPlanLoader: () => projectLoader,
-  createPrismaMcpRunPlanLoader: () => vi.fn()
+  createPrismaMcpRunPlanLoader: () => personalLoader
 }));
 
 describe("default MCP runtime startup", () => {
@@ -92,6 +95,53 @@ describe("default MCP runtime startup", () => {
       await coordinator?.stop();
       delete scope.__aiqsaMcpRuntimeCoordinator;
       if (previous) scope.__aiqsaMcpRuntimeCoordinator = previous;
+    }
+  });
+});
+
+describe("default MCP dispatch tool selection", () => {
+  it.each([false, true])("revalidates a selected tool from a 1024-tool inventory (Project: %s)", async (projectScope) => {
+    const scope = globalThis as typeof globalThis & { __aiqsaMcpRuntimeCoordinator?: McpRuntimeCoordinator };
+    const previous = scope.__aiqsaMcpRuntimeCoordinator;
+    delete scope.__aiqsaMcpRuntimeCoordinator;
+    const inventory = Array.from({ length: MCP_SERVER_TOOL_LIMIT }, (_, index) => ({
+      definitionHash: "a".repeat(64), description: null, inputSchema: { type: "object" }, name: `tool_${index + 1}`
+    }));
+    const record: McpRunPlanRecord = {
+      credentialSources: [], enabled: true, errorCode: null, externalAccountLabel: null,
+      fingerprint: "fingerprint", generationId: "generation", inventory: { tools: inventory, version: 1 },
+      inventoryUpdatedAt: new Date(), namespace: "large_inventory", readiness: "ready",
+      revisionId: "revision", serverId: "server", serverName: "Large inventory"
+    };
+    personalLoader.mockResolvedValue([record]);
+    projectLoader.mockResolvedValue([record]);
+    const start = vi.spyOn(McpRuntimeCoordinator.prototype, "start").mockImplementation(() => undefined);
+    const ensurePersonal = vi.spyOn(McpRuntimeCoordinator.prototype, "ensureUserServersReady").mockResolvedValue(undefined);
+    const ensureShared = vi.spyOn(McpRuntimeCoordinator.prototype, "ensureSharedServersReady").mockResolvedValue(undefined);
+    const isLive = vi.spyOn(McpRuntimeCoordinator.prototype, "hasLiveGeneration").mockReturnValue(true);
+    const selected = namespacedMcpToolName(record.namespace, `tool_${MCP_SERVER_TOOL_LIMIT}`);
+    const prepare = (allowedToolNames?: readonly string[]) => projectScope
+      ? defaultMcpRunPlan.prepareProject("user", [record.serverId], { allowedToolNames })
+      : defaultMcpRunPlan.prepare("user", { allowedServerIds: [record.serverId], allowedToolNames });
+    try {
+      await expect(prepare([selected])).resolves.toMatchObject({
+        ok: true, snapshot: { tools: [{ namespacedName: selected }] }
+      });
+      // The model-facing full-inventory limit stays in force.
+      await expect(prepare()).resolves.toMatchObject({ ok: false, code: "mcp_plan_too_large" });
+      if (projectScope) {
+        expect(ensureShared).toHaveBeenCalledWith([record.serverId]);
+        expect(ensurePersonal).not.toHaveBeenCalled();
+      } else {
+        expect(ensurePersonal).toHaveBeenCalledWith("user", [record.serverId], undefined);
+        expect(ensureShared).not.toHaveBeenCalled();
+      }
+    } finally {
+      await (scope.__aiqsaMcpRuntimeCoordinator as McpRuntimeCoordinator | undefined)?.stop();
+      delete scope.__aiqsaMcpRuntimeCoordinator;
+      if (previous) scope.__aiqsaMcpRuntimeCoordinator = previous;
+      start.mockRestore(); ensurePersonal.mockRestore(); ensureShared.mockRestore(); isLive.mockRestore();
+      personalLoader.mockClear(); projectLoader.mockClear();
     }
   });
 });

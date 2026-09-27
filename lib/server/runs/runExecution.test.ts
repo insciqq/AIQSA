@@ -26,7 +26,8 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { McpSemanticRouterError } from "../mcp/router";
 import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
-import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
+import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanSnapshot } from "../mcp/runPlan";
+import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
@@ -5970,7 +5971,7 @@ describe("run execution", () => {
     }, previewRequests);
     const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(
       async (_userId, options) => {
-        expect(options).toEqual({ allowedServerIds: ["server-egress"] });
+        expect(options).toEqual({ allowedServerIds: ["server-egress"], allowedToolNames: [namespacedName] });
         return {
           bindings: [{
             fingerprint,
@@ -6184,7 +6185,7 @@ describe("run execution", () => {
       ? ["egress-1", "egress-3"]
       : ["egress-1", "egress-2", "egress-3"]);
     expect(egress.failed).toEqual([]);
-    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: ["server-blocked"] });
+    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: ["server-blocked"], allowedToolNames: [namespacedName] });
     expect(providerRequests).toHaveLength(2);
     expect(providerRequests[1]).toMatchObject({ toolChoice: "auto" });
     expect(repository.completeRuns[0]?.finalText).toBe("Dispatch stayed blocked");
@@ -6192,6 +6193,57 @@ describe("run execution", () => {
       state: revoked ? "error" : "complete"
     });
     expect(events.some((event) => event.type === "done")).toBe(true);
+  });
+
+  it.each([false, true])("dispatches the selected tool from a 1024-tool inventory (Project: %s)", async (projectScope) => {
+    const fingerprint = "large-inventory-fingerprint";
+    const record: McpRunPlanRecord = {
+      credentialSources: [], enabled: true, errorCode: null, externalAccountLabel: null,
+      fingerprint, generationId: `generation-${fingerprint}`, inventory: { version: 1,
+        tools: Array.from({ length: MCP_SERVER_TOOL_LIMIT }, (_, index) => ({
+          definitionHash: "a".repeat(64), description: null, inputSchema: { type: "object" }, name: `tool_${index + 1}`
+        })) },
+      inventoryUpdatedAt: new Date(), namespace: "large_inventory", readiness: "ready",
+      revisionId: "revision", serverId: "server", serverName: "Large inventory"
+    };
+    const namespacedName = namespacedMcpToolName(record.namespace, `tool_${MCP_SERVER_TOOL_LIMIT}`);
+    const currentPlan = (allowedToolNames?: readonly string[]) => prepareMcpRunPlan({
+      allowedServerIds: [record.serverId], allowedToolNames, isGenerationLive: () => true, load: async () => [record]
+    });
+    const accepted = await currentPlan([namespacedName]);
+    if (!accepted.ok) throw new Error("large_inventory_fixture_invalid");
+    const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(async (_user, options) =>
+      currentPlan(options?.allowedToolNames));
+    const prepareProject = vi.fn<NonNullable<NonNullable<RunExecutionInput["mcp"]>["prepareProject"]>>(
+      async (_user, _servers, options) => currentPlan(options?.allowedToolNames));
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["LATE_TOOL_RESULT"], unsupportedContentTypes: [] };
+    });
+    let rounds = 0;
+    const adapter = createAdapter(async function* (request) {
+      if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{
+        arguments: {}, id: "late-tool-call", name: namespacedName
+      }] });
+      expect(JSON.stringify(request.providerToolMessages)).toContain("LATE_TOOL_RESULT");
+      return providerResult({ finalText: "Late tool succeeded" });
+    });
+    const repository = createRepository();
+    const prepared = preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai",
+      ...(projectScope ? { project: { ...projectAdmission(), mcpServerIds: [record.serverId], modelIds: ["gpt-tool-model"] } } : {}) });
+    await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+      mcp: { filterTools: allowMcpTools, prepare, prepareProject },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } })).text();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ name: `tool_${MCP_SERVER_TOOL_LIMIT}` }));
+    expect(repository.completeRuns[0]?.finalText).toBe("Late tool succeeded");
+    if (projectScope) {
+      expect(prepare).not.toHaveBeenCalled();
+      expect(prepareProject).toHaveBeenCalledWith("user-1", [record.serverId], { allowedToolNames: [namespacedName] });
+    } else {
+      expect(prepareProject).not.toHaveBeenCalled();
+      expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
+    }
   });
 
   it.each([false, true])("recalls a large MCP original through the public reader, with duplicate representation=%s", async duplicate => {

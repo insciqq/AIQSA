@@ -337,9 +337,9 @@ export type RunExecutionInput = Readonly<{
     ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
     prepare(
       userId: string,
-      options?: Readonly<{ allowedServerIds?: readonly string[] }>
+      options?: Readonly<{ allowedServerIds?: readonly string[]; allowedToolNames?: readonly string[] }>
     ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
-    prepareProject?(userId: string, serverIds: readonly string[]): Promise<import("../mcp/runPlan").McpRunPlanResult>;
+    prepareProject?(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>): Promise<import("../mcp/runPlan").McpRunPlanResult>;
     router?: McpSemanticRouter;
     routerForRun?(owner: Readonly<{ runId: string; userId: string }>): McpSemanticRouter;
   }>;
@@ -1729,11 +1729,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         if (!input.mcp) return process.env.NODE_ENV !== "production" ? null : "mcp_runtime_unavailable";
         try {
           if (!(await input.mcp.filterTools(input.userId, [route.tool])).length) return "mcp_tool_access_denied";
+          // Revalidate this accepted tool without loading the server's entire
+          // inventory into a model-facing plan and applying its 128-tool cap.
+          const selection = { allowedToolNames: [route.tool.namespacedName] };
           const current = input.prepared.project?.executionScope === "project" && input.mcp.prepareProject
-            ? await input.mcp.prepareProject(input.userId, [route.serverId])
+            ? await input.mcp.prepareProject(input.userId, [route.serverId], selection)
             : input.prepared.project?.executionScope === "project"
               ? null
-              : await input.mcp.prepare(input.userId, { allowedServerIds: [route.serverId] });
+              : await input.mcp.prepare(input.userId, { allowedServerIds: [route.serverId], ...selection });
           return currentMcpDispatchFailure(current, route, generationId);
         } catch {
           return "mcp_runtime_unavailable";
