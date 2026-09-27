@@ -1,4 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { imageTokenEstimator } from "../../domain/imageTokenEstimate";
+import { contextTokenEstimator } from "../../domain/tokenEstimate";
 import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { createVisionAnalysisPlanResolver, type AcceptedVisionAnalysisPlan, type AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
@@ -18,6 +20,19 @@ const VISION_ERRORS = new Set([
   "workspace_image_invalid", "workspace_image_unsupported", "workspace_image_limit_exceeded", "workspace_image_unavailable", "workspace_image_cancelled",
   "workspace_capture_busy", "workspace_capture_invalid", "workspace_capture_limit_exceeded", "workspace_capture_stale", "workspace_capture_unavailable"
 ]);
+
+/** A context-window refusal carries its measured estimate to the model. */
+class VisionContextLimitError extends VisionAnalysisError {
+  constructor(readonly detail: Readonly<{ limit: "context_window"; contextWindow: number; estimatedInputTokens: number; maxOutputTokens: number }>) {
+    super("vision_analysis_limit_exceeded");
+  }
+}
+
+/** The longest prefix of whole code points within `maxBytes`: a streaming
+ * decoder withholds a trailing incomplete UTF-8 sequence instead of U+FFFD. */
+function utf8Prefix(bytes: Buffer, maxBytes: number): string {
+  return new TextDecoder("utf-8").decode(bytes.subarray(0, maxBytes), { stream: true });
+}
 
 export function parseVisionAnalysisInput(value: Record<string, unknown>, outputDirectory?: string) {
   if (Object.keys(value).some(key => !["images", "question"].includes(key)) || !Array.isArray(value.images) ||
@@ -99,11 +114,12 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           const limits = plan.snapshot.model.capabilities.imageInputLimits;
           if (images.length > Math.min(LIMITS.maxImages, limits?.imageCount ?? LIMITS.maxImages)) throw new VisionAnalysisError("vision_analysis_limit_exceeded");
           let encodedBytes = 0; let imageTokens = 0;
+          const estimateImageTokens = imageTokenEstimator({ provider: plan.snapshot.providerFamily, modelId: plan.snapshot.model.upstreamModelId });
           const attachments: ProviderAttachment[] = [];
           for (const [index, image] of images.entries()) {
             const d = image.descriptor;
             encodedBytes += Math.ceil(d.byteSize / 3) * 4;
-            imageTokens += Math.ceil(d.width / 32) * Math.ceil(d.height / 32) * 4 + 1024;
+            imageTokens += estimateImageTokens(d);
             if (d.byteSize > Math.min(24 * 1024 * 1024, limits?.imageBytes ?? Infinity) ||
               d.width * d.height > Math.min(16_777_216, limits?.imagePixels ?? Infinity) ||
               encodedBytes > Math.min(64 * 1024 * 1024, limits?.payloadBytes ?? Infinity)) throw new VisionAnalysisError("vision_analysis_limit_exceeded");
@@ -114,10 +130,16 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
               metadata: {}, extractedText: null, dataUrl: `data:${d.mimeType};base64,${bytes.toString("base64")}` });
           }
           const request = visionProviderRequest(plan, c.chatId, input.question, attachments);
-          const metadataBytes = Buffer.byteLength(JSON.stringify({ ...request, attachments: attachments.map(({ base64Data: _bytes, dataUrl: _url, ...a }) => a) }));
-          if (encodedBytes + metadataBytes > Math.min(64 * 1024 * 1024, limits?.payloadBytes ?? Infinity) ||
-            Math.ceil(metadataBytes / 3) + imageTokens + LIMITS.maxOutputTokens > (plan.snapshot.model.capabilities.contextWindow ?? 32768))
+          const metadata = JSON.stringify({ ...request, attachments: attachments.map(({ base64Data: _bytes, dataUrl: _url, ...a }) => a) });
+          if (encodedBytes + Buffer.byteLength(metadata) > Math.min(64 * 1024 * 1024, limits?.payloadBytes ?? Infinity))
             throw new VisionAnalysisError("vision_analysis_limit_exceeded");
+          // Like the run context budget, an undeclared window is not budgeted:
+          // no invented window refuses the call, the provider's own limit applies.
+          const contextWindow = plan.snapshot.model.capabilities.contextWindow;
+          const inputTokens = contextTokenEstimator(request)(metadata) + imageTokens;
+          if (Number.isFinite(contextWindow) && Number(contextWindow) > 0 && inputTokens + LIMITS.maxOutputTokens > Number(contextWindow))
+            throw new VisionContextLimitError({ limit: "context_window", contextWindow: Number(contextWindow),
+              estimatedInputTokens: inputTokens, maxOutputTokens: LIMITS.maxOutputTokens });
           for (const source of sources) await source.source.assertAccess();
           bounded.throwIfAborted();
           await hooks?.beforeDispatch?.();
@@ -132,10 +154,11 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           usage = mergeTokenUsage(usage, response.usage);
           bounded.throwIfAborted();
           if (!response.finalText.trim() || response.toolCalls?.length) throw new VisionAnalysisError("vision_analysis_response_invalid");
-          const text = Buffer.from(response.finalText).subarray(0, LIMITS.resultBytes).toString("utf8");
+          const bytes = Buffer.from(response.finalText);
+          const truncated = bytes.byteLength > LIMITS.resultBytes;
           result = { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value: {
-            provenance: "System Vision Model", evidence: "untrusted_textual_analysis", analysis: text,
-            truncated: Buffer.byteLength(response.finalText) > LIMITS.resultBytes,
+            provenance: "System Vision Model", evidence: "untrusted_textual_analysis", analysis: utf8Prefix(bytes, LIMITS.resultBytes),
+            truncated, ...(truncated ? { originalBytes: bytes.byteLength } : {}),
             inputs: images.map((image, index) => ({ ordinal: index + 1, ...image.descriptor }))
           } }] };
         } catch (error) {
@@ -143,7 +166,8 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           const code = signal?.aborted ? "vision_analysis_cancelled" : bounded.aborted ? "vision_analysis_timeout" :
             VISION_ERRORS.has(observed) ? observed : dispatched ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
           unknown = dispatched && !providerCompleted;
-          result = visionFailure(call, code, unknown);
+          result = visionFailure(call, code, unknown, error instanceof VisionContextLimitError && code === error.code ? { ...error.detail,
+            hint: "The estimated input exceeds the Vision model context window. Use fewer images, or crop or resize them, before retrying." } : undefined);
         }
         if (!dispatched) return result;
         // This transaction is keyed by the durable attempt and has one winner.

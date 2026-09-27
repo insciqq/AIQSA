@@ -137,6 +137,57 @@ describe("shared System Vision boundary", () => {
     expect(JSON.stringify(await f.service.execute(f.call, f.context))).toContain("vision_analysis_limit_exceeded");
     expect(f.store.dispatch).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled();
   });
+  it.each([["Cyrillic", "a" + "я".repeat(9000)], ["emoji", "ab" + "😀".repeat(5000)]])(
+    "cuts a long %s analysis at a code point within the result bound and keeps the paid usage", async (_name, finalText) => {
+      const f = fixture();
+      f.execute.mockResolvedValue({ finalText, finalProviderResponsePreview: {}, usage: { inputTokens: 9, outputTokens: 4096 } });
+      const result = await f.service.execute(f.call, f.context);
+      const value = (result.content[0] as { value: { analysis: string; truncated: boolean; originalBytes: number } }).value;
+      expect(result.status).toBe("complete");
+      expect(value.analysis).not.toContain("\uFFFD");
+      expect(finalText.startsWith(value.analysis)).toBe(true);
+      expect(Buffer.byteLength(value.analysis)).toBeLessThanOrEqual(16 * 1024);
+      expect(Buffer.byteLength(value.analysis)).toBeGreaterThan(16 * 1024 - 4);
+      expect(value).toMatchObject({ truncated: true, originalBytes: Buffer.byteLength(finalText) });
+      expect(f.store.settle.mock.calls[0]?.[2]).toMatchObject({ inputTokens: 9, outputTokens: 4096 });
+    });
+  it("keeps a short analysis whole and unmarked", async () => {
+    const f = fixture();
+    const value = (await f.service.execute(f.call, f.context)).content[0] as { value: Record<string, unknown> };
+    expect(value.value).toMatchObject({ analysis: "First is red; second is blue.", truncated: false });
+    expect(value.value).not.toHaveProperty("originalBytes");
+  });
+  function uhdImages(f: ReturnType<typeof fixture>, count: number, contextWindow: number | undefined, providerFamily = plan.snapshot.providerFamily) {
+    f.call.arguments.images = Array.from({ length: count }, (_, index) => ({ path: `/workspace/project/${index}.png` }));
+    f.prepareImages.mockImplementation(async sources => sources.map((_source, index) => ({
+      descriptor: { version: 1, id: `image-${index}`, byteSize: 3, checksum: "a".repeat(64), mimeType: "image/png", width: 3840, height: 2160, frames: 1,
+        source: { captureId: "capture", relativePath: `project/${index}.png`, byteSize: 3, checksum: "b".repeat(64), width: 3840, height: 2160 }, transform: null },
+      open: vi.fn(async () => new ReadableStream({ start(c) { c.enqueue(new Uint8Array([index, 2, 3])); c.close(); } })), dispose: vi.fn()
+    })));
+    f.context.request.visionAnalysis = { ...plan, snapshot: { ...plan.snapshot, providerFamily, model: { ...plan.snapshot.model,
+      capabilities: { ...plan.snapshot.model.capabilities, contextWindow } } } };
+  }
+  it("admits one 4K image in a known 128k window and refuses four before dispatch with the measured estimate", async () => {
+    const one = fixture(); uhdImages(one, 1, 131_072);
+    expect((await one.service.execute(one.call, one.context)).status).toBe("complete");
+    expect(one.execute).toHaveBeenCalledOnce();
+    const four = fixture(); uhdImages(four, 4, 131_072);
+    const result = await four.service.execute(four.call, four.context);
+    expect(result.content[0]).toMatchObject({ type: "json", value: { error: "vision_analysis_limit_exceeded", limit: "context_window",
+      contextWindow: 131_072, maxOutputTokens: 4096 } });
+    expect((result.content[0] as { value: { estimatedInputTokens: number } }).value.estimatedInputTokens).toBeGreaterThan(4 * 33_664);
+    expect(four.store.dispatch).not.toHaveBeenCalled(); expect(four.execute).not.toHaveBeenCalled(); expect(four.store.settle).not.toHaveBeenCalled();
+  });
+  it("applies a declared family policy: four 4K images fit a 128k Anthropic window", async () => {
+    const f = fixture(); uhdImages(f, 4, 131_072, "anthropic");
+    expect((await f.service.execute(f.call, f.context)).status).toBe("complete");
+    expect(f.execute).toHaveBeenCalledOnce();
+  });
+  it("does not invent a window for a model without a declared one", async () => {
+    const f = fixture(); uhdImages(f, 1, undefined);
+    expect((await f.service.execute(f.call, f.context)).status).toBe("complete");
+    expect(f.execute).toHaveBeenCalledOnce();
+  });
   it("normalizes the current physical output directory and rejects another run", async () => {
     const f = fixture(); f.call.arguments.images = [{ path: "/workspace/output/run/result.png" }];
     expect((await f.service.execute(f.call, f.context)).status).toBe("complete");

@@ -1,3 +1,4 @@
+import { conservativeImageTokens } from "../../domain/imageTokenEstimate";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
@@ -71,8 +72,8 @@ export function createWorkspaceImageViewer(captures: ReturnType<typeof createWor
         if (!request.workspaceImageView || !request.workspace || !evidence) throw failure();
         const d = evidence.descriptor;
         count++; byteSize += Math.ceil(d.byteSize / 3) * 4;
-        // Conservative reserve for bounded 32px patches plus per-image overhead.
-        imageTokens += Math.ceil(d.width / 32) * Math.ceil(d.height / 32) * 4 + 1024;
+        // The legacy direct-view path keeps the conservative fallback policy.
+        imageTokens += conservativeImageTokens(d);
         if (count > Math.min(8, limits?.imageCount ?? 8) || d.byteSize > Math.min(4 * 1024 * 1024, limits?.imageBytes ?? Infinity) ||
           d.width * d.height > Math.min(4_194_304, limits?.imagePixels ?? Infinity)) throw limit();
         selected.push({ messageIndex, partIndex, evidence });
