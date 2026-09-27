@@ -937,6 +937,65 @@ describe("Prisma Memory persistence", () => {
     }
   });
 
+  it("authorizes a control save from the exact current turn beyond the statement bound", async () => {
+    const userId = await createActiveUser("control-long-source");
+    let cleanupProvider: (() => Promise<void>) | undefined;
+    try {
+      const sourceText = `${"Weekly planning context and quoted notes. ".repeat(80)}` +
+        "Please remember that I prefer concise answers.";
+      expect(sourceText.length).toBeGreaterThan(2_000);
+      const admitted = await createControlAuthorizedSave(userId, "long-source", { sourceText });
+      cleanupProvider = admitted.cleanupProvider;
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const saved = await createPrismaMemoryFactRepository(
+        suppressionKeyring,
+        prisma
+      ).save(userId, {
+        ...saveInput(scope.id, `control-long-source-${randomUUID()}`, {
+          ...factValue(
+            `control.long-source.${randomUUID()}`,
+            admitted.controlIntent.statement!,
+            "concise"
+          ),
+          category: "preferences",
+          modality: "PREFERENCE",
+          safetyClassification: {
+            executionId: admitted.binding.id,
+            intent: admitted.controlIntent,
+            kind: "CONTROL"
+          }
+        }),
+        authorization: {
+          action: "SAVE",
+          authorizationId: admitted.authorization.id,
+          authorizedPayloadHash: admitted.authorizedPayloadHash
+        },
+        modelRunId: admitted.run.id,
+        requestId: admitted.authorization.requestId
+      });
+
+      expect(saved).toMatchObject({ outcome: "CREATED", replayed: false });
+      await expect(prisma.memoryMutationAuthorization.findUniqueOrThrow({
+        where: { id: admitted.authorization.id }
+      })).resolves.toMatchObject({ exactSourceEnd: sourceText.length, exactSourceStart: 0 });
+      // A different turn text never mints authority, however long it is.
+      await expect(createPrismaMemoryMutationAuthorizationRepository(prisma)
+        .mintForControl(userId, {
+          action: "SAVE",
+          admissionDeadlineAtMs: Date.now() + 4_000,
+          authorizedPayloadHash: admitted.authorizedPayloadHash,
+          bindingId: admitted.binding.id,
+          chatId: admitted.chat.id,
+          controlIntent: admitted.controlIntent,
+          modelRunId: admitted.run.id,
+          sourceText: `${sourceText} Also remember my address.`
+        })).rejects.toMatchObject({ code: "memory_mutation_authorization_invalid" });
+    } finally {
+      await cleanupUser(userId);
+      await cleanupProvider?.();
+    }
+  });
+
   it("binds fact safety to the exact ordinal-zero control decision", async () => {
     const userId = await createActiveUser("control-safety-receipt");
     let cleanupProvider: (() => Promise<void>) | undefined;

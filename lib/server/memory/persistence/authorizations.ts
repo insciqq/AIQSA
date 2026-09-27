@@ -4,7 +4,10 @@ import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   type MemoryMutationAuthorizationInput
 } from "../../../contracts/memory";
-import type { MemoryActionIntent } from "../../../contracts/memoryActionIntent";
+import {
+  MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH,
+  type MemoryActionIntent
+} from "../../../contracts/memoryActionIntent";
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import { prisma } from "../../prisma";
 import { MEMORY_ADMISSION_MAX_TIMEOUT_MS } from "../admissionDeadline";
@@ -754,7 +757,8 @@ export function createPrismaMemoryMutationAuthorizationRepository(
         input.admissionDeadlineAtMs <= now.getTime() ||
         input.admissionDeadlineAtMs - now.getTime() >
           MEMORY_ADMISSION_MAX_TIMEOUT_MS ||
-        !input.sourceText || input.sourceText.length > 2_000 ||
+        !input.sourceText ||
+        input.sourceText.length > MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH ||
         input.sourceText.includes("\u0000") ||
         new Set([
           hasTargetSelectionBinding,

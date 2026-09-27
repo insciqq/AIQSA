@@ -20,6 +20,7 @@ import {
   type MemoryLearningProviderEvidence,
   type MemoryLearningProviderResult
 } from "../learning/providerRuntime";
+import { MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH } from "../../../contracts/memoryActionIntent";
 import { memorySha256 } from "../persistence/lexical";
 import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import type { MemoryActionTarget } from "./targetSearch";
@@ -249,7 +250,8 @@ function providerSelection(
 function validSelectorInput(input: Parameters<MemoryTargetSelector["select"]>[0]): boolean {
   return input.candidates.length >= 1 && input.candidates.length <= 5 &&
     input.controlBindingId.length > 0 && input.controlBindingId.length <= 256 &&
-    input.currentUserText.length > 0 && input.currentUserText.length <= 8_000 &&
+    input.currentUserText.length > 0 &&
+    input.currentUserText.length <= MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH &&
     input.targetQuery.length > 0 && input.targetQuery.length <= 500 &&
     input.candidates.every(({ handle, target }) =>
       targetHandleSet.has(handle) && target.statement.length > 0 &&

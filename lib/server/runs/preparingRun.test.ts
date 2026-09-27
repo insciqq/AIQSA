@@ -59,10 +59,12 @@ describe("Memory preparing context ceiling", () => {
       semanticRewrite: safe.safeText,
       semanticDecompositions: [safe.safeText]
     });
-    expect(plan.originalSanitizedQuery.length).toBeGreaterThanOrEqual(1_999);
     expect(plan.originalSanitizedQuery.length).toBeLessThanOrEqual(2_000);
     expect(plan.originalSanitizedQuery).not.toMatch(/\p{Surrogate}/u);
-    expect(text.startsWith(plan.originalSanitizedQuery)).toBe(true);
+    const fragments = plan.originalSanitizedQuery.split("\n\n");
+    expect(text.startsWith(fragments[0]!)).toBe(true);
+    expect(text.endsWith(fragments.at(-1)!)).toBe(true);
+    expect(plan.originalSanitizedQuery.endsWith(text.slice(-4))).toBe(true);
     for (const variant of [...plan.semanticQueryVariants, ...plan.temporalQueryVariants]) {
       expect(variant.text.length).toBeLessThanOrEqual(2_000);
       expect(variant.text).not.toMatch(/\p{Surrogate}/u);
@@ -86,6 +88,30 @@ describe("Memory preparing context ceiling", () => {
     expect(() => validateMemoryPreparingAttemptResult({
       budgetSnapshot: {}, outcome: "EMPTY", querySnapshot: card
     })).toThrow(MemoryPreparingRunConflictError);
+  });
+
+  it("persists a long turn's head-to-tail fragment projection and rejects unplanned text", () => {
+    const text = `${"Travel log entry. ".repeat(400)}Where did I leave the blue umbrella?`;
+    const safe = sanitizeMemoryUtilityText(text);
+    const plan = planMemoryRetrieval({
+      currentUserText: safe.safeText,
+      now: new Date("2026-09-01T00:00:00Z")
+    });
+    expect(plan.originalSanitizedQuery.endsWith("Where did I leave the blue umbrella?"))
+      .toBe(true);
+    expect(() => validateMemoryPreparingAttemptResult({
+      budgetSnapshot: {}, outcome: "EMPTY", querySnapshot: plan.originalSanitizedQuery
+    })).not.toThrow();
+    for (const querySnapshot of [
+      ` ${plan.originalSanitizedQuery.slice(0, 100)}`,
+      "left\u202eright",
+      "bell\u0007query",
+      "x".repeat(2_001)
+    ]) {
+      expect(() => validateMemoryPreparingAttemptResult({
+        budgetSnapshot: {}, outcome: "EMPTY", querySnapshot
+      })).toThrow(MemoryPreparingRunConflictError);
+    }
   });
 
   it("admits each declared adaptive profile up to its bounded ceiling", () => {

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH } from
-  "../../../contracts/memoryActionIntent";
+import {
+  MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH,
+  MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH
+} from "../../../contracts/memoryActionIntent";
 import {
   MEMORY_ACTION_ADMISSION_VERSION,
-  admitMemoryAction
+  admitMemoryAction,
+  memoryActionControlAdmitted
 } from "./actionAdmission";
 
 describe("Memory action admission", () => {
@@ -49,13 +52,39 @@ describe("Memory action admission", () => {
     }
   );
 
-  it("keeps the existing whole-input bound without classifying a truncated prefix", () => {
-    const text = "x".repeat(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH);
-    expect(admitMemoryAction(text).state).toBe("SEMANTIC_CANDIDATE");
-    expect(admitMemoryAction(`${text}x`)).toEqual({
-      reason: "INPUT_UNSUPPORTED",
-      state: "ORDINARY",
+  it.each([
+    ["a trailing directive", `${"Background notes. ".repeat(130)}Please remember that I prefer tea.`],
+    ["a Unicode trailing directive", `${"Заметки о поездке 🧳. ".repeat(110)}Запомни, что я люблю чай.`],
+    ["a quoted instruction", `${"Log line. ".repeat(220)}He wrote: «remember his address».`]
+  ])("sends a turn beyond the statement bound with %s to semantic control", (_label, text) => {
+    expect(text.length).toBeGreaterThan(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH);
+    expect(admitMemoryAction(text)).toEqual({
+      reason: "CURRENT_USER_TEXT",
+      state: "SEMANTIC_CANDIDATE",
       version: MEMORY_ACTION_ADMISSION_VERSION
     });
+    expect(memoryActionControlAdmitted(admitMemoryAction(text), true)).toBe(true);
+  });
+
+  it("keeps a long explicit command at its protocol boundary", () => {
+    const text = `/memory ${"context ".repeat(300)}forget my old address`;
+    expect(admitMemoryAction(text)).toMatchObject({
+      reason: "MEMORY_COMMAND",
+      state: "EXPLICIT_CANDIDATE"
+    });
+  });
+
+  it("reports a turn beyond the source budget as too long without classifying a prefix", () => {
+    const text = "x".repeat(MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH);
+    expect(admitMemoryAction(text).state).toBe("SEMANTIC_CANDIDATE");
+    const tooLong = admitMemoryAction(`/memory ${text}`);
+    expect(tooLong).toEqual({
+      reason: "INPUT_TOO_LONG",
+      state: "INPUT_TOO_LONG",
+      version: MEMORY_ACTION_ADMISSION_VERSION
+    });
+    expect(admitMemoryAction("", { sourceTooLong: true })).toEqual(tooLong);
+    expect(memoryActionControlAdmitted(tooLong, true)).toBe(false);
+    expect(memoryActionControlAdmitted(tooLong, false)).toBe(false);
   });
 });

@@ -5,7 +5,9 @@ import {
   type MemoryActionControlDecision
 } from "../../../contracts/memoryActionIntent";
 import {
+  MEMORY_CONTROL_INPUT_TOO_LONG,
   MEMORY_CONTROL_PIPELINE_VERSION,
+  MEMORY_CONTROL_STATEMENT_TOO_LONG,
   MEMORY_CONTROL_REASONING_POLICY,
   MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR,
   MEMORY_CONTROL_VERSIONS,
@@ -183,6 +185,78 @@ describe("Memory control runtime contract", () => {
     expect(withAuthorizedResultCommit).toHaveBeenCalledWith(
       "user-1", { acceptedOutputHash, bindingId: "control-binding" }, expect.any(Function)
     );
+  });
+
+  it.each([
+    ["an over-long statement", MEMORY_CONTROL_STATEMENT_TOO_LONG, "FAILED"],
+    ["a context overflow before dispatch", MEMORY_CONTROL_INPUT_TOO_LONG, "FAILED"]
+  ] as const)("reports %s as too long instead of generic unavailable", async (
+    _label,
+    reason,
+    state
+  ) => {
+    const settle = vi.fn(async () => undefined);
+    const withAuthorizedResultCommit = vi.fn();
+    const run = vi.fn(async (): Promise<MemoryLearningProviderResult> => {
+      if (reason === MEMORY_CONTROL_INPUT_TOO_LONG) {
+        throw Object.assign(new Error("provider_context_limit_exceeded"), {
+          code: "provider_context_limit_exceeded"
+        });
+      }
+      return {
+        providerResponseId: "provider-response-1",
+        toolCalls: [{ arguments: providerDecision({
+          ...profileIntent,
+          action: "SAVE",
+          category: "preferences",
+          memoryUseful: false,
+          profileRequested: false,
+          queryText: null,
+          reasonCode: "save_request",
+          retrievalMode: "TARGETED_CURRENT",
+          statement: `I prefer ${"t".repeat(2_000)}`
+        }), id: "call-1", name: MEMORY_ACTION_INTENT_NAME }],
+        usage: {}
+      };
+    });
+    const service = createMemoryControlService({
+      execution: {
+        admission: {
+          bind: vi.fn(async () => ({ id: "control-binding" })),
+          start: vi.fn(async () => ({
+            bindingId: "control-binding",
+            snapshot: {
+              logicalRole: "MEMORY_CONTROL",
+              providerExecutionSnapshot: {
+                connectionId: "connection-1",
+                credentialId: "credential-1",
+                credentialVersionId: "credential-version-1",
+                providerModelId: "model-1"
+              },
+              requiresStrictStructuredOutput: true
+            }
+          }))
+        },
+        lifecycle: { settle, withAuthorizedResultCommit }
+      } as never,
+      provider: { run }
+    });
+
+    await expect(service.decide({
+      attemptId: "attempt-1",
+      context: {
+        capabilities: { automaticLearning: true, historyRecall: true, memoryEnabled: true },
+        currentUserMessage: `${"Long context. ".repeat(200)}Remember my tea preference.`
+      },
+      signal: new AbortController().signal,
+      userId: "user-1"
+    })).resolves.toEqual({ bindingId: "control-binding", reason, status: "UNAVAILABLE" });
+    expect(settle).toHaveBeenCalledWith("user-1", "control-binding", expect.objectContaining({
+      acceptedOutputHash: null,
+      errorCode: reason,
+      state
+    }));
+    expect(withAuthorizedResultCommit).not.toHaveBeenCalled();
   });
 
   it("redacts every control-provider text field before provider I/O", async () => {

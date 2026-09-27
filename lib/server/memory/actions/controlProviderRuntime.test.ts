@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMORY_ACTION_INTENT_NAME } from "../../../contracts/memoryActionIntent";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import { encryptProviderCredentialSecret } from "../../providers/credentialSecrets";
-import { createAcceptedMemoryControlProvider } from "./controlRuntime";
+import {
+  MEMORY_CONTROL_INPUT_TOO_LONG,
+  createAcceptedMemoryControlProvider
+} from "./controlRuntime";
 import { buildMemoryActionIntentRequest } from "./intentService";
 
 const { fetchProvider } = vi.hoisted(() => ({ fetchProvider: vi.fn<typeof fetch>() }));
@@ -185,5 +188,45 @@ describe("Memory control provider request", () => {
     expect(body.provider).toMatchObject({
       only: ["selected-route"], allow_fallbacks: false, data_collection: "deny"
     });
+  });
+
+  it("sends a long turn whole or reports it too long before any provider call", async () => {
+    const currentUserMessage = `${"Planning notes for the week. ".repeat(400)}` +
+      "Please remember that I prefer tea.";
+    const request = buildMemoryActionIntentRequest({
+      capabilities: { automaticLearning: true, historyRecall: true, memoryEnabled: true },
+      currentUserMessage,
+      memoryRefs: [],
+      recentMessages: []
+    });
+    const run = (contextWindow: number) => {
+      const runtime = snapshot();
+      runtime.model.capabilities.contextWindow = contextWindow;
+      return createAcceptedMemoryControlProvider({
+        $transaction: async (callback: (tx: { $queryRaw: () => Promise<unknown> }) => Promise<unknown>) =>
+          callback({ $queryRaw: async () => [{
+            credentialId: "credential-1", id: "credential-version-1", revokedAt: null,
+            secretEnvelope: null, testEvidence: { authenticationMode: "none" }
+          }] })
+      } as never).run({
+        connectionId: runtime.connectionId,
+        credentialId: runtime.credentialId!,
+        credentialVersionId: runtime.credentialVersionId!,
+        executionSnapshot: runtime,
+        providerModelId: runtime.providerModelId
+      }, request, new AbortController().signal);
+    };
+
+    await expect(run(4_096)).rejects.toMatchObject({
+      code: MEMORY_CONTROL_INPUT_TOO_LONG
+    });
+    expect(fetchProvider).not.toHaveBeenCalled();
+
+    await expect(run(128_000)).resolves.toMatchObject({
+      toolCalls: [expect.objectContaining({ name: MEMORY_ACTION_INTENT_NAME })]
+    });
+    expect(fetchProvider).toHaveBeenCalledOnce();
+    const body = JSON.stringify(JSON.parse(String(fetchProvider.mock.calls[0]![1]?.body)));
+    expect(body).toContain("Please remember that I prefer tea.");
   });
 });
