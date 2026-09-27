@@ -1142,6 +1142,77 @@ describe("Prisma Memory entity provenance", () => {
     }
   });
 
+  it.each(["ORPHANED", "FORGOTTEN"] as const)(
+    "retains an entity referenced only by a %s fact and prunes it after that fact is removed",
+    async (state) => {
+      const userId = await createOwner(`subject-prune-${state.toLowerCase()}`);
+      const foreignUserId = await createOwner("subject-prune-foreign");
+      try {
+        const scope = await prisma.memoryScope.create({
+          data: { scopeType: "GLOBAL_USER", userId }
+        });
+        const root = await prisma.memoryEntity.create({
+          data: {
+            canonicalKey: "entity:v3:product-device:retained-root",
+            displayName: "Retained root",
+            entityType: "DEVICE",
+            userId
+          }
+        });
+        const subject = await prisma.memoryEntity.create({
+          data: {
+            canonicalKey: "entity:v3:product-device:retained-subject",
+            displayName: "Retained subject",
+            entityType: "DEVICE",
+            mergedIntoId: root.id,
+            state: "MERGED",
+            userId
+          }
+        });
+        await prisma.memoryEntity.createMany({
+          data: [userId, foreignUserId].map((ownerId) => ({
+            canonicalKey: "entity:v3:product-device:unreferenced",
+            displayName: "Unreferenced entity",
+            entityType: "DEVICE",
+            userId: ownerId
+          }))
+        });
+        const fact = await prisma.memoryFact.create({
+          data: {
+            canonicalKey: `slot:v3:entity:${subject.id}:product_status:_`,
+            category: "about_you",
+            forgottenAt: state === "FORGOTTEN" ? observedAt : null,
+            identityKind: "SLOT",
+            identityVersion: "slot-v3",
+            predicateKey: "product_status",
+            scopeId: scope.id,
+            state,
+            subjectEntityId: subject.id,
+            subjectKey: `entity:${subject.id}`,
+            userId
+          }
+        });
+
+        await prisma.$transaction((tx) => pruneUnreferencedMemoryEntities(tx, userId));
+        await expect(prisma.memoryEntity.findMany({
+          orderBy: { canonicalKey: "asc" },
+          select: { id: true },
+          where: { userId }
+        })).resolves.toEqual([{ id: root.id }, { id: subject.id }]);
+        await expect(prisma.memoryEntity.count({ where: { userId: foreignUserId } }))
+          .resolves.toBe(1);
+
+        await prisma.memoryFact.delete({ where: { id: fact.id } });
+        await prisma.$transaction((tx) => pruneUnreferencedMemoryEntities(tx, userId));
+        await expect(prisma.memoryEntity.count({ where: { userId } })).resolves.toBe(0);
+      } finally {
+        await prisma.memoryFact.deleteMany({ where: { userId } });
+        await cleanupOwner(userId);
+        await cleanupOwner(foreignUserId);
+      }
+    }
+  );
+
   it("retains aliases while supported, cleans zero-support derivatives, and converges a real create race", async () => {
     const userId = await createOwner("support-race");
     try {

@@ -95,7 +95,8 @@ export async function removeUnsupportedMemoryEntityLinks(
 }
 
 /**
- * Deletes only entity rows with no semantic or alias reference. Iteration is
+ * Deletes only entity rows with no fact identity, semantic or alias reference.
+ * Forgotten fact containers still retain their subject identity. Iteration is
  * required because merged roots are protected until every unreferenced child
  * has been removed.
  */
@@ -107,6 +108,11 @@ export async function pruneUnreferencedMemoryEntities(
     const deleted = await tx.$executeRaw(Prisma.sql`
       DELETE FROM "MemoryEntity" AS entity
       WHERE entity."userId" = ${userId}
+        AND NOT EXISTS (
+          SELECT 1 FROM "MemoryFact" AS fact
+          WHERE fact."userId" = entity."userId"
+            AND fact."subjectEntityId" = entity."id"
+        )
         AND NOT EXISTS (
           SELECT 1 FROM "MemoryFactVersionEntity" AS link
           WHERE link."userId" = entity."userId"
