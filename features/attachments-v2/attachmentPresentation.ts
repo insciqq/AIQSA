@@ -44,6 +44,7 @@ const processingFailureMessages: Readonly<Record<string, string>> = {
   attachment_checksum_mismatch: "The file failed its integrity check.",
   attachment_object_read_failed: "Could not read the stored file.",
   attachment_object_size_mismatch: "The stored file size did not match.",
+  attachment_processing_attempts_exhausted: "Processing stopped after repeated failures.",
   attachment_processing_failed: "Could not process the file.",
   parser_invalid_output: "The parser returned an invalid result.",
   parser_output_too_large: "The processed result is too large.",

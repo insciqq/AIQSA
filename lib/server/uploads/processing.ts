@@ -17,6 +17,7 @@ export type AttachmentProcessingErrorCode =
   | "attachment_checksum_mismatch"
   | "attachment_object_read_failed"
   | "attachment_object_size_mismatch"
+  | "attachment_processing_attempts_exhausted"
   | "attachment_processing_failed"
   | "parser_invalid_output"
   | "parser_output_too_large"
