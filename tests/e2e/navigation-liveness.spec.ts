@@ -174,31 +174,35 @@ test.describe("branch graph request liveness", () => {
         expect(count(second)).toBeLessThanOrEqual(2);
         await page.screenshot({ path: testInfo.outputPath(`branches-revision-${viewport.label}.png`) });
 
-        // A negative HTTP outcome is kept until an explicit Retry.
+        // A negative HTTP outcome is kept until an explicit Retry. A cached
+        // graph is deliberately not refetched, so the failure targets a chat
+        // whose graph the browser has never loaded.
+        const third = await seedChat(page, `Liveness third ${viewport.label}`);
+        owned.push(third);
         let failBranches = true;
-        await page.route(`**/api/chats/${second}/branches`, async (route) => {
+        await page.route(`**/api/chats/${third}/branches`, async (route) => {
           if (failBranches) await route.fulfill({ json: { error: "internal_error" }, status: 500 });
           else await route.continue();
         });
-        await prisma.chat.updateMany({ data: { title: `Liveness second renamed ${viewport.label}` }, where: { id: second } });
-        await select(second);
-        await expect(page.getByText(`Liveness second ${viewport.label} answer`)).toBeVisible();
+        await page.reload();
+        await select(third);
+        await expect(page.getByText(`Liveness third ${viewport.label} answer`)).toBeVisible();
         await page.getByTestId("header-more-trigger").click();
         await page.getByRole("menuitem", { name: "Branches" }).click();
         const branches = page.getByRole("dialog", { name: "Conversation branches" });
         await expect(branches.getByText("Could not load branches")).toBeVisible();
-        const failed = count(second);
+        const failed = count(third);
         await page.waitForTimeout(5_000);
-        expect(count(second)).toBe(failed);
+        expect(count(third)).toBe(failed);
         await expectNoHorizontalOverflow(page);
         await page.screenshot({ path: testInfo.outputPath(`branches-error-${viewport.label}.png`) });
 
         failBranches = false;
         await branches.getByRole("button", { name: "Retry" }).click();
         await expect(branches.getByText("Could not load branches")).toHaveCount(0);
-        await expect.poll(() => count(second)).toBe(failed + 1);
+        await expect.poll(() => count(third)).toBe(failed + 1);
         await page.waitForTimeout(3_000);
-        expect(count(second)).toBe(failed + 1);
+        expect(count(third)).toBe(failed + 1);
       } finally {
         for (const id of owned) await page.request.delete(`/api/chats/${id}`);
       }
