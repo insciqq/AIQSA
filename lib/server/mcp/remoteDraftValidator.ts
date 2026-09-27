@@ -15,7 +15,7 @@ import {
   type McpClientSessionLimits,
   type McpClientSessionOptions
 } from "./clientSession";
-import { hashCanonicalMcpValue, validateMcpSlotValue } from "./definitions";
+import { hashCanonicalMcpValue, mcpToolDefinitionEvidence, validateMcpSlotValue } from "./definitions";
 import type {
   McpEndpointCorrection,
   McpDraftValidationInput,
@@ -199,17 +199,15 @@ function successfulOutcome(input: {
     origin: endpoint.origin,
     pathname: endpoint.pathname
   });
-  const toolDefinitionHashes = input.tools.map((tool) => tool.definitionHash).sort();
+  const definitions = mcpToolDefinitionEvidence(input.tools);
   const evidence: McpJsonObject = {
     endpointHash,
     ...(input.endpointCorrection ? { endpointCorrection: { kind: "gitlab", endpoint: safeMcpEndpoint(source.url)! } } : {}),
     ...(input.serverEvidence ? { server: input.serverEvidence } : {}),
     toolCount: input.tools.length,
-    toolDefinitionHashes,
-    toolInventoryHash: hashCanonicalMcpValue(
-      input.tools.map((tool) => ({ definitionHash: tool.definitionHash, name: tool.name }))
-        .sort((left, right) => left.name.localeCompare(right.name))
-    ),
+    toolDefinitionHashes: definitions.toolDefinitionHashes,
+    toolDefinitions: definitions.toolDefinitions,
+    toolInventoryHash: definitions.toolInventoryHash,
     transport: "streamable_http"
   };
   return {

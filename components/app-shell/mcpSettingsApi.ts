@@ -1,5 +1,5 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
-import { mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
+import { isMcpToolName, isMcpUnavailableToolReason, mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
 import type {
   McpReadiness,
   McpOperationalStatus,
@@ -83,6 +83,16 @@ function userServer(value: unknown): UserMcpServer | null {
   });
   if (tools.length !== value.tools.length) return null;
 
+  let unavailableTools: UserMcpServer["unavailableTools"];
+  if (value.unavailableTools !== undefined) {
+    if (!Array.isArray(value.unavailableTools)) return null;
+    unavailableTools = value.unavailableTools.flatMap((candidate) =>
+      isRecord(candidate) && isMcpToolName(candidate.name) && isMcpUnavailableToolReason(candidate.reason)
+        ? [{ name: candidate.name, reason: candidate.reason }]
+        : []);
+    if (unavailableTools.length !== value.unavailableTools.length) return null;
+  }
+
   return {
     accountLabel: value.accountLabel,
     description: value.description,
@@ -98,7 +108,8 @@ function userServer(value: unknown): UserMcpServer | null {
     ...(value.runtimeErrorCode !== undefined ? {
       runtimeErrorCode: value.runtimeErrorCode === null ? null : mcpRuntimeErrorCode(value.runtimeErrorCode)
     } : {}),
-    tools
+    tools,
+    ...(unavailableTools ? { unavailableTools } : {})
   };
 }
 

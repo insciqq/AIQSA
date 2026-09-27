@@ -1,4 +1,4 @@
-import { MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
+import { isMcpToolName, MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
 import { createHash } from "node:crypto";
 import type {
   McpAuthPolicy,
@@ -394,6 +394,66 @@ export function canonicalMcpJson(value: unknown): string {
 
 export function hashCanonicalMcpValue(value: unknown): string {
   return createHash("sha256").update(canonicalMcpJson(value)).digest("hex");
+}
+
+const DEFINITION_HASH_PATTERN = /^[a-f0-9]{64}$/u;
+
+/**
+ * Validation evidence naming every checked tool with its exact definition.
+ * `toolInventoryHash` covers `toolDefinitions` in the stored order, so a reader
+ * verifies the pairs without sorting them again.
+ */
+export function mcpToolDefinitionEvidence(
+  tools: readonly Readonly<{ definitionHash: string; name: string }>[]
+): { toolDefinitionHashes: string[]; toolDefinitions: { definitionHash: string; name: string }[]; toolInventoryHash: string } {
+  const toolDefinitions = tools
+    .map((tool) => ({ definitionHash: tool.definitionHash, name: tool.name }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  return {
+    toolDefinitionHashes: tools.map((tool) => tool.definitionHash).sort(),
+    toolDefinitions,
+    toolInventoryHash: hashCanonicalMcpValue(toolDefinitions)
+  };
+}
+
+/**
+ * What a published configuration lets its runtime offer. `definitions` holds
+ * the exact checked name/definition pairs; `names` is evidence recorded before
+ * pairs existed, matched by name until the next check; `invalid` means the
+ * recorded pairs do not verify, so nothing upstream is offered.
+ */
+export type McpPublishedToolDefinitions =
+  | Readonly<{ hashes: ReadonlyMap<string, string>; kind: "definitions" }>
+  | Readonly<{ kind: "invalid" }>
+  | Readonly<{ kind: "names"; names: ReadonlySet<string> }>;
+
+export function mcpPublishedToolDefinitions(validationEvidence: unknown): McpPublishedToolDefinitions {
+  const stored: ObjectValue = isObject(validationEvidence) ? validationEvidence : {};
+  const evidence: ObjectValue = isObject(stored.evidence) ? stored.evidence : {};
+  const inventoryNames = (Array.isArray(stored.toolInventory) ? stored.toolInventory as unknown[] : [])
+    .map((tool) => isObject(tool) ? tool.name : undefined);
+  if (!Object.hasOwn(evidence, "toolDefinitions")) {
+    return { kind: "names", names: new Set(inventoryNames.filter(isMcpToolName)) };
+  }
+  const definitions = evidence.toolDefinitions;
+  if (!Array.isArray(definitions) || definitions.length !== inventoryNames.length ||
+    evidence.toolCount !== definitions.length ||
+    evidence.toolInventoryHash !== hashCanonicalMcpValue(definitions)) {
+    return { kind: "invalid" };
+  }
+  // Names are data, never object keys: `__proto__` is a valid tool name.
+  const hashes = new Map<string, string>();
+  for (const definition of definitions) {
+    if (!isObject(definition) || !isMcpToolName(definition.name) || hashes.has(definition.name) ||
+      typeof definition.definitionHash !== "string" || !DEFINITION_HASH_PATTERN.test(definition.definitionHash)) {
+      return { kind: "invalid" };
+    }
+    hashes.set(definition.name, definition.definitionHash);
+  }
+  const names = new Set(inventoryNames.filter(isMcpToolName));
+  return names.size === hashes.size && [...names].every((name) => hashes.has(name))
+    ? { hashes, kind: "definitions" }
+    : { kind: "invalid" };
 }
 
 function slotSemanticIdentity(slot: McpConfigurationSlot): unknown {

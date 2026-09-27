@@ -4,6 +4,8 @@ import {
   canonicalMcpJson,
   hashCanonicalMcpValue,
   mcpEndpointBinding,
+  mcpPublishedToolDefinitions,
+  mcpToolDefinitionEvidence,
   mcpValuesForEndpoint,
   parseMcpEndpointBindings,
   validateMcpDraft,
@@ -466,5 +468,86 @@ describe("MCP stored value endpoint bindings", () => {
     expect(parseMcpEndpointBindings([])).toBeNull();
     expect(parseMcpEndpointBindings({ token: { ...valid, origin: "" } })).toBeNull();
     expect(parseMcpEndpointBindings({ token: { ...valid, endpointHash: "short" } })).toBeNull();
+  });
+});
+
+describe("MCP published tool definitions", () => {
+  const tools = [
+    { definitionHash: "b".repeat(64), name: "zeta" },
+    { definitionHash: "a".repeat(64), name: "__proto__" },
+    { definitionHash: "c".repeat(64), name: "constructor" }
+  ];
+  const names = tools.map(({ name }) => name);
+
+  function stored(evidence: Record<string, unknown>, inventoryNames: readonly string[] = names) {
+    return {
+      evidence,
+      testedAt: "2026-09-27T00:00:00.000Z",
+      toolInventory: inventoryNames.map((name) => ({ description: null, name }))
+    };
+  }
+
+  function recorded(): Record<string, unknown> & ReturnType<typeof mcpToolDefinitionEvidence> {
+    return { ...mcpToolDefinitionEvidence(tools), toolCount: tools.length };
+  }
+
+  it("records exact pairs whose stored order the inventory hash covers", () => {
+    const evidence = mcpToolDefinitionEvidence(tools);
+    expect(evidence.toolDefinitions.map(({ name }) => name)).toEqual([...names].sort((left, right) => left.localeCompare(right)));
+    expect(evidence.toolDefinitionHashes).toEqual(tools.map(({ definitionHash }) => definitionHash).sort());
+    // The inventory hash keeps its meaning: it is the hash of the recorded pairs.
+    expect(evidence.toolInventoryHash).toBe(hashCanonicalMcpValue(evidence.toolDefinitions));
+
+    const published = mcpPublishedToolDefinitions(stored(recorded()));
+    expect(published).toEqual({ hashes: new Map(tools.map(({ definitionHash, name }) => [name, definitionHash])), kind: "definitions" });
+    if (published.kind !== "definitions") throw new Error("expected recorded definitions");
+    // Tool names are data: object-prototype names neither collide nor leak.
+    expect(published.hashes.get("__proto__")).toBe("a".repeat(64));
+    expect(published.hashes.get("constructor")).toBe("c".repeat(64));
+    expect(published.hashes.has("toString")).toBe(false);
+  });
+
+  it("matches evidence recorded before pairs existed by its valid published names", () => {
+    const legacy = { toolCount: 3, toolDefinitionHashes: tools.map(({ definitionHash }) => definitionHash).sort() };
+    expect(mcpPublishedToolDefinitions(stored(legacy))).toEqual({ kind: "names", names: new Set(names) });
+    expect(mcpPublishedToolDefinitions(stored({}, ["kept", "not a tool name"]))).toEqual({
+      kind: "names",
+      names: new Set(["kept"])
+    });
+    expect(mcpPublishedToolDefinitions({ evidence: {} })).toEqual({ kind: "names", names: new Set() });
+    expect(mcpPublishedToolDefinitions(null)).toEqual({ kind: "names", names: new Set() });
+  });
+
+  it.each([
+    ["an altered hash", (evidence: ReturnType<typeof recorded>) => ({
+      ...evidence,
+      toolDefinitions: evidence.toolDefinitions.map((entry, index) =>
+        index === 0 ? { ...entry, definitionHash: "d".repeat(64) } : entry)
+    })],
+    ["reordered pairs", (evidence: ReturnType<typeof recorded>) => ({
+      ...evidence,
+      toolDefinitions: [...evidence.toolDefinitions].reverse()
+    })],
+    ["a wrong tool count", (evidence: ReturnType<typeof recorded>) => ({ ...evidence, toolCount: 2 })],
+    ["a missing inventory hash", (evidence: ReturnType<typeof recorded>) => ({ ...evidence, toolInventoryHash: undefined })],
+    ["pairs that are not a list", (evidence: ReturnType<typeof recorded>) => ({ ...evidence, toolDefinitions: null })]
+  ])("fails closed on %s", (_label, mutate) => {
+    expect(mcpPublishedToolDefinitions(stored(mutate(recorded())))).toEqual({ kind: "invalid" });
+  });
+
+  it("fails closed when verified pairs are malformed or disagree with the tool inventory", () => {
+    const rehashed = (toolDefinitions: unknown[]) => ({
+      toolCount: toolDefinitions.length,
+      toolDefinitions,
+      toolInventoryHash: hashCanonicalMcpValue(toolDefinitions)
+    });
+    const pairs = recorded().toolDefinitions;
+    expect(mcpPublishedToolDefinitions(stored(rehashed([...pairs.slice(1), { ...pairs[1]! }])))).toEqual({ kind: "invalid" });
+    expect(mcpPublishedToolDefinitions(stored(rehashed([{ ...pairs[0]!, definitionHash: "short" }, ...pairs.slice(1)]))))
+      .toEqual({ kind: "invalid" });
+    expect(mcpPublishedToolDefinitions(stored(rehashed([{ ...pairs[0]!, name: "not a tool name" }, ...pairs.slice(1)]))))
+      .toEqual({ kind: "invalid" });
+    expect(mcpPublishedToolDefinitions(stored(recorded(), ["zeta", "__proto__", "other"]))).toEqual({ kind: "invalid" });
+    expect(mcpPublishedToolDefinitions(stored(recorded(), ["zeta", "__proto__"]))).toEqual({ kind: "invalid" });
   });
 });

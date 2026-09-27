@@ -1,4 +1,9 @@
-import { decodeMcpToolAccessPolicy, mcpValidationIssue } from "@/lib/contracts/mcp";
+import {
+  decodeMcpToolAccessPolicy,
+  isMcpInventoryDifferenceReason,
+  isMcpToolName,
+  mcpValidationIssue
+} from "@/lib/contracts/mcp";
 import type {
   AdminMcpCatalogResponse,
   AdminMcpCreateRequest,
@@ -37,7 +42,16 @@ function isIssue(value: unknown): value is McpValidationIssue {
 function hasIdentityHash(value: unknown): boolean {
   return isRecord(value) &&
     typeof value.identityHash === "string" && value.identityHash.length > 0 &&
-    hasValidDisabledToolNames(value);
+    hasValidDisabledToolNames(value) &&
+    (value.toolVerification === undefined ||
+      ["definitions", "invalid", "names"].includes(String(value.toolVerification)));
+}
+
+function hasValidInventoryDifferences(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.every((difference) =>
+    isRecord(difference) && isMcpInventoryDifferenceReason(difference.reason) &&
+    (difference.name === null || isMcpToolName(difference.name)) &&
+    Number.isSafeInteger(difference.connections) && Number(difference.connections) > 0));
 }
 
 function hasValidDisabledToolNames(value: Record<string, unknown>): boolean {
@@ -92,6 +106,7 @@ function isServer(value: unknown): value is AdminMcpServer {
       value.runtimeProblem === "reauthorization_required" || value.runtimeProblem === "unavailable") &&
     (value.toolAccess === undefined || (Array.isArray(value.toolAccess) &&
       value.toolAccess.every((policy) => decodeMcpToolAccessPolicy(policy) !== null))) &&
+    hasValidInventoryDifferences(value.inventoryDifferences) &&
     validActivePersonalSlots &&
     validActiveRevision &&
     validDraftTest &&
