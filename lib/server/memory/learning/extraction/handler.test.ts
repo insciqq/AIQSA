@@ -1024,4 +1024,120 @@ describe("Memory fact extraction handler", () => {
       );
     }
   );
+
+  it.each([
+    "memory_fact_source_oversized",
+    "memory_fact_source_partially_processed",
+    "memory_fact_source_coverage_exhausted"
+  ])("fails an incomplete source visibly as %s instead of staling it", async (code) => {
+    const fixture = dependencies();
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        prepare: vi.fn(async () => ({
+          decision: { errorCode: code, status: "CANCELLED" as const }
+        }))
+      }
+    });
+    const failure = await handler.execute(claim(), context()).catch((error) => error);
+    expect(failure).toBeInstanceOf(MemoryCoordinatorError);
+    expect(failure).toMatchObject({ code, retryable: false });
+    expect(fixture.bind).not.toHaveBeenCalled();
+    expect(fixture.run).not.toHaveBeenCalled();
+
+    const staleHandler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        prepare: vi.fn(async () => ({
+          decision: { errorCode: "memory_fact_source_stale", status: "STALE" as const }
+        }))
+      }
+    });
+    await expect(staleHandler.execute(claim(), context())).resolves.toMatchObject({
+      stage: "memory_fact_source_stale"
+    });
+  });
+
+  it("hands coverage to the next page after a page that applied nothing", async () => {
+    const continueCoverage = vi.fn(async () => undefined);
+    const valid = providerOutput();
+    const fixture = dependencies({
+      provider: {
+        run: vi.fn(async () => ({
+          ...valid,
+          toolCalls: [{
+            arguments: { observations: "invalid" },
+            id: "invalid-call",
+            name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+          }]
+        }))
+      }
+    });
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: { ...fixture.base.repository, continueCoverage }
+    });
+    const jobClaim = claim();
+    const rejected = await handler.execute(jobClaim, context());
+    expect(rejected.stage).toBe("fact_output_rejected");
+    expect(fixture.apply).not.toHaveBeenCalled();
+    expect(continueCoverage).not.toHaveBeenCalled();
+    await rejected.apply?.({} as never, jobClaim);
+    expect(continueCoverage).toHaveBeenCalledWith({}, jobClaim, fixture.input, undefined);
+
+    // An applied page enqueued its continuation inside its own apply.
+    const applied = await createMemoryFactExtractionHandler({
+      ...dependencies().base,
+      repository: { ...dependencies().base.repository, continueCoverage }
+    }).execute(claim(), context());
+    expect(applied.stage).toBe("fact_observations_committed");
+    expect(applied.apply).toBeUndefined();
+  });
+
+  it("keeps covering later pages when this page's apply turned stale", async () => {
+    const continueCoverage = vi.fn(async () => undefined);
+    const fixture = dependencies();
+    fixture.apply.mockResolvedValueOnce("STALE" as never);
+    const jobClaim = claim();
+    const result = await createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: { ...fixture.base.repository, continueCoverage }
+    }).execute(jobClaim, context());
+    expect(result.stage).toBe("fact_apply_stale");
+    await result.apply?.({} as never, jobClaim);
+    expect(continueCoverage).toHaveBeenCalledWith({}, jobClaim, fixture.input, undefined);
+  });
+
+  it("fences a secret in a page's preceding text before provider egress", async () => {
+    const fixture = dependencies();
+    const pageInput: MemoryFactExtractionInput = {
+      ...fixture.input,
+      targetPage: {
+        coreEnd: 40_000,
+        coreStart: 20_000,
+        ordinal: 1,
+        precedingText: "My API key is sk-abcdefghijklmnopqrstuvwxyz123456.",
+        sourceLength: 60_000,
+        sourceUnprocessed: false
+      }
+    };
+    const continueCoverage = vi.fn(async () => undefined);
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        continueCoverage,
+        prepare: vi.fn(async () => ({ input: pageInput }))
+      }
+    });
+    const result = await handler.execute(claim(), context());
+    expect(result.stage).toBe("fact_secret_source_fenced");
+    expect(fixture.bind).not.toHaveBeenCalled();
+    expect(fixture.run).not.toHaveBeenCalled();
+    await result.apply?.({} as never, claim());
+    expect(continueCoverage)
+      .toHaveBeenCalledWith({}, expect.anything(), pageInput, undefined);
+  });
 });
