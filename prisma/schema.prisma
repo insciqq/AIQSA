@@ -3496,6 +3496,7 @@ model McpServer {
   enabled              Boolean              @default(false)
   archivedAt           DateTime?
   activeRevisionId     String?              @unique
+  legacyToolRecheckPending Boolean           @default(false)
   draft                Json                 @default("{}")
   testedDraftHash      String?
   draftTestEvidence    Json?

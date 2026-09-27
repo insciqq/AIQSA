@@ -41,6 +41,7 @@ export type McpActivationPublishResult =
   | Readonly<{ kind: "lease_lost" }>;
 
 export type McpActivationCoordinatorRepository = Readonly<{
+  enqueueLegacyToolRechecks(): Promise<void>;
   advanceActivation(input: {
     id: string;
     leaseId: string;
@@ -147,6 +148,11 @@ export class McpActivationCoordinator {
   async #drain(): Promise<void> {
     do {
       this.#rerun = false;
+      try {
+        await this.#repository.enqueueLegacyToolRechecks();
+      } catch (error) {
+        reportSubsystemFailure({ subsystem: "mcp", stage: "prepare", code: "mcp_activation_failed", prisma_code: databaseFailureCode(error), action: "retry" });
+      }
       await Promise.all(Array.from({ length: this.#maxParallel }, () => this.#worker()));
     } while (this.#rerun);
   }

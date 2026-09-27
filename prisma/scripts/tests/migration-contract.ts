@@ -17,6 +17,7 @@ import { MEMORY_CONFIGURATION_WAIT_MIGRATION, memoryConfigurationAdoptionFixture
 import { MEMORY_WORKER_RECOVERY_MIGRATION, memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql } from "./memory-worker-recovery-adoption";
 import { MEMORY_HISTORY_LIVE_ORDINALS_MIGRATION, memoryHistoryLiveOrdinalsFixtureSql, memoryHistoryLiveOrdinalsProofSql } from "./memory-history-live-ordinals";
 import { MCP_MODEL_OUTPUT_BUDGET_MIGRATION, mcpModelOutputBudgetFixtures } from "./mcp-model-output-budget";
+import { MCP_LEGACY_TOOL_RECHECK_MIGRATION, mcpLegacyToolRecheckFixtureSql, mcpLegacyToolRecheckProofSql, mcpLegacyToolRecheckRepeatProofSql } from "./mcp-legacy-tool-recheck";
 import { UTILITY_RUNTIME_BUDGET_MIGRATION, utilityRuntimeBudgetFixtures } from "./utility-runtime-budgets";
 import { SEMANTIC_DECISIONS_MIGRATION, semanticDecisionsFixtureSql, semanticDecisionsProofSql } from "./semantic-decisions-adoption";
 import { DECISION_UPGRADE_MIGRATION, decisionUpgradeFixtureSql, decisionUpgradeProofSql } from "./decision-upgrade-adoption";
@@ -7528,6 +7529,8 @@ function main(
     runForwardAdoptionProof(shadowDatabase, migrations, MCP_MODEL_OUTPUT_BUDGET_MIGRATION,
       fixture, proof, proof);
   }
+  runForwardAdoptionProof(shadowDatabase, migrations, MCP_LEGACY_TOOL_RECHECK_MIGRATION,
+    mcpLegacyToolRecheckFixtureSql, mcpLegacyToolRecheckProofSql, mcpLegacyToolRecheckRepeatProofSql);
   for (const { fixture, proof } of utilityRuntimeBudgetFixtures) {
     runForwardAdoptionProof(shadowDatabase, migrations, UTILITY_RUNTIME_BUDGET_MIGRATION,
       fixture, proof, proof);

@@ -1492,6 +1492,79 @@ export function createPrismaMcpRepository(input: {
       return repository.activateDraft(serverId);
     },
 
+    enqueueLegacyToolRechecks: async () => {
+      // The migration marks only the upgrade's existing servers. Consuming that
+      // marker and recording the ordinary activation are one transaction, so a
+      // restart cannot lose the work or repeatedly retry a failed upstream check.
+      while (await client.$transaction(async (tx) => {
+        const [candidate] = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "McpServer"
+          WHERE "legacyToolRecheckPending" = true
+          ORDER BY "id"
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1
+        `;
+        if (!candidate) return false;
+        const server = await tx.mcpServer.findUniqueOrThrow({
+          include: { activeRevision: true, activationJob: true },
+          where: { id: candidate.id }
+        });
+        await tx.mcpServer.update({ data: { legacyToolRecheckPending: false }, where: { id: server.id } });
+        if (!server.enabled || server.archivedAt || !server.activeRevision ||
+          mcpPublishedToolDefinitions(server.activeRevision.validationEvidence).kind !== "names") return true;
+        if (server.activationJob && LIVE_ACTIVATION_STAGES.includes(
+          server.activationJob.stage as (typeof LIVE_ACTIVATION_STAGES)[number]
+        )) return true;
+
+        const draft = draftFrom(server.draft);
+        const draftHash = hashCanonicalMcpValue(draft);
+        let validationUserId: string | undefined;
+        if (draft.auth.mode === "oauth") {
+          const connections = await tx.mcpOAuthConnection.findMany({
+            include: { oauthClient: true },
+            orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+            where: {
+              disconnectRequestedAt: null, purpose: "validation", serverId: server.id,
+              state: "ready", tokenEnvelope: { not: null }, user: { role: "admin", status: "active" }
+            }
+          });
+          validationUserId = connections.find((connection) => {
+            if (!connection.oauthClient || !input.oauthValidationRedirectUri) return false;
+            try {
+              return connection.policyFingerprint === mcpOAuthPolicyFingerprint(buildMcpOAuthPolicy({
+                configurationIdentity: draftHash, draft, purpose: "validation",
+                redirectUri: input.oauthValidationRedirectUri(server.id), serverId: server.id, userId: connection.userId
+              }), connection.oauthClient.clientId);
+            } catch { return false; }
+          })?.userId;
+        } else {
+          validationUserId = (await tx.user.findFirst({
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
+            where: { role: "admin", status: "active" }
+          }))?.id;
+        }
+
+        // An upgrade must not publish unrelated settings somebody left in a
+        // draft. Existing manual Test & Save remains the recovery path.
+        const result: ActivationEnqueueResult = draftHash !== server.activeRevision.draftHash
+          ? { kind: "draft_changed" }
+          : !validationUserId ? { kind: "invalid_values", issues: [{
+              code: draft.auth.mode === "oauth" ? "mcp_oauth_validation_unavailable" : "validation_identity_invalid",
+              path: draft.auth.mode === "oauth" ? "auth.mode" : "activation"
+            }] }
+          : await enqueueActivationLocked(tx, server.id, validationUserId, encryptionKey(), draftHash);
+        if (result.kind === "ok") return true;
+        await tx.mcpActivationJob.deleteMany({ where: { serverId: server.id } });
+        await tx.mcpActivationJob.create({ data: {
+          completedAt: new Date(), draftHash, errorCode: "mcp_draft_test_failed",
+          issues: ("issues" in result ? result.issues : [{ code: "mcp_draft_changed", path: "draft" }]) as Prisma.InputJsonValue,
+          serverId: server.id, sharedConfigVersion: server.sharedConfigVersion, stage: "failed",
+          validationUserId, workloadToken: activationToken()
+        } });
+        return true;
+      })) { /* Drain durable upgrade markers before normal activation claims. */ }
+    },
+
     requestActivation: async ({ expectedDraftHash, serverId, validationUserId }) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {

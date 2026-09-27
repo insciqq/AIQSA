@@ -2,6 +2,10 @@ import { loadMcpCapabilityCatalog, loadMcpRunPlanRecordsForServers, loadMcpRunPl
 import { prepareMcpRunPlan } from "./runPlan";
 import { filterMcpToolsForUser } from "./toolAccess";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { Server, type Tool } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { adminMcpAttention, MCP_INVENTORY_EXCLUSION_LIMIT, type AdminMcpServer, type McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { prisma } from "../prisma";
@@ -9,6 +13,9 @@ import { hashCanonicalMcpValue, mcpPublishedToolDefinitions, mcpToolDefinitionEv
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type { McpDraftValidationInput, McpDraftValidationOutcome } from "./draftValidator";
 import { createPrismaMcpRepository } from "./prismaRepository";
+import { McpActivationCoordinator } from "./activationCoordinator";
+import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
+import { createMcpSafeFetch } from "./safeFetch";
 import { createPrismaMcpOAuthRepository } from "./oauthRepository";
 import { McpOAuthService } from "./oauthService";
 import { createPrismaMcpRuntimeRepository, remoteRuntimeCandidate } from "./runtimeRepository";
@@ -50,7 +57,7 @@ async function admin() {
   return user.id;
 }
 
-async function fixture() {
+async function fixture(configuration: McpDraftConfiguration = draft) {
   const userId = await admin();
   const validate = vi.fn(async (_input: McpDraftValidationInput): Promise<McpDraftValidationOutcome> => valid);
   const redirectUri = (id: string) => `https://app.example.test/api/admin/mcp/${id}/oauth/validation/callback`;
@@ -58,7 +65,7 @@ async function fixture() {
     prisma, draftValidator: { validate }, encryptionKey: () => Buffer.alloc(32, 1), oauthValidationRedirectUri: redirectUri
   });
   const created = await repository.createServer({
-    description: "Test & Save fixture", draft, name: `Tools ${randomUUID()}`, sharedValues: { api_key: "fixture-initial-key" }
+    description: "Test & Save fixture", draft: configuration, name: `Tools ${randomUUID()}`, sharedValues: { api_key: "fixture-initial-key" }
   });
   if (created.kind !== "ok") throw new Error(`fixture_create_${created.kind}`);
   const serverId = created.value.id;
@@ -633,6 +640,222 @@ describe("MCP published tool inventory", () => {
     ...valid,
     evidence: { ...mcpToolDefinitionEvidence(checkedTools), toolCount: checkedTools.length }
   };
+
+  it("queues one upgrade check across competing schedulers and removes the legacy warning after validated publication", async () => {
+    const f = await fixture();
+    await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
+    await Promise.all(Array.from({ length: 4 }, () => f.repository.enqueueLegacyToolRechecks()));
+    const queued = await prisma.mcpActivationJob.findUniqueOrThrow({ where: { serverId: f.serverId } });
+    expect(queued.stage).toBe("queued");
+    const before = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } });
+    expect(before.legacyToolRecheckPending).toBe(false);
+    expect(before.activeRevisionId).toBe(f.server.activeRevision!.id);
+    f.validate.mockClear().mockResolvedValue(checked);
+    const coordinator = new McpActivationCoordinator({
+      repository: f.repository, draftValidator: { validate: f.validate }, maxParallel: 1
+    });
+    await coordinator.reconcileNow();
+    expect(f.validate).toHaveBeenCalledOnce();
+    expect(f.validate.mock.calls[0]![0].values).toEqual({ api_key: "fixture-initial-key" });
+    const upgraded = (await f.repository.listAdminServers()).find(({ id }) => id === f.serverId)!;
+    expect(upgraded.activeRevision?.toolVerification).toBe("definitions");
+    expect(adminMcpAttention(upgraded)).toBeNull();
+    await coordinator.reconcileNow();
+    expect(f.validate).toHaveBeenCalledOnce();
+    expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } }))
+      .toMatchObject({ id: queued.id, stage: "ready" });
+  });
+
+  it("rechecks a legacy server through authenticated MCP discovery once, preserving disabled tools while accepting current inventory", async () => {
+    const tools: Tool[] = [
+      { name: "search", description: "Search current records", inputSchema: { type: "object", properties: { query: { type: "string" } } } },
+      { name: "write", description: "Write records", inputSchema: { type: "object" } },
+      { name: "new_tool", description: "Newly available tool", inputSchema: { type: "object" } }
+    ];
+    let discoveries = 0;
+    let businessCalls = 0;
+    const authenticatedRequests: boolean[] = [];
+    const server = new Server({ name: "legacy-recheck-fixture", version: "1.0.0" }, { capabilities: { tools: {} } });
+    server.setRequestHandler("tools/list", async () => { discoveries += 1; return { tools }; });
+    server.setRequestHandler("tools/call", async () => {
+      businessCalls += 1;
+      return { content: [{ type: "text", text: "Unexpected business call" }] };
+    });
+    const transport = new NodeStreamableHTTPServerTransport({ enableJsonResponse: true, sessionIdGenerator: randomUUID });
+    await server.connect(transport);
+    const httpServer = createServer((request, response) => {
+      const authenticated = request.headers["x-api-key"] === "fixture-initial-key";
+      authenticatedRequests.push(authenticated);
+      if (!authenticated) { response.writeHead(401).end(); return; }
+      void transport.handleRequest(request, response).catch(() => {
+        if (!response.headersSent) response.writeHead(500).end();
+      });
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        httpServer.once("error", reject);
+        httpServer.listen(0, "127.0.0.1", resolve);
+      });
+      const url = `http://127.0.0.1:${(httpServer.address() as AddressInfo).port}/mcp`;
+      // Persist the old name-only result, then use only the real validator for upgrade.
+      const f = await fixture({ ...draft, source: { kind: "remote", url, allowPrivateNetwork: true },
+        runtime: { callTimeoutMs: 5_000, startupTimeoutMs: 5_000 } });
+      const disabled = await f.repository.updateServer({
+        expectedUpdatedAt: f.server.updatedAt, serverId: f.serverId, tool: { name: "write", enabled: false }
+      });
+      if (disabled.kind !== "ok") throw new Error(disabled.kind);
+      expect(adminMcpAttention(disabled.value)).toMatchObject({ label: "Check again to guard against tool changes" });
+      const legacy = await prisma.mcpRevision.findUniqueOrThrow({ where: { id: disabled.value.activeRevision!.id } });
+      await prisma.mcpServer.update({ where: { id: f.serverId }, data: { legacyToolRecheckPending: true } });
+      const draftValidator = createRemoteMcpDraftValidator({
+        fetch: createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true })
+      });
+      const createRepository = () => createPrismaMcpRepository({
+        prisma, draftValidator, encryptionKey: () => Buffer.alloc(32, 1), oauthValidationRedirectUri: f.redirectUri
+      });
+      const repository = createRepository();
+      const coordinator = new McpActivationCoordinator({ repository, draftValidator, maxParallel: 1 });
+      await coordinator.reconcileNow();
+      const upgraded = (await repository.listAdminServers()).find(({ id }) => id === f.serverId)!;
+      expect(upgraded.activeRevision).toMatchObject({
+        toolVerification: "definitions", disabledToolNames: ["write"],
+        validationEvidence: { toolInventory: tools.map(({ name, description }) => expect.objectContaining({ name, description })) }
+      });
+      expect(adminMcpAttention(upgraded)).toBeNull();
+      expect(upgraded.activeRevision?.id).not.toBe(legacy.id);
+      const published = await prisma.mcpRevision.findUniqueOrThrow({ where: { id: upgraded.activeRevision!.id } });
+      expect(mcpPublishedToolDefinitions(published.validationEvidence)).toEqual({
+        kind: "definitions", hashes: new Map(tools.map(({ name }) => [name, expect.stringMatching(/^[a-f0-9]{64}$/u)]))
+      });
+      expect(published.configuration).toEqual(legacy.configuration);
+      expect(await prisma.mcpRevision.findUniqueOrThrow({ where: { id: legacy.id } })).toEqual(legacy);
+      expect(authenticatedRequests.length).toBeGreaterThan(0);
+      expect(authenticatedRequests.every(Boolean)).toBe(true);
+      expect(discoveries).toBe(1);
+      expect(businessCalls).toBe(0);
+      const requestCount = authenticatedRequests.length;
+      const completed = await prisma.mcpActivationJob.findUniqueOrThrow({ where: { serverId: f.serverId } });
+      expect(completed.stage).toBe("ready");
+      // A fresh repository/coordinator represents restart; completion remains durable.
+      await new McpActivationCoordinator({ repository: createRepository(), draftValidator, maxParallel: 1 }).reconcileNow();
+      await coordinator.reconcileNow();
+      expect(discoveries).toBe(1);
+      expect(businessCalls).toBe(0);
+      expect(authenticatedRequests).toHaveLength(requestCount);
+      expect(await prisma.mcpActivationJob.findUniqueOrThrow({ where: { serverId: f.serverId } })).toEqual(completed);
+      expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).activeRevisionId).toBe(published.id);
+    } finally {
+      await server.close();
+      httpServer.closeAllConnections();
+      if (httpServer.listening) await new Promise<void>((resolve, reject) => httpServer.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("preserves a failed upgrade's serving revision and waits for an explicit retry", async () => {
+    const f = await fixture();
+    await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
+    f.validate.mockClear().mockResolvedValue({ kind: "invalid", issues: [{ code: "mcp_network_failed", path: "source" }] });
+    const coordinator = new McpActivationCoordinator({ repository: f.repository, draftValidator: { validate: f.validate }, maxParallel: 1 });
+    await coordinator.reconcileNow();
+    await coordinator.reconcileNow();
+    expect(f.validate).toHaveBeenCalledOnce();
+    const failed = (await f.repository.listAdminServers()).find(({ id }) => id === f.serverId)!;
+    expect(failed.activeRevision?.id).toBe(f.server.activeRevision!.id);
+    expect(adminMcpAttention(failed)).toMatchObject({ action: "Review and retry", label: "Settings check failed" });
+    f.validate.mockResolvedValue(checked);
+    await f.repository.requestActivation({ serverId: f.serverId, validationUserId: f.userId });
+    await coordinator.reconcileNow();
+    expect(f.validate).toHaveBeenCalledTimes(2);
+    expect((await f.repository.listAdminServers()).find(({ id }) => id === f.serverId)?.activeRevision?.toolVerification)
+      .toBe("definitions");
+  });
+
+  it.each(["disabled", "archived", "exact", "invalid", "new"] as const)("does not automatically check a %s server", async (state) => {
+    const f = await fixture();
+    if (state === "exact") {
+      f.validate.mockResolvedValue(checked);
+      await f.save(f.server);
+    }
+    if (state === "invalid") await prisma.mcpRevision.update({
+      data: { validationEvidence: { evidence: { toolDefinitions: null } } }, where: { id: f.server.activeRevision!.id }
+    });
+    await prisma.mcpServer.update({ data: {
+      legacyToolRecheckPending: state !== "new",
+      ...(state === "disabled" ? { enabled: false } : {}),
+      ...(state === "archived" ? { archivedAt: new Date() } : {})
+    }, where: { id: f.serverId } });
+    await f.repository.enqueueLegacyToolRechecks();
+    expect(await prisma.mcpActivationJob.count({ where: { serverId: f.serverId } })).toBe(0);
+  });
+
+  it("does not publish unrelated draft edits during the upgrade", async () => {
+    const f = await fixture();
+    await f.repository.updateServer({ serverId: f.serverId, draft: {
+      ...draft, runtime: { ...draft.runtime, callTimeoutMs: 40_000 }
+    } });
+    expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).legacyToolRecheckPending)
+      .toBe(false);
+    await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
+    await f.repository.enqueueLegacyToolRechecks();
+    expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } })).toMatchObject({
+      stage: "failed", issues: [{ code: "mcp_draft_changed", path: "draft" }]
+    });
+    expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).activeRevisionId)
+      .toBe(f.server.activeRevision!.id);
+  });
+
+  it("requires new one-time values instead of borrowing stored personal credentials", async () => {
+    const f = await fixture();
+    const personalDraft: McpDraftConfiguration = { ...draft, slots: [...draft.slots, {
+      label: "Personal key", policy: { kind: "personal", required: true }, sensitive: true,
+      slotKey: "user_token", target: { kind: "header", name: "X-Personal-Key" }, valueType: "secret"
+    }] };
+    const updated = await f.repository.updateServer({ serverId: f.serverId, draft: personalDraft });
+    if (updated.kind !== "ok") throw new Error(updated.kind);
+    const saved = await f.repository.testDraft({ serverId: f.serverId, expectedUpdatedAt: updated.value.updatedAt,
+      oneTimeValues: { user_token: "fixture-one-time-value" }, publish: true, validationUserId: f.userId });
+    if (saved.kind !== "ok") throw new Error(saved.kind);
+    await f.repository.setGrant({ serverId: f.serverId, userId: f.userId, groupId: null,
+      canUse: true, personalSlotKeys: ["user_token"] });
+    expect(await f.repository.updateUserServer({ serverId: f.serverId, userId: f.userId,
+      enabled: true, values: { user_token: "fixture-personal-value" } })).toMatchObject({ kind: "ok" });
+    f.validate.mockClear();
+    await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
+    await new McpActivationCoordinator({ repository: f.repository, draftValidator: { validate: f.validate }, maxParallel: 1 }).reconcileNow();
+    expect(f.validate).not.toHaveBeenCalled();
+    expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } })).toMatchObject({
+      stage: "failed", issues: [{ code: "slot_value_required", path: "oneTimeValues.user_token" }]
+    });
+    expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).activeRevisionId)
+      .toBe(saved.value.activeRevision!.id);
+  });
+
+  it("uses an existing in-flight check without replacing its durable job", async () => {
+    const f = await fixture();
+    await f.repository.requestActivation({ serverId: f.serverId, validationUserId: f.userId });
+    const existing = await prisma.mcpActivationJob.findUniqueOrThrow({ where: { serverId: f.serverId } });
+    await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
+    await f.repository.enqueueLegacyToolRechecks();
+    expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } })).toEqual(existing);
+    expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).legacyToolRecheckPending).toBe(false);
+  });
+
+  it("uses only the existing administrator validation OAuth identity", async () => {
+    const f = await correctionFixture();
+    expect(await f.repository.testDraft({ serverId: f.serverId, expectedUpdatedAt: f.expectedUpdatedAt,
+      oneTimeValues: {}, publish: true, validationUserId: f.userId })).toMatchObject({ kind: "ok" });
+    await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
+    await f.repository.enqueueLegacyToolRechecks();
+    expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } }))
+      .toMatchObject({ stage: "queued", validationUserId: f.userId });
+    await prisma.mcpActivationJob.deleteMany({ where: { serverId: f.serverId } });
+    await prisma.mcpOAuthConnection.update({ data: { purpose: "user" }, where: { id: f.connection.id } });
+    await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
+    await f.repository.enqueueLegacyToolRechecks();
+    expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } }))
+      .toMatchObject({ stage: "failed", validationUserId: null,
+        issues: [{ code: "mcp_oauth_validation_unavailable", path: "auth.mode" }] });
+  });
 
   async function readyGeneration(input: {
     credentialSources?: string[];
