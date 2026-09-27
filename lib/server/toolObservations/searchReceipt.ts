@@ -21,8 +21,8 @@ function shortenedSnippet(source: SearchSource, maximum: number): SearchSource {
   const points = source.snippet === undefined ? [] : Array.from(source.snippet);
   return points.length <= maximum ? source : { ...source, snippet: `${points.slice(0, maximum - 1).join("").trimEnd()}…` };
 }
-const sourceFields = (source: Readonly<Record<string, unknown>>) =>
-  JSON.stringify([source.date ?? null, source.rank, source.snippet ?? null, source.title, source.url]);
+const sourceFields = (source: Readonly<Record<string, unknown>>) => JSON.stringify([source.citation ?? null,
+  source.date ?? null, source.rank, source.snippet ?? null, source.title, source.url]);
 
 /** The sole owner of reported usage and of each engine's thread sources. It is
  * recorded before the original is stored and survives its loss. Findings stay
@@ -62,10 +62,11 @@ export function decodeSearchObservationReceipt(value: unknown): SearchObservatio
       !Array.isArray(entry.sources) || entry.sources.length > 20 ||
       entry.status !== "complete" && entry.status !== "error" || !record(entry.usage)) return null;
     // Accept only already normalized, re-ranked thread sources. PostgreSQL
-    // JSON reorders keys, so compare fields rather than serialized text.
+    // JSON reorders keys, so compare fields rather than serialized text. The
+    // citation number lets a restore render each engine's numbered sources.
     const sources = normalizeSearchSources(entry.sources, 20);
     if (sources.length !== entry.sources.length || entry.sources.some((source, index) => !record(source) ||
-      Object.keys(source).some(key => !["date", "rank", "snippet", "title", "url"].includes(key)) ||
+      Object.keys(source).some(key => !["citation", "date", "rank", "snippet", "title", "url"].includes(key)) ||
       sourceFields(source) !== sourceFields(sources[index]!))) return null;
     const usage = decodeTokenUsage(entry.usage);
     const cost = entry.usage.estimatedCostMicros;

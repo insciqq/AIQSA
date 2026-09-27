@@ -371,9 +371,15 @@ export function createOpenAIResponsesSearchAdapter(
           usage: completed.result.usage
         });
       }
+      // Cited sources come first so no bound can drop what the findings cite;
+      // a cited page the engine also browsed keeps its browsed fields.
+      const browsed = safeActionSources(response);
       const sources = normalizeSearchSources([
-        ...safeActionSources(response),
-        ...searchSourcesFromCitationArtifacts(artifacts)
+        ...searchSourcesFromCitationArtifacts(artifacts).map((source) => {
+          const same = browsed.find((candidate) => candidate.url === source.url);
+          return same ? { ...same, citation: source.citation } : source;
+        }),
+        ...browsed
       ], 20);
       if (sources.length === 0) {
         throw new ProviderSearchExecutionError({
