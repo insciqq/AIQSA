@@ -1,4 +1,5 @@
 import { executionFailure } from "./executionFailure";
+import type { ImageFailureEvidence } from "../images/errors";
 import {
   providerStreamSafetyReport,
   type ProviderStreamSafetyReport
@@ -23,6 +24,8 @@ export type ToolLoopCall = Readonly<{
 export type ToolLoopIssue = Readonly<{
   code: string;
   fatal?: boolean;
+  /** Content-free cause of a run-ending image failure. */
+  imageFailure?: ImageFailureEvidence;
   message: string;
   retryable?: boolean;
   streamSafetyReport?: ProviderStreamSafetyReport;
