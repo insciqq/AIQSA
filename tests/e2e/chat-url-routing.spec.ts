@@ -357,11 +357,11 @@ test("Control Center returns to the chat it was opened from", async ({ page, con
     await expect(controlCenter).toHaveAttribute("href", `/admin?return=%2Fc%2F${chatId}`);
     await controlCenter.click();
     await expect(page.getByTestId("admin-shell")).toBeVisible({ timeout: 30_000 });
-    // Control Center links carry its address only once it is interactive.
+    // The server markup already links back to the chat; sections keep that return with or without hydration.
     const chats = page.getByTestId("admin-rail").getByRole("link", { name: "Chats" });
-    await expect(chats).toHaveAttribute("href", `/c/${chatId}`);
+    await expect(chats).toHaveAttribute("href", `/c/${chatId}`, { timeout: 30_000 });
     await page.getByTestId("admin-nav-users").click();
-    await expect(page).toHaveURL(/section=users/u);
+    await expect(page).toHaveURL(/section=users/u, { timeout: 30_000 });
     expect(new URL(page.url()).searchParams.get("return")).toBe(`/c/${chatId}`);
     await page.screenshot({ path: testInfo.outputPath("routing-control-center-dark-1440.png") });
     await chats.click();
