@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
-import { SkillLibraryDialog, SkillLibrarySection } from "./SkillLibraryDialog";
+import { requestSkillDialogNavigation, SkillLibraryDialog, SkillLibrarySection } from "./SkillLibraryDialog";
 
 const ownedSkill = {
   archived: false,
@@ -350,6 +350,126 @@ describe("SkillLibraryDialog", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("instructions: 131,076 exceeds the limit of 131,072.");
     expect(screen.getByLabelText("Instructions")).toHaveValue(tooLarge);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps typed text when the server rejects a save", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
+      ? new Response("{}", { status: 503 }) : listResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SkillLibraryDialog onClose={vi.fn()} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    await screen.findByText("Careful editor");
+    fireEvent.click(screen.getByRole("button", { name: "New Skill" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Release checklist" } });
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Prepare a release" } });
+    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Check rollback notes." } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Skill" }));
+    expect(await screen.findByRole("alert")).toBeVisible();
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Check rollback notes.");
+  });
+
+  it("asks before a dirty Skill draft is dropped by close, Escape or the scrim and closes a clean one at once", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => listResponse()));
+    const onClose = vi.fn();
+    render(<SkillLibraryDialog onClose={onClose} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    await screen.findByText("Careful editor");
+    fireEvent.click(screen.getByRole("button", { name: "New Skill" }));
+    const instructions = screen.getByLabelText("Instructions");
+    fireEvent.change(instructions, { target: { value: "Keep this draft." } });
+    const beforeUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(beforeUnload);
+    expect(beforeUnload.defaultPrevented).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Skills" }));
+    let confirmation = await screen.findByRole("dialog", { name: "Unsaved Skill changes" });
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByRole("dialog", { name: "Unsaved Skill changes" })).toBeNull();
+    expect(instructions).toHaveValue("Keep this draft.");
+
+    fireEvent.keyDown(instructions, { key: "Escape" });
+    confirmation = await screen.findByRole("dialog", { name: "Unsaved Skill changes" });
+    fireEvent.keyDown(within(confirmation).getByRole("button", { name: "Keep editing" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Unsaved Skill changes" })).toBeNull());
+    expect(instructions).toHaveValue("Keep this draft.");
+
+    fireEvent.mouseDown(document.querySelector(".v2-skill-dialog-scrim")!);
+    confirmation = await screen.findByRole("dialog", { name: "Unsaved Skill changes" });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm discard changes" }));
+    expect(onClose).toHaveBeenCalledOnce();
+
+    cleanup();
+    const onCleanClose = vi.fn();
+    render(<SkillLibraryDialog onClose={onCleanClose} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    await screen.findByText("Careful editor");
+    fireEvent.click(screen.getByRole("button", { name: "New Skill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Skills" }));
+    expect(onCleanClose).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog", { name: "Unsaved Skill changes" })).toBeNull();
+  });
+
+  it("confirms Back, Cancel, another row and New Skill before replacing a dirty edit", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/skill-owned")
+      ? Response.json({ skill: ownedSkillDetail })
+      : String(input).endsWith("/skill-shared") ? Response.json({ skill: sharedSkillDetail }) : listResponse()));
+    render(<SkillLibraryDialog onClose={vi.fn()} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    await screen.findByText("Careful editor");
+    fireEvent.click(screen.getByRole("button", { name: "Open Careful editor" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Skills" }));
+    expect(screen.queryByLabelText("Instructions")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Careful editor" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Verify every claim twice." } });
+    for (const name of ["Back to Skills", "Cancel", "Open Action closer", "New Skill"]) {
+      fireEvent.click(screen.getByRole("button", { name }));
+      const confirmation = await screen.findByRole("dialog", { name: "Unsaved Skill changes" });
+      fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+      expect(screen.getByLabelText("Instructions")).toHaveValue("Verify every claim twice.");
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Open Action closer" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Unsaved Skill changes" }))
+      .getByRole("button", { name: "Confirm discard changes" }));
+    expect(await screen.findByText("End with a short action list.")).toBeVisible();
+    expect(screen.queryByLabelText("Instructions")).toBeNull();
+  });
+
+  it("holds chat navigation until a dirty Skill dialog draft is discarded", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => listResponse()));
+    const proceed = vi.fn();
+    requestSkillDialogNavigation(proceed);
+    expect(proceed).toHaveBeenCalledOnce();
+    proceed.mockClear();
+    render(<SkillLibraryDialog onClose={vi.fn()} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    await screen.findByText("Careful editor");
+    fireEvent.click(screen.getByRole("button", { name: "New Skill" }));
+    requestSkillDialogNavigation(proceed);
+    expect(proceed).toHaveBeenCalledOnce();
+    proceed.mockClear();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Unsaved" } });
+    act(() => requestSkillDialogNavigation(proceed));
+    const confirmation = await screen.findByRole("dialog", { name: "Unsaved Skill changes" });
+    expect(proceed).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+    expect(proceed).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Name")).toHaveValue("Unsaved");
+    act(() => requestSkillDialogNavigation(proceed));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Unsaved Skill changes" }))
+      .getByRole("button", { name: "Confirm discard changes" }));
+    expect(proceed).toHaveBeenCalledOnce();
+  });
+
+  it("reports an unsaved section editor to the enclosing Studio guard", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => listResponse()));
+    const onDirtyChange = vi.fn();
+    const { unmount } = render(<SkillLibrarySection onDirtyChange={onDirtyChange} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    await screen.findByText("Careful editor");
+    fireEvent.click(screen.getByRole("button", { name: "New Skill" }));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Unsaved" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    unmount();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 
   it("shows each import outcome, skipped files, and the unchanged selection", async () => {

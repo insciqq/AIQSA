@@ -180,6 +180,7 @@ import {
   type ChatRouteResolution,
   type ChatRouteTargets
 } from "@/components/app-shell/chatRoute";
+import { requestSkillDialogNavigation } from "@/components/skills/SkillLibraryDialog";
 import { formatChatRoutePath } from "@/lib/domain/chatRoute";
 import type { ProjectDetailWire } from "@/lib/contracts/projects";
 import type { ComposerConfigKnowledgeBase } from "@/lib/contracts/composerConfig";
@@ -1360,8 +1361,11 @@ export function PowerAppShellV2({
       if (studio.busy) return;
       const studioOpen = !projectContext &&
         Boolean(librarySnapshot.open || knowledgeSnapshot.open || memoryOpen);
-      if (studioOpen) studio.exit(proceed);
-      else proceed();
+      // An open Skill dialog is keyed by the chat and would drop its unsaved draft.
+      requestSkillDialogNavigation(() => {
+        if (studioOpen) studio.exit(proceed);
+        else proceed();
+      });
     },
     resolve(route, resolution) {
       void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
