@@ -239,6 +239,38 @@ describe("thread actions", () => {
     });
   });
 
+  it("adopts the chat revision returned by a message deletion without rewinding a newer copy", async () => {
+    let chatUpdatedAt = "2026-06-12T00:00:09.000Z";
+    const fetchMock = vi.fn(async () => Response.json({
+      message: {
+        activeLeafMessageId: null,
+        chatId: "chat-b",
+        chatUpdatedAt,
+        deleted: true,
+        deletedMessageIds: ["message-1", "message-2"],
+        id: "message-1"
+      }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, chats } = createActionsForTest();
+
+    await actions.deleteMessage("message-1");
+    // Deleting the active leaf bumps the server revision; the summary follows
+    // it, so revision-keyed readers such as the branch graph stop at one fetch.
+    expect(chats()[0]).toMatchObject({
+      activeLeafMessageId: null,
+      messageCount: 0,
+      updatedAt: "2026-06-12T00:00:09.000Z"
+    });
+
+    useWorkspaceStore.setState((state) => ({
+      chats: state.chats.map((chat) => ({ ...chat, messageCount: 2, updatedAt: "2026-06-12T00:01:00.000Z" }))
+    }));
+    chatUpdatedAt = "2026-06-12T00:00:30.000Z";
+    await actions.deleteMessage("message-1");
+    expect(chats()[0]?.updatedAt).toBe("2026-06-12T00:01:00.000Z");
+  });
+
   it("keeps the message untouched when the delete confirmation is declined", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

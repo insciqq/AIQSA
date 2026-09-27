@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -1128,6 +1128,101 @@ describe("Navigation v2", () => {
     view.rerender(<NavigationSidebar {...props} error={null} loading={false} />);
     fireEvent.click(screen.getByRole("button", { name: "Show earlier" }));
     expect(props.onLoadMore).toHaveBeenCalledTimes(2);
+  });
+
+  describe("first-page liveness", () => {
+    // Unmount before the shared store reset so a mounted container cannot
+    // start a real request against the reset store.
+    afterEach(() => cleanup());
+    const listRequests = (fetchMock: { mock: { calls: unknown[][] } }) =>
+      fetchMock.mock.calls.filter((call) => String(call[0]).startsWith("/api/chats/compact")).length;
+    const flush = async (ms = 0) => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    };
+    const page = () => Response.json({ chats, folders: [], nextCursor: null });
+    const renderContainer = () => render(
+      <NavigationSidebarContainer onClose={vi.fn()} onNewChat={vi.fn()} onSelectChat={vi.fn()} now={now} />
+    );
+
+    it("keeps a steady error through a bounded retry sequence after HTTP 500, then reloads on an explicit retry", async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
+      const fetchMock = vi.fn(async () => Response.json({ error: "chat_navigation_failed" }, { status: 500 }));
+      vi.stubGlobal("fetch", fetchMock);
+      renderContainer();
+      await flush();
+      expect(listRequests(fetchMock)).toBe(1);
+      expect(screen.getByText("Could not load chats")).toBeVisible();
+
+      await flush(60_000);
+      // One automatic retry per backoff step, never a back-to-back loop.
+      expect(listRequests(fetchMock)).toBe(5);
+      await flush(10 * 60_000);
+      expect(listRequests(fetchMock)).toBe(5);
+      // The error state never flashes back to the skeleton between attempts.
+      expect(screen.queryByLabelText("Loading chats")).toBeNull();
+      expect(screen.getByText("Could not load chats")).toBeVisible();
+
+      fetchMock.mockImplementation(async () => page());
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      await flush();
+      expect(listRequests(fetchMock)).toBe(6);
+      expect(screen.getByRole("treeitem", { name: "Selected brief" })).toBeVisible();
+      await flush(10 * 60_000);
+      expect(listRequests(fetchMock)).toBe(6);
+    });
+
+    it("keeps the retry control busy but labelled while an automatic retry is in flight", async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
+      let finish: ((response: Response) => void) | undefined;
+      const fetchMock = vi.fn(async () => Response.json({ error: "chat_navigation_failed" }, { status: 500 }));
+      vi.stubGlobal("fetch", fetchMock);
+      renderContainer();
+      await flush();
+      fetchMock.mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
+      await flush(2_000);
+      expect(listRequests(fetchMock)).toBe(2);
+      const retry = screen.getByRole("button", { name: "Retry" });
+      expect(retry).toHaveAttribute("aria-busy", "true");
+      fireEvent.click(retry);
+      await flush();
+      // A duplicate retry is rejected while the automatic one is in flight.
+      expect(listRequests(fetchMock)).toBe(2);
+      finish?.(page());
+      await flush();
+      expect(screen.getByRole("treeitem", { name: "Selected brief" })).toBeVisible();
+    });
+
+    it("waits offline without timers and reloads when the connection returns or the window regains focus", async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
+      const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+      const fetchMock = vi.fn(async (): Promise<Response> => { throw new TypeError("Failed to fetch"); });
+      vi.stubGlobal("fetch", fetchMock);
+      renderContainer();
+      await flush();
+      expect(listRequests(fetchMock)).toBe(1);
+      await flush(10 * 60_000);
+      expect(listRequests(fetchMock)).toBe(1);
+      expect(screen.getByText("Could not load chats")).toBeVisible();
+
+      // Focus is an explicit retry event even while the browser reports offline.
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      await flush();
+      expect(listRequests(fetchMock)).toBe(2);
+      expect(screen.getByText("Could not load chats")).toBeVisible();
+
+      online.mockReturnValue(true);
+      fetchMock.mockImplementation(async () => page());
+      act(() => { window.dispatchEvent(new Event("online")); });
+      await flush();
+      expect(listRequests(fetchMock)).toBe(3);
+      expect(screen.getByRole("treeitem", { name: "Selected brief" })).toBeVisible();
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      await flush(10 * 60_000);
+      expect(listRequests(fetchMock)).toBe(3);
+    });
   });
 
   it("reconciles local run start and settlement with the server summary cue", () => {

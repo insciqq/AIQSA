@@ -22,14 +22,14 @@ describe("chat title metadata", () => {
     expect(chatTitlePending({ ...chat, titleGeneration: { ...chat.titleGeneration, status: "dispatched", expiresAt: new Date(0), dispatchedAt: new Date() } })).toBe(true);
   });
 
-  it("returns only an authorized personal title and pending flag with no cached or internal projection", async () => {
-    const findFirst = vi.fn(async () => chat);
+  it("returns only an authorized personal title, pending flag and chat revision with no cached or internal projection", async () => {
+    const findFirst = vi.fn(async () => ({ ...chat, updatedAt: new Date("2026-09-27T10:00:00.000Z") }));
     const handler = createGetChatTitleHandler({
       client: { chat: { findFirst } } as unknown as Pick<PrismaClient, "chat">,
       resolveAuth: async () => auth
     });
     const response = await handler(new Request("https://app.test/api/chats/chat/title"), { params: Promise.resolve({ chatId: "chat" }) });
-    expect(await response.json()).toEqual({ pending: true, title: "Question" });
+    expect(await response.json()).toEqual({ pending: true, title: "Question", updatedAt: "2026-09-27T10:00:00.000Z" });
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: { archived: false, id: "chat", permanentDeletionAt: null, projectId: null, userId: "owner" }

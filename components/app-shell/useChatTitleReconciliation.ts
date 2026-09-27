@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
 import type { WorkspaceChatSummary } from "./types";
 import { shellFetch, subscribeToSessionExpired } from "./shellApi";
-import { useWorkspaceStore } from "./workspaceStore";
+import { laterRevision, useWorkspaceStore } from "./workspaceStore";
 
 /** A bounded metadata refresh survives navigation and never owns a run or its
- * stream. Only the title is merged, leaving current controls/history intact. */
+ * stream. Only the title and the chat revision its write produced are merged,
+ * leaving current controls/history intact. */
 export function useChatTitleReconciliation(input: Readonly<{
   accountId: string;
   chats: readonly WorkspaceChatSummary[];
@@ -53,8 +54,16 @@ export function useChatTitleReconciliation(input: Readonly<{
             if (!currentChat?.titlePending || currentChat.projectId || currentChat.title !== before.title) continue;
             const title = value.title;
             const titlePending = value.pending;
+            // The title write advances the server chat revision; merging it
+            // keeps revision-keyed readers (branch graph) from chasing it.
+            const updatedAt = "updatedAt" in value && typeof value.updatedAt === "string" ? value.updatedAt : null;
             useWorkspaceStore.setState((state) => ({
-              chats: state.chats.map((chat) => chat.id === chatId ? { ...chat, title, titlePending } : chat),
+              chats: state.chats.map((chat) => chat.id === chatId ? {
+                ...chat,
+                title,
+                titlePending,
+                ...(updatedAt ? { updatedAt: laterRevision(chat.updatedAt, updatedAt) } : {})
+              } : chat),
               navigationChats: state.navigationChats.map((chat) => chat.id === chatId ? { ...chat, title } : chat),
               navigationSearchChats: state.navigationSearchChats.map((chat) => chat.id === chatId ? { ...chat, title } : chat)
             }));

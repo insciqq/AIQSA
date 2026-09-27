@@ -18,6 +18,7 @@ export type WorkspaceSnapshot = {
   chats: WorkspaceChatSummary[];
   creatingChat: boolean;
   folders: FolderSummary[];
+  navigationAttempted: boolean;
   navigationChats: ChatNavigationSummaryWire[];
   navigationError: string | null;
   navigationFolders: ChatNavigationFolderWire[];
@@ -75,6 +76,7 @@ export const initialWorkspaceSnapshot: WorkspaceSnapshot = {
   chats: [],
   creatingChat: false,
   folders: [],
+  navigationAttempted: false,
   navigationChats: [],
   navigationError: null,
   navigationFolders: [],
@@ -164,6 +166,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   },
   applyNavigationPage(page, append) {
     set((state) => ({
+      navigationAttempted: true,
       navigationChats: mergeNavigationChats(state.navigationChats, page.chats, append),
       navigationError: null,
       navigationFolders: mergeNavigationFolders(
@@ -192,7 +195,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     set({ navigationError: value });
   },
   setNavigationLoading(value) {
-    set({ navigationLoading: value });
+    // A started request (like an applied page) marks the list attempted; the
+    // sidebar never auto-loads it again, so failures wait for a retry event.
+    set(value ? { navigationAttempted: true, navigationLoading: true } : { navigationLoading: false });
   },
   setNavigationSearchError(value) {
     set({ navigationSearchError: value });
@@ -282,6 +287,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     }));
   }
 }));
+
+/** Server revisions only move forward: a lagging response never rewinds a newer copy. */
+export function laterRevision(current: string, incoming: string): string {
+  const currentTime = Date.parse(current);
+  const incomingTime = Date.parse(incoming);
+  if (!Number.isFinite(incomingTime)) return current;
+  return Number.isFinite(currentTime) && currentTime >= incomingTime ? current : incoming;
+}
 
 export function workspaceNavigationChats(chats: readonly WorkspaceChatSummary[]): WorkspaceChatSummary[] {
   return chats.filter(
