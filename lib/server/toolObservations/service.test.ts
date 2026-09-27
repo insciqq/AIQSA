@@ -16,7 +16,7 @@ import { createToolObservationService, type ToolObservationRepository } from "./
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider,
   observationRestoreRefused, observationWholeDeliveryBatches, restoreObservedResult, wholeDeliveryAllowance } from "./sourceAdapters";
 import { settleableToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
-import { boundedRenderedSearchToolResultText, boundedRetainedSearchToolResultText, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultText,
+import { boundedRenderedSearchToolResultText, boundedRetainedSearchToolResultText, boundedSearchToolResultText, LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_TOOL_RESULT_VERSION, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultText,
   type SearchExecutionEvidence } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 import { fitDurableSearchToolResult, SearchToolCancelledError } from "../search/toolExecutor";
@@ -424,7 +424,7 @@ describe("accepted observation source adapters", () => {
       status: "complete", sources: [{ rank: 1, title: `Title ${index}`, url: `https://example.com/${index}`, snippet: `Accepted snippet ${index}` }],
       usage: { inputTokens: 10 * index, outputTokens: index, totalTokens: 11 * index } }));
     return { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
-      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+      rawPreview: { providerCall: true, searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: executions } };
   };
   const sources = [1, 2, 3].map(index => ({ optionId: `option-${index}`, revisionId: `revision-${index}` }));
 
@@ -483,7 +483,7 @@ describe("accepted observation source adapters", () => {
     expect(result.content).toEqual([{ type: "text", text: searchToolResultText(executions) }]);
     expect(result).not.toHaveProperty("usage");
     const visible = JSON.stringify(projectObservationForProvider(result).content);
-    expect(visible).toContain("1. Title 1 — https://example.com/1");
+    expect(visible).toContain("[1] Title 1 — https://example.com/1");
     expect(visible).toContain(result.observation!.handle);
     for (const field of internalSearchFields) expect(visible).not.toContain(field);
     // The checkpoint keeps the same text and descriptor, never the compact original.
@@ -510,7 +510,7 @@ describe("accepted observation source adapters", () => {
       }),
       usage: { inputTokens: 10 * index, outputTokens: index, totalTokens: 11 * index } }));
     const off: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
-      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+      rawPreview: { providerCall: true, searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: executions } };
     await captureSearchObservation({ service: f.service(), producer }, call, sources, async () => off);
     // Both paths persist one SearchRun per execution from these sources.
     const accounted = await f.service().searchAccounting(producer);
@@ -529,21 +529,20 @@ describe("accepted observation source adapters", () => {
     // Off would have dropped these engines; the model receives their canonical
     // text within a bounded budget, every numbered source and the reader.
     expect(text.startsWith('Search source "Source 1":\nzzz')).toBe(true);
-    expect(text).toContain("Findings shortened here");
-    expect(text).toContain("Sources:\n1. Title 1 — https://example.com/1\n2. Title 2 — https://example.com/2\n3. Title 3 — https://example.com/3");
+    for (const index of [1, 2, 3]) {
+      expect(text).toContain(`the complete saved result remains readable.]\n\nSources for "Source ${index}":\n[1] Title ${index} — https://example.com/${index}`);
+    }
     expect(text).not.toContain("rare-search-1");
     expect(Buffer.byteLength(text)).toBeLessThan(80 * 1024);
     for (const field of internalSearchFields) expect(JSON.stringify(result)).not.toContain(field);
     expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
-    // A restore has only the retained text and the receipt: it bounds that
-    // same text and keeps the receipt's numbered sources.
+    // A restore has only the retained text and the receipt: it recovers each
+    // engine's findings by the receipt's numbered sources and bounds them as
+    // the live projection did.
     const restored = await restoreObservedResult({ service: f.service(), producer }, call);
     const restoredText = restored.content[0]?.type === "text" ? restored.content[0].text : "";
     expect(restored).toMatchObject({ status: "complete", observation: result.observation });
-    expect(restoredText.startsWith('Search source "Source 1":\nzzz')).toBe(true);
-    expect(restoredText).toContain("Search result shortened here");
-    expect(restoredText.endsWith("Sources:\n1. Title 1 — https://example.com/1\n2. Title 2 — https://example.com/2\n3. Title 3 — https://example.com/3"))
-      .toBe(true);
+    expect(restoredText).toBe(text);
     expect(snapshotToolExecutionResult(restored, 256 * 1024)).not.toBeNull();
     for (const field of internalSearchFields) expect(JSON.stringify(restored)).not.toContain(field);
     const tail = (await f.service().read(producer, { handle: result.observation!.handle, query: "rare-search-3" })).fragment;
@@ -566,7 +565,7 @@ describe("accepted observation source adapters", () => {
         url: `https://example.com/${index}/${rank}/${"p".repeat(900)}`, snippet: "s".repeat(1900) })),
       usage: { inputTokens: index, outputTokens: 1, totalTokens: index + 1 } }));
     const receipt = searchObservationReceipt({ callId: call.id, name: call.name, status: "complete",
-      content: searchToolResultContent(executions), rawPreview: { searchResultVersion: 2, searchExecutions: executions } });
+      content: searchToolResultContent(executions), rawPreview: { searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: executions } });
     expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(SEARCH_OBSERVATION_RECEIPT_BYTES);
     expect(receipt.executions.map(execution => execution.usage.totalTokens)).toEqual([2, 3, 4]);
     expect(receipt.executions.every(execution => execution.sources.every(source => source.snippet === undefined))).toBe(true);
@@ -734,7 +733,7 @@ describe("accepted observation source adapters", () => {
         usage: { inputTokens: 10 * index, outputTokens: index, totalTokens: 11 * index } };
     });
     return { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
-      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+      rawPreview: { providerCall: true, searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: executions } };
   };
 
   it("retains three 1 MiB Search findings whole behind a bounded projection and reads each tail without searching again", async () => {
@@ -746,7 +745,9 @@ describe("accepted observation source adapters", () => {
     expect(f.row().byteSize).toBeLessThanOrEqual(SEARCH_OBSERVATION_MAX_BYTES);
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text).toContain("Findings shortened here");
-    expect(text).toContain("Sources:\n1. Title 1 — https://example.com/1\n2. Title 2 — https://example.com/2\n3. Title 3 — https://example.com/3");
+    for (const index of [1, 2, 3]) {
+      expect(text).toContain(`\n\nSources for "Source ${index}":\n[1] Title ${index} — https://example.com/${index}`);
+    }
     expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
     for (const index of [1, 2, 3]) {
       const read = await f.service().read(producer, { handle: result.observation!.handle, query: `rare-search-${index}` });
@@ -867,7 +868,7 @@ describe("observed MCP and Workspace projections match Off", () => {
     expect(preview).toMatchObject({ artifacts: shell.artifacts, rawPreview: shell.rawPreview, observation: { sourceTruncated: true } });
   });
 
-  it("restores a Search result above the persisted bound with every numbered receipt source and its warnings", async () => {
+  it("restores a version 2 Search result above the persisted bound with every numbered receipt source and its warnings", async () => {
     const f = fixture();
     const executions: SearchExecutionEvidence[] = [1, 2, 3].map((index): SearchExecutionEvidence => index === 3
       ? { displayName: "Source 3", invocationId: "invocation-3", modelId: "model", optionId: "option-3", provider: "provider",
@@ -879,8 +880,8 @@ describe("observed MCP and Workspace projections match Off", () => {
           url: `https://example.com/${index}/${rank}`, snippet: `Snippet ${index}-${rank}` })),
         usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 } });
     const search: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete",
-      content: searchToolResultContent(executions), rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
-    const canonical = searchToolResultText(executions);
+      content: searchToolResultContent(executions, LEGACY_SEARCH_TOOL_RESULT_VERSION), rawPreview: { providerCall: true, searchResultVersion: LEGACY_SEARCH_TOOL_RESULT_VERSION, searchExecutions: executions } };
+    const canonical = searchToolResultText(executions, LEGACY_SEARCH_TOOL_RESULT_VERSION);
     const tail = canonical.slice(canonical.lastIndexOf("\n\nSources:\n") + 2);
     expect(tail).toContain("12. Title 2-5 — https://example.com/2/5");
     expect(tail).toMatch(/\n\nSearch warnings: "Source 3": search_timeout$/u);
@@ -897,17 +898,65 @@ describe("observed MCP and Workspace projections match Off", () => {
     expect(snapshotToolExecutionResult(restored, 256 * 1024)).not.toBeNull();
   });
 
-  it("bounds rendered Search text only when the receipt names its exact source list", () => {
+  it("bounds rendered version 2 Search text only when the receipt names its exact source list", () => {
     const executions: SearchExecutionEvidence[] = [{ displayName: "Source", invocationId: "invocation", modelId: null,
       optionId: "option", provider: "provider", revisionId: "revision", findings: "f".repeat(4096), status: "complete",
       sources: [1, 2].map(rank => ({ rank, title: `Title ${rank}`, url: `https://example.com/${rank}` })),
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }];
-    const text = searchToolResultText(executions);
+    const text = searchToolResultText(executions, LEGACY_SEARCH_TOOL_RESULT_VERSION);
     const bounded = boundedRenderedSearchToolResultText(text, executions, 1024);
     expect(bounded).toContain("Search result shortened here");
     expect(bounded?.endsWith("\n\nSources:\n1. Title 1 — https://example.com/1\n2. Title 2 — https://example.com/2")).toBe(true);
     const trimmed = [{ ...executions[0]!, sources: executions[0]!.sources.slice(0, 1) }];
     expect(boundedRenderedSearchToolResultText(text, trimmed, 1024)).toBeNull();
+    expect(boundedRenderedSearchToolResultText(`${text}\n\nforged trailer`, executions, 1024)).toBeNull();
+  });
+
+  it("restores a Search above the persisted bound with each engine's own numbered sources and its warnings", async () => {
+    const f = fixture();
+    const executions: SearchExecutionEvidence[] = [1, 2, 3].map((index): SearchExecutionEvidence => index === 3
+      ? { displayName: "Source 3", invocationId: "invocation-3", modelId: "model", optionId: "option-3", provider: "provider",
+        revisionId: "revision-3", failure: { code: "search_timeout" }, sources: [], status: "error",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
+      : { displayName: `Source ${index}`, invocationId: `invocation-${index}`, modelId: "model", optionId: `option-${index}`,
+        provider: "provider", revisionId: `revision-${index}`, findings: `${unique(128 * 1024 - 40, `search-${index}`)} rare-search-${index} [15]`,
+        status: "complete", sources: Array.from({ length: 6 }, (_, rank) => ({ ...(index === 1 ? { citation: rank + 10 } : {}),
+          rank: rank + 1, title: `Title ${index}-${rank}`, url: `https://example.com/${index}/${rank}`, snippet: `Snippet ${index}-${rank}` })),
+        usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 } });
+    const search: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
+      rawPreview: { providerCall: true, searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: executions } };
+    const live = await captureSearchObservation({ service: f.service(), producer }, call,
+      [1, 2, 3].map(index => ({ optionId: `option-${index}`, revisionId: `revision-${index}` })), async () => search);
+    expect(f.row().byteSize).toBeGreaterThan(256 * 1024);
+    // The receipt keeps the citation numbers the restore renders.
+    expect((await f.service().searchAccounting(producer))[0]?.sources.map(source => source.citation)).toEqual([10, 11, 12, 13, 14, 15]);
+    const restored = await restoreObservedResult({ service: f.service(), producer }, call);
+    const text = restored.content[0]?.type === "text" ? restored.content[0].text : "";
+    expect(restored).toMatchObject({ status: "complete", observation: live.observation });
+    expect(text).toBe(live.content[0]?.type === "text" ? live.content[0].text : null);
+    expect(text).toContain(`Sources for "Source 1":\n${[10, 11, 12, 13, 14, 15].map((number, rank) =>
+      `[${number}] Title 1-${rank} — https://example.com/1/${rank}`).join("\n")}\n\nSearch source "Source 2":\n`);
+    expect(text).toMatch(/\n\nSources for "Source 2":\n\[1\] Title 2-0 — https:\/\/example\.com\/2\/0\n(?:.+\n){4}\[6\] Title 2-5 — https:\/\/example\.com\/2\/5\n\nSearch warnings: "Source 3": search_timeout$/u);
+    expect(text.match(/Findings shortened here/gu)).toHaveLength(2);
+    expect(text).not.toContain("rare-search-");
+    expect(snapshotToolExecutionResult(restored, 256 * 1024)).not.toBeNull();
+  });
+
+  it("bounds rendered Search text only when the receipt renders each engine's exact sources", () => {
+    const executions: SearchExecutionEvidence[] = ["A", "B"].map(name => ({ displayName: name, invocationId: `invocation-${name}`,
+      modelId: null, optionId: `option-${name}`, provider: "provider", revisionId: `revision-${name}`, findings: `${name} `.repeat(2048),
+      status: "complete", sources: [1, 2].map(rank => ({ citation: rank * 7, rank, title: `Title ${name}${rank}`, url: `https://example.com/${name}/${rank}` })),
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }));
+    const text = searchToolResultText(executions);
+    const bounded = boundedRenderedSearchToolResultText(text, executions, 1024);
+    expect(bounded).toBe(boundedSearchToolResultText(executions, 1024));
+    expect(bounded).toContain('\n\nSources for "A":\n[7] Title A1 — https://example.com/A/1\n[14] Title A2 — https://example.com/A/2\n\nSearch source "B":\n');
+    expect(bounded?.endsWith('\n\nSources for "B":\n[7] Title B1 — https://example.com/B/1\n[14] Title B2 — https://example.com/B/2')).toBe(true);
+    expect(Buffer.byteLength(bounded!)).toBeLessThan(Buffer.byteLength(text));
+    const trimmed = [executions[0]!, { ...executions[1]!, sources: executions[1]!.sources.slice(0, 1) }];
+    expect(boundedRenderedSearchToolResultText(text, trimmed, 1024)).toBeNull();
+    const renumbered = [{ ...executions[0]!, sources: executions[0]!.sources.map(({ citation: _citation, ...source }) => source) }, executions[1]!];
+    expect(boundedRenderedSearchToolResultText(text, renumbered, 1024)).toBeNull();
     expect(boundedRenderedSearchToolResultText(`${text}\n\nforged trailer`, executions, 1024)).toBeNull();
   });
 });
@@ -999,7 +1048,7 @@ describe("observation review fixes: batch share, restore classification, Search 
     expect(observationRestoreRefused(await failure())).toBe(true);
   });
 
-  it("restores a Search above the bound with every retained numbered source after the receipt dropped them", async () => {
+  it("restores a version 2 Search above the bound with every retained numbered source after the receipt dropped them", async () => {
     const f = fixture();
     const call = { id: "search-call", name: "search_selected_engines", arguments: {} };
     const executions: SearchExecutionEvidence[] = [1, 2, 3].map(engine => ({ displayName: `Engine ${engine}`,
@@ -1010,13 +1059,13 @@ describe("observation review fixes: batch share, restore classification, Search 
         url: `https://example.com/${engine}/${rank}?q=${"u".repeat(1200)}`.slice(0, 1200),
         snippet: `Snippet ${engine}-${rank} ${"s".repeat(300)}`.slice(0, 300) })),
       usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } }));
-    const search: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
-      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+    const search: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions, LEGACY_SEARCH_TOOL_RESULT_VERSION),
+      rawPreview: { providerCall: true, searchResultVersion: LEGACY_SEARCH_TOOL_RESULT_VERSION, searchExecutions: executions } };
     const receipt = searchObservationReceipt(search);
     // The receipt stayed bounded by dropping snippets and trailing sources.
     expect(receipt.executions.some(execution => execution.sources.length < 20)).toBe(true);
     expect(receipt.executions.flatMap(execution => execution.sources).some(source => source.snippet)).toBe(false);
-    const canonical = searchToolResultText(executions);
+    const canonical = searchToolResultText(executions, LEGACY_SEARCH_TOOL_RESULT_VERSION);
     const tail = canonical.slice(canonical.lastIndexOf("\n\nSources:\n") + 2);
     expect(tail).toContain("\n24. Title");
     await captureSearchObservation({ service: f.service(), producer }, call,
@@ -1051,7 +1100,7 @@ describe("observation review fixes: batch share, restore classification, Search 
       optionId: "option-1", provider: "provider", revisionId: "revision-1", status: "complete", findings: "Findings",
       sources: [{ rank: 1, title: "Title", url: "https://example.com/1" }], usage: { inputTokens: 9, outputTokens: 3, totalTokens: 12 } }];
     const search: ToolExecutionResult = { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
-      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+      rawPreview: { providerCall: true, searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: executions } };
     f.repository.recordSearchReceipt.mockRejectedValueOnce(new Error("could not serialize access"));
     const unrecorded = vi.fn();
     const execute = vi.fn(async () => search);

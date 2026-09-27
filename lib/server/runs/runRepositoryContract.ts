@@ -14,6 +14,7 @@ import type { ChatWorkspaceState } from "../../contracts/workspace";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import type { CatalogAdapterKind } from "../../domain/catalog";
 import type { ModelRunStatus } from "../../contracts/runs";
+import type { ImageFailureEvidence } from "../images/errors";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelTokenPricing } from "../../domain/usage";
 import type { ResolvedEntitlements } from "../auth/entitlements";
@@ -619,7 +620,7 @@ export type RunRepository = {
   failRun(
     runId: string,
     assistantMessageId: string,
-    error: { code: string; message: string },
+    error: { code: string; imageFailure?: ImageFailureEvidence; message: string },
     options?: Readonly<{ recoveryTerminal?: boolean; workspaceClaimToken?: string }>
   ): Promise<boolean>;
   findOwnedChat(chatId: string, userId: string): Promise<RunOwnedChatRecord | null>;
@@ -810,7 +811,7 @@ export type RunRepository = {
     userId: string;
   }>): Promise<boolean>;
   settleRecoveredRunError(input: {
-    error: { code: string; message: string };
+    error: { code: string; imageFailure?: ImageFailureEvidence; message: string };
     outputEvents: RunOutputArtifactEvent[];
     providerResponseId?: string;
     runId: string;

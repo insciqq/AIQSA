@@ -20,8 +20,8 @@ import type {
 } from "../providers/types";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import {
+  boundedEngineSearchSources,
   normalizeSearchFindings,
-  normalizeSearchSources,
   type SearchSource
 } from "./evidence";
 import { validateSearchToolArguments } from "./query";
@@ -308,7 +308,7 @@ async function consumeProviderSearch(
   if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
   const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
   const sourceAttribution = result.sourceAttribution ?? "available";
-  const sources = normalizeSearchSources(result.sources, searchExecutionConfiguration(option).maxResults);
+  const sources = boundedEngineSearchSources(result.sources, searchExecutionConfiguration(option).maxResults);
   const providerSourcesUnavailable =
     sourceAttribution === "provider_unavailable" &&
     option.provider === "deepseek" &&

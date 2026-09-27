@@ -17,6 +17,9 @@ import { loadSkillTool, readSkillFileTool } from "../tools/skill";
 import { freezeSkillManifest } from "../skills/runManifest";
 import { artifactTool } from "../tools/artifact";
 import { mixedToolsImagePlan, openRouterMixedTools } from "@/tests/support/openRouterTools";
+import { imageGenerationTool } from "../tools/imageGeneration";
+import { ImageGenerationError } from "../providers/imageGeneration";
+import { imageFailureDiagnostic } from "../providers/imageFailure";
 import {
   MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
   MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
@@ -122,6 +125,8 @@ import { decodeContextCompactionStatus, type ContextSummary } from "../../contra
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
 type RecordRunUsageEventsInput = Parameters<RunRepository["recordRunUsageEvents"]>[0];
+/** The same failure must read identically on the recovery path (runRecovery.test.ts). */
+const IMAGE_RATE_LIMIT_MESSAGE = "Image generation failed because the image provider is limiting the request rate. The request was not repeated. Wait a minute before asking again. Any saved image remains in the chat.";
 type FailedRun = {
   assistantMessageId: string;
   error: { code: string; message: string };
@@ -2249,6 +2254,40 @@ describe("run execution", () => {
     expect(JSON.stringify(repository.persistedEvents)).not.toContain("LIVE_CODE_CANARY");
     expect(repository.persistedEvents.some(({ event }) => event.type === "artifact_generation")).toBe(false);
     expect(repository.completeRuns).toHaveLength(1);
+  });
+  it("ends the run with the image failure cause, keeps it with the failed call and never repeats the generation", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, imagePlan: mixedToolsImagePlan },
+      providerRequest: { ...base.providerRequest, imagePlan: mixedToolsImagePlan, tools: [imageGenerationTool(mixedToolsImagePlan)] } };
+    const repository = createRepository();
+    const rejected = JSON.stringify({ error: { code: "rate_limit_exceeded", message: "PRIVATE_PROVIDER_TEXT" } });
+    const execute = vi.fn(async (): Promise<never> => {
+      throw new ImageGenerationError("image_provider_http_error", 429, imageFailureDiagnostic(rejected, 429));
+    });
+    const images = { authorize: vi.fn(async () => true), execute, restore: vi.fn(async () => null),
+      withConversationPixels: vi.fn(async (request: ProviderRunRequest) => request) };
+    let dispatches = 0;
+    const adapter = createAdapter(async function* () {
+      dispatches++;
+      return providerResult({ finalText: "", toolCalls: [{ id: "image-call", name: "generate_image",
+        arguments: { prompt: "PRIVATE_PROMPT_TEXT", image_ids: [] } }] });
+    });
+
+    const events = parseSse(await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+      images: images as unknown as NonNullable<RunExecutionInput["images"]> }).text());
+
+    const imageFailure = { category: "rate_limit", code: "image_provider_http_error", httpStatus: 429 };
+    expect(execute).toHaveBeenCalledOnce();
+    expect(dispatches).toBe(1);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: { code: "image_generation_failed", imageFailure, message: IMAGE_RATE_LIMIT_MESSAGE } })]);
+    const [call] = [...repository.toolCalls.values()];
+    expect(call).toMatchObject({ toolName: "generate_image", state: "error" });
+    const stored = call!.result as { content: [{ text: string }] };
+    expect(JSON.parse(stored.content[0].text)).toMatchObject({ ok: false, error: { imageFailure, message: IMAGE_RATE_LIMIT_MESSAGE } });
+    expect(events.filter(event => event.type === "error")).toEqual([
+      { type: "error", data: { code: "image_generation_failed", message: IMAGE_RATE_LIMIT_MESSAGE } }]);
+    expect(JSON.stringify([repository.failedRuns, stored.content, events])).not.toMatch(/PRIVATE_PROVIDER_TEXT|PRIVATE_PROMPT_TEXT/);
   });
   it("aborts an in-flight artifact resource operation on Stop without another provider dispatch", async () => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });

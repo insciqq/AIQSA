@@ -19,7 +19,7 @@ import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
 import { observedFailure, observedFailureCode } from "../providers/providerObservability";
 
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
-import { imageDispatchMustStop } from "../images/errors";
+import { imageDispatchMustStop, imageGenerationFailure, type ImageFailureEvidence } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
@@ -454,15 +454,18 @@ function isRefreshableRun(control: Readonly<{ answerComplete?: true; recoverySet
 
 class ToolLoopRecoveryError extends Error {
   readonly report?: ProviderStreamSafetyReport;
+  readonly imageFailure?: ImageFailureEvidence;
 
   constructor(
     readonly code: string,
     message: string,
-    report?: ProviderStreamSafetyReport
+    report?: ProviderStreamSafetyReport,
+    imageFailure?: ImageFailureEvidence
   ) {
     super(message);
     this.name = "ToolLoopRecoveryError";
     if (report) this.report = report;
+    if (imageFailure) this.imageFailure = imageFailure;
   }
 }
 
@@ -578,13 +581,16 @@ function recoveryToolUnavailable(code: RecoveryToolUnavailableCode): Error {
 function toolExecutionErrorResult(
   call: ModelToolCall,
   error: unknown,
-  label: "Knowledge" | "Search" | "Tool" | "Workspace" = "Tool"
+  label: "Knowledge" | "Search" | "Tool" | "Workspace" = "Tool",
+  imageFailure?: Readonly<{ evidence: ImageFailureEvidence; message: string }>
 ): ToolExecutionResult {
   if (label === "Knowledge") return knowledgeSearchFailureToolResult(call, error);
   const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
-  const failure = executionFailure(error);
+  const failure = imageFailure
+    ? { ...executionFailure(error), message: imageFailure.message, imageFailure: imageFailure.evidence }
+    : executionFailure(error);
   const message = failure.message;
   return {
     callId: call.id,
@@ -778,7 +784,7 @@ function usageAttributionsWithoutAnswerRounds(
 async function settleToolLoopRecoveryError(
   deps: RunRecoveryDeps,
   run: CheckpointedToolLoopRun,
-  error: Readonly<{ code: string; message: string }>,
+  error: Readonly<{ code: string; imageFailure?: ImageFailureEvidence; message: string }>,
   usageAttributions: readonly RunUsageAttribution[],
   events: readonly ModelRunSseEvent[] = [],
   providerResponseId: string | null = run.providerResponseId
@@ -1995,8 +2001,9 @@ async function executePersistedToolCallInContext(
       ).catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "fail"));
     }
     if (signal.aborted) throw new ToolLoopRecoveryStopped();
-    if (call.name === IMAGE_GENERATION_TOOL_NAME && imageDispatchMustStop(error)) {
-      fatalToolError = new ToolLoopRecoveryError("image_generation_failed", "Image generation could not finish. The request was not repeated. Any saved image remains in the chat.");
+    const imageFailure = call.name === IMAGE_GENERATION_TOOL_NAME && imageDispatchMustStop(error) ? imageGenerationFailure(error) : undefined;
+    if (imageFailure) {
+      fatalToolError = new ToolLoopRecoveryError("image_generation_failed", imageFailure.message, undefined, imageFailure.evidence);
     }
     if (error instanceof McpAutoDiscoveryUnavailableError) {
       fatalToolError = new ToolLoopRecoveryError(error.code, error.message);
@@ -2009,7 +2016,8 @@ async function executePersistedToolCallInContext(
           ? "Knowledge"
           : context.searchExecutor && isRecoveredSearchCall(context, call.name)
             ? "Search"
-            : isRecoveredWorkspaceCall(context, call.name) ? "Workspace" : "Tool"
+            : isRecoveredWorkspaceCall(context, call.name) ? "Workspace" : "Tool",
+        imageFailure
       );
     }
   }
@@ -3284,7 +3292,8 @@ async function recoverCheckpointedToolLoop(
                 error instanceof Error ? error.message : "Recovered tool call failed."
               );
           return {
-            error: { code: failure.code, fatal: true, message: failure.message },
+            error: { code: failure.code, fatal: true, message: failure.message,
+              ...(failure.imageFailure ? { imageFailure: failure.imageFailure } : {}) },
             status: "error"
           };
         }
@@ -3368,7 +3377,8 @@ async function recoverCheckpointedToolLoop(
         outcome.failure.code,
         outcome.failure.streamSafetyReport?.message ??
           (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
-        outcome.failure.streamSafetyReport
+        outcome.failure.streamSafetyReport,
+        outcome.failure.imageFailure
       );
     }
     await tokenBuffer.flush();
@@ -3476,7 +3486,7 @@ async function recoverCheckpointedToolLoop(
     await settleToolLoopRecoveryError(
       deps,
       run,
-      { code: failure.code, message: failure.message },
+      { code: failure.code, message: failure.message, ...(failure.imageFailure ? { imageFailure: failure.imageFailure } : {}) },
       usageEvidenceTrusted ? allUsageAttributions() : [],
       [],
       currentProviderResponseId

@@ -6,7 +6,8 @@ import {
   providerAttachmentPreviewMediaType,
   usesNativePdfInput,
   providerAttachmentPreviewText,
-  providerAttachmentText
+  providerAttachmentText,
+  providerImageCaption
 } from "./attachmentPayload";
 import {
   conversationMessagesForRequest,
@@ -188,6 +189,8 @@ function latestUserContent(
 
   for (const attachment of request.attachments) {
     if (attachment.kind === "image" && request.modelCapabilities.vision) {
+      const caption = providerImageCaption(attachment);
+      if (caption) content.push({ text: caption, type: "text" });
       content.push(imageContent(attachment, options.preview));
       continue;
     }

@@ -21,6 +21,9 @@ import { runWithContext } from "../observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { observeProviderOperation } from "../providers/providerObservability";
+import { createOpenAIResponsesSearchAdapter } from "../providers/openaiResponsesSearch";
+import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouterPerplexitySearch";
+import { LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_TOOL_RESULT_VERSION } from "./toolResult";
 
 function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {}): NormalizedSearchPlanOption {
   return {
@@ -333,7 +336,7 @@ describe("Search plan tool router", () => {
     )).rejects.toThrow("search_tool_not_selected");
   });
 
-  it("fans one query out concurrently, shares query-only context, and merges duplicate URLs deterministically", async () => {
+  it("fans one query out concurrently, shares query-only context, and lists each engine's sources beside its findings", async () => {
     const requests: ProviderSearchRequest[] = [];
     const runOptions: Array<ProviderSearchOptions | undefined> = [];
     const first = option("first");
@@ -367,8 +370,13 @@ describe("Search plan tool router", () => {
       expect(JSON.stringify(request)).not.toContain("private system prompt");
     }
     const executions = searchExecutionsFromToolResult(result);
-    expect((result.content[0] as { text: string }).text.match(/https:\/\/example\.com\/shared/gu))
-      .toHaveLength(1);
+    // Each engine's findings are followed by that engine's own sources.
+    expect((result.content[0] as { text: string }).text).toBe([
+      'Search source "first":\nFinding from model-first',
+      'Sources for "first":\n[1] Source model-first — https://example.com/shared#one',
+      'Search source "second":\nFinding from model-second',
+      'Sources for "second":\n[1] Source model-second — https://example.com/shared#two'
+    ].join("\n\n"));
     expect(executions).toEqual(expect.arrayContaining([
       expect.objectContaining({ findings: "Finding from model-first" }),
       expect.objectContaining({ findings: "Finding from model-second" })
@@ -428,6 +436,155 @@ describe("Search plan tool router", () => {
     expect(serialized).not.toContain("private transcript");
     expect(serialized).not.toContain("private developer prompt");
     expect(serialized).not.toContain("private system prompt");
+  });
+
+  it("keeps every cited source past maxResults and numbers each engine's sources as its findings do", async () => {
+    const answerAdapter = runtime().adapter;
+    const openai = option("openai");
+    const perplexity = option("perplexity", {
+      config: { ...option("perplexity").config, modelDefaultParams: { provider: { order: ["perplexity"] }, temperature: 0 } },
+      modelId: "perplexity/sonar-pro-search",
+      protocol: "openrouter_perplexity_chat",
+      provider: "openrouter"
+    });
+    const browsed = Array.from({ length: 8 }, (_, index) => ({
+      title: `Browsed ${index}`, url: `https://example.com/browsed/${index}`
+    }));
+    const cited = Array.from({ length: 3 }, (_, index) => ({
+      title: `Cited ${index}`, type: "url_citation", url: `https://example.com/cited/${index}`
+    }));
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [openai, perplexity] },
+      runtimes: {
+        openai: { adapter: answerAdapter, responseTimeoutMs: 300_000, searchAdapter: createOpenAIResponsesSearchAdapter({
+          client: {
+            cancel: async () => ({}),
+            create: async () => ({
+              id: "resp-cited",
+              output: [{
+                action: { query: "bounded query", sources: browsed, type: "search" },
+                id: "ws-cited", status: "completed", type: "web_search_call"
+              }, {
+                content: [{ annotations: cited, text: "OpenAI findings.", type: "output_text" }],
+                role: "assistant", type: "message"
+              }],
+              status: "completed",
+              usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 }
+            }),
+            retrieve: async () => ({})
+          },
+          provider: "openai"
+        }) },
+        perplexity: { adapter: answerAdapter, responseTimeoutMs: 300_000, searchAdapter: createOpenRouterPerplexitySearchAdapter({
+          client: {
+            createChatCompletion: async () => ({
+              choices: [{ finish_reason: "stop", message: { content: "Fact [1]; later fact [15].", role: "assistant" } }],
+              citations: Array.from({ length: 15 }, (_, index) => `https://example.com/perplexity/${index + 1}`),
+              id: "or-cited", model: "perplexity/sonar-pro-search", object: "chat.completion",
+              usage: { completion_tokens: 5, prompt_tokens: 11 }
+            })
+          }
+        }) }
+      }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const [openaiExecution, perplexityExecution] = searchExecutionsFromToolResult(result);
+
+    expect(result.rawPreview?.searchResultVersion).toBe(SEARCH_TOOL_RESULT_VERSION);
+    // OpenAI: every cited page survives maxResults 8, first; browsed pages fill maxResults.
+    expect(openaiExecution?.sources.map((source) => source.url)).toEqual([
+      ...cited.map((source) => source.url),
+      ...browsed.map((source) => source.url)
+    ]);
+    expect(openaiExecution?.sources.map((source) => source.citation)).toEqual([1, 2, 3, ...Array(8).fill(undefined)]);
+    // Perplexity: all fifteen cited sources are kept with the provider's numbers.
+    expect(perplexityExecution?.sources).toHaveLength(15);
+    expect(perplexityExecution?.sources.at(-1)).toMatchObject({ citation: 15, url: "https://example.com/perplexity/15" });
+    // The model reads each engine's sources beside its findings, numbered as its findings number them.
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain([
+      'Search source "openai":\nOpenAI findings.',
+      `Sources for "openai":\n${[...cited, ...browsed].map((source, index) =>
+        `[${index + 1}] ${source.title} — ${source.url}`).join("\n")}`
+    ].join("\n\n"));
+    expect(text.endsWith([
+      'Search source "perplexity":\nFact [1]; later fact [15].',
+      `Sources for "perplexity":\n${Array.from({ length: 15 }, (_, index) =>
+        `[${index + 1}] Source ${index + 1} — https://example.com/perplexity/${index + 1}`).join("\n")}`
+    ].join("\n\n"))).toBe(true);
+    // The durable result still fits and replays the same text.
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toEqual(result);
+  });
+
+  it("does not spend browsed slots on pages OpenAI cites with its attribution parameter", async () => {
+    const browsed = Array.from({ length: 10 }, (_, index) => ({
+      title: `Browsed ${index}`, url: `https://example.com/browsed/${index}`
+    }));
+    // Two cited pages were also browsed; the third was only cited.
+    const cited = [0, 1].map((index) => ({
+      title: `Cited ${index}`, type: "url_citation", url: `https://example.com/browsed/${index}?utm_source=openai`
+    })).concat([{ title: "Cited only", type: "url_citation", url: "https://example.com/cited-only?utm_source=openai" }]);
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("openai")] },
+      runtimes: {
+        openai: { adapter: runtime().adapter, responseTimeoutMs: 300_000, searchAdapter: createOpenAIResponsesSearchAdapter({
+          client: {
+            cancel: async () => ({}),
+            create: async () => ({
+              id: "resp-attributed",
+              output: [{
+                action: { query: "bounded query", sources: browsed, type: "search" },
+                id: "ws-attributed", status: "completed", type: "web_search_call"
+              }, {
+                content: [{ annotations: cited, text: "OpenAI findings.", type: "output_text" }],
+                role: "assistant", type: "message"
+              }],
+              status: "completed",
+              usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 }
+            }),
+            retrieve: async () => ({})
+          },
+          provider: "openai"
+        }) }
+      }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const [execution] = searchExecutionsFromToolResult(result);
+
+    // Three cited pages first (the browsed ones under their clean URLs), then
+    // maxResults 8 distinct browsed pages.
+    expect(execution?.sources.map(({ citation, url }) => ({ citation, url }))).toEqual([
+      { citation: 1, url: "https://example.com/browsed/0" },
+      { citation: 2, url: "https://example.com/browsed/1" },
+      { citation: 3, url: "https://example.com/cited-only?utm_source=openai" },
+      ...browsed.slice(2).map(({ url }) => ({ citation: undefined, url }))
+    ]);
+  });
+
+  it("decodes and replays a saved version 2 Search result exactly as before", () => {
+    const first = { rank: 1, title: "First", url: "https://example.com/first" };
+    const second = { rank: 2, snippet: "Second snippet", title: "Second", url: "https://example.com/second" };
+    const execution = {
+      displayName: "Saved", findings: "Saved findings [2]", invocationId: "call-1:saved", modelId: "model-saved",
+      optionId: "saved", provider: "openrouter", revisionId: "revision-saved",
+      sources: [first, second],
+      status: "complete" as const, usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 }
+    };
+    const saved = { callId: "call-1", name: "search_engine_1", status: "complete" as const,
+      content: [{ type: "json" as const, value: { aiqsaType: "search_result", version: LEGACY_SEARCH_TOOL_RESULT_VERSION } }],
+      rawPreview: { searchExecutions: [execution], searchResultVersion: LEGACY_SEARCH_TOOL_RESULT_VERSION } };
+
+    const decoded = parsePersistedToolExecutionResult({ id: "call-1", name: "search_engine_1" }, saved);
+
+    expect(decoded?.content).toEqual([{ type: "text", text: [
+      'Search source "Saved":\nSaved findings [2]',
+      "Sources:\n1. First — https://example.com/first\n2. Second — https://example.com/second"
+    ].join("\n\n") }]);
+    expect(decoded && searchExecutionsFromToolResult(decoded)[0]?.sources).toEqual(execution.sources);
+    expect(decoded && snapshotToolExecutionResult(decoded, toolLoopPersistenceLimits.resultBytes)).toEqual(saved);
   });
 
   it("binds Anthropic query-only Search to its exact technical model without answer context", async () => {
