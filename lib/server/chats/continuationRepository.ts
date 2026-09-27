@@ -11,6 +11,7 @@ import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sour
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { boundedChatTitle } from "../../contracts/chats";
 import { CHAT_SUMMARY_LEASE_MS, ChatContinuationError, type ContinuationRepository, type ContinuationSource } from "./continuation";
 import type { StorageAdapter } from "../uploads/storage";
 import { WorkspaceRuntimeError, type WorkspaceOutputStream, type WorkspaceRuntime } from "../workspace/runtime";
@@ -344,7 +345,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         const messageId = randomUUID();
         const deadline = chat.memoryMode === "TEMPORARY" ? temporaryRetentionDeadline(new Date()) : null;
         await tx.chat.create({ data: {
-          id: newChatId, title: `Continued: ${chat.title}`.slice(0, 120),
+          id: newChatId, title: boundedChatTitle(`Continued: ${chat.title}`),
           defaultProviderModelId: operation.requestedProviderModelId ?? chat.defaultProviderModelId, memoryMode: chat.memoryMode,
           defaultKnowledgePlan: chat.defaultKnowledgePlan ?? Prisma.DbNull,
           defaultSearchPlan: chat.defaultSearchPlan ?? Prisma.DbNull,
