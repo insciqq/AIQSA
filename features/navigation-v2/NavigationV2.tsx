@@ -28,8 +28,11 @@ import {
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
+import { NameFieldFormV2, type NameSaveOutcome } from "./NameFieldFormV2";
 import {
   CHAT_NAVIGATION_QUERY_MAX_LENGTH,
+  CHAT_TITLE_MAX_LENGTH,
+  PERSONAL_FOLDER_NAME_MAX_LENGTH,
   type ChatNavigationFolderWire,
   type ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
@@ -85,7 +88,8 @@ export type NavigationSidebarProps = Readonly<{
   onChangeChatRename?(value: string): void;
   onChangeFolderRename?(value: string): void;
   onClose(): void;
-  onCreateFolder?(parentId: string | null, name: string): Promise<unknown> | unknown;
+  /** Resolves `ok: true` once stored; any other outcome keeps the typed name. */
+  onCreateFolder?(parentId: string | null, name: string): Promise<NameSaveOutcome> | NameSaveOutcome;
   /**
    * Direct permanent-deletion entry. Provided only while the server-verified
    * `permanentChatDeletionAvailable` capability holds; it opens the existing
@@ -123,8 +127,8 @@ export type NavigationSidebarProps = Readonly<{
   onNewChat(mode: NewChatMode): void;
   onRenameChat?(chat: ChatNavigationSummaryWire): void;
   onRenameFolder?(folder: ChatNavigationFolderWire): void;
-  onSaveChatRename?(chat: ChatNavigationSummaryWire): Promise<unknown> | unknown;
-  onSaveFolderRename?(folder: ChatNavigationFolderWire): Promise<unknown> | unknown;
+  onSaveChatRename?(chat: ChatNavigationSummaryWire): Promise<NameSaveOutcome> | NameSaveOutcome;
+  onSaveFolderRename?(folder: ChatNavigationFolderWire): Promise<NameSaveOutcome> | NameSaveOutcome;
   onRetry(): void;
   onSelectChat(chat: ChatNavigationSummaryWire): void;
   onShare?(chat: ChatNavigationSummaryWire): void;
@@ -230,7 +234,7 @@ function ChatRow({
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
   onRename?(chat: ChatNavigationSummaryWire): void;
-  onSaveRename?(chat: ChatNavigationSummaryWire): Promise<unknown> | unknown;
+  onSaveRename?(chat: ChatNavigationSummaryWire): Promise<NameSaveOutcome> | NameSaveOutcome;
   onShare?(chat: ChatNavigationSummaryWire): void;
   onSelect(chat: ChatNavigationSummaryWire): void;
 }) {
@@ -243,30 +247,21 @@ function ChatRow({
   const memoryUsed = (rowState?.memoryMode ?? "NORMAL") !== "EXCLUDED";
   if (editing) {
     return (
-      <form
+      <NameFieldFormV2
+        cancelLabel="Cancel rename"
         className="v2-chat-rename"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void onSaveRename?.(chat);
+        inputLabel={`New title: ${displayTitle}`}
+        maxLength={CHAT_TITLE_MAX_LENGTH}
+        saveLabel="Save title"
+        value={editingTitle ?? chat.title}
+        onCancel={onCancelRename}
+        onChange={(value) => onChangeRename?.(value)}
+        onEscape={(event) => {
+          event.stopPropagation();
+          onCancelRename?.();
         }}
-      >
-        <input
-          autoFocus
-          aria-label={`New title: ${displayTitle}`}
-          maxLength={120}
-          value={editingTitle ?? chat.title}
-          onChange={(event) => onChangeRename?.(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              onCancelRename?.();
-            }
-          }}
-        />
-        <UiV2IconButton icon="check" label="Save title" type="submit" />
-        <UiV2IconButton icon="close" label="Cancel rename" onClick={onCancelRename} />
-      </form>
+        onSave={() => onSaveRename?.(chat)}
+      />
     );
   }
   return (
@@ -379,27 +374,21 @@ function FolderGroup({
     <div className="v2-navigation-group" data-folder-id={folder.id} role="none">
       <div className="v2-folder-row" data-v2-tree-row="true" {...drop}>
         {editing ? (
-          <form className="v2-folder-rename" onSubmit={(event) => {
-            event.preventDefault();
-            void props.onSaveFolderRename?.(folder);
-          }}>
-            <input
-              autoFocus
-              aria-label={`New folder name: ${folder.name}`}
-              maxLength={80}
-              value={props.editingFolderName ?? folder.name}
-              onChange={(event) => props.onChangeFolderRename?.(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  props.onCancelFolderRename?.();
-                }
-              }}
-            />
-            <UiV2IconButton icon="check" label="Save folder" type="submit" />
-            <UiV2IconButton icon="close" label="Cancel" onClick={props.onCancelFolderRename} />
-          </form>
+          <NameFieldFormV2
+            cancelLabel="Cancel"
+            className="v2-folder-rename"
+            inputLabel={`New folder name: ${folder.name}`}
+            maxLength={PERSONAL_FOLDER_NAME_MAX_LENGTH}
+            saveLabel="Save folder"
+            value={props.editingFolderName ?? folder.name}
+            onCancel={props.onCancelFolderRename}
+            onChange={(value) => props.onChangeFolderRename?.(value)}
+            onEscape={(event) => {
+              event.stopPropagation();
+              props.onCancelFolderRename?.();
+            }}
+            onSave={() => props.onSaveFolderRename?.(folder)}
+          />
         ) : (
           <>
             <button
@@ -477,25 +466,22 @@ function FolderGroup({
       {open ? (
         <div className="v2-folder-children" role="group">
           {subfolderOpen ? (
-            <form className="v2-new-folder-inline" onSubmit={(event) => {
-              event.preventDefault();
-              if (!subfolderName.trim()) return;
-              void Promise.resolve(props.onCreateFolder?.(folder.id, subfolderName.trim())).then(() => {
+            <NameFieldFormV2
+              cancelLabel="Cancel"
+              className="v2-new-folder-inline"
+              inputLabel={`Subfolder name in ${folder.name}`}
+              maxLength={PERSONAL_FOLDER_NAME_MAX_LENGTH}
+              placeholder="Subfolder name"
+              saveLabel="Create subfolder"
+              value={subfolderName}
+              onCancel={() => setSubfolderOpen(false)}
+              onChange={setSubfolderName}
+              onSave={() => props.onCreateFolder?.(folder.id, subfolderName.trim())}
+              onSaved={() => {
                 setSubfolderName("");
                 setSubfolderOpen(false);
-              });
-            }}>
-              <input
-                autoFocus
-                aria-label={`Subfolder name in ${folder.name}`}
-                maxLength={80}
-                placeholder="Subfolder name"
-                value={subfolderName}
-                onChange={(event) => setSubfolderName(event.target.value)}
-              />
-              <UiV2IconButton icon="check" label="Create subfolder" type="submit" />
-              <UiV2IconButton icon="close" label="Cancel" onClick={() => setSubfolderOpen(false)} />
-            </form>
+              }}
+            />
           ) : null}
           {directChats.map((chat) => (
             <ChatRow
@@ -945,25 +931,22 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                   ) : null}
                 </div>
                 {props.onCreateFolder && newFolderOpen ? (
-                  <form className="v2-new-folder-inline" onSubmit={(event) => {
-                    event.preventDefault();
-                    if (!newFolderName.trim()) return;
-                    void Promise.resolve(props.onCreateFolder?.(null, newFolderName.trim())).then(() => {
+                  <NameFieldFormV2
+                    cancelLabel="Cancel"
+                    className="v2-new-folder-inline"
+                    inputLabel="New folder name"
+                    maxLength={PERSONAL_FOLDER_NAME_MAX_LENGTH}
+                    placeholder="Folder name"
+                    saveLabel="Create folder"
+                    value={newFolderName}
+                    onCancel={() => setNewFolderOpen(false)}
+                    onChange={setNewFolderName}
+                    onSave={() => props.onCreateFolder?.(null, newFolderName.trim())}
+                    onSaved={() => {
                       setNewFolderName("");
                       setNewFolderOpen(false);
-                    });
-                  }}>
-                    <input
-                      autoFocus
-                      aria-label="New folder name"
-                      maxLength={80}
-                      placeholder="Folder name"
-                      value={newFolderName}
-                      onChange={(event) => setNewFolderName(event.target.value)}
-                    />
-                    <UiV2IconButton icon="check" label="Create folder" type="submit" />
-                    <UiV2IconButton icon="close" label="Cancel" onClick={() => setNewFolderOpen(false)} />
-                  </form>
+                    }}
+                  />
                 ) : null}
                 {roots.map((folder) => (
                   <FolderGroup

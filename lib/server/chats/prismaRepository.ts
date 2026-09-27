@@ -1634,7 +1634,7 @@ export function createPrismaChatRepository(
       });
     },
     createFolder: async ({ name, parentId, userId }) => {
-      const trimmed = name.trim().slice(0, 60);
+      const trimmed = name.trim();
       if (!trimmed) {
         return null;
       }
@@ -2041,7 +2041,7 @@ export function createPrismaChatRepository(
       }));
     },
     updateFolder: async ({ defaultKnowledgePlan, folderId, name, parentId, projectMemory, userId }) => {
-      const trimmed = typeof name === "string" ? name.trim().slice(0, 60) : undefined;
+      const trimmed = typeof name === "string" ? name.trim() : undefined;
       if (typeof name === "string" && !trimmed) {
         return null;
       }
@@ -2416,7 +2416,7 @@ export function createPrismaChatRepository(
               ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
               ...(folderId !== undefined ? { projectFolderId: folderId } : {}),
               ...(pinned !== undefined ? { pinned } : {}),
-              ...(title ? { title: title.trim().slice(0, 80), titleRevision: { increment: 1 } } : {}),
+              ...(title ? { title: title.trim(), titleRevision: { increment: 1 } } : {}),
               ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
             },
             select: chatSummarySelect,
@@ -2516,7 +2516,7 @@ export function createPrismaChatRepository(
                   : {}),
                 ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
                 ...(pinned !== undefined ? { pinned } : {}),
-                ...(title ? { title: title.trim().slice(0, 80), titleRevision: { increment: 1 } } : {}),
+                ...(title ? { title: title.trim(), titleRevision: { increment: 1 } } : {}),
                 ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
               },
               select: chatSummarySelect,

@@ -6,6 +6,11 @@ import {
   requestBodyErrorResponse
 } from "../http/requestBody";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import {
+  CHAT_TITLE_MAX_LENGTH,
+  PERSONAL_FOLDER_NAME_MAX_LENGTH,
+  codePointLength
+} from "../../contracts/chats";
 import type {
   ChatDetailResponseWire,
   ChatDetailWire,
@@ -193,6 +198,14 @@ async function readJson<Wire extends object = Record<string, unknown>>(
 
 function textValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function chatTitleTooLong(title: string | null | undefined): boolean {
+  return typeof title === "string" && codePointLength(title) > CHAT_TITLE_MAX_LENGTH;
+}
+
+function folderNameTooLong(name: string | null | undefined): boolean {
+  return typeof name === "string" && codePointLength(name) > PERSONAL_FOLDER_NAME_MAX_LENGTH;
 }
 
 function folderValue(body: { folderId?: unknown } | null): string | null | undefined {
@@ -519,10 +532,14 @@ export function createCreateChatHandler(deps: ChatHandlerDeps) {
     if (!workspaceEnabled.ok) {
       return chatRouteErrorJson({ error: "workspace_state_invalid" }, { status: 400 });
     }
+    const title = textValue(body?.title);
+    if (chatTitleTooLong(title)) {
+      return chatRouteErrorJson({ error: "chat_title_too_long" }, { status: 400 });
+    }
     const chat = await deps.repository.createChat({
       folderId: body && "folderId" in body ? folderValue(body) : null,
       ...(memoryMode ? { memoryMode } : {}),
-      title: textValue(body?.title),
+      title,
       userId: result.session.userId,
       workspaceEnabled: workspaceEnabled.value
     });
@@ -562,6 +579,10 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     if (!defaultKnowledgePlan.ok) {
       return chatRouteErrorJson({ error: "knowledge_plan_invalid" }, { status: 400 });
     }
+    const title = textValue(body?.title);
+    if (chatTitleTooLong(title)) {
+      return chatRouteErrorJson({ error: "chat_title_too_long" }, { status: 400 });
+    }
     let chat: ChatSummaryRecord | null;
     try {
       chat = await deps.repository.updateChat({
@@ -571,7 +592,7 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
         ...(body && "defaultSearchPlan" in body ? { defaultSearchPlan: search?.ok ? search.plan : null } : {}),
         folderId: folderValue(body),
         pinned: pinnedValue(body),
-        title: textValue(body?.title),
+        title,
         userId: result.session.userId,
         workspaceEnabled: workspaceEnabled.value
       });
@@ -641,6 +662,9 @@ export function createCreateFolderHandler(deps: ChatHandlerDeps) {
     const name = textValue(body?.name);
     if (!name) {
       return Response.json({ error: "folder_name_required" }, { status: 400 });
+    }
+    if (folderNameTooLong(name)) {
+      return Response.json({ error: "folder_name_too_long" }, { status: 400 });
     }
 
     const folder = await deps.repository.createFolder({
@@ -718,6 +742,9 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
     }
     if (name !== undefined && !name) {
       return Response.json({ error: "folder_name_required" }, { status: 400 });
+    }
+    if (folderNameTooLong(name)) {
+      return Response.json({ error: "folder_name_too_long" }, { status: 400 });
     }
 
     const folder = await deps.repository.updateFolder({

@@ -13,6 +13,8 @@ import {
 import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { chatMenuActionsV2 } from "@/features/navigation-v2/chatMenuActions";
+import { NameFieldFormV2, type NameSaveOutcome } from "@/features/navigation-v2/NameFieldFormV2";
+import { CHAT_TITLE_MAX_LENGTH } from "@/lib/contracts/chats";
 import { useRef, useState, type ReactNode } from "react";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { ChatContextIndicatorV2 } from "./ChatContextIndicatorV2";
@@ -284,7 +286,8 @@ export function WorkspaceHeaderV2({
   renameDisabled?: boolean;
   onRenameCancel(): void;
   onRenameChange(value: string): void;
-  onRenameSave(): void;
+  /** Resolves `ok: true` once stored; otherwise the field keeps the typed title. */
+  onRenameSave(): Promise<NameSaveOutcome> | NameSaveOutcome;
   onRenameStart(): void;
   onShare(): void;
   shareDisabled: boolean;
@@ -330,29 +333,18 @@ export function WorkspaceHeaderV2({
         {/* The welcome screen keeps a quiet empty header: actions only. */}
         {active ? (
           editingTitle !== null ? (
-            <form
+            <NameFieldFormV2
+              cancelLabel="Cancel rename"
               className="v2-live-title-rename"
-              onSubmit={(event) => {
-                event.preventDefault();
-                onRenameSave();
-              }}
-            >
-              <input
-                autoFocus
-                aria-label={`New title: ${displayTitle}`}
-                maxLength={120}
-                value={editingTitle}
-                onChange={(event) => onRenameChange(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    onRenameCancel();
-                  }
-                }}
-              />
-              <UiV2IconButton icon="check" label="Save title" type="submit" />
-              <UiV2IconButton icon="close" label="Cancel rename" onClick={onRenameCancel} />
-            </form>
+              inputLabel={`New title: ${displayTitle}`}
+              maxLength={CHAT_TITLE_MAX_LENGTH}
+              saveLabel="Save title"
+              value={editingTitle}
+              onCancel={onRenameCancel}
+              onChange={onRenameChange}
+              onEscape={() => onRenameCancel()}
+              onSave={onRenameSave}
+            />
           ) : (
             <h1>
               {crumb ? (

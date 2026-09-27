@@ -9,6 +9,7 @@ import { fallbackCatalogModel } from "@/components/app-shell/controlDefaults";
 import {
   errorMessage,
   exportFileBaseName,
+  nameSaveFailure,
   responseErrorMessage
 } from "@/components/app-shell/shellFormatting";
 import { chatRouteForChat, chatSendUnderWay, writeChatRoute } from "@/components/app-shell/chatRoute";
@@ -17,6 +18,7 @@ import type {
   Catalog,
   CatalogModel,
   ChatDetail,
+  NameSaveResult,
   WorkspaceChatSummary,
   Notice,
   RunEventView,
@@ -1237,10 +1239,10 @@ export function useWorkspaceActions({
     }
   }
 
-  async function renameChat(chat: WorkspaceChatSummary) {
+  async function renameChat(chat: WorkspaceChatSummary): Promise<NameSaveResult> {
     const title = chatMutation.editingTitle.trim();
     if (!title) {
-      return;
+      return { fieldError: null, ok: false };
     }
 
     try {
@@ -1253,7 +1255,9 @@ export function useWorkspaceActions({
       });
 
       if (!response.ok) {
-        throw new Error(`chat_rename_failed_${response.status}`);
+        const failure = await nameSaveFailure(response, `chat_rename_failed_${response.status}`);
+        if (failure.fieldError) return { fieldError: failure.fieldError, ok: false };
+        throw new Error(failure.message);
       }
 
       const apiChat = decodeChatSummaryResponse(await response.json());
@@ -1265,11 +1269,13 @@ export function useWorkspaceActions({
       mergeChatIntoList(updated);
       chatMutation.finishEditing();
       setNotice(null);
+      return { ok: true };
     } catch (error) {
       setNotice({
         kind: "error",
         text: errorMessage(error)
       });
+      return { fieldError: null, ok: false };
     }
   }
 

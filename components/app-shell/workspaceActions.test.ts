@@ -615,6 +615,25 @@ describe("workspace actions", () => {
     expect(state.setNotice).toHaveBeenLastCalledWith(null);
   });
 
+  it("returns a too-long title rejection as a field error instead of a save or notice", async () => {
+    const state = useWorkspaceActionsForTest({
+      attachments: [],
+      draft: "",
+      editingTitle: "Rejected title"
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      Response.json({ error: "chat_title_too_long" }, { status: 400 })
+    ));
+
+    await expect(state.actions.renameChat(state.chatA)).resolves.toEqual({
+      fieldError: "Use at most 120 characters for the chat title (chat_title_too_long)",
+      ok: false
+    });
+    expect(state.chatMutation.finishEditing).not.toHaveBeenCalled();
+    expect(state.setNotice).not.toHaveBeenCalled();
+    expect(state.chats().find((candidate) => candidate.id === state.chatA.id)?.title).toBe("Chat A");
+  });
+
   it("archives chats with a functional list update so concurrent rows survive", async () => {
     const state = useWorkspaceActionsForTest({
       activeChatId: "chat-b",

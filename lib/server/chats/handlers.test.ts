@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { CHAT_TITLE_MAX_LENGTH, PERSONAL_FOLDER_NAME_MAX_LENGTH } from "@/lib/contracts/chats";
 import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
 import {
   createArchiveChatHandler,
   createCreateChatHandler,
+  createCreateFolderHandler,
   createDeleteFolderHandler,
   createGetChatBranchesHandler,
   createGetChatHandler,
@@ -38,6 +40,98 @@ const historyRepositoryMethods: Pick<
 };
 
 describe("chat route handlers", () => {
+  it("accepts names at the code-point limit intact and rejects longer ones without truncating", async () => {
+    const stored: string[] = [];
+    const summary = (id: string, title: string) => ({
+      activeLeafMessageId: null,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      defaultModelId: null,
+      defaultProvider: null,
+      folderId: null,
+      id,
+      messageCount: 0,
+      pinned: false,
+      title,
+      updatedAt: "2026-09-27T00:00:00.000Z"
+    });
+    const folderRecord = (id: string, name: string) => ({
+      id, name, parentId: null, projectMemory: "", sortOrder: 10
+    });
+    const repository: ChatRepository = {
+      ...historyRepositoryMethods,
+      archiveChat: async () => false,
+      createChat: async (input) => {
+        stored.push(input.title ?? "");
+        return summary("chat-1", input.title ?? "New Chat");
+      },
+      createFolder: async (input) => {
+        stored.push(input.name);
+        return folderRecord("folder-1", input.name);
+      },
+      deleteFolder: async () => false,
+      getChat: async () => null,
+      listWorkspace: async () => null,
+      searchChatContent: async () => [],
+      updateChat: async (input) => {
+        stored.push(input.title ?? "");
+        return summary(input.chatId, input.title ?? "Chat");
+      },
+      updateFolder: async (input) => {
+        stored.push(input.name ?? "");
+        return folderRecord(input.folderId, input.name ?? "Folder");
+      }
+    };
+    const deps = { repository, resolveAuth: auth.resolveAuth };
+    const request = (path: string, method: string, body: unknown) => new Request(`http://app.local${path}`, {
+      body: JSON.stringify(body),
+      headers: { cookie: authCookie() },
+      method
+    });
+    // One emoji is one code point but two UTF-16 units: the limit counts code
+    // points and a stored name keeps every submitted pair intact.
+    const emoji = "😀";
+    const title = `${"t".repeat(CHAT_TITLE_MAX_LENGTH - 2)}${emoji}${emoji}`;
+    const name = `${"f".repeat(PERSONAL_FOLDER_NAME_MAX_LENGTH - 1)}${emoji}`;
+    const longTitle = `${title}x`;
+    const longName = `${emoji}${name}`;
+
+    const created = await createCreateChatHandler(deps)(request("/api/chats", "POST", { title: ` ${title} ` }));
+    const renamed = await createUpdateChatHandler(deps)(
+      request("/api/chats/chat-1", "PATCH", { title }),
+      { params: { chatId: "chat-1" } }
+    );
+    const folder = await createCreateFolderHandler(deps)(request("/api/folders", "POST", { name }));
+    const folderRenamed = await createUpdateFolderHandler(deps)(
+      request("/api/folders/folder-1", "PATCH", { name }),
+      { params: { folderId: "folder-1" } }
+    );
+    expect([created.status, renamed.status, folder.status, folderRenamed.status]).toEqual([201, 200, 201, 200]);
+    expect(stored).toEqual([title, title, name, name]);
+    await expect(renamed.json()).resolves.toMatchObject({ chat: { title } });
+
+    stored.length = 0;
+    const rejected = [
+      await createCreateChatHandler(deps)(request("/api/chats", "POST", { title: longTitle })),
+      await createUpdateChatHandler(deps)(
+        request("/api/chats/chat-1", "PATCH", { title: longTitle }),
+        { params: { chatId: "chat-1" } }
+      ),
+      await createCreateFolderHandler(deps)(request("/api/folders", "POST", { name: longName })),
+      await createUpdateFolderHandler(deps)(
+        request("/api/folders/folder-1", "PATCH", { name: longName }),
+        { params: { folderId: "folder-1" } }
+      )
+    ];
+    expect(rejected.map((response) => response.status)).toEqual([400, 400, 400, 400]);
+    await expect(Promise.all(rejected.map((response) => response.json()))).resolves.toEqual([
+      { error: "chat_title_too_long" },
+      { error: "chat_title_too_long" },
+      { error: "folder_name_too_long" },
+      { error: "folder_name_too_long" }
+    ]);
+    expect(stored).toEqual([]);
+  });
+
   it("creates generic new chats unfiled unless a folder is explicitly provided", async () => {
     const createInputs: Parameters<ChatRepository["createChat"]>[0][] = [];
     const repository: ChatRepository = {

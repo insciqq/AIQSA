@@ -4,6 +4,8 @@ import {
   CHAT_BRANCH_PREVIEW_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
   boundedChatBranchPreview,
+  boundedChatTitle,
+  CHAT_TITLE_MAX_LENGTH,
   decodeArchivedChatDetailResponse,
   decodeArchivedChatsResponse,
   decodeChatBranchesResponse,
@@ -524,6 +526,12 @@ describe("chat wire contracts", () => {
         ]
       }
     })).toBeNull();
+  });
+
+  it("bounds server-composed chat titles by code points without splitting a surrogate pair", () => {
+    const fits = `Continued: ${"😀".repeat(CHAT_TITLE_MAX_LENGTH - 11)}`;
+    expect(boundedChatTitle(fits)).toBe(fits);
+    expect(boundedChatTitle(`${fits}😀tail`)).toBe(fits);
   });
 
   it("bounds branch previews by UTF-16 units without splitting a surrogate pair", () => {
