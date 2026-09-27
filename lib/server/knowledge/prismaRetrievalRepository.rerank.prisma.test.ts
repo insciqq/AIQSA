@@ -608,7 +608,9 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
       runId: fixture.runId,
       userId: fixture.userId
     });
-    expect(next?.priorOccurrenceKeys).toEqual([knowledgeEvidenceOccurrenceKeyV1(top)]);
+    expect(next?.priorOccurrenceKeys).toEqual([
+      knowledgeEvidenceOccurrenceKeyV1({ ...top, sourceArtifactId: top.sourceArtifactId ?? null })
+    ]);
     expect(next?.usage.retrievedTokens).toBe(Math.ceil(truncated.includedTextBytes / 4));
   });
 
