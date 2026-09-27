@@ -2582,6 +2582,46 @@ describe("run execution", () => {
     });
   });
 
+  it.each(["during preparation", "between preparation and execution"] as const)(
+    "keeps Stop %s durable with no later provider dispatch", async (stop) => {
+      // Stop writes the durable cancellation first, then aborts whichever
+      // controller the process holds. The preparation controller is released
+      // before execution registers its own; either way execution must see the
+      // terminal row and never open a provider stream.
+      const repository = createRepository({ failureWins: false, runStatus: "cancelled" });
+      const failRun = vi.spyOn(repository.repository, "failRun");
+      let providerCalls = 0;
+      const adapter = createAdapter(async function* () {
+        providerCalls += 1;
+        return providerResult();
+      });
+      const preparation = activeRunControllerRegistry.register("run-1");
+      expect(preparation).not.toBeNull();
+      if (stop === "during preparation") {
+        expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
+        expect(preparation!.signal.aborted).toBe(true);
+      }
+      preparation!.release();
+      if (stop === "between preparation and execution") {
+        expect(activeRunControllerRegistry.abort("run-1")).toBe(false);
+      }
+
+      const events = parseSse(await createRunExecutionResponse(executionInput({
+        adapter,
+        repository: repository.repository
+      })).text());
+
+      expect(providerCalls).toBe(0);
+      expect(repository.persistedEvents.some(({ event }) => event.type === "run_start")).toBe(false);
+      // The guarded terminal write cannot replace the cancellation that won.
+      expect(failRun).toHaveBeenCalledExactlyOnceWith("run-1", "assistant-1",
+        expect.objectContaining({ code: "model_run_not_active" }), undefined);
+      expect(repository.failedRuns).toEqual([]);
+      expect(events.some((event) => event.type === "error")).toBe(false);
+      expect(activeRunControllerRegistry.has("run-1")).toBe(false);
+    }
+  );
+
   it("fails stale Project access before provider I/O or streaming starts", async () => {
     const repository = createRepository({ projectAccessCurrent: false });
     let providerCalls = 0;

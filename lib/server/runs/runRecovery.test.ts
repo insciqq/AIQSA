@@ -87,6 +87,7 @@ import {
 } from "../knowledge/retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
 import type { ToolExecutionResult } from "../tools/types";
+import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import {
   packKnowledgeEvidenceDispatchManifest,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -9378,5 +9379,127 @@ describe("Workspace image recovery", () => {
         expect(JSON.stringify(harness.state.events)).not.toMatch(/base64|private-recovery/);
       }
     } finally { viewer.mockRestore(); }
+  });
+});
+
+describe("Recovered image and artifact tool services", () => {
+  const imageCall = (state: PersistedToolLoopCall["state"]): PersistedToolLoopCall => ({ ...persistedRecoveryCall(state),
+    mcpBinding: null, toolName: "generate_image", arguments: { prompt: "A green square", image_ids: [] } });
+  const imageResult = (callId: string): ToolExecutionResult => ({ callId, name: "generate_image", status: "complete",
+    content: [{ type: "json", value: { image_id: "saved-image", width: 8, height: 8, source_image_ids: [], displayed_in_chat: true } }] });
+  function imageRun(harness: ReturnType<typeof createHarness>, call: PersistedToolLoopCall) {
+    const initial = checkpointedRun({ phase: call.state === "pending" ? "tools_pending" : "tools_running", calls: [call],
+      providerToolMessages: [{ type: "function_call", name: call.toolName, call_id: call.providerCallId, arguments: JSON.stringify(call.arguments) }] });
+    return installCheckpointState(harness, { ...initial, normalizedRequest: { ...initial.normalizedRequest, mcp: undefined,
+      imagePlan: mixedToolsImagePlan } });
+  }
+  function imageService(overrides: Readonly<Record<string, unknown>> = {}) {
+    const service = {
+      authorize: vi.fn(async () => true),
+      execute: vi.fn(),
+      restore: vi.fn(async (): Promise<ToolExecutionResult | null> => null),
+      withConversationPixels: vi.fn(async (request: ProviderRunRequest) => request),
+      ...overrides
+    };
+    return { service, deps: service as unknown as NonNullable<RunRecoveryDeps["images"]> };
+  }
+
+  it("restores a running image call from its saved image and gives the answer request conversation pixels", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call = imageCall("running");
+    const state = imageRun(harness, call);
+    const restore = vi.fn(async () => imageResult(call.providerCallId));
+    const withConversationPixels = vi.fn(async (request: ProviderRunRequest) => ({ ...request,
+      prompt: { ...request.prompt, system: "CONVERSATION_PIXELS_NOTE" } }));
+    const images = imageService({ restore, withConversationPixels });
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+
+    expect(restore).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: "generate_image" }),
+      expect.objectContaining({ persistedToolCallId: call.id, runId, userId }));
+    expect(images.service.execute).not.toHaveBeenCalled();
+    expect(images.service.authorize).not.toHaveBeenCalled();
+    expect(state.calls()[0]).toMatchObject({ state: "complete" });
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).not.toBeNull();
+    expect(withConversationPixels).toHaveBeenCalledWith(expect.anything(), userId, expect.any(AbortSignal));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.prompt.system).toBe("CONVERSATION_PIXELS_NOTE");
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("saved-image");
+  });
+
+  it("keeps a running image call without a saved image unknown and never repeats the paid generation", async () => {
+    const stream = vi.fn<ProviderAdapter["stream"]>();
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+    imageRun(harness, imageCall("running"));
+    const images = imageService();
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+
+    expect(images.service.restore).toHaveBeenCalledOnce();
+    expect(images.service.execute).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "tool_call_outcome_unknown" })
+    })]);
+  });
+
+  it("dispatches an undispatched image call once through the accepted image service", async () => {
+    const egress = createRecoveryMemoryEgressRecorder();
+    const harness = createHarness({ memoryEgress: egress.service, providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream() { return providerResult; } } } });
+    const call = imageCall("pending");
+    const state = imageRun(harness, call);
+    const images = imageService({ execute: vi.fn(async () => imageResult(call.providerCallId)) });
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+
+    expect(images.service.authorize).toHaveBeenCalledExactlyOnceWith(mixedToolsImagePlan);
+    expect(images.service.execute).toHaveBeenCalledOnce();
+    expect(egress.blocked).toEqual([]);
+    expect(egress.began.filter(receipt => receipt.mode === "TOOL_CALL")).toEqual([
+      expect.objectContaining({ destinationKind: "image", modelRunToolCallId: call.id })]);
+    expect(state.calls()[0]).toMatchObject({ state: "complete" });
+    expect(harness.state.completed).not.toBeNull();
+  });
+
+  it("settles an undispatched image call without the image service as image_tool_unavailable, not a revoked destination", async () => {
+    const stream = vi.fn<ProviderAdapter["stream"]>();
+    const egress = createRecoveryMemoryEgressRecorder();
+    const harness = createHarness({ memoryEgress: egress.service, providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+    const state = imageRun(harness, imageCall("pending"));
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(egress.blocked).toEqual([]);
+    expect(egress.began).toEqual([]);
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+    expect(JSON.stringify(state.calls()[0]!.result)).toContain("image_tool_unavailable");
+    expect(JSON.stringify(state.calls()[0]!.result)).not.toContain("memory_egress_destination_revoked");
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "image_generation_failed" })
+    })]);
+  });
+
+  it("settles an undispatched artifact call without the artifact service with its exact code", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call: PersistedToolLoopCall = { ...persistedRecoveryCall("pending"), mcpBinding: null, toolName: "create_artifact",
+      arguments: { artifact_id: "artifact" } };
+    const initial = checkpointedRun({ phase: "tools_pending", calls: [call], providerToolMessages: [{
+      type: "function_call", name: call.toolName, call_id: call.providerCallId, arguments: JSON.stringify(call.arguments) }] });
+    const state = installCheckpointState(harness, { ...initial, normalizedRequest: { ...initial.normalizedRequest, mcp: undefined,
+      artifactTool: true } });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+    expect(JSON.stringify(state.calls()[0]!.result)).toContain("artifact_tool_unavailable");
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("artifact_tool_unavailable");
   });
 });
