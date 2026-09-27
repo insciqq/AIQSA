@@ -3153,15 +3153,15 @@ async function applyPlan(
   // guard. History backfill revives the job for the next page.
   const indexedThrough = memoryHistoryIndexPlanIndexedThrough(plan);
   const status = "READY" as const;
-  const lastErrorCode = (plan.incremental.truncatedMessageIds?.length ?? 0) > 0
-    ? MEMORY_HISTORY_MESSAGE_TRUNCATED_CODE
-    : null;
+  // A READY checkpoint carries no error code (ChatMemoryCheckpoint_shape_check).
+  // An explicitly truncated message is reported by the persisted job stage
+  // (lexical_ready:history_message_truncated) and its content-free log event.
   await tx.chatMemoryCheckpoint.upsert({
     create: {
       activeLeafMessageId: plan.source.activeLeafMessageId,
       branchGeneration: plan.source.branchGeneration,
       chatId: plan.source.chatId,
-      lastErrorCode,
+      lastErrorCode: null,
       lastIndexedMessageId: indexedThrough,
       lastSucceededAt: now,
       pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
@@ -3173,7 +3173,7 @@ async function applyPlan(
     update: {
       activeLeafMessageId: plan.source.activeLeafMessageId,
       branchGeneration: plan.source.branchGeneration,
-      lastErrorCode,
+      lastErrorCode: null,
       lastIndexedMessageId: indexedThrough,
       lastSucceededAt: now,
       pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
