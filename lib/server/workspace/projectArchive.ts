@@ -30,15 +30,17 @@ export function projectArchiveTarMaxBytes(limits: Readonly<{ maxBytes: number; m
  * Arguments: archive, project, max_bytes, max_entries, mode.
  * - verify: validate structure and bounds only; nothing is written.
  * - restore: validate first (a preflight failure never touches the project),
- *   extract into the sibling staging directory, confine links there, then
- *   commit with renames. Only the rename pair can be interrupted; the old tree
- *   then sits at the fixed `previous` path and recovery moves it back.
- * - recover: roll back an interrupted swap and remove staging leftovers.
+ *   extract into sibling staging, then replace contents under a durable
+ *   rollback journal. The project root stays in place: overlayfs rejects
+ *   renaming lower/merged directories, including nested old directories.
+ * - recover: copy back the unchanged snapshot after an interrupted replace;
+ *   a committed journal preserves the new tree. Recovery is itself restartable.
+ *   The coordinator keeps the guest fenced until restore/recovery settles.
  *
  * Exit codes: 65 invalid, 67 limit, 68 other, 69 cleanup not proven.
  */
 export const PROJECT_RESTORE_SCRIPT = String.raw`
-import gzip, os, posixpath, shutil, sys, tarfile
+import gzip, json, os, posixpath, shutil, stat, sys, tarfile
 
 archive, project = sys.argv[1:3]
 max_bytes, max_entries = map(int, sys.argv[3:5])
@@ -47,6 +49,8 @@ if mode not in ('verify', 'restore', 'recover'): sys.exit(68)
 parent, name = os.path.split(os.path.normpath(project))
 staging = os.path.join(parent, '.' + name + '.restore')
 previous = os.path.join(parent, '.' + name + '.previous')
+journal = os.path.join(parent, '.' + name + '.restore-state')
+journal_tmp = journal + '.tmp'
 
 class Invalid(Exception): pass
 class Limit(Exception): pass
@@ -89,11 +93,79 @@ def remove(path):
     if os.path.isdir(path) and not os.path.islink(path): shutil.rmtree(path)
     elif os.path.lexists(path): os.unlink(path)
 
+def directory(path):
+    if not os.path.isdir(path) or os.path.islink(path): raise Invalid()
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+
+def walk_error(error): raise error
+
+def sync_tree(path):
+    directory(path)
+    for current, dirs, files in os.walk(path, topdown=False, followlinks=False, onerror=walk_error):
+        for name in files:
+            item = os.path.join(current, name)
+            if os.path.islink(item): continue
+            fd = os.open(item, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode): raise Invalid()
+                os.fsync(fd)
+            finally: os.close(fd)
+        sync_directory(current)
+
+def record(phase, had_project):
+    remove(journal_tmp)
+    with open(journal_tmp, 'x') as output:
+        json.dump({'phase': phase, 'had_project': had_project}, output)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(journal_tmp, journal)
+    sync_directory(parent)
+
+def read_journal():
+    if not os.path.lexists(journal): return None
+    fd = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 256: raise Invalid()
+        value = json.loads(os.read(fd, 256))
+    finally: os.close(fd)
+    if (not isinstance(value, dict) or set(value) != {'phase', 'had_project'} or
+        value['phase'] not in ('replacing', 'committed') or
+        not isinstance(value['had_project'], bool)): raise Invalid()
+    return value
+
+def clear_contents(path):
+    directory(path)
+    for name in os.listdir(path): remove(os.path.join(path, name))
+
 def recover():
-    if not os.path.lexists(project) and os.path.lexists(previous):
-        os.rename(previous, project)
+    state = read_journal()
+    if state and state['phase'] == 'replacing':
+        # Never consume the only rollback copy. If recovery is interrupted,
+        # the same journal and complete snapshot can be applied again.
+        directory(previous)
+        if state['had_project']:
+            if not os.path.lexists(project): os.mkdir(project, 0o755)
+            directory(project)
+            clear_contents(project)
+            shutil.copytree(previous, project, symlinks=True, dirs_exist_ok=True)
+            sync_tree(project)
+        else:
+            remove(project)
+        sync_directory(parent)
+    elif state:
+        directory(project)
+    # First make the recovered/committed tree authoritative; only then may
+    # its rollback copy disappear. No journal means the project was untouched.
+    remove(journal)
+    sync_directory(parent)
     remove(staging)
     remove(previous)
+    remove(journal_tmp)
 
 def validate():
     entries, total, count = {}, 0, 0
@@ -151,17 +223,32 @@ except Exception:
     sys.exit(69)
 try:
     extract()
-    if os.path.lexists(project): os.rename(project, previous)
-    os.rename(staging, project)
+    had_project = os.path.lexists(project)
+    if had_project:
+        directory(project)
+        # Copy lower/merged directories; renaming them can fail with EXDEV.
+        # Any space/copy failure occurs before modifying the original tree.
+        shutil.copytree(project, previous, symlinks=True)
+    else:
+        os.mkdir(previous, 0o755)
+    sync_tree(previous)
+    record('replacing', had_project)
+    if not had_project: os.mkdir(project, 0o755)
+    clear_contents(project)
+    # These entries were freshly extracted into the writable upper layer.
+    for name in os.listdir(staging):
+        os.rename(os.path.join(staging, name), os.path.join(project, name))
+    os.chmod(project, stat.S_IMODE(os.stat(staging).st_mode))
+    sync_tree(project)
+    record('committed', had_project)
 except Exception as error:
     try:
         recover()
     except Exception:
         sys.exit(69)
     sys.exit(status(error))
-# The swap is committed. A leftover old tree is swept by the next recovery.
-try:
-    remove(previous)
-except Exception:
-    pass
+# The journal proves a complete new tree. Cleanup failure may leave harmless
+# scratch state; the next recovery must keep the committed project.
+try: recover()
+except Exception: pass
 `;
