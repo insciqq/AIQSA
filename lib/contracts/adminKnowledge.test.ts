@@ -4,7 +4,7 @@ import {
   adminKnowledgeOperationsFixture,
   adminKnowledgeProfileFixture
 } from "@/tests/support/knowledgeProfile";
-import { decodeAdminKnowledgeResponse } from "./adminKnowledge";
+import { decodeAdminKnowledgeResponse, decodeAdminKnowledgeSearchRetryResponse } from "./adminKnowledge";
 
 const response = {
   knowledge: {
@@ -131,7 +131,9 @@ describe("administrator Knowledge contract", () => {
       search: {
         backendState: "unavailable",
         expectedProjections: 4,
+        failedBases: 2,
         failedProjections: 1,
+        failedSources: 1,
         pendingProjections: 1,
         readyProjections: 2,
         workerLastSeenAt: "2026-08-18T00:00:00.000Z",
@@ -180,5 +182,23 @@ describe("administrator Knowledge contract", () => {
       ...healthy,
       workerState: "unknown"
     }))).toBeNull();
+    const failing = { ...healthy, expectedProjections: 2, failedProjections: 2, readyProjections: 0 };
+    expect(decodeAdminKnowledgeResponse(withSearch({ ...failing, failedBases: 0, failedSources: 1 })))
+      .not.toBeNull();
+    for (const counts of [
+      { failedBases: 0, failedSources: 0 },
+      { failedBases: 1, failedSources: 3 },
+      { failedBases: undefined, failedSources: 1 }
+    ]) expect(decodeAdminKnowledgeResponse(withSearch({ ...failing, ...counts }))).toBeNull();
+    expect(decodeAdminKnowledgeResponse(withSearch({ ...healthy, failedBases: 1 }))).toBeNull();
+  });
+
+  it("decodes the failed search indexing retry result with refreshed settings", () => {
+    expect(decodeAdminKnowledgeSearchRetryResponse({ ...response, retried: 3 }))
+      .toEqual({ ...response, retried: 3 });
+    for (const retried of [undefined, -1, 1.5, "3"]) {
+      expect(decodeAdminKnowledgeSearchRetryResponse({ ...response, retried })).toBeNull();
+    }
+    expect(decodeAdminKnowledgeSearchRetryResponse({ knowledge: {}, retried: 1 })).toBeNull();
   });
 });

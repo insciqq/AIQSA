@@ -8,6 +8,7 @@ import {
   KNOWLEDGE_CANDIDATE_LIMIT,
   KNOWLEDGE_RESULT_LIMIT
 } from "../../knowledge/retrievalTypes";
+import { retryFailedKnowledgeSearchProjections } from "../../knowledge/searchProjection";
 import { createAdminKnowledgeOperationsService } from "./operationsService";
 import { createAdminKnowledgeProfileService } from "./profileService";
 import { createAdminKnowledgeAnswerPolicyService } from "./answerPolicyService";
@@ -57,6 +58,11 @@ export function createAdminKnowledgePolicyService(
     updateAnswerPolicy: answerPolicyService.update,
 
     updateIngestionParallelism: answerPolicyService.updateIngestionParallelism,
+
+    /** Installation-wide targeted recovery; never recreates the index. */
+    async retryFailedSearchProjections(): Promise<number> {
+      return (await retryFailedKnowledgeSearchProjections(prisma)).retried;
+    },
 
     rollbackProfile: profileService.rollback
   };

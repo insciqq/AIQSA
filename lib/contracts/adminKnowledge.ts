@@ -129,7 +129,9 @@ export type AdminKnowledgeOperations = Readonly<{
   search: Readonly<{
     backendState: "available" | "unavailable";
     expectedProjections: number;
+    failedBases: number;
     failedProjections: number;
+    failedSources: number;
     pendingProjections: number;
     readyProjections: number;
     workerLastSeenAt: string | null;
@@ -418,7 +420,9 @@ function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
   ] as const;
   const searchKeys = [
     "expectedProjections",
+    "failedBases",
     "failedProjections",
+    "failedSources",
     "pendingProjections",
     "readyProjections"
   ] as const;
@@ -440,6 +444,9 @@ function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
     (search.workerState === "missing") !== (search.workerLastSeenAt === null) ||
     Number(search.readyProjections) + Number(search.pendingProjections) +
       Number(search.failedProjections) !== Number(search.expectedProjections) ||
+    Number(search.failedSources) > Number(search.failedProjections) ||
+    (Number(search.failedSources) === 0) !== (Number(search.failedProjections) === 0) ||
+    Number(search.failedSources) === 0 && Number(search.failedBases) !== 0 ||
     !nullableInteger(retrieval.p50DurationMs24h) ||
     !nullableInteger(retrieval.p95DurationMs24h) ||
     Number(retrieval.degradedOperations24h) > Number(retrieval.operations24h) ||
@@ -510,4 +517,18 @@ export function decodeAdminKnowledgeResponse(value: unknown): AdminKnowledgeResp
       }
     }
   };
+}
+
+export type AdminKnowledgeSearchRetryResponse = AdminKnowledgeResponse & {
+  retried: number;
+};
+
+/** POST result of the targeted retry of failed search indexing: the refreshed
+ * settings plus how many failed projections were re-queued. */
+export function decodeAdminKnowledgeSearchRetryResponse(
+  value: unknown
+): AdminKnowledgeSearchRetryResponse | null {
+  if (!record(value) || !nonNegativeInteger(value.retried)) return null;
+  const decoded = decodeAdminKnowledgeResponse(value);
+  return decoded ? { ...decoded, retried: Number(value.retried) } : null;
 }

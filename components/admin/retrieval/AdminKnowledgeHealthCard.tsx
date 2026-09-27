@@ -3,6 +3,7 @@
 import {
   adminKnowledgeErrorMessage,
   getAdminKnowledgeSettings,
+  retryAdminKnowledgeFailedSearchIndexing,
   updateAdminKnowledgeAnswerPolicy,
   updateAdminKnowledgeIngestionParallelism
 } from "@/components/admin/adminKnowledgeApi";
@@ -25,7 +26,7 @@ const alertCopy: Record<AdminKnowledgeOperationsAlert["code"], string> = {
   knowledge_retrieval_degraded: "Recent Knowledge retrieval is frequently using degraded paths.",
   knowledge_search_backend_unavailable: "The Knowledge search index is unavailable.",
   knowledge_search_projection_backlog: "Knowledge search projections are waiting to be indexed.",
-  knowledge_search_projection_failures: "One or more Knowledge search projections need administrator action.",
+  knowledge_search_projection_failures: "Search indexing failed for one or more sources and needs an administrator retry.",
   knowledge_search_worker_unavailable: "The Knowledge search worker heartbeat is missing or stale.",
   knowledge_upload_sessions_expired: "Expired upload sessions are awaiting cleanup or retry.",
   knowledge_v1_reconciliation_incomplete: "Legacy Knowledge reconciliation is incomplete."
@@ -42,6 +43,10 @@ function formatDuration(value: number | null): string {
   if (value < 1_000) return `${value.toLocaleString()} ms`;
   if (value < 60_000) return `${(value / 1_000).toLocaleString("en", { maximumFractionDigits: 1 })} s`;
   return `${Math.round(value / 60_000).toLocaleString()} min`;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count.toLocaleString()} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function processingNote(settings: AdminKnowledgeSettings): string | null {
@@ -106,8 +111,10 @@ export function AdminKnowledgeHealthCard({
   const [settings, setSettings] = useState<AdminKnowledgeSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const [syncedSettings, setSyncedSettings] = useState(settings);
   const [draft, setDraft] = useState<Draft>(() => draftFor(settings));
   if (syncedSettings !== settings) {
@@ -181,6 +188,23 @@ export function AdminKnowledgeHealthCard({
     reportNotice("Knowledge limits saved. New answers and future processing use them.");
   };
 
+  const retryFailedIndexing = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    setRetryError(null);
+    const result = await retryAdminKnowledgeFailedSearchIndexing();
+    setRetrying(false);
+    if (!result.ok) {
+      setRetryError(adminKnowledgeErrorMessage(result.error));
+      return;
+    }
+    setSettings(result.data);
+    void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
+    reportNotice(result.retried > 0
+      ? `${plural(result.retried, "failed search projection")} queued for indexing. Ready sources keep serving.`
+      : "No failed search indexing needed a retry.");
+  };
+
   const state = settings ? knowledgeProcessingState(settings.profile) : null;
   const note = settings ? processingNote(settings) : null;
   const operations = settings?.operations ?? null;
@@ -222,6 +246,23 @@ export function AdminKnowledgeHealthCard({
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {operations && operations.search.failedProjections > 0 ? (
+        <div
+          className="flex flex-wrap items-center gap-3 border-t border-trace-subtle px-5 py-3"
+          data-testid="knowledge-search-failures"
+        >
+          <p className="min-w-0 basis-full text-xs leading-5 text-ink-secondary sm:basis-auto sm:flex-1">
+            Search indexing failed for {plural(operations.search.failedSources, "source")} in{" "}
+            {plural(operations.search.failedBases, "base")}. Searches that include them stay unavailable
+            until indexing is retried. If the search service was failing, fix it first; ready sources keep serving.
+          </p>
+          <UiV2Button busy={retrying} onClick={() => void retryFailedIndexing()}>
+            Retry failed indexing
+          </UiV2Button>
+          {retryError ? <p className="basis-full text-xs text-critical" role="alert">{retryError}</p> : null}
+        </div>
       ) : null}
 
       {operations && settings ? (
