@@ -344,6 +344,30 @@ describe("summarizeMessageRunArtifacts", () => {
     );
   });
 
+  it("merges every engine's cited sources into one URL-deduplicated list without their citation numbers", () => {
+    const engine = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => ({
+      citation: index + 1, rank: index + 1, title: `${prefix} ${index + 1}`, url: `https://example.com/${prefix}/${index + 1}`
+    }));
+    const perplexity = engine("perplexity", 15);
+    const openai = [
+      { ...perplexity[14]!, citation: 1, rank: 1, title: "Shared" },
+      ...engine("openai", 2).map((source) => ({ ...source, citation: source.citation + 1, rank: source.rank + 1 })),
+      { rank: 4, title: "Browsed", url: "https://example.com/browsed" }
+    ];
+
+    const summary = summarizeMessageRunArtifacts({
+      events: [],
+      searchRuns: [{ artifacts: { sources: perplexity } }, { artifacts: { sources: openai } }]
+    });
+
+    expect(summary?.sources?.map((source) => source.url)).toEqual([
+      ...perplexity.map((source) => source.url),
+      ...openai.slice(1).map((source) => source.url)
+    ]);
+    expect(summary?.sources?.map((source) => source.rank)).toEqual(Array.from({ length: 18 }, (_, index) => index + 1));
+    expect(JSON.stringify(summary?.sources)).not.toContain("citation");
+  });
+
   it("projects only cited legacy Knowledge handles without stale source labels", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [],
