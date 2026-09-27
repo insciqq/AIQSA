@@ -1,6 +1,120 @@
-import type { MemoryRecallChunkMessageJoin } from "./chunking";
+import {
+  DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS,
+  type MemoryRecallChunkMessageJoin
+} from "./chunking";
+import { MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS } from "./toolEvents";
 
+// Explicit active-path ceiling. Every job proves the whole checkpoint path and
+// retains its prefix rows, so this bounds per-job metadata and retained-row
+// memory. A longer path fails with `memory_history_path_limit_exceeded`
+// instead of being mistaken for a corrupt or cyclic path.
 export const MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES = 8_192;
+export const MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE =
+  "memory_history_path_limit_exceeded";
+
+/**
+ * Work admitted by one INDEX_HISTORY job. A longer uncovered tail is indexed
+ * in consecutive pages: each committed page advances the checkpoint cursor
+ * (`lastIndexedMessageId` plus checkpoint message rows) and the next job
+ * resumes with the ordinary APPEND proof. The bounds apply to rebuilt work in
+ * one job, never to retained history.
+ */
+export type MemoryHistoryIndexPageLimits = Readonly<{
+  maxChunks: number;
+  maxContentBytes: number;
+  maxMessages: number;
+  maxToolCalls: number;
+}>;
+
+export const DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS: MemoryHistoryIndexPageLimits =
+  Object.freeze({
+    maxChunks: DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS.maxChunks,
+    maxContentBytes: 4 * 1024 * 1024,
+    maxMessages: 1_024,
+    maxToolCalls: MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS
+  });
+
+export function memoryHistoryIndexPageLimitsAreValid(
+  limits: MemoryHistoryIndexPageLimits
+): boolean {
+  return Number.isSafeInteger(limits.maxChunks) && limits.maxChunks >= 1 &&
+    limits.maxChunks <= DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS.maxChunks &&
+    Number.isSafeInteger(limits.maxContentBytes) && limits.maxContentBytes >= 1 &&
+    Number.isSafeInteger(limits.maxMessages) && limits.maxMessages >= 1 &&
+    Number.isSafeInteger(limits.maxToolCalls) && limits.maxToolCalls >= 1;
+}
+
+/**
+ * The smallest page: the first uncovered recall unit, i.e. a prompt with its
+ * reply, or one standalone message. A page never ends inside that unit.
+ */
+export function memoryHistoryIndexMinimumPageEnd(
+  roles: readonly string[],
+  firstUncoveredOrdinal: number
+): number {
+  if (firstUncoveredOrdinal >= roles.length) return roles.length;
+  return roles[firstUncoveredOrdinal] === "user" &&
+      roles[firstUncoveredOrdinal + 1] === "assistant"
+    ? firstUncoveredOrdinal + 2
+    : firstUncoveredOrdinal + 1;
+}
+
+/** Keeps a later prompt with its reply when a page would end between them. */
+export function alignMemoryHistoryIndexPageEnd(
+  roles: readonly string[],
+  minimumEnd: number,
+  end: number
+): number {
+  if (
+    end < roles.length &&
+    end - 1 >= minimumEnd &&
+    roles[end - 1] === "user" &&
+    roles[end] === "assistant"
+  ) {
+    return end - 1;
+  }
+  return end;
+}
+
+/**
+ * Largest page end whose cumulative cost from `costStartOrdinal` fits
+ * `limit`. The minimum recall unit is admitted even when it alone exceeds
+ * the budget: it is the smallest checkpoint step.
+ */
+export function boundMemoryHistoryIndexPageEnd(input: Readonly<{
+  cost: (ordinal: number) => number;
+  costStartOrdinal: number;
+  limit: number;
+  maximumEnd: number;
+  minimumEnd: number;
+}>): number {
+  let total = 0;
+  for (let ordinal = input.costStartOrdinal; ordinal < input.maximumEnd; ordinal += 1) {
+    total += input.cost(ordinal);
+    if (total > input.limit) {
+      return Math.min(input.maximumEnd, Math.max(input.minimumEnd, ordinal));
+    }
+  }
+  return input.maximumEnd;
+}
+
+/** Halves the uncovered part of a page, or returns null at the minimum unit. */
+export function shrinkMemoryHistoryIndexPageEnd(
+  roles: readonly string[],
+  firstUncoveredOrdinal: number,
+  minimumEnd: number,
+  end: number
+): number | null {
+  if (end <= minimumEnd) return null;
+  return alignMemoryHistoryIndexPageEnd(
+    roles,
+    minimumEnd,
+    Math.max(
+      minimumEnd,
+      firstUncoveredOrdinal + Math.ceil((end - firstUncoveredOrdinal) / 2)
+    )
+  );
+}
 
 export type MemoryHistoryCheckpointMessageIdentity = Readonly<{
   messageId: string;

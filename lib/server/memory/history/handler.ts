@@ -34,7 +34,10 @@ import {
 } from "./classifier";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 import {
+  MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS,
+  MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES,
   memoryHistoryIndexClaimIsValid,
+  memoryHistoryIndexPlanIsPartial,
   memoryHistoryIndexResultHash,
   type MemoryHistoryIndexPlan
 } from "./contract";
@@ -42,6 +45,7 @@ import {
   createPrismaMemoryChatDigestGenerator,
   MemoryChatDigestError,
   MemoryChatDigestOutputError,
+  selectMemoryChatDigestSourceChunks,
   type MemoryChatDigestContractViolation,
   type MemoryChatDigestGenerationResult,
   type MemoryChatDigestGenerator
@@ -64,6 +68,7 @@ import {
 } from "./rounds";
 import {
   createPrismaMemoryHistoryIndexRepository,
+  MEMORY_HISTORY_MESSAGE_TRUNCATED_CODE,
   type MemoryHistoryIndexRepository
 } from "./repository";
 
@@ -88,10 +93,22 @@ export type MemoryHistoryIndexHandlerDependencies = Readonly<{
 
 const MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION =
   "memory-chat-digest-output-degraded-v1";
+// A partial index page has no whole-chat digest. The final page builds one
+// for the complete source instead of paying for a rebuild on every page.
+const MEMORY_CHAT_DIGEST_DEFERRED_POLICY_VERSION =
+  "memory-chat-digest-deferred-partial-page-v1";
+
+function digestSourceExceedsLimit(plan: MemoryHistoryIndexPlan): boolean {
+  const eligible = selectMemoryChatDigestSourceChunks(plan.chunks);
+  return eligible.length > MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS ||
+    new Set(eligible.flatMap((chunk) =>
+      chunk.messageJoins.map(({ messageId }) => messageId))).size >
+      MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES;
+}
 
 function degradedMemoryChatDigest(
   reason: "aggregate_limit" | "contract" | "invalid" | "safety_rejected" |
-    "unavailable" | "output_limit",
+    "source_limit" | "unavailable" | "output_limit",
   violation?: MemoryChatDigestContractViolation
 ): Readonly<{
   generated: MemoryChatDigestGenerationResult;
@@ -538,7 +555,25 @@ export function createMemoryHistoryIndexHandler(
           executionResults.push(...generated.executions);
           plan = attachMemoryContextualKeys(plan, generated, contextualTargets);
         }
-        if (dependencies.digestGenerator) {
+        const partial = memoryHistoryIndexPlanIsPartial(plan);
+        if (partial) {
+          plan = attachMemoryChatDigest(plan, {
+            classificationRequired: false,
+            digest: null,
+            executions: [],
+            policyVersion: MEMORY_CHAT_DIGEST_DEFERRED_POLICY_VERSION,
+            work: {
+              digestSegmentsProcessed: 0,
+              digestSourceChunksProcessed: 0
+            }
+          }, null);
+        } else if (dependencies.digestGenerator && digestSourceExceedsLimit(plan)) {
+          // The digest cannot materialize beyond its own source bound; decide
+          // before any provider dispatch rather than after paying for it.
+          const degraded = degradedMemoryChatDigest("source_limit");
+          completionStage = degraded.stage;
+          plan = attachMemoryChatDigest(plan, degraded.generated, null);
+        } else if (dependencies.digestGenerator) {
           await context.setStage("digest_generation");
           let generated: MemoryChatDigestGenerationResult;
           try {
@@ -596,8 +631,22 @@ export function createMemoryHistoryIndexHandler(
           }, null);
         }
         await context.setStage("lexical_apply");
-        if (recoveryOnly && (plan.work.contextualRoundsFallback > 0 || !plan.digest)) {
+        if (recoveryOnly &&
+          (plan.work.contextualRoundsFallback > 0 || (!plan.digest && !partial))) {
           completionStage = "lexical_ready:recovery_raw_fallback";
+        }
+        const truncated = (plan.incremental.truncatedMessageIds?.length ?? 0) > 0;
+        if (truncated) {
+          logEvent("service_operation", { subsystem: "memory", stage: "validate", outcome: "degraded",
+            job_id: claim.id, code: MEMORY_HISTORY_MESSAGE_TRUNCATED_CODE, action: "degrade",
+            count: plan.incremental.truncatedMessageIds?.length ?? 0 });
+        }
+        if (completionStage === "lexical_ready") {
+          completionStage = truncated
+            ? "lexical_ready:history_message_truncated"
+            : partial
+              ? "lexical_ready:history_page_partial"
+              : completionStage;
         }
         return {
           acceptedResultHash: plan.resultHash,
