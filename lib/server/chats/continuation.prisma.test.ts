@@ -285,6 +285,8 @@ it("captures once, transfers ownership, and preserves the seed when its source i
   if (result.status !== "complete") throw new Error("summary missing");
   expect(await f.continueChat(request)).toEqual(result);
   expect(capture).toHaveBeenCalledOnce();
+  // The seed is captured only after the runtime proves it restorable.
+  expect(capture).toHaveBeenCalledWith(expect.objectContaining({ restorable: true }));
   const seed = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { newChatId: result.chatId } });
   expect(seed).toMatchObject({ status: "TRANSFERRED", checksum: expect.any(String), byteSize: expect.any(Number) });
   expect(w.storage.objects.has(seed.storageKey!)).toBe(true);

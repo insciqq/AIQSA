@@ -211,6 +211,39 @@ describe("deterministic Workspace runtime", () => {
     await runtime.removeSession({ runtimeSandboxId: destination.runtimeSandboxId, sessionId: destinationId });
   });
 
+  it("rejects a continuation capture above the restore bounds and keeps the destination tree on a refused restore", async () => {
+    const bounded = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test",
+      AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES: "1024", AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES: "1024" });
+    const runtime = new DeterministicWorkspaceRuntime(bounded);
+    const sourceId = "0199aabc-12ef-7abc-8abc-0123456789af";
+    const destinationId = "0199aabc-12ef-7abc-8abc-0123456789b0";
+    const open = (id: string) => runtime.ensureSession({ cpus: 1, diskMiB: bounded.diskMiB, imageRef: bounded.imageRef,
+      internetEnabled: false, memoryMiB: bounded.memoryMiB, runtimeSandboxId: null, sandboxName: workspaceSandboxName(id), sessionId: id });
+    const write = (runtimeSandboxId: string, sessionId: string, path: string, content: string) => runtime.callBoundTool({
+      arguments: { content, path: `/workspace/project/${path}` }, modelRunId: "bounds", modelRunToolCallId: `write-${path}`,
+      originalName: "sandbox_fs_write", runtimeSandboxId, sessionId });
+    const source = await open(sourceId);
+    const destination = await open(destinationId);
+    await write(source.runtimeSandboxId, sourceId, "a.txt", "x".repeat(512));
+    await write(source.runtimeSandboxId, sourceId, "b.txt", "y".repeat(512));
+    const exact = await runtime.createProjectArchive({ restorable: true, runtimeSandboxId: source.runtimeSandboxId, sessionId: sourceId });
+    await exact.body.cancel();
+    await write(source.runtimeSandboxId, sourceId, "c.txt", "z");
+    await expect(runtime.createProjectArchive({ restorable: true, runtimeSandboxId: source.runtimeSandboxId, sessionId: sourceId }))
+      .rejects.toMatchObject({ code: "workspace_archive_limit_exceeded" });
+    // A download export is not bounded by restore rules; restoring it is refused before any change.
+    const download = await runtime.createProjectArchive({ runtimeSandboxId: source.runtimeSandboxId, sessionId: sourceId });
+    const bytes = await collect(download.body);
+    await write(destination.runtimeSandboxId, destinationId, "kept.txt", "kept");
+    await expect(runtime.restoreProjectArchive({ archive: stream(bytes), byteSize: bytes.byteLength, checksum: download.checksum,
+      runtimeSandboxId: destination.runtimeSandboxId, sessionId: destinationId })).rejects.toMatchObject({ code: "workspace_archive_limit_exceeded" });
+    const kept = await runtime.callBoundTool({ arguments: { path: "/workspace/project/kept.txt" }, modelRunId: "bounds",
+      modelRunToolCallId: "read", originalName: "sandbox_fs_read", runtimeSandboxId: destination.runtimeSandboxId, sessionId: destinationId });
+    expect(kept.content[0]?.text).toContain("kept");
+    await runtime.removeSession({ runtimeSandboxId: source.runtimeSandboxId, sessionId: sourceId });
+    await runtime.removeSession({ runtimeSandboxId: destination.runtimeSandboxId, sessionId: destinationId });
+  });
+
   it("binds long exec ids to one run and removes state idempotently", async () => {
     const runtime = new DeterministicWorkspaceRuntime(config);
     const sessionId = "0199aabc-12ef-7abc-8abc-0123456789ac";

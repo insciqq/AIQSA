@@ -635,6 +635,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const body = await readJson(request);
         const operation = parseWorkspaceOperation(body.operation);
         const output = await execute(operation, (signal) => input.runtime.createProjectArchive({
+          restorable: body.restorable === true,
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
           sessionId, signal
         }));

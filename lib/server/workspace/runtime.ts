@@ -284,6 +284,8 @@ export interface WorkspaceRuntime {
   createProjectArchive(input: Readonly<{
     runtimeSandboxId: string;
     operation?: WorkspaceOperation;
+    /** Continuation seeds only: reject a tree restoreProjectArchive would refuse. */
+    restorable?: boolean;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceOutputStream>;

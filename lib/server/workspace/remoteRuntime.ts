@@ -647,7 +647,8 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
 
   async createProjectArchive(input: Parameters<WorkspaceRuntime["createProjectArchive"]>[0]): Promise<WorkspaceOutputStream> {
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/project/archive`, {
-      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
+      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), restorable: input.restorable === true,
+        runtimeSandboxId: input.runtimeSandboxId }),
       method: "POST",
       signal: input.signal
     });
