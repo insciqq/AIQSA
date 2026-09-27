@@ -7,6 +7,7 @@ import {
   type AiqsaMcpToolDefinition,
   type McpClientSessionOptions
 } from "./clientSession";
+import { mcpPublishedToolDefinitions } from "./definitions";
 import {
   createRemoteMcpDraftValidator,
   type McpRemoteDraftValidationSession,
@@ -266,6 +267,10 @@ describe("remote MCP draft validator", () => {
         },
         toolCount: 2,
         toolDefinitionHashes: ["a".repeat(64), "b".repeat(64)],
+        toolDefinitions: [
+          { definitionHash: "a".repeat(64), name: "create_task" },
+          { definitionHash: "b".repeat(64), name: "list_tasks" }
+        ],
         toolInventoryHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
         transport: "streamable_http"
       },
@@ -285,6 +290,12 @@ describe("remote MCP draft validator", () => {
         { description: "List tasks", name: "list_tasks" }
       ]
     });
+    if (outcome.kind !== "ok") throw new Error("expected a checked remote draft");
+    // The stored check lets the runtime admit exactly these name/definition pairs.
+    expect(mcpPublishedToolDefinitions({ evidence: outcome.evidence, toolInventory: outcome.toolInventory })).toEqual({
+      hashes: new Map([["create_task", "a".repeat(64)], ["list_tasks", "b".repeat(64)]]),
+      kind: "definitions"
+    });
     expect(harness.events).toEqual(["initialize", "listAllTools", "close"]);
     expect(progress).toEqual(["connecting", "discovering_tools"]);
     expect(harness.options).toHaveLength(1);
@@ -301,6 +312,29 @@ describe("remote MCP draft validator", () => {
     expect(JSON.stringify(outcome)).not.toContain(SECRET);
     expect(JSON.stringify(outcome)).not.toContain(URL_SECRET);
     expect(JSON.stringify(outcome)).not.toContain("https://mcp.example.test");
+  });
+
+  it("records a maximal inventory and rejects one tool beyond the per-server bound", async () => {
+    const maximal = (count: number) => Array.from({ length: count }, (_, index) =>
+      tool({ definitionHash: index.toString(16).padStart(64, "0"), name: `tool_${index}` }));
+    const validate = (tools: readonly AiqsaMcpToolDefinition[]) => createRemoteMcpDraftValidator({
+      fetch: safeFetch,
+      sessionFactory: sessionHarness({ tools }).sessionFactory
+    }).validate({
+      draft: remoteDraft({ auth: { mode: "none" }, slots: [], url: "https://mcp.example.test/rpc" }),
+      values: {}
+    });
+
+    const outcome = await validate(maximal(1_024));
+    if (outcome.kind !== "ok") throw new Error("expected a maximal inventory to validate");
+    expect(outcome.toolInventory).toHaveLength(1_024);
+    expect(outcome.evidence).toMatchObject({ toolCount: 1_024 });
+    const published = mcpPublishedToolDefinitions({ evidence: outcome.evidence, toolInventory: outcome.toolInventory });
+    expect(published.kind === "definitions" && published.hashes.size).toBe(1_024);
+    await expect(validate(maximal(1_025))).resolves.toEqual({
+      issues: [{ code: "mcp_remote_inventory_limit", path: "tools" }],
+      kind: "invalid"
+    });
   });
 
   it("supports an unauthenticated remote without inventing headers", async () => {

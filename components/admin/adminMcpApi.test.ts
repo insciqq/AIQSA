@@ -135,6 +135,16 @@ describe("adminMcpApi", () => {
     }));
   });
 
+  it("decodes a disabled-tool policy up to the per-server tool bound", async () => {
+    const names = (count: number) => Array.from({ length: count }, (_, index) => `tool_${index}`);
+    const maximal = { ...server, draft: { ...server.draft, disabledToolNames: names(1_024) } };
+    await expect(updateAdminMcpServer(server.id, { enabled: true }, vi.fn().mockResolvedValue(response({ server: maximal }))))
+      .resolves.toEqual({ data: maximal, ok: true });
+    const beyond = { ...server, draft: { ...server.draft, disabledToolNames: names(1_025) } };
+    await expect(updateAdminMcpServer(server.id, { enabled: true }, vi.fn().mockResolvedValue(response({ server: beyond }))))
+      .resolves.toMatchObject({ ok: false });
+  });
+
   it("uses the narrow server endpoint for irreversible deletion", async () => {
     const tombstone = { ...server, archivedAt: "2026-07-23T01:00:00.000Z", enabled: false };
     const fetcher = vi.fn().mockResolvedValue(response({ server: tombstone }));
@@ -194,6 +204,45 @@ describe("adminMcpApi", () => {
     });
     if (failed.ok) throw new Error("Expected failure");
     expect(adminMcpErrorMessage(failed.error)).toContain("source.url: remote_unavailable");
+  });
+
+  it("decodes held-back tools and tool verification, and rejects malformed ones", async () => {
+    const checked = {
+      artifactStatus: "not_applicable" as const,
+      createdAt: "2026-07-22T00:00:00.000Z",
+      draftHash: "hash-1",
+      id: "revision-1",
+      identityHash: "identity-1",
+      resolvedArtifact: null,
+      revisionNumber: 1,
+      toolVerification: "names" as const,
+      validationEvidence: { evidence: {}, testedAt: "2026-07-22T00:00:00.000Z", toolInventory: [] }
+    };
+    const changed: AdminMcpServer = {
+      ...server,
+      activeRevision: checked,
+      inventoryDifferences: [
+        { connections: 2, name: "delete_repo", reason: "unpublished_addition" },
+        { connections: 1, name: null, reason: "unpublished_addition" }
+      ],
+      revisions: [checked]
+    };
+    await expect(requestAdminMcpCatalog(vi.fn().mockResolvedValue(response({ servers: [changed] })))).resolves.toEqual({
+      data: { servers: [changed] },
+      ok: true
+    });
+    for (const malformed of [
+      { ...changed, inventoryDifferences: [{ connections: 0, name: "delete_repo", reason: "unpublished_addition" }] },
+      { ...changed, inventoryDifferences: [{ connections: 1, name: "delete repo", reason: "unpublished_addition" }] },
+      { ...changed, inventoryDifferences: [{ connections: 1, name: "search", reason: "disabled_by_policy" }] },
+      { ...changed, inventoryDifferences: {} },
+      { ...changed, activeRevision: { ...checked, toolVerification: "trusted" } }
+    ]) {
+      await expect(requestAdminMcpCatalog(vi.fn().mockResolvedValue(response({ servers: [malformed] })))).resolves.toEqual({
+        error: { code: "mcp_admin_response_invalid", issues: [] },
+        ok: false
+      });
+    }
   });
 
   it("decodes a durable activation receipt from an accepted create response", async () => {

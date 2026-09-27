@@ -219,7 +219,7 @@ describe("message run lifecycle", () => {
         status: "complete"
       })
     ]);
-    expect(fetchRun).toHaveBeenCalledWith("run-1", "chat-1");
+    expect(fetchRun).toHaveBeenCalledWith("run-1", "chat-1", { producer: expect.any(String) });
     expect(refreshActiveChat).toHaveBeenCalledWith("chat-1", {
       forceDetail: true,
       preserveControls: true
@@ -289,7 +289,7 @@ describe("message run lifecycle", () => {
     });
 
     expect(result).toMatchObject({ failed: true, runId: "run-failed" });
-    expect(fetchRun).toHaveBeenCalledWith("run-failed", "chat-1");
+    expect(fetchRun).toHaveBeenCalledWith("run-failed", "chat-1", { producer: expect.any(String) });
     expect(notifyAnswerReady).not.toHaveBeenCalled();
     expect(surfaceEvents()).toEqual([]);
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
@@ -453,7 +453,7 @@ describe("message run lifecycle", () => {
       request: async () => new Response("", { status: 200 })
     });
 
-    expect(fetchRun).toHaveBeenCalledWith("run-1", "chat-1");
+    expect(fetchRun).toHaveBeenCalledWith("run-1", "chat-1", { producer: expect.any(String) });
     expect(refreshActiveChat).toHaveBeenCalledWith("chat-1", {
       forceDetail: true,
       preserveControls: true
@@ -716,6 +716,53 @@ describe("message run lifecycle", () => {
     expect(settleFailedRunState).not.toHaveBeenCalled();
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
       status: "error"
+    });
+  });
+
+  it("fetches its run after a successor took over only with its own producer token", async () => {
+    prepareThread();
+    const activeStreamAbortRef = { current: new Map<string, AbortController>() };
+    const successor = new AbortController();
+    const fetchRun = vi.fn(async (runId: string, chatId: string, options?: { producer?: string }) => {
+      if (options?.producer) {
+        useRunLifecycleStore.getState().runIdReceived({ chatId, producer: options.producer, runId });
+      }
+      useRunLifecycleStore.getState().answerCompleted({ chatId, runId, ...options });
+      return null;
+    });
+
+    await executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef,
+      chatId: "chat-1",
+      consumeRunStream: async ({ onAnswerComplete, onRunId }) => {
+        onRunId("run-x");
+        onAnswerComplete!({ assistantMessageId: "assistant-optimistic", runId: "run-x" });
+        activeStreamAbortRef.current.set("chat-1", successor);
+        useRunLifecycleStore.getState().streamStarted({
+          assistantMessageId: "assistant-successor", chatId: "chat-1", producer: "successor"
+        });
+        return { failed: false, receivedChatUpdate: true, runId: "run-x", terminalStatus: "complete" };
+      },
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
+      failurePrefix: "send_failed",
+      fetchRun,
+      notifyAnswerReady: vi.fn(async () => undefined),
+      optimisticAssistantMessageId: "assistant-optimistic",
+      primeAnswerSound: vi.fn(async () => undefined),
+      reconcileMessageIds: vi.fn(),
+      refreshActiveChat: vi.fn(async () => null),
+      request: async () => new Response("")
+    });
+
+    expect(fetchRun).toHaveBeenCalledExactlyOnceWith("run-x", "chat-1", { producer: expect.any(String) });
+    expect(fetchRun.mock.calls[0]?.[2]?.producer).not.toBe("successor");
+    expect(activeStreamAbortRef.current.get("chat-1")).toBe(successor);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toEqual({
+      optimisticAssistantMessageId: "assistant-successor",
+      producer: "successor",
+      resuming: false,
+      runId: null
     });
   });
 

@@ -13,7 +13,13 @@ export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_CALLS =
   MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS;
+/** Maximum stored statement or replacement statement. */
 export const MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH = 2_000 as const;
+/** Structural bound for the exact current-user turn a Memory command is read
+ * from. It equals the local Memory text processing budget; the admitted
+ * utility model's actual context, with its response reserve, can only lower it
+ * at dispatch, where an overflow is reported as too long. */
+export const MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH = 100_000 as const;
 export const MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH = 500 as const;
 export const MEMORY_ACTION_INTENT_MAX_QUERY_DECOMPOSITIONS = 2 as const;
 export const MEMORY_ACTION_INTENT_MAX_REF_LENGTH = 2_048 as const;
@@ -490,7 +496,10 @@ export const memoryActionIntentContractSchema = MEMORY_ACTION_INTENT_JSON_SCHEMA
 
 export type MemoryActionIntentDecodeResult =
   | Readonly<{ ok: true; value: MemoryActionIntent }>
-  | Readonly<{ code: "memory_action_intent_invalid"; ok: false }>;
+  | Readonly<{
+      code: "memory_action_intent_invalid" | "memory_action_intent_statement_too_long";
+      ok: false;
+    }>;
 
 type MemoryActionIntentWire = z.infer<typeof memoryActionIntentWireSchema>;
 
@@ -670,6 +679,23 @@ export function decodeMemoryActionIntent(value: unknown): MemoryActionIntentDeco
   };
 }
 
+/** A requested SAVE/UPDATE whose statement exceeds the stored statement bound
+ * is reported as too long. It is never truncated into a different fact. */
+function controlStatementTooLong(value: unknown): boolean {
+  const decision = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as { decision?: unknown }).decision
+    : null;
+  if (decision === null || typeof decision !== "object" || Array.isArray(decision)) {
+    return false;
+  }
+  const record = decision as Record<string, unknown>;
+  const statement = record.action === "SAVE"
+    ? record.statement
+    : record.action === "UPDATE" ? record.replacementStatement : null;
+  return typeof statement === "string" &&
+    statement.trim().length > MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH;
+}
+
 /** Fresh decisions populate the retained intent shape without model read
  * planning. Its legacy query field is only a bounded compatibility projection;
  * deterministic retrieval continues to use the exact sanitized source turn. */
@@ -682,7 +708,11 @@ export function decodeMemoryActionControlDecision(
     return invalid;
   }
   const wire = memoryActionControlWireSchema.safeParse(value);
-  if (!wire.success) return invalid;
+  if (!wire.success) {
+    return controlStatementTooLong(value)
+      ? { code: "memory_action_intent_statement_too_long", ok: false }
+      : invalid;
+  }
   // Missing fields belong only to other actions. In particular, every mutation
   // branch supplies its own confidence and applicable statement/target fields.
   const { answerRequested, ...action } = {
@@ -738,8 +768,9 @@ export function memoryActionIntentSourceTextMatchesCurrentUser(
   currentUserText: unknown
 ): sourceText is string {
   return typeof sourceText === "string" && typeof currentUserText === "string" &&
-    sourceText.length > 0 && sourceText.length <= MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH &&
-    currentUserText.length > 0 && currentUserText.length <= MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH &&
+    sourceText.length > 0 && sourceText.length <= MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH &&
+    currentUserText.length > 0 &&
+    currentUserText.length <= MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH &&
     !hasUnsafeSourceControlCharacter(sourceText) &&
     !hasUnsafeSourceControlCharacter(currentUserText) &&
     sourceText === currentUserText;

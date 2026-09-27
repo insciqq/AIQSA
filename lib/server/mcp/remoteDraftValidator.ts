@@ -5,8 +5,9 @@ import type {
   McpToolInventoryEntry,
   McpValidationIssue
 } from "@/lib/contracts/mcp";
-import { mcpValidationIssue, safeMcpEndpoint } from "@/lib/contracts/mcp";
+import { MCP_SERVER_TOOL_LIMIT, mcpValidationIssue, safeMcpEndpoint } from "@/lib/contracts/mcp";
 import {
+  MCP_INVENTORY_SESSION_LIMITS,
   McpClientSession,
   McpClientSessionError,
   type AiqsaMcpServerEvidence,
@@ -15,7 +16,7 @@ import {
   type McpClientSessionLimits,
   type McpClientSessionOptions
 } from "./clientSession";
-import { hashCanonicalMcpValue, validateMcpSlotValue } from "./definitions";
+import { hashCanonicalMcpValue, mcpToolDefinitionEvidence, validateMcpSlotValue } from "./definitions";
 import type {
   McpEndpointCorrection,
   McpDraftValidationInput,
@@ -27,7 +28,7 @@ import { compactMcpToolInventoryEntry } from "./catalogMetadata";
 import { getMcpRequestMaxBytes } from "./responseLimits";
 import { discoverGitLabMcpEndpoint, type McpValidationOAuthProvider } from "./endpointCorrection";
 
-const MAX_EVIDENCE_TOOLS = 256;
+const MAX_EVIDENCE_TOOLS = MCP_SERVER_TOOL_LIMIT;
 const MAX_TOOL_DESCRIPTION_LENGTH = 2_048;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/u;
 const DEFINITION_HASH_PATTERN = /^[a-f0-9]{64}$/u;
@@ -40,10 +41,8 @@ const SDK_OWNED_HEADERS = new Set([
 ]);
 
 const DEFAULT_LIMITS: McpClientSessionLimits = {
-  maxListPages: 16,
-  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); },
-  maxToolMetadataBytes: 256 * 1_024,
-  maxTools: MAX_EVIDENCE_TOOLS
+  ...MCP_INVENTORY_SESSION_LIMITS,
+  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); }
 };
 
 export type McpRemoteDraftValidationSession = Readonly<{
@@ -199,17 +198,15 @@ function successfulOutcome(input: {
     origin: endpoint.origin,
     pathname: endpoint.pathname
   });
-  const toolDefinitionHashes = input.tools.map((tool) => tool.definitionHash).sort();
+  const definitions = mcpToolDefinitionEvidence(input.tools);
   const evidence: McpJsonObject = {
     endpointHash,
     ...(input.endpointCorrection ? { endpointCorrection: { kind: "gitlab", endpoint: safeMcpEndpoint(source.url)! } } : {}),
     ...(input.serverEvidence ? { server: input.serverEvidence } : {}),
     toolCount: input.tools.length,
-    toolDefinitionHashes,
-    toolInventoryHash: hashCanonicalMcpValue(
-      input.tools.map((tool) => ({ definitionHash: tool.definitionHash, name: tool.name }))
-        .sort((left, right) => left.name.localeCompare(right.name))
-    ),
+    toolDefinitionHashes: definitions.toolDefinitionHashes,
+    toolDefinitions: definitions.toolDefinitions,
+    toolInventoryHash: definitions.toolInventoryHash,
     transport: "streamable_http"
   };
   return {

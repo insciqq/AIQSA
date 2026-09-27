@@ -16,6 +16,7 @@ import {
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
+import { projectArchiveLimits, projectArchiveTarMaxBytes } from "./projectArchive";
 import { selectedCaptureRequest } from "./outputManifest";
 import { WorkspaceSkillRunState } from "./skillRunState";
 import { parseSkillArchive, readSkillArchive, skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
@@ -271,10 +272,14 @@ function tarNumber(bytes: Uint8Array, offset: number, length: number): number {
 }
 
 /** Bounded parser for the ustar archives emitted by the workspace runtimes. */
-function parseTarGzip(archive: Uint8Array, maxUncompressedBytes: number, maxEntries: number): RestoredArchive {
+function parseTarGzip(archive: Uint8Array, limits: ReturnType<typeof projectArchiveLimits>): RestoredArchive {
+  const maxTarBytes = projectArchiveTarMaxBytes(limits);
   let tar: Uint8Array;
-  try { tar = new Uint8Array(gunzipSync(archive, { maxOutputLength: maxUncompressedBytes })); } catch { throw new WorkspaceRuntimeError("workspace_archive_invalid"); }
-  if (tar.byteLength > maxUncompressedBytes) throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+  try { tar = new Uint8Array(gunzipSync(archive, { maxOutputLength: maxTarBytes })); } catch (error) {
+    throw new WorkspaceRuntimeError((error as { code?: unknown }).code === "ERR_BUFFER_TOO_LARGE" ? "workspace_archive_limit_exceeded" : "workspace_archive_invalid");
+  }
+  if (tar.byteLength > maxTarBytes) throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+  let fileBytes = 0;
   const directories: string[] = [];
   const files: Array<{ path: string; content: Uint8Array }> = [];
   const seen = new Set<string>();
@@ -290,13 +295,14 @@ function parseTarGzip(archive: Uint8Array, maxUncompressedBytes: number, maxEntr
       throw new WorkspaceRuntimeError("workspace_archive_invalid");
     }
     seen.add(path);
-    if (seen.size > maxEntries) throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+    if (seen.size > limits.maxEntries) throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
     const size = tarNumber(header, 124, 12);
     if (offset + size > tar.byteLength) throw new WorkspaceRuntimeError("workspace_archive_invalid");
     const type = header[156] === 0 || header[156] === 0x30 ? "file" : header[156] === 0x35 ? "directory" : "unsupported";
     if (type === "unsupported") throw new WorkspaceRuntimeError("workspace_archive_invalid");
     if (type === "file") {
-      if (size > maxUncompressedBytes) {
+      fileBytes += size;
+      if (fileBytes > limits.maxBytes) {
         throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
       }
       files.push({ path, content: tar.slice(offset, offset + size) });
@@ -1079,6 +1085,14 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     const files = [...session.files.entries()]
       .filter(([path]) => path.startsWith(prefix))
       .map(([path, content]) => ({ content, path: path.slice(prefix.length), type: "file" as const }));
+    if (input.restorable) {
+      // Same restore bounds as the guest verify pass in the microsandbox runtime.
+      const limits = projectArchiveLimits(this.config);
+      if (directories.length + files.length > limits.maxEntries ||
+        files.reduce((sum, file) => sum + file.content.byteLength, 0) > limits.maxBytes) {
+        throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+      }
+    }
     const archive = new Uint8Array(gzipSync(tarArchive(
       [...directories, ...files].sort((left, right) => left.path.localeCompare(right.path))
     )));
@@ -1102,7 +1116,8 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     }
     const archive = await readArchiveBody(input.archive, input.byteSize, input.signal);
     if (hash(archive) !== input.checksum) throw new WorkspaceRuntimeError("workspace_archive_invalid");
-    const parsed = parseTarGzip(archive, this.config.diskMiB * 1_024 * 1_024, this.config.outputMaxFiles * 4);
+    // Parsing completes before the project tree is replaced.
+    const parsed = parseTarGzip(archive, projectArchiveLimits(this.config));
     const prefix = `${WORKSPACE_PROJECT_DIRECTORY}/`;
     for (const path of [...session.files.keys()]) if (path.startsWith(prefix)) session.files.delete(path);
     for (const path of [...session.directories]) if (path.startsWith(prefix) && path !== WORKSPACE_PROJECT_DIRECTORY) session.directories.delete(path);

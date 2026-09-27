@@ -17,6 +17,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 import packageMetadata from "@/package.json";
+import { MCP_SERVER_TOOL_LIMIT } from "@/lib/contracts/mcp";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 import { McpResponseGuard } from "./responseGuard";
 import { McpSafeFetchError } from "./safeFetch";
@@ -47,6 +48,7 @@ export type McpClientSessionErrorCode =
   | "mcp_inventory_metadata_limit"
   | "mcp_inventory_schema_limit"
   | "mcp_inventory_secret_exposed"
+  | "mcp_inventory_time_limit"
   | "mcp_inventory_tool_invalid"
   | "mcp_inventory_tool_limit"
   | "mcp_inventory_response_too_large"
@@ -82,9 +84,10 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_initialize_response_too_large: "The MCP initialization response exceeds the configured byte limit.",
   mcp_inventory_cursor_cycle: "The MCP tool inventory repeated a pagination cursor.",
   mcp_inventory_metadata_limit: "MCP tool metadata exceeds the configured byte limit.",
-  mcp_inventory_page_limit: "The MCP tool inventory exceeds the configured page limit.",
+  mcp_inventory_page_limit: "The MCP tool inventory has more pages than its tool limit allows.",
   mcp_inventory_schema_limit: "An MCP tool schema exceeds the configured byte limit.",
   mcp_inventory_secret_exposed: "The MCP tool inventory contains an exact known credential.",
+  mcp_inventory_time_limit: "The MCP tool inventory could not be read within its time budget.",
   mcp_inventory_tool_invalid: "The MCP tool inventory contains an invalid tool definition.",
   mcp_inventory_tool_limit: "The MCP tool inventory exceeds the configured tool limit.",
   mcp_inventory_response_too_large: "The MCP tool inventory response exceeds the configured byte limit.",
@@ -191,7 +194,12 @@ export type AiqsaMcpToolCallResult = Readonly<{
 }>;
 
 export type McpClientSessionLimits = Readonly<{
-  maxListPages: number;
+  /**
+   * Time budget for one complete tools/list traversal. A traversal is also
+   * bounded by `maxTools`, the cumulative list byte limit and cursor-cycle
+   * detection; a single page may always use its whole request timeout.
+   */
+  maxListDurationMs: number;
   maxToolArgumentBytes: number;
   maxToolMetadataBytes: number;
   /** Defaults to the configured tools/call wire limit. */
@@ -220,7 +228,19 @@ export type McpClientSessionOptions = Readonly<{
 type SessionState = "closed" | "initializing" | "new" | "ready";
 
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/u;
+/** Implementation and capability evidence only; instructions have their own bound. */
 const MAX_SERVER_EVIDENCE_BYTES = 16 * 1_024;
+
+/**
+ * Shared inventory bounds of runtime sessions and draft validation. The time
+ * budget equals the default MCP call timeout, so a server that lists within
+ * one call timeout lists within the traversal budget too.
+ */
+export const MCP_INVENTORY_SESSION_LIMITS = Object.freeze({
+  maxListDurationMs: 300_000,
+  maxToolMetadataBytes: 256 * 1_024,
+  maxTools: MCP_SERVER_TOOL_LIMIT
+});
 const SDK_OWNED_HEADERS = new Set([
   "accept",
   "content-type",
@@ -304,7 +324,7 @@ function validateOptions(options: McpClientSessionOptions): void {
     url.password ||
     url.hash ||
     !positiveInteger(options.requestTimeoutMs) ||
-    !positiveInteger(options.limits.maxListPages) ||
+    !positiveInteger(options.limits.maxListDurationMs) ||
     !positiveInteger(options.limits.maxToolArgumentBytes) ||
     !positiveInteger(options.limits.maxToolMetadataBytes) ||
     (options.limits.maxToolResultBytes !== undefined && !positiveInteger(options.limits.maxToolResultBytes)) ||
@@ -409,7 +429,8 @@ function canonicalSchema(inputSchema: Record<string, unknown>): Readonly<{
   }
 }
 
-const MAX_CACHED_SCHEMA_VALIDATORS = 256;
+// One maximal server's inventory stays cached across health and refresh reads.
+const MAX_CACHED_SCHEMA_VALIDATORS = MCP_SERVER_TOOL_LIMIT;
 const MAX_CACHED_SCHEMA_BYTES = DEFAULT_MCP_RESPONSE_WIRE_LIMITS.listToolsResponseMaxBytes;
 const schemaValidators = new Map<string, JsonSchemaValidator<unknown>>();
 let cachedSchemaBytes = 0;
@@ -479,7 +500,8 @@ function normalizeAnnotations(annotations: Readonly<{
 function normalizeServerEvidence(
   implementation: Implementation | undefined,
   capabilities: ServerCapabilities | undefined,
-  instructions: string | undefined
+  instructions: string | undefined,
+  maxInstructionsBytes: number
 ): AiqsaMcpServerEvidence {
   if (!implementation || !capabilities || !implementation.name ||
     typeof implementation.version !== "string") {
@@ -508,12 +530,19 @@ function normalizeServerEvidence(
       ...(implementation.title !== undefined ? { title: implementation.title } : {}),
       version: implementation.version
     },
-    ...(instructions?.trim() ? { instructions: instructions.trim() } : {})
   };
   if (Buffer.byteLength(canonicalMcpJson(evidence), "utf8") > MAX_SERVER_EVIDENCE_BYTES) {
     throw sessionError("mcp_initialize_failed", "initialize");
   }
-  return evidence;
+  // Server instructions are kept whole alongside the evidence. Only the
+  // configured initialize response limit bounds them, measured as the JSON
+  // escaped bytes that evidence persistence stores.
+  const trimmed = instructions?.trim();
+  if (!trimmed) return evidence;
+  if (Buffer.byteLength(JSON.stringify(trimmed), "utf8") > maxInstructionsBytes) {
+    throw sessionError("mcp_initialize_response_too_large", "initialize");
+  }
+  return { ...evidence, instructions: trimmed };
 }
 
 function normalizeTool(
@@ -618,6 +647,7 @@ export class McpClientSession {
   private inventoryChangeVersion = 0;
   private inventoryStaleValue = true;
   private readonly limits: Required<McpClientSessionLimits>;
+  private readonly maxInstructionsBytes: number;
   private readonly maxInventoryBytes: number;
   private readonly onInventoryStale: (() => void) | undefined;
   private fatalCauseExposed = false;
@@ -629,6 +659,7 @@ export class McpClientSession {
     validateOptions(options);
     this.defaultRequestTimeoutMs = options.requestTimeoutMs;
     const responseLimits = resolveMcpResponseWireLimits(options.responseLimits);
+    this.maxInstructionsBytes = responseLimits.initializeResponseMaxBytes;
     this.maxInventoryBytes = responseLimits.listToolsResponseMaxBytes;
     this.limits = {
       ...options.limits,
@@ -793,7 +824,8 @@ export class McpClientSession {
         this.serverEvidenceValue = normalizeServerEvidence(
           this.client.getServerVersion(),
           this.client.getServerCapabilities(),
-          this.client.getInstructions()
+          this.client.getInstructions(),
+          this.maxInstructionsBytes
         );
         this.state = "ready";
       } catch (error) {
@@ -860,33 +892,47 @@ export class McpClientSession {
   async listAllTools(options?: McpClientRequestOptions): Promise<readonly AiqsaMcpToolDefinition[]> {
     this.requireReady("list_tools");
     const sdkOptions = requestOptions("list_tools", this.defaultRequestTimeoutMs, options);
+    // requestOptions always resolves the per-request timeout; the SDK type keeps it optional.
+    const requestTimeoutMs = sdkOptions.timeout ?? this.defaultRequestTimeoutMs;
     const refreshVersion = this.inventoryChangeVersion;
     const tools: AiqsaMcpToolDefinition[] = [];
     const names = new Set<string>();
     const cursors = new Set<string>();
+    const deadline = Date.now() + Math.max(this.limits.maxListDurationMs, requestTimeoutMs);
     let cursor: string | undefined;
     let page = 0;
     let inventoryBytes = 0;
 
     try {
       while (true) {
-        if (page >= this.limits.maxListPages) {
+        // No fixed page count: an inventory of N tools never needs more than
+        // N + 1 pages, so the item budget also bounds the page sequence.
+        if (page > this.limits.maxTools) {
           throw sessionError("mcp_inventory_page_limit", "list_tools");
         }
         page += 1;
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) throw sessionError("mcp_inventory_time_limit", "list_tools");
+        const timeout = Math.min(requestTimeoutMs, remainingMs);
+        const params = cursor === undefined ? {} : { cursor };
         const result = await this.guardedRequest(
           "list_tools",
-          sdkOptions.timeout,
-          () => this.client.request({
-            method: "tools/list",
-            params: cursor === undefined ? {} : { cursor }
-          }, sdkOptions)
-        );
+          timeout,
+          () => this.client.request({ method: "tools/list", params }, { ...sdkOptions, timeout })
+        ).catch((error: unknown) => {
+          // Only the traversal budget shortened this request's own timeout.
+          throw timeout < requestTimeoutMs && SdkError.isInstance(error) &&
+            error.code === SdkErrorCode.RequestTimeout
+            ? sessionError("mcp_inventory_time_limit", "list_tools")
+            : error;
+        });
         if (tools.length + result.tools.length > this.limits.maxTools) {
           throw sessionError("mcp_inventory_tool_limit", "list_tools");
         }
-        // Pagination must not multiply the configured catalog memory budget.
-        inventoryBytes += Buffer.byteLength(JSON.stringify(result.tools), "utf8");
+        // Pagination must not multiply the configured catalog memory budget;
+        // retained cursors count toward it as well.
+        inventoryBytes += Buffer.byteLength(JSON.stringify(result.tools), "utf8") +
+          (result.nextCursor === undefined ? 0 : Buffer.byteLength(result.nextCursor, "utf8"));
         if (inventoryBytes > this.maxInventoryBytes) {
           await this.close();
           throw sessionError("mcp_inventory_response_too_large", "list_tools");
@@ -909,6 +955,7 @@ export class McpClientSession {
         cursor = result.nextCursor;
       }
     } catch (error) {
+      // A partial traversal is never an inventory: nothing is returned.
       this.inventoryStaleValue = true;
       throw requestFailure(
         error,

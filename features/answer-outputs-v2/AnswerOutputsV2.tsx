@@ -118,15 +118,19 @@ function KnowledgeStateV2({ state }: Readonly<{ state: ThreadKnowledgeAnswerStat
 function MemoryStatusV2({ status }: Readonly<{
   status: NonNullable<ThreadArtifactSummary["memoryStatus"]>;
 }>) {
-  const limited = status === "LIMITED";
+  const presentation = status === "INPUT_TOO_LONG"
+    ? { copy: mt("answer.inputTooLong"), testId: "memory-input-too-long-status" }
+    : status === "LIMITED"
+      ? { copy: mt("answer.limited"), testId: "memory-limited-status" }
+      : { copy: mt("answer.unavailable"), testId: "memory-unavailable-status" };
   return (
     <p
       className="v2-memory-answer-state"
-      data-testid={limited ? "memory-limited-status" : "memory-unavailable-status"}
+      data-testid={presentation.testId}
       role="status"
     >
       <UiV2Icon name="memory" />
-      <span>{mt(limited ? "answer.limited" : "answer.unavailable")}</span>
+      <span>{presentation.copy}</span>
     </p>
   );
 }
@@ -530,6 +534,11 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
             ))}
           </ol>
         ) : null}
+        {artifact.citationsTruncated || artifact.sourcesTruncated ? (
+          <p className="v2-answer-sources-note" data-testid="answer-sources-truncated">
+            This answer has more sources than can be listed.
+          </p>
+        ) : null}
       </div>
     ) : null
   };
@@ -567,8 +576,8 @@ export function AnswerOutputsV2({
     </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
-  const hasMemoryStatus = artifact?.memoryStatus === "LIMITED" ||
-    artifact?.memoryStatus === "UNAVAILABLE";
+  const hasMemoryStatus = artifact?.memoryStatus === "INPUT_TOO_LONG" ||
+    artifact?.memoryStatus === "LIMITED" || artifact?.memoryStatus === "UNAVAILABLE";
   const hasKnowledgeState = Boolean(artifact?.knowledgeState && (
     artifact.knowledgeState.answer === "insufficient_evidence" ||
     artifact.knowledgeState.scope === "partial_sources_ready"

@@ -530,24 +530,27 @@ describe("Memory coordinator", () => {
   });
 
   it.each([
-    ["EXTRACT_FACTS", 1, "retry"],
-    ["EXTRACT_FACTS", 2, "terminal"],
-    ["RESOLVE_FACT_RELATIONS", 1, "retry"],
-    ["RESOLVE_FACT_RELATIONS", 2, "terminal"]
+    ["EXTRACT_FACTS", 1, "retry", "memory_learning_provider_transient"],
+    ["EXTRACT_FACTS", 1, "retry", "memory_semantic_adjudication_output_invalid"],
+    ["EXTRACT_FACTS", 2, "terminal", "memory_learning_provider_transient"],
+    ["EXTRACT_FACTS", 2, "terminal", "memory_semantic_adjudication_output_invalid"],
+    ["RESOLVE_FACT_RELATIONS", 1, "retry", "memory_learning_provider_transient"],
+    ["RESOLVE_FACT_RELATIONS", 2, "terminal", "memory_learning_provider_transient"]
   ] as const)(
     "uses the two-attempt provider-learning ceiling for %s attempt %s",
-    async (kind, attemptCount, expected) => {
+    async (kind, attemptCount, expected, errorCode) => {
       const claim = jobClaim({ attemptCount, kind });
       const claimJob = vi.fn()
         .mockResolvedValueOnce(claim)
         .mockResolvedValue(null);
       const retryJob = vi.fn(async () => true);
       const terminalJob = vi.fn(async () => true);
-      const coordinatorRepository = repository({ claimJob, retryJob, terminalJob });
+      const commitJobSuccess = vi.fn(async () => true);
+      const coordinatorRepository = repository({ claimJob, commitJobSuccess, retryJob, terminalJob });
       const registry = new MemoryCoordinatorRegistry();
       registry.registerJob({
         execute: async () => {
-          throw new MemoryCoordinatorError("memory_learning_provider_transient", true);
+          throw new MemoryCoordinatorError(errorCode, true);
         },
         kind,
         preflight: async () => ({ status: "READY" })
@@ -556,17 +559,18 @@ describe("Memory coordinator", () => {
 
       await service.reconcileNow();
       service.stop();
+      expect(commitJobSuccess).not.toHaveBeenCalled();
 
       if (expected === "retry") {
         expect(retryJob).toHaveBeenCalledWith(expect.objectContaining({
           claim,
-          errorCode: "memory_learning_provider_transient"
+          errorCode
         }));
         expect(terminalJob).not.toHaveBeenCalled();
       } else {
         expect(terminalJob).toHaveBeenCalledWith(expect.objectContaining({
           claim,
-          errorCode: "memory_learning_provider_transient"
+          errorCode
         }));
         expect(retryJob).not.toHaveBeenCalled();
       }

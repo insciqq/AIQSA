@@ -2,11 +2,17 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSecretsPanel } from "./WorkspaceSecretsPanel";
-import { requestWorkspaceSecrets } from "./workspaceSecretsApi";
-import { WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_SECRET_MAX_COUNT, type WorkspaceSecretSummary } from "@/lib/contracts/workspaceSecrets";
+import { requestWorkspaceSecrets, type WorkspaceSecretsState } from "./workspaceSecretsApi";
+import {
+  WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_SECRET_MAX_COUNT,
+  type WorkspaceBrowserAutosaveReport, type WorkspaceSecretSummary
+} from "@/lib/contracts/workspaceSecrets";
 
 vi.mock("./workspaceSecretsApi", () => ({ requestWorkspaceSecrets: vi.fn() }));
 const request = vi.mocked(requestWorkspaceSecrets);
+function listed(secrets: readonly WorkspaceSecretSummary[], browserAutosave: WorkspaceBrowserAutosaveReport | null = null): WorkspaceSecretsState {
+  return { secrets, browserAutosave };
+}
 function expectDirty(value: boolean) {
   const event = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(event);
@@ -31,10 +37,10 @@ describe("WorkspaceSecretsPanel", () => {
     [0, WORKSPACE_BROWSER_SESSION_MAX_COUNT, "SSH key"],
     [WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_COUNT, null]
   ] as const)("keeps ordinary and browser-session capacity independent (%i, %i)", async (ordinary, sessions, initialType) => {
-    request.mockResolvedValueOnce([
+    request.mockResolvedValueOnce(listed([
       ...Array.from({ length: ordinary }, (_, index) => ({ ...saved, id: `ordinary-${index}`, name: `Saved secret ${index}` })),
       ...Array.from({ length: sessions }, (_, index) => ({ ...saved, id: `browser-${index}`, name: `Saved session ${index}`, kind: "browser_session" as const }))
-    ]);
+    ]));
     render(<WorkspaceSecretsPanel />);
     await screen.findByRole("heading", { name: ordinary ? "Saved secret 0" : "Saved session 0" });
     const add = screen.getByRole("button", { name: "Add secret" });
@@ -51,7 +57,7 @@ describe("WorkspaceSecretsPanel", () => {
   });
 
   it("reports dirty only while a create draft differs from its opening state", async () => {
-    request.mockResolvedValueOnce([]);
+    request.mockResolvedValueOnce(listed([]));
     render(<WorkspaceSecretsPanel />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
 
@@ -73,7 +79,7 @@ describe("WorkspaceSecretsPanel", () => {
   });
 
   it("reports edit metadata and replacement changes and clears dirty when they are reverted", async () => {
-    request.mockResolvedValueOnce([saved]);
+    request.mockResolvedValueOnce(listed([saved]));
     render(<WorkspaceSecretsPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit Saved access" }));
     expectDirty(false);
@@ -93,7 +99,7 @@ describe("WorkspaceSecretsPanel", () => {
   it("shows browser origin metadata and imports original state bytes without showing saved cookies", async () => {
     const browser: WorkspaceSecretSummary = { ...saved, kind: "browser_session", name: "Shop session", originalName: "shop.example.json",
       browserSession: { autoSaved: true } };
-    request.mockResolvedValueOnce([browser]);
+    request.mockResolvedValueOnce(listed([browser]));
     render(<WorkspaceSecretsPanel />);
     expect(await screen.findByText(/Saved by Workspace/)).toBeInTheDocument();
     expect(screen.getByText("shop.example.json")).toBeInTheDocument();
@@ -106,7 +112,7 @@ describe("WorkspaceSecretsPanel", () => {
     fireEvent.change(screen.getByLabelText("Browser session JSON"), { target: { files: [upload] } });
     await waitFor(() => expect(screen.getByLabelText("Session filename")).toHaveValue("import.json"));
     fireEvent.change(screen.getByLabelText("Session filename"), { target: { value: "shop.example.json" } });
-    request.mockResolvedValueOnce([{ ...browser, browserSession: { autoSaved: false } }]);
+    request.mockResolvedValueOnce(listed([{ ...browser, browserSession: { autoSaved: false } }]));
     fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
     await screen.findByText(/Imported/);
     expect(request).toHaveBeenLastCalledWith({ action: "update", id: browser.id, expectedVersionId: browser.versionId,
@@ -115,9 +121,32 @@ describe("WorkspaceSecretsPanel", () => {
       } } });
   });
 
+  it("shows the latest skipped autosave outcome without names and admits browser imports up to the browser limit", async () => {
+    const browser: WorkspaceSecretSummary = { ...saved, kind: "browser_session", name: "Shop session", originalName: "shop.example.json",
+      byteSize: 600 * 1024, browserSession: { autoSaved: true } };
+    request.mockResolvedValueOnce(listed([browser], { saved: 0, unchanged: 0, skipped: { browser_session_too_large: 1 } }));
+    render(<WorkspaceSecretsPanel />);
+    const outcome = await screen.findByTestId("workspace-browser-autosave");
+    expect(outcome).toHaveTextContent("Last browser autosave: 0 saved, 0 unchanged. 1 session larger than 8 MiB skipped; any previously saved version was kept.");
+    expect(outcome).toHaveClass("text-caution");
+    fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Browser session" }));
+    expect(screen.getByText(/Each browser session can be up to 8 MiB, with up to 64 MiB/)).toBeInTheDocument();
+    const oversized = new File(["{}"], "large.json", { type: "application/json" });
+    Object.defineProperty(oversized, "size", { value: WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1 });
+    fireEvent.change(screen.getByLabelText("Browser session JSON"), { target: { files: [oversized] } });
+    expect(await screen.findByText("Browser sessions can be up to 8 MiB.")).toBeInTheDocument();
+    const original = Buffer.from('{"cookies":[],"origins":[]}');
+    const accepted = new File([new Uint8Array(original)], "shop.example.json", { type: "application/json" });
+    Object.defineProperty(accepted, "size", { value: 600 * 1024 });
+    Object.defineProperty(accepted, "arrayBuffer", { value: async () => original.buffer.slice(original.byteOffset, original.byteOffset + original.byteLength) });
+    fireEvent.change(screen.getByLabelText("Browser session JSON"), { target: { files: [accepted] } });
+    await waitFor(() => expect(screen.getByLabelText("Session filename")).toHaveValue("shop.example.json"));
+  });
+
   it("ignores an aborted initial load after React remounts the effect", async () => {
     let reject!: (error: Error) => void;
-    request.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail; })).mockResolvedValueOnce([]);
+    request.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail; })).mockResolvedValueOnce(listed([]));
     render(<StrictMode><WorkspaceSecretsPanel /></StrictMode>);
     await screen.findByText("No saved Workspace secrets.");
     expect(request.mock.calls[0]![1]!.aborted).toBe(true);
@@ -127,7 +156,7 @@ describe("WorkspaceSecretsPanel", () => {
   });
 
   it("keeps exact env input after failure, blocks duplicate writes and preserves focus after saving", async () => {
-    request.mockResolvedValueOnce([]);
+    request.mockResolvedValueOnce(listed([]));
     render(<WorkspaceSecretsPanel />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
@@ -149,7 +178,7 @@ describe("WorkspaceSecretsPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("already used");
     expect(screen.getByLabelText("Variable value 1")).toHaveValue(value);
     expectDirty(true);
-    request.mockResolvedValueOnce([{ ...saved, kind: "env", name: "Fixture API", envNames: ["API_TOKEN"] }]);
+    request.mockResolvedValueOnce(listed([{ ...saved, kind: "env", name: "Fixture API", envNames: ["API_TOKEN"] }]));
     fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
     await screen.findByRole("heading", { name: "Fixture API" });
     expect(request).toHaveBeenLastCalledWith({ action: "create", name: "Fixture API", description: "", value: { kind: "env", entries: [{ name: "API_TOKEN", value }] } });
@@ -159,13 +188,13 @@ describe("WorkspaceSecretsPanel", () => {
   });
 
   it("renames with preserve, requires an explicit replacement, and deletes the exact version", async () => {
-    request.mockResolvedValueOnce([saved]);
+    request.mockResolvedValueOnce(listed([saved]));
     render(<WorkspaceSecretsPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit Saved access" }));
     expect(screen.queryByLabelText("Secret text")).toBeNull();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed access" } });
     const renamed = { ...saved, name: "Renamed access", versionId: "10000000-0000-4000-8000-000000000003" };
-    request.mockResolvedValueOnce([renamed]);
+    request.mockResolvedValueOnce(listed([renamed]));
     fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
     await screen.findByRole("heading", { name: "Renamed access" });
     expect(request).toHaveBeenLastCalledWith({ action: "update", id: saved.id, expectedVersionId: saved.versionId,
@@ -181,7 +210,7 @@ describe("WorkspaceSecretsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
     fireEvent.click(screen.getByRole("button", { name: "More actions for Renamed access" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
-    request.mockResolvedValueOnce([]);
+    request.mockResolvedValueOnce(listed([]));
     fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
     await screen.findByText("No saved Workspace secrets.");
     expect(request).toHaveBeenLastCalledWith({ action: "delete", id: renamed.id, expectedVersionId: renamed.versionId });
@@ -189,7 +218,7 @@ describe("WorkspaceSecretsPanel", () => {
   });
 
   it("uploads original binary bytes and offers private-key paste/upload without a host field", async () => {
-    request.mockResolvedValueOnce([]);
+    request.mockResolvedValueOnce(listed([]));
     render(<WorkspaceSecretsPanel />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
@@ -203,7 +232,7 @@ describe("WorkspaceSecretsPanel", () => {
     Object.defineProperty(file, "arrayBuffer", { value: async () => bytes.buffer });
     fireEvent.change(screen.getByLabelText(/Original file/), { target: { files: [file] } });
     await screen.findByText("credentials.bin");
-    request.mockResolvedValueOnce([{ ...saved, kind: "file", name: "Original credentials", originalName: file.name }]);
+    request.mockResolvedValueOnce(listed([{ ...saved, kind: "file", name: "Original credentials", originalName: file.name }]));
     fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
     await screen.findByRole("heading", { name: "Original credentials" });
     expect(request).toHaveBeenLastCalledWith({ action: "create", name: "Original credentials", description: "",
@@ -211,7 +240,7 @@ describe("WorkspaceSecretsPanel", () => {
   });
 
   it("merges .env locally, retains pasted drafts on close and sends only explicit Save", async () => {
-    request.mockResolvedValueOnce([]);
+    request.mockResolvedValueOnce(listed([]));
     render(<WorkspaceSecretsPanel />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
@@ -230,7 +259,7 @@ describe("WorkspaceSecretsPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Added 1, replaced 1, skipped 1.");
     expect(screen.getByLabelText("Variable value 2")).toHaveValue("first\nsecond");
     expect(request).toHaveBeenCalledTimes(1);
-    request.mockResolvedValueOnce([{ ...saved, kind: "env", name: "Fixture env", envNames: ["EXISTING", "NEW"] }]);
+    request.mockResolvedValueOnce(listed([{ ...saved, kind: "env", name: "Fixture env", envNames: ["EXISTING", "NEW"] }]));
     fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
     await screen.findByRole("heading", { name: "Fixture env" });
     expect(request).toHaveBeenLastCalledWith({ action: "create", name: "Fixture env", description: "", value: {
@@ -240,7 +269,7 @@ describe("WorkspaceSecretsPanel", () => {
   });
 
   it("blocks every sheet close during Save and keeps the draft after failure", async () => {
-    request.mockResolvedValueOnce([]);
+    request.mockResolvedValueOnce(listed([]));
     render(<WorkspaceSecretsPanel />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
@@ -259,7 +288,7 @@ describe("WorkspaceSecretsPanel", () => {
   });
 
   it("refreshes conflicting metadata without replacing the draft or its text selection", async () => {
-    request.mockResolvedValueOnce([saved]);
+    request.mockResolvedValueOnce(listed([saved]));
     render(<WorkspaceSecretsPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit Saved access" }));
     fireEvent.click(screen.getByLabelText("Replace saved value"));
@@ -268,7 +297,7 @@ describe("WorkspaceSecretsPanel", () => {
     request.mockRejectedValueOnce(new Error("This secret changed in another window."));
     fireEvent.click(screen.getByRole("button", { name: "Save secret" }));
     await screen.findByRole("alert");
-    request.mockResolvedValueOnce([{ ...saved, versionId: "10000000-0000-4000-8000-000000000003" }]);
+    request.mockResolvedValueOnce(listed([{ ...saved, versionId: "10000000-0000-4000-8000-000000000003" }]));
     text.focus(); text.setSelectionRange(2, 7);
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());

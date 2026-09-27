@@ -133,6 +133,7 @@ export type KnowledgeSearchScope = Readonly<{
   indexGenerationId: string;
   knowledgeBaseId: string;
   projectionComplete: boolean;
+  projectionFailed: boolean;
   targetDimension: number;
 }>;
 
@@ -573,6 +574,8 @@ function knowledgeRetrievalScopeRowsSql(): Prisma.Sql {
         ) FILTER (WHERE artifact."indexArtifactId" IS NOT NULL),
         true
       ) AS "projectionComplete",
+      COALESCE(bool_or(projection."state" = 'FAILED'::"KnowledgeSearchProjectionState")
+        FILTER (WHERE artifact."indexArtifactId" IS NOT NULL), false) AS "projectionFailed",
       COALESCE(sum(embedding_count."eligibleRows") FILTER (
         WHERE embedding_count."embeddingDimension" = binding."targetDimension"
       ), 0)::integer AS "eligibleRows"
@@ -647,6 +650,8 @@ function decodeScope(value: unknown): ScopeRow | null {
     targetDimension !== 1_024 && targetDimension !== 1_536 ||
     acceptedIndexArtifactIds === null ||
     typeof value.projectionComplete !== "boolean" ||
+    typeof value.projectionFailed !== "boolean" ||
+    value.projectionComplete && value.projectionFailed ||
     typeof value.baseName !== "string" || !value.baseName ||
     typeof value.indexGenerationId !== "string" || !value.indexGenerationId ||
     typeof value.knowledgeBaseId !== "string" || !value.knowledgeBaseId
@@ -659,6 +664,7 @@ function decodeScope(value: unknown): ScopeRow | null {
     indexGenerationId: value.indexGenerationId,
     knowledgeBaseId: value.knowledgeBaseId,
     projectionComplete: value.projectionComplete,
+    projectionFailed: value.projectionFailed,
     targetDimension
   };
 }
@@ -722,7 +728,8 @@ export async function assertKnowledgeSearchScopeReady(
     scope.acceptedIndexArtifactIds))].sort();
   if (acceptedIndexArtifactIds.length > 0 &&
     acceptedScopes.some((scope) => !scope.projectionComplete)) {
-    throw new KnowledgeSearchFailure("knowledge_search_projection_incomplete",
+    throw new KnowledgeSearchFailure(acceptedScopes.some((scope) => scope.projectionFailed)
+      ? "knowledge_search_projection_failed" : "knowledge_search_projection_pending",
       createHash("sha256").update(JSON.stringify(acceptedScopes)).digest("hex"));
   }
   return Object.freeze(acceptedScopes.map((scope) => Object.freeze(scope)));

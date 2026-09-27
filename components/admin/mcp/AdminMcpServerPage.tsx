@@ -33,11 +33,10 @@ import type { AdminFeedbackController } from "@/components/admin/useAdminFeedbac
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { UiV2Button, UiV2IconButton, UiV2Switch } from "@/components/ui-v2";
 import type { AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
-import type { AdminMcpServer } from "@/lib/contracts/mcp";
+import { adminMcpOAuthAction, type AdminMcpServer, type McpInventoryDifferenceReason } from "@/lib/contracts/mcp";
+import { useAdminMcpOAuthStart } from "@/components/admin/mcp/useAdminMcpOAuthStart";
 import { CircleAlert, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-
-const linkButton = "v2-button v2-focusable";
 
 export type AdminMcpServerPageProps = Readonly<{
   controller: AdminMcpController;
@@ -153,13 +152,15 @@ function ActivationBanner({
   return null;
 }
 
-function AuthorizationCard({ controller, server }: Readonly<{ controller: AdminMcpController; server: AdminMcpServer }>) {
+function AuthorizationCard({ controller, onError, server }: Readonly<{
+  controller: AdminMcpController;
+  onError(message: string): void;
+  server: AdminMcpServer;
+}>) {
   const state = mcpAuthorizationState(server);
   const connection = server.validationOAuth;
   const archived = Boolean(server.archivedAt);
-  const encoded = encodeURIComponent(server.id);
-  const connectHref = `/api/admin/mcp/${encoded}/oauth/validation/connect`;
-  const reconnectHref = `/api/admin/mcp/${encoded}/oauth/validation/reconnect`;
+  const oauthStart = useAdminMcpOAuthStart(onError);
   const ready = connection?.state === "ready";
   const reconnect = connection?.state === "reauthorization_required";
   const disconnecting = connection?.state === "disconnecting";
@@ -180,16 +181,29 @@ function AuthorizationCard({ controller, server }: Readonly<{ controller: AdminM
           {archived ? null : (
             <div className="flex flex-wrap gap-2">
               {ready || reconnect ? (
-                <a className={linkButton} data-tone={reconnect ? "primary" : "ghost"} href={reconnectHref}>
-                  <span>Reconnect</span>
-                </a>
+                <UiV2Button
+                  busy={oauthStart.pending !== null}
+                  disabled={controller.state.busy}
+                  onClick={() => oauthStart.start(adminMcpOAuthAction(server.id, true))}
+                  tone={reconnect ? "primary" : "ghost"}
+                  type="button"
+                >
+                  Reconnect
+                </UiV2Button>
               ) : (
-                <a aria-disabled={disconnecting ? true : undefined} className={linkButton} data-tone="primary" href={connectHref}>
-                  <span>Connect</span>
-                </a>
+                <UiV2Button
+                  busy={oauthStart.pending !== null}
+                  disabled={controller.state.busy || disconnecting}
+                  onClick={() => oauthStart.start(adminMcpOAuthAction(server.id, false))}
+                  tone="primary"
+                  type="button"
+                >
+                  Connect
+                </UiV2Button>
               )}
               <UiV2Button
-                disabled={controller.state.busy || !connection || connection.state === "disconnected" || disconnecting}
+                disabled={controller.state.busy || oauthStart.pending !== null || !connection ||
+                  connection.state === "disconnected" || disconnecting}
                 onClick={() => void controller.actions.disconnectValidationOAuth(server.id)}
                 tone="ghost"
                 type="button"
@@ -204,7 +218,58 @@ function AuthorizationCard({ controller, server }: Readonly<{ controller: AdminM
   );
 }
 
-function ToolsSection({ controller, groups, server, users }: Pick<AdminMcpServerPageProps, "controller" | "groups" | "server" | "users">) {
+const TOOL_DIFFERENCE_REASONS: Readonly<Record<McpInventoryDifferenceReason, string>> = {
+  definition_drift: "Changed on the server since the last check",
+  missing_upstream: "No longer offered by the server",
+  unpublished_addition: "New on the server, not checked yet"
+};
+
+function connectionCount(count: number): string {
+  return `${count} connection${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * Tools the server changed since the last check are held back from chats.
+ * Each is named with its reason, except additions seen only through personal
+ * accounts, which are counted; Test & Save checks the server again.
+ */
+function ToolDifferences({ checking, disabled, onTestAndSave, server }: Readonly<{
+  checking: boolean;
+  disabled: boolean;
+  onTestAndSave(): void;
+  server: AdminMcpServer;
+}>) {
+  const differences = server.inventoryDifferences ?? [];
+  if (!differences.length) return null;
+  return (
+    <McpNote data-testid="mcp-tool-differences" role="status" tone="warn">
+      <p className="font-semibold text-ink">Server tools changed since the last check</p>
+      <p className="mt-0.5 text-ink-secondary">
+        These tools are not offered in chats; the other tools keep working. Test &amp; Save checks the server again and applies what it finds.
+      </p>
+      <ul aria-label={`Tool changes on ${server.name}`} className="mt-2 grid gap-1">
+        {differences.map((difference) => (
+          <li className="flex min-w-0 flex-wrap items-baseline gap-x-2" key={`${difference.reason}:${difference.name ?? ""}`}>
+            {difference.name
+              ? <span className="break-words font-mono font-medium text-ink [overflow-wrap:anywhere]">{difference.name}</span>
+              : <span className="font-medium text-ink">Hidden · seen in personal accounts</span>}
+            <span className="text-ink-secondary">{TOOL_DIFFERENCE_REASONS[difference.reason]}</span>
+            <span className="text-ink-muted">{connectionCount(difference.connections)}</span>
+          </li>
+        ))}
+      </ul>
+      <UiV2Button busy={checking} className="mt-2" disabled={disabled} icon="flask" onClick={onTestAndSave} type="button">
+        Test &amp; Save
+      </UiV2Button>
+    </McpNote>
+  );
+}
+
+function ToolsSection({ checking, controller, groups, onTestAndSave, server, testDisabled, users }: Pick<AdminMcpServerPageProps, "controller" | "groups" | "server" | "users"> & Readonly<{
+  checking: boolean;
+  onTestAndSave(): void;
+  testDisabled: boolean;
+}>) {
   const [editingTool, setEditingTool] = useState<string | null>(null);
   const accessTrigger = useRef<HTMLButtonElement | null>(null);
   const [query, setQuery] = useState("");
@@ -221,6 +286,10 @@ function ToolsSection({ controller, groups, server, users }: Pick<AdminMcpServer
     (!search || `${tool.name} ${tool.description ?? ""}`.toLocaleLowerCase().includes(search)));
   const shown = expanded ? filtered : filtered.slice(0, 6);
   const locked = controller.state.busy || Boolean(server.archivedAt) || !server.activeRevision;
+  // Published names the server no longer offers as checked; additions have no row here.
+  const heldBack = new Map((server.inventoryDifferences ?? []).flatMap((difference) =>
+    difference.name && difference.reason !== "unpublished_addition" ? [[difference.name, difference.reason] as const] : []));
+  const verification = server.activeRevision?.toolVerification;
   useEffect(() => {
     if (editingTool !== null || controller.state.busy || !accessTrigger.current) return;
     // Wait for the closing render to re-enable the trigger before focusing it.
@@ -246,9 +315,21 @@ function ToolsSection({ controller, groups, server, users }: Pick<AdminMcpServer
         </span>
       </div>
       <McpNote tone="warn">
-        Tools that are on can act and change data without a per-call confirmation; newly discovered tools are on until turned off.
+        Tools that are on can act and change data without a per-call confirmation. A tool the server adds or changes later stays unavailable until Test &amp; Save checks it; tools found by a check are on until turned off.
         {server.draft.source.kind !== "remote" ? " Local servers run in an isolated runtime with unrestricted outbound network access." : ""}
       </McpNote>
+      {verification === "invalid" ? (
+        <McpNote data-testid="mcp-tool-verification" role="status" tone="critical">
+          The last check of this server&apos;s tools could not be read, so none of its tools are offered in chats. Use Test &amp; Save to check the server again.
+        </McpNote>
+      ) : verification === "names" ? (
+        <McpNote data-testid="mcp-tool-verification" role="status" tone="warn">
+          This server was last checked before tool changes were tracked, so its tools are matched by name only. Use Test &amp; Save to guard against tools changing on the server.
+        </McpNote>
+      ) : null}
+      {server.archivedAt ? null : (
+        <ToolDifferences checking={checking} disabled={testDisabled} onTestAndSave={onTestAndSave} server={server} />
+      )}
       {tools.length ? (
         <>
           <p className="text-xs text-ink-muted">{server.activeRevision
@@ -284,6 +365,11 @@ function ToolsSection({ controller, groups, server, users }: Pick<AdminMcpServer
                 <div className="min-w-0 flex-1">
                   <p className="break-words font-mono text-xs font-medium text-ink [overflow-wrap:anywhere]">{tool.name}</p>
                   {tool.description ? <p className="mt-0.5 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{tool.description}</p> : null}
+                  {heldBack.has(tool.name) ? (
+                    <p className="mt-1 text-xs font-medium text-caution" data-testid={`mcp-tool-unavailable-${tool.name}`}>
+                      Unavailable · {TOOL_DIFFERENCE_REASONS[heldBack.get(tool.name)!]}
+                    </p>
+                  ) : null}
                   <p className="mt-1 text-xs text-ink-secondary">{mcpToolAccessSummary(server.toolAccess?.find((policy) => policy.name === tool.name))}</p>
                   <UiV2Button aria-label={`Edit access to ${tool.name}`} disabled={locked || editingTool !== null} onClick={(event) => { accessTrigger.current = event.currentTarget; setEditingTool(tool.name); }} tone="ghost" type="button">Edit access</UiV2Button>
                 </div>
@@ -390,9 +476,19 @@ export function AdminMcpServerPage({
         />
       )}
 
-      {server.draft.auth.mode === "oauth" ? <AuthorizationCard controller={controller} server={server} /> : null}
+      {server.draft.auth.mode === "oauth"
+        ? <AuthorizationCard controller={controller} onError={feedback.reportError} server={server} />
+        : null}
 
-      <ToolsSection controller={controller} groups={groups} server={server} users={users} />
+      <ToolsSection
+        checking={saving}
+        controller={controller}
+        groups={groups}
+        onTestAndSave={() => void testAndSave()}
+        server={server}
+        testDisabled={controller.state.busy || applying}
+        users={users}
+      />
 
       <section aria-labelledby="mcp-access-heading" className="grid grid-cols-[minmax(0,1fr)] gap-2.5">
         <h3 className={sectionHeadingClass} id="mcp-access-heading">Access</h3>

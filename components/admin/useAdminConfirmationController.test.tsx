@@ -57,6 +57,7 @@ describe("useAdminConfirmationController", () => {
 
   it("maps a confirmed admin action and runs cleanup only after success", async () => {
     const runAction = createRunAction();
+    const onFailure = vi.fn();
     const onSuccess = vi.fn();
     const { result } = renderHook(() => useAdminConfirmationController({ runAction }));
 
@@ -67,6 +68,7 @@ describe("useAdminConfirmationController", () => {
         dialogLabel: "Delete stale@example.com",
         icon: "trash",
         message: "User deleted.",
+        onFailure,
         onSuccess,
         prompt: "Delete stale@example.com?",
         testId: "admin-confirm-delete-user",
@@ -93,6 +95,7 @@ describe("useAdminConfirmationController", () => {
         confirmLabel: "Delete user",
         dialogLabel: "Delete missing@example.com",
         message: "User deleted.",
+        onFailure,
         onSuccess,
         prompt: "Delete missing@example.com?",
         testId: "admin-confirm-delete-user",
@@ -101,6 +104,8 @@ describe("useAdminConfirmationController", () => {
       result.current.confirmConfirmation();
     });
     await waitFor(() => expect(runAction).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(onFailure).toHaveBeenCalledWith({ error: "user_not_found" }));
+    expect(onFailure).toHaveBeenCalledOnce();
     expect(onSuccess).toHaveBeenCalledOnce();
   });
 });

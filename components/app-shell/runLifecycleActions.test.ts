@@ -11,6 +11,7 @@ import {
   selectComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";
+import { executeMessageRunLifecycle } from "./messageRunLifecycle";
 import {
   abortActiveStreamControllers,
   useRunLifecycleActions
@@ -84,7 +85,7 @@ function useRunLifecycleActionsForTest(
     });
   }
   const selectedChatId = overrides.activeChatId ?? "chat-1";
-  const activeChatIdRef = { current: selectedChatId };
+  const activeChatIdRef: { current: string | null } = { current: selectedChatId };
   useComposerSessionStore.getState().activateSession(composerSessionKey(selectedChatId));
   const noticeRef: { current: Notice | null } = { current: null };
   const refreshActiveChat = vi.fn(async () => null);
@@ -314,39 +315,150 @@ describe("run lifecycle actions", () => {
     });
   });
 
-  it("retains an unknown source gate at the polling horizon until Check run proves terminal", async () => {
+  it("keeps a run past the 20-minute horizon gated and checks it at the background cadence until terminal", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-19T00:00:00.000Z"));
     let terminal = false;
-    const fetchMock = vi.fn(async () =>
-      terminal
-        ? Response.json(runResponse("error"))
-        : new Response("upstream unavailable", { status: 502 })
-    );
+    let offline = false;
+    const checkedAt: number[] = [];
+    const fetchMock = vi.fn(async () => {
+      checkedAt.push(Date.now());
+      if (offline) throw new TypeError("network disconnected");
+      return terminal
+        ? Response.json(runResponse("complete"))
+        : Response.json(runResponse("streaming"));
+    });
     vi.stubGlobal("fetch", fetchMock);
-    const { actions, notice, notifyAnswerReady } = useRunLifecycleActionsForTest();
+    const { actions, notifyAnswerReady } = useRunLifecycleActionsForTest();
 
     const resume = actions.resumeChatRun(streamingChat());
-    await vi.runAllTimersAsync();
-    await resume;
-
+    await vi.advanceTimersByTimeAsync(19 * 60_000);
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toEqual({
       optimisticAssistantMessageId: null,
       resuming: true,
       runId: "run-1"
     });
-    expect(notice()).toMatchObject({
-      action: { label: "Check run" },
-      kind: "error",
-      text: "Run is still active in the background."
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toEqual({
+      optimisticAssistantMessageId: null,
+      resuming: true,
+      runId: "run-1",
+      waitingInBackground: true
     });
 
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    const intervals = checkedAt.slice(-3).map((time, index, times) => index ? time - times[index - 1]! : 0);
+    expect(intervals.slice(1)).toEqual([60_000, 60_000]);
+
+    offline = true;
+    const beforeOffline = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(beforeOffline + 1);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({ resuming: true });
+
+    offline = false;
     terminal = true;
-    notice()?.action?.onClick();
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await resume;
 
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
-    expect(notifyAnswerReady).not.toHaveBeenCalled();
+    expect(notifyAnswerReady).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["focus", () => window.dispatchEvent(new Event("focus"))],
+    ["online", () => window.dispatchEvent(new Event("online"))],
+    ["visibility", () => document.dispatchEvent(new Event("visibilitychange"))],
+    ["Check run", (check: () => void) => check()]
+  ] as const)("checks a background run immediately on %s", async (_trigger, wake) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T00:00:00.000Z"));
+    let terminal = false;
+    const fetchMock = vi.fn(async () => terminal
+      ? Response.json(runResponse("error"))
+      : Response.json(runResponse("streaming")));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions } = useRunLifecycleActionsForTest();
+
+    const resume = actions.resumeChatRun(streamingChat());
+    await vi.advanceTimersByTimeAsync(21 * 60_000);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]?.waitingInBackground).toBe(true);
+    const checks = fetchMock.mock.calls.length;
+
+    terminal = true;
+    wake(() => actions.checkBackgroundRun("chat-1"));
+    await vi.advanceTimersByTimeAsync(0);
+    await resume;
+
+    expect(fetchMock).toHaveBeenCalledTimes(checks + 1);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+  });
+
+  it("remembers connectivity regained while a background check is in flight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T00:00:00.000Z"));
+    let terminal = false;
+    let holdNext = false;
+    let releaseHeld!: () => void;
+    const fetchMock = vi.fn(async () => {
+      if (holdNext) {
+        holdNext = false;
+        await new Promise<void>((resolve) => { releaseHeld = resolve; });
+        throw new TypeError("network disconnected");
+      }
+      return terminal ? Response.json(runResponse("complete")) : Response.json(runResponse("streaming"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions } = useRunLifecycleActionsForTest();
+
+    const resume = actions.resumeChatRun(streamingChat());
+    await vi.advanceTimersByTimeAsync(21 * 60_000);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]?.waitingInBackground).toBe(true);
+    holdNext = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    const checks = fetchMock.mock.calls.length;
+
+    // Connectivity returns while the offline read is still pending.
+    terminal = true;
+    window.dispatchEvent(new Event("online"));
+    releaseHeld();
+    await vi.advanceTimersByTimeAsync(0);
+    await resume;
+
+    expect(fetchMock).toHaveBeenCalledTimes(checks + 1);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+  });
+
+  it("stops polling within one cadence after leaving the chat and resumes on return", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T00:00:00.000Z"));
+    const fetchMock = vi.fn(async () => Response.json(runResponse("streaming")));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, activeChatIdRef } = useRunLifecycleActionsForTest();
+
+    const firstOwner = actions.resumeChatRun(streamingChat());
+    await vi.advanceTimersByTimeAsync(21 * 60_000);
+    activeChatIdRef.current = "chat-2";
+    await vi.advanceTimersByTimeAsync(60_000);
+    await firstOwner;
+    const checksWhileAway = fetchMock.mock.calls.length;
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(checksWhileAway);
+
+    activeChatIdRef.current = "chat-1";
+    const secondOwner = actions.resumeChatRun(streamingChat());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(checksWhileAway + 1);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toEqual({
+      optimisticAssistantMessageId: null,
+      resuming: true,
+      runId: "run-1"
+    });
+    activeChatIdRef.current = null;
+    await vi.advanceTimersByTimeAsync(1500);
+    await secondOwner;
   });
 
   it("returns a late outcome without painting it into any chat surface", async () => {
@@ -399,6 +511,93 @@ describe("run lifecycle actions", () => {
     await expect(staleFetch).resolves.toMatchObject({ id: "run-1" });
     expect(surface("chat-1")).toMatchObject({ events: [] });
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]?.runId).toBe("run-new");
+  });
+
+  it("late X fetch does not bind a runId-less Y; Y keeps its own id, Stop targets Y and finish frees the chat", async () => {
+    const { actions, activeStreamAbortRef } = useRunLifecycleActionsForTest();
+    useThreadStore.getState().replaceThread("chat-1", {
+      activeLeafId: "assistant-x",
+      messages: [message({ id: "assistant-x", role: "assistant", status: "streaming" })],
+      usageStats: null
+    });
+    let releaseX!: () => void;
+    const xHandoff = new Promise<void>((resolve) => { releaseX = resolve; });
+    let publishedX!: () => void;
+    const xPublished = new Promise<void>((resolve) => { publishedX = resolve; });
+    let admitY!: () => void;
+    const yAdmission = new Promise<void>((resolve) => { admitY = resolve; });
+    let finishY!: () => void;
+    const yFinish = new Promise<void>((resolve) => { finishY = resolve; });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/model-runs/run-X") {
+        return Response.json({ run: { answerComplete: true, id: "run-X", status: "streaming" }, version: 1 });
+      }
+      if (url === "/api/model-runs/run-Y/cancel" && init?.method === "POST") {
+        return Response.json({ error: "model_run_not_cancelable", run: { id: "run-Y", status: "streaming" } }, { status: 409 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lifecycle = (input: {
+      assistantMessageId: string;
+      consume: Parameters<typeof executeMessageRunLifecycle>[0]["consumeRunStream"];
+    }) => executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef,
+      chatId: "chat-1",
+      consumeRunStream: input.consume,
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
+      failurePrefix: "send_failed",
+      fetchRun: actions.fetchRun,
+      notifyAnswerReady: vi.fn(async () => undefined),
+      optimisticAssistantMessageId: input.assistantMessageId,
+      primeAnswerSound: vi.fn(async () => undefined),
+      reconcileMessageIds: vi.fn(),
+      refreshActiveChat: vi.fn(async () => null),
+      request: async () => new Response("")
+    });
+
+    const runX = lifecycle({
+      assistantMessageId: "assistant-x",
+      async consume({ onAnswerComplete, onRunId }) {
+        onRunId("run-X");
+        onAnswerComplete!({ assistantMessageId: "assistant-x", runId: "run-X" });
+        publishedX();
+        await xHandoff;
+        return { failed: false, receivedChatUpdate: true, runId: "run-X", terminalStatus: "complete" };
+      }
+    });
+    await xPublished;
+    const runY = lifecycle({
+      assistantMessageId: "assistant-y",
+      async consume({ onRunId }) {
+        await yAdmission;
+        onRunId("run-Y");
+        await yFinish;
+        return { failed: false, receivedChatUpdate: true, runId: "run-Y", terminalStatus: "complete" };
+      }
+    });
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({ runId: null });
+
+    releaseX();
+    await runX;
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/model-runs/run-X"]);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({
+      optimisticAssistantMessageId: "assistant-y",
+      runId: null
+    });
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]?.answerComplete).toBeUndefined();
+
+    admitY();
+    await vi.waitFor(() =>
+      expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({ runId: "run-Y" }));
+    await actions.stopCurrentRun();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/model-runs/run-X", "/api/model-runs/run-Y/cancel"]);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({ runId: "run-Y" });
+
+    finishY();
+    await runY;
+    expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
 
   it("rejects a malformed outcome before updating client state", async () => {

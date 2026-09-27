@@ -1,4 +1,4 @@
-import { MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
+import { isMcpToolName, MCP_RUNTIME_TIMEOUT_LIMITS, MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { createHash } from "node:crypto";
 import type {
   McpAuthPolicy,
@@ -13,7 +13,7 @@ import type {
 
 const MAX_ARGS = 64;
 const MAX_ARGUMENT_LENGTH = 2_048;
-const MAX_DISABLED_TOOL_NAMES = 512;
+const MAX_DISABLED_TOOL_NAMES = MCP_SERVER_TOOL_LIMIT;
 const MAX_SLOTS = 64;
 const MAX_SLOT_VALUE_LENGTH = 16_384;
 const RUNTIME_CONTROL_NAMES = new Set([
@@ -396,6 +396,74 @@ export function hashCanonicalMcpValue(value: unknown): string {
   return createHash("sha256").update(canonicalMcpJson(value)).digest("hex");
 }
 
+const DEFINITION_HASH_PATTERN = /^[a-f0-9]{64}$/u;
+
+/**
+ * Validation evidence naming every checked tool with its exact definition.
+ * `toolInventoryHash` covers `toolDefinitions` in the stored order, so a reader
+ * verifies the pairs without sorting them again.
+ *
+ * Size: each pair is at most about 230 bytes and each listed hash 67, so a
+ * maximal 1,024-tool server adds roughly 300 KiB. Stored validation evidence
+ * therefore stays within the cumulative tools/list bound (compact inventory)
+ * plus the initialize bound (instructions) plus that overhead.
+ */
+export function mcpToolDefinitionEvidence(
+  tools: readonly Readonly<{ definitionHash: string; name: string }>[]
+): { toolDefinitionHashes: string[]; toolDefinitions: { definitionHash: string; name: string }[]; toolInventoryHash: string } {
+  const toolDefinitions = tools
+    .map((tool) => ({ definitionHash: tool.definitionHash, name: tool.name }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  return {
+    toolDefinitionHashes: tools.map((tool) => tool.definitionHash).sort(),
+    toolDefinitions,
+    toolInventoryHash: hashCanonicalMcpValue(toolDefinitions)
+  };
+}
+
+/**
+ * What a published configuration lets its runtime offer. `definitions` holds
+ * the exact checked name/definition pairs; `names` is evidence recorded before
+ * pairs existed, matched by name until the next check; `invalid` means the
+ * recorded pairs do not verify, so nothing upstream is offered.
+ */
+export type McpPublishedToolDefinitions =
+  | Readonly<{ hashes: ReadonlyMap<string, string>; kind: "definitions" }>
+  | Readonly<{ kind: "invalid" }>
+  | Readonly<{ kind: "names"; names: ReadonlySet<string> }>;
+
+export function mcpPublishedToolDefinitions(validationEvidence: unknown): McpPublishedToolDefinitions {
+  const stored: ObjectValue = isObject(validationEvidence) ? validationEvidence : {};
+  const evidence: ObjectValue = isObject(stored.evidence) ? stored.evidence : {};
+  const inventoryNames = (Array.isArray(stored.toolInventory) ? stored.toolInventory as unknown[] : [])
+    .map((tool) => isObject(tool) ? tool.name : undefined);
+  // Evidence beyond the per-server bound was never produced by a check; it
+  // offers nothing rather than widening what the runtime may expose.
+  if (inventoryNames.length > MCP_SERVER_TOOL_LIMIT) return { kind: "invalid" };
+  if (!Object.hasOwn(evidence, "toolDefinitions")) {
+    return { kind: "names", names: new Set(inventoryNames.filter(isMcpToolName)) };
+  }
+  const definitions = evidence.toolDefinitions;
+  if (!Array.isArray(definitions) || definitions.length !== inventoryNames.length ||
+    evidence.toolCount !== definitions.length ||
+    evidence.toolInventoryHash !== hashCanonicalMcpValue(definitions)) {
+    return { kind: "invalid" };
+  }
+  // Names are data, never object keys: `__proto__` is a valid tool name.
+  const hashes = new Map<string, string>();
+  for (const definition of definitions) {
+    if (!isObject(definition) || !isMcpToolName(definition.name) || hashes.has(definition.name) ||
+      typeof definition.definitionHash !== "string" || !DEFINITION_HASH_PATTERN.test(definition.definitionHash)) {
+      return { kind: "invalid" };
+    }
+    hashes.set(definition.name, definition.definitionHash);
+  }
+  const names = new Set(inventoryNames.filter(isMcpToolName));
+  return names.size === hashes.size && [...names].every((name) => hashes.has(name))
+    ? { hashes, kind: "definitions" }
+    : { kind: "invalid" };
+}
+
 function slotSemanticIdentity(slot: McpConfigurationSlot): unknown {
   const policy = slot.policy.kind === "shared"
     ? { allowPersonalOverride: slot.policy.allowPersonalOverride, kind: slot.policy.kind }
@@ -441,4 +509,57 @@ export function validateMcpSlotValue(slot: McpConfigurationSlot, value: unknown)
     value.length < (slot.minLength ?? 0)) return false;
   if (slot.valueType === "enum") return Boolean(slot.enumValues?.includes(value));
   return true;
+}
+
+/**
+ * Destination a stored slot value was entered for: the remote origin plus the
+ * same origin/path hash recorded in validation evidence. Packaged sources share
+ * one local destination.
+ */
+export type McpEndpointBinding = Readonly<{ endpointHash: string; origin: string }>;
+
+const ENDPOINT_HASH = /^[0-9a-f]{64}$/u;
+
+export function mcpEndpointBinding(draft: McpDraftConfiguration): McpEndpointBinding {
+  if (draft.source.kind !== "remote") {
+    return { endpointHash: hashCanonicalMcpValue({ kind: "local" }), origin: "local" };
+  }
+  const endpoint = new URL(draft.source.url);
+  return {
+    endpointHash: hashCanonicalMcpValue({ origin: endpoint.origin, pathname: endpoint.pathname }),
+    origin: endpoint.origin
+  };
+}
+
+export function parseMcpEndpointBindings(value: unknown): Record<string, McpEndpointBinding> | null {
+  if (value === undefined) return {};
+  if (!isObject(value)) return null;
+  const bindings: Record<string, McpEndpointBinding> = {};
+  for (const [slotKey, binding] of Object.entries(value)) {
+    if (!isObject(binding) || typeof binding.origin !== "string" || !binding.origin ||
+      typeof binding.endpointHash !== "string" || !ENDPOINT_HASH.test(binding.endpointHash)) {
+      return null;
+    }
+    bindings[slotKey] = { endpointHash: binding.endpointHash, origin: binding.origin };
+  }
+  return bindings;
+}
+
+/**
+ * Keeps only values entered for the target origin, so an origin change makes
+ * owners enter them again before any outbound use. A same-origin path change,
+ * including endpoint correction, keeps them. Values stored before bindings
+ * existed belong to `implicit`, the active revision's destination; before the
+ * first publication there is none and they stay usable.
+ */
+export function mcpValuesForEndpoint<T>(input: Readonly<{
+  bindings: Readonly<Record<string, McpEndpointBinding>>;
+  implicit: McpEndpointBinding | null;
+  target: McpEndpointBinding;
+  values: Readonly<Record<string, T>>;
+}>): Record<string, T> {
+  return Object.fromEntries(Object.entries(input.values).filter(([slotKey]) => {
+    const binding = input.bindings[slotKey] ?? input.implicit;
+    return !binding || binding.origin === input.target.origin;
+  }));
 }

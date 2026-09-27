@@ -38,20 +38,18 @@ describe("PDF extraction configuration", () => {
     (value) => {
       expect(() =>
         getPdfExtractionConfig({
-          AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: value,
-          AIQSA_PDF_EXTRACTION_TIMEOUT_MS: value,
-          AIQSA_PDF_MAX_PAGES: value
+          AIQSA_PDF_EXTRACTION_TIMEOUT_MS: value
         })
       ).toThrow("pdf_extraction_timeout_config_invalid");
     }
   );
 
-  it("accepts longer extraction while retaining independent page and text bounds", () => {
+  it("treats empty optional values as unset and accepts longer extraction", () => {
     expect(
       getPdfExtractionConfig({
-        AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: String(DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS + 1),
+        AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: "",
         AIQSA_PDF_EXTRACTION_TIMEOUT_MS: "900000",
-        AIQSA_PDF_MAX_PAGES: String(DEFAULT_PDF_MAX_PAGES + 1)
+        AIQSA_PDF_MAX_PAGES: ""
       })
     ).toMatchObject({
       extractedTextMaxChars: DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS,
@@ -59,6 +57,24 @@ describe("PDF extraction configuration", () => {
       timeoutMs: 900_000
     });
   });
+
+  it.each([
+    String(DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS + 1), "0", "-1", "1.5", " 4", "1e2"
+  ])("rejects extracted-text limit %j instead of silently applying the default", (value) => {
+    expect(() => getPdfExtractionConfig({ AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: value }))
+      .toThrow(expect.objectContaining({
+        code: "attachment_text_config_invalid",
+        message: expect.stringContaining("AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS")
+      }));
+  });
+
+  it.each([String(DEFAULT_PDF_MAX_PAGES + 1), "0", "1.5", "NaN"])(
+    "rejects page limit %j instead of silently applying the default",
+    (value) => {
+      expect(() => getPdfExtractionConfig({ AIQSA_PDF_MAX_PAGES: value }))
+        .toThrow(expect.objectContaining({ code: "pdf_page_limit_config_invalid" }));
+    }
+  );
 
   it("rejects a duration that would overflow the runtime timer", () => {
     expect(() => getPdfExtractionConfig({ AIQSA_PDF_EXTRACTION_TIMEOUT_MS: "2147483648" }))

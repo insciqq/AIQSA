@@ -4,8 +4,9 @@ import type {
   McpSlotValue,
   McpToolInventoryEntry
 } from "@/lib/contracts/mcp";
+import { MCP_SERVER_TOOL_LIMIT } from "@/lib/contracts/mcp";
 import { McpClientSessionError } from "./clientSession";
-import { hashCanonicalMcpValue, validateMcpSlotValue } from "./definitions";
+import { hashCanonicalMcpValue, mcpToolDefinitionEvidence, validateMcpSlotValue } from "./definitions";
 import type {
   McpDraftValidationOutcome,
   McpDraftValidator
@@ -40,7 +41,7 @@ import {
 } from "./toolhiveRuntimeDriver";
 import { compactMcpToolInventoryEntry } from "./catalogMetadata";
 
-const MAX_EVIDENCE_TOOLS = 256;
+const MAX_EVIDENCE_TOOLS = MCP_SERVER_TOOL_LIMIT;
 const MAX_DESCRIPTION_LENGTH = 2_048;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/u;
 const DEFINITION_HASH_PATTERN = /^[a-f0-9]{64}$/u;
@@ -310,18 +311,16 @@ export function createLocalMcpDraftValidator(
           return invalid("mcp_local_artifact_invalid", "source");
         }
 
-        const definitionHashes = tools.map((tool) => tool.definitionHash).sort();
+        const definitions = mcpToolDefinitionEvidence(tools);
         const artifactJson = localResolvedArtifactJson(artifact);
         const evidence: McpJsonObject = {
           artifactIdentityHash: hashCanonicalMcpValue(artifactJson),
           materializer: artifact.materializer,
           ...(serverEvidence ? { server: serverEvidence } : {}),
           toolCount: tools.length,
-          toolDefinitionHashes: definitionHashes,
-          toolInventoryHash: hashCanonicalMcpValue(
-            tools.map((tool) => ({ definitionHash: tool.definitionHash, name: tool.name }))
-              .sort((left, right) => left.name.localeCompare(right.name))
-          ),
+          toolDefinitionHashes: definitions.toolDefinitionHashes,
+          toolDefinitions: definitions.toolDefinitions,
+          toolInventoryHash: definitions.toolInventoryHash,
           transport: "stdio"
         };
         return {

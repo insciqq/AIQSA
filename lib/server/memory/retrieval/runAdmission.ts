@@ -58,6 +58,8 @@ import type { MemoryExecutionAuthorityDependencies } from "../execution";
 import { memorySha256 } from "../persistence/lexical";
 import { redactMemorySecrets } from "../explicit/safety";
 import {
+  MEMORY_CONTROL_INPUT_TOO_LONG,
+  MEMORY_CONTROL_STATEMENT_TOO_LONG,
   createMemoryReadOnlyControlReuseProof,
   createPrismaMemoryControlService,
   memoryControlInputHash,
@@ -67,6 +69,7 @@ import {
 } from "../actions/controlRuntime";
 import {
   admitMemoryAction,
+  memoryActionControlAdmitted,
   type MemoryActionAdmission
 } from "../actions/actionAdmission";
 import { defaultMemoryIntentActionExecutor } from "../actions/defaultAction";
@@ -123,15 +126,24 @@ import {
   MEMORY_SNAPSHOT_OPTIONAL_MAXIMUM_MS,
   abortableMemoryRead as abortableRead,
   createMemoryRetrievalDeadline,
+  isMemoryDeadlineExhaustion,
+  MemoryOptionalDeadlineError,
   runBoundedMemoryRead,
   runOptionalMemoryUtility,
   type MemoryRetrievalDeadline
 } from "./deadline";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v58";
+  "memory-run-retrieval-admission-v60";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v19";
+const MEMORY_QUERY_EMBEDDING_DEADLINE_REASON =
+  "memory_query_embedding_deadline_exceeded";
+
+type MemoryAdmissionBudgetEvidence = Readonly<{
+  admissionBudgetMs: number;
+  optionalWindowMs: number;
+}>;
 
 export { MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS } from "../admissionDeadline";
 
@@ -359,7 +371,8 @@ function withMemoryPreparationEvidence(
   result: MemoryPreparingAttemptResult,
   timings: MemoryPreparationTimings,
   queryResolverExecution: MemoryQueryResolverExecution | null = null,
-  historyRelevance: Readonly<{ result: MemoryHistoryRelevanceResult; removedCount: number }> | null = null
+  historyRelevance: Readonly<{ result: MemoryHistoryRelevanceResult; removedCount: number }> | null = null,
+  admissionBudget: MemoryAdmissionBudgetEvidence | null = null
 ): MemoryPreparingAttemptResult {
   const latency = timings.finish();
   let budget = result.budgetSnapshot;
@@ -439,6 +452,8 @@ function withMemoryPreparationEvidence(
     budgetSnapshot: {
       ...budget,
       ...latency,
+      // The effective budget this attempt applied, after preparation reserves.
+      ...(admissionBudget ?? {}),
       aggregationProviderCalls: budgetUtilityCallCount(budget, "MEMORY_AGGREGATE"),
       controlProviderCalls: budgetUtilityCallCount(budget, "MEMORY_CONTROL"),
       historyRelevanceProviderCalls: budgetUtilityCallCount(budget, "MEMORY_HISTORY_RELEVANCE"),
@@ -629,8 +644,13 @@ async function prepareOriginalQueryEmbedding(input: Readonly<{
           userId: input.retrieval.userId
         });
       }));
-  } catch {
-    return { reason: "memory_query_embedding_unavailable", status: "UNAVAILABLE" };
+  } catch (error) {
+    return {
+      reason: isMemoryDeadlineExhaustion(error)
+        ? MEMORY_QUERY_EMBEDDING_DEADLINE_REASON
+        : "memory_query_embedding_unavailable",
+      status: "UNAVAILABLE"
+    };
   }
 }
 
@@ -792,6 +812,30 @@ function baseBudget(
   };
 }
 
+type MemoryInputLimitReason = "CONTEXT" | "SOURCE" | "STATEMENT";
+
+/** Content-free record that Memory could not process the whole current turn:
+ * the turn exceeds the local source budget, the admitted control model's
+ * actual context with its response reserve, or a requested statement exceeds
+ * the stored statement bound. Nothing was classified from a prefix or
+ * truncated, and no Memory change was made from it. Presentation reads this
+ * marker; it grants no authority. */
+function memoryInputLimitEvidence(
+  admission: MemoryActionAdmission,
+  control: MemoryControlResult | null = null
+): Readonly<{ memoryInputLimitReason: MemoryInputLimitReason; memoryInputTooLong: true }> |
+  Readonly<Record<string, never>> {
+  const reason: MemoryInputLimitReason | null = admission.state === "INPUT_TOO_LONG"
+    ? "SOURCE"
+    : control?.status === "UNAVAILABLE" && control.reason === MEMORY_CONTROL_INPUT_TOO_LONG
+      ? "CONTEXT"
+      : control?.status === "UNAVAILABLE" &&
+          control.reason === MEMORY_CONTROL_STATEMENT_TOO_LONG
+        ? "STATEMENT"
+        : null;
+  return reason ? { memoryInputLimitReason: reason, memoryInputTooLong: true } : {};
+}
+
 function emptyAttempt(
   expected: MemoryRunRetrievalExpectedSnapshot,
   outcome: MemoryPreparingAttemptResult["outcome"],
@@ -825,16 +869,13 @@ function createMemoryAdmissionDeadline(
 }
 
 export {
-  MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
   MEMORY_CONTROL_READ_RESERVE_MS,
-  MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
-  MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
-  MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
   MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
-  MEMORY_SNAPSHOT_OPTIONAL_MAXIMUM_MS
+  MEMORY_SNAPSHOT_OPTIONAL_MAXIMUM_MS,
+  memoryOptionalWindowMs
 } from "./deadline";
 
 function sameRetrievalSnapshot(
@@ -1427,10 +1468,14 @@ function unavailableControlAfterFailure(
     : null;
   return {
     ...(bindingId ? { bindingId } : {}),
-    reason: code === "memory_control_timeout" ||
-      code === "memory_admission_deadline_exceeded"
-      ? "memory_action_intent_outcome_unknown"
-      : "memory_action_intent_unavailable",
+    // A control that never started lost to the budget, not to its provider.
+    // Once dispatched, a deadline abort leaves the provider outcome unknown.
+    reason: error instanceof MemoryOptionalDeadlineError
+      ? "memory_action_intent_deadline_exceeded"
+      : code === "memory_control_timeout" ||
+        code === "memory_admission_deadline_exceeded"
+        ? "memory_action_intent_outcome_unknown"
+        : "memory_action_intent_unavailable",
     status: "UNAVAILABLE"
   };
 }
@@ -2354,7 +2399,9 @@ function degradationFor(
   // not a failure for this mode.
   if (profileRequested) return null;
   if (queryEmbedding?.status === "UNAVAILABLE") {
-    return "memory_query_embedding_unavailable";
+    return queryEmbedding.reason === MEMORY_QUERY_EMBEDDING_DEADLINE_REASON
+      ? MEMORY_QUERY_EMBEDDING_DEADLINE_REASON
+      : "memory_query_embedding_unavailable";
   }
   if (result.vectorState === "DEGRADED") return "memory_vector_unavailable";
   if (result.snapshot.indexMode === "HYBRID" && result.vectorState === "NOT_CONFIGURED") {
@@ -2382,6 +2429,9 @@ export function createMemoryRunRetrievalService(
       const historyRelevanceState: {
         execution: Readonly<{ result: MemoryHistoryRelevanceResult; removedCount: number }> | null
       } = { execution: null };
+      const admissionBudgetState: { evidence: MemoryAdmissionBudgetEvidence | null } = {
+        evidence: null
+      };
       const result: MemoryPreparingAttemptResult = await (
         async (): Promise<MemoryPreparingAttemptResult> => {
       if (input.expected.chatMemoryMode === "TEMPORARY") {
@@ -2396,6 +2446,10 @@ export function createMemoryRunRetrievalService(
         input.signal,
         options
       );
+      admissionBudgetState.evidence = {
+        admissionBudgetMs: deadline.budgetMs,
+        optionalWindowMs: deadline.optionalWindowMs
+      };
       const speculativeBaselineController = new AbortController();
       const speculativeDenseController = new AbortController();
       const speculativeQueryResolverController = new AbortController();
@@ -2415,17 +2469,25 @@ export function createMemoryRunRetrievalService(
       const currentUserText = exactCurrentUserText(input.normalizedRequest);
       const querySafety = sanitizeMemoryUtilityText(currentUserText);
       const actionAdmission: MemoryActionAdmission = admitMemoryAction(
-        querySafety.safeText
+        querySafety.safeText,
+        { sourceTooLong: querySafety.tooLong }
       );
-      const actionControlRequested = !deterministicRead ||
-        actionAdmission.state !== "ORDINARY";
+      const actionControlRequested = memoryActionControlAdmitted(
+        actionAdmission,
+        deterministicRead
+      );
+      // Retrieval reads deterministic head, interior and tail fragments of the
+      // locally redacted turn, so a trailing question is never cut away.
       const provisionalPlan = planMemoryRetrieval({
         currentUserText: querySafety.safeText,
         now: input.now,
         timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
       });
       if (!provisionalPlan.queryPresent) {
-        return emptyAttempt(input.expected, "FAILED_SAFE", "memory_plan_query_missing", null, {
+        return emptyAttempt(input.expected, "FAILED_SAFE", querySafety.tooLong
+          ? "memory_query_input_too_long"
+          : "memory_plan_query_missing", null, {
+          ...memoryInputLimitEvidence(actionAdmission),
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
           memoryActionAdmissionReason: actionAdmission.reason,
           memoryActionAdmissionState: actionAdmission.state,
@@ -2496,6 +2558,7 @@ export function createMemoryRunRetrievalService(
         ...(cachedActionResult ? { memoryActionResult: cachedActionResult } : {}),
         ...(readOnlyControlReuse ? { readOnlyControlReuse } : {}),
         ...(fallbackControlReuse ? { fallbackControlReuse } : {}),
+        ...memoryInputLimitEvidence(actionAdmission),
         memoryActionAdmissionReason: actionAdmission.reason,
         memoryActionAdmissionState: actionAdmission.state,
         memoryActionAdmissionVersion: actionAdmission.version,
@@ -2583,8 +2646,10 @@ export function createMemoryRunRetrievalService(
                 sources,
                 userId: input.userId
               })
-            ).catch(() => ({
-              reason: "memory_query_resolution_unavailable",
+            ).catch((error: unknown) => ({
+              reason: isMemoryDeadlineExhaustion(error)
+                ? "memory_query_resolution_deadline_exceeded"
+                : "memory_query_resolution_unavailable",
               status: "UNAVAILABLE" as const
             })));
         }
@@ -2798,6 +2863,10 @@ export function createMemoryRunRetrievalService(
         ...(actionResult ? { memoryActionResult: actionResult } : {}),
         ...(readOnlyControlReuse ? { readOnlyControlReuse } : {}),
         ...(fallbackControlReuse ? { fallbackControlReuse } : {}),
+        ...memoryInputLimitEvidence(
+          actionAdmission,
+          actionControlRequested ? control : null
+        ),
         memoryActionAdmissionReason: actionAdmission.reason,
         memoryActionAdmissionState: actionAdmission.state,
         memoryActionAdmissionVersion: actionAdmission.version,
@@ -3286,8 +3355,12 @@ export function createMemoryRunRetrievalService(
                 temporalIntent: plan.temporalIntent,
                 userId: input.userId
               })
-          ).catch(() => ({ reason: "memory_relevance_unavailable",
-            status: "UNAVAILABLE" as const })));
+          ).catch((error: unknown) => ({
+            reason: isMemoryDeadlineExhaustion(error)
+              ? "memory_relevance_deadline_exceeded"
+              : "memory_relevance_unavailable",
+            status: "UNAVAILABLE" as const
+          })));
       })();
       const initialRelevance = await relevancePromise;
       if (deadline.expired()) {
@@ -3320,7 +3393,9 @@ export function createMemoryRunRetrievalService(
                 attemptId: input.attemptId, userId: input.userId, query: plan.originalSanitizedQuery,
                 passages, signal: utilitySignal
               })
-          ).catch(() => unavailable("memory_history_relevance_unavailable")));
+          ).catch((error: unknown) => unavailable(isMemoryDeadlineExhaustion(error)
+            ? "memory_history_relevance_deadline_exceeded"
+            : "memory_history_relevance_unavailable")));
           input.signal?.throwIfAborted();
           const rejected = rejectedMemoryHistoryHandles(passages, decision);
           if (decision.status === "READY" && rejected === null) {
@@ -3702,7 +3777,8 @@ export function createMemoryRunRetrievalService(
         deadline.dispose();
       }
       })();
-      return withMemoryPreparationEvidence(result, timings, queryResolverState.execution, historyRelevanceState.execution);
+      return withMemoryPreparationEvidence(result, timings, queryResolverState.execution,
+        historyRelevanceState.execution, admissionBudgetState.evidence);
     }
   });
 }

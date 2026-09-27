@@ -4,8 +4,8 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import { normalizeTokenUsage, reportedTokenCount, sumTokenUsage } from "../../domain/usage";
 import { adminSearchExecutionLimits } from "../../contracts/adminSearch";
 import { ANTHROPIC_WEB_SEARCH_TOOL_DECLARATION } from "../tools/bridges";
+import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
 import {
-  MAX_SEARCH_FINDINGS_CHARACTERS,
   normalizeSearchFindings,
   normalizeSearchSources,
   type SearchSource
@@ -29,7 +29,10 @@ const MAX_ANTHROPIC_SEARCH_CONTINUATION_BLOCKS =
 const MAX_ANTHROPIC_SEARCH_OPERATIONS = 32;
 const MAX_ANTHROPIC_SEARCH_QUERY_LENGTH = 2_048;
 const MAX_ANTHROPIC_SEARCH_RESULT_COUNT = 100;
-const MAX_ANTHROPIC_SEARCH_CITATIONS = 100;
+// Citations are bounded per provider message; content inspected together
+// spans the original message and its pause continuations.
+const MAX_ANTHROPIC_SEARCH_CONTINUATION_CITATIONS =
+  PROVIDER_RESPONSE_MAX_CITATIONS * (MAX_ANTHROPIC_PAUSE_CONTINUATIONS + 1);
 const MAX_ANTHROPIC_SEARCH_TITLE_LENGTH = 512;
 const MAX_ANTHROPIC_SEARCH_URL_LENGTH = 2_048;
 const MAX_ANTHROPIC_CITED_TEXT_LENGTH = 2_000;
@@ -78,7 +81,7 @@ export type AnthropicMessagesSearchRequestBody = Readonly<{
   output_config?: Readonly<{ effort: string }>;
   stream: false;
   system: string;
-  thinking?: Readonly<{ type: "adaptive" }>;
+  thinking?: Readonly<{ display: "summarized"; type: "adaptive" }>;
   tools: readonly [Readonly<{
     allowed_callers: readonly ["direct"];
     max_uses: 3;
@@ -270,7 +273,7 @@ export function buildAnthropicMessagesSearchRequest(
     ...(effort
       ? {
           output_config: { effort },
-          thinking: { type: "adaptive" as const }
+          thinking: { display: "summarized" as const, type: "adaptive" as const }
         }
       : {}),
     stream: false,
@@ -405,6 +408,12 @@ function truncationArtifact(): ModelRunSseEvent {
   };
 }
 
+/** Citations of every text block of the given content together. */
+function anthropicCitationCount(content: readonly unknown[]): number {
+  return content.reduce<number>((count, block) =>
+    count + (isRecord(block) && Array.isArray(block.citations) ? block.citations.length : 0), 0);
+}
+
 export function inspectAnthropicWebSearchContent(
   value: unknown,
   options: Readonly<{
@@ -414,7 +423,8 @@ export function inspectAnthropicWebSearchContent(
   }> = {}
 ): AnthropicSearchInspection {
   if (!Array.isArray(value) ||
-    value.length > MAX_ANTHROPIC_SEARCH_CONTINUATION_BLOCKS) {
+    value.length > MAX_ANTHROPIC_SEARCH_CONTINUATION_BLOCKS ||
+    anthropicCitationCount(value) > MAX_ANTHROPIC_SEARCH_CONTINUATION_CITATIONS) {
     throw new Error("anthropic_search_response_invalid");
   }
   assertBoundedStructuredTextLength({
@@ -486,8 +496,7 @@ export function inspectAnthropicWebSearchContent(
     }
     textParts.push(candidate.text);
     if (candidate.citations === undefined) continue;
-    if (!Array.isArray(candidate.citations) ||
-      candidate.citations.length > MAX_ANTHROPIC_SEARCH_CITATIONS) {
+    if (!Array.isArray(candidate.citations)) {
       throw new Error("anthropic_search_response_invalid");
     }
     for (const citation of candidate.citations) {
@@ -738,6 +747,10 @@ export function createAnthropicMessagesSearchAdapter(
               totalWebSearchUsage,
               attemptWebSearchUsage
             );
+            // Refused after this message's usage is counted, which it keeps.
+            if (anthropicCitationCount(envelope.content) > PROVIDER_RESPONSE_MAX_CITATIONS) {
+              throw new Error("anthropic_search_response_invalid");
+            }
             assistantContent.push(...envelope.content);
             const inspection = inspectAnthropicWebSearchContent(assistantContent, {
               allowUnmatchedCalls: envelope.stopReason === "pause_turn",
@@ -820,11 +833,7 @@ export function createAnthropicMessagesSearchAdapter(
       }
       let normalizedFindings: string;
       try {
-        const joinedFindings = finalInspection.findingsText;
-        if (joinedFindings.length > MAX_SEARCH_FINDINGS_CHARACTERS) {
-          throw new Error("search_findings_invalid");
-        }
-        normalizedFindings = normalizeSearchFindings(joinedFindings);
+        normalizedFindings = normalizeSearchFindings(finalInspection.findingsText);
       } catch {
         throw typedFailure({
           artifacts: artifacts.filter((event) =>

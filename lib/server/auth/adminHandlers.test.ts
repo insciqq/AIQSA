@@ -531,6 +531,36 @@ describe("admin route handlers", () => {
     ]);
   });
 
+  it("maps a sole-Owner disable conflict to 409 with only the bounded Project projection", async () => {
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({
+        disableUser: async () => ({
+          kind: "project_owner_required",
+          projectCount: 3,
+          projects: [
+            { id: "project-internal-1", name: "Archive", status: "ARCHIVED" },
+            { name: "Launch", status: "ACTIVE" }
+          ] as { name: string; status: "ACTIVE" | "ARCHIVED" }[]
+        })
+      }),
+      resolveAuth: admin.resolveAuth
+    });
+
+    const response = await POST(jsonRequest({ action: "disable_user", userId: "user-1" }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "project_owner_required",
+      projectCount: 3,
+      projects: [
+        { name: "Archive", status: "ARCHIVED" },
+        { name: "Launch", status: "ACTIVE" }
+      ]
+    });
+  });
+
   it("acknowledges durable account deletion while private cleanup is pending", async () => {
     const POST = createAdminActionHandler({
       getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),

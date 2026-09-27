@@ -289,6 +289,13 @@
   padding: 0 0 0.75rem 0.25rem;
 }
 
+/* A bounded list says it is partial instead of ending silently. */
+.v2-answer-sources-note {
+  margin: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+}
+
 /* The domain sits in its own column on wide screens and under the title on
    narrow ones, where the snippet gives way to it. */
 .v2-answer-source-main .v2-answer-source-domain-stacked {

@@ -139,15 +139,16 @@ function headTail(value: string, bytes: number): Readonly<{ text: string; trunca
 }
 
 /**
- * 8 KiB UTF-8 budget shared by stdout and stderr with head+tail retention.
- * A failed command gives stderr priority so its tail is what the reader sees.
+ * UI-only 8 KiB UTF-8 budget shared by stdout and stderr with head+tail
+ * retention. A failed command gives stderr priority so its tail is what the
+ * reader sees. Model-visible command output has its own budget.
  */
 export function boundedOutputPreview(input: Readonly<{
   failed: boolean;
   stderr: string;
   stdout: string;
-}>, maximumBytes = WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES): Readonly<{ stderrPreview: string; stdoutPreview: string; truncated: boolean }> {
-  const budget = Math.max(0, Math.min(WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES, maximumBytes) - 16);
+}>): Readonly<{ stderrPreview: string; stdoutPreview: string; truncated: boolean }> {
+  const budget = WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES - 16;
   const stdout = cleanText(input.stdout);
   const stderr = cleanText(input.stderr);
   if (utf8Bytes(stdout) + utf8Bytes(stderr) <= budget) {

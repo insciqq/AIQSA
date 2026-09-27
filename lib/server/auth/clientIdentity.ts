@@ -57,6 +57,37 @@ export function canonicalIp(value: string): string | null {
   return null;
 }
 
+function ipv6Hextets(canonical: string): string[] | null {
+  const halves = canonical.split("::");
+
+  if (halves.length > 2) return null;
+
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const omitted = 8 - head.length - tail.length;
+
+  if (halves.length === 1 ? omitted !== 0 : omitted < 1) return null;
+
+  return [...head, ...Array.from({ length: omitted }, () => "0"), ...tail];
+}
+
+/**
+ * Rate-limit source for a canonical address. One IPv6 client routinely controls a whole
+ * /64 (SLAAC and privacy addresses), so per-address keys would let it rotate through 2^64
+ * identities: an IPv6 source is its /64 network, written `<network>/64`. IPv4, including
+ * IPv4-mapped IPv6 that `canonicalIp` already folds to dotted form, keeps the full address.
+ */
+function rateLimitSourceAddress(canonical: string): string | null {
+  if (isIP(canonical) !== 6) {
+    return canonical;
+  }
+
+  const hextets = ipv6Hextets(canonical);
+  const network = hextets ? canonicalIp([...hextets.slice(0, 4), "0", "0", "0", "0"].join(":")) : null;
+
+  return network ? `${network}/64` : null;
+}
+
 export function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
 
@@ -97,7 +128,13 @@ function forwardedIdentity(
     return { status: "unavailable" };
   }
 
-  return { key: `ip:${chain[0]}`, status: "available" };
+  return sourceIdentity(chain[0]!);
+}
+
+function sourceIdentity(canonical: string): LoginRateLimitIdentity {
+  const source = rateLimitSourceAddress(canonical);
+
+  return source ? { key: `ip:${source}`, status: "available" } : { status: "unavailable" };
 }
 
 function decodeCanonicalPeer(encodedPeer: string): string | null {
@@ -152,7 +189,7 @@ export function directPeerIdentity(
     return { status: "unavailable" };
   }
 
-  return { key: `ip:${peer}`, status: "available" };
+  return sourceIdentity(peer);
 }
 
 export function resolveLoginRateLimitIdentity(

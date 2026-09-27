@@ -1017,6 +1017,54 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
+  it.each(["dormant preparation", "handoff"] as const)("keeps Stop during %s a durable terminal for the execution fence", async (stage) => {
+    await withPreparingUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({ data: {
+        defaultProviderModelId: providerTemplateIds.fakeModel, title: "Stop handoff fixture", userId
+      } });
+      const baseRequest = normalizedRequest(chat.id, "An ordinary question");
+      const request = { ...baseRequest, prompt: {
+        ...baseRequest.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+      } };
+      const cancel = (runId: string) => repository.cancelRun({ runId, userId,
+        payload: { code: "model_run_cancelled", message: "Model run cancelled" } });
+      let runId = "";
+      // This step ignores its signal, so only durable state can fence the
+      // accepted run after Stop aborted the preparation controller.
+      const retrieve = vi.fn(async (input: { modelRunId: string; signal: AbortSignal }) => {
+        runId = input.modelRunId;
+        if (stage === "dormant preparation") {
+          await cancel(runId);
+          expect(activeRunControllerRegistry.abort(runId)).toBe(true);
+          expect(input.signal.aborted).toBe(true);
+        }
+        return { budgetSnapshot: { memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT, utilityEgressMode: "LOCAL_ONLY" },
+          items: [], outcome: "EMPTY", preparedContext: null, querySnapshot: null };
+      });
+      const repository = createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve } as never });
+      const pending = repository.createRun({ chatId: chat.id, content: request.content, expectedActiveLeafId: null,
+        modelId: request.modelId, provider: request.provider, normalizedRequest: request,
+        providerRequestPreview: {}, signal: new AbortController().signal, userId,
+        memoryMaterializer: () => ({ contextTruncation: null, normalizedRequest: request,
+          providerRequest: { ...request, attachments: [] }, providerRequestPreview: {} }) });
+      if (stage === "dormant preparation") await expect(pending).rejects.toThrow();
+      else {
+        await pending;
+        // Preparation released its controller; execution has not registered.
+        expect(activeRunControllerRegistry.has(runId)).toBe(false);
+        await expect(cancel(runId)).resolves.toMatchObject({ kind: "cancelled" });
+        expect(activeRunControllerRegistry.abort(runId)).toBe(false);
+      }
+      expect(retrieve).toHaveBeenCalledOnce();
+      expect(activeRunControllerRegistry.has(runId)).toBe(false);
+      // Execution reads this control before any provider dispatch.
+      await expect(repository.getRunControlForUser(runId, userId)).resolves.toMatchObject({ status: "cancelled" });
+      await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: runId } })).resolves.toMatchObject({
+        status: "cancelled", providerResponseId: null
+      });
+    });
+  });
+
   it("finishes an accepted SAVE after transport abort and competing recovery, including revision advances", async () => {
     await withPreparingUser(async ({ userId }) => {
       const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
@@ -3159,6 +3207,76 @@ describe("PREPARING run orchestration", () => {
           where: { id: fact.factId }
         });
       });
+    });
+  });
+
+  it("shows a turn beyond the Memory source budget as too long, not as unavailable", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0,
+        useMemoryFacts: true
+      });
+      const chat = await prisma.chat.create({ data: { title: "Oversized turn", userId } });
+      const request = normalizedRequest(
+        chat.id,
+        `${"Pasted log line. ".repeat(6_000)}Please remember that I prefer tea.`
+      );
+      const repository = createPrismaRunRepository(prisma, { memoryExecutionAuthority: {} });
+      const created = await repository.createRun({
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        memoryMaterializer(personalContext, memoryActionAnswerResult) {
+          const finalRequest: NormalizedRunRequest = {
+            ...request,
+            ...(personalContext ? { personalContext } : {}),
+            prompt: {
+              ...request.prompt,
+              ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
+            }
+          };
+          return {
+            contextTruncation: null,
+            normalizedRequest: finalRequest,
+            providerRequest: { ...finalRequest, attachments: [] },
+            providerRequestPreview: {
+              memoryActionAnswerResult: memoryActionAnswerResult ?? null,
+              personalContext: personalContext?.text ?? null
+            }
+          };
+        },
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: { request: "base" },
+        userId
+      });
+
+      const [attempt, binding, controls] = await Promise.all([
+        prisma.memoryRetrievalAttempt.findFirstOrThrow({ where: { modelRunId: created.runId } }),
+        prisma.modelRunMemoryBinding.findUniqueOrThrow({ where: { modelRunId: created.runId } }),
+        prisma.memoryExecutionBinding.count({ where: { logicalRole: "MEMORY_CONTROL", userId } })
+      ]);
+      expect(attempt).toMatchObject({ boundedSafeQuerySnapshot: null, outcome: "FAILED_SAFE" });
+      expect(attempt.budgetSnapshot).toMatchObject({
+        memoryActionAdmissionState: "INPUT_TOO_LONG",
+        memoryActionControlRequested: false,
+        memoryInputLimitReason: "SOURCE",
+        memoryInputTooLong: true,
+        reason: "memory_query_input_too_long"
+      });
+      expect(binding).toMatchObject({ outcome: "FAILED_SAFE", retrievalAttemptId: attempt.id });
+      expect(controls).toBe(0);
+
+      const chatUpdate = await repository.getChatUpdateForRun({
+        assistantMessageId: created.assistantMessageId,
+        chatId: chat.id,
+        userId,
+        userMessageId: created.userMessageId
+      });
+      expect(chatUpdate?.messages.find(({ id }) => id === created.assistantMessageId)
+        ?.artifactSummary?.memoryStatus).toBe("INPUT_TOO_LONG");
     });
   });
 

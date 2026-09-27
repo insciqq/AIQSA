@@ -9,7 +9,7 @@ import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
-import { KnowledgeSearchFailure } from "./searchFailure";
+import { KnowledgeSearchFailure, knowledgeSearchFailureFromToolResult } from "./searchFailure";
 import { decodeKnowledgeRetrievalEvidence } from "./toolResult";
 import { createKnowledgeToolExecutor, type KnowledgeRetrievalStore } from "./toolExecutor";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
@@ -755,7 +755,7 @@ describe("Knowledge executor surface", () => {
       }));
       const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
         eligibleRows: 0, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
-        projectionComplete: true, targetDimension: 1_024 };
+        projectionFailed: false, projectionComplete: true, targetDimension: 1_024 };
       const core = await executeKnowledgeRetrievalCore({
         $querySemantic: vi.fn().mockResolvedValue([]),
         $queryRaw: vi.fn().mockResolvedValueOnce([scope])
@@ -839,6 +839,173 @@ describe("Knowledge executor surface", () => {
       persistedToolCallId: "forbidden-source", request: request(), runId: "run-1", userId: "user-1"
     })).resolves.toMatchObject({ status: "error" });
     expect(hybridSearch).toHaveBeenCalledTimes(before);
+  });
+
+  it("reports passages omitted by the excerpt budget and leaves them eligible for a later search", async () => {
+    // 16 ranked 3 KiB passages against the 32 KiB excerpt budget of a fresh run.
+    const pool = Array.from({ length: 16 }, (_, index) => ({
+      ...lexicalSearchResult().passages[0]!, chunkId: `chunk-${index + 1}`, chunkIndex: index,
+      contentHash: (index + 1).toString(16).padStart(64, "0"), expandedContext: undefined,
+      sectionId: null, text: `Row ${String(index + 1).padStart(2, "0")} ${"x".repeat(3 * 1_024 - 7)}`
+    }));
+    const receipts: Record<string, unknown>[] = [];
+    const historyStore = createPrismaKnowledgeRetrievalStore({
+      $queryRaw: vi.fn(async () => [{ invocationOrdinal: receipts.length + 1, operations: receipts.length + 1 }]),
+      knowledgeRun: { findMany: vi.fn(async () => JSON.parse(JSON.stringify(receipts))) },
+      knowledgeRunScope: { findFirst: vi.fn(async () => ({ budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY, exclusions: [] })) }
+    } as never);
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>(async (input) => {
+      const rows = pool.map((source, index) => ({
+        ...source, contributingBindingOrdinals: [0], documentContext: null,
+        exactKind: null, lane: "passage_bm25", laneRank: index + 1, rawScore: 1, vectorMode: null
+      }));
+      const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
+        eligibleRows: 0, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
+        projectionFailed: false, projectionComplete: true, targetDimension: 1_024 };
+      // The retrieval core, not this fake, applies the prior-delivery exclusion.
+      const core = await executeKnowledgeRetrievalCore({
+        $querySemantic: vi.fn().mockResolvedValue([]),
+        $queryRaw: vi.fn().mockResolvedValueOnce([scope])
+          .mockResolvedValueOnce([{ candidates: rows, scopeVerified: true, semanticRevalidatedCount: 0 }])
+      } as never, { ...input, lexicalSearch: async () => ({ evidence: knowledgeLexicalBackendEvidenceFixture(), hits: [] }) });
+      return { ...core, passages: core.passages.map((passage) => ({ ...passage, signalProvenance: passage.signals })) };
+    });
+    const base = automaticStore(hybridSearch).store;
+    const persistReceipt = vi.fn<KnowledgeRetrievalStore["persistReceipt"]>(async ({ evidence }) => {
+      receipts.push({ candidateCount: evidence.candidateCount, durationMs: evidence.durationMs,
+        embeddingUsage: evidence.embeddingExecutions, results: evidence.results });
+      return evidence;
+    });
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: { resolve: vi.fn(async () => ({
+        adapter: { embed: vi.fn(async (input: { texts: readonly string[] }) => ({
+          model: "embedding-upstream", requestId: null, usage: { inputTokens: 1, totalTokens: 1 },
+          vectors: input.texts.map(() => Array.from({ length: 1_024 }, () => 0)) })) },
+        configuration: embeddingConfiguration, provider: "openai_compatible", providerModelId: "embedding-model-1"
+      })) },
+      store: { ...base, budgetState: historyStore.budgetState!, persistReceipt }
+    });
+    const texts: string[] = [];
+    for (const index of [1, 2, 3]) {
+      const result = await runtime.execute({ arguments: { query: "Rows", sourceAliases: [] },
+        id: `call-${index}`, name: KNOWLEDGE_SEARCH_TOOL_NAME }, {
+        persistedToolCallId: `tool-call-${index}`, request: request(), runId: "run-1", userId: "user-1"
+      });
+      expect(result, JSON.stringify(result)).toMatchObject({ status: "complete" });
+      texts.push(result.content[0]?.type === "text" ? result.content[0].text : "");
+    }
+    const accepted = persistReceipt.mock.calls.map(([input]) => input.evidence);
+    const delivered = accepted.map((receipt) => receipt.results.map(({ chunkId }) => chunkId));
+    expect(delivered[0]).toHaveLength(10);
+    expect(accepted[0]!.results.every((result) => !result.textTruncated)).toBe(true);
+    expect(accepted[0]!.omittedPassages).toEqual(Array.from({ length: 6 }, () => ({
+      reason: "over_budget", sourceTextBytes: 3 * 1_024
+    })));
+    expect(texts[0]).toContain("Coverage limitation: passages_omitted_for_size. 6 ranked passages " +
+      "matching this search were not delivered because of the evidence size budget (over_budget: 6).");
+    expect(texts[0]).toContain("another search_knowledge call");
+    const stored = decodeKnowledgeRetrievalEvidence(JSON.parse(JSON.stringify(accepted[0])));
+    expect(stored?.omittedPassages).toEqual(accepted[0]!.omittedPassages);
+    expect(stored?.providerText).toBe(texts[0]);
+
+    // Only delivered occurrences are excluded, so each omitted passage is
+    // returned by the next search, and every passage is delivered exactly once.
+    expect(hybridSearch.mock.calls[1]?.[0].excludedOccurrenceKeys)
+      .toEqual(accepted[0]!.results.map((result) =>
+        knowledgeEvidenceOccurrenceKeyV1({ ...result, sourceArtifactId: result.sourceArtifactId ?? null })));
+    expect(delivered[1]).toHaveLength(6);
+    expect(accepted[1]).not.toHaveProperty("omittedPassages");
+    expect(texts[1]).not.toContain("passages_omitted_for_size");
+    expect(delivered[2]).toEqual([]);
+    expect(accepted[2]).not.toHaveProperty("omittedPassages");
+    expect(delivered.flat().sort()).toEqual(pool.map(({ chunkId }) => chunkId).sort());
+  });
+
+  it("truncates an oversize top passage with a marker instead of failing the call", async () => {
+    const lexical = lexicalSearchResult();
+    const passages = [
+      { chunkId: "chunk-top", text: "測".repeat(2 * 1_024) },
+      { chunkId: "chunk-fits-alone", text: "b".repeat(1_024) },
+      { chunkId: "chunk-too-large", text: "c".repeat(5 * 1_024) }
+    ].map(({ chunkId, text }, index) => ({
+      ...lexical.passages[0]!, chunkId, chunkIndex: index, expandedContext: undefined, text
+    }));
+    const hybridSearch = vi.fn(async () => ({
+      ...lexical,
+      candidateCount: 3,
+      candidateCounts: { 0: 3 },
+      lexicalBackendEvidence: knowledgeLexicalBackendEvidenceFixture({ candidateCount: 3 }),
+      passages,
+      rankingEvidence: {
+        candidateOrder: passages.map(({ chunkId }) => chunkId),
+        fusion: "weighted_rrf_v2" as const
+      }
+    }));
+    const { persistReceipt, store } = automaticStore(hybridSearch);
+    // A later scoped round with 4096 retrieved tokens left: the excerpt budget
+    // is 4 KiB, smaller than the 6 KiB top-ranked passage.
+    const budgetState = vi.fn(async () => ({
+      evidenceCount: 8,
+      excludedResources: 0,
+      invocationOrdinal: 2,
+      policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+      priorOccurrenceKeys: [],
+      priorSourceAliases: ["S1"],
+      stopReason: null,
+      usage: {
+        cumulativeCandidates: 8,
+        estimatedCostMicros: 0,
+        latencyMs: 10,
+        operations: 1,
+        queryEmbeddingCalls: 1,
+        retrievedTokens: DEFAULT_KNOWLEDGE_BUDGET_POLICY.maxRetrievedTokens - 4_096
+      }
+    }));
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: { resolve: async () => {
+        throw new EmbeddingAdapterError("embedding_provider_http_error", { httpStatus: 503 });
+      } },
+      store: { ...store, budgetState }
+    });
+
+    const result = await runtime.execute({
+      arguments: { query: "Oversize row", sourceAliases: ["S1"] },
+      id: "call-oversize",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, {
+      persistedToolCallId: "tool-call-oversize",
+      request: request(),
+      runId: "run-oversize",
+      userId: "user-1"
+    });
+
+    expect(result.status).toBe("complete");
+    expect(hybridSearch).toHaveBeenCalledWith(expect.objectContaining({ resultLimit: 8 }));
+    const evidence = persistReceipt.mock.calls[0]![0].evidence;
+    expect(evidence.outcome).toBe("complete");
+    expect(evidence.results).toHaveLength(1);
+    // 4096 is not a multiple of the 3-byte code point; the prefix never splits one.
+    expect(evidence.results[0]).toMatchObject({
+      chunkId: "chunk-top",
+      handle: "K9",
+      includedText: "測".repeat(1_365),
+      includedTextBytes: 4_095,
+      sourceTextBytes: 6_144,
+      textTruncated: true
+    });
+    expect(evidence.results[0]).not.toHaveProperty("expandedContext");
+    expect(evidence.omittedPassages).toEqual([
+      { reason: "over_budget", sourceTextBytes: 1_024 },
+      { reason: "item_too_large", sourceTextBytes: 5_120 }
+    ]);
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toContain("Truncated: yes");
+    expect(text).toContain("Coverage limitation: passage_truncated. [K9] exceeded the whole " +
+      "evidence size budget and was delivered only as a truncated prefix");
+    expect(text).toContain("(over_budget: 1; item_too_large: 1)");
+    expect(text).not.toContain("\uFFFD");
+    const stored = decodeKnowledgeRetrievalEvidence(JSON.parse(JSON.stringify(evidence)));
+    expect(stored).toEqual(evidence);
   });
 
   it("keeps the current-question anchor inside disclosed follow-up Source scope", async () => {
@@ -1027,11 +1194,15 @@ describe("Knowledge executor surface", () => {
     }));
   });
 
-  it("settles an incomplete projection before embedding without leaking the query", async () => {
+  it.each([
+    ["knowledge_search_projection_incomplete", "knowledge_search_projection_unavailable", "Knowledge search is temporarily unavailable."],
+    ["knowledge_search_projection_pending", "knowledge_search_projection_pending", "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes."],
+    ["knowledge_search_projection_failed", "knowledge_search_projection_failed", "Knowledge search indexing failed for a selected source. An administrator must retry its search indexing."]
+  ] as const)("settles %s before embedding without leaking the query", async (code, failureCode, message) => {
     const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>();
     const { persistReceipt, store } = automaticStore(hybridSearch);
     store.assertSearchReady = vi.fn(async () => {
-      throw new Error("knowledge_search_projection_incomplete");
+      throw new KnowledgeSearchFailure(code);
     });
     const resolve = vi.fn();
     const records = captureKnowledgeEvents();
@@ -1052,8 +1223,10 @@ describe("Knowledge executor surface", () => {
     });
 
     expect(result.status).toBe("error");
+    expect(knowledgeSearchFailureFromToolResult(result)).toBe(code);
+    expect(decodeKnowledgeRetrievalEvidence(persistReceipt.mock.calls[0]?.[0].evidence)).not.toBeNull();
     expect(result.content).toEqual([{
-      text: "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.",
+      text: `${message} Do not infer or invent an answer from Knowledge.`,
       type: "text"
     }]);
     expect(store.assertSearchReady).toHaveBeenCalledWith({
@@ -1069,7 +1242,7 @@ describe("Knowledge executor surface", () => {
         bases: [],
         candidateCount: 0,
         embeddingExecutions: [],
-        failureCode: "knowledge_search_projection_unavailable",
+        failureCode,
         outcome: "search_unavailable",
         query: "knowledge_search_unavailable",
         results: []
@@ -1081,7 +1254,7 @@ describe("Knowledge executor surface", () => {
     expect(JSON.stringify(persisted)).not.toContain(acceptedBinding.knowledgeBaseId);
     expect(records()).toContainEqual(expect.objectContaining({
       event: "tool_execution", tool_kind: "knowledge", stage: "result",
-      outcome: "failed", code: "knowledge_search_projection_unavailable"
+      outcome: "failed", code: failureCode
     }));
     expect(JSON.stringify(records())).not.toContain("private incident phrase");
   });

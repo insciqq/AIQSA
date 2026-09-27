@@ -211,6 +211,15 @@ function authorizationErrorPage(status = 400): Response {
   );
 }
 
+/**
+ * The consent form posts to this origin, and the enforced production CSP
+ * (`form-action 'self'`) also covers redirects of that submission: a 303 to
+ * the client's callback never leaves the consent page. Answer the POST with a
+ * same-origin page that navigates to the already validated `redirect_uri`
+ * instead; document navigation is outside `form-action`. The link covers
+ * browsers that ignore refresh and private-use native schemes that need a
+ * user gesture. Never widen `form-action` globally for this.
+ */
 function authorizationRedirect(input: Readonly<{
   code?: string;
   error?: "access_denied";
@@ -222,14 +231,25 @@ function authorizationRedirect(input: Readonly<{
   if (input.error) location.searchParams.append("error", input.error);
   if (input.request.state !== null) location.searchParams.append("state", input.request.state);
   location.searchParams.append("iss", input.issuer);
-  return new Response(null, {
+  const target = htmlEscape(location.toString());
+  const destination = location.protocol === "http:" || location.protocol === "https:"
+    ? location.host
+    : location.protocol;
+  const body = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=${target}">
+<title>Returning to your app · AIQSA</title>
+<style>body{margin:0;background:#0c1018;color:#eef2ff;font:16px/1.5 system-ui,sans-serif}main{max-width:36rem;margin:8vh auto;padding:2rem;border:1px solid #30394b;border-radius:1rem;background:#151b27}h1{margin-top:0;font-size:1.4rem}p{color:#c7cfdf}a{color:#8fb4ff}</style></head>
+<body><main><h1>${input.error ? "Authorization cancelled" : "Authorization approved"}</h1>
+<p>Returning to <span>${htmlEscape(destination)}</span>…</p>
+<p><a href="${target}" rel="noreferrer">Continue to your app</a></p></main></body></html>`;
+  return new Response(body, {
     headers: {
       "cache-control": "no-store",
-      location: location.toString(),
+      "content-type": "text/html; charset=utf-8",
       pragma: "no-cache",
       "referrer-policy": "no-referrer"
-    },
-    status: 303
+    }
   });
 }
 

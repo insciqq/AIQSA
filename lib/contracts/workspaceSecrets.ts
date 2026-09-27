@@ -4,9 +4,19 @@ export const WORKSPACE_SECRET_KINDS = ["ssh_key", "env", "text", "file", "browse
 export type WorkspaceSecretKind = (typeof WORKSPACE_SECRET_KINDS)[number];
 export const WORKSPACE_SECRET_MAX_COUNT = 32;
 export const WORKSPACE_BROWSER_SESSION_MAX_COUNT = 50;
-export const WORKSPACE_BROWSER_SESSION_MAX_BYTES = 512 * 1024;
+/** Raw storage_state bytes of one browser session. */
+export const WORKSPACE_BROWSER_SESSION_MAX_BYTES = 8 * 1024 * 1024;
+/** Raw bytes across all saved browser sessions, separate from the ordinary total. */
+export const WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES = 64 * 1024 * 1024;
 export const WORKSPACE_SECRET_FILE_MAX_BYTES = 512 * 1024;
+/** Serialized ordinary value: the largest file as base64 plus its JSON envelope. */
 export const WORKSPACE_SECRET_VALUE_MAX_BYTES = 768 * 1024;
+/**
+ * Serialized browser value: the largest state as base64 plus its kind and
+ * filename. The WorkspaceSecretValue_shape database check bounds the raw size
+ * and the encrypted envelope derived from this value.
+ */
+export const WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES = Math.ceil(WORKSPACE_BROWSER_SESSION_MAX_BYTES / 3) * 4 + 4 * 1024;
 export const WORKSPACE_SECRET_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 export const WORKSPACE_SECRET_ENV_MAX_BYTES = 128 * 1024;
 export const WORKSPACE_SECRETS_PATH = "/workspace/secrets";
@@ -41,6 +51,20 @@ export type WorkspaceSecretSummary = Readonly<{
   browserSession?: Readonly<{ autoSaved: boolean }>;
 }>;
 
+export const WORKSPACE_BROWSER_SKIP_CODES = [
+  "browser_session_invalid", "browser_session_too_large", "browser_session_total_limit", "browser_session_limit",
+  "browser_session_stale", "browser_session_read_failed"
+] as const;
+export type WorkspaceBrowserSkipCode = (typeof WORKSPACE_BROWSER_SKIP_CODES)[number];
+/** Outcome of one accepted run's browser autosave: counts only, never names, origins or cookies. */
+export type WorkspaceBrowserAutosaveReport = Readonly<{
+  saved: number;
+  unchanged: number;
+  skipped: Partial<Record<WorkspaceBrowserSkipCode, number>>;
+  /** The save stopped early; sessions committed before it and all older versions remain. */
+  failure?: "browser_session_save_failed";
+}>;
+
 export type WorkspaceSecretErrorCode =
   | "workspace_secret_invalid"
   | "workspace_secret_limit"
@@ -51,11 +75,22 @@ export type WorkspaceSecretErrorCode =
   | "workspace_browser_session_conflict"
   | "workspace_secret_unavailable";
 
+/** Binary units for limit copy, for example 512 KiB or 8 MiB. */
+export function formatWorkspaceSecretLimit(bytes: number): string {
+  return bytes % (1024 * 1024) === 0 ? `${bytes / (1024 * 1024)} MiB` : `${Math.round(bytes / 1024)} KiB`;
+}
+
+const browserLimit = formatWorkspaceSecretLimit(WORKSPACE_BROWSER_SESSION_MAX_BYTES);
+const browserTotalLimit = formatWorkspaceSecretLimit(WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES);
+/** Shared by settings, the guest guide and the model guidance. */
+export const WORKSPACE_BROWSER_SESSION_LIMIT_TEXT =
+  `Each browser session can be up to ${browserLimit}, with up to ${browserTotalLimit} across at most ${WORKSPACE_BROWSER_SESSION_MAX_COUNT} saved sessions.`;
+
 export function workspaceSecretErrorMessage(code: unknown): string {
   switch (code) {
     case "workspace_secret_invalid": return "Check the name, value and file size. Environment names must be unique and use letters, digits and underscores.";
-    case "workspace_secret_limit": return "Workspace secrets allow up to 32 entries and 4 MiB in total, including up to 128 KiB of environment variables, plus 50 browser sessions. Each file or browser session can be up to 512 KiB.";
-    case "workspace_browser_session_invalid": return "Choose a Playwright storage_state JSON file with cookies and origins, up to 512 KiB. Use a safe filename such as shop.example.json.";
+    case "workspace_secret_limit": return `Workspace secrets allow up to ${WORKSPACE_SECRET_MAX_COUNT} entries and ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_TOTAL_MAX_BYTES)} in total, including up to ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_ENV_MAX_BYTES)} of environment variables. Each file can be up to ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_FILE_MAX_BYTES)}. ${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT}`;
+    case "workspace_browser_session_invalid": return `Choose a Playwright storage_state JSON file with cookies and origins, up to ${browserLimit}. Use a safe filename such as shop.example.json.`;
     case "workspace_browser_session_conflict": return "A browser session with this filename already exists. Edit that session to replace it.";
     case "workspace_secret_conflict": return "This secret changed in another window. Refresh the list before saving again. Your input is still here.";
     case "workspace_secret_env_conflict": return "An environment name is already used by another saved secret.";
@@ -102,7 +137,8 @@ export function decodeWorkspaceSecretList(value: unknown): readonly WorkspaceSec
       !WORKSPACE_SECRET_KINDS.includes(item.kind as WorkspaceSecretKind) ||
       typeof item.name !== "string" || !item.name.trim() || item.name.length > 120 ||
       typeof item.description !== "string" || item.description.length > 2000 ||
-      typeof item.byteSize !== "number" || !Number.isSafeInteger(item.byteSize) || item.byteSize < 1 || item.byteSize > WORKSPACE_SECRET_VALUE_MAX_BYTES ||
+      typeof item.byteSize !== "number" || !Number.isSafeInteger(item.byteSize) || item.byteSize < 1 ||
+      item.byteSize > (item.kind === "browser_session" ? WORKSPACE_BROWSER_SESSION_MAX_BYTES : WORKSPACE_SECRET_VALUE_MAX_BYTES) ||
       typeof item.updatedAt !== "string" || !Number.isFinite(Date.parse(item.updatedAt)) ||
       !Array.isArray(item.envNames) || item.envNames.length > 64 || !item.envNames.every(isWorkspaceEnvName) ||
       new Set(item.envNames).size !== item.envNames.length ||
@@ -116,4 +152,39 @@ export function decodeWorkspaceSecretList(value: unknown): readonly WorkspaceSec
   const browserCount = value.filter((entry) => entry.kind === "browser_session").length;
   if (browserCount > WORKSPACE_BROWSER_SESSION_MAX_COUNT || value.length - browserCount > WORKSPACE_SECRET_MAX_COUNT) return null;
   return value as WorkspaceSecretSummary[];
+}
+
+function reportCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 1_000;
+}
+
+/** An unreadable report is shown as absent; it never fails the secrets list. */
+export function decodeWorkspaceBrowserAutosaveReport(value: unknown): WorkspaceBrowserAutosaveReport | null {
+  if (!record(value) || Object.keys(value).some((key) => !["saved", "unchanged", "skipped", "failure"].includes(key)) ||
+    !reportCount(value.saved) || !reportCount(value.unchanged) || !record(value.skipped) ||
+    !Object.entries(value.skipped).every(([code, total]) =>
+      WORKSPACE_BROWSER_SKIP_CODES.includes(code as WorkspaceBrowserSkipCode) && reportCount(total)) ||
+    !(value.failure === undefined || value.failure === "browser_session_save_failed")) return null;
+  return value as WorkspaceBrowserAutosaveReport;
+}
+
+function counted(total: number, noun: string): string {
+  return `${total} ${noun}${total === 1 ? "" : "s"}`;
+}
+
+/** Exact, content-free copy for the latest browser autosave outcome. */
+export function workspaceBrowserAutosaveMessage(report: WorkspaceBrowserAutosaveReport): Readonly<{ attention: boolean; text: string }> {
+  const skipped = (code: WorkspaceBrowserSkipCode) => report.skipped[code] ?? 0;
+  const kept = "any previously saved version was kept.";
+  const parts = [`Last browser autosave: ${report.saved} saved, ${report.unchanged} unchanged.`];
+  if (skipped("browser_session_too_large")) parts.push(`${counted(skipped("browser_session_too_large"), "session")} larger than ${browserLimit} skipped; ${kept}`);
+  if (skipped("browser_session_total_limit")) parts.push(`${counted(skipped("browser_session_total_limit"), "session")} skipped because saved sessions would exceed ${browserTotalLimit} in total; ${kept}`);
+  if (skipped("browser_session_limit")) parts.push(`${counted(skipped("browser_session_limit"), "session")} skipped because at most ${WORKSPACE_BROWSER_SESSION_MAX_COUNT} sessions can be saved; ${kept}`);
+  if (skipped("browser_session_invalid")) parts.push(`${counted(skipped("browser_session_invalid"), "file")} skipped: not a Playwright storage_state JSON with a safe filename.`);
+  if (skipped("browser_session_read_failed")) parts.push(`${counted(skipped("browser_session_read_failed"), "session")} could not be read from Workspace; ${kept}`);
+  if (skipped("browser_session_stale")) parts.push(`${counted(skipped("browser_session_stale"), "session")} not saved because a newer save or a settings change took precedence.`);
+  if (report.failure) parts.push("The autosave did not finish; sessions saved before it stopped and all other previous versions were kept.");
+  const attention = report.failure !== undefined ||
+    WORKSPACE_BROWSER_SKIP_CODES.some((code) => code !== "browser_session_stale" && skipped(code) > 0);
+  return { attention, text: parts.join(" ") };
 }

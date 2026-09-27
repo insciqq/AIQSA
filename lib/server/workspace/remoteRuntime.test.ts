@@ -6,7 +6,7 @@ import {
   workspaceRunOutputDirectory,
   workspaceSandboxName
 } from "@/lib/domain/workspace";
-import { getWorkspaceConfig, type WorkspaceConfig } from "./config";
+import { getWorkspaceConfig, workspaceToolTransportMaxBytes, type WorkspaceConfig } from "./config";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { createWorkspaceRunnerServer } from "./runnerServer";
@@ -210,7 +210,10 @@ describe("remote Workspace runner protocol", () => {
   it.each([
     { outputs: [], skipped: ["private-cookie-value"] },
     { outputs: Array(51).fill({}), skipped: [] },
-    { outputs: [], skipped: Array(131).fill("browser_session_invalid") }
+    { outputs: [], skipped: Array(131).fill("browser_session_invalid") },
+    // Each state is within the per-file limit, but together they exceed the aggregate budget.
+    { outputs: Array.from({ length: 9 }, (_, index) => ({ batchId: "a".repeat(32), byteSize: 8 * 1024 * 1024, checksum: "b".repeat(64),
+      mimeType: "application/json", opaqueFileId: String(index).padStart(64, "c"), relativePath: `site-${index}.json` })), skipped: [] }
   ])("rejects invalid browser collection metadata before opening a byte stream", async (response) => {
     const fetch = vi.fn(async () => Response.json(response)); vi.stubGlobal("fetch", fetch);
     const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token, runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
@@ -241,6 +244,27 @@ describe("remote Workspace runner protocol", () => {
     expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ cursor: "cursor fixture", signal: expect.any(AbortSignal) }));
     expect(stop).not.toHaveBeenCalled();
     expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it("forwards the continuation restorability request to the runner's project archive", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const bytes = new Uint8Array([1, 2, 3]);
+    const archive = vi.spyOn(local, "createProjectArchive").mockImplementation(async () => ({
+      body: stream(bytes), byteSize: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex"),
+      mimeType: "application/gzip", opaqueFileId: "a".repeat(64), relativePath: "workspace.tar.gz"
+    }));
+    const server = createWorkspaceRunnerServer({ runtime: local, token });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const input = { operation, runtimeSandboxId: "runtime_fixture", sessionId: "0199aabc-12ef-7abc-8abc-0123456789b1" };
+    await remote.claimSessionOperation(input);
+    for (const restorable of [true, false]) {
+      const output = await remote.createProjectArchive({ ...input, ...(restorable ? { restorable } : {}) });
+      expect(await collect(output.body)).toEqual(bytes);
+      expect(archive).toHaveBeenLastCalledWith(expect.objectContaining({ restorable }));
+    }
   });
 
   it.each([
@@ -281,7 +305,43 @@ describe("remote Workspace runner protocol", () => {
     await request;
   });
 
-  it.each(["workspace_session_lost_before_dispatch", "workspace_session_lost", "workspace_tool_timeout"] as const)(
+  it("carries a worst-case escaped tool result at any accepted bound and names a larger one exactly", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    let text = "";
+    const callBoundTool = vi.spyOn(local, "callBoundTool").mockImplementation(async () => ({
+      content: [{ type: "text", text }], status: "complete"
+    }));
+    const server = createWorkspaceRunnerServer({ runtime: local, token });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const claim = await fetch(new URL("/v1/sessions/session_fixture/operations/claim", runnerUrl), {
+      body: JSON.stringify({ operation, runtimeSandboxId: null }),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, method: "POST"
+    });
+    expect(claim.status).toBe(200);
+    await claim.arrayBuffer();
+    const input = { arguments: { command: "printf marker" }, modelRunId: "run_fixture", modelRunToolCallId: "call_fixture",
+      originalName: "sandbox_shell" as const, operation, runtimeSandboxId: "runtime_fixture", sessionId: "session_fixture" };
+    for (const bound of ["1024", "131072", "1048576"]) {
+      const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test",
+        AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: bound });
+      const remote = new RemoteWorkspaceRuntime({ ...config, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+      // The runner bounds result text to toolOutputMaxBytes; each unit is escaped by the HTTP JSON layer.
+      for (const unit of ["\u0001", "\"\\", "é🧪 "]) {
+        text = unit.repeat(Math.floor(config.toolOutputMaxBytes / Buffer.byteLength(unit)));
+        const result = await remote.callBoundTool(input);
+        expect(result.content[0]?.text === text).toBe(true);
+      }
+      // A runner configured with a larger bound than this application answers unreadably.
+      text = "\u0001".repeat(Math.floor(workspaceToolTransportMaxBytes(config.toolOutputMaxBytes) / 6) + 1);
+      await expect(remote.callBoundTool(input)).rejects.toMatchObject({ code: "workspace_tool_output_limit_exceeded" });
+    }
+    expect(callBoundTool).toHaveBeenCalledTimes(12);
+  });
+
+  it.each(["workspace_session_lost_before_dispatch", "workspace_session_lost", "workspace_tool_timeout",
+    "workspace_tool_output_limit_exceeded", "workspace_request_too_large"] as const)(
     "preserves the exact %s dispatch outcome across HTTP without SDK details", async (code) => {
       const local = new DeterministicWorkspaceRuntime(deterministicConfig);
       const error = new WorkspaceRuntimeError(code);

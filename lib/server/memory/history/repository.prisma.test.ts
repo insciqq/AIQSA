@@ -20,7 +20,10 @@ import {
   loadMemorySourceSnapshot,
   lockMemorySourceChat
 } from "../sourceState";
-import { createPrismaMemoryHistoryIndexHandler } from "./handler";
+import {
+  createMemoryHistoryIndexHandler,
+  createPrismaMemoryHistoryIndexHandler
+} from "./handler";
 import type { MemoryHistorySafetyClassifier } from "./classifier";
 import {
   decodeMemoryChatDigest,
@@ -42,10 +45,16 @@ import {
 } from "../temporaryRetention";
 import { createMemoryToolEgressReceiptService } from "../egress/receipts";
 import {
+  authorizeMemoryHistoryTerminalRetries,
   MEMORY_HISTORY_BACKFILL_WINDOW,
   readMemoryHistoryIndexingProgress,
   seedMemoryHistoryBackfill
 } from "./backfill";
+import {
+  MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
+  MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE,
+  type MemoryHistoryIndexPageLimits
+} from "./incremental";
 import {
   MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
@@ -69,7 +78,10 @@ import { createMemoryRebuildHandler } from "../rebuild/handler";
 import { createPrismaMemoryRebuildRepository } from "../rebuild/repository";
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from "./segments";
 import { MEMORY_RECALL_ROUND_PROJECTION_VERSION } from "./rounds";
-import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "./toolEvents";
+import {
+  MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+  MEMORY_TOOL_EVENT_SOURCE_READ_BATCH
+} from "./toolEvents";
 import { purgeMemoryHistorySelection } from "./purge";
 
 async function mutateSource(
@@ -350,6 +362,109 @@ const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
 async function seedHistoryBackfill(userId: string) {
   return withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
     seedMemoryHistoryBackfill(tx, settings));
+}
+
+// Reduced per-job bounds exercise several pages on a small synthetic chat.
+const pagedHistoryLimits: MemoryHistoryIndexPageLimits = Object.freeze({
+  maxChunks: 3,
+  maxContentBytes: 1_048_576,
+  maxMessages: 4,
+  maxToolCalls: 4_096
+});
+
+async function createPagedHistoryChat(userId: string, turnCount: number) {
+  const chat = await prisma.chat.create({
+    data: { title: "Paged history", userId }
+  });
+  const turns: Array<Awaited<ReturnType<typeof createTurn>>> = [];
+  let parentMessageId: string | null = null;
+  for (let ordinal = 0; ordinal < turnCount; ordinal += 1) {
+    // About 2,000 safe characters per turn: one ordinary chunk per turn.
+    const turn: Awaited<ReturnType<typeof createTurn>> = await createTurn({
+      assistantText: `Assistant paged answer ${ordinal}. ${
+        "Detailed paged context. ".repeat(80)}`,
+      chatId: chat.id,
+      createdAt: new Date(Date.UTC(2026, 7, 20, 9, ordinal * 2)),
+      parentMessageId,
+      userId,
+      userText: `User paged question ${ordinal}.`
+    });
+    turns.push(turn);
+    parentMessageId = turn.assistantMessage.id;
+  }
+  const last = turns.at(-1)!;
+  await mutateSource(userId, chat.id, {
+    mutations: ["NORMAL_APPEND"],
+    patch: { activeLeafMessageId: last.assistantMessage.id }
+  });
+  await mutateSource(userId, chat.id, {
+    mutations: ["TERMINAL_SETTLEMENT"],
+    terminalSettlement: {
+      assistantMessageId: last.assistantMessage.id,
+      runId: last.run.id,
+      status: "complete"
+    }
+  });
+  return { chat, turns };
+}
+
+async function processPagedHistoryJob(
+  userId: string,
+  limits: MemoryHistoryIndexPageLimits = pagedHistoryLimits
+) {
+  // The coordinator settles superseded source jobs as STALE at preflight.
+  const latest = await prisma.memoryJob.findFirstOrThrow({
+    orderBy: [{ sourceRevision: "desc" }, { createdAt: "desc" }],
+    where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
+  });
+  await prisma.memoryJob.updateMany({
+    data: { errorCode: "memory_source_stale", state: "STALE" },
+    where: { id: { not: latest.id }, kind: "INDEX_HISTORY", state: "QUEUED", userId }
+  });
+  const claim = await claimHistoryJob(userId);
+  const handler = createMemoryHistoryIndexHandler({
+    repository: createPrismaMemoryHistoryIndexRepository(prisma, limits)
+  });
+  await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
+  const now = new Date();
+  const result = await handler.execute(claim, executionContext(now));
+  expect(await createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+    acceptedResultHash: result.acceptedResultHash,
+    apply: result.apply,
+    claim,
+    now,
+    stage: result.stage ?? null
+  })).toBe(true);
+  return { claim, result };
+}
+
+async function activeHistoryChunkIds(userId: string, chatId: string) {
+  const rows = await prisma.memoryRecallChunk.findMany({
+    select: { id: true },
+    where: { chatId, state: "ACTIVE", userId }
+  });
+  return new Set(rows.map(({ id }) => id));
+}
+
+async function authorizedHistoryChunkIds(userId: string, chatId: string) {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT chunk."id"
+    FROM "MemoryRecallChunk" AS chunk
+    INNER JOIN "Chat" AS source_chat
+      ON source_chat."userId" = chunk."userId"
+      AND source_chat."id" = chunk."chatId"
+    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+      ON checkpoint."userId" = chunk."userId"
+      AND checkpoint."chatId" = chunk."chatId"
+    WHERE chunk."userId" = ${userId}
+      AND chunk."chatId" = ${chatId}
+      AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+      AND ${memoryHistoryChunkSourceAuthorityPredicate({
+        chat: "source_chat",
+        checkpoint: "checkpoint"
+      })}
+  `);
+  return rows.map(({ id }) => id).sort();
 }
 
 describe("Memory lexical history index persistence", () => {
@@ -2132,6 +2247,382 @@ describe("Memory lexical history index persistence", () => {
     }
   }, 90_000);
 
+  it("[L07] indexes a long chat in bounded cursor pages resumed through backfill", async () => {
+    const userId = await createOwner("memory-history-paged");
+    try {
+      const { chat, turns } = await createPagedHistoryChat(userId, 6);
+      const pathIds = turns.flatMap((turn) =>
+        [turn.userMessage.id, turn.assistantMessage.id]);
+      let firstPageEntries: Array<{
+        embeddingState: string;
+        id: string;
+        recallChunkId: string | null;
+      }> = [];
+      let previousCursor = -1;
+      let previousChunkIds = new Set<string>();
+      let jobs = 0;
+      for (;;) {
+        jobs += 1;
+        expect(jobs).toBeLessThanOrEqual(8);
+        const { claim, result } = await processPagedHistoryJob(userId);
+        const checkpoint = await prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+          where: { userId_chatId: { chatId: chat.id, userId } }
+        });
+        const cursor = pathIds.indexOf(checkpoint.lastIndexedMessageId ?? "");
+        expect(cursor).toBeGreaterThan(previousCursor);
+        previousCursor = cursor;
+        const activeChunkIds = await activeHistoryChunkIds(userId, chat.id);
+        const added = [...activeChunkIds].filter((id) => !previousChunkIds.has(id));
+        // Each job rebuilds a bounded page and never drops earlier pages.
+        expect(added.length).toBeGreaterThan(0);
+        expect(added.length).toBeLessThanOrEqual(pagedHistoryLimits.maxChunks);
+        expect([...previousChunkIds].every((id) => activeChunkIds.has(id))).toBe(true);
+        previousChunkIds = activeChunkIds;
+        if (jobs === 1) {
+          firstPageEntries = await prisma.memorySearchEntry.findMany({
+            orderBy: { id: "asc" },
+            select: { embeddingState: true, id: true, recallChunkId: true },
+            where: { itemType: "RECALL_CHUNK", userId }
+          });
+          expect(firstPageEntries).toHaveLength(activeChunkIds.size);
+        }
+        if (cursor === pathIds.length - 1) {
+          expect(checkpoint).toMatchObject({ lastErrorCode: null, status: "READY" });
+          expect(result.stage).toBe("lexical_ready");
+          break;
+        }
+        // Coverage is the cursor: READY proves only the indexed prefix.
+        expect(checkpoint).toMatchObject({
+          activeLeafMessageId: pathIds.at(-1),
+          lastErrorCode: null,
+          status: "READY"
+        });
+        expect(result.stage).toBe("lexical_ready:history_page_partial");
+        // A partial page stays outside READY-gated retrieval and is shown as
+        // backlog, never as a completed index.
+        await expect(authorizedHistoryChunkIds(userId, chat.id)).resolves.toEqual([]);
+        await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
+          .resolves.toMatchObject({ completedChats: 0, state: "INDEXING", totalChats: 1 });
+        // A replayed commit of the same page is idempotent.
+        const entryCount = await prisma.memorySearchEntry.count({ where: { userId } });
+        await prisma.$transaction((tx) => result.apply!(tx, claim), { timeout: 30_000 });
+        await expect(activeHistoryChunkIds(userId, chat.id)).resolves.toEqual(activeChunkIds);
+        await expect(prisma.memorySearchEntry.count({ where: { userId } }))
+          .resolves.toBe(entryCount);
+        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      }
+      expect(jobs).toBeGreaterThan(2);
+
+      const joins = await prisma.memoryRecallChunkMessage.findMany({
+        select: { messageId: true },
+        where: { chunkId: { in: [...previousChunkIds] }, userId }
+      });
+      expect(new Set(joins.map(({ messageId }) => messageId))).toEqual(new Set(pathIds));
+      await expect(authorizedHistoryChunkIds(userId, chat.id))
+        .resolves.toEqual([...previousChunkIds].sort());
+      await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
+        .resolves.toMatchObject({ completedChats: 1, state: "READY", totalChats: 1 });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+      // Search artifacts of completed pages were retained, not re-created.
+      await expect(prisma.memorySearchEntry.findMany({
+        orderBy: { id: "asc" },
+        select: { embeddingState: true, id: true, recallChunkId: true },
+        where: { id: { in: firstPageEntries.map(({ id }) => id) } }
+      })).resolves.toEqual(firstPageEntries);
+      await expect(prisma.memoryRecallChunk.count({
+        where: { chatId: chat.id, state: "INVALIDATED", userId }
+      })).resolves.toBe(0);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  }, 90_000);
+
+  it("[L07] fences source races and exclusions between history pages", async () => {
+    const userId = await createOwner("memory-history-paged-fences");
+    try {
+      const { chat, turns } = await createPagedHistoryChat(userId, 4);
+      await processPagedHistoryJob(userId);
+      const firstPageChunkIds = await activeHistoryChunkIds(userId, chat.id);
+      // The last turn of the committed page: its chunk and round must be
+      // retired without renumbering earlier live rows.
+      const excludedTurn = turns[1]!;
+      const excludedJoin = await prisma.memoryRecallChunkMessage.findFirstOrThrow({
+        where: { messageId: excludedTurn.userMessage.id, userId }
+      });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        activeLeafMessageId: turns.at(-1)!.assistantMessage.id,
+        lastIndexedMessageId: turns[1]!.assistantMessage.id,
+        status: "READY"
+      });
+
+      // An append between prepare and commit stales the page atomically.
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      const racedClaim = await claimHistoryJob(userId);
+      const raced = await createMemoryHistoryIndexHandler({
+        repository: createPrismaMemoryHistoryIndexRepository(prisma, pagedHistoryLimits)
+      }).execute(racedClaim, executionContext(new Date()));
+      const appended = await createTurn({
+        assistantText: `Assistant paged answer 4. ${"Detailed paged context. ".repeat(80)}`,
+        chatId: chat.id,
+        createdAt: new Date(Date.UTC(2026, 7, 20, 9, 30)),
+        parentMessageId: turns.at(-1)!.assistantMessage.id,
+        userId,
+        userText: "User paged question 4."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: appended.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: appended.assistantMessage.id,
+          runId: appended.run.id,
+          status: "complete"
+        }
+      });
+      await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+        acceptedResultHash: raced.acceptedResultHash,
+        apply: raced.apply,
+        claim: racedClaim,
+        now: new Date(),
+        stage: raced.stage ?? null
+      })).resolves.toBe(true);
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: racedClaim.id } }))
+        .resolves.toMatchObject({ errorCode: "memory_source_stale", state: "STALE" });
+      await expect(activeHistoryChunkIds(userId, chat.id)).resolves.toEqual(firstPageChunkIds);
+
+      // An exclusion of an already indexed page is not revived by later pages.
+      const source = await prisma.chat.findUniqueOrThrow({ where: { id: chat.id } });
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      await prisma.memorySuppression.create({
+        data: {
+          deletionGeneration: settings.memoryGeneration,
+          fingerprintKeyVersion: "history-test-v1",
+          normalizationVersion: "memory-search-normalization-v1",
+          scope: "SOURCE_MESSAGE",
+          sourceBranchGeneration: source.memoryBranchGeneration,
+          sourceChatId: chat.id,
+          sourceMessageId: excludedTurn.userMessage.id,
+          userId
+        }
+      });
+      const excludedIds = [excludedTurn.userMessage.id, excludedTurn.assistantMessage.id];
+      const pathIds = [...turns, appended].flatMap((turn) =>
+        [turn.userMessage.id, turn.assistantMessage.id]);
+      let jobs = 0;
+      for (;;) {
+        jobs += 1;
+        expect(jobs).toBeLessThanOrEqual(8);
+        await processPagedHistoryJob(userId);
+        const activeIds = [...await activeHistoryChunkIds(userId, chat.id)];
+        await expect(prisma.memoryRecallChunkMessage.count({
+          where: { chunkId: { in: activeIds }, messageId: { in: excludedIds }, userId }
+        })).resolves.toBe(0);
+        const checkpoint = await prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+          where: { userId_chatId: { chatId: chat.id, userId } }
+        });
+        expect(checkpoint.status).toBe("READY");
+        if (checkpoint.lastIndexedMessageId === appended.assistantMessage.id) break;
+        await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
+          .resolves.toMatchObject({ completedChats: 0, state: "INDEXING" });
+        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      }
+      await expect(prisma.memoryRecallChunk.findUniqueOrThrow({
+        where: { id: excludedJoin.chunkId }
+      })).resolves.toMatchObject({ state: "INVALIDATED" });
+      await expect(prisma.memorySearchEntry.count({
+        where: { recallChunkId: excludedJoin.chunkId, userId }
+      })).resolves.toBe(0);
+      const finalIds = [...await activeHistoryChunkIds(userId, chat.id)];
+      const covered = await prisma.memoryRecallChunkMessage.findMany({
+        select: { messageId: true },
+        where: { chunkId: { in: finalIds }, userId }
+      });
+      expect(new Set(covered.map(({ messageId }) => messageId)))
+        .toEqual(new Set(pathIds.filter((id) => !excludedIds.includes(id))));
+    } finally {
+      await cleanupOwner(userId);
+    }
+  }, 90_000);
+
+  it("[L07] pages settled tool observations with a keyset cursor and a per-job bound", async () => {
+    const userId = await createOwner("memory-history-paged-tools");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Paged tool history", userId } });
+      const first = await createTurn({
+        assistantText: "The reports are ready.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-28T12:00:00Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Create the reports."
+      });
+      const last = await createTurn({
+        assistantText: "The summaries are ready.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-28T12:10:00Z"),
+        parentMessageId: first.assistantMessage.id,
+        userId,
+        userText: "Summarize them."
+      });
+      const toolCalls = (runId: string, prefix: string, count: number) =>
+        Array.from({ length: count }, (_, ordinal) => ({
+          arguments: {},
+          completedAt: new Date(Date.parse("2026-08-28T12:00:01Z") + ordinal),
+          modelRunId: runId,
+          ordinal,
+          providerCallId: `${prefix}-${ordinal}`,
+          result: { filename: `${prefix}-${ordinal}.csv`, status: "complete" },
+          roundIndex: 0,
+          state: "complete" as const,
+          toolName: "filesystem.write"
+        }));
+      // More calls than one keyset read and than the reduced per-job bound.
+      const heavyCount = MEMORY_TOOL_EVENT_SOURCE_READ_BATCH + 44;
+      await prisma.modelRunToolCall.createMany({
+        data: toolCalls(first.run.id, "report", heavyCount)
+      });
+      await prisma.modelRunToolCall.createMany({
+        data: toolCalls(last.run.id, "summary", 5)
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: last.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: last.assistantMessage.id,
+          runId: last.run.id,
+          status: "complete"
+        }
+      });
+      const limits = { ...pagedHistoryLimits, maxMessages: 1_024, maxToolCalls: 100 };
+
+      await processPagedHistoryJob(userId, limits);
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        activeLeafMessageId: last.assistantMessage.id,
+        lastIndexedMessageId: first.assistantMessage.id,
+        status: "READY"
+      });
+      // Tool observations of a partial page follow the same cursor fence.
+      await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
+        .resolves.toMatchObject({ completedChats: 0, state: "INDEXING" });
+      await expect(prisma.memoryToolEvent.count({
+        where: { assistantMessageId: first.assistantMessage.id, state: "ACTIVE", userId }
+      })).resolves.toBe(heavyCount);
+      await expect(prisma.memoryToolEvent.count({
+        where: { assistantMessageId: last.assistantMessage.id, userId }
+      })).resolves.toBe(0);
+
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      await processPagedHistoryJob(userId, limits);
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        lastIndexedMessageId: last.assistantMessage.id,
+        status: "READY"
+      });
+      const events = await prisma.memoryToolEvent.findMany({
+        select: { modelRunToolCallId: true },
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(events).toHaveLength(heavyCount + 5);
+      expect(new Set(events.map(({ modelRunToolCallId }) => modelRunToolCallId)).size)
+        .toBe(heavyCount + 5);
+      await expect(prisma.memorySearchEntry.count({
+        where: { itemType: "TOOL_EVENT", userId }
+      })).resolves.toBe(heavyCount + 5);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  }, 90_000);
+
+  it("[L07] reports an overlong active path as an explicit non-retried ceiling", async () => {
+    const userId = await createOwner("memory-history-path-ceiling");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Path ceiling history", userId }
+      });
+      const count = MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES + 2;
+      const messageIds = Array.from({ length: count }, () => randomUUID());
+      const baseTime = Date.parse("2026-08-14T08:00:00.000Z");
+      const rows = messageIds.map((id, ordinal) => ({
+        chatId: chat.id,
+        content: textMessageContent(`Ceiling message ${ordinal}.`),
+        createdAt: new Date(baseTime + ordinal * 1_000),
+        id,
+        parentMessageId: ordinal === 0 ? null : messageIds[ordinal - 1]!,
+        role: ordinal % 2 === 0 ? "user" : "assistant",
+        status: "complete" as const,
+        updatedAt: new Date(baseTime + ordinal * 1_000)
+      }));
+      for (let offset = 0; offset < rows.length; offset += 1_000) {
+        await prisma.message.createMany({ data: rows.slice(offset, offset + 1_000) });
+      }
+      await prisma.chat.update({
+        data: { activeLeafMessageId: messageIds.at(-1)! },
+        where: { id: chat.id }
+      });
+      const source = await loadMemorySourceSnapshot(prisma, {
+        chatId: chat.id,
+        personalOnly: true,
+        userId
+      });
+      if (!source?.activeLeafMessageId) throw new Error("memory_path_ceiling_source_missing");
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      const identity = {
+        activeLeafMessageId: source.activeLeafMessageId,
+        branchGeneration: source.memoryBranchGeneration,
+        chatId: source.id,
+        idempotencyFingerprint: memoryHistoryIndexJobFingerprint(source),
+        kind: "INDEX_HISTORY" as const,
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        sourceHash: source.sourceHash,
+        sourceRevision: source.memorySourceRevision,
+        userId
+      };
+      const claim: MemoryJobClaim = {
+        ...identity,
+        attemptCount: 1,
+        claimToken: randomUUID(),
+        id: randomUUID(),
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        recoveredLease: false,
+        sourceMessageId: null,
+        stage: null,
+        targetFactVersionId: null
+      };
+      await expect(createPrismaMemoryHistoryIndexRepository(prisma).prepare(claim))
+        .rejects.toMatchObject({
+          code: MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE,
+          retryable: false
+        });
+
+      const terminal = await prisma.memoryJob.create({
+        data: {
+          ...identity,
+          completedAt: new Date(),
+          errorCode: MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE,
+          state: "TERMINAL_FAILED"
+        }
+      });
+      await expect(withLockedMemoryTransaction(prisma, userId, (tx, locked) =>
+        authorizeMemoryHistoryTerminalRetries(tx, locked))).resolves.toBe(0);
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: terminal.id } }))
+        .resolves.toMatchObject({ state: "TERMINAL_FAILED" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  }, 120_000);
+
   it("persists one retry-idempotent source-bound digest and replaces it after append", async () => {
     const userId = await createOwner("memory-history-digest");
     try {
@@ -3057,6 +3548,127 @@ describe("Memory lexical history index persistence", () => {
       expect(vectorResult).toMatchObject({ status: "READY" });
       expect(vectorResult.hits.map(({ entryId }) => entryId).sort())
         .toEqual([...vectorEntryIds].sort());
+    } finally {
+      await cleanupOwner(userId);
+    }
+  }, 90_000);
+
+  it("[L08] indexes an oversized turn by windowed safety and withholds only unscannable text", async () => {
+    const userId = await createOwner("memory-history-oversized");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Oversized history", userId }
+      });
+      const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+      const blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo".repeat(3_500);
+      const userText = `${"a word ".repeat(14_285)}${token} oversizedturnmarker. ` +
+        "Long diary line about the harbour. ".repeat(4_500);
+      expect(userText.indexOf(token)).toBeLessThan(100_000);
+      expect(userText.indexOf(token) + token.length).toBeGreaterThan(100_000);
+      expect(userText.length).toBeGreaterThan(250_000);
+      const first = await createTurn({
+        assistantText: "Short reply about the harbour.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T09:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText
+      });
+      const second = await createTurn({
+        assistantText: "I cannot read the pasted data.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T09:10:00.000Z"),
+        parentMessageId: first.assistantMessage.id,
+        userId,
+        userText: `Here is my photo.\n${blob}\nwithheldturnmarker: I moved to Rome.`
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: second.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: second.assistantMessage.id,
+          runId: second.run.id,
+          status: "complete"
+        }
+      });
+
+      const { claim, result } = await processHistoryJob(userId);
+
+      // The withheld blob is an explicit truncation, never a full safety pass:
+      // the persisted job stage records it; a READY checkpoint has no error.
+      expect(result.stage).toBe("lexical_ready:history_message_truncated");
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: claim.id }
+      })).resolves.toMatchObject({
+        stage: "lexical_ready:history_message_truncated",
+        state: "SUCCEEDED"
+      });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        lastErrorCode: null,
+        lastIndexedMessageId: second.assistantMessage.id,
+        status: "READY"
+      });
+      const chunkIds = await authorizedHistoryChunkIds(userId, chat.id);
+      const joins = await prisma.memoryRecallChunkMessage.findMany({
+        select: { chunkId: true, messageId: true },
+        where: { chunkId: { in: chunkIds }, userId }
+      });
+      // Size excludes neither the >100k prompt nor the replies around it.
+      expect(new Set(joins.map(({ messageId }) => messageId))).toEqual(new Set([
+        first.userMessage.id,
+        first.assistantMessage.id,
+        second.userMessage.id,
+        second.assistantMessage.id
+      ]));
+      const persisted = JSON.stringify({
+        chunks: await prisma.memoryRecallChunk.findMany({ where: { chatId: chat.id, userId } }),
+        entries: await prisma.memorySearchEntry.findMany({ where: { userId } }),
+        rounds: await prisma.memoryRecallRound.findMany({ where: { chatId: chat.id, userId } }),
+        segments: await prisma.memoryRecallRoundSegment.findMany({ where: { userId } })
+      });
+      expect(persisted).not.toContain(token);
+      expect(persisted).not.toContain(blob.slice(0, 40));
+      expect(persisted).toContain("[REDACTED:TOKEN]");
+      expect(persisted).toContain("oversizedturnmarker");
+      expect(persisted).toContain("[REDACTED:UNPROCESSED_TEXT]withheldturnmarker");
+      // A turn beyond round capacity keeps chunk recall instead of a round.
+      const rounds = await prisma.memoryRecallRound.findMany({
+        select: { id: true },
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      const roundMessages = await prisma.memoryRecallRoundMessage.findMany({
+        select: { messageId: true },
+        where: { roundId: { in: rounds.map(({ id }) => id) }, userId }
+      });
+      expect(new Set(roundMessages.map(({ messageId }) => messageId)))
+        .toEqual(new Set([second.userMessage.id, second.assistantMessage.id]));
+
+      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const retrievalNow = new Date("2026-08-10T10:00:00.000Z");
+      const plan = planMemoryRetrieval({
+        currentUserText: "oversizedturnmarker",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: retrievalNow,
+        temporalIntent: "ANY"
+      });
+      const retrieved = await repository.retrieve({
+        assistantId: null,
+        chatId: chat.id,
+        now: retrievalNow,
+        plan,
+        userId
+      });
+      const oversizedChunkIds = new Set(joins.flatMap(({ chunkId, messageId }) =>
+        messageId === first.userMessage.id ? [chunkId] : []));
+      expect(fuseMemoryRetrievalCandidates(plan, retrieved.laneResults, retrievalNow)
+        .some((candidate) => candidate.itemType === "RECALL_CHUNK" &&
+          oversizedChunkIds.has(candidate.itemId))).toBe(true);
     } finally {
       await cleanupOwner(userId);
     }

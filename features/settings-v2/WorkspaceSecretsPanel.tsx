@@ -13,11 +13,15 @@ import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
 import {
   WORKSPACE_SECRET_FILE_MAX_BYTES, WORKSPACE_SECRET_KINDS, WORKSPACE_SECRET_MAX_COUNT,
-  WORKSPACE_BROWSER_SESSION_MAX_COUNT,
-  workspaceSecretErrorMessage, type WorkspaceSecretKind, type WorkspaceSecretMutation,
+  WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_LIMIT_TEXT,
+  formatWorkspaceSecretLimit, workspaceBrowserAutosaveMessage, workspaceSecretErrorMessage,
+  type WorkspaceBrowserAutosaveReport, type WorkspaceSecretKind, type WorkspaceSecretMutation,
   type WorkspaceSecretSummary, type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
 import { requestWorkspaceSecrets } from "./workspaceSecretsApi";
+
+const fileLimit = formatWorkspaceSecretLimit(WORKSPACE_SECRET_FILE_MAX_BYTES);
+const browserLimit = formatWorkspaceSecretLimit(WORKSPACE_BROWSER_SESSION_MAX_BYTES);
 
 const labels: Record<WorkspaceSecretKind, string> = { ssh_key: "SSH key", env: "Environment variables", text: "Text", file: "File", browser_session: "Browser session" };
 const kinds: Record<WorkspaceSecretKind, { label: string; description: string; icon: UiV2IconName }> = {
@@ -77,6 +81,7 @@ function sameDraft(left: Draft, right: Draft | null) {
 
 export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?(busy: boolean): void }>) {
   const [secrets, setSecrets] = useState<readonly WorkspaceSecretSummary[]>([]);
+  const [browserAutosave, setBrowserAutosave] = useState<WorkspaceBrowserAutosaveReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,8 +108,8 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
   useEffect(() => {
     active.current = true;
     const controller = new AbortController();
-    requestWorkspaceSecrets(undefined, controller.signal).then((rows) => {
-      if (active.current && !controller.signal.aborted) { setSecrets(rows); setError(null); setLoading(false); }
+    requestWorkspaceSecrets(undefined, controller.signal).then((state) => {
+      if (active.current && !controller.signal.aborted) { setSecrets(state.secrets); setBrowserAutosave(state.browserAutosave); setError(null); setLoading(false); }
     }, () => { if (active.current && !controller.signal.aborted) { setError("Workspace secrets could not be loaded."); setLoading(false); } });
     return () => { active.current = false; controller.abort(); };
   }, []);
@@ -154,9 +159,9 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
     if (pending.current) return;
     pending.current = true; setBusy(true); setError(null);
     try {
-      const rows = await requestWorkspaceSecrets();
+      const { secrets: rows, browserAutosave: autosave } = await requestWorkspaceSecrets();
       if (!active.current) return;
-      setSecrets(rows);
+      setSecrets(rows); setBrowserAutosave(autosave);
       setDraft((current) => {
         if (!current?.original) return current;
         const latest = rows.find(({ id, kind }) => id === current.original!.id && kind === current.kind);
@@ -170,11 +175,11 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
     if (pending.current) return;
     pending.current = true; setBusy(true); setError(null); setNotice(null);
     try {
-      const rows = await requestWorkspaceSecrets(mutation);
+      const { secrets: rows, browserAutosave: autosave } = await requestWorkspaceSecrets(mutation);
       if (!active.current) return;
       restoreFocus.current = mutation.action === "delete" ? "add" : mutation.action === "update" ? mutation.id
         : rows.find(({ id }) => !secrets.some((old) => old.id === id))?.id ?? "add";
-      setInitialDraft(null); setSecrets(rows); setDraft(null); setDeleting(null); setDiscarding(false); setPasteText(""); setPasteOpen(false);
+      setInitialDraft(null); setSecrets(rows); setBrowserAutosave(autosave); setDraft(null); setDeleting(null); setDiscarding(false); setPasteText(""); setPasteOpen(false);
       setNotice(mutation.action === "delete" ? "Secret deleted. Future requests will use the updated set." : "Secret saved. Available automatically in your personal Workspace requests.");
     } catch (failure) { if (active.current) setError(failure instanceof Error ? failure.message : workspaceSecretErrorMessage(null)); }
     finally { pending.current = false; if (active.current) setBusy(false); }
@@ -193,8 +198,9 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
 
   async function upload(file: File | undefined, key: boolean) {
     if (!file || pending.current) return;
-    if (file.size > (key ? 32 * 1024 : WORKSPACE_SECRET_FILE_MAX_BYTES)) {
-      setError(key ? "SSH keys can be up to 32 KiB." : "Files can be up to 512 KiB."); return;
+    const browser = !key && draft?.kind === "browser_session";
+    if (file.size > (key ? 32 * 1024 : browser ? WORKSPACE_BROWSER_SESSION_MAX_BYTES : WORKSPACE_SECRET_FILE_MAX_BYTES)) {
+      setError(key ? "SSH keys can be up to 32 KiB." : browser ? `Browser sessions can be up to ${browserLimit}.` : `Files can be up to ${fileLimit}.`); return;
     }
     pending.current = true; setBusy(true); setError(null);
     try {
@@ -215,6 +221,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
   const ordinaryCount = secrets.length - browserCount;
   const kindAtLimit = (kind: WorkspaceSecretKind) => kind === "browser_session" ? browserCount >= WORKSPACE_BROWSER_SESSION_MAX_COUNT : ordinaryCount >= WORKSPACE_SECRET_MAX_COUNT;
   const bothLimits = kindAtLimit("text") && kindAtLimit("browser_session");
+  const autosave = browserAutosave ? workspaceBrowserAutosaveMessage(browserAutosave) : null;
   return <section className="v2-studio-settings-page" aria-label="Secrets" data-testid="workspace-secrets-panel">
     <SectionHeading description="Available to the model and programs inside your personal Workspace. Shared Projects never receive them."
       action={<><UiV2Button type="button" disabled={busy || loading} icon="regenerate" onClick={() => void refresh()}>Refresh</UiV2Button>
@@ -227,6 +234,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
         <p>Browser sessions are saved automatically after work in Workspace and contain sign-in cookies. Delete a session to remove that saved sign-in from your next Workspace request. You can also import a session after signing in manually.</p>
       </div>
     </details>
+    {autosave ? <p className={`mt-3 break-words text-xs leading-5 ${autosave.attention ? "text-caution" : "text-ink-muted"}`} data-testid="workspace-browser-autosave">{autosave.text}</p> : null}
     {error && !draft ? <p className="mt-4 break-words text-sm text-critical" role="alert">{error}</p> : null}
     {notice ? <p className="mt-4 text-sm text-positive" role="status">{notice}</p> : null}
     {loading ? <p className="mt-5 text-sm text-ink-muted" role="status">Loading Workspace secrets…</p> : null}
@@ -305,10 +313,10 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
             <textarea aria-label="Secret text" autoComplete="off" spellCheck={false} className={field} rows={6} required value={draft.text} onChange={event => change({ text: event.target.value })} />
           </label> : <><label className="grid gap-1.5 text-xs font-medium text-ink-secondary">{draft.kind === "browser_session" ? "Browser session JSON" : "Original file"}
             <input aria-label={draft.kind === "browser_session" ? "Browser session JSON" : "Original file"} accept={draft.kind === "browser_session" ? ".json,application/json" : undefined} className="w-full min-w-0 text-xs" type="file" onChange={event => void upload(event.target.files?.[0], false)} />
-            <span className="break-all text-xs text-ink-muted">{draft.fileName || "Up to 512 KiB; original bytes are preserved."}</span>
+            <span className="break-all text-xs text-ink-muted">{draft.fileName || `Up to ${draft.kind === "browser_session" ? browserLimit : fileLimit}; original bytes are preserved.`}</span>
           </label>{draft.kind === "browser_session" ? <>
             <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Session filename<input className={field} required value={draft.fileName} onChange={event => change({ fileName: event.target.value })} /></label>
-            <p className="text-xs leading-5 text-ink-muted">Import a Playwright storage_state JSON file with cookies and origins. Use a filename such as shop.example.json so Workspace can find the right site. Up to 50 browser sessions, each up to 512 KiB.</p>
+            <p className="text-xs leading-5 text-ink-muted">Import a Playwright storage_state JSON file with cookies and origins. Use a filename such as shop.example.json so Workspace can find the right site. {WORKSPACE_BROWSER_SESSION_LIMIT_TEXT}</p>
           </> : null}</>}
           {error ? <div role="alert" className="text-sm text-critical"><p>{error}</p>
             <UiV2Button type="button" disabled={busy} onClick={() => void refresh()}>Refresh</UiV2Button>

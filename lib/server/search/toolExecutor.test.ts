@@ -745,7 +745,7 @@ describe("Search plan tool router", () => {
         selected.optionId,
         runtime({
           artifacts: operationArtifacts(String(index)),
-          findings: String(index).repeat(MAX_SEARCH_FINDINGS_BYTES),
+          findings: String(index).repeat(128 * 1_024),
           sources: sources(String(index))
         })
       ]))
@@ -763,6 +763,62 @@ describe("Search plan tool router", () => {
       .not.toHaveLength(0);
     expect(executions.every((execution) => execution.usage.totalTokens === 5)).toBe(true);
     expect(JSON.stringify(executions)).not.toMatch(/providerOperations|bounded query/u);
+  });
+
+  it("admits findings up to 1 MiB whole for a retained original and gives Off its exact bounded outcome", async () => {
+    const options = ["mid", "max"].map((id) => option(id));
+    // Above the former 128 KiB bound but within Off's persisted result.
+    const midFindings = `${"m".repeat(160 * 1_024)} rare-mid-tail`;
+    const maxFindings = `${"x".repeat(MAX_SEARCH_FINDINGS_BYTES - " rare-max-tail".length)} rare-max-tail`;
+    expect(Buffer.byteLength(maxFindings, "utf8")).toBe(MAX_SEARCH_FINDINGS_BYTES);
+    const router = () => createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options },
+      runtimes: {
+        mid: runtime({ findings: midFindings }),
+        max: runtime({ findings: maxFindings })
+      }
+    })!;
+
+    // A retained original carries every engine's complete findings.
+    const retained = await router().execute(call("search_selected_engines"), answerRequest(), { retainOriginal: true });
+    expect(searchExecutionsFromToolResult(retained).map((execution) => execution.findings)).toEqual([midFindings, maxFindings]);
+    expect(retained.content[0]?.type === "text" ? retained.content[0].text : "").toContain("rare-max-tail");
+
+    // Off keeps what fits its persisted result: the 1 MiB engine is refused by
+    // an explicit code with its usage, the other engine stays whole.
+    const off = await router().execute(call("search_selected_engines"), answerRequest());
+    const executions = searchExecutionsFromToolResult(off);
+    expect(executions).toEqual([
+      expect.objectContaining({ findings: midFindings, status: "complete" }),
+      expect.objectContaining({ failure: { code: "search_result_too_large" }, sources: [], status: "error",
+        usage: expect.objectContaining({ totalTokens: 5 }) })
+    ]);
+    expect(off.status).toBe("complete");
+    expect(off.usage).toMatchObject({ totalTokens: 10 });
+    const text = off.content[0]?.type === "text" ? off.content[0].text : "";
+    expect(text).toContain("rare-mid-tail");
+    expect(text).toContain('Search warnings: "max": search_result_too_large');
+    expect(snapshotToolExecutionResult(off, toolLoopPersistenceLimits.resultBytes)).not.toBeNull();
+  });
+
+  it("reads persisted executions from before and after the 1 MiB findings bound, refusing only beyond it", () => {
+    const persisted = (findings: string) => {
+      const execution = {
+        displayName: "Persisted", findings, invocationId: "call-1:persisted", modelId: "model-persisted",
+        optionId: "persisted", provider: "openai", revisionId: "revision-persisted",
+        sources: [{ rank: 1, title: "Source", url: "https://example.com/persisted" }], status: "complete" as const,
+        usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 }
+      };
+      return { callId: "call-1", name: "search_engine_1", status: "complete" as const,
+        content: [{ type: "json" as const, value: { aiqsaType: "search_result", version: 2 } }],
+        rawPreview: { searchExecutions: [execution], searchResultVersion: 2 } };
+    };
+    for (const findings of ["x".repeat(128 * 1_024), "x".repeat(MAX_SEARCH_FINDINGS_BYTES)]) {
+      const decoded = parsePersistedToolExecutionResult({ id: "call-1", name: "search_engine_1" }, persisted(findings));
+      expect(decoded && searchExecutionsFromToolResult(decoded)[0]?.findings).toBe(findings);
+    }
+    const beyond = persisted("x".repeat(MAX_SEARCH_FINDINGS_BYTES + 1));
+    expect(parsePersistedToolExecutionResult({ id: "call-1", name: "search_engine_1" }, beyond)).toBeNull();
   });
 
   it("retains normalized incomplete evidence and usage without a raw provider response", async () => {

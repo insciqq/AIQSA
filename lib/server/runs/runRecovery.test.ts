@@ -17,7 +17,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { McpSemanticRouterError } from "../mcp/router";
-import type { McpDiscoveryState } from "../mcp/runPlan";
+import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord } from "../mcp/runPlan";
+import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 import type {
   NormalizedRunRequest,
@@ -87,6 +88,7 @@ import {
 } from "../knowledge/retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
 import type { ToolExecutionResult } from "../tools/types";
+import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import {
   packKnowledgeEvidenceDispatchManifest,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -173,10 +175,12 @@ vi.mock("../knowledge/answerPipelineRollout", async (importOriginal) => {
 const userId = "user-1";
 const runId = "run-1";
 
+// Already in its durable reasoning-record shape, so recovery persists it unchanged.
 const providerEvent = {
   data: {
     artifactType: "reasoning",
     payload: {
+      entry: "start",
       text: "Recovered reasoning"
     }
   },
@@ -1225,7 +1229,7 @@ function focusedKnowledgeZeroCandidateResult(): ToolExecutionResult {
   };
 }
 
-function focusedKnowledgeSearchUnavailableResult(): ToolExecutionResult {
+function focusedKnowledgeSearchUnavailableResult(failureCode = "knowledge_search_backend_unavailable"): ToolExecutionResult {
   const complete = focusedKnowledgeRetrievalResult();
   const preview = complete.rawPreview as Readonly<{
     knowledgeRetrieval: KnowledgeRetrievalEvidence;
@@ -1234,7 +1238,7 @@ function focusedKnowledgeSearchUnavailableResult(): ToolExecutionResult {
     ...preview.knowledgeRetrieval,
     bases: [],
     candidateCount: 0,
-    failureCode: "knowledge_search_backend_unavailable",
+    failureCode,
     operation: "automatic_search",
     outcome: "search_unavailable",
     providerText: "pending",
@@ -3952,7 +3956,11 @@ describe("run recovery", () => {
       .toBe(true);
   });
 
-  it("replays a settled Knowledge search outage without repeating retrieval or usage", async () => {
+  it.each([
+    ["knowledge_search_backend_unavailable", KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE],
+    ["knowledge_search_projection_pending", "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes."],
+    ["knowledge_search_projection_failed", "Knowledge search indexing failed for a selected source. Contact an administrator to retry its search indexing."]
+  ] as const)("replays a settled Knowledge search outage without repeating retrieval or usage: %s", async (failureCode, terminalText) => {
     const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
     const execute = vi.fn(async () => focusedKnowledgeRetrievalResult());
     const preflight = vi.fn(async () => ({ kind: "admitted" as const }));
@@ -3987,7 +3995,7 @@ describe("run recovery", () => {
         }
       }
     });
-    const outage = focusedKnowledgeSearchUnavailableResult();
+    const outage = focusedKnowledgeSearchUnavailableResult(failureCode);
     const storedOutage = snapshotToolExecutionResult({
       ...outage,
       callId: "knowledge-provider-call-unavailable",
@@ -4042,11 +4050,11 @@ describe("run recovery", () => {
     expect(requests).toHaveLength(1);
     const providerMessages = JSON.stringify(requests[0]?.providerToolMessages);
     expect(providerMessages).toContain(
-      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge."
+      (outage.content[0] as { text: string }).text
     );
-    expect(providerMessages).not.toContain("knowledge_search_backend_unavailable");
+    expect(providerMessages).not.toContain(failureCode);
     expect(harness.state.completed).toMatchObject({
-      finalText: KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
+      finalText: terminalText,
       usage: { inputTokens: 4, outputTokens: 3, reasoningTokens: 0, totalTokens: 7 }
     });
     expect(harness.state.completed?.usageAttributions).toEqual(expect.arrayContaining([
@@ -7517,6 +7525,64 @@ describe("run recovery", () => {
     expect(state.calls()[0]).toMatchObject({ state: "error" });
   });
 
+  it.each([false, true])("recovers a selected tool from a 1024-tool inventory (Project: %s)", async (projectScope) => {
+    const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
+    const record: McpRunPlanRecord = {
+      credentialSources: [], enabled: true, errorCode: null, externalAccountLabel: null,
+      fingerprint: recoveryFingerprint, generationId: "generation-1", inventory: { version: 1,
+        tools: Array.from({ length: MCP_SERVER_TOOL_LIMIT }, (_, index) => ({
+          definitionHash: "b".repeat(64), description: null, inputSchema: { type: "object" }, name: `tool_${index + 1}`
+        })) },
+      inventoryUpdatedAt: new Date(), namespace: "large_inventory", readiness: "ready",
+      revisionId: "revision-1", serverId: "server-1", serverName: "Large inventory"
+    };
+    const namespacedName = namespacedMcpToolName(record.namespace, `tool_${MCP_SERVER_TOOL_LIMIT}`);
+    const currentPlan = (allowedToolNames?: readonly string[]) => prepareMcpRunPlan({
+      allowedServerIds: [record.serverId], allowedToolNames, isGenerationLive: () => true, load: async () => [record]
+    });
+    const accepted = await currentPlan([namespacedName]);
+    if (!accepted.ok) throw new Error("large_inventory_fixture_invalid");
+    const prepare = vi.fn<NonNullable<RunRecoveryDeps["mcp"]>["prepare"]>(async (_user, options) =>
+      currentPlan(options?.allowedToolNames));
+    const prepareProject = vi.fn<NonNullable<NonNullable<RunRecoveryDeps["mcp"]>["prepareProject"]>>(
+      async (_user, _servers, options) => currentPlan(options?.allowedToolNames));
+    const callTool = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["RECOVERED_LATE_TOOL_RESULT"], unsupportedContentTypes: [] };
+    });
+    const harness = createHarness({
+      mcp: { filterTools: allowMcpTools, prepare, prepareProject },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      projectAccessCurrent: true,
+      ...(projectScope ? { providerAdmission: { load: async () => ({
+        fingerprint: project.providerAdmissionFingerprint
+      }) as ProviderAdmissionPlan } } : {}),
+      providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
+        expect(JSON.stringify(request.providerToolMessages)).toContain("RECOVERED_LATE_TOOL_RESULT");
+        return { ...providerResult, finalText: "Recovered late tool" };
+      } } }
+    });
+    const state = installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [{ ...persistedRecoveryCall(), arguments: {}, toolName: namespacedName }],
+        phase: "tools_pending", providerToolMessages: [{ arguments: "{}", call_id: "provider-call-1",
+          name: namespacedName, type: "function_call" }] }),
+      normalizedRequest: { ...normalizedToolRequest(), mcp: accepted.snapshot },
+      ...(projectScope ? { project } : {})
+    });
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ name: `tool_${MCP_SERVER_TOOL_LIMIT}` }));
+    expect(state.calls()[0]).toMatchObject({ state: "complete" });
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered late tool" });
+    if (projectScope) {
+      expect(prepare).not.toHaveBeenCalled();
+      expect(prepareProject).toHaveBeenCalledWith(userId, [record.serverId], { allowedToolNames: [namespacedName] });
+    } else {
+      expect(prepareProject).not.toHaveBeenCalled();
+      expect(prepare).toHaveBeenCalledWith(userId, { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
+    }
+  });
+
   it("revalidates recovered Project MCP through shared authority only", async () => {
     const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
     const snapshot = normalizedToolRequest().mcp!;
@@ -7577,7 +7643,7 @@ describe("run recovery", () => {
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
     expect(prepare).not.toHaveBeenCalled();
-    expect(prepareProject).toHaveBeenCalledWith("user-1", ["server-1"]);
+    expect(prepareProject).toHaveBeenCalledWith("user-1", ["server-1"], { allowedToolNames: [recoveryToolName] });
     expect(runtimeCall).toHaveBeenCalledOnce();
     expect(providerLoad).toHaveBeenCalledWith(expect.objectContaining({
       executionScope: "project",
@@ -9378,5 +9444,127 @@ describe("Workspace image recovery", () => {
         expect(JSON.stringify(harness.state.events)).not.toMatch(/base64|private-recovery/);
       }
     } finally { viewer.mockRestore(); }
+  });
+});
+
+describe("Recovered image and artifact tool services", () => {
+  const imageCall = (state: PersistedToolLoopCall["state"]): PersistedToolLoopCall => ({ ...persistedRecoveryCall(state),
+    mcpBinding: null, toolName: "generate_image", arguments: { prompt: "A green square", image_ids: [] } });
+  const imageResult = (callId: string): ToolExecutionResult => ({ callId, name: "generate_image", status: "complete",
+    content: [{ type: "json", value: { image_id: "saved-image", width: 8, height: 8, source_image_ids: [], displayed_in_chat: true } }] });
+  function imageRun(harness: ReturnType<typeof createHarness>, call: PersistedToolLoopCall) {
+    const initial = checkpointedRun({ phase: call.state === "pending" ? "tools_pending" : "tools_running", calls: [call],
+      providerToolMessages: [{ type: "function_call", name: call.toolName, call_id: call.providerCallId, arguments: JSON.stringify(call.arguments) }] });
+    return installCheckpointState(harness, { ...initial, normalizedRequest: { ...initial.normalizedRequest, mcp: undefined,
+      imagePlan: mixedToolsImagePlan } });
+  }
+  function imageService(overrides: Readonly<Record<string, unknown>> = {}) {
+    const service = {
+      authorize: vi.fn(async () => true),
+      execute: vi.fn(),
+      restore: vi.fn(async (): Promise<ToolExecutionResult | null> => null),
+      withConversationPixels: vi.fn(async (request: ProviderRunRequest) => request),
+      ...overrides
+    };
+    return { service, deps: service as unknown as NonNullable<RunRecoveryDeps["images"]> };
+  }
+
+  it("restores a running image call from its saved image and gives the answer request conversation pixels", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call = imageCall("running");
+    const state = imageRun(harness, call);
+    const restore = vi.fn(async () => imageResult(call.providerCallId));
+    const withConversationPixels = vi.fn(async (request: ProviderRunRequest) => ({ ...request,
+      prompt: { ...request.prompt, system: "CONVERSATION_PIXELS_NOTE" } }));
+    const images = imageService({ restore, withConversationPixels });
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+
+    expect(restore).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: "generate_image" }),
+      expect.objectContaining({ persistedToolCallId: call.id, runId, userId }));
+    expect(images.service.execute).not.toHaveBeenCalled();
+    expect(images.service.authorize).not.toHaveBeenCalled();
+    expect(state.calls()[0]).toMatchObject({ state: "complete" });
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).not.toBeNull();
+    expect(withConversationPixels).toHaveBeenCalledWith(expect.anything(), userId, expect.any(AbortSignal));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.prompt.system).toBe("CONVERSATION_PIXELS_NOTE");
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("saved-image");
+  });
+
+  it("keeps a running image call without a saved image unknown and never repeats the paid generation", async () => {
+    const stream = vi.fn<ProviderAdapter["stream"]>();
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+    imageRun(harness, imageCall("running"));
+    const images = imageService();
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+
+    expect(images.service.restore).toHaveBeenCalledOnce();
+    expect(images.service.execute).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "tool_call_outcome_unknown" })
+    })]);
+  });
+
+  it("dispatches an undispatched image call once through the accepted image service", async () => {
+    const egress = createRecoveryMemoryEgressRecorder();
+    const harness = createHarness({ memoryEgress: egress.service, providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream() { return providerResult; } } } });
+    const call = imageCall("pending");
+    const state = imageRun(harness, call);
+    const images = imageService({ execute: vi.fn(async () => imageResult(call.providerCallId)) });
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+
+    expect(images.service.authorize).toHaveBeenCalledExactlyOnceWith(mixedToolsImagePlan);
+    expect(images.service.execute).toHaveBeenCalledOnce();
+    expect(egress.blocked).toEqual([]);
+    expect(egress.began.filter(receipt => receipt.mode === "TOOL_CALL")).toEqual([
+      expect.objectContaining({ destinationKind: "image", modelRunToolCallId: call.id })]);
+    expect(state.calls()[0]).toMatchObject({ state: "complete" });
+    expect(harness.state.completed).not.toBeNull();
+  });
+
+  it("settles an undispatched image call without the image service as image_tool_unavailable, not a revoked destination", async () => {
+    const stream = vi.fn<ProviderAdapter["stream"]>();
+    const egress = createRecoveryMemoryEgressRecorder();
+    const harness = createHarness({ memoryEgress: egress.service, providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+    const state = imageRun(harness, imageCall("pending"));
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(egress.blocked).toEqual([]);
+    expect(egress.began).toEqual([]);
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+    expect(JSON.stringify(state.calls()[0]!.result)).toContain("image_tool_unavailable");
+    expect(JSON.stringify(state.calls()[0]!.result)).not.toContain("memory_egress_destination_revoked");
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "image_generation_failed" })
+    })]);
+  });
+
+  it("settles an undispatched artifact call without the artifact service with its exact code", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call: PersistedToolLoopCall = { ...persistedRecoveryCall("pending"), mcpBinding: null, toolName: "create_artifact",
+      arguments: { artifact_id: "artifact" } };
+    const initial = checkpointedRun({ phase: "tools_pending", calls: [call], providerToolMessages: [{
+      type: "function_call", name: call.toolName, call_id: call.providerCallId, arguments: JSON.stringify(call.arguments) }] });
+    const state = installCheckpointState(harness, { ...initial, normalizedRequest: { ...initial.normalizedRequest, mcp: undefined,
+      artifactTool: true } });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+    expect(JSON.stringify(state.calls()[0]!.result)).toContain("artifact_tool_unavailable");
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("artifact_tool_unavailable");
   });
 });

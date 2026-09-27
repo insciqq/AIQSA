@@ -16,16 +16,23 @@ type SearchHealthClient = Pick<PrismaClient, "$queryRaw">;
 
 type SearchHealthRow = Readonly<{
   expectedProjections: number;
+  failedBases: number;
   failedProjections: number;
+  failedSources: number;
   pendingProjections: number;
   readyProjections: number;
   workerLastSeenAt: Date | null;
 }>;
 
+/** Content-free installation aggregate. `failedSources`/`failedBases` count
+ * the distinct Sources with a terminal search projection failure and the live
+ * Bases containing them, without naming either. */
 export type KnowledgeSearchHealth = Readonly<{
   backendState: "available" | "unavailable";
   expectedProjections: number;
+  failedBases: number;
   failedProjections: number;
+  failedSources: number;
   pendingProjections: number;
   readyProjections: number;
   workerLastSeenAt: string | null;
@@ -68,7 +75,8 @@ export async function readKnowledgeSearchHealth(
         SELECT DISTINCT ON (hierarchy."sourceArtifactId")
           hierarchy.checksum,
           hierarchy.id,
-          hierarchy."passageCount"
+          hierarchy."passageCount",
+          source.id AS "sourceId"
         FROM "KnowledgeHierarchicalIndexArtifact" AS hierarchy
         INNER JOIN "KnowledgeSourceIndexArtifact" AS source_artifact
           ON source_artifact.id = hierarchy."sourceArtifactId"
@@ -88,6 +96,7 @@ export async function readKnowledgeSearchHealth(
       ), obligations AS (
         SELECT
           expected.id,
+          expected."sourceId",
           projection.state,
           (
             projection."backendKind" = ${KNOWLEDGE_SEARCH_BACKEND_KIND}
@@ -112,6 +121,20 @@ export async function readKnowledgeSearchHealth(
       SELECT
         count(*)::integer AS "expectedProjections",
         count(*) FILTER (WHERE state = 'FAILED')::integer AS "failedProjections",
+        count(DISTINCT "sourceId") FILTER (WHERE state = 'FAILED')::integer AS "failedSources",
+        (
+          SELECT count(DISTINCT membership."knowledgeBaseId")::integer
+          FROM "KnowledgeBaseSource" AS membership
+          INNER JOIN "KnowledgeBase" AS base
+            ON base.id = membership."knowledgeBaseId"
+           AND base."ownerUserId" = membership."ownerUserId"
+          WHERE membership."removedAt" IS NULL
+            AND base."deletionRequestedAt" IS NULL
+            AND base."trashedAt" IS NULL
+            AND membership."sourceId" IN (
+              SELECT failed."sourceId" FROM obligations AS failed WHERE failed.state = 'FAILED'
+            )
+        ) AS "failedBases",
         count(*) FILTER (WHERE NOT COALESCE(ready, false) AND state IS DISTINCT FROM 'FAILED')::integer
           AS "pendingProjections",
         count(*) FILTER (WHERE ready)::integer AS "readyProjections",
@@ -132,7 +155,11 @@ export async function readKnowledgeSearchHealth(
   const failedProjections = count(row.failedProjections);
   const pendingProjections = count(row.pendingProjections);
   const readyProjections = count(row.readyProjections);
-  if (readyProjections + pendingProjections + failedProjections !== expectedProjections) {
+  const failedSources = count(row.failedSources);
+  const failedBases = count(row.failedBases);
+  if (readyProjections + pendingProjections + failedProjections !== expectedProjections ||
+    failedSources > failedProjections || (failedSources === 0) !== (failedProjections === 0) ||
+    failedSources === 0 && failedBases !== 0) {
     throw new Error("knowledge_search_health_invalid");
   }
   const workerState = row.workerLastSeenAt === null
@@ -144,7 +171,9 @@ export async function readKnowledgeSearchHealth(
   return Object.freeze({
     backendState,
     expectedProjections,
+    failedBases,
     failedProjections,
+    failedSources,
     pendingProjections,
     readyProjections,
     workerLastSeenAt: row.workerLastSeenAt?.toISOString() ?? null,

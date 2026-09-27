@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_MCP_VERSION,
+  WORKSPACE_TOOL_TRANSPORT_CEILING_BYTES,
   WorkspaceConfigError,
-  getWorkspaceConfig
+  getWorkspaceConfig,
+  workspaceToolTransportMaxBytes
 } from "./config";
 
 describe("Workspace configuration", () => {
@@ -49,6 +51,16 @@ describe("Workspace configuration", () => {
     for (const env of invalid) {
       expect(() => getWorkspaceConfig(env)).toThrow(WorkspaceConfigError);
     }
+  });
+
+  it("accepts only tool output bounds whose escaped worst case fits one transport message", () => {
+    const largest = getWorkspaceConfig({ AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: "1048576" }).toolOutputMaxBytes;
+    expect(workspaceToolTransportMaxBytes(largest)).toBeLessThanOrEqual(WORKSPACE_TOOL_TRANSPORT_CEILING_BYTES);
+    expect(workspaceToolTransportMaxBytes(largest + 1)).toBeGreaterThan(WORKSPACE_TOOL_TRANSPORT_CEILING_BYTES);
+    expect(() => getWorkspaceConfig({ AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: String(largest + 1) }))
+      .toThrow(WorkspaceConfigError);
+    // stdout and stderr at the default bound, both fully control characters, after both JSON layers.
+    expect(workspaceToolTransportMaxBytes(128 * 1_024)).toBeGreaterThanOrEqual(2 * 7 * 128 * 1_024);
   });
 
   it("permits the deterministic runtime only in explicit non-production test mode", () => {

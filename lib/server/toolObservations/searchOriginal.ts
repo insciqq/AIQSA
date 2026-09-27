@@ -5,8 +5,9 @@ import { compactSearchToolExecutionResult } from "../search/toolResult";
 import type { ToolExecutionResult } from "../tools/types";
 import { ObservationStoreError, type ToolObservationDescriptor } from "./contract";
 
-// Three Search engines, each with independently bounded findings and at most
-// twenty normalized source records. Never use the MCP wire cap for this owner.
+// Three Search engines, each with at most MAX_SEARCH_FINDINGS_BYTES of findings
+// (at most twice that as escaped JSON text) and at most twenty normalized
+// source records. Never use the MCP wire cap for this owner.
 export const SEARCH_OBSERVATION_MAX_BYTES = 8 * 1024 * 1024;
 const unavailable = () => new ObservationStoreError("tool_observation_unavailable");
 const record = (value: unknown): value is Record<string, unknown> =>

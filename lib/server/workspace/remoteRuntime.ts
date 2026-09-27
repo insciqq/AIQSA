@@ -6,13 +6,13 @@ import {
   isWorkspaceRuntimeExecSessionId,
   workspaceAttachmentPath
 } from "@/lib/domain/workspace";
-import type { WorkspaceConfig } from "./config";
+import { workspaceToolTransportMaxBytes, type WorkspaceConfig } from "./config";
 import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
 import { transportFailureFacts } from "../providers/providerObservability";
 import { parseWorkspaceOperation } from "./operationFence";
 import { outputIdentities, parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
-import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import {
   WorkspaceRuntimeError,
@@ -72,15 +72,30 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
   }
 }
 
-async function jsonResponse(response: Response): Promise<unknown> {
+type ResponseLimit = Readonly<{ maxBytes: number; oversize: WorkspaceRuntimeError["code"] }>;
+const PROTOCOL_RESPONSE_LIMIT: ResponseLimit = { maxBytes: RESPONSE_MAX_BYTES, oversize: "workspace_runtime_incompatible" };
+
+/** Reads at most the limit; a larger body is cancelled, never buffered whole. */
+async function jsonResponse(response: Response, limit: ResponseLimit = PROTOCOL_RESPONSE_LIMIT): Promise<unknown> {
   const length = Number(response.headers.get("content-length"));
-  if (Number.isFinite(length) && length > RESPONSE_MAX_BYTES) {
-    throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+  if (Number.isFinite(length) && length > limit.maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new WorkspaceRuntimeError(limit.oversize);
   }
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > RESPONSE_MAX_BYTES) {
-    throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  const reader = response.body?.getReader();
+  while (reader) {
+    const next = await reader.read();
+    if (next.done) break;
+    byteLength += next.value.byteLength;
+    if (byteLength > limit.maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new WorkspaceRuntimeError(limit.oversize);
+    }
+    chunks.push(next.value);
   }
+  const text = new TextDecoder().decode(Buffer.concat(chunks));
   try {
     return JSON.parse(text);
   } catch {
@@ -476,7 +491,12 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     try {
       const response = await this.request(path, request, finish);
       httpStatus = response.status;
-      const value = await jsonResponse(response);
+      // The tool has run once the runner answers; an oversized result is
+      // unreadable, not an incompatible runner.
+      const value = await jsonResponse(response, {
+        maxBytes: workspaceToolTransportMaxBytes(this.config.toolOutputMaxBytes),
+        oversize: "workspace_tool_output_limit_exceeded"
+      });
       if (!response.ok) throw workspaceError(value);
       if (
         !isRecord(value) ||
@@ -611,7 +631,8 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       !value.skipped.every((code) => WORKSPACE_BROWSER_SKIP_CODES.includes(code))) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     const metadata = value.outputs.map((entry) => outputMetadata(entry));
     if (metadata.some((entry) => !entry || !isWorkspaceBrowserSessionFilename(entry.relativePath) ||
-      entry.byteSize > WORKSPACE_BROWSER_SESSION_MAX_BYTES)) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      entry.byteSize > WORKSPACE_BROWSER_SESSION_MAX_BYTES) ||
+      metadata.reduce((total, entry) => total + entry!.byteSize, 0) > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     return { files: (metadata as Omit<WorkspaceOutputStream, "body">[]).map((entry) => this.output(input.sessionId, entry, input.signal)),
       skipped: value.skipped as WorkspaceBrowserSkipCode[] };
   }
@@ -626,7 +647,8 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
 
   async createProjectArchive(input: Parameters<WorkspaceRuntime["createProjectArchive"]>[0]): Promise<WorkspaceOutputStream> {
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/project/archive`, {
-      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
+      body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), restorable: input.restorable === true,
+        runtimeSandboxId: input.runtimeSandboxId }),
       method: "POST",
       signal: input.signal
     });

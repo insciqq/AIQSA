@@ -3,7 +3,13 @@ import { MEMORY_ANSWER_SOURCE_MAX_ITEMS } from "./memoryClient";
 import {
   CHAT_BRANCH_PREVIEW_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
+  THREAD_CITATION_MAX_ITEMS,
+  THREAD_REASONING_MAX_CHARACTERS,
+  THREAD_REASONING_MAX_ENTRIES,
+  THREAD_SEARCH_SOURCE_MAX_ITEMS,
   boundedChatBranchPreview,
+  boundedChatTitle,
+  CHAT_TITLE_MAX_LENGTH,
   decodeArchivedChatDetailResponse,
   decodeArchivedChatsResponse,
   decodeChatBranchesResponse,
@@ -337,7 +343,7 @@ describe("chat wire contracts", () => {
     );
   });
 
-  it("rejects malformed direct output fields and duplicate Knowledge handles", () => {
+  it("drops malformed direct output fields and duplicate Knowledge handles one by one", () => {
     const artifactSummary = {
       citations: [],
       knowledgeCitations: [{
@@ -354,21 +360,90 @@ describe("chat wire contracts", () => {
         messages: [{ ...message, artifactSummary: value }],
         usageStats
       })
-    });
+    })?.messages[0]?.artifactSummary;
 
-    expect(decode(artifactSummary)).not.toBeNull();
-    expect(decode({ ...artifactSummary, reasoningText: "not-an-array" })).toBeNull();
+    expect(decode(artifactSummary)).toEqual({ ...artifactSummary, knowledgeCitations: [{ handle: "K1.1" }] });
+    expect(decode({ ...artifactSummary, reasoningText: "not-an-array" })?.reasoningText).toEqual([]);
     expect(decode({
       ...artifactSummary,
-      sources: [{ rank: 1, title: "Unsafe", url: "javascript:alert(1)" }]
-    })).toBeNull();
+      sources: [
+        { rank: 1, title: "Unsafe", url: "javascript:alert(1)" },
+        { rank: 2, title: "Safe", url: "https://example.com/safe" }
+      ]
+    })?.sources).toEqual([{ rank: 2, title: "Safe", url: "https://example.com/safe" }]);
     expect(decode({
       ...artifactSummary,
       knowledgeCitations: [
         artifactSummary.knowledgeCitations[0],
         artifactSummary.knowledgeCitations[0]
       ]
+    })?.knowledgeCitations).toEqual([{ handle: "K1.1" }]);
+  });
+
+  it("never lets an optional answer output invalidate its message, page or terminal update", () => {
+    const rootMessage = { ...message, id: "message-root", modelRunId: null };
+    const answer = (artifactSummary: unknown) => ({ ...message, artifactSummary, id: "message-answer", parentMessageId: rootMessage.id });
+    const citation = (index: number) => ({ index: 1, title: `Cited ${index}`, url: `https://example.com/${index}` });
+    const corrupted = [
+      "not-an-object",
+      { citations: "none", reasoningText: [7, " ", "Kept"], sources: null },
+      { citations: [citation(1), { index: 1, title: "Long link", url: `https://example.com/${"u".repeat(2_049)}` }],
+        reasoningText: [], sources: [] },
+      { citations: [], contextCompaction: { state: "unknown" }, memoryStatus: "NEWER_STATUS", reasoningText: [], sources: [],
+        generatedImages: [{ attachmentId: "" }], generatedArtifacts: "none", memorySources: [{ memoryRef: "" }],
+        memoryAction: { targetId: "private" }, knowledgeState: { answer: "unknown" }, workDurationMs: -1,
+        groundingDisplay: { provider: "other" }, skillCatalogOmittedCount: 1.5 }
+    ];
+    for (const artifactSummary of corrupted) {
+      const page = decodeChatMessagesPageResponse({
+        messages: [rootMessage, answer(artifactSummary)],
+        pageInfo: { activeLeafMessageId: "message-answer", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: summary.updatedAt }
+      });
+      expect(page?.messages.map(({ id }) => id)).toEqual(["message-root", "message-answer"]);
+      expect(JSON.stringify(page)).not.toMatch(/private|NEWER_STATUS|u{2049}/u);
+      expect(decodeChatUpdateData({ chat: { ...summary, contextStats, usageStats }, messages: [answer(artifactSummary)] })
+        ?.messages).toHaveLength(1);
+    }
+    const decoded = (value: unknown) => decodeChatMessagesPageResponse({
+      messages: [rootMessage, answer(value)],
+      pageInfo: { activeLeafMessageId: "message-answer", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: summary.updatedAt }
+    })?.messages[1]?.artifactSummary;
+    expect(decoded("not-an-object")).toBeNull();
+    expect(decoded(corrupted[1])).toEqual({ citations: [], reasoningText: ["Kept"], sources: [] });
+    expect(decoded(corrupted[2])?.citations).toEqual([citation(1)]);
+    expect(decoded(corrupted[3])).toEqual({ citations: [], generatedImages: [], memorySources: [],
+      reasoningText: [], sources: [] });
+    // Mandatory message fields still fail closed.
+    expect(decodeChatMessagesPageResponse({
+      messages: [rootMessage, { ...answer(null), role: "system" }],
+      pageInfo: { activeLeafMessageId: "message-answer", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: summary.updatedAt }
     })).toBeNull();
+  });
+
+  it("bounds reader portions and keeps their completeness marks", () => {
+    const decode = (value: unknown) => decodeChatDetailResponse({
+      chat: detailChat({ messages: [{ ...message, artifactSummary: value }], usageStats })
+    })?.messages[0]?.artifactSummary;
+    const citations = Array.from({ length: THREAD_CITATION_MAX_ITEMS + 1 }, (_, index) => ({
+      index: 1, title: `Cited ${index}`, url: `https://example.com/${index}`
+    }));
+    const sources = Array.from({ length: THREAD_SEARCH_SOURCE_MAX_ITEMS + 1 }, (_, index) => ({
+      rank: index + 1, title: `Result ${index}`, url: `https://example.org/${index}`
+    }));
+    const entries = Array.from({ length: THREAD_REASONING_MAX_ENTRIES + 2 }, (_, index) => `Entry ${index}`);
+    const bounded = decode({ citations, reasoningText: entries, sources });
+    expect(bounded?.citations).toHaveLength(THREAD_CITATION_MAX_ITEMS);
+    expect(bounded?.sources).toHaveLength(THREAD_SEARCH_SOURCE_MAX_ITEMS);
+    expect(bounded).toMatchObject({ citationsTruncated: true, sourcesTruncated: true });
+    expect(bounded?.reasoningText).toHaveLength(THREAD_REASONING_MAX_ENTRIES);
+    expect(bounded?.reasoningText.join("\n\n")).toBe(entries.join("\n\n"));
+    expect(bounded).not.toHaveProperty("reasoningTruncated");
+    const long = decode({ citations: [], reasoningText: [`${"x".repeat(THREAD_REASONING_MAX_CHARACTERS - 1)}😀`], sources: [] });
+    expect(long).toMatchObject({ reasoningText: ["x".repeat(THREAD_REASONING_MAX_CHARACTERS - 1)], reasoningTruncated: true });
+    expect(decode({ citations: [], reasoningText: ["Short"], reasoningTruncated: true, sources: [] }))
+      .toMatchObject({ reasoningText: ["Short"], reasoningTruncated: true });
+    expect(decode({ citations: [], reasoningText: [], reasoningTruncated: "yes", sources: [] }))
+      .not.toHaveProperty("reasoningTruncated");
   });
 
   it("round-trips the snapshot-bound assistant identity and fails closed on malformed identities", () => {
@@ -526,6 +601,12 @@ describe("chat wire contracts", () => {
     })).toBeNull();
   });
 
+  it("bounds server-composed chat titles by code points without splitting a surrogate pair", () => {
+    const fits = `Continued: ${"😀".repeat(CHAT_TITLE_MAX_LENGTH - 11)}`;
+    expect(boundedChatTitle(fits)).toBe(fits);
+    expect(boundedChatTitle(`${fits}😀tail`)).toBe(fits);
+  });
+
   it("bounds branch previews by UTF-16 units without splitting a surrogate pair", () => {
     const preview = boundedChatBranchPreview(
       `${"x".repeat(CHAT_BRANCH_PREVIEW_MAX_LENGTH - 1)}😀trailing`
@@ -571,11 +652,12 @@ describe("chat wire contracts", () => {
         content: message.content,
         status: "complete"
       });
-      expect(decode([...memorySources, { ...memorySources[0], memoryRef: "" }])).toBeNull();
+      expect(decode([...memorySources, { ...memorySources[0], memoryRef: "" }])?.messages[0]?.artifactSummary)
+        .toMatchObject({ generatedFiles, memorySources });
       expect(decode(Array.from(
         { length: MEMORY_ANSWER_SOURCE_MAX_ITEMS + 1 },
         () => memorySources[0]
-      ))).toBeNull();
+      ))?.messages[0]?.artifactSummary?.memorySources).toHaveLength(MEMORY_ANSWER_SOURCE_MAX_ITEMS);
     }
   );
 
@@ -638,14 +720,29 @@ describe("chat wire contracts", () => {
     });
     expect(decode({
       citations: [],
+      memoryStatus: "INPUT_TOO_LONG",
+      reasoningText: [],
+      sources: []
+    })?.messages[0]?.artifactSummary).toEqual({
+      citations: [],
+      memoryStatus: "INPUT_TOO_LONG",
+      reasoningText: [],
+      sources: []
+    });
+    // An unknown (newer) status or a feedback carrying a private field is left
+    // out; the answer and its page stay readable.
+    expect(decode({
+      citations: [],
       memoryStatus: "FAILED_SAFE",
       reasoningText: [],
       sources: []
-    })).toBeNull();
-    expect(decode({
+    })?.messages[0]?.artifactSummary).toEqual({ citations: [], reasoningText: [], sources: [] });
+    const withPrivateField = decode({
       ...artifactSummary,
       memoryAction: { ...artifactSummary.memoryAction, targetId: "private" }
-    })).toBeNull();
+    })?.messages[0]?.artifactSummary;
+    expect(withPrivateField).toEqual({ citations: [], reasoningText: [], sources: [] });
+    expect(JSON.stringify(withPrivateField)).not.toContain("private");
   });
 
   it("strictly decodes distinct lifecycle, Archived, and source-resolution wires", () => {
@@ -746,7 +843,11 @@ it("reloads failed answers with same-name immutable checkpoints and retains sepa
     messages: [{ ...message, status: "error", artifactSummary: { citations: [], reasoningText: [], sources: [], generatedFiles } }], usageStats
   }) });
   expect(decode([...files, final])?.messages[0]).toMatchObject({ status: "error", artifactSummary: { generatedFiles: [...files, final] } });
-  expect(decode([files[0], files[0]])).toBeNull();
-  expect(decode([final, { ...final, attachmentId: "another-final" }])).toBeNull();
-  expect(decode([...files, { ...files[0], attachmentId: "excess", checkpoint: { ...files[0]!.checkpoint, id: "cp-17" } }])).toBeNull();
+  // A file that would break the Workspace list rules is dropped on its own;
+  // the answer and every other download stay.
+  const kept = (generatedFiles: unknown[]) => decode(generatedFiles)?.messages[0]?.artifactSummary?.generatedFiles;
+  expect(kept([files[0], files[0]])).toEqual([files[0]]);
+  expect(kept([final, { ...final, attachmentId: "another-final" }])).toEqual([final]);
+  expect(kept([...files, { ...files[0], attachmentId: "excess", checkpoint: { ...files[0]!.checkpoint, id: "cp-17" } }]))
+    .toEqual(files);
 });

@@ -21,10 +21,15 @@ import { memoryLocalDateTimeParts } from
   "../../../../domain/memory/temporal/calendar";
 import {
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
+  MEMORY_FACT_MAX_EVIDENCE_CHARACTERS,
   MEMORY_FACT_MAX_PACKET_CANDIDATES,
+  MEMORY_FACT_MAX_RAW_OBSERVATIONS,
   memoryFactCandidateId,
   memoryFactExtractionOutputHash,
   memoryFactNormalizedValue,
+  memoryFactPageBoundaryAfter,
+  memoryFactTargetSourceHash,
+  memoryFactTargetTextOffset,
   type MemoryExactTextRef,
   type MemoryExtractedCandidate,
   type MemoryFactCandidateDependency,
@@ -177,6 +182,8 @@ function targetSource(input: MemoryFactExtractionInput) {
   return source;
 }
 
+/** Resolves page-local exact text and records it at full-text offsets with
+ * the full-text hash, the identity every later evidence proof rechecks. */
 function exactEvidence(
   input: MemoryFactExtractionInput,
   ref: MemoryExactTextRef
@@ -188,12 +195,13 @@ function exactEvidence(
     span.startOffset < redacted.endOffset && span.endOffset > redacted.startOffset)) {
     fail("memory_fact_secret");
   }
+  const offset = memoryFactTargetTextOffset(input);
   return [{
-    endOffset: span.endOffset,
+    endOffset: offset + span.endOffset,
     messageId: source.id,
     quote: span.text,
-    sourceTextHash: memorySha256(source.text),
-    startOffset: span.startOffset
+    sourceTextHash: memoryFactTargetSourceHash(input, source),
+    startOffset: offset + span.startOffset
   }];
 }
 
@@ -652,7 +660,10 @@ function decodeObservation(
   const candidateRef = boundedString(value.candidate_ref, 64);
   if (!boundedMachineToken.test(candidateRef)) fail();
   const statement = boundedString(value.statement, 2_000);
-  const evidenceRef = decodeMemoryExactTextRef(value.evidence, 2_000) ?? fail();
+  const evidenceRef = decodeMemoryExactTextRef(
+    value.evidence,
+    MEMORY_FACT_MAX_EVIDENCE_CHARACTERS
+  ) ?? fail();
   const evidence = exactEvidence(input, evidenceRef);
   const quote = evidence[0]!.quote!;
   if (memoryExplicitStatementContainsSecret(source.text) ||
@@ -836,15 +847,109 @@ function decodeObservation(
   return { ...withoutId, id: memoryFactCandidateId(input, withoutId) };
 }
 
+type EvidencePosition = Readonly<{
+  end: number;
+  ordinal: number;
+  start: number;
+}>;
+
+type PacketSelection = Readonly<{
+  coverageEnd?: number;
+  rejected: ReadonlyMap<number, MemoryFactCandidateRejection["reasonCode"]>;
+}>;
+
+/** Full-text position of a raw observation's exact evidence, resolved without
+ * decoding the observation; null when it does not resolve (and so fails). */
+function rawEvidencePosition(
+  value: unknown,
+  text: string,
+  offset: number,
+  ordinal: number
+): EvidencePosition | null {
+  if (!isRecord(value)) return null;
+  const ref = decodeMemoryExactTextRef(value.evidence, MEMORY_FACT_MAX_EVIDENCE_CHARACTERS);
+  const span = ref ? projectMemoryExactTextRef(text, ref) : null;
+  return span
+    ? { end: offset + span.endOffset, ordinal, start: offset + span.startOffset }
+    : null;
+}
+
+/**
+ * Partitions one packet by where each observation's evidence starts. Evidence
+ * starting after the page core belongs to the next page. A full packet may
+ * have stopped early (the provider is asked for source order and at most one
+ * packet), so it admits only observations that start before the first one it
+ * cannot admit, or before its last one, and the next page resumes there. When
+ * a full packet shares one evidence start, it admits one packet from that
+ * start and resumes after the shared span; observations beyond that packet
+ * are rejected as overflow instead of failing the whole output.
+ */
+function packetSelection(
+  raw: readonly unknown[],
+  input: MemoryFactExtractionInput
+): PacketSelection {
+  let source: MemoryFactExtractionInput["messages"][number];
+  try {
+    source = targetSource(input);
+  } catch {
+    // Every observation is then rejected by its own decode.
+    return { rejected: new Map() };
+  }
+  const offset = memoryFactTargetTextOffset(input);
+  const coreEnd = input.targetPage?.coreEnd ?? source.text.length;
+  const rejected = new Map<number, MemoryFactCandidateRejection["reasonCode"]>();
+  const inCore: EvidencePosition[] = [];
+  let reachedBeyondCore = false;
+  raw.forEach((value, ordinal) => {
+    const position = rawEvidencePosition(value, source.text, offset, ordinal);
+    if (!position) return;
+    if (position.start >= coreEnd) {
+      rejected.set(ordinal, "REJECT_OUTSIDE_PAGE");
+      reachedBeyondCore = true;
+      return;
+    }
+    inCore.push(position);
+  });
+  const packet = MEMORY_FACT_MAX_PACKET_CANDIDATES;
+  if (raw.length < packet || inCore.length === 0 ||
+    (inCore.length <= packet && reachedBeyondCore)) return { rejected };
+
+  const sorted = [...inCore].sort((left, right) =>
+    left.start - right.start || left.ordinal - right.ordinal);
+  let cut = sorted[Math.min(packet, sorted.length - 1)]!.start;
+  let admitted = sorted.filter(({ start }) => start < cut);
+  if (admitted.length === 0) {
+    const first = sorted[0]!.start;
+    const shared = sorted.filter(({ start }) => start === first);
+    const nextStart = sorted.find(({ start }) => start > first)?.start;
+    const sharedEnd = Math.max(...shared.map(({ end }) => end));
+    admitted = shared.slice(0, packet);
+    cut = nextStart === undefined ? sharedEnd : Math.min(sharedEnd, nextStart);
+  }
+  const admittedOrdinals = new Set(admitted.map(({ ordinal }) => ordinal));
+  for (const position of sorted) {
+    if (!admittedOrdinals.has(position.ordinal)) {
+      rejected.set(position.ordinal, "REJECT_PACKET_OVERFLOW");
+    }
+  }
+  return {
+    coverageEnd: offset + memoryFactPageBoundaryAfter(source.text, cut - offset),
+    rejected
+  };
+}
+
 function packetPlan(
   raw: readonly unknown[],
   input: MemoryFactExtractionInput,
   decode: (value: unknown, input: MemoryFactExtractionInput) => MemoryExtractedCandidate
 ): MemoryFactExtractionPlan {
+  const selection = packetSelection(raw, input);
   const decoded: Array<{ candidate: MemoryExtractedCandidate; candidateOrdinal: number }> = [];
-  const rejections: MemoryFactCandidateRejection[] = [];
+  const rejections: MemoryFactCandidateRejection[] = [...selection.rejected]
+    .map(([candidateOrdinal, reasonCode]) => ({ candidateOrdinal, reasonCode }));
   const candidateRefs = new Set<string>();
   raw.forEach((value, candidateOrdinal) => {
+    if (selection.rejected.has(candidateOrdinal)) return;
     try {
       const candidate = decode(value, input);
       if (candidateRefs.has(candidate.candidateRef)) {
@@ -879,10 +984,11 @@ function packetPlan(
     }
   }
   const values = [...unique.values()];
+  // Unreachable after packet selection; kept as the admission bound.
   for (const item of values.slice(MEMORY_FACT_MAX_ACCEPTED_CANDIDATES)) {
     rejections.push({
       candidateOrdinal: item.candidateOrdinal,
-      reasonCode: "REJECT_UNSUPPORTED"
+      reasonCode: "REJECT_PACKET_OVERFLOW"
     });
   }
   const accepted = values.slice(0, MEMORY_FACT_MAX_ACCEPTED_CANDIDATES);
@@ -894,19 +1000,24 @@ function packetPlan(
   return {
     candidateOrdinals,
     candidates,
+    ...(selection.coverageEnd === undefined
+      ? {}
+      : { coverageEnd: selection.coverageEnd }),
     input,
     outputHash: memoryFactExtractionOutputHash(
       input,
       candidates,
       candidateOrdinals,
-      rejections
+      rejections,
+      selection.coverageEnd
     ),
     rejections
   };
 }
 
-/** Executable vNext strict packet. Candidate defects are isolated; malformed
- * call count/name/top-level shape fails the complete provider output. */
+/** Executable vNext strict packet. Candidate defects and observations beyond
+ * one packet are isolated per ordinal; malformed call count/name/top-level
+ * shape, or more observations than receipts can record, fails the output. */
 export function decodeMemoryFactExtraction(
   calls: readonly ModelToolCall[] | undefined,
   input: MemoryFactExtractionInput
@@ -917,6 +1028,6 @@ export function decodeMemoryFactExtraction(
     !isRecord(calls[0].arguments) ||
     !hasExactKeys(calls[0].arguments, ["observations"]) ||
     !Array.isArray(calls[0].arguments.observations) ||
-    calls[0].arguments.observations.length > MEMORY_FACT_MAX_PACKET_CANDIDATES) fail();
+    calls[0].arguments.observations.length > MEMORY_FACT_MAX_RAW_OBSERVATIONS) fail();
   return packetPlan(calls[0].arguments.observations, input, decodeObservation);
 }

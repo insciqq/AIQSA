@@ -271,6 +271,7 @@ export function AdminMcpSection({
           error={error}
           loaded={loaded}
           loading={loading}
+          onOAuthError={feedback.reportError}
           onOpen={(serverId) => onSelectResource(serverId)}
           onRetry={() => void controller.actions.refresh()}
           servers={servers}

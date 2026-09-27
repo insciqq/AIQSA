@@ -90,7 +90,11 @@ export interface McpOAuthRepository {
     tokens: OAuthTokens;
     userId: string;
   }>): Promise<McpOAuthRepositoryResult<McpOAuthStoredConnection>>;
-  finalizeDisconnected(connectionId: string): Promise<boolean>;
+  /** Clears only the revoked generation; a later rotation keeps the row disconnecting. */
+  finalizeDisconnected(input: Readonly<{
+    connectionId: string;
+    tokenVersion: string;
+  }>): Promise<boolean>;
   findClient(registrationKey: string): Promise<McpOAuthStoredClient | null>;
   findReadyConnection(input: Readonly<{
     policyFingerprint: string;
@@ -635,7 +639,9 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
       });
     },
 
-    async finalizeDisconnected(connectionId) {
+    async finalizeDisconnected({ connectionId, tokenVersion: expectedVersion }) {
+      const tokenGeneration = Number(expectedVersion);
+      if (!Number.isSafeInteger(tokenGeneration)) return false;
       const result = await client.mcpOAuthConnection.updateMany({
         data: {
           expiresAt: null,
@@ -650,7 +656,8 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
               runBindings: { some: { modelRun: { status: { in: [...ACTIVE_RUN_STATUSES] } } } }
             }
           },
-          state: "disconnecting"
+          state: "disconnecting",
+          tokenGeneration
         }
       });
       return result.count === 1;

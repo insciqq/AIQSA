@@ -53,6 +53,14 @@ export class ActiveMessageMutationConflictError extends Error {
   }
 }
 
+/** A concurrent reference kept the subtree from being deleted atomically. */
+export class MessageDeleteConflictError extends Error {
+  constructor() {
+    super("message_delete_conflict");
+    this.name = "MessageDeleteConflictError";
+  }
+}
+
 export type MessageBranchRepository = {
   createChatBranchFromMessage(input: {
     sourceMessageId: string;
@@ -69,6 +77,7 @@ export type MessageBranchRepository = {
   }): Promise<{
     activeLeafMessageId: string | null;
     chatId: string;
+    chatUpdatedAt: Date;
     deletedMessageIds: string[];
   } | null>;
 };
@@ -272,6 +281,7 @@ export function createDeleteMessageHandler(deps: MessageBranchHandlerDeps) {
     let deleted: {
       activeLeafMessageId: string | null;
       chatId: string;
+      chatUpdatedAt: Date;
       deletedMessageIds: string[];
     } | null;
     try {
@@ -282,6 +292,10 @@ export function createDeleteMessageHandler(deps: MessageBranchHandlerDeps) {
     } catch (error) {
       if (isActiveMessageMutationConflictError(error)) {
         return activeMutationConflictResponse(error);
+      }
+      if (error instanceof MessageDeleteConflictError ||
+        (error instanceof Error && error.name === "MessageDeleteConflictError")) {
+        return Response.json({ error: "message_delete_conflict" }, { status: 409 });
       }
 
       throw error;
@@ -295,6 +309,7 @@ export function createDeleteMessageHandler(deps: MessageBranchHandlerDeps) {
       message: {
         activeLeafMessageId: deleted.activeLeafMessageId,
         chatId: deleted.chatId,
+        chatUpdatedAt: deleted.chatUpdatedAt.toISOString(),
         deleted: true,
         deletedMessageIds: deleted.deletedMessageIds,
         id: params.messageId

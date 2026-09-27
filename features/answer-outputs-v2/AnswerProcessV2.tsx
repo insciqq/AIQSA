@@ -79,6 +79,8 @@ export type AnswerProcessV2Props = Readonly<{
   pinnedSkillIds?: readonly string[];
   memorySources?: readonly MemoryAnswerSource[];
   reasoningTexts?: readonly string[];
+  /** Part of the thinking was too long to keep or show; the fold says so. */
+  reasoningTruncated?: boolean;
   toolActivity?: ThreadToolActivity | null;
   /** Send → first answer token; null when the run recorded none. */
   workDurationMs?: number | null;
@@ -102,6 +104,7 @@ export function AnswerProcessV2({
   pinnedSkillIds = [],
   memorySources = [],
   reasoningTexts = [],
+  reasoningTruncated = false,
   toolActivity = null,
   workDurationMs = null,
   workspaceActivity = null
@@ -193,6 +196,11 @@ export function AnswerProcessV2({
               <div className="v2-answer-process-reasoning">
                 <MarkdownMessage content={reasoning} />
               </div>
+              {reasoningTruncated ? (
+                <p className="v2-answer-process-step-meta" data-testid="answer-reasoning-truncated">
+                  Thinking is too long to show in full.
+                </p>
+              ) : null}
             </section>
           ) : null}
           {calls.length > 0 ? (

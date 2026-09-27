@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { workspaceSandboxName } from "@/lib/domain/workspace";
 import { getContext, runWithContext } from "../observability";
 import { observeWorkspaceHealth } from "./lifecycleObservability";
-import { createWorkspaceRunnerServer } from "./runnerServer";
+import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
+import { CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "../agents/codexProfile";
+import { CODEX_OUTPUT_LIMITS } from "../agents/codexProtocol";
+import { AGENT_START_BODY_MAX_BYTES, createWorkspaceRunnerServer } from "./runnerServer";
 import { WorkspaceRuntimeError, type WorkspaceRuntime, type WorkspaceRuntimeHealth } from "./runtime";
 
 const token = "synthetic_runner_token_with_at_least_32_characters";
@@ -107,6 +110,68 @@ describe("Workspace runner lifecycle diagnostics", () => {
     expect(runtimeContexts[0]?.trace_id).not.toBe("a".repeat(32));
     expect(output.lines.join("")).not.toContain("PRIVATE");
     expect(output.lines.join("")).not.toContain("foreign_");
+  });
+
+  describe("Agent transport bounds", () => {
+    const identity = { operation: body.operation, modelRunId: "run_fixture", runtimeExecSessionId: "agent-fixture",
+      runtimeSandboxId: "sandbox_fixture" };
+    const ensureSession = vi.fn(async () => ({ runtimeSandboxId: "sandbox_fixture", sandboxName: body.sandboxName, state: "ready" as const }));
+    const profile = { gatewayOrigin: "http://gateway.invalid", modelId: "fixture-model", contextWindowTokens: 8_192,
+      maxOutputTokens: 1_024, developerInstructions: "\u0001".repeat(CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES),
+      mcpMode: "off", mcpTimeoutSeconds: 30 };
+    const start = { ...identity, profile, skillManifestHash: "b".repeat(64), runToken: "run_token_fixture", timeoutSeconds: null };
+
+    it("accepts a maximal worst-case escaped prompt and server instructions at the default configuration", async () => {
+      const prompts: string[] = [];
+      const startAgent = vi.fn(async (input: Parameters<NonNullable<WorkspaceRuntime["startAgent"]>>[0]) => {
+        prompts.push(input.prompt);
+      });
+      const request = fixture({ ensureSession, startAgent, stopSession: vi.fn(async () => undefined) });
+      await request("/v1/sessions/ensure", body);
+      for (const unit of ["\u0001", "\"\\", "é🧪"]) {
+        const prompt = unit.repeat(Math.floor(AGENT_PROMPT_MAX_BYTES / Buffer.byteLength(unit)));
+        // The escaped control-character prompt alone exceeds the former 2 MiB body bound.
+        if (unit === "\u0001") expect(Buffer.byteLength(JSON.stringify(prompt))).toBeGreaterThan(4 * AGENT_PROMPT_MAX_BYTES);
+        const response = await request(`/v1/sessions/${sessionId}/agent/start`, { ...start, prompt });
+        expect(response.end).toHaveBeenCalledWith(JSON.stringify({ started: true }));
+        expect(prompts.at(-1) === prompt).toBe(true);
+      }
+      expect(startAgent).toHaveBeenCalledTimes(3);
+    });
+
+    it("rejects a start body above its bound as oversized before dispatch", async () => {
+      capture();
+      const startAgent = vi.fn(async () => undefined);
+      const request = fixture({ ensureSession, startAgent, stopSession: vi.fn(async () => undefined) });
+      await request("/v1/sessions/ensure", body);
+      const response = await request(`/v1/sessions/${sessionId}/agent/start`,
+        { ...start, prompt: "fixture", padding: "x".repeat(AGENT_START_BODY_MAX_BYTES) });
+      expect(response.writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+      expect(response.end).toHaveBeenCalledWith(JSON.stringify({ error: "workspace_request_too_large" }));
+      const tool = await request(`/v1/sessions/${sessionId}/tools/sandbox_fs_write/call`, { ...identity,
+        modelRunToolCallId: "call_fixture", arguments: { path: "/workspace/project/a", content: "x".repeat(2 * 1_024 * 1_024) } });
+      expect(tool.end).toHaveBeenCalledWith(JSON.stringify({ error: "workspace_request_too_large" }));
+      expect(startAgent).not.toHaveBeenCalled();
+    });
+
+    it("pages Agent output past 64 MiB up to the execution total, never beyond it", async () => {
+      capture();
+      const cursors: number[] = [];
+      const pollAgent = vi.fn(async (input: Parameters<NonNullable<WorkspaceRuntime["pollAgent"]>>[0]) => {
+        cursors.push(input.cursor);
+        return { cursor: input.cursor, nextCursor: input.cursor, stdoutBase64: "", done: false, exitCode: null };
+      });
+      const request = fixture({ ensureSession, pollAgent, stopSession: vi.fn(async () => undefined) });
+      await request("/v1/sessions/ensure", body);
+      for (const cursor of [64 * 1_024 * 1_024 + 1, CODEX_OUTPUT_LIMITS.totalBytes]) {
+        const response = await request(`/v1/sessions/${sessionId}/agent/poll`, { ...identity, cursor });
+        expect(response.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+      }
+      const beyond = await request(`/v1/sessions/${sessionId}/agent/poll`, { ...identity, cursor: CODEX_OUTPUT_LIMITS.totalBytes + 1 });
+      expect(beyond.writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+      expect(cursors).toEqual([64 * 1_024 * 1_024 + 1, CODEX_OUTPUT_LIMITS.totalBytes]);
+      expect(CODEX_OUTPUT_LIMITS.totalBytes).toBeGreaterThan(64 * 1_024 * 1_024);
+    });
   });
 
   it("keeps healthy probes quiet and recovers only the matching health boundary", async () => {

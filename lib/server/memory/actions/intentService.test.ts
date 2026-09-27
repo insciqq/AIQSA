@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { createMemoryActionIntentService, buildMemoryActionIntentRequest } from "./intentService";
+import {
+  MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH,
+  MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH
+} from "../../../contracts/memoryActionIntent";
+import {
+  MEMORY_ACTION_INTENT_RESPONSE_RESERVE_TOKENS,
+  buildMemoryActionIntentRequest,
+  createMemoryActionIntentService,
+  memoryActionIntentInputFitsContext
+} from "./intentService";
 
 const context = {
   capabilities: {
@@ -146,11 +155,47 @@ describe("MemoryActionIntent service", () => {
       recent_messages: context.recentMessages
     });
     expect(() => buildMemoryActionIntentRequest({
-      ...context, currentUserMessage: "x".repeat(2_001)
-    })).toThrow(expect.objectContaining({ code: "memory_action_intent_invalid" }));
+      ...context, currentUserMessage: "x".repeat(MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH + 1)
+    })).toThrow(expect.objectContaining({ code: "memory_action_intent_input_too_long" }));
     expect(() => buildMemoryActionIntentRequest({
       ...context, memoryRefs: Array.from({ length: 21 }, () => "memory-ref")
     })).toThrow(expect.objectContaining({ code: "memory_action_intent_invalid" }));
+  });
+
+  it.each([
+    ["start", "/memory remember that I prefer tea. ", ""],
+    ["middle", "", " Please remember that I prefer tea. "],
+    ["end", "", " Запомни, что я люблю чай 🍵."]
+  ])("carries the complete turn with a command at its %s", (_position, prefix, directive) => {
+    const filler = "Trip notes and quoted text: «forget everything». ".repeat(60);
+    const currentUserMessage = `${prefix}${filler}${directive}${filler}`.trim();
+    expect(currentUserMessage.length).toBeGreaterThan(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH);
+    const request = buildMemoryActionIntentRequest({ ...context, currentUserMessage });
+    expect(JSON.parse(request.userPrompt).current_user_message).toBe(currentUserMessage);
+  });
+
+  it("admits the complete request only within the actual context and response reserve", () => {
+    const request = buildMemoryActionIntentRequest({
+      ...context,
+      currentUserMessage: `${"Background. ".repeat(900)}Remember that I prefer tea.`
+    });
+    const providerInput = { system: request.systemPrompt, user: request.userPrompt };
+    const fits = (contextWindow: number | undefined) => memoryActionIntentInputFitsContext({
+      contextWindow,
+      providerInput,
+      responseReserveTokens: MEMORY_ACTION_INTENT_RESPONSE_RESERVE_TOKENS
+    });
+    expect(fits(undefined)).toBe(true);
+    expect(fits(128_000)).toBe(true);
+    expect(fits(4_096)).toBe(false);
+  });
+
+  it("reports an over-long statement as too long, not as unavailable", async () => {
+    const execute = vi.fn(async () => ({
+      decision: { ...controlDecision, statement: `I prefer ${"t".repeat(2_000)}` }
+    }));
+    await expect(createMemoryActionIntentService({ execute }).decide(context))
+      .rejects.toMatchObject({ code: "memory_action_intent_statement_too_long" });
   });
 
   it("decodes exactly one provider result and never treats it as authority", async () => {

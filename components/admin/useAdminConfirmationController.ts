@@ -25,6 +25,8 @@ export type AdminConfirmedActionRequest = Readonly<{
   dialogLabel: string;
   icon?: AdminConfirmationIcon;
   message: string;
+  /** Receives the failed result after the runner has reported its error. */
+  onFailure?(result: AdminActionResult): void;
   onSuccess?(): void;
   prompt: string;
   testId: string;
@@ -81,7 +83,9 @@ export function useAdminConfirmationController({
         onConfirm: async () => {
           const result: AdminActionResult = await runAction(config.body, config.message);
 
-          if (!result.error) {
+          if (result.error) {
+            config.onFailure?.(result);
+          } else {
             config.onSuccess?.();
           }
         },

@@ -307,9 +307,8 @@ export function usePinnedScroll<T extends HTMLElement>({
     }
 
     if (!hasContent) {
-      if (element.scrollTop !== 0) {
-        element.scrollTop = 0;
-      }
+      // The blank thread starts at its greeting, but its in-flow composer
+      // may extend below a short viewport. Keep manual/focus scrolling usable.
       setPinnedState(true);
       return;
     }

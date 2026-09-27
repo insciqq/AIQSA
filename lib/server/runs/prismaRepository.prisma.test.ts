@@ -9,7 +9,7 @@ import { textMessageContent } from "../../domain/content";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { loadAdminUsageQueryRows } from "../auth/adminUsageQueries";
-import { mcpRuntimeFingerprint } from "../mcp/access";
+import { mcpRuntimeFingerprint, mcpSharedRuntimeFingerprint } from "../mcp/access";
 import {
   encryptMcpEnvelope,
   mcpRuntimeGenerationEnvelopeContext
@@ -44,6 +44,7 @@ import {
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
+import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
 const fakeControlKey = `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`;
@@ -776,6 +777,97 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("binds a Project run only to the server's shared runtime, never a member's generation", async () => {
+    await withRunUser(async ({ userId }) => {
+      const createdProject = await createPrismaProjectRepository(prisma).create({
+        actorDisplayName: "Run Repository Test User",
+        description: "Project MCP shared runtime admission",
+        name: `Shared MCP project ${randomUUID()}`,
+        userId
+      });
+      if (createdProject.kind !== "ok") throw new Error(`project_create_${createdProject.kind}`);
+      const project = createdProject.value;
+      // A ready, fresh, no-auth runtime the member started for personal chats.
+      const fixture = await createReadyMcpBinding(userId);
+      try {
+        await prisma.projectMcpBinding.create({ data: { projectId: project.id, serverId: fixture.server.id } });
+        await prisma.mcpSharedRuntime.create({ data: { serverId: fixture.server.id } });
+        const shared = await prisma.mcpRuntimeGeneration.create({ data: {
+          fingerprint: mcpSharedRuntimeFingerprint({ plan: [], revisionId: fixture.revision.id }),
+          inventory: fixture.generation.inventory as Prisma.InputJsonValue,
+          inventoryUpdatedAt: new Date(),
+          revisionId: fixture.revision.id,
+          sharedServerId: fixture.server.id,
+          state: "ready"
+        } });
+        await prisma.mcpSharedRuntime.update({
+          data: { desiredRuntimeGenerationId: shared.id },
+          where: { serverId: fixture.server.id }
+        });
+        const admission = async (title: string) => {
+          const chat = await prisma.chat.create({ data: {
+            createdByDisplayName: "Run Repository Test User", createdByUserId: userId,
+            memoryMode: "EXCLUDED", projectId: project.id, title, userId: null
+          } });
+          return createRunInput({
+            chatId: chat.id,
+            project: {
+              accessRevision: project.accessRevision,
+              assistantBindings: [],
+              defaults: project.defaults,
+              instructions: project.instructions,
+              instructionsRevision: project.instructionsRevision,
+              knowledgeBaseIds: [],
+              mcpServerIds: [fixture.server.id],
+              memoryEnabled: false,
+              memoryItems: [],
+              memoryRevision: project.memoryRevision,
+              modelIds: ["fake-qsa"],
+              policy: { ...project.policy, externalToolsEnabled: true },
+              policyRevision: project.policyRevision,
+              projectId: project.id,
+              role: "OWNER",
+              searchOptionIds: []
+            },
+            providerAdmissionPlan: await projectProviderAdmission(userId),
+            question: "Use the Project's MCP tools",
+            userId
+          });
+        };
+        const repository = createPrismaRunRepository(prisma);
+
+        const borrowed = await admission("Borrowed member runtime");
+        borrowed.mcpBindings = [fixture.binding];
+        await expect(repository.createRun(borrowed)).rejects.toBeInstanceOf(McpRunPlanConflictError);
+        await expect(prisma.mcpRunBinding.count({ where: { runtimeGenerationId: fixture.generation.id } }))
+          .resolves.toBe(0);
+
+        const sharedBinding = { fingerprint: shared.fingerprint, runtimeGenerationId: shared.id, serverId: fixture.server.id };
+        const accepted = await admission("Shared runtime");
+        accepted.mcpBindings = [sharedBinding];
+        const created = await repository.createRun(accepted);
+        await expect(prisma.mcpRunBinding.findMany({
+          select: { runtimeGenerationFingerprint: true, runtimeGenerationId: true },
+          where: { modelRunId: created.runId }
+        })).resolves.toEqual([{ runtimeGenerationFingerprint: shared.fingerprint, runtimeGenerationId: shared.id }]);
+
+        // A shared generation its runtime no longer desires is not current authority.
+        await prisma.mcpSharedRuntime.update({
+          data: { desiredRuntimeGenerationId: null },
+          where: { serverId: fixture.server.id }
+        });
+        const released = await admission("Released shared runtime");
+        released.mcpBindings = [sharedBinding];
+        await expect(repository.createRun(released)).rejects.toBeInstanceOf(McpRunPlanConflictError);
+      } finally {
+        await prisma.modelRun.deleteMany({ where: { chat: { projectId: project.id } } });
+        await prisma.project.deleteMany({ where: { id: project.id } });
+        await prisma.mcpSharedRuntime.deleteMany({ where: { serverId: fixture.server.id } });
+        await deleteMcpFixture(fixture.server.id);
+      }
+    });
+  });
+
   it("keeps persisted Project Memory dormant and never binds it to a new run", async () => {
     await withRunUser(async ({ userId }) => {
       const projectRepository = createPrismaProjectRepository(prisma);
@@ -1309,6 +1401,23 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("checkpoints every call one provider response may carry and refuses a larger batch", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Full provider response batch");
+      await repository.beginToolLoopProviderRound({ providerContinuation: null, roundIndex: 0, runId: created.runId, userId });
+      const calls = (count: number) => Array.from({ length: count }, (_, ordinal) =>
+        ({ arguments: { ordinal }, ordinal, providerCallId: `call-${ordinal}`, toolName: "lookup" }));
+      await expect(repository.persistToolLoopCallBatch({ calls: calls(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1),
+        providerContinuation: null, roundIndex: 0, runId: created.runId, userId })).resolves.toEqual({ kind: "conflict" });
+      const persisted = await repository.persistToolLoopCallBatch({ calls: calls(PROVIDER_RESPONSE_MAX_TOOL_CALLS),
+        providerContinuation: null, roundIndex: 0, runId: created.runId, userId });
+      expect(persisted).toMatchObject({ kind: "persisted" });
+      await expect(prisma.modelRunToolCall.count({ where: { modelRunId: created.runId } }))
+        .resolves.toBe(PROVIDER_RESPONSE_MAX_TOOL_CALLS);
+    });
+  });
+
   it("atomically cancels pending checkpointed calls while preserving ambiguous running calls", async () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);
@@ -1733,7 +1842,7 @@ describe("Prisma-backed run repository", () => {
         await expect(runtime.markReady({
           fingerprint: fixture.generation.fingerprint,
           generationId: fixture.generation.id,
-          inventory: { tools: [], version: 1 },
+          inventory: { exclusions: [], tools: [], version: 1 },
           now
         })).resolves.toBe(true);
 
@@ -3719,7 +3828,7 @@ describe("Prisma-backed run repository", () => {
           {
             data: {
               artifactType: "reasoning",
-              payload: { text: "Recovered reasoning" }
+              payload: { entry: "start", text: "Recovered reasoning" }
             },
             type: "artifact"
           }
@@ -4288,7 +4397,7 @@ describe("Prisma-backed run repository", () => {
       await repository.appendRunOutputEvent(created.runId, {
         data: {
           artifactType: "reasoning",
-          payload: { text: "Streamed reasoning" }
+          payload: { entry: "start", text: "Streamed reasoning" }
         },
         type: "artifact"
       });

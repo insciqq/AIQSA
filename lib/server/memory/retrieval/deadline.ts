@@ -1,36 +1,55 @@
 import { boundedMemoryAdmissionDeadlineMs } from "../admissionDeadline";
 
-export const MEMORY_INTERACTIVE_SOFT_DEADLINE_MS = 20_000;
-export const MEMORY_INTERACTIVE_HARD_DEADLINE_MS = 26_000;
+// Standalone interactive reads that carry no configured admission budget
+// (inbound Memory MCP search, explicit relation candidates) use this outer
+// deadline. Run admission always passes the administrator-configured budget,
+// which then is the hard deadline without a lower hidden ceiling.
+export const MEMORY_STANDALONE_READ_DEADLINE_MS = 26_000;
 export const MEMORY_SNAPSHOT_OPTIONAL_MAXIMUM_MS = 1_000;
 export const MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS = 1_500;
 // Query embedding starts beside the control call and keeps its own eight-second
-// fence. System Model utilities get a wider measurement window without
-// extending embedding or reranker provider budgets.
+// fence. System Model utilities scale with the configured admission budget
+// without extending embedding or reranker provider budgets.
 export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS = 8_000;
-// The resolver starts from the original-query speculative frontier beside the
-// control call. Its child fence is only a provider-execution safety ceiling:
-// the final pack boundary never waits for it, while the admission fence and
-// terminal-settlement reserve remain authoritative.
-export const MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS = 20_000;
 export const MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS = 2_000;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS = 4_000;
-export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS = 20_000;
+// Authoritative rejoin plus the synchronous packer after a reranking stage.
+const MEMORY_REJOIN_RESERVE_MS = 2_000;
 // A timed-out control decision must still leave enough of the shared admission
 // envelope for the two authoritative local expansion passes plus synchronous
 // packing and attachment. The provider result is optional; the fresh rejoin is
 // not.
 export const MEMORY_CONTROL_READ_RESERVE_MS =
   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS * 2 + 1_000;
+// Optional System Model work (control, query resolution) and the soft start
+// fence share one window: the remaining admission budget minus a fixed local
+// tail for the reranker ceiling and the rejoin/packing reserve. A short budget
+// shrinks the tail proportionally, so optional work keeps at least three
+// quarters of it; a longer budget extends only the window.
+export const MEMORY_OPTIONAL_TAIL_RESERVE_MS =
+  MEMORY_RERANK_OPTIONAL_MAXIMUM_MS + MEMORY_REJOIN_RESERVE_MS;
+const MEMORY_OPTIONAL_TAIL_MAXIMUM_SHARE_DIVISOR = 4;
+
+export function memoryOptionalWindowMs(budgetMs: number): number {
+  const budget = Number.isFinite(budgetMs) ? Math.max(0, Math.floor(budgetMs)) : 0;
+  return budget - Math.min(
+    MEMORY_OPTIONAL_TAIL_RESERVE_MS,
+    Math.floor(budget / MEMORY_OPTIONAL_TAIL_MAXIMUM_SHARE_DIVISOR)
+  );
+}
 
 const MEMORY_ADMISSION_DEADLINE_REASON = Object.freeze({
   code: "memory_admission_deadline_exceeded"
 });
 
 export type MemoryRetrievalDeadline = Readonly<{
+  /** Hard budget remaining when this attempt's deadline was created. */
+  budgetMs: number;
   canStartOptional(): boolean;
   dispose(): void;
   expired(): boolean;
+  /** Effective optional System Model window derived from `budgetMs`. */
+  optionalWindowMs: number;
   outerDeadlineAtMs: number;
   remainingMs(): number;
   signal: AbortSignal;
@@ -43,9 +62,51 @@ export type OptionalMemoryUtilityRole =
   | "HISTORY_RELEVANCE"
   | "RERANK";
 
+/**
+ * The admission budget, not a provider, prevented this optional utility from
+ * starting: the soft window has closed or the remaining time is reserved.
+ */
+export class MemoryOptionalDeadlineError extends Error {
+  readonly code: "memory_optional_soft_deadline_exceeded" |
+    "memory_optional_hard_deadline_reserved";
+
+  constructor(code: MemoryOptionalDeadlineError["code"]) {
+    super(code);
+    this.name = "MemoryOptionalDeadlineError";
+    this.code = code;
+  }
+}
+
+function optionalUtilityTimeoutCode(role: OptionalMemoryUtilityRole): string {
+  return `memory_${role.toLocaleLowerCase("und")}_timeout`;
+}
+
+const optionalUtilityTimeoutCodes: ReadonlySet<string> = new Set(
+  (["CONTROL", "QUERY_EMBED", "QUERY_RESOLVE", "HISTORY_RELEVANCE", "RERANK"] as const)
+    .map(optionalUtilityTimeoutCode)
+);
+
+/**
+ * True when a budget stopped the optional utility: it could not start, or its
+ * own or the admission deadline aborted it. Callers record a deadline reason
+ * instead of reporting the provider as unavailable. A user Stop is not a
+ * deadline.
+ */
+export function isMemoryDeadlineExhaustion(error: unknown): boolean {
+  if (error instanceof MemoryOptionalDeadlineError) return true;
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? error.code
+    : null;
+  return typeof code === "string" && (
+    code === MEMORY_ADMISSION_DEADLINE_REASON.code ||
+    optionalUtilityTimeoutCodes.has(code)
+  );
+}
+
+// A null maximum is bounded by the deadline's configured optional window.
 const optionalUtilityBudget = Object.freeze({
   CONTROL: {
-    maximumMs: MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+    maximumMs: null,
     reserveMs: MEMORY_CONTROL_READ_RESERVE_MS
   },
   QUERY_EMBED: {
@@ -53,24 +114,26 @@ const optionalUtilityBudget = Object.freeze({
     reserveMs: 0
   },
   QUERY_RESOLVE: {
-    maximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
-    // Governed cancellation settlement must stay inside the hard admission
-    // envelope even though the synchronous attachment boundary never waits.
+    // The resolver starts from the original-query speculative frontier beside
+    // the control call. The final pack boundary never waits for it, while
+    // governed cancellation settlement must stay inside the hard admission
+    // envelope.
+    maximumMs: null,
     reserveMs: MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS
   },
   RERANK: {
     maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
     // Preserve time for authoritative rejoin and the synchronous packer.
-    reserveMs: 2_000
+    reserveMs: MEMORY_REJOIN_RESERVE_MS
   },
   HISTORY_RELEVANCE: {
     // This additional optional stage shares the existing reranker latency
     // ceiling and must leave the authoritative rejoin/packing reserve intact.
     maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
-    reserveMs: 2_000
+    reserveMs: MEMORY_REJOIN_RESERVE_MS
   }
 } satisfies Record<OptionalMemoryUtilityRole, Readonly<{
-  maximumMs: number;
+  maximumMs: number | null;
   reserveMs: number;
 }>>);
 
@@ -84,25 +147,24 @@ export function createMemoryRetrievalDeadline(
 ): MemoryRetrievalDeadline {
   const clock = options.clock ?? Date.now;
   const nowMs = clock();
-  const requestedDeadlineAtMs = nowMs + boundedMemoryAdmissionDeadlineMs(
-    options.admissionDeadlineMs
-  );
   const existingDeadlineAtMs = options.existingDeadlineAtMs;
   const hasExistingDeadline = typeof existingDeadlineAtMs === "number" &&
     Number.isFinite(existingDeadlineAtMs);
-  const outerDeadlineAtMs = hasExistingDeadline
+  const requestedDeadlineAtMs = nowMs + (
+    options.admissionDeadlineMs === undefined && !hasExistingDeadline
+      ? MEMORY_STANDALONE_READ_DEADLINE_MS
+      : boundedMemoryAdmissionDeadlineMs(options.admissionDeadlineMs)
+  );
+  // The configured or already running admission deadline is the hard
+  // deadline; a smaller outer deadline still wins.
+  const hardDeadlineAtMs = hasExistingDeadline
     ? options.admissionDeadlineMs === undefined
       ? existingDeadlineAtMs
       : Math.min(existingDeadlineAtMs, requestedDeadlineAtMs)
     : requestedDeadlineAtMs;
-  const hardDeadlineAtMs = Math.min(
-    outerDeadlineAtMs,
-    nowMs + MEMORY_INTERACTIVE_HARD_DEADLINE_MS
-  );
-  const softDeadlineAtMs = Math.min(
-    hardDeadlineAtMs,
-    nowMs + MEMORY_INTERACTIVE_SOFT_DEADLINE_MS
-  );
+  const budgetMs = Math.max(0, Math.floor(hardDeadlineAtMs - nowMs));
+  const optionalWindowMs = memoryOptionalWindowMs(budgetMs);
+  const softDeadlineAtMs = nowMs + optionalWindowMs;
 
   const controller = new AbortController();
   let expired = hardDeadlineAtMs <= nowMs;
@@ -126,6 +188,7 @@ export function createMemoryRetrievalDeadline(
   if (expired) expire();
 
   return Object.freeze({
+    budgetMs,
     canStartOptional: () => !controller.signal.aborted &&
       clock() < softDeadlineAtMs,
     dispose() {
@@ -133,7 +196,8 @@ export function createMemoryRetrievalDeadline(
       parentSignal?.removeEventListener("abort", forwardParentAbort);
     },
     expired: () => expired || clock() >= hardDeadlineAtMs,
-    outerDeadlineAtMs,
+    optionalWindowMs,
+    outerDeadlineAtMs: hardDeadlineAtMs,
     remainingMs: () => Math.max(0, hardDeadlineAtMs - clock()),
     signal: controller.signal
   });
@@ -145,17 +209,19 @@ export async function runOptionalMemoryUtility<T>(
   operation: (signal: AbortSignal) => Promise<T>
 ): Promise<T> {
   if (!deadline.canStartOptional()) {
-    throw new Error("memory_optional_soft_deadline_exceeded");
+    // A Stop is not budget exhaustion; nothing was dispatched in either case.
+    if (deadline.signal.aborted && !isMemoryDeadlineExhaustion(deadline.signal.reason)) {
+      throw abortReason(deadline.signal);
+    }
+    throw new MemoryOptionalDeadlineError("memory_optional_soft_deadline_exceeded");
   }
   const budget = optionalUtilityBudget[role];
   const availableMs = deadline.remainingMs() - budget.reserveMs;
   if (availableMs < 1) {
-    throw new Error("memory_optional_hard_deadline_reserved");
+    throw new MemoryOptionalDeadlineError("memory_optional_hard_deadline_reserved");
   }
-  const timeoutMs = Math.max(1, Math.min(
-    budget.maximumMs,
-    Math.floor(availableMs)
-  ));
+  const maximumMs = budget.maximumMs ?? deadline.optionalWindowMs;
+  const timeoutMs = Math.max(1, Math.min(maximumMs, Math.floor(availableMs)));
   const controller = new AbortController();
   const forwardAbort = () => {
     if (!controller.signal.aborted) controller.abort(deadline.signal.reason);
@@ -164,7 +230,7 @@ export async function runOptionalMemoryUtility<T>(
   else deadline.signal.addEventListener("abort", forwardAbort, { once: true });
   const timeout = !controller.signal.aborted
     ? setTimeout(() => controller.abort({
-        code: `memory_${role.toLocaleLowerCase("und")}_timeout`
+        code: optionalUtilityTimeoutCode(role)
       }), timeoutMs)
     : null;
   try {

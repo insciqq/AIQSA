@@ -30,8 +30,9 @@ export {
   type DocumentParserRoute,
   type InlineDocumentFormat
 } from "./routing";
+export { extractHtmlTextInIsolation } from "./isolatedParser";
 export {
-  assertBoundedSpreadsheetArchive,
+  canonicalizeSpreadsheetArchive,
   parseSpreadsheetDocument
 } from "./spreadsheet";
 export {

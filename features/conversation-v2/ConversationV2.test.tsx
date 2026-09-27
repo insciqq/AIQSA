@@ -287,7 +287,7 @@ describe("Conversation v2", () => {
     expect(screen.queryByRole("menu", { name: "Answer menu" })).toBeNull();
   });
 
-  it("keeps streaming actions disabled with one readable reason", () => {
+  it("keeps streaming actions disabled with one readable reason and an escapable menu", async () => {
     render(
       <ConversationTurnV2
         actions={{
@@ -313,9 +313,17 @@ describe("Conversation v2", () => {
     // The reason is the disabled controls' tooltip, not a permanent line (B6).
     expect(regenerate).toHaveAttribute("data-tooltip", "Wait for the answer to finish or stop it.");
     expect(screen.getByText("Wait for the answer to finish or stop it.")).toHaveClass("v2-sr-only");
-    fireEvent.click(screen.getByRole("button", { name: "More answer actions" }));
+    const more = screen.getByRole("button", { name: "More answer actions" });
+    fireEvent.click(more);
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: "Branch from here" })).toBeDisabled();
+    const menu = screen.getByRole("menu", { name: "Answer menu" });
+    await waitFor(() => expect(menu).toHaveFocus());
+    // Browser focus can still be on the trigger while the menu is positioned.
+    more.focus();
+    fireEvent.keyDown(more, { key: "Escape" });
+    await waitFor(() => expect(more).toHaveFocus());
+    expect(screen.queryByRole("menu", { name: "Answer menu" })).toBeNull();
   });
 
   it("keeps unavailable, loading, failed, and partial-error states explicit", () => {

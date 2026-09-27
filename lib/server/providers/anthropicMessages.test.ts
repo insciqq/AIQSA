@@ -7,9 +7,11 @@ import {
   type AnthropicStreamEvent
 } from "./anthropicMessages";
 import type { ProviderRunRequest } from "./types";
-import type { RunTool } from "../tools/types";
+import { PROVIDER_RESPONSE_MAX_TOOL_CALLS, type RunTool } from "../tools/types";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 import { attachProviderStreamSafetySnapshot } from "./streamSafety";
+import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
 
 const mcpTool: RunTool = {
   capability: "mcp",
@@ -385,6 +387,7 @@ describe("Anthropic Messages adapter", () => {
       },
       stream: true,
       thinking: {
+        display: "summarized",
         type: "adaptive"
       }
     });
@@ -1101,6 +1104,47 @@ describe("Anthropic Messages adapter", () => {
     });
   });
 
+  it("publishes each thinking block as merged exact fragments instead of one event per delta", async () => {
+    const deltas = Array.from({ length: 1_000 }, (_, index) =>
+      index % 60 === 59 ? `thought ${index}.\n\n` : `thought ${index} 思考😀 `);
+    const client: AnthropicMessagesClient = {
+      stream: () => events([
+        { message: { id: "msg-thinking" }, type: "message_start" },
+        { content_block: { signature: "", thinking: "Initial ", type: "thinking" }, index: 0, type: "content_block_start" },
+        ...deltas.map((thinking) => ({ delta: { thinking, type: "thinking_delta" }, index: 0, type: "content_block_delta" })),
+        { delta: { signature: "PRIVATE_THINKING_SIGNATURE", type: "signature_delta" }, index: 0, type: "content_block_delta" },
+        { index: 0, type: "content_block_stop" },
+        { content_block: { signature: "", thinking: "", type: "thinking" }, index: 1, type: "content_block_start" },
+        { delta: { thinking: "Second block.", type: "thinking_delta" }, index: 1, type: "content_block_delta" },
+        { index: 1, type: "content_block_stop" },
+        { content_block: { text: "", type: "text" }, index: 2, type: "content_block_start" },
+        { delta: { text: "Done", type: "text_delta" }, index: 2, type: "content_block_delta" },
+        { index: 2, type: "content_block_stop" },
+        { delta: { stop_reason: "end_turn" }, type: "message_delta", usage: { output_tokens: 3 } },
+        { type: "message_stop" }
+      ])
+    };
+    const { events: seen } = await collectAdapterStream(client, DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars);
+    const reasoning = seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "reasoning"
+      ? [event.data.payload as { entry: string; text: string }]
+      : []);
+    const first = reasoning.slice(0, -1);
+    const full = `Initial ${deltas.join("")}`;
+
+    expect(reasoning.length).toBeGreaterThan(2);
+    expect(reasoning.length).toBeLessThan(20);
+    expect(reasoning.map(({ entry }) => entry)).toEqual([
+      "start", ...first.slice(1).map(() => "continue"), "start"
+    ]);
+    expect(first.map(({ text }) => text).join("").trimEnd()).toBe(full.trimEnd());
+    for (const { text } of first) {
+      expect(text.length).toBeLessThanOrEqual(4_000);
+      expect(text).not.toMatch(/[\uD800-\uDFFF]/u);
+    }
+    expect(reasoning.at(-1)).toEqual({ entry: "start", text: "Second block." });
+    expect(JSON.stringify(seen)).not.toContain("PRIVATE_THINKING_SIGNATURE");
+  });
+
   it.each(["refusal", "model_context_window_exceeded"])(
     "rejects a non-hosted %s terminal without exposing provider details",
     async (stopReason) => {
@@ -1416,6 +1460,77 @@ describe("Anthropic Messages adapter", () => {
     expect(JSON.stringify(normalized)).not.toMatch(
       /PRIVATE_ENCRYPTED_RESULT|PRIVATE_ENCRYPTED_INDEX/u
     );
+  });
+
+  it("accepts as many client tool calls per message as one tool batch holds and refuses the next", async () => {
+    const toolMessage = (count: number): AnthropicMessagesClient => ({
+      stream: () => events([
+        { message: { id: `msg-${count}-tools`, usage: { input_tokens: 3 } }, type: "message_start" },
+        ...Array.from({ length: count }, (_, index): AnthropicStreamEvent[] => [
+          { content_block: { id: `toolu-${index}`, input: { query: `q${index}` }, name: "mem0__search", type: "tool_use" },
+            index, type: "content_block_start" },
+          { index, type: "content_block_stop" }
+        ]).flat(),
+        { delta: { stop_reason: "tool_use" }, type: "message_delta", usage: { output_tokens: 2 } },
+        { type: "message_stop" }
+      ])
+    });
+    for (const count of [17, PROVIDER_RESPONSE_MAX_TOOL_CALLS]) {
+      const normalized = await collectAdapterStream(toolMessage(count), DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+        request({ tools: [mcpTool] }));
+      expect(normalized.result.toolCalls).toHaveLength(count);
+    }
+    await expect(collectAdapterStream(toolMessage(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1),
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars, request({ tools: [mcpTool] })))
+      .rejects.toThrow("anthropic_stream_tool_call_limit_exceeded");
+  });
+
+  it("bounds hosted Search citations per provider message across its text blocks", async () => {
+    const citation = (index: number) => ({ cited_text: `Fact ${index}.`, encrypted_index: "PRIVATE_ENCRYPTED_INDEX", title: null,
+      type: "web_search_result_location", url: `https://example.com/report/${index % 7}` });
+    // Half of the citations arrive with their block, the rest as deltas of a second block.
+    const hosted = (count: number): AnthropicMessagesClient => {
+      const first = Math.floor(count / 2);
+      return {
+        stream: () => events([
+          { message: { id: `msg-${count}-citations`, usage: { input_tokens: 8, server_tool_use: { web_search_requests: 1 } } },
+            type: "message_start" },
+          { content_block: { id: "srvtoolu-hosted", input: {}, name: "web_search", type: "server_tool_use" }, index: 0,
+            type: "content_block_start" },
+          { delta: { partial_json: '{"query":"news"}', type: "input_json_delta" }, index: 0, type: "content_block_delta" },
+          { index: 0, type: "content_block_stop" },
+          { content_block: { caller: { type: "direct" }, content: [{ encrypted_content: "PRIVATE_ENCRYPTED_RESULT", title: "Report",
+            type: "web_search_result", url: "https://example.com/report/0" }], tool_use_id: "srvtoolu-hosted",
+            type: "web_search_tool_result" }, index: 1, type: "content_block_start" },
+          { index: 1, type: "content_block_stop" },
+          { content_block: { citations: Array.from({ length: first }, (_, index) => citation(index)), text: "First.", type: "text" },
+            index: 2, type: "content_block_start" },
+          { index: 2, type: "content_block_stop" },
+          { content_block: { text: "", type: "text" }, index: 3, type: "content_block_start" },
+          { delta: { text: " Second.", type: "text_delta" }, index: 3, type: "content_block_delta" },
+          ...Array.from({ length: count - first }, (_, index): AnthropicStreamEvent => ({
+            delta: { citation: citation(first + index), type: "citations_delta" }, index: 3, type: "content_block_delta" })),
+          { index: 3, type: "content_block_stop" },
+          { delta: { stop_reason: "end_turn" }, type: "message_delta",
+            usage: { output_tokens: 5, server_tool_use: { web_search_requests: 1 } } },
+          { type: "message_stop" }
+        ])
+      };
+    };
+    for (const count of [101, PROVIDER_RESPONSE_MAX_CITATIONS]) {
+      const normalized = await collectAdapterStream(hosted(count), DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+        hostedSearchRequest());
+      expect(normalized.result.finalText).toBe("First. Second.");
+      expect(normalized.events.filter((event) => event.type === "artifact" && event.data.artifactType === "citation"))
+        .toHaveLength(7);
+    }
+    const refused = createAnthropicMessagesAdapter({ client: hosted(PROVIDER_RESPONSE_MAX_CITATIONS + 1) })
+      .stream(hostedSearchRequest());
+    const seen: ModelRunSseEvent[] = [];
+    await expect((async () => { for await (const event of refused) seen.push(event); })())
+      .rejects.toThrow("anthropic_stream_citation_invalid");
+    // The message's reported input usage survives the refusal.
+    expect(seen).toContainEqual({ type: "usage", data: expect.objectContaining({ inputTokens: 8 }) });
   });
 
   it("matches a paused server-tool id on the next hop under shared stream budgets", async () => {

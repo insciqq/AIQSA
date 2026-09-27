@@ -18,6 +18,7 @@ import {
   applyLoadAllAfterMcpDiscoveryFailureV2,
   blankConversationOrientationV2,
   chatLocationCrumbV2,
+  BackgroundRunStatusV2,
   ComposerOperationErrorV2,
   SkillLibraryOverlayV2,
   type RunSetupComposerV2
@@ -71,6 +72,20 @@ describe("MCP discovery failure actions v2", () => {
     applyLoadAllAfterMcpDiscoveryFailureV2(regenerate);
     expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
     expect(regenerate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Background run status v2", () => {
+  it("keeps a persistent Check run action while a resumed run waits in the background", () => {
+    const onCheck = vi.fn();
+    const { rerender } = render(<BackgroundRunStatusV2 onCheck={onCheck} waiting />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Run is still active in the background.");
+    fireEvent.click(screen.getByRole("button", { name: "Check run" }));
+    expect(onCheck).toHaveBeenCalledOnce();
+
+    rerender(<BackgroundRunStatusV2 onCheck={onCheck} waiting={false} />);
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });
 

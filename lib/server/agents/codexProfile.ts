@@ -10,6 +10,7 @@ export const CODEX_MANAGED_PROFILE_VERSION = 7;
 export const CODEX_PROVIDER_MAX_RETRIES = 2;
 export const CODEX_HOME_DIRECTORY = "/workspace/.aiqsa/codex";
 export const CODEX_RUN_TOKEN_ENV = "AIQSA_AGENT_TOKEN";
+export const CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES = 256 * 1024;
 
 export type CodexManagedProfile = Readonly<{
   /** A trusted installation gateway origin, never a model-selected upstream. */
@@ -76,7 +77,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     (input.nativeWebSearch !== undefined && typeof input.nativeWebSearch !== "boolean") ||
     !Number.isSafeInteger(input.mcpTimeoutSeconds) || input.mcpTimeoutSeconds < 1 ||
     !["auto", "all", "off"].includes(input.mcpMode) ||
-    Buffer.byteLength(input.developerInstructions) > 256 * 1024 ||
+    Buffer.byteLength(input.developerInstructions) > CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES ||
     (input.reasoningEffort !== undefined && !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(input.reasoningEffort))) {
     return invalid();
   }

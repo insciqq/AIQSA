@@ -13,7 +13,14 @@ import type {
   McpRevisionSummary,
   McpToolInventoryEntry
 } from "@/lib/contracts/mcp";
+import { followMcpOAuthStart } from "@/components/app-shell/mcpSettingsApi";
 import { AdminMcpSection } from "./AdminMcpSection";
+
+// jsdom cannot navigate; the start answer is observed where the browser would follow it.
+vi.mock("@/components/app-shell/mcpSettingsApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/app-shell/mcpSettingsApi")>(),
+  followMcpOAuthStart: vi.fn()
+}));
 
 const NOW = "2026-09-07T10:00:00.000Z";
 const bannedWords = /\bdraft\b|revision|pending|probe|evidence|adapter|fingerprint|\bversion\b|\bCAS\b|tuple/iu;
@@ -217,6 +224,8 @@ function fakeApi(state: ApiState) {
         draftTest: testedDraft("identity-next"),
         draftTested: true,
         enabled: true,
+        // Publication replaces every desired runtime; none holds anything back yet.
+        inventoryDifferences: [],
         revisions: [active, ...current.revisions]
       }) });
     }
@@ -335,8 +344,7 @@ describe("AdminMcpSection", () => {
     expect(rows[0]).toHaveTextContent("2 tools on");
     expect(rows[0]).toHaveTextContent("No access yet");
     expect(rows[1]).toHaveTextContent("Authorization required to check changes");
-    expect(within(rows[1]!).getByRole("link", { name: "Connect Workspace tools" }))
-      .toHaveAttribute("href", "/api/admin/mcp/server-oauth/oauth/validation/connect");
+    expect(within(rows[1]!).getByRole("button", { name: "Connect Workspace tools" })).not.toHaveAttribute("href");
     await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("MCP servers"));
     expect(view.container.textContent).not.toMatch(bannedWords);
 
@@ -426,6 +434,53 @@ describe("AdminMcpSection", () => {
     fireEvent.click(within(usersList).getByRole("switch", { name: "Working Tools for Alice" }));
     await waitFor(() => expect(within(usersList).getByRole("switch", { name: "Working Tools for Alice" })).toBeChecked());
     expect(calls.at(-1)).toMatchObject({ body: { canUse: true, personalSlotKeys: [], userId: "user-1" }, method: "PUT" });
+  });
+
+  it("names each held-back tool with its reason and checks the server again from the tools section", async () => {
+    state.servers = [workingServer({
+      inventoryDifferences: [
+        { connections: 2, name: "forget", reason: "definition_drift" },
+        { connections: 1, name: "remember", reason: "missing_upstream" },
+        { connections: 3, name: "delete_repo", reason: "unpublished_addition" },
+        { connections: 1, name: null, reason: "unpublished_addition" }
+      ]
+    })];
+    const { calls, view } = renderSection(state, "server-1");
+    const page = await screen.findByTestId("mcp-server-page");
+
+    expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent("Needs attention · Server tools changed since the last check");
+    const differences = within(page).getByTestId("mcp-tool-differences");
+    const items = within(within(differences).getByRole("list", { name: "Tool changes on Working Tools" })).getAllByRole("listitem");
+    expect(items).toHaveLength(4);
+    expect(items[0]).toHaveTextContent(/^forget.*Changed on the server since the last check.*2 connections$/u);
+    expect(items[1]).toHaveTextContent(/^remember.*No longer offered by the server.*1 connection$/u);
+    expect(items[2]).toHaveTextContent(/^delete_repo.*New on the server, not checked yet.*3 connections$/u);
+    expect(items[3]).toHaveTextContent(/^Hidden · seen in personal accounts.*New on the server, not checked yet.*1 connection$/u);
+    expect(within(page).getByTestId("mcp-tool-unavailable-forget")).toHaveTextContent("Unavailable · Changed on the server since the last check");
+    expect(within(page).getByTestId("mcp-tool-unavailable-remember")).toHaveTextContent("Unavailable · No longer offered by the server");
+    expect(within(page).getByRole("switch", { name: "Use forget" })).toBeChecked();
+    expect(view.container.textContent).not.toMatch(bannedWords);
+
+    fireEvent.click(within(differences).getByRole("button", { name: "Test & Save" }));
+    await waitFor(() => expect(calls.at(-1)?.url).toBe("/api/admin/mcp/server-1/test"));
+    expect(calls.at(-1)?.body).toMatchObject({ expectedUpdatedAt: NOW, publish: true });
+    await waitFor(() => expect(within(page).queryByTestId("mcp-tool-differences")).not.toBeInTheDocument());
+    expect(within(page).queryByTestId("mcp-tool-unavailable-forget")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["names", "matched by name only", "Check again to guard against tool changes"],
+    ["invalid", "none of its tools are offered in chats", "Check again to restore this server's tools"]
+  ] as const)("explains a %s tool check with the next action", async (toolVerification, note, status) => {
+    const server = workingServer();
+    state.servers = [{ ...server, activeRevision: { ...server.activeRevision!, toolVerification } }];
+    const { view } = renderSection(state, "server-1");
+    const page = await screen.findByTestId("mcp-server-page");
+
+    expect(within(page).getByTestId("mcp-tool-verification")).toHaveTextContent(note);
+    expect(within(page).getByTestId("mcp-tool-verification")).toHaveTextContent("Test & Save");
+    expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent(`Needs attention · ${status}`);
+    expect(view.container.textContent).not.toMatch(bannedWords);
   });
 
   it("searches and collapses a long inventory, filters enabled tools and keeps focus after disabling a filtered tool", async () => {
@@ -544,9 +599,44 @@ describe("AdminMcpSection", () => {
     const banner = await screen.findByTestId("admin-mcp-oauth-return");
     expect(banner).toHaveTextContent("Your account is connected");
     expect(screen.getByTestId("mcp-authorization-state")).toHaveTextContent("Not connected");
-    expect(screen.getByRole("link", { name: "Connect" })).toHaveAttribute("href", "/api/admin/mcp/server-oauth/oauth/validation/connect");
+    expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
     fireEvent.click(within(banner).getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByTestId("admin-mcp-oauth-return")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["the server page", "server-oauth", "Connect"],
+    ["the list", null, "Connect Workspace tools"]
+  ])("starts validation OAuth from %s with a same-origin POST and follows its answer", async (_label, resource, name) => {
+    const startFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ location: "https://auth.example.test/authorize?state=s" }));
+    vi.stubGlobal("fetch", startFetch);
+    try {
+      renderSection(state, resource);
+      const start = await screen.findByRole("button", { name });
+      fireEvent.click(start);
+      fireEvent.click(start);
+      await waitFor(() => expect(followMcpOAuthStart).toHaveBeenCalledWith("https://auth.example.test/authorize?state=s"));
+      expect(startFetch).toHaveBeenCalledOnce();
+      expect(String(startFetch.mock.calls[0]?.[0])).toBe("/api/admin/mcp/server-oauth/oauth/validation/connect");
+      expect(startFetch.mock.calls[0]?.[1]).toMatchObject({ credentials: "same-origin", method: "POST" });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.mocked(followMcpOAuthStart).mockClear();
+    }
+  });
+
+  it("reports a validation OAuth start that could not begin and releases the control", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "mcp_not_found" }, { status: 404 })));
+    try {
+      const { feedback } = renderSection(state, "server-oauth");
+      fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+      await waitFor(() => expect(feedback.reportError).toHaveBeenCalledWith("This MCP server no longer exists. Refresh the catalog."));
+      expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+      expect(followMcpOAuthStart).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("Settings opens a focus-trapped sheet with the form, applies through Test & Save and asks before discarding edits", async () => {

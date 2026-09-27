@@ -1,16 +1,11 @@
 import { createHash } from "node:crypto";
-import { isWorkspaceBrowserSessionFilename, WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
+import {
+  isWorkspaceBrowserSessionFilename, WORKSPACE_BROWSER_SESSION_MAX_BYTES,
+  type WorkspaceBrowserAutosaveReport, type WorkspaceBrowserSkipCode
+} from "@/lib/contracts/workspaceSecrets";
 
-export const WORKSPACE_BROWSER_SKIP_CODES = [
-  "browser_session_invalid", "browser_session_too_large", "browser_session_limit",
-  "browser_session_stale", "browser_session_read_failed"
-] as const;
-export type WorkspaceBrowserSkipCode = (typeof WORKSPACE_BROWSER_SKIP_CODES)[number];
-export type WorkspaceBrowserSaveReport = Readonly<{
-  saved: number;
-  unchanged: number;
-  skipped: Partial<Record<WorkspaceBrowserSkipCode, number>>;
-}>;
+export { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "@/lib/contracts/workspaceSecrets";
+export type WorkspaceBrowserSaveReport = WorkspaceBrowserAutosaveReport;
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -207,6 +207,7 @@ export function createMemoryPasswordAuthRepository(input: {
       currentIdentity.passwordHash = resetInput.passwordHash;
 
       return {
+        normalizedEmail: currentIdentity.normalizedEmail,
         userId: currentIdentity.userId
       };
     },

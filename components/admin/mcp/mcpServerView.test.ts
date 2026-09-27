@@ -147,6 +147,21 @@ describe("mcpServerStatus", () => {
     expect(mcpServerStatus(server({ archivedAt: "2026-09-07T11:00:00.000Z" }), NOW)).toMatchObject({ kind: "archived", label: "Archived" });
   });
 
+  it("asks to check again when tools changed on the server or were matched by name only", () => {
+    const changed = server({ inventoryDifferences: [{ connections: 1, name: "delete_repo", reason: "unpublished_addition" }] });
+    expect(mcpServerStatus(changed, NOW)).toMatchObject({
+      detail: "Server tools changed since the last check", kind: "needs_attention", label: "Needs attention", tone: "warn"
+    });
+    expect(mcpHeaderStatus(server({ activeRevision: configuration({ toolVerification: "names" }) }), NOW))
+      .toBe("Needs attention · Check again to guard against tool changes");
+    expect(mcpHeaderStatus(server({ activeRevision: configuration({ toolVerification: "invalid" }) }), NOW))
+      .toBe("Needs attention · Check again to restore this server's tools");
+    expect(mcpServerStatus(server({ activeRevision: configuration({ toolVerification: "definitions" }), inventoryDifferences: [] }), NOW).kind)
+      .toBe("working");
+    expect(mcpServerStatus({ ...changed, enabled: false }, NOW).kind).toBe("disabled");
+    expect(mcpHeaderStatus(changed, NOW)).not.toMatch(bannedWords);
+  });
+
   it("uses only the shared vocabulary", () => {
     const variants = [
       server(),

@@ -1,8 +1,15 @@
 import {
-  isWorkspaceEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_FILE_MAX_BYTES,
-  WORKSPACE_SECRET_VALUE_MAX_BYTES, WORKSPACE_SECRET_ENV_MAX_BYTES, type WorkspaceSecretMutation, type WorkspaceSecretValue
+  isWorkspaceEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_FILE_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES,
+  WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES, WORKSPACE_SECRET_VALUE_MAX_BYTES, WORKSPACE_SECRET_ENV_MAX_BYTES,
+  type WorkspaceSecretMutation, type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
 import { workspaceBrowserSessionError } from "./browserSession";
+
+/**
+ * One settings mutation: the largest value (a browser session) plus id, name
+ * and a description whose control characters JSON escapes up to six times.
+ */
+export const WORKSPACE_SECRET_MUTATION_MAX_BYTES = WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES + 64 * 1024;
 
 export class WorkspaceSecretError extends Error {
   constructor(readonly code: import("@/lib/contracts/workspaceSecrets").WorkspaceSecretErrorCode) {
@@ -39,19 +46,22 @@ export function parseWorkspaceSecretValue(value: unknown): WorkspaceSecretValue 
           new Set(value.entries.map((entry) => (entry as { name: string }).name)).size === value.entries.length;
         break;
       case "file":
-      case "browser_session":
+      case "browser_session": {
+        const maxBytes = value.kind === "browser_session" ? WORKSPACE_BROWSER_SESSION_MAX_BYTES : WORKSPACE_SECRET_FILE_MAX_BYTES;
+        const bytes = typeof value.base64 === "string" && value.base64.length <= Math.ceil(maxBytes / 3) * 4
+          ? Buffer.from(value.base64, "base64") : null;
         valid = keys(value, ["kind", "originalName", "base64"]) && text(value.originalName, 255, true) &&
-          !/[\u0000-\u001f\u007f/\\]/u.test(value.originalName) && typeof value.base64 === "string" &&
-          value.base64.length <= Math.ceil(WORKSPACE_SECRET_FILE_MAX_BYTES / 3) * 4 &&
-          Buffer.from(value.base64, "base64").toString("base64") === value.base64 &&
-          Buffer.from(value.base64, "base64").byteLength <= WORKSPACE_SECRET_FILE_MAX_BYTES;
-        if (value.kind === "browser_session" && (!valid || workspaceBrowserSessionError(value.originalName, Buffer.from(String(value.base64), "base64")))) {
+          !/[\u0000-\u001f\u007f/\\]/u.test(value.originalName) && bytes !== null &&
+          bytes.toString("base64") === value.base64 && bytes.byteLength <= maxBytes;
+        if (value.kind === "browser_session" && (!valid || workspaceBrowserSessionError(value.originalName, bytes!))) {
           throw new WorkspaceSecretError("workspace_browser_session_invalid");
         }
         break;
+      }
     }
   }
-  if (!valid || Buffer.byteLength(JSON.stringify(value), "utf8") > WORKSPACE_SECRET_VALUE_MAX_BYTES) {
+  if (!valid || Buffer.byteLength(JSON.stringify(value), "utf8") > ((value as WorkspaceSecretValue).kind === "browser_session"
+    ? WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES : WORKSPACE_SECRET_VALUE_MAX_BYTES)) {
     throw new WorkspaceSecretError("workspace_secret_invalid");
   }
   if ((value as WorkspaceSecretValue).kind === "env" && Buffer.byteLength(JSON.stringify(value), "utf8") > WORKSPACE_SECRET_ENV_MAX_BYTES) {

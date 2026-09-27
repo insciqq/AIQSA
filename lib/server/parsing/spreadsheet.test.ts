@@ -1,8 +1,21 @@
+import { crc32, deflateRawSync } from "node:zlib";
 import { utils, write, type BookType } from "xlsx";
 import {
-  assertBoundedSpreadsheetArchive,
+  canonicalizeSpreadsheetArchive,
   parseSpreadsheetDocument
 } from "./spreadsheet";
+import {
+  centralHeader,
+  describeArchive,
+  endOfCentralDirectory,
+  localHeader,
+  salesWorkbookEntries,
+  storedFields,
+  zip64Extra,
+  zipArchive,
+  zipEntries,
+  type ZipFixtureEntry
+} from "./spreadsheetArchive.testFixtures";
 import {
   SPREADSHEET_MAX_COLUMNS_PER_SHEET,
   SPREADSHEET_MAX_UNCOMPRESSED_BYTES
@@ -125,12 +138,180 @@ describe("bounded spreadsheet parsing", () => {
     bytes.writeUInt16LE(1, eocdOffset + 10);
     bytes.writeUInt32LE(centralSize, eocdOffset + 12);
     bytes.writeUInt32LE(centralOffset, eocdOffset + 16);
-    expect(() => assertBoundedSpreadsheetArchive(bytes))
+    expect(() => canonicalizeSpreadsheetArchive(bytes))
       .toThrowError(expect.objectContaining({ code: "parser_output_too_large" }));
   });
 
   it("rejects a truncated spreadsheet archive with a stable parser error", () => {
-    expect(() => assertBoundedSpreadsheetArchive(Buffer.from("PK")))
+    expect(() => canonicalizeSpreadsheetArchive(Buffer.from("PK")))
       .toThrowError(expect.objectContaining({ code: "parser_rejected" }));
+  });
+});
+
+describe("spreadsheet archive canonicalization", () => {
+  const entries = salesWorkbookEntries();
+  const deflated: readonly ZipFixtureEntry[] = entries.map((entry) => ({ ...entry, method: 8 }));
+  const zeros = Buffer.alloc(4 * 1_024 * 1_024);
+
+  function parsedSales(bytes: Buffer): unknown {
+    return parseSpreadsheetDocument({ bytes, fileName: "sales.xlsx", mimeType: mimeByType.xlsx })
+      .workbook?.sheets[0]?.cells.find((cell) => cell.address === "B2")?.value;
+  }
+
+  function expectCanonicalFailure(bytes: Buffer, code = "parser_rejected"): void {
+    expect(() => canonicalizeSpreadsheetArchive(bytes))
+      .toThrowError(expect.objectContaining({ code }));
+  }
+
+  function withEntry(entry: ZipFixtureEntry): Buffer {
+    return zipArchive([...deflated, entry]);
+  }
+
+  function withFirstEntry(overrides: Partial<ZipFixtureEntry>): Buffer {
+    return zipArchive([{ ...deflated[0]!, ...overrides }, ...deflated.slice(1)]);
+  }
+
+  it("parses deflated packages and rebuilds one stored archive without extras", () => {
+    const sheet = utils.aoa_to_sheet([["Region", "Revenue"], ["North", 10]]);
+    const book = utils.book_new();
+    utils.book_append_sheet(book, sheet, "Sales");
+    const compressed = write(book, { bookType: "xlsx", compression: true, type: "buffer" }) as Buffer;
+    const withComment = zipArchive(deflated.map((entry) => ({
+      ...entry,
+      central: { extra: Buffer.from([0x55, 0x54, 0x01, 0x00, 0x01]) }
+    })), { comment: Buffer.from("archive comment") });
+
+    for (const bytes of [compressed, withComment]) {
+      const canonical = describeArchive(canonicalizeSpreadsheetArchive(bytes));
+      expect(canonical).toMatchObject({ commentLength: 0, directorySignatures: 1 });
+      expect(canonical.entries.length).toBeGreaterThan(1);
+      expect(canonical.entries.every((entry) => entry.method === 0 && entry.localMethod === 0 &&
+        entry.flags === 0 && entry.localFlags === 0 && entry.centralExtra === 0 &&
+        entry.localExtra === 0)).toBe(true);
+      expect(parsedSales(bytes)).toBe(10);
+    }
+    expect(describeArchive(compressed).entries.some((entry) => entry.method === 8)).toBe(true);
+    expect(zipEntries(canonicalizeSpreadsheetArchive(compressed)))
+      .toEqual(zipEntries(compressed));
+  });
+
+  it.each(["signed", "unsigned"] as const)(
+    "accepts %s data descriptors whose local sizes are zero",
+    (dataDescriptor) => {
+      const archive = zipArchive(deflated.map((entry) => ({ ...entry, dataDescriptor })));
+      expect(parsedSales(archive)).toBe(10);
+    }
+  );
+
+  it("accepts empty stored and deflated entries", () => {
+    const archive = zipArchive([
+      ...deflated,
+      { data: Buffer.alloc(0), name: "xl/empty-deflated.bin" },
+      { data: Buffer.alloc(0), method: 0, name: "xl/empty-stored.bin" }
+    ]);
+    expect(deflateRawSync(Buffer.alloc(0)).byteLength).toBe(2);
+    expect(parsedSales(archive)).toBe(10);
+  });
+
+  it("rejects ZIP64 size extras that disagree with the enforced sizes", () => {
+    const hidden = Buffer.alloc(1_024 * 1_024);
+    const payload = deflateRawSync(hidden);
+    const extra = zip64Extra(BigInt(hidden.byteLength), BigInt(payload.byteLength));
+    const entry = { data: hidden, name: "xl/media/zip64.bin", payload };
+    expect(() => canonicalizeSpreadsheetArchive(withEntry({
+      ...entry,
+      central: { extra: zip64Extra(BigInt(hidden.byteLength), 0n) }
+    }))).not.toThrow();
+    expectCanonicalFailure(withEntry({
+      ...entry,
+      central: { extra, uncompressedSize: 1 },
+      local: { extra, uncompressedSize: 1 }
+    }));
+    expectCanonicalFailure(withEntry({ ...entry, local: { extra: zip64Extra(1n, 1n) } }));
+    expectCanonicalFailure(withEntry({
+      ...entry,
+      central: { extra, uncompressedSize: 0xffffffff },
+      local: { extra, uncompressedSize: 0xffffffff }
+    }));
+    const locator = Buffer.alloc(20);
+    locator.writeUInt32LE(0x07064b50, 0);
+    const archive = zipArchive(deflated);
+    const eocd = archive.byteLength - 22;
+    const withLocator = Buffer.concat([archive.subarray(0, eocd), locator, archive.subarray(eocd)]);
+    withLocator.writeUInt32LE(withLocator.readUInt32LE(withLocator.byteLength - 10) + 20,
+      withLocator.byteLength - 10);
+    expectCanonicalFailure(withLocator);
+  });
+
+  it("verifies inflation against the declared size, consumed bytes and checksum", () => {
+    const entry = { data: zeros, name: "xl/media/bomb.bin" };
+    expect(() => canonicalizeSpreadsheetArchive(withEntry(entry))).not.toThrow();
+    expectCanonicalFailure(withEntry({
+      ...entry,
+      central: { uncompressedSize: 0 },
+      local: { uncompressedSize: 0 }
+    }));
+    const declaredTooLarge = zeros.byteLength + 1;
+    expectCanonicalFailure(withEntry({
+      ...entry,
+      central: { uncompressedSize: declaredTooLarge },
+      local: { uncompressedSize: declaredTooLarge }
+    }));
+    const payload = Buffer.concat([deflateRawSync(zeros), Buffer.from("trailing")]);
+    expectCanonicalFailure(withEntry({ ...entry, payload }));
+    const wrongCrc = (crc32(zeros) ^ 1) >>> 0;
+    expectCanonicalFailure(withEntry({ ...entry, central: { crc: wrongCrc }, local: { crc: wrongCrc } }));
+  });
+
+  it("rejects local headers that disagree with the central directory", () => {
+    const entry = { data: zeros, name: "xl/media/mismatch.bin" };
+    expectCanonicalFailure(withEntry({ ...entry, central: { uncompressedSize: 1 }, local: { uncompressedSize: 0 } }));
+    expectCanonicalFailure(withEntry({ ...entry, local: { uncompressedSize: 0 } }));
+    expectCanonicalFailure(withFirstEntry({ local: { method: 0 } }));
+    expectCanonicalFailure(withFirstEntry({ local: { name: "xl/renamed.xml" } }));
+    expectCanonicalFailure(withFirstEntry({ local: { flags: 0x0008 } }));
+  });
+
+  it("rejects ambiguous directories, overlap, duplicate names and unsupported variants", () => {
+    const archive = zipArchive(deflated);
+    expectCanonicalFailure(Buffer.concat([archive, archive.subarray(archive.byteLength - 22)]));
+    expectCanonicalFailure(Buffer.concat([archive, Buffer.from("x")]));
+    expectCanonicalFailure(zipArchive(deflated, { comment: Buffer.from("note"), commentLength: 9 }));
+    expectCanonicalFailure(withEntry({ ...deflated[0]!, name: deflated[0]!.name.toUpperCase() }));
+    expectCanonicalFailure(withEntry({ data: Buffer.from("x"), name: "xl\\media.bin" }));
+    expectCanonicalFailure(withFirstEntry({ central: { flags: 0x0001 }, local: { flags: 0x0001 } }));
+    for (const method of [9, 12]) {
+      expectCanonicalFailure(withFirstEntry({ central: { method }, local: { method } }));
+    }
+
+    const inner = Buffer.from("inner");
+    const innerLocal = localHeader(storedFields(inner, "b.txt"));
+    const outer = Buffer.concat([Buffer.from("xx"), innerLocal, inner]);
+    const outerLocal = localHeader(storedFields(outer, "a.txt"));
+    const directory = Buffer.concat([
+      centralHeader({ ...storedFields(outer, "a.txt"), localOffset: 0 }),
+      centralHeader({ ...storedFields(inner, "b.txt"), localOffset: outerLocal.byteLength + 2 })
+    ]);
+    expectCanonicalFailure(Buffer.concat([
+      outerLocal,
+      outer,
+      directory,
+      endOfCentralDirectory({
+        count: 2,
+        offset: outerLocal.byteLength + outer.byteLength,
+        size: directory.byteLength
+      })
+    ]));
+  });
+
+  it("parses the real directory when a comment carries a forged trailing directory", () => {
+    const forged = Buffer.alloc(18);
+    forged.writeUInt32LE(0x06054b50, 0);
+    forged.writeUInt16LE(1, 8);
+    forged.writeUInt16LE(1, 10);
+    const archive = zipArchive(deflated, { comment: forged });
+    expect(describeArchive(canonicalizeSpreadsheetArchive(archive)))
+      .toMatchObject({ commentLength: 0, directorySignatures: 1 });
+    expect(parsedSales(archive)).toBe(10);
   });
 });

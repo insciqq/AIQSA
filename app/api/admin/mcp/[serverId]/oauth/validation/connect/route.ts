@@ -16,4 +16,4 @@ const start: AsyncRouteHandler<ReturnType<typeof createMcpOAuthStartHandler>> = 
   service: mcpOAuthService
 }, { forceReconnect: false, purpose: "validation" });
 
-export { start as GET, start as POST };
+export { start as POST };

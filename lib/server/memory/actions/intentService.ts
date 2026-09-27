@@ -1,10 +1,15 @@
 import {
   MEMORY_ACTION_CONTROL_JSON_SCHEMA,
+  MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH,
   MEMORY_ACTION_INTENT_NAME,
   decodeMemoryActionControlDecision,
   memoryActionIntentSourceTextMatchesCurrentUser,
   type MemoryActionIntent
 } from "../../../contracts/memoryActionIntent";
+import {
+  calculateContextBudgetLimits,
+  estimateApproxTokens
+} from "../../../domain/contextBudget";
 import type {
   ProviderStructuredOutputOptions,
   ProviderStructuredOutputRequest
@@ -13,6 +18,8 @@ import type {
 const MAX_CONTEXT_MESSAGES = 8;
 const MAX_CONTEXT_CHARACTERS = 8_000;
 const MAX_MEMORY_REFS = 20;
+/** Output reserved for one strict control decision before any input is sent. */
+export const MEMORY_ACTION_INTENT_RESPONSE_RESERVE_TOKENS = 1_024;
 
 export type MemoryActionIntentContext = Readonly<{
   capabilities: Readonly<{
@@ -33,8 +40,14 @@ export type MemoryActionIntentExecutor = (
   options?: ProviderStructuredOutputOptions
 ) => Promise<Record<string, unknown>>;
 
+export type MemoryActionIntentServiceErrorCode =
+  | "memory_action_intent_input_too_long"
+  | "memory_action_intent_invalid"
+  | "memory_action_intent_statement_too_long"
+  | "memory_action_intent_unavailable";
+
 export class MemoryActionIntentServiceError extends Error {
-  constructor(readonly code: "memory_action_intent_invalid" | "memory_action_intent_unavailable") {
+  constructor(readonly code: MemoryActionIntentServiceErrorCode) {
     super(code);
     this.name = "MemoryActionIntentServiceError";
   }
@@ -68,12 +81,33 @@ function memoryRefs(input: MemoryActionIntentContext): readonly string[] {
   return refs.map((ref) => boundedText(ref, 2_048));
 }
 
+/** The complete current turn is sent only when the admitted utility model's
+ * declared context holds the whole request plus the response reserve. There
+ * is no prefix fallback: an overflow is an explicit too-long outcome. */
+export function memoryActionIntentInputFitsContext(input: Readonly<{
+  contextWindow: number | null | undefined;
+  providerInput: unknown;
+  responseReserveTokens: number;
+}>): boolean {
+  if (input.contextWindow === null || input.contextWindow === undefined) return true;
+  const { budgetTokens } = calculateContextBudgetLimits({
+    contextWindow: input.contextWindow,
+    maxOutputTokens: input.responseReserveTokens
+  });
+  return budgetTokens > 0 && estimateApproxTokens(input.providerInput) <= budgetTokens;
+}
+
 /** Builds the one bounded, strict System Model request. All user/context
  * material is carried as quoted data; the resulting intent never grants
- * mutation authority by itself. */
+ * mutation authority by itself. The whole current turn is carried up to the
+ * source budget, never a prefix of it. */
 export function buildMemoryActionIntentRequest(
   input: MemoryActionIntentContext
 ): ProviderStructuredOutputRequest {
+  if (typeof input.currentUserMessage === "string" &&
+    input.currentUserMessage.length > MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH) {
+    throw new MemoryActionIntentServiceError("memory_action_intent_input_too_long");
+  }
   if (!memoryActionIntentSourceTextMatchesCurrentUser(
     input.currentUserMessage,
     input.currentUserMessage
@@ -82,12 +116,15 @@ export function buildMemoryActionIntentRequest(
   }
   const payload = {
     capabilities: input.capabilities,
-    current_user_message: boundedText(input.currentUserMessage, 2_000),
+    current_user_message: boundedText(
+      input.currentUserMessage,
+      MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH
+    ),
     memory_refs: memoryRefs(input),
     recent_messages: recentContext(input)
   };
   return {
-    maxOutputTokens: 1_024,
+    maxOutputTokens: MEMORY_ACTION_INTENT_RESPONSE_RESERVE_TOKENS,
     name: MEMORY_ACTION_INTENT_NAME,
     schema: MEMORY_ACTION_CONTROL_JSON_SCHEMA,
     systemPrompt: [
@@ -140,9 +177,7 @@ export function createMemoryActionIntentService(input: Readonly<{
         throw new MemoryActionIntentServiceError("memory_action_intent_unavailable");
       }
       const decoded = decodeMemoryActionControlDecision(output, context.currentUserMessage);
-      if (!decoded.ok) {
-        throw new MemoryActionIntentServiceError("memory_action_intent_invalid");
-      }
+      if (!decoded.ok) throw new MemoryActionIntentServiceError(decoded.code);
       return decoded.value;
     }
   });

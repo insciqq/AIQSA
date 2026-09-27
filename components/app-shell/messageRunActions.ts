@@ -13,6 +13,7 @@ import {
   chatIdFromComposerSessionKey,
   composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
+  pendingSendHasNewerInput,
   projectIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore,
@@ -24,7 +25,8 @@ import { editMessageBranchAction } from "@/components/app-shell/messageEditActio
 import { shellFetch } from "@/components/app-shell/shellApi";
 import {
   executeMessageRunLifecycle,
-  type ConsumeMessageRunStream
+  type ConsumeMessageRunStream,
+  type MessageRunLifecycleResult
 } from "@/components/app-shell/messageRunLifecycle";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
@@ -99,7 +101,7 @@ type MessageRunActionsInput = {
     getAssistantMessageId(): string;
   }): RunStreamTokenBuffer;
   currentModel: CatalogModel | undefined;
-  fetchRun(runId: string, chatId: string): Promise<unknown>;
+  fetchRun(runId: string, chatId: string, options?: { producer?: string }): Promise<unknown>;
   notifyAnswerReady(): Promise<void>;
   openMemorySettings(): void;
   persistActiveLeaf(chatId: string, messageId: string | null): Promise<unknown>;
@@ -536,6 +538,19 @@ export function useMessageRunActions({
     );
   }
 
+  /**
+   * A rejected Regenerate/Retry or starter rolls its optimistic answer back,
+   * taking the in-thread failure text with it, and has no composer draft to
+   * carry the reason; the shell notice keeps the server's safe reason visible
+   * (also after a draft chat returns to its blank route). A result arriving
+   * after navigation to another chat stays silent.
+   */
+  function noticeRejectedRun(chatId: string, result: MessageRunLifecycleResult) {
+    if (!result.failed || result.cancelled || activeChatIdRef.current !== chatId) return;
+    const reason = result.rejectionMessage ?? result.failureMessage;
+    if (reason) setNotice({ kind: "error", text: reason });
+  }
+
   async function refreshInterruptedRun(chatId = activeChatId): Promise<boolean> {
     const interrupted = chatId
       ? useRunLifecycleStore.getState().ambiguousFailures[chatId]
@@ -967,11 +982,14 @@ export function useMessageRunActions({
         setNotice({ kind: "error", text: message });
       }
     } finally {
+      const refusedCopy = pendingSendHasNewerInput(useComposerSessionStore.getState(), sendToken)
+        ? "Send failed. Your message is back in the composer, ahead of your newer text."
+        : "Send failed. Your draft was preserved.";
       useComposerSessionStore.getState().finishSend(
         sendToken,
         sendOutcome,
         sendOutcome === "failed" && !sendFailureHandled
-          ? sendRejectionMessage ?? sendFailureMessage ?? "Send failed. Your draft was preserved."
+          ? sendRejectionMessage ?? sendFailureMessage ?? refusedCopy
           : null,
         sendFailureLive,
         sendRunId,
@@ -1187,6 +1205,8 @@ export function useMessageRunActions({
       });
       if (result.failureCode === "memory_intent_confirmation_required") {
         await showMemoryTargetSelection();
+      } else {
+        noticeRejectedRun(chatIdForSend, result);
       }
       if (temporaryRun) {
         await reconcileTemporaryAdmission(chatIdForSend);
@@ -1306,6 +1326,8 @@ export function useMessageRunActions({
     });
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
+    } else {
+      noticeRejectedRun(chatIdForRegenerate, result);
     }
     if (isTemporaryChat(chatIdForRegenerate)) {
       await reconcileTemporaryAdmission(chatIdForRegenerate);

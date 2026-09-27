@@ -19,6 +19,7 @@ import {
   type KnowledgeRetrievedPassageEvidence
 } from "./retrievalTypes";
 import { createKnowledgeFocusedRequest } from "./focusedRequest";
+import { knowledgeToolResultText } from "./toolResult";
 
 const vectorSpaceFingerprint = "e".repeat(64);
 const evidenceProfileFixture = Object.freeze({
@@ -255,6 +256,38 @@ function evidence(input: Readonly<{
 describe("Prisma Knowledge Evidence v2 receipts", () => {
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it.each([
+    "knowledge_search_backend_unavailable", "knowledge_search_projection_unavailable",
+    "knowledge_search_projection_pending", "knowledge_search_projection_failed"
+  ] as const)("persists and reloads the classified %s receipt", async (failureCode) => {
+    const fixture = await createRunFixture({ query: "Synthetic search", readyBases: 1, readySources: 1 });
+    try {
+      const call = await prisma.modelRunToolCall.create({ data: {
+        arguments: { query: "Synthetic search", sourceAliases: [] },
+        modelRunId: fixture.runId, ordinal: 0, providerCallId: randomUUID(), roundIndex: 0,
+        startedAt: new Date(), state: "running", toolName: "search_knowledge"
+      } });
+      const draft: KnowledgeRetrievalEvidence = {
+        bases: [], candidateCount: 0, candidateLimit: 64, durationMs: 1,
+        embeddingExecutions: [], failureCode, fusion: "weighted_rrf_v2", invocationOrdinal: 1,
+        operation: "automatic_search", outcome: "search_unavailable", providerText: "pending",
+        query: "knowledge_search_unavailable", resultLimit: 8, results: [], version: KNOWLEDGE_RESULT_VERSION
+      };
+      const receipt = { ...draft, providerText: knowledgeToolResultText(draft) };
+      const input = { modelRunToolCallId: call.id, runId: fixture.runId, userId: fixture.userId };
+      expect(await createPrismaKnowledgeRetrievalStore(prisma).persistReceipt({
+        ...input, evidence: receipt
+      })).toMatchObject({ failureCode, providerText: receipt.providerText });
+      expect(await createPrismaKnowledgeRetrievalStore(prisma).loadReceipt!(input))
+        .toMatchObject({ failureCode, providerText: receipt.providerText, query: "knowledge_search_unavailable" });
+      // Re-saving the tool checkpoint exercises the reverse receipt guard.
+      await prisma.modelRunToolCall.update({ where: { id: call.id }, data: { state: "error" } });
+    } finally {
+      await prisma.chat.deleteMany({ where: { id: fixture.chatId, userId: fixture.userId } });
+      await prisma.user.deleteMany({ where: { id: fixture.userId } });
+    }
   });
 
   it("persists one focused operation with stable handles and seals accepted evidence", async () => {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_ACTION_CONTROL_JSON_SCHEMA,
+  MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH,
   MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS,
+  MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH,
   decodeMemoryActionControlDecision,
   decodeMemoryActionIntent,
   memoryActionIntentCurrentTurnAuthorizesMutation,
@@ -146,8 +148,46 @@ describe("Fresh Memory action control contract", () => {
       } });
   });
 
+  it("reports an over-long SAVE or UPDATE statement instead of generic invalid output", () => {
+    const tooLong = "I prefer " + "t".repeat(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH);
+    const source = "Remember this exact preference for later.";
+    expect(decodeMemoryActionControlDecision(command({ statement: tooLong }), source))
+      .toEqual({ code: "memory_action_intent_statement_too_long", ok: false });
+    const { statement: _statement, ...saved } = command().decision;
+    expect(decodeMemoryActionControlDecision({ decision: {
+      ...saved, action: "UPDATE", reasonCode: "update_request", referencedMemoryRef: null,
+      replacementStatement: tooLong, targetQuery: "drink preference"
+    } }, source)).toEqual({ code: "memory_action_intent_statement_too_long", ok: false });
+    expect(decodeMemoryActionControlDecision(
+      command({ statement: "t".repeat(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH) }),
+      source
+    )).toMatchObject({ ok: true, value: { action: "SAVE" } });
+    expect(decodeMemoryActionControlDecision(command({ statement: null }), source))
+      .toEqual({ code: "memory_action_intent_invalid", ok: false });
+  });
+
+  it("classifies a complete current turn beyond the statement bound", () => {
+    const source = `${"Context paragraph. ".repeat(150)}Please remember that I prefer tea.`;
+    expect(source.length).toBeGreaterThan(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH);
+    expect(decodeMemoryActionControlDecision(command(), source)).toMatchObject({
+      ok: true,
+      value: { action: "SAVE", statement: "I prefer tea." }
+    });
+    expect(memoryActionIntentCurrentTurnAuthorizesMutation({ action: "SAVE" }, source, source))
+      .toBe(true);
+    expect(memoryActionIntentCurrentTurnAuthorizesMutation(
+      { action: "SAVE" },
+      source,
+      `${source} `
+    )).toBe(false);
+  });
+
   it("does not turn a source-only or malformed packet into a command", () => {
-    for (const source of ["", "bad\u0000source", "x".repeat(2_001)]) {
+    for (const source of [
+      "",
+      "bad\u0000source",
+      "x".repeat(MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH + 1)
+    ]) {
       expect(decodeMemoryActionControlDecision(command(), source)).toMatchObject({ ok: false });
     }
     expect(decodeMemoryActionControlDecision({ statement: "I prefer tea." }, "Remember this."))
