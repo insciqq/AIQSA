@@ -594,6 +594,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     (selectedProjectContext && !activeChatSummary)
     ? workspace.projects.detail
     : null;
+  // Deletion status survives direct entry/reload independently of the local
+  // overview toggle. The owner must keep a reachable status and retry action.
+  const projectsSurfaceVisible = projectsSurfaceOpen || activeProject?.status === "DELETING";
   const skillScopeKey = `${session.accountId}:${projectContext ? activeChatSummary?.projectId ?? workspace.projects.selectedProjectId : "personal"}:${session.activeChatId ?? "new"}`;
   const skillScopeRef = useRef(skillScopeKey);
   useLayoutEffect(() => { skillScopeRef.current = skillScopeKey; }, [skillScopeKey]);
@@ -1386,7 +1389,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           accountLabel={session.accountDisplayName.trim() || session.accountEmail}
           adminEntryVisible={session.adminEntryVisible}
           chatActive={Boolean(session.activeChatId)}
-          projectsSectionOpen={projectsSurfaceOpen}
+          projectsSectionOpen={projectsSurfaceVisible}
           section={libraryOpen && !projectContext ? "library" : "chats"}
           onProjectsSectionChange={setProjectsSurfaceOpen}
           navigationBusy={settings.studio?.busy}
@@ -1516,7 +1519,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               initialTab={libraryInitialTab}
               props={props}
             />
-          ) : projectsSurfaceOpen ? (
+          ) : projectsSurfaceVisible ? (
             <ProjectsSurfaceV2
               composerSlot={(
                 <div className="v2-project-page-composer-stack" ref={setComposerDockRef}>
