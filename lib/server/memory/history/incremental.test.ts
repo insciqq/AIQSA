@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryRecallChunkMessageJoin } from "./chunking";
 import {
+  alignMemoryHistoryIndexPageEnd,
+  boundMemoryHistoryIndexPageEnd,
+  DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS,
   MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
+  memoryHistoryIndexMinimumPageEnd,
+  memoryHistoryIndexPageLimitsAreValid,
   planMemoryHistoryTailUpdate,
+  shrinkMemoryHistoryIndexPageEnd,
   type MemoryHistoryCheckpointMessageIdentity,
   type MemoryHistoryIncrementalChunk
 } from "./incremental";
@@ -164,5 +170,88 @@ describe("incremental Memory history planning", () => {
       rebuildFromMessageOrdinal: 2_986
     });
     expect(result.reusedChunkIds).toHaveLength(1_493);
+  });
+
+  it("resumes a partial checkpoint cursor with the ordinary APPEND proof", () => {
+    const all = messages(10);
+    const committedPage = all.slice(0, 7);
+    const result = planMemoryHistoryTailUpdate({
+      currentMessages: all,
+      previousChunks: chunks(committedPage.slice(0, 6)),
+      previousMessages: committedPage
+    });
+
+    // The cursor may end on a user prompt; the next page still appends
+    // without rebuilding the proven prefix.
+    expect(result).toMatchObject({
+      commonPathMessageCount: 7,
+      mode: "APPEND",
+      rebuildFromMessageOrdinal: 3
+    });
+    expect(result.reusedChunkIds).toEqual(["chunk-0", "chunk-1", "chunk-2"]);
+  });
+});
+
+describe("Memory history index pages", () => {
+  const roles = ["user", "assistant", "user", "assistant", "user", "assistant"];
+
+  it("never splits the first uncovered prompt from its reply", () => {
+    expect(memoryHistoryIndexMinimumPageEnd(roles, 0)).toBe(2);
+    expect(memoryHistoryIndexMinimumPageEnd(roles, 1)).toBe(2);
+    expect(memoryHistoryIndexMinimumPageEnd(["user", "user"], 0)).toBe(1);
+    expect(memoryHistoryIndexMinimumPageEnd(roles, roles.length)).toBe(roles.length);
+  });
+
+  it("keeps a later prompt with its reply without cutting the minimum unit", () => {
+    expect(alignMemoryHistoryIndexPageEnd(roles, 2, 3)).toBe(2);
+    expect(alignMemoryHistoryIndexPageEnd(roles, 2, 5)).toBe(4);
+    expect(alignMemoryHistoryIndexPageEnd(roles, 2, 4)).toBe(4);
+    expect(alignMemoryHistoryIndexPageEnd(roles, 2, roles.length)).toBe(roles.length);
+  });
+
+  it("bounds cumulative page cost from the rewind and always admits one unit", () => {
+    const costs = [5, 5, 5, 5, 5, 5];
+    const bound = (limit: number, costStartOrdinal = 0, minimumEnd = 2) =>
+      boundMemoryHistoryIndexPageEnd({
+        cost: (ordinal) => costs[ordinal]!,
+        costStartOrdinal,
+        limit,
+        maximumEnd: costs.length,
+        minimumEnd
+      });
+
+    expect(bound(30)).toBe(6);
+    expect(bound(12)).toBe(2);
+    expect(bound(1)).toBe(2);
+    expect(bound(17)).toBe(3);
+    // Rewind cost counts, but the first uncovered unit is still admitted.
+    expect(bound(12, 0, 6)).toBe(6);
+    expect(bound(12, 2, 5)).toBe(5);
+    expect(bound(20, 2, 5)).toBe(6);
+  });
+
+  it("halves only the uncovered part and stops at the indivisible unit", () => {
+    expect(shrinkMemoryHistoryIndexPageEnd(roles, 0, 2, 6)).toBe(2);
+    expect(shrinkMemoryHistoryIndexPageEnd(roles, 2, 4, 6)).toBe(4);
+    expect(shrinkMemoryHistoryIndexPageEnd(roles, 1, 2, 6)).toBe(4);
+    expect(shrinkMemoryHistoryIndexPageEnd(roles, 2, 4, 4)).toBeNull();
+    expect(shrinkMemoryHistoryIndexPageEnd(["assistant", "user"], 0, 1, 1)).toBeNull();
+  });
+
+  it("keeps per-job limits positive and within the per-call chunk bound", () => {
+    expect(memoryHistoryIndexPageLimitsAreValid(DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS))
+      .toBe(true);
+    expect(memoryHistoryIndexPageLimitsAreValid({
+      ...DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS,
+      maxChunks: 0
+    })).toBe(false);
+    expect(memoryHistoryIndexPageLimitsAreValid({
+      ...DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS,
+      maxChunks: DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS.maxChunks + 1
+    })).toBe(false);
+    expect(memoryHistoryIndexPageLimitsAreValid({
+      ...DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS,
+      maxToolCalls: 1.5
+    })).toBe(false);
   });
 });
