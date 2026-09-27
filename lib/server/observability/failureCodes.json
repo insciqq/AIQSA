@@ -47,6 +47,7 @@
   "attachment_checksum_mismatch",
   "attachment_object_read_failed",
   "attachment_object_size_mismatch",
+  "attachment_processing_attempts_exhausted",
   "attachment_processing_failed",
   "attachment_processing_lease_lost",
   "attachment_processing_startup_failed",
