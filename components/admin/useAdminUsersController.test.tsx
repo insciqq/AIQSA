@@ -85,4 +85,30 @@ describe("useAdminUsersController", () => {
     expect(confirmations[3]?.onSuccess).toBe(onSuccess);
     expect(confirmations.every((config) => config.prompt.includes("pat@example.com") || config.body.action === "revoke_all_sessions")).toBe(true);
   });
+
+  it("offers session revocation separately when disable needs a Project ownership transfer", () => {
+    const { confirmations, view } = harness();
+    act(() => view.result.current.actions.requestDisable(target));
+    const disable = confirmations[0]!;
+
+    act(() => disable.onFailure?.({ error: "last_admin_forbidden" }));
+    expect(confirmations).toHaveLength(1);
+
+    act(() => disable.onFailure?.({
+      error: "project_owner_required",
+      projectCount: 3,
+      projects: [{ name: "Launch", status: "ACTIVE" }, { name: "Archive", status: "ARCHIVED" }]
+    }));
+    expect(confirmations).toHaveLength(2);
+    const revoke = confirmations[1]!;
+    expect(revoke.testId).toBe("admin-confirm-revoke-sessions-after-owner-conflict");
+    expect(revoke.body).toEqual({ action: "revoke_user_sessions", userId: "pat" });
+    expect(revoke.prompt).toContain("pat@example.com was not disabled");
+    expect(revoke.prompt).toContain("3 Projects: “Launch”, “Archive” (archived) and 1 more");
+    expect(revoke.prompt).toContain("make another member an Owner in each Project (restoring an archived Project first), then disable the user again");
+    expect(revoke.onFailure).toBeUndefined();
+
+    act(() => disable.onFailure?.({ error: "project_owner_required" }));
+    expect(confirmations[2]?.prompt).toContain("the only active Owner of one or more Projects.");
+  });
 });

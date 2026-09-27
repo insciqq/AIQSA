@@ -6,6 +6,7 @@ import type {
   AdminGroup as AdminGroupWire,
   AdminGroupGrantChange,
   AdminInviteRecord as AdminInviteWire,
+  AdminSoleOwnedProject,
   AdminUserRecord as AdminUserWire
 } from "@/lib/contracts/admin";
 
@@ -50,11 +51,17 @@ export type AdminDeleteGroupResult =
   | "system_group_forbidden";
 export type AdminDeleteInviteResult = "deleted" | "invite_accepted" | "invite_open" | "not_found";
 export type AdminApproveUserResult = "approved" | "not_found" | "not_verified";
+export type AdminDisableUserProjectOwnerRequired = Readonly<{
+  kind: "project_owner_required";
+  projectCount: number;
+  projects: readonly AdminSoleOwnedProject[];
+}>;
 export type AdminDisableUserResult =
   | "disabled"
   | "last_admin_forbidden"
   | "not_found"
-  | "self_disable_forbidden";
+  | "self_disable_forbidden"
+  | AdminDisableUserProjectOwnerRequired;
 export type AdminRejectUserResult = "not_found" | "rejected";
 
 export type AdminDashboard = Omit<AdminDashboardWire, "groups" | "invites" | "users"> & {

@@ -157,6 +157,59 @@ async function createPasswordUser(input: {
   });
 }
 
+type ProjectFixtureRepository = ReturnType<typeof createPrismaProjectRepository>;
+
+async function createOwnedProject(
+  projects: ProjectFixtureRepository,
+  owner: Readonly<{ displayName: string; id: string }>,
+  name: string
+): Promise<string> {
+  const created = await projects.create({
+    actorDisplayName: owner.displayName,
+    description: "Admin disable ownership fixture",
+    name,
+    userId: owner.id
+  });
+  if (created.kind !== "ok") throw new Error(`project_fixture_create_${created.kind}`);
+  return created.value.id;
+}
+
+async function setProjectRole(
+  projects: ProjectFixtureRepository,
+  input: Readonly<{ actorId: string; projectId: string; role: "CONTRIBUTOR" | "MANAGER" | "OWNER"; targetId: string }>
+) {
+  const [project, grant] = await Promise.all([
+    prisma.project.findUniqueOrThrow({ select: { accessRevision: true }, where: { id: input.projectId } }),
+    prisma.projectGrant.findFirst({
+      select: { id: true },
+      where: { projectId: input.projectId, userId: input.targetId }
+    })
+  ]);
+  return grant
+    ? projects.updateGrant({
+      actorDisplayName: "Project Owner",
+      expectedAccessRevision: project.accessRevision,
+      grantId: grant.id,
+      projectId: input.projectId,
+      role: input.role,
+      userId: input.actorId
+    })
+    : projects.addGrant({
+      actorDisplayName: "Project Owner",
+      expectedAccessRevision: project.accessRevision,
+      projectId: input.projectId,
+      role: input.role,
+      targetUserId: input.targetId,
+      userId: input.actorId
+    });
+}
+
+function activeDirectOwnerCount(projectId: string): Promise<number> {
+  return prisma.projectGrant.count({
+    where: { groupId: null, projectId, role: "OWNER", user: { status: "active" } }
+  });
+}
+
 describe("Prisma-backed admin repository", () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -599,6 +652,171 @@ describe("Prisma-backed admin repository", () => {
       expect(userStatuses.get(active.id)).toBe("active");
       expect(userStatuses.get(pending.id)).toBe("pending");
       expect(sessions.every((session) => session.revokedAt === null)).toBe(true);
+    });
+  });
+
+  it("refuses to disable a sole Project Owner without committing, keeps session revocation separate, and disables after an in-Project transfer", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const [owner, successor] = await Promise.all(["sole-owner", "owner-successor"].map((emailLocalPart) =>
+        createPasswordUser({ displayName: "Project Owner Test User", domain, emailLocalPart, status: "active" })));
+      const projects = createPrismaProjectRepository(prisma);
+      const suffix = randomUUID();
+      const projectIds: string[] = [];
+      try {
+        for (const label of ["A archived", "B active", "C co-owned", "D deleting"]) {
+          projectIds.push(await createOwnedProject(projects, owner!, `${label} ${suffix}`));
+        }
+        const [archivedId, activeId, coOwnedId, deletingId] = projectIds as [string, string, string, string];
+        for (const projectId of [archivedId, activeId, coOwnedId]) {
+          const granted = await setProjectRole(projects, {
+            actorId: owner!.id,
+            projectId,
+            role: projectId === coOwnedId ? "OWNER" : "CONTRIBUTOR",
+            targetId: successor!.id
+          });
+          if (granted.kind !== "ok") throw new Error(`project_fixture_grant_${granted.kind}`);
+        }
+        await expect(projects.update({
+          actorDisplayName: owner!.displayName,
+          projectId: archivedId,
+          status: "ARCHIVED",
+          userId: owner!.id
+        })).resolves.toMatchObject({ kind: "ok" });
+        await prisma.project.update({
+          data: { deletionRequestedAt: new Date(), status: "DELETING" },
+          where: { id: deletingId }
+        });
+        const tokenHash = hashToken(`sole-owner-session-${suffix}`);
+        await prisma.authSession.create({
+          data: { expiresAt: new Date("2099-01-01T00:00:00.000Z"), tokenHash, userId: owner!.id }
+        });
+        const revisionsBefore = await prisma.project.findMany({
+          orderBy: { id: "asc" },
+          select: { accessRevision: true, id: true },
+          where: { id: { in: projectIds } }
+        });
+
+        await expect(repository.disableUser({ revokedByUserId: adminId, userId: owner!.id })).resolves.toEqual({
+          kind: "project_owner_required",
+          projectCount: 2,
+          projects: [
+            { name: `A archived ${suffix}`, status: "ARCHIVED" },
+            { name: `B active ${suffix}`, status: "ACTIVE" }
+          ]
+        });
+        await expect(prisma.user.findUniqueOrThrow({ select: { status: true }, where: { id: owner!.id } }))
+          .resolves.toEqual({ status: "active" });
+        await expect(prisma.authSession.findUniqueOrThrow({ select: { revokedAt: true }, where: { tokenHash } }))
+          .resolves.toEqual({ revokedAt: null });
+        await expect(prisma.project.findMany({
+          orderBy: { id: "asc" },
+          select: { accessRevision: true, id: true },
+          where: { id: { in: projectIds } }
+        })).resolves.toEqual(revisionsBefore);
+
+        // The security action does not wait for the ownership transfer.
+        await expect(repository.revokeUserSessions({ revokedByUserId: adminId, userId: owner!.id })).resolves.toBe(1);
+        await expect(prisma.authSession.findUniqueOrThrow({ select: { revokedReason: true }, where: { tokenHash } }))
+          .resolves.toEqual({ revokedReason: "admin_revoke_user" });
+        await expect(prisma.user.findUniqueOrThrow({ select: { status: true }, where: { id: owner!.id } }))
+          .resolves.toEqual({ status: "active" });
+
+        // Ownership moves inside each Project through its current Owner; an archived Project is
+        // restored for the change and archived again.
+        await expect(setProjectRole(projects, {
+          actorId: owner!.id, projectId: activeId, role: "OWNER", targetId: successor!.id
+        })).resolves.toMatchObject({ kind: "ok" });
+        await expect(repository.disableUser({ revokedByUserId: adminId, userId: owner!.id })).resolves.toEqual({
+          kind: "project_owner_required",
+          projectCount: 1,
+          projects: [{ name: `A archived ${suffix}`, status: "ARCHIVED" }]
+        });
+        await expect(projects.update({
+          actorDisplayName: owner!.displayName, projectId: archivedId, status: "ACTIVE", userId: owner!.id
+        })).resolves.toMatchObject({ kind: "ok" });
+        await expect(setProjectRole(projects, {
+          actorId: owner!.id, projectId: archivedId, role: "OWNER", targetId: successor!.id
+        })).resolves.toMatchObject({ kind: "ok" });
+        await expect(projects.update({
+          actorDisplayName: owner!.displayName, projectId: archivedId, status: "ARCHIVED", userId: owner!.id
+        })).resolves.toMatchObject({ kind: "ok" });
+
+        await expect(repository.disableUser({ revokedByUserId: adminId, userId: owner!.id })).resolves.toBe("disabled");
+        await expect(prisma.user.findUniqueOrThrow({ select: { status: true }, where: { id: owner!.id } }))
+          .resolves.toEqual({ status: "disabled" });
+        for (const projectId of [archivedId, activeId, coOwnedId]) {
+          await expect(activeDirectOwnerCount(projectId)).resolves.toBe(1);
+        }
+      } finally {
+        await prisma.project.deleteMany({ where: { id: { in: projectIds } } });
+      }
+    });
+  });
+
+  it("serializes concurrent disables of two co-Owners so the Project keeps an active Owner", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const [first, second] = await Promise.all(["co-owner-one", "co-owner-two"].map((emailLocalPart) =>
+        createPasswordUser({ displayName: "Co-Owner Test User", domain, emailLocalPart, status: "active" })));
+      const projects = createPrismaProjectRepository(prisma);
+      const name = `Co-owned race ${randomUUID()}`;
+      let projectId: string | null = null;
+      try {
+        projectId = await createOwnedProject(projects, first!, name);
+        await expect(setProjectRole(projects, {
+          actorId: first!.id, projectId, role: "OWNER", targetId: second!.id
+        })).resolves.toMatchObject({ kind: "ok" });
+        const wait = startBarrier(2);
+
+        const results = await Promise.all([first!, second!].map(async (user) => {
+          await wait();
+          return repository.disableUser({ revokedByUserId: adminId, userId: user.id });
+        }));
+
+        expect(results.filter((result) => result === "disabled")).toHaveLength(1);
+        expect(results.filter((result) => result !== "disabled")).toEqual([{
+          kind: "project_owner_required",
+          projectCount: 1,
+          projects: [{ name, status: "ACTIVE" }]
+        }]);
+        await expect(activeDirectOwnerCount(projectId)).resolves.toBe(1);
+      } finally {
+        if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
+      }
+    });
+  });
+
+  it("never lets a concurrent Owner step-down and Owner disable both commit", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const [target, peer] = await Promise.all(["disabled-owner", "stepping-down-owner"].map((emailLocalPart) =>
+        createPasswordUser({ displayName: "Co-Owner Test User", domain, emailLocalPart, status: "active" })));
+      const projects = createPrismaProjectRepository(prisma);
+      let projectId: string | null = null;
+      try {
+        projectId = await createOwnedProject(projects, target!, `Step-down race ${randomUUID()}`);
+        const ownedProjectId = projectId;
+        await expect(setProjectRole(projects, {
+          actorId: target!.id, projectId: ownedProjectId, role: "OWNER", targetId: peer!.id
+        })).resolves.toMatchObject({ kind: "ok" });
+        const wait = startBarrier(2);
+
+        const [disabled, steppedDown] = await Promise.all([
+          wait().then(() => repository.disableUser({ revokedByUserId: adminId, userId: target!.id })),
+          wait().then(() => setProjectRole(projects, {
+            actorId: peer!.id, projectId: ownedProjectId, role: "MANAGER", targetId: peer!.id
+          }))
+        ]);
+
+        // Exactly one side wins; the loser reports a conflict instead of leaving no Owner.
+        expect([disabled === "disabled", steppedDown.kind === "ok"].filter(Boolean)).toHaveLength(1);
+        if (disabled !== "disabled") {
+          expect(disabled).toMatchObject({ kind: "project_owner_required", projectCount: 1 });
+        } else {
+          expect(steppedDown.kind).toBe("conflict");
+        }
+        await expect(activeDirectOwnerCount(ownedProjectId)).resolves.toBe(1);
+      } finally {
+        if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
+      }
     });
   });
 
