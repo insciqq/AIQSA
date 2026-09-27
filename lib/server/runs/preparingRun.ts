@@ -40,6 +40,18 @@ const safeSelectionReason = /^[a-z][a-z0-9_.:+-]{0,127}$/u;
 // JSON escaping and multibyte text make a token-derived byte ceiling unsafe.
 const MEMORY_PREPARING_CONTEXT_MAX_BYTES = 512 * 1024;
 const MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES = 64 * 1024;
+// Controls the local query boundary rejects before planning.
+const MEMORY_QUERY_SNAPSHOT_UNSAFE_CONTROL =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u;
+
+/** A persisted query is the planner's bounded projection of a locally
+ * sanitized turn: one text or its head, interior and tail fragments within the
+ * shared budget, trimmed, free of unsafe controls and recognized secrets. */
+function validMemoryQuerySnapshot(value: string): boolean {
+  return value.length > 0 && value.length <= MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS &&
+    value.trim() === value && !MEMORY_QUERY_SNAPSHOT_UNSAFE_CONTROL.test(value) &&
+    !memoryExplicitStatementContainsSecret(value);
+}
 
 export type MemoryPreparingSettingsSnapshot = Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
@@ -443,12 +455,8 @@ export function validateMemoryPreparingAttemptResult(
     !safeCode.test(input.degradationCode)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
-  if (input.querySnapshot !== undefined && input.querySnapshot !== null && (
-    input.querySnapshot.length === 0 ||
-    input.querySnapshot.length > MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS ||
-    input.querySnapshot.includes("\u0000") ||
-    memoryExplicitStatementContainsSecret(input.querySnapshot)
-  )) {
+  if (input.querySnapshot !== undefined && input.querySnapshot !== null &&
+    !validMemoryQuerySnapshot(input.querySnapshot)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
   if (input.queryHash !== undefined && !/^[a-f0-9]{64}$/u.test(input.queryHash)) {

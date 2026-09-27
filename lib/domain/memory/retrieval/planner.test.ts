@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { planMemoryRetrieval } from "./planner";
+import {
+  MEMORY_RETRIEVAL_QUERY_FRAGMENT_SEPARATOR,
+  MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS,
+  memoryRetrievalQueryText,
+  planMemoryRetrieval
+} from "./planner";
 
 const now = new Date("2026-08-13T10:00:00.000Z");
 
@@ -257,6 +262,62 @@ describe("language-agnostic Memory retrieval planning", () => {
 
   it("treats only an empty normalized turn as absent", () => {
     expect(planMemoryRetrieval({ currentUserText: " \n\t ", now }).queryPresent).toBe(false);
+  });
+
+  it("keeps a trailing question of a long turn in every query lane", () => {
+    const opening = "Opening context about the vermilion-harbor trip.";
+    const middle = "Midpoint remark about the saffron-orchard visit.";
+    const question = "Which bakery did I say I liked most?";
+    const filler = (label: string) => `${label} filler sentence number. `.repeat(60);
+    const currentUserText = [opening, filler("early"), middle, filler("late"), question].join(" ");
+    expect(currentUserText.length).toBeGreaterThan(3 * MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS / 2);
+
+    const plan = planMemoryRetrieval({ currentUserText, now });
+    expect(plan.originalSanitizedQuery.length).toBeLessThanOrEqual(MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS);
+    expect(plan.originalSanitizedQuery.startsWith(opening)).toBe(true);
+    expect(plan.originalSanitizedQuery.endsWith(question)).toBe(true);
+    expect(plan.originalSanitizedQuery).toContain(MEMORY_RETRIEVAL_QUERY_FRAGMENT_SEPARATOR);
+    expect(plan.semanticQueryVariants[0]).toEqual({
+      kind: "ORIGINAL",
+      text: plan.originalSanitizedQuery
+    });
+    expect(plan.temporalQueryVariants).toContainEqual({
+      kind: "UNRESTRICTED",
+      text: plan.originalSanitizedQuery
+    });
+    expect(plan.lexicalQuery).toContain("bakery");
+    expect(plan.normalizedExactQuery).toContain("bakery");
+    // Fragments stay in source order and are verbatim slices of the turn.
+    const fragments = plan.originalSanitizedQuery.split(MEMORY_RETRIEVAL_QUERY_FRAGMENT_SEPARATOR);
+    let cursor = 0;
+    for (const fragment of fragments) {
+      const at = currentUserText.indexOf(fragment, cursor);
+      expect(at).toBeGreaterThanOrEqual(cursor);
+      cursor = at + fragment.length;
+    }
+    // Replanning the persisted projection is a fixed point.
+    expect(planMemoryRetrieval({ currentUserText: plan.originalSanitizedQuery, now })
+      .originalSanitizedQuery).toBe(plan.originalSanitizedQuery);
+  });
+
+  it.each([
+    ["just over the budget", "word ".repeat(401).trim()],
+    ["a script without spaces", "长".repeat(4_000) + "我最喜欢哪家面包店？"],
+    ["astral characters", "🧠".repeat(3_000) + " where did I park?"]
+  ])("bounds %s without splitting code points", (_label, currentUserText) => {
+    expect(currentUserText.length).toBeGreaterThan(MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS);
+    const query = memoryRetrievalQueryText(currentUserText);
+    expect(query.length).toBeLessThanOrEqual(MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS);
+    expect(query).toBe(query.trim());
+    expect(query.endsWith(currentUserText.normalize("NFKC").slice(-8).trim())).toBe(true);
+    expect(/[\ud800-\udfff]/u
+      .test(query)).toBe(false);
+    expect(memoryRetrievalQueryText(query)).toBe(query);
+  });
+
+  it("keeps a turn within the budget whole", () => {
+    const currentUserText = "x".repeat(MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS);
+    expect(memoryRetrievalQueryText(`  ${currentUserText}  `)).toBe(currentUserText);
   });
 
   it("admits the deterministic ANY fallback for a mixed fact/history plan", () => {
