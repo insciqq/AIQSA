@@ -1,7 +1,4 @@
-import { visionAnalysisForStorage } from "@/lib/server/vision/defaultVision";
 import { agentPolicyRepository } from "@/lib/server/agents/defaultPolicy";
-import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
-import { artifactServiceForStorage } from "@/lib/server/artifacts/defaultArtifacts";
 import { getDefaultChatPdf } from "@/lib/server/uploads/defaultChatPdf";
 import { getDefaultWorkspaceFollowup } from "@/lib/server/runs/defaultWorkspaceFollowup";
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
@@ -13,18 +10,11 @@ import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { createGetChatMessagesPageHandler } from "@/lib/server/chats/handlers";
 import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository";
 import { createPrismaChatTitleGenerator } from "@/lib/server/chats/titleGeneration";
-import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
-import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
-import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
-import { knowledgeProviderDispatchLifecycle } from "@/lib/server/knowledge/defaultEvidenceDispatch";
-import { defaultMemoryToolEgressReceiptService } from "@/lib/server/memory/egress/receipts";
-import { providerAdmissionService } from "@/lib/server/providerRuntime/defaultAdmission";
-import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
+import { defaultRunServices } from "@/lib/server/runs/defaultRunServices";
 import { createSendMessageHandler } from "@/lib/server/runs/handlers";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { installationToolBudgetPolicy } from "@/lib/server/runs/toolBudgets";
 import { defaultSkillRepository, defaultSkillCatalogRelevance } from "@/lib/server/skills/defaultSkills";
-import { defaultSkillTools } from "@/lib/server/skills/defaultSkillTools";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 import {
   workspaceAdmissionService,
@@ -48,18 +38,9 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createSendMessageHandler>
   instructions: defaultInstructionPresets,
   chatTitleGenerator: createPrismaChatTitleGenerator(),
   getConfig: () => getAuthConfig(),
-  knowledgeAdmission: knowledgeRunAdmissionService,
-  knowledgeExecutor: knowledgeToolExecutor,
-  knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
-  images: imageGenerationForStorage(storage),
-  vision: visionAnalysisForStorage(storage),
-  artifacts: artifactServiceForStorage(storage),
-  memoryEgress: defaultMemoryToolEgressReceiptService,
-  mcp: defaultMcpRunPlan,
+  ...defaultRunServices(storage),
   chatPdf: getDefaultChatPdf(),
   workspaceFollowup: getDefaultWorkspaceFollowup(),
-  providerAdmission: providerAdmissionService,
-  providerRuntime: providerRuntimeResolver,
   providers: {},
   repository,
   resolveAuth: resolveRequestAuth,
@@ -67,8 +48,6 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createSendMessageHandler>
   runPolicy: installationToolBudgetPolicy,
   skills: defaultSkillRepository,
   skillCatalogRelevance: defaultSkillCatalogRelevance,
-  skillTools: defaultSkillTools,
-  storage,
   workspace: workspaceAdmissionService,
   workspaceCoordinator: workspaceCoordinatorForStorage(storage)
 });

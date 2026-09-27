@@ -1,16 +1,9 @@
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { getDefaultChatPdf } from "../uploads/defaultChatPdf";
 import { getDefaultWorkspaceFollowup } from "./defaultWorkspaceFollowup";
-import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
-import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
-import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
-import { knowledgeProviderDispatchLifecycle } from "../knowledge/defaultEvidenceDispatch";
-import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
-import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
-import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
-import { visionAnalysisForStorage } from "../vision/defaultVision";
+import { defaultRunServices } from "./defaultRunServices";
 import { activeRunControllerRegistry } from "./runExecution";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { reconcileInstallationRuns } from "./runRecovery";
@@ -27,19 +20,13 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
     const titles = createPrismaChatTitleWorker();
     // The application owns export recovery and orphan settlement, using the
     // same Workspace coordinator as run routes and independent worker slots.
+    // Recovery composes the same tool services as the run routes: a run left
+    // to this scheduler keeps its image, artifact and Skill tools.
     const deps = {
-      knowledgeAdmission: knowledgeRunAdmissionService,
-      knowledgeExecutor: knowledgeToolExecutor,
-      knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
-      memoryEgress: defaultMemoryToolEgressReceiptService,
-      mcp: defaultMcpRunPlan,
-      providerAdmission: providerAdmissionService,
-      providerRuntime: providerRuntimeResolver,
+      ...defaultRunServices(storage),
       providers: {},
       registry: activeRunControllerRegistry,
       repository: createPrismaRunRepository(),
-      storage,
-      vision: visionAnalysisForStorage(storage),
       workspace: workspaceCoordinatorForStorage(storage)
     };
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
