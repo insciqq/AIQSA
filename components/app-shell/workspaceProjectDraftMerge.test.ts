@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceChatSummary } from "@/components/app-shell/types";
 import type { ProjectChatSummaryWire } from "@/lib/contracts/projects";
-import { mergeWorkspaceProjectDrafts } from "./workspaceProjectDraftMerge";
+import { chatScopeProjectId, mergeWorkspaceProjectDrafts, nextChatInScope } from "./workspaceProjectDraftMerge";
 
 function summary(input: Partial<WorkspaceChatSummary> & Pick<WorkspaceChatSummary, "id">): WorkspaceChatSummary {
   return {
@@ -102,6 +102,51 @@ describe("Project draft workspace reconciliation", () => {
     expect(merged.chats.map((chat) => chat.id).sort()).toEqual(["draft-1", "personal-1"]);
     expect(merged.chats.find((chat) => chat.id === draft.id)?.pendingProjectDraft)
       .toEqual(draft.pendingProjectDraft);
+  });
+
+  it("keeps saved and reserved Project chats through a personal refresh without admitting new ones", () => {
+    const reservation = summary({
+      id: "project-reservation",
+      pendingProjectDraft: { folderId: null, projectId: "project-1" },
+      projectId: "project-1"
+    });
+    const saved = summary({ id: "project-saved", projectId: "project-1", title: "Saved Project chat" });
+    const otherProject = summary({ id: "other-project-saved", projectId: "project-2" });
+    const invalidReservation = summary({
+      id: "invalid-reservation",
+      pendingProjectDraft: { folderId: null, projectId: "project-1" },
+      projectId: null
+    });
+    const removedPersonal = summary({ id: "personal-removed", projectId: null });
+    const personal = summary({ id: "personal-1", projectId: null });
+
+    const merged = mergeWorkspaceProjectDrafts({
+      currentChats: [reservation, saved, otherProject, invalidReservation, removedPersonal],
+      incomingChats: [personal]
+    });
+
+    expect(merged.chats.map((chat) => chat.id).sort()).toEqual([
+      "other-project-saved",
+      "personal-1",
+      "project-reservation",
+      "project-saved"
+    ]);
+    expect(merged.chats.find((chat) => chat.id === saved.id)).toBe(saved);
+    expect(merged.chats.find((chat) => chat.id === reservation.id)?.pendingProjectDraft)
+      .toEqual(reservation.pendingProjectDraft);
+  });
+
+  it("replaces a removed chat only from its own scope", () => {
+    const chats = [
+      summary({ id: "project-reservation", pendingProjectDraft: { folderId: null, projectId: "project-1" }, projectId: "project-1" }),
+      summary({ id: "project-saved", projectId: "project-1" }),
+      summary({ id: "personal-draft", pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" }, projectId: null }),
+      summary({ id: "personal-1", projectId: null })
+    ];
+    expect(nextChatInScope(chats, "personal-1", null)?.id).toBe("personal-draft");
+    expect(nextChatInScope(chats, "project-saved", "project-1")?.id).toBe("project-reservation");
+    expect(nextChatInScope(chats, "project-saved", "project-2")).toBeNull();
+    expect(chats.map(chatScopeProjectId)).toEqual(["project-1", "project-1", null, null]);
   });
 
   it("preserves a scoped draft in both stores without leaking another Project", () => {
