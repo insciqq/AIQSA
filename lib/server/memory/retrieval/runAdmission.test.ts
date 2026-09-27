@@ -36,13 +36,11 @@ import {
   applyMemoryRelevance,
   createMemoryRunRetrievalService,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
-  MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
   MEMORY_CONTROL_READ_RESERVE_MS,
-  MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
-  MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
   MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
+  memoryOptionalWindowMs,
   mergeMemorySessionEvidenceCompletion,
   memoryRelevanceCandidates,
   selectMemoryAggregationRawCandidates,
@@ -1135,7 +1133,7 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
-  it("times out optional control early and keeps deterministic local evidence", async () => {
+  it("times out optional control at the configured window and keeps deterministic local evidence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -1156,7 +1154,9 @@ describe("Personal Memory v1 run admission", () => {
         control: { decide }
       }).retrieve(runInput("What do I prefer?"));
 
-      await vi.advanceTimersByTimeAsync(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS - 1);
+      // 120 s minus the fixed six-second local tail; no 20-second ceiling.
+      expect(memoryOptionalWindowMs(120_000)).toBe(114_000);
+      await vi.advanceTimersByTimeAsync(memoryOptionalWindowMs(120_000) - 1);
       expect(receivedSignals[0]?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       const result = await pending;
@@ -1218,7 +1218,7 @@ describe("Personal Memory v1 run admission", () => {
 
       await vi.advanceTimersByTimeAsync(0);
       expect(run).toHaveBeenCalledOnce();
-      await vi.advanceTimersByTimeAsync(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS);
+      await vi.advanceTimersByTimeAsync(memoryOptionalWindowMs(120_000));
       const result = await pending;
       finishSettlement();
       if (lateOutcome === "resolve") resolveProvider({ providerResponseId: null, toolCalls: [], usage: {} });
@@ -1985,13 +1985,13 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("does not start reranking after the twenty-second soft deadline", async () => {
+  it("does not start reranking after the configured soft window", async () => {
     const local = repository({ candidates: [laneCandidate("soft-deadline-rrf")] });
     const originalExpand = local.expand.getMockImplementation()!;
     let deadlineClockMs = 0;
     local.expand.mockImplementation(async (...args) => {
       const expanded = await originalExpand(...args);
-      deadlineClockMs = 20_000;
+      deadlineClockMs = memoryOptionalWindowMs(120_000);
       return expanded;
     });
     const base = intentOptions({
@@ -2011,12 +2011,46 @@ describe("Personal Memory v1 run admission", () => {
     expect(base.utilities.rerank).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       budgetSnapshot: {
+        admissionBudgetMs: 120_000,
         aggregationState: "READER_REQUIRED",
-        rerankProviderCalls: 0
+        optionalWindowMs: 114_000,
+        rerankProviderCalls: 0,
+        utilityExecutions: expect.arrayContaining([expect.objectContaining({
+          externalCallCount: 0,
+          reason: "memory_relevance_deadline_exceeded",
+          role: "MEMORY_RERANK",
+          state: "UNAVAILABLE"
+        })])
       },
       items: [{ exactItemId: "soft-deadline-rrf" }],
       outcome: "USED"
     });
+  });
+
+  it("still starts reranking after twenty seconds inside a longer configured window", async () => {
+    const local = repository({ candidates: [laneCandidate("late-rerank")] });
+    const originalExpand = local.expand.getMockImplementation()!;
+    let deadlineClockMs = 0;
+    local.expand.mockImplementation(async (...args) => {
+      const expanded = await originalExpand(...args);
+      deadlineClockMs = 27_000;
+      return expanded;
+    });
+    const base = intentOptions({
+      aggregationRequested: true,
+      memoryUseful: false,
+      pastChatsUseful: true,
+      retrievalMode: "PAST_CHAT_SEARCH",
+      temporalIntent: "ANY"
+    });
+    await createMemoryRunRetrievalService(local.value, {
+      ...base,
+      admissionDeadlineMs: 60_000,
+      clock: () => deadlineClockMs,
+      monotonicClock: () => deadlineClockMs
+    }).retrieve(runInput("Which releases did I complete?"));
+
+    expect(base.utilities.rerank).toHaveBeenCalledOnce();
   });
 
   it("resolves query-local guidance beside reranking and preserves the evidence pack", async () => {
@@ -2119,7 +2153,6 @@ describe("Personal Memory v1 run admission", () => {
         state: "READY"
       })])
     });
-    expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(20_000);
   });
 
   it("starts query resolution from the original-query frontier before control settles", async () => {
@@ -2531,8 +2564,6 @@ describe("Personal Memory v1 run admission", () => {
       expect(resolve).toHaveBeenCalledOnce();
       expect(result.degradationCode).toBeUndefined();
       expect(result.preparedContext?.text).not.toContain("query_scope_constraints");
-      expect(MEMORY_INTERACTIVE_HARD_DEADLINE_MS).toBe(26_000);
-      expect(MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS).toBe(20_000);
     } finally {
       vi.useRealTimers();
     }
@@ -2727,7 +2758,7 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("caps control at nine seconds despite a longer outer deadline", async () => {
+  it("derives the control window from a 30-second outer deadline", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -2752,7 +2783,8 @@ describe("Personal Memory v1 run admission", () => {
         return result;
       });
 
-      await vi.advanceTimersByTimeAsync(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS - 1);
+      expect(memoryOptionalWindowMs(30_000)).toBe(24_000);
+      await vi.advanceTimersByTimeAsync(memoryOptionalWindowMs(30_000) - 1);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       await expect(pending).resolves.toMatchObject({
@@ -2766,7 +2798,7 @@ describe("Personal Memory v1 run admission", () => {
     }
   });
 
-  it("does not let administrator headroom extend the interactive control ceiling", async () => {
+  it("lets administrator headroom extend the interactive control window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     try {
@@ -2791,7 +2823,10 @@ describe("Personal Memory v1 run admission", () => {
         return result;
       });
 
-      await vi.advanceTimersByTimeAsync(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS - 1);
+      // The former 20-second control ceiling no longer applies.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(memoryOptionalWindowMs(120_000) - 20_000 - 1);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       await expect(pending).resolves.toMatchObject({
@@ -2800,7 +2835,162 @@ describe("Personal Memory v1 run admission", () => {
         },
         outcome: "EMPTY"
       });
-      expect(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS).toBe(20_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { admissionDeadlineMs: 30_000, expectedReason: "memory_action_intent_outcome_unknown", ready: false },
+    { admissionDeadlineMs: 60_000, expectedReason: null, ready: true },
+    { admissionDeadlineMs: 120_000, expectedReason: null, ready: true }
+  ])("applies a control answer after 27 seconds only inside a configured $admissionDeadlineMs ms budget", async ({
+    admissionDeadlineMs,
+    expectedReason,
+    ready
+  }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({
+        candidates: [laneCandidate("slow-control-answer")],
+        speculativeBaseline: true
+      });
+      const base = intentOptions({
+        action: "SAVE" as const,
+        category: "preferences" as const,
+        memoryUseful: true,
+        reasonCode: "save_request" as const,
+        statement: "I prefer concise answers."
+      });
+      const decide = vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) =>
+        new Promise<MemoryControlResult>((resolve) => {
+          setTimeout(() => void base.control.decide(input).then(resolve), 27_000);
+        }));
+      const actionExecutor = {
+        execute: vi.fn(async () => ({
+          memoryRef: "saved-memory-ref",
+          operation: "SAVE" as const,
+          statement: "I prefer concise answers.",
+          status: "COMMITTED" as const
+        }))
+      };
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        actionExecutor,
+        admissionDeadlineMs,
+        clock: Date.now,
+        control: { decide }
+      }).retrieve(runInput(
+        "Remember that I prefer concise answers, then tell me what style I prefer."
+      ));
+
+      await vi.advanceTimersByTimeAsync(27_000);
+      const result = await pending;
+
+      expect(result.budgetSnapshot).toMatchObject({
+        admissionBudgetMs: admissionDeadlineMs,
+        optionalWindowMs: memoryOptionalWindowMs(admissionDeadlineMs),
+        plannerFallbackReason: expectedReason
+      });
+      expect(result.budgetSnapshot.memoryActionAnswerResult).toEqual(ready
+        ? { operation: "SAVE", status: "COMMITTED", version: 1 }
+        : MEMORY_ACTION_NO_COMMIT_RESULT);
+      expect(actionExecutor.execute).toHaveBeenCalledTimes(ready ? 1 : 0);
+      expect(result.items).toEqual([expect.objectContaining({ exactItemId: "slow-control-answer" })]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a smaller outer deadline win over a larger configured budget", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({});
+      const base = retrievalOptions([]);
+      const signals: AbortSignal[] = [];
+      const result = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        admissionDeadlineMs: 120_000,
+        clock: Date.now,
+        control: {
+          decide: vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) => {
+            signals.push(input.signal);
+            return resolveWhenAborted(input.signal, {
+              reason: "memory_action_intent_unavailable",
+              status: "UNAVAILABLE" as const
+            });
+          })
+        }
+      }).retrieve({
+        ...runInput("What do I prefer?"),
+        controlCache: { admissionDeadlineAtMs: now.getTime() + 15_000 }
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000 - MEMORY_CONTROL_READ_RESERVE_MS - 1);
+      expect(signals[0]?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signals[0]?.aborted).toBe(true);
+      await expect(result).resolves.toMatchObject({
+        budgetSnapshot: {
+          admissionBudgetMs: 15_000,
+          optionalWindowMs: memoryOptionalWindowMs(15_000),
+          plannerFallbackReason: "memory_action_intent_outcome_unknown"
+        }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("propagates Stop to every running child immediately inside a long configured budget", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({ candidates: [laneCandidate("stopped-read")] });
+      const base = retrievalOptions(["c0"]);
+      const childSignals: AbortSignal[] = [];
+      const stop = new AbortController();
+      let settled = false;
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        admissionDeadlineMs: 120_000,
+        clock: Date.now,
+        control: {
+          decide: vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) => {
+            childSignals.push(input.signal);
+            return new Promise<MemoryControlResult>(() => undefined);
+          })
+        },
+        utilities: {
+          ...base.utilities,
+          embedQuery: vi.fn((input: Parameters<MemoryRunUtilityService["embedQuery"]>[0]) => {
+            childSignals.push(input.signal);
+            return resolveWhenAborted(input.signal, {
+              reason: "memory_query_embedding_unavailable",
+              status: "UNAVAILABLE" as const
+            });
+          })
+        }
+      }).retrieve({ ...runInput("What do I prefer?"), signal: stop.signal })
+        .then(
+          (result) => ({ result, status: "resolved" as const }),
+          (error: unknown) => ({ error, status: "rejected" as const })
+        )
+        .finally(() => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(childSignals).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(childSignals.every(({ aborted }) => !aborted)).toBe(true);
+
+      stop.abort({ code: "run_cancelled" });
+      expect(childSignals.every(({ aborted }) => aborted)).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(true);
+      await pending;
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
