@@ -549,6 +549,12 @@ function executionByteSize(execution: SearchExecutionEvidence): number {
   return Buffer.byteLength(JSON.stringify(execution), "utf8");
 }
 
+/** The Search result Off persists, and an unretained v1 call delivers: whole
+ * when it fits `resultBytes`; otherwise the largest successful engines, one by
+ * one, become `search_result_too_large` errors whose findings and sources leave
+ * this result while their usage stays (an unretained call's receipt also keeps
+ * the sources). The model reads that code in the warnings line; findings are
+ * never cut silently and no reader is promised without a retained original. */
 export function fitDurableSearchToolResult(input: Readonly<{
   call: ModelToolCall;
   executions: readonly SearchExecutionEvidence[];

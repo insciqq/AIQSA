@@ -84,6 +84,18 @@ describe("Search source evidence normalization", () => {
     expect(() => normalizeSearchFindings(above)).toThrow("search_findings_invalid");
   });
 
+  it("admits the agreed 1 MiB of findings, including beyond the former 128 KiB bound", () => {
+    expect(MAX_SEARCH_FINDINGS_BYTES).toBe(1_024 * 1_024);
+    const formerBoundPlusOne = "x".repeat(128 * 1_024 + 1);
+    expect(normalizeSearchFindings(formerBoundPlusOne)).toBe(formerBoundPlusOne);
+    // A four-byte code point may end exactly at the bound but never cross it.
+    const emojiAt = `${"x".repeat(MAX_SEARCH_FINDINGS_BYTES - 4)}😀`;
+    expect(Buffer.byteLength(emojiAt, "utf8")).toBe(MAX_SEARCH_FINDINGS_BYTES);
+    expect(normalizeSearchFindings(emojiAt)).toBe(emojiAt);
+    expect(() => normalizeSearchFindings(`${"x".repeat(MAX_SEARCH_FINDINGS_BYTES - 3)}😀`))
+      .toThrow("search_findings_invalid");
+  });
+
   it("enforces the ASCII findings boundary one character below, at, and above it", () => {
     const below = "x".repeat(MAX_SEARCH_FINDINGS_CHARACTERS - 1);
     const at = "x".repeat(MAX_SEARCH_FINDINGS_CHARACTERS);

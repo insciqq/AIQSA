@@ -203,7 +203,10 @@ function unretainedSearchResult(call: ModelToolCall, value: Readonly<{ original:
     ...(!value.providerCall ? { rawPreview: { providerCall: false } } : {}) };
 }
 
-/** Findings budget for a Search result too large to deliver whole. */
+/** Findings budget for a retained Search result too large to deliver whole:
+ * one bounded projection within `resultBytes`, never the 1 MiB-per-engine
+ * findings themselves. The model reads the rest of the retained original in
+ * reader-sized parts. */
 export const SEARCH_PROJECTION_FINDINGS_BYTES = 64 * 1024;
 
 /** The model receives the retained canonical Search text: whole whenever it

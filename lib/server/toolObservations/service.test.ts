@@ -21,6 +21,8 @@ import { boundedRenderedSearchToolResultText, boundedRetainedSearchToolResultTex
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 import { fitDurableSearchToolResult, SearchToolCancelledError } from "../search/toolExecutor";
 import { decodeSearchObservationReceipt, SEARCH_OBSERVATION_RECEIPT_BYTES, searchObservationReceipt } from "./searchReceipt";
+import { SEARCH_OBSERVATION_MAX_BYTES } from "./searchOriginal";
+import { MAX_SEARCH_FINDINGS_BYTES } from "../search/evidence";
 import type { ToolExecutionResult } from "../tools/types";
 import { ObservationReadError } from "./byteReader";
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
@@ -720,6 +722,56 @@ describe("accepted observation source adapters", () => {
     expect(text).toContain("search_result_too_large");
     expect(text).not.toMatch(/remains readable|read_tool_result/u);
     expect(snapshotToolExecutionResult(bounded, 256 * 1024)).not.toBeNull();
+  });
+
+  /** Three engines at the 1 MiB findings bound; quotes double their JSON size. */
+  const maximalSearchResult = (): ToolExecutionResult => {
+    const executions: SearchExecutionEvidence[] = [1, 2, 3].map(index => {
+      const tail = ` rare-search-${index}`;
+      return { displayName: `Source ${index}`, invocationId: `invocation-${index}`, modelId: "model", optionId: `option-${index}`,
+        provider: "provider", revisionId: `revision-${index}`, findings: `${'"'.repeat(MAX_SEARCH_FINDINGS_BYTES - tail.length)}${tail}`,
+        status: "complete", sources: [{ rank: 1, title: `Title ${index}`, url: `https://example.com/${index}` }],
+        usage: { inputTokens: 10 * index, outputTokens: index, totalTokens: 11 * index } };
+    });
+    return { name: call.name, callId: call.id, status: "complete", content: searchToolResultContent(executions),
+      rawPreview: { providerCall: true, searchResultVersion: 2, searchExecutions: executions } };
+  };
+
+  it("retains three 1 MiB Search findings whole behind a bounded projection and reads each tail without searching again", async () => {
+    const f = fixture();
+    const execute = vi.fn(async () => maximalSearchResult());
+    const result = await captureSearchObservation({ service: f.service(), producer }, call, sources, execute);
+    expect(f.row()).toMatchObject({ state: "READY", storageMode: "OBJECT" });
+    expect(f.row().byteSize).toBeGreaterThan(6 * MAX_SEARCH_FINDINGS_BYTES);
+    expect(f.row().byteSize).toBeLessThanOrEqual(SEARCH_OBSERVATION_MAX_BYTES);
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toContain("Findings shortened here");
+    expect(text).toContain("Sources:\n1. Title 1 — https://example.com/1\n2. Title 2 — https://example.com/2\n3. Title 3 — https://example.com/3");
+    expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
+    for (const index of [1, 2, 3]) {
+      const read = await f.service().read(producer, { handle: result.observation!.handle, query: `rare-search-${index}` });
+      expect(read.fragment).toContain(`rare-search-${index}`);
+    }
+    expect((await f.service().searchAccounting(producer)).map(execution => execution.usage.totalTokens)).toEqual([11, 22, 33]);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("gives an unretained 1 MiB Search Off's exact outcome and keeps usage and sources in the receipt", async () => {
+    const f = fixture();
+    f.exhaust();
+    const maximal = maximalSearchResult();
+    const result = await captureSearchObservation({ service: f.service(), producer }, call, sources, async () => maximal);
+    const off = fitDurableSearchToolResult({ call, executions: searchExecutionsFromToolResult(maximal), name: call.name });
+    expect(result).toEqual({ callId: call.id, name: call.name, status: off.status, content: off.content });
+    // No engine fits Off's persisted result: each is named, none is cut silently.
+    expect(result.status).toBe("error");
+    expect(JSON.stringify(result.content)).toContain(
+      'Search warnings: \\"Source 1\\": search_result_too_large; \\"Source 2\\": search_result_too_large; \\"Source 3\\": search_result_too_large');
+    expect(JSON.stringify(result)).not.toMatch(/rare-search|remains readable|read_tool_result/u);
+    expect(f.row()).toMatchObject({ state: "UNAVAILABLE", executionOutcome: "complete", reservedBytes: 0 });
+    const accounting = await f.service().searchAccounting(producer);
+    expect(accounting.map(execution => execution.usage.totalTokens)).toEqual([11, 22, 33]);
+    expect(accounting.map(execution => execution.sources[0]?.url)).toEqual([1, 2, 3].map(index => `https://example.com/${index}`));
   });
 });
 

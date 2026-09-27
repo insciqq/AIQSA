@@ -34,6 +34,13 @@ export type ModelToolCall = {
   raw?: unknown;
 };
 
+/** Function calls one provider response may carry, shared by every answer
+ * adapter: the most one persisted tool batch holds (`toolLoopPersistenceLimits
+ * .batchCalls`), so an accepted response is always checkpointable. This is not
+ * a run budget: `maxToolCalls`/rounds and the tool loop's concurrency remain
+ * independent authorities over what executes. */
+export const PROVIDER_RESPONSE_MAX_TOOL_CALLS = 64;
+
 export type ToolExecutionContent =
   | { type: "workspace_image"; value: import("../workspace/directImageEvidence").WorkspaceImageEvidence }
   | {
