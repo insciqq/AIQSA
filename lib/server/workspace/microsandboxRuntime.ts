@@ -60,7 +60,7 @@ import { WorkspaceSkillRunState } from "./skillRunState";
 import { WORKSPACE_SKILL_GUEST_SCRIPT } from "./skillGuest";
 import { parseSkillArchive, readSkillArchive, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
-import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "./config";
+import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION, workspaceToolOutputDataMaxBytes, workspaceToolTransportMaxBytes } from "./config";
 import {
   bindOfficialWorkspaceTools,
   injectWorkspaceToolArguments,
@@ -85,6 +85,8 @@ type McpConnection = Readonly<{
   catalog: WorkspaceToolCatalog;
   client: Client;
   transport: StdioClientTransport;
+  /** Transport facts: a closed connection is never reused. */
+  state: { closed: boolean; inFlight: number; overflow: "sole" | "shared" | null };
 }>;
 
 type LocalSession = {
@@ -104,6 +106,11 @@ const EXEC_SESSION_TOOL_SET = new Set<WorkspaceMcpToolName>(WORKSPACE_EXEC_SESSI
 const EXEC_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const MCP_BINARY = resolveRuntimeModulePath("microsandbox-mcp/bin/microsandbox-mcp.js");
+/** Catalog-only connections carry no tool output. */
+const CATALOG_MCP_BUFFER_BYTES = 2 * 1_024 * 1_024;
+/** The pinned MCP's page default and schema maximum for sandbox_exec_poll. */
+const EXEC_POLL_DEFAULT_LIMIT = 100;
+const EXEC_POLL_MAX_LIMIT = 1_000;
 const PROJECT_ARCHIVE_COMMAND =
   "set -o pipefail; cd \"$2\"; " +
   "if find . -xdev \\( -type b -o -type c -o -type s \\) -print -quit | IFS= read -r _; " +
@@ -166,6 +173,17 @@ function boundedBytes(value: Uint8Array, maximum: number): Readonly<{
     originalByteCount: value.byteLength,
     truncated: true
   };
+}
+
+/**
+ * The pinned MCP bounds each polled event separately. Share one result's
+ * stdout/stderr data budget across the requested page so any valid limit fits
+ * the transport; a truncated event is reported and can be polled again alone.
+ */
+export function execPollEventMaxBytes(limit: unknown, toolOutputMaxBytes: number): number {
+  const events = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 1 && limit <= EXEC_POLL_MAX_LIMIT
+    ? limit : typeof limit === "number" ? EXEC_POLL_MAX_LIMIT : EXEC_POLL_DEFAULT_LIMIT;
+  return Math.max(1, Math.floor(workspaceToolOutputDataMaxBytes(toolOutputMaxBytes) / events));
 }
 
 function boundedMcpResult(value: unknown, maximum: number, tool: WorkspaceMcpToolName): WorkspaceToolResult {
@@ -456,15 +474,39 @@ function safeChildEnvironment(): Record<string, string> {
   );
 }
 
-async function openPinnedOfficialMcp(mcpVersion: string): Promise<McpConnection> {
+/** The pinned SDK's ReadBuffer rejects a line above maxBufferSize, then closes the transport. */
+function isStdioBufferOverflow(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("ReadBuffer exceeded maximum size");
+}
+
+/** Counts pending requests so an overflow is attributed only when unambiguous. */
+async function trackedMcpRequest<T>(connection: McpConnection, request: () => Promise<T>): Promise<T> {
+  connection.state.inFlight += 1;
+  try {
+    return await request();
+  } finally {
+    connection.state.inFlight -= 1;
+  }
+}
+
+async function openPinnedOfficialMcp(mcpVersion: string, maxBufferSize = CATALOG_MCP_BUFFER_BYTES): Promise<McpConnection> {
   const transport = new StdioClientTransport({
     args: [MCP_BINARY],
     command: process.execPath,
     env: safeChildEnvironment(),
-    maxBufferSize: 2 * 1_024 * 1_024,
+    maxBufferSize,
     stderr: "pipe"
   });
   transport.stderr?.on("data", () => undefined);
+  const state: McpConnection["state"] = { closed: false, inFlight: 0, overflow: null };
+  // Client.connect chains these handlers. Overflow closes the transport, so
+  // the pending response is lost although the tool finished executing.
+  transport.onerror = (error) => {
+    if (!isStdioBufferOverflow(error)) return;
+    state.closed = true;
+    state.overflow ??= state.inFlight <= 1 ? "sole" : "shared";
+  };
+  transport.onclose = () => { state.closed = true; };
   const client = new Client({ name: "aiqsa-workspace-runner", version: "1" });
   try {
     await client.connect(transport);
@@ -493,7 +535,7 @@ async function openPinnedOfficialMcp(mcpVersion: string): Promise<McpConnection>
     if (catalog.hash !== WORKSPACE_BOUND_TOOL_CATALOG_HASH) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
-    return { catalog, client, transport };
+    return { catalog, client, transport, state };
   } catch (error) {
     await transport.close().catch(() => undefined);
     if (error instanceof WorkspaceRuntimeError) throw error;
@@ -856,14 +898,23 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   private async mcp(session: LocalSession): Promise<McpConnection> {
-    if (session.mcp) return session.mcp;
+    if (session.mcp && !session.mcp.state.closed) return session.mcp;
+    // A transport closed by overflow or process exit rejects every later
+    // request with "Not connected"; replace it instead of caching it.
+    this.discardClosedMcp(session, session.mcp);
     const connection = await this.openMcpConnection();
     session.mcp = connection;
     return connection;
   }
 
+  private discardClosedMcp(session: LocalSession, connection: McpConnection | undefined): void {
+    if (!connection?.state.closed) return;
+    if (session.mcp === connection) session.mcp = undefined;
+    void connection.transport.close().catch(() => undefined);
+  }
+
   private async openMcpConnection(): Promise<McpConnection> {
-    return openPinnedOfficialMcp(this.config.mcpVersion);
+    return openPinnedOfficialMcp(this.config.mcpVersion, workspaceToolTransportMaxBytes(this.config.toolOutputMaxBytes));
   }
 
   async listStagedAttachments(
@@ -1216,9 +1267,11 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
               maxBytes: this.config.toolOutputMaxBytes,
               timeoutMs: this.config.turnTimeoutSeconds * 1_000
             }
-          : input.originalName === "sandbox_exec_poll" || input.originalName === "sandbox_fs_read"
-            ? { ...argumentsWithIdentity, maxBytes: this.config.toolOutputMaxBytes }
-            : argumentsWithIdentity;
+          : input.originalName === "sandbox_exec_poll"
+            ? { ...argumentsWithIdentity, maxBytes: execPollEventMaxBytes(argumentsWithIdentity.limit, this.config.toolOutputMaxBytes) }
+            : input.originalName === "sandbox_fs_read"
+              ? { ...argumentsWithIdentity, maxBytes: this.config.toolOutputMaxBytes }
+              : argumentsWithIdentity;
       if (input.signal?.aborted || controller.signal.aborted) {
         throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       }
@@ -1227,14 +1280,14 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       logEvent("tool_deadline", { tool_kind: "workspace", configured_timeout_ms: toolTimeoutMs, effective_timeout_ms: toolTimeoutMs,
         request_timeout_ms: requestTimeoutMs });
       finishRequest = beginWorkspaceToolStage("request");
-      const result = await mcp.client.callTool({
+      const result = await trackedMcpRequest(mcp, () => mcp.client.callTool({
         arguments: boundedArguments,
         name: input.originalName
       }, undefined, {
         maxTotalTimeout: requestTimeoutMs,
         signal: controller.signal,
         timeout: requestTimeoutMs
-      });
+      }));
       if (input.originalName === "sandbox_exec_start") {
         const failure = workspaceMcpFailure(result, this.config.toolOutputMaxBytes, input.originalName);
         if (failure) {
@@ -1255,12 +1308,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     } catch (error) {
       const timedOut = error instanceof McpError && error.code === ErrorCode.RequestTimeout;
       if (timedOut) observeAbort({ stage: "delivery", abort_source: "workspace_deadline", deadline_kind: "sdk_request", timeout_ms: requestTimeoutMs });
-      const facts = timedOut ? { code: "workspace_tool_timeout", reason: "deadline" as const } : workspaceToolFailure(error);
+      // Only the sole in-flight request can own the oversized line. Concurrent
+      // calls lost with the same transport keep an unknown outcome.
+      const overflowed = !controller.signal.aborted && !(error instanceof WorkspaceRuntimeError) &&
+        mcp.state.overflow === "sole";
+      const facts = timedOut ? { code: "workspace_tool_timeout", reason: "deadline" as const }
+        : overflowed ? { code: "workspace_tool_output_limit_exceeded", reason: "safety_limit" as const } : workspaceToolFailure(error);
       const outcome = controller.signal.aborted || facts.reason === "cancelled" ? "cancelled" : "failed";
       if (finishRequest) finishRequest({ outcome, ...facts });
       else logEvent("tool_execution", { tool_kind: "workspace", stage: "admission", outcome, ...facts });
+      this.discardClosedMcp(session, mcp);
       if (error instanceof WorkspaceRuntimeError) throw error;
       if (controller.signal.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+      if (overflowed) throw new WorkspaceRuntimeError("workspace_tool_output_limit_exceeded");
       if (timedOut) throw new WorkspaceRuntimeError("workspace_tool_timeout");
       if (error instanceof McpError && error.code === ErrorCode.InvalidParams) throw new WorkspaceRuntimeError("workspace_request_invalid");
       throw new WorkspaceRuntimeError("workspace_tool_outcome_unknown");
@@ -1313,17 +1373,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const call = (name: WorkspaceMcpToolName, args: Record<string, unknown>) =>
       operationSignal.aborted ? Promise.resolve(null) :
-        mcp.client.callTool({ arguments: args, name }, undefined, { signal: operationSignal, timeout: 2_000 })
+        trackedMcpRequest(mcp, () => mcp.client.callTool({ arguments: args, name }, undefined, { signal: operationSignal, timeout: 2_000 }))
         .then((result) => result.isError !== true ? result : null)
         .catch(() => null);
     await Promise.all(ids.map((execSessionId) => call("sandbox_exec_signal", { execSessionId, signal: "term" })));
     await delay(1_000);
+    // Exit proof needs only status; output bytes would only consume the transport budget.
+    const poll = (execSessionId: string) => call("sandbox_exec_poll", { execSessionId, limit: 1, maxBytes: 1 });
     await Promise.all(ids.map(async (execSessionId) => {
-      let exited = execPollReportsLeaderExit(await call("sandbox_exec_poll", { execSessionId, limit: 1 }));
+      let exited = execPollReportsLeaderExit(await poll(execSessionId));
       if (!exited) {
         await call("sandbox_exec_signal", { execSessionId, signal: "kill" });
         await delay(1_000);
-        exited = execPollReportsLeaderExit(await call("sandbox_exec_poll", { execSessionId, limit: 1 }));
+        exited = execPollReportsLeaderExit(await poll(execSessionId));
       }
       if (exited) await call("sandbox_exec_close", { execSessionId });
       // Retain cached ownership as well: handle disposal cannot erase an
