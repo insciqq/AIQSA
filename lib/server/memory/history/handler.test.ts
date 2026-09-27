@@ -7,6 +7,7 @@ import type { MemoryHistorySafetyClassifier } from "./classifier";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import {
   EMPTY_MEMORY_HISTORY_WORK_COUNTERS,
+  MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryIndexJobFingerprint,
   memoryHistoryIndexResultHash,
@@ -254,6 +255,52 @@ describe("Memory INDEX_HISTORY handler", () => {
       }
     }
   );
+
+  it("defers the digest on a partial page and never pays past its source bound", async () => {
+    const execute = async (currentPlan: MemoryHistoryIndexPlan) => {
+      const generate = vi.fn();
+      const handler = createMemoryHistoryIndexHandler({
+        classifier: classifier(),
+        digestGenerator: { generate },
+        repository: {
+          apply: vi.fn(),
+          prepare: vi.fn(async () => ({ plan: currentPlan }))
+        } as unknown as MemoryHistoryIndexRepository
+      });
+      const result = await handler.execute(claim(), context());
+      return { generate, result };
+    };
+    const cursor = [{
+      createdAt: "2026-08-10T10:00:00.000Z",
+      messageId: "user-1",
+      ordinal: 0,
+      sourceMessageUpdatedAt: "2026-08-10T10:00:00.000Z"
+    }];
+
+    const partial = await execute({ ...plan([chunk("chunk-0", 0)]), checkpointMessages: cursor });
+    expect(partial.generate).not.toHaveBeenCalled();
+    expect(partial.result.stage).toBe("lexical_ready:history_page_partial");
+
+    const truncated = await execute({
+      ...plan([chunk("chunk-0", 0)]),
+      checkpointMessages: cursor,
+      incremental: {
+        commonPathMessageCount: 0,
+        mode: "FULL_REBUILD",
+        rebuildFromMessageOrdinal: 0,
+        truncatedMessageIds: ["user-1"]
+      }
+    });
+    expect(truncated.generate).not.toHaveBeenCalled();
+    expect(truncated.result.stage).toBe("lexical_ready:history_message_truncated");
+
+    const oversized = await execute(plan(Array.from(
+      { length: MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS + 1 },
+      (_, ordinal) => chunk(`chunk-${ordinal}`, ordinal)
+    )));
+    expect(oversized.generate).not.toHaveBeenCalled();
+    expect(oversized.result.stage).toBe("lexical_ready:digest_source_limit");
+  });
 
   it("suppresses secret chunks and canonicalizes legacy sensitive output", () => {
     const current = plan([chunk("chunk-sensitive", 0), chunk("chunk-secret", 1)]);

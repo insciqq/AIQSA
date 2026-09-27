@@ -11,6 +11,7 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryIndexJobFingerprint
 } from "./contract";
+import { MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE } from "./incremental";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "./toolEvents";
 
 export const MEMORY_HISTORY_BACKFILL_WINDOW = 4;
@@ -99,6 +100,9 @@ function eligibleHistorySourceWhereSql(userId: string): Prisma.Sql {
   `;
 }
 
+// A committed partial index page leaves the checkpoint cursor
+// (lastIndexedMessageId) before the active leaf. It never matches here, so
+// reconciliation revives the settled job and the next page resumes from it.
 function checkpointMatchesSourceSql(): Prisma.Sql {
   return Prisma.sql`
     checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
@@ -314,6 +318,9 @@ export async function authorizeMemoryHistoryTerminalRetries(
       AND job."activeLeafMessageId" = chat."activeLeafMessageId"
       AND job."branchGeneration" = chat."memoryBranchGeneration"
       AND job."sourceRevision" = chat."memorySourceRevision"
+      -- The explicit path ceiling is deterministic for this source; a retry
+      -- would only repeat the same bounded path walk.
+      AND job."errorCode" IS DISTINCT FROM ${MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE}
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
   `);
   return updated;
