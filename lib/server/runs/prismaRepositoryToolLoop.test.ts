@@ -66,7 +66,7 @@ describe("Workspace activity publication", () => {
       $transaction: async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)
     } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await operations.appendRunOutputEvent("run", {
-      type: "artifact", data: { artifactType: "reasoning", payload: { text: "Late provider output" } }
+      type: "artifact", data: { artifactType: "reasoning", payload: { entry: "start", text: "Late provider output" } }
     });
     expect(createMany).not.toHaveBeenCalled();
     const published = await operations.appendRunOutputEvent("run", {

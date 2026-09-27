@@ -174,10 +174,12 @@ vi.mock("../knowledge/answerPipelineRollout", async (importOriginal) => {
 const userId = "user-1";
 const runId = "run-1";
 
+// Already in its durable reasoning-record shape, so recovery persists it unchanged.
 const providerEvent = {
   data: {
     artifactType: "reasoning",
     payload: {
+      entry: "start",
       text: "Recovered reasoning"
     }
   },

@@ -48,6 +48,19 @@ describe("Search source evidence normalization", () => {
     expect(normalizeSearchSources([{ [field]: `${atLimit}b`, title: "Overlong source" }])).toEqual([]);
   });
 
+  it("names an untitled source by its host and cuts titles at a code point", () => {
+    const longBare = `https://reports.example.com/${"r".repeat(600)}`;
+    expect(normalizeSearchSources([
+      { url: longBare },
+      { title: `${"t".repeat(499)}😀 rest`, url: "https://example.com/emoji" },
+      { title: `${"s".repeat(499)} x`, url: "https://example.com/space" }
+    ])).toEqual([
+      { rank: 1, title: "reports.example.com", url: longBare },
+      { rank: 2, title: "t".repeat(499), url: "https://example.com/emoji" },
+      { rank: 3, title: "s".repeat(499), url: "https://example.com/space" }
+    ]);
+  });
+
   it("bounds and canonicalizes adapter findings", () => {
     expect(normalizeSearchFindings("  grounded result  ")).toBe("grounded result");
     expect(() => normalizeSearchFindings(" ")).toThrow("search_findings_invalid");

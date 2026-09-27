@@ -12,6 +12,10 @@ export type GroundingDisplay = {
   }[];
 };
 
+/** One grounded response: the agreed 500 citations per provider response. The
+ * adapter enforces its own cap first; this bound only has to admit it. */
+export const GROUNDING_DISPLAY_MAX_CITATIONS = 500;
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -23,7 +27,8 @@ export function decodeGroundingDisplay(value: unknown): GroundingDisplay | null 
     typeof value.suggestionsHtml !== "string" || !value.suggestionsHtml ||
     new TextEncoder().encode(value.suggestionsHtml).byteLength >
       GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxHtmlBytes ||
-    !Array.isArray(value.citations) || value.citations.length > 100) return null;
+    !Array.isArray(value.citations) ||
+    value.citations.length > GROUNDING_DISPLAY_MAX_CITATIONS) return null;
   const citations: GroundingDisplay["citations"] = [];
   for (const candidate of value.citations) {
     if (!record(candidate) ||
