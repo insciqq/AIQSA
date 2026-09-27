@@ -671,10 +671,12 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     const beforeArchive = await historyLength();
     await page.getByTestId("header-more-trigger").click();
     await page.getByTestId("header-more-menu").getByRole("menuitem", { name: "Archive" }).click();
-    await expect(page.getByTestId("shell-notice")).toContainText("Chat moved to archive");
+    // Archive reads the Memory state and the chat source before it posts; a
+    // cold development server compiles each of those routes on first use.
+    await expect(page.getByTestId("shell-notice")).toContainText("Chat moved to archive", { timeout: 45_000 });
     // The fallback stays personal and replaces the address.
-    await expect(page).toHaveURL(exactPath(`/c/${beta}`));
-    await expect(header).toHaveText(betaTitle);
+    await expect(page).toHaveURL(exactPath(`/c/${beta}`), { timeout: 20_000 });
+    await expect(header).toHaveText(betaTitle, { timeout: 20_000 });
     await expect(projectChip).toHaveCount(0);
     expect(await historyLength()).toBe(beforeArchive);
     await page.screenshot({ path: testInfo.outputPath("scope-archive-fallback-light-1440.png") });
@@ -689,8 +691,8 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     await settings.getByRole("button", { name: "Data" }).click();
     await settings.getByRole("button", { name: "Manage" }).click();
     const archived = settings.getByTestId("settings-archived-panel");
-    await archived.getByRole("button", { name: `Restore ${alphaTitle}` }).click();
-    await expect(page).toHaveURL(exactPath(`/c/${alpha}`), { timeout: 20_000 });
+    await archived.getByRole("button", { name: `Restore ${alphaTitle}` }).click({ timeout: 30_000 });
+    await expect(page).toHaveURL(exactPath(`/c/${alpha}`), { timeout: 45_000 });
     await settings.getByRole("button", { name: "Close settings" }).click();
     await expect(header).toHaveText(alphaTitle);
     await expect(projectChip).toHaveCount(0);
