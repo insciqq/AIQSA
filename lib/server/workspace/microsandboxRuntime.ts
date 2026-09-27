@@ -55,7 +55,7 @@ import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSec
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
 import { SELECTED_FILE_CAPTURE_GUEST } from "./selectedFileGuest";
-import { PROJECT_ARCHIVE_MAX_ENTRIES, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
+import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceSkillRunState } from "./skillRunState";
 import { WORKSPACE_SKILL_GUEST_SCRIPT } from "./skillGuest";
 import { parseSkillArchive, readSkillArchive, SKILL_RUNTIME_JSON_MAX_BYTES,
@@ -1576,6 +1576,18 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       await session.sandbox.fs().remove(archivePath).catch(() => undefined);
       throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
     }
+    if (input.restorable) {
+      // A continuation seed must be restorable: prove the restore bounds and
+      // structure in the guest before any stored checkpoint can become READY.
+      const limits = projectArchiveLimits(this.config);
+      const verified = await session.sandbox.exec("python3", ["-c", PROJECT_RESTORE_SCRIPT, archivePath, WORKSPACE_PROJECT_DIRECTORY,
+        String(limits.maxBytes), String(limits.maxEntries), "verify"]).catch(() => null);
+      if (!verified?.success) {
+        await session.sandbox.fs().remove(archivePath).catch(() => undefined);
+        throw new WorkspaceRuntimeError(verified?.code === 67 ? "workspace_archive_limit_exceeded" :
+          verified?.code === 65 ? "workspace_archive_invalid" : "workspace_output_export_failed");
+      }
+    }
     return {
       body: readStreamBody(
         () => session.sandbox.fs().readStream(archivePath),
@@ -1625,14 +1637,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       await fs.remove(archivePath).catch(() => undefined);
       throw new WorkspaceRuntimeError("workspace_archive_invalid");
     }
+    const limits = projectArchiveLimits(this.config);
+    const script = (mode: "recover" | "restore") => session.sandbox.exec("python3", ["-c", PROJECT_RESTORE_SCRIPT, archivePath,
+      WORKSPACE_PROJECT_DIRECTORY, String(limits.maxBytes), String(limits.maxEntries), mode]);
     try {
-      const result = await session.sandbox.exec("python3", ["-c", PROJECT_RESTORE_SCRIPT, archivePath, WORKSPACE_PROJECT_DIRECTORY,
-        String(Math.min(this.config.outputTotalMaxBytes, this.config.diskMiB * 1_024 * 1_024)), String(PROJECT_ARCHIVE_MAX_ENTRIES)]);
+      const result = await script("restore");
       if (!result.success) throw new WorkspaceRuntimeError(result.code === 65 ? "workspace_archive_invalid" :
         result.code === 67 ? "workspace_archive_limit_exceeded" : result.code === 69 ? "workspace_execution_cleanup_failed" : "workspace_archive_restore_failed");
     } catch (error) {
-      const cleanup = await session.sandbox.exec("bash", ["-c", "find \"$1\" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +", "aiqsa-workspace-cleanup", WORKSPACE_PROJECT_DIRECTORY]).catch(() => null);
-      if (!cleanup?.success) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+      // The script validates before touching /project and commits a complete
+      // staging tree by rename. Recovery only rolls back an interrupted swap
+      // and removes staging; it never clears the project.
+      const recovered = await script("recover").catch(() => null);
+      if (!recovered?.success) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
       if (error instanceof WorkspaceRuntimeError) throw error;
       throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
     } finally {
