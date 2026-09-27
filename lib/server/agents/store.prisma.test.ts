@@ -322,7 +322,7 @@ describe("durable Agent authority and accounting", () => {
     } finally { await f.dispose(); }
   });
 
-  it("rolls back image publication and usage with a failed receipt without repeating the paid request", async () => {
+  it("rolls back image publication with a failed receipt, keeps the settled usage and never repeats the paid request", async () => {
     const f = await imageFixture();
     try {
       const store = { ...f.accepted.store, async settleBuiltinToolInTransaction(...args: Parameters<typeof f.accepted.store.settleBuiltinToolInTransaction>) {
@@ -331,7 +331,8 @@ describe("durable Agent authority and accounting", () => {
       } };
       await expect(f.dispatch(f.request, f.accepted, f.images, store)(f.call, new AbortController().signal)).rejects.toThrow("synthetic_image_receipt_failure");
       expect(await prisma.attachment.count({ where: { producerModelRunId: f.accepted.id } })).toBe(0);
-      expect(await prisma.usageEvent.count({ where: { modelRunId: f.accepted.id, imageGeneration: true } })).toBe(0);
+      // Provider-reported usage settles before publication (M04); a failed receipt keeps it.
+      expect(await prisma.usageEvent.count({ where: { modelRunId: f.accepted.id, imageGeneration: true } })).toBe(1);
       expect(await prisma.modelRunEvent.count({ where: { modelRunId: f.accepted.id, eventType: "artifact" } })).toBe(0);
       expect((await f.dispatch()(f.call, new AbortController().signal)).status).toBe("error");
       expect(f.fetchFn).toHaveBeenCalledOnce();
