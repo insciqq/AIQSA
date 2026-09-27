@@ -21,29 +21,39 @@ async function startPlainFakeChat(page: Page): Promise<void> {
 }
 
 /**
- * The fake provider echoes the question one token per configured delay, so a
- * long synthetic question keeps the accepted server run active for a while.
+ * Presents one settled fake answer of `chatId` as a still-active run while
+ * `held` is true: chat detail reads report its answer as streaming and run
+ * outcome reads as streaming. This stands in for a run that outlives the
+ * 20-minute polling horizon without a long question, which would exceed the
+ * 8k fake model context. Released reads reach the real server again.
  */
-async function sendLongRun(page: Page, label: string): Promise<string> {
-  await page.getByRole("textbox", { name: "Message" }).fill(`${label}. ` + "synthetic ".repeat(2500));
-  await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.getByRole("button", { name: "Stop answer" }).first()).toBeVisible({ timeout: 15_000 });
-  return activeChatId(page);
-}
-
-/**
- * Answers run outcome reads as still active while `held` is true, standing in
- * for a run that outlives the 20-minute polling horizon; released reads reach
- * the real server.
- */
-async function holdRunOutcomes(page: Page): Promise<{ release(): void }> {
+async function holdRunAsActive(page: Page, chatId: string): Promise<{ release(): void }> {
   let held = true;
+  await page.route((url) => url.pathname === `/api/chats/${chatId}`, async (route) => {
+    if (!held || route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const body = await response.json() as { chat?: { messages?: Array<{ role?: string; status?: string }> } };
+    const answer = [...(body.chat?.messages ?? [])].reverse().find((message) => message.role === "assistant");
+    if (answer) answer.status = "streaming";
+    await route.fulfill({ json: body, response });
+  });
   await page.route("**/api/model-runs/*", async (route) => {
     const runId = new URL(route.request().url()).pathname.split("/").at(-1) ?? "";
     if (!held || route.request().method() !== "GET") return route.continue();
     await route.fulfill({ json: { run: { id: decodeURIComponent(runId), status: "streaming" }, version: 1 } });
   });
   return { release: () => { held = false; } };
+}
+
+/** Sends a short question, waits for its settled answer, then holds that run as active. */
+async function sendHeldRun(page: Page, question: string): Promise<{ chatId: string; release(): void }> {
+  await page.getByRole("textbox", { name: "Message" }).fill(question);
+  await page.getByRole("button", { name: "Send message" }).click();
+  const chatId = await activeChatId(page);
+  await expect(page.locator('article[data-role="assistant"]').last())
+    .toContainText(`Fake answer: ${question}`, { timeout: 45_000 });
+  await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
+  return { chatId, ...(await holdRunAsActive(page, chatId)) };
 }
 
 test("a disconnected accepted answer can be stopped through the real cancellation endpoint", async ({ page, context }, testInfo) => {
@@ -146,8 +156,8 @@ test("a reloaded long run stays stoppable past the polling horizon and releases 
   await page.clock.install();
   await signInWithLocalToken(page);
   await startPlainFakeChat(page);
-  const chatId = await sendLongRun(page, "Background liveness");
-  const outcomes = await holdRunOutcomes(page);
+  const { chatId, release } = await sendHeldRun(page, "Background liveness");
+  const outcomes = { release };
   try {
     // Reload restores the chat only by its address.
     await page.goto(`/c/${chatId}`);
@@ -200,8 +210,8 @@ test("a background run is checked on focus and after returning to its chat throu
   await page.clock.install();
   await signInWithLocalToken(page);
   await startPlainFakeChat(page);
-  const chatId = await sendLongRun(page, "Focus liveness");
-  const outcomes = await holdRunOutcomes(page);
+  const { chatId, release } = await sendHeldRun(page, "Focus liveness");
+  const outcomes = { release };
   let otherChatId: string | null = null;
   try {
     await page.goto(`/c/${chatId}`);
