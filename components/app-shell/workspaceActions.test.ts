@@ -2887,6 +2887,7 @@ describe("chat scope across personal and Project workspaces", () => {
     stubArchiveRequests();
 
     await state.actions.deleteChat(state.chatA);
+    expect(state.setNotice).toHaveBeenLastCalledWith(expect.objectContaining({ text: "Chat moved to archive" }));
     expect(useWorkspaceStore.getState().activeChatId).toBe("chat-b");
     expect(window.location.pathname).toBe("/c/chat-b");
     expect(state.setSelectedModelId).toHaveBeenLastCalledWith("gpt-5.5", "system");
