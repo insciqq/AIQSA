@@ -7123,6 +7123,91 @@ function runKnowledgeSearchHealthMigrationProof(
     "Knowledge search health migration rejected a valid pre- or post-embedding outage receipt",
   );
 
+  const projectionFailureMigration = "20260927220000_knowledge_projection_failure_receipts";
+  assert.ok(committed.indexOf(projectionFailureMigration) > outageEvidenceShapeIndex,
+    "Projection failure receipt migration must follow the original outage guards");
+  const projectionFailureSql = readFileSync(join(migrationsRoot, projectionFailureMigration, "migration.sql"), "utf8");
+  assert.doesNotMatch(projectionFailureSql, /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"KnowledgeRun"\b/iu,
+    "Projection failure migration must not rewrite immutable historical receipts");
+  const historicalReceiptsSql = `SELECT jsonb_agg(to_jsonb(receipt) ORDER BY receipt.id)::text
+    FROM "KnowledgeRun" AS receipt
+    WHERE id IN ('knowledge-search-health-backend-run', 'knowledge-search-health-projection-run');`;
+  const historicalReceipts = psqlScalar(database, historicalReceiptsSql);
+  // Reapplying the forward DDL over actual old-code receipts proves they remain
+  // valid and unchanged, including their exact original provider text and usage.
+  postgres(["psql", "-X", "--set=ON_ERROR_STOP=1", "--username", POSTGRES_USER, "--dbname", database],
+    "reapply projection failure guards over historical receipts", projectionFailureSql);
+  assert.equal(psqlScalar(database, historicalReceiptsSql), historicalReceipts,
+    "Projection failure migration changed historical outage receipts");
+
+  const projectionOutages = [
+    { suffix: "pending", ordinal: 3,
+      text: "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes. Do not infer or invent an answer from Knowledge." },
+    { suffix: "failed", ordinal: 4,
+      text: "Knowledge search indexing failed for a selected source. An administrator must retry its search indexing. Do not infer or invent an answer from Knowledge." }
+  ] as const;
+  for (const outage of projectionOutages) {
+    const callId = `knowledge-search-health-${outage.suffix}-call`;
+    const receiptId = `knowledge-search-health-${outage.suffix}-run`;
+    const failureCode = `knowledge_search_projection_${outage.suffix}`;
+    psqlScalar(database, `
+      INSERT INTO "ModelRunToolCall" (
+        id, "modelRunId", "roundIndex", ordinal, "providerCallId", "toolName", arguments,
+        state, "startedAt", "completedAt", "updatedAt"
+      ) VALUES ('${callId}', 'knowledge-search-health-run', 0, ${outage.ordinal},
+        '${callId}', 'search_knowledge', '{"query":"synthetic outage","sourceAliases":[]}'::jsonb,
+        'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+      INSERT INTO "KnowledgeRun" (
+        id, "modelRunId", "modelRunToolCallId", "invocationOrdinal", operation, query,
+        outcome, fusion, "candidateLimit", "resultLimit", "candidateCount", "baseEvidence",
+        results, "providerText", "embeddingUsage", "failureCode", "durationMs", "updatedAt"
+      ) VALUES ('${receiptId}', 'knowledge-search-health-run', '${callId}', ${outage.ordinal},
+        'automatic_search', 'knowledge_search_unavailable', 'search_unavailable', 'weighted_rrf_v2',
+        64, 16, 0, '[]'::jsonb, '[]'::jsonb, '${outage.text}', '[]'::jsonb,
+        '${failureCode}', 1, CURRENT_TIMESTAMP);
+      UPDATE "ModelRunToolCall" SET "toolName" = "toolName" WHERE id = '${callId}';
+    `);
+    assert.deepEqual(JSON.parse(psqlScalar(database, `
+      SELECT jsonb_build_object('code', "failureCode", 'text', "providerText")::text
+      FROM "KnowledgeRun" WHERE id = '${receiptId}';
+    `)), { code: failureCode, text: outage.text },
+    `Knowledge ${outage.suffix} outage receipt did not retain its exact classified text`);
+
+    for (const malformed of [
+      { label: "mismatched classified text", set: `"providerText" = '${projectionOutages.find(other => other.suffix !== outage.suffix)!.text}'` },
+      { label: "unclassified code", set: `"failureCode" = 'knowledge_search_private_failure'` },
+      { label: "private query", set: `query = 'private outage query'` }
+    ]) {
+      const rejected = compose(["exec", "-T", POSTGRES_SERVICE, "psql", "-X", "--set=ON_ERROR_STOP=1",
+        "--username", POSTGRES_USER, "--dbname", database, "--command", `BEGIN;
+          ALTER TABLE "KnowledgeRun" DISABLE TRIGGER "KnowledgeRun_basic_focused_guard";
+          UPDATE "KnowledgeRun" SET ${malformed.set} WHERE id = '${receiptId}';
+          ROLLBACK;`]);
+      assert.notEqual(rejected.status, 0, `Knowledge ${outage.suffix} receipt accepted ${malformed.label}`);
+      assert.match(`${rejected.stdout}\n${rejected.stderr}`, /KnowledgeRun_search_unavailable_shape_check/u,
+        `Knowledge ${outage.suffix} ${malformed.label} did not reach the global shape constraint`);
+    }
+
+    // Isolate the reverse relationship guard: even without the global check or
+    // run-side trigger, a tool-call update must reject a malformed linked receipt.
+    const rejectedToolCall = compose(["exec", "-T", POSTGRES_SERVICE, "psql", "-X", "--set=ON_ERROR_STOP=1",
+      "--username", POSTGRES_USER, "--dbname", database, "--command", `BEGIN;
+        ALTER TABLE "KnowledgeRun" DROP CONSTRAINT "KnowledgeRun_search_unavailable_shape_check";
+        ALTER TABLE "KnowledgeRun" DISABLE TRIGGER "KnowledgeRun_basic_focused_guard";
+        UPDATE "KnowledgeRun" SET "providerText" = 'private outage detail' WHERE id = '${receiptId}';
+        UPDATE "ModelRunToolCall" SET "toolName" = "toolName" WHERE id = '${callId}';
+        ROLLBACK;`]);
+    assert.notEqual(rejectedToolCall.status, 0, `Knowledge ${outage.suffix} receipt bypassed the tool-call guard`);
+    assert.match(`${rejectedToolCall.stdout}\n${rejectedToolCall.stderr}`, /knowledge_basic_focused_run_contract_invalid/u,
+      `Knowledge ${outage.suffix} receipt did not reach the tool-call guard`);
+    assert.deepEqual(JSON.parse(psqlScalar(database, `
+      SELECT jsonb_build_object('code', "failureCode", 'text', "providerText")::text
+      FROM "KnowledgeRun" WHERE id = '${receiptId}';
+    `)), { code: failureCode, text: outage.text }, "Rejected mutations must preserve the valid receipt");
+  }
+  assert.equal(psqlScalar(database, historicalReceiptsSql), historicalReceipts,
+    "New outage receipt checks changed historical receipts");
+
   for (const malformedReceipt of [
     {
       label: "missing failure code",
