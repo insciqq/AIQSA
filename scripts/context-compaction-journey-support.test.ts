@@ -8,24 +8,30 @@ import {
   JOURNEY_LIMITS,
   JourneyFailure,
   codexLbSetupBody,
+  catalogReadiness,
   contextWindowUpdate,
-  findJourneyModel,
+  debugHttpLine,
+  debugPath,
+  deploymentUsability,
   journeyBrief,
   journeyConfig,
   journeyExitCode,
   journeyFiller,
   journeyProse,
+  journeyReuseDecision,
   journeyRound,
   journeyRunParams,
   journeyVerdict,
   ledgerInputTokens,
   listItemCount,
   messageText,
+  modelInConnection,
   nextFillerTokens,
   probeAnswerCarriesCorrections,
   quickSetupCandidate,
   readConnections,
   settledTurn,
+  stableCode,
   type JourneyRound
 } from "./context-compaction-journey-support";
 
@@ -46,7 +52,7 @@ describe("journey configuration", () => {
   it("skips routes without keys and defaults the stand, window and turn bound", () => {
     const config = journeyConfig({});
     expect(config.baseUrl.origin).toBe("http://127.0.0.1:3000");
-    expect(config).toMatchObject({ cleanupProviders: false, contextWindow: 32_768, explicitRoutes: false, maxTurns: 12 });
+    expect(config).toMatchObject({ cleanupProviders: false, contextWindow: 32_768, debug: false, explicitRoutes: false, maxTurns: 12 });
     expect(config.routes).toEqual([
       { route: "anthropic", skipped: "api_key_missing" },
       { route: "codex-lb", skipped: "api_key_missing" }
@@ -70,6 +76,10 @@ describe("journey configuration", () => {
     ]);
     expect(journeyConfig({ AIQSA_JOURNEY_ROUTES: "codex-lb", CODEX_LB_API_KEY: "c-key" }).routes)
       .toEqual([{ route: "codex-lb", skipped: "base_url_missing" }]);
+    const cliRoot = journeyConfig({ AIQSA_JOURNEY_DEBUG: "1", AIQSA_JOURNEY_ROUTES: "codex-lb", CODEX_LB_API_KEY: "c-key",
+      CODEX_LB_BASE_URL: "https://lb.example.test/backend-api/codex/" });
+    expect(cliRoot.debug).toBe(true);
+    expect(cliRoot.routes[0]).toMatchObject({ apiRoot: "https://lb.example.test/v1" });
   });
 
   it("rejects unsafe stands, unknown routes and out-of-range bounds", () => {
@@ -186,35 +196,74 @@ const modelConfig = (upstreamModelId: string, contextWindow?: number) => ({
   upstreamModelId
 });
 
-const providersResponse = {
-  connections: [
-    { activeConfig: { apiRoot: "https://api.example.test/" }, checkRun: { state: "running" }, enabled: false,
-      family: "anthropic", id: "c-disabled",
-      models: [{ activeConfig: modelConfig("claude-sonnet-5"), activeVersion: 1, displayName: "Sonnet", draftConfig: modelConfig("claude-sonnet-5"),
-        draftVersion: 1, enabled: true, id: "m-disabled", updatedAt: "2026-09-27T10:00:00.000Z" }] },
-    { activeConfig: null, draftConfig: { apiRoot: "https://api.example.test" }, enabled: true, family: "anthropic", id: "c-live",
-      models: [{ activeConfig: modelConfig("claude-sonnet-5", 200_000), activeVersion: 3, displayName: "Sonnet",
-        draftConfig: modelConfig("claude-sonnet-5", 200_000), draftVersion: 4, enabled: true, id: "m-live",
-        updatedAt: "2026-09-27T11:00:00.000Z" }] }
-  ]
+const liveModel = { activeConfig: modelConfig("claude-sonnet-5", 200_000), activeVersion: 3, displayName: "Sonnet",
+  draftConfig: modelConfig("claude-sonnet-5", 200_000), draftVersion: 4, enabled: true, id: "m-live",
+  updatedAt: "2026-09-27T11:00:00.000Z" };
+const liveConnection = {
+  activeChecks: [{ connectionVersion: 2, credentialId: "k1", credentialVersionId: "kv1", modelVersion: 3,
+    providerModelId: "m-live", status: "available" }],
+  activeConfig: { apiRoot: "https://api.example.test/" }, activeVersion: 2, defaultCredentialId: "k1",
+  credentials: [{ activeVersion: { id: "kv1", revokedAt: null }, enabled: true, id: "k1" }],
+  enabled: true, family: "anthropic", id: "c-live", models: [liveModel]
 };
+// The seed's code-owned template: disabled, keyless and unpublished.
+const seededTemplate = {
+  activeChecks: [], activeConfig: null, activeVersion: 0, defaultCredentialId: null, credentials: [],
+  draftConfig: { apiRoot: "https://api.example.test" }, enabled: false, family: "anthropic", id: "c-template",
+  models: [{ activeConfig: null, activeVersion: 0, displayName: "Sonnet", draftConfig: modelConfig("claude-sonnet-5"),
+    draftVersion: 1, enabled: true, id: "m-template", updatedAt: "2026-09-27T10:00:00.000Z" }]
+};
+// Published and keyed, but its only check belongs to an older model version.
+const staleConnection = { ...liveConnection, checkRun: { state: "running" }, id: "c-stale",
+  activeChecks: [{ ...liveConnection.activeChecks[0]!, modelVersion: 2, providerModelId: "m-stale" }],
+  models: [{ ...liveModel, id: "m-stale" }] };
+const providersResponse = { connections: [seededTemplate, staleConnection, liveConnection] };
 
 describe("admin provider projection", () => {
-  it("reads connections and prefers an enabled deployment of the model", () => {
+  it("reads the connection state the reuse decision needs", () => {
     const connections = readConnections(providersResponse)!;
-    expect(connections.map(({ apiRoot, checkRunning, id }) => ({ apiRoot, checkRunning, id }))).toEqual([
-      { apiRoot: "https://api.example.test", checkRunning: true, id: "c-disabled" },
-      { apiRoot: "https://api.example.test", checkRunning: false, id: "c-live" }
+    expect(connections.map(({ active, apiRoot, checkRunning, defaultCredentialVersionId, id }) =>
+      ({ active, apiRoot, checkRunning, defaultCredentialVersionId, id }))).toEqual([
+      { active: false, apiRoot: "https://api.example.test", checkRunning: false, defaultCredentialVersionId: null, id: "c-template" },
+      { active: true, apiRoot: "https://api.example.test", checkRunning: true, defaultCredentialVersionId: "kv1", id: "c-stale" },
+      { active: true, apiRoot: "https://api.example.test", checkRunning: false, defaultCredentialVersionId: "kv1", id: "c-live" }
     ]);
-    expect(findJourneyModel(connections, { family: "anthropic", upstreamModelId: "claude-sonnet-5" })?.model.id).toBe("m-live");
-    expect(findJourneyModel(connections, { family: "openai_compatible", upstreamModelId: "claude-sonnet-5" })).toBeNull();
-    expect(findJourneyModel(connections, { apiRoot: "https://other.test", family: "anthropic", upstreamModelId: "claude-sonnet-5" }))
-      .toBeNull();
     expect(readConnections({ connections: [{ id: "x" }] })).toBeNull();
   });
 
+  it("reuses only a usable deployment and explains every candidate with booleans", () => {
+    const connections = readConnections(providersResponse)!;
+    const decision = journeyReuseDecision(connections, { family: "anthropic", upstreamModelId: "claude-sonnet-5" });
+    expect(decision.reason).toBe("usable");
+    expect(decision.match?.model.id).toBe("m-live");
+    expect(decision.candidates).toEqual([
+      { checkAvailable: false, connectionActive: false, connectionEnabled: false, credentialActive: false,
+        modelActive: false, modelEnabled: true, usable: false },
+      { checkAvailable: false, connectionActive: true, connectionEnabled: true, credentialActive: true,
+        modelActive: true, modelEnabled: true, usable: false },
+      { checkAvailable: true, connectionActive: true, connectionEnabled: true, credentialActive: true,
+        modelActive: true, modelEnabled: true, usable: true }
+    ]);
+    expect(JSON.stringify(decision.candidates)).not.toMatch(/c-|m-|k1|kv1/u);
+  });
+
+  it("falls back to setup for the seeded keyless template, a revoked key or another endpoint", () => {
+    const template = readConnections({ connections: [seededTemplate] })!;
+    expect(journeyReuseDecision(template, { family: "anthropic", upstreamModelId: "claude-sonnet-5" }))
+      .toMatchObject({ match: null, reason: "not_usable" });
+    const revoked = readConnections({ connections: [{ ...liveConnection,
+      credentials: [{ activeVersion: { id: "kv1", revokedAt: "2026-09-27T12:00:00.000Z" }, enabled: true, id: "k1" }] }] })!;
+    expect(deploymentUsability(revoked[0]!, revoked[0]!.models[0]!)).toMatchObject({ credentialActive: false, usable: false });
+    const connections = readConnections(providersResponse)!;
+    expect(journeyReuseDecision(connections, { apiRoot: "https://other.test", family: "anthropic", upstreamModelId: "claude-sonnet-5" }))
+      .toMatchObject({ candidates: [], match: null, reason: "no_candidate" });
+    expect(journeyReuseDecision(connections, { family: "openai_compatible", upstreamModelId: "claude-sonnet-5" }).reason)
+      .toBe("no_candidate");
+    expect(modelInConnection(connections[0]!, "claude-sonnet-5")?.id).toBe("m-template");
+  });
+
   it("publishes the journey window as the administrator-set context window only when it differs", () => {
-    const model = readConnections(providersResponse)![1]!.models[0]!;
+    const model = readConnections(providersResponse)![2]!.models[0]!;
     const update = contextWindowUpdate(model, 32_768)!;
     expect(update).toMatchObject({
       action: "update", activate: true, displayName: "Sonnet", expectedActiveVersion: 3, expectedDisplayName: "Sonnet",
@@ -235,13 +284,52 @@ describe("admin provider projection", () => {
   });
 
   it("declares a tool-capable compatible Responses model with the journey window", () => {
-    const body = codexLbSetupBody({ apiRoot: "https://lb.test/v1", catalogProof: "proof", contextWindow: 32_768,
-      model: "gpt-5.5", secret: "s" });
+    const body = codexLbSetupBody({ apiRoot: "https://lb.test/v1", catalogProof: "proof", connectionDisplayName: "J",
+      contextWindow: 32_768, model: "gpt-5.5", secret: "s" });
     expect(body).toMatchObject({ authenticationMode: "bearer", catalogProof: "proof", confirmPaidRequest: true,
+      connectionDisplayName: "J",
       modelIds: ["gpt-5.5"], protocol: "responses", capabilities: { contextWindow: 32_768, toolCalling: true } });
     expect(body).not.toHaveProperty("modelId");
-    expect(codexLbSetupBody({ apiRoot: "https://lb.test/v1", contextWindow: 16_384, model: "gpt-5.5", secret: "s" }))
-      .toMatchObject({ modelId: "gpt-5.5" });
+    // The manual fallback: no receipt, one explicit id proven by setup's tiny generation.
+    const manual = codexLbSetupBody({ apiRoot: "https://lb.test/v1", connectionDisplayName: "J", contextWindow: 16_384,
+      model: "gpt-5.5", secret: "s" });
+    expect(manual).toMatchObject({ modelId: "gpt-5.5" });
+    expect(manual).not.toHaveProperty("catalogProof");
+    expect(manual).not.toHaveProperty("modelIds");
+  });
+});
+
+describe("catalog readiness and debug evidence", () => {
+  it("names the last observed catalog state for the timeout code", () => {
+    const ready = catalogModel({ providerFamily: "anthropic", upstreamModelId: "claude-sonnet-5" });
+    expect(catalogReadiness(undefined, 32_768)).toBe("catalog_model_missing");
+    expect(catalogReadiness(catalogModel({}), 32_768)).toBe("catalog_model_identity_missing");
+    expect(catalogReadiness({ ...ready, contextWindow: 200_000 }, 32_768)).toBe("catalog_window_not_applied");
+    expect(catalogReadiness({ ...ready, capabilities: { ...ready.capabilities, toolCalling: false } }, 32_768))
+      .toBe("catalog_tool_calling_unavailable");
+    expect(catalogReadiness(ready, 32_768)).toBe("ready");
+  });
+
+  it("redacts ids and queries from debug paths", () => {
+    expect(debugPath("/api/admin/providers/3f2c9a1e-0000-4000-8000-000000000001/models/cm1abc?x=1"))
+      .toBe("/api/admin/providers/<id>/models/<id>");
+    expect(debugPath("/api/admin/providers/custom-setup/discover")).toBe("/api/admin/providers/custom-setup/discover");
+    expect(debugPath("/api/chats/provider-anthropic/delete-permanently/status")).toBe("/api/chats/<id>/delete-permanently/status");
+    expect(debugPath("/api/me/chats/abc/memory-mode")).toBe("/api/me/chats/<id>/memory-mode");
+  });
+
+  it("keeps only stable codes of a JSON body in a debug line", () => {
+    expect(debugHttpLine({ body: { error: "provider_custom_setup_discovery_failed", message: "sk-secret upstream text",
+      secret: "sk-secret" }, method: "POST", path: "/api/admin/providers/custom-setup/discover", stage: "provider_setup",
+      status: 422 })).toEqual({ debug: "http", error: "provider_custom_setup_discovery_failed", method: "POST",
+      path: "/api/admin/providers/custom-setup/discover", stage: "provider_setup", status: 422 });
+    expect(debugHttpLine({ body: { code: "Some Message With Spaces", outcome: "ready", error: "x".repeat(65) },
+      method: "GET", path: "/api/me/catalog", stage: "catalog", status: 200 }))
+      .toEqual({ debug: "http", method: "GET", outcome: "ready", path: "/api/me/catalog", stage: "catalog", status: 200 });
+    expect(debugHttpLine({ method: "GET", path: "/api/admin", stage: "evidence", status: null }))
+      .toEqual({ debug: "http", method: "GET", path: "/api/admin", stage: "evidence", status: null });
+    expect(stableCode("provider_draft_stale")).toBe("provider_draft_stale");
+    expect(stableCode("Bearer abc")).toBeNull();
   });
 });
 
