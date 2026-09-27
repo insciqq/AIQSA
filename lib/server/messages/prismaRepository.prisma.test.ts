@@ -1910,7 +1910,7 @@ describe("Prisma-backed message branch repository", () => {
             policyRevision: 1,
             runtimeVersion: "synthetic",
             toolCatalogHash: sha("synthetic-catalog"),
-            toolDefinitions: [],
+            toolDefinitions: [{ name: "sandbox_fs_write" }],
             workspaceSessionId: session.id
           }
         });
