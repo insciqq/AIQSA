@@ -77,6 +77,7 @@ export type MessageBranchRepository = {
   }): Promise<{
     activeLeafMessageId: string | null;
     chatId: string;
+    chatUpdatedAt: Date;
     deletedMessageIds: string[];
   } | null>;
 };
@@ -280,6 +281,7 @@ export function createDeleteMessageHandler(deps: MessageBranchHandlerDeps) {
     let deleted: {
       activeLeafMessageId: string | null;
       chatId: string;
+      chatUpdatedAt: Date;
       deletedMessageIds: string[];
     } | null;
     try {
@@ -307,6 +309,7 @@ export function createDeleteMessageHandler(deps: MessageBranchHandlerDeps) {
       message: {
         activeLeafMessageId: deleted.activeLeafMessageId,
         chatId: deleted.chatId,
+        chatUpdatedAt: deleted.chatUpdatedAt.toISOString(),
         deleted: true,
         deletedMessageIds: deleted.deletedMessageIds,
         id: params.messageId

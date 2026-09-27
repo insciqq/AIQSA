@@ -743,6 +743,13 @@ describe("Prisma-backed message branch repository", () => {
         chatId: sourceChat.id,
         deletedMessageIds: expect.arrayContaining([userMessage.id, assistantMessage.id])
       });
+      // Deleting the active leaf bumps the chat revision; the response carries
+      // the committed value so the browser summary can follow it.
+      const { updatedAt: afterDeleteUpdatedAt } = await prisma.chat.findUniqueOrThrow({
+        select: { updatedAt: true },
+        where: { id: sourceChat.id }
+      });
+      expect(deleted?.chatUpdatedAt.toISOString()).toBe(afterDeleteUpdatedAt.toISOString());
       await expect(
         prisma.modelRun.count({
           where: {
