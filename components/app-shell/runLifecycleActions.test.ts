@@ -394,6 +394,41 @@ describe("run lifecycle actions", () => {
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
   });
 
+  it("remembers connectivity regained while a background check is in flight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T00:00:00.000Z"));
+    let terminal = false;
+    let holdNext = false;
+    let releaseHeld!: () => void;
+    const fetchMock = vi.fn(async () => {
+      if (holdNext) {
+        holdNext = false;
+        await new Promise<void>((resolve) => { releaseHeld = resolve; });
+        throw new TypeError("network disconnected");
+      }
+      return terminal ? Response.json(runResponse("complete")) : Response.json(runResponse("streaming"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions } = useRunLifecycleActionsForTest();
+
+    const resume = actions.resumeChatRun(streamingChat());
+    await vi.advanceTimersByTimeAsync(21 * 60_000);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]?.waitingInBackground).toBe(true);
+    holdNext = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    const checks = fetchMock.mock.calls.length;
+
+    // Connectivity returns while the offline read is still pending.
+    terminal = true;
+    window.dispatchEvent(new Event("online"));
+    releaseHeld();
+    await vi.advanceTimersByTimeAsync(0);
+    await resume;
+
+    expect(fetchMock).toHaveBeenCalledTimes(checks + 1);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+  });
+
   it("stops polling within one cadence after leaving the chat and resumes on return", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-19T00:00:00.000Z"));
