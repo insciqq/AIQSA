@@ -1,9 +1,14 @@
 import {
-  decodeWorkspaceSecretList, workspaceSecretErrorMessage,
-  type WorkspaceSecretMutation, type WorkspaceSecretSummary
+  decodeWorkspaceBrowserAutosaveReport, decodeWorkspaceSecretList, workspaceSecretErrorMessage,
+  type WorkspaceBrowserAutosaveReport, type WorkspaceSecretMutation, type WorkspaceSecretSummary
 } from "@/lib/contracts/workspaceSecrets";
 
-export async function requestWorkspaceSecrets(mutation?: WorkspaceSecretMutation, signal?: AbortSignal): Promise<readonly WorkspaceSecretSummary[]> {
+export type WorkspaceSecretsState = Readonly<{
+  secrets: readonly WorkspaceSecretSummary[];
+  browserAutosave: WorkspaceBrowserAutosaveReport | null;
+}>;
+
+export async function requestWorkspaceSecrets(mutation?: WorkspaceSecretMutation, signal?: AbortSignal): Promise<WorkspaceSecretsState> {
   const response = await fetch("/api/me/workspace/secrets", {
     method: mutation ? "POST" : "GET", credentials: "same-origin", cache: "no-store", signal,
     ...(mutation ? { headers: { "content-type": "application/json" }, body: JSON.stringify(mutation) } : {})
@@ -13,5 +18,5 @@ export async function requestWorkspaceSecrets(mutation?: WorkspaceSecretMutation
   if (!response.ok) throw new Error(workspaceSecretErrorMessage(data?.error));
   const secrets = decodeWorkspaceSecretList(data?.secrets);
   if (!secrets) throw new Error(workspaceSecretErrorMessage(null));
-  return secrets;
+  return { secrets, browserAutosave: decodeWorkspaceBrowserAutosaveReport(data?.browserAutosave) };
 }

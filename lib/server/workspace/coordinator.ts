@@ -391,10 +391,15 @@ export function createPrismaWorkspaceCoordinatorRepository(
       if (current.projectId) return [];
       const owner = await prisma.user.findFirst({ select: { id: true }, where: { id: binding.userId, status: "active" } });
       if (!owner) throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
-      const secrets = await prisma.workspaceRunSecret.findMany({
-        include: { value: true }, where: { modelRunId: binding.runId }, orderBy: { secretId: "asc" }
+      const bound = await prisma.workspaceRunSecret.findMany({
+        select: { valueId: true }, where: { modelRunId: binding.runId }, orderBy: { secretId: "asc" }
       });
-      return secrets.map(({ value }) => decryptWorkspaceSecret(value, binding.userId));
+      // One ciphertext at a time: browser states can reach the aggregate budget.
+      const secrets: AcceptedWorkspaceSecret[] = [];
+      for (const { valueId } of bound) {
+        secrets.push(decryptWorkspaceSecret(await prisma.workspaceSecretValue.findUniqueOrThrow({ where: { id: valueId } }), binding.userId));
+      }
+      return secrets;
     },
     async unregisteredCommands({ runId }) {
       return prisma.modelRunToolCall.count({
@@ -1158,6 +1163,12 @@ async function objectMatches(
 }
 
 const EXEC_SESSION_TOOLS = new Set<string>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
+/**
+ * Settlement and handoff share one browser autosave window, sized for the
+ * aggregate state budget. States committed before it ends remain saved and an
+ * unfinished save is recorded in the run's visible autosave outcome.
+ */
+const BROWSER_SESSION_SAVE_TIMEOUT_MS = 30_000;
 
 const EMPTY_WORKSPACE_ARCHIVE = new Uint8Array(gzipSync(new Uint8Array(1_024)));
 const EMPTY_WORKSPACE_ARCHIVE_CHECKSUM = createHash("sha256").update(EMPTY_WORKSPACE_ARCHIVE).digest("hex");
@@ -1720,20 +1731,28 @@ export function createWorkspaceCoordinator(input: Readonly<{
     if (binding.projectId || !binding.runtimeSandboxId || !binding.operationOwner) return;
     let collection: Awaited<ReturnType<WorkspaceRuntime["collectBrowserSessions"]>> | null = null;
     try {
-      let contents: Awaited<ReturnType<typeof readWorkspaceBrowserCollection>>;
       try {
         collection = await input.runtime.collectBrowserSessions({ modelRunId: binding.runId, runtimeSandboxId: binding.runtimeSandboxId,
           operation: ownedOperation(binding), sessionId: binding.sessionId, signal });
-        contents = await readWorkspaceBrowserCollection(collection, signal);
       } catch {
-        if (signal.aborted) return;
-        contents = { files: [], skipped: ["browser_session_read_failed"] };
+        collection = null;
       }
-      await input.repository.saveBrowserSessions({ ...contents, runId: binding.runId, userId: binding.userId,
-        sessionId: binding.sessionId, runtimeSandboxId: binding.runtimeSandboxId, operation: ownedOperation(binding), handoffToken, signal });
-    } catch {
+      // States stream one at a time into the store after it authorizes this
+      // run; an expired deadline is recorded there as an unfinished save.
+      const report = await input.repository.saveBrowserSessions({
+        files: collection ? readWorkspaceBrowserCollection(collection, signal) : [],
+        skipped: collection ? collection.skipped : signal.aborted ? [] : ["browser_session_read_failed"],
+        runId: binding.runId, userId: binding.userId, sessionId: binding.sessionId, runtimeSandboxId: binding.runtimeSandboxId,
+        operation: ownedOperation(binding), handoffToken, signal
+      });
+      if (report?.failure) {
+        logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "write", outcome: "failed",
+          code: "workspace_browser_session_save_failed", action: "skip" });
+      }
+    } catch (error) {
       // Cache failure must not fail an otherwise completed task or expose file data.
-      console.warn("workspace_browser_session_save_failed");
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "write", outcome: "failed",
+        code: "workspace_browser_session_save_failed", prisma_code: databaseFailureCode(error), action: "skip" });
     } finally {
       if (collection) {
         await Promise.allSettled(collection.files.map((file) => file.body.cancel()));
@@ -1913,7 +1932,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         : binding;
       let quiescence = await quiesceRun(current);
       if (quiescence.proven && !skipBrowserSave && current.operationOwner === workspaceRunOperationOwner(runId)) {
-        await persistBrowserSessions(current, AbortSignal.timeout(10_000));
+        await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
       }
       try {
         const operation = { operation: ownedOperation(current), runtimeSandboxId: current.runtimeSandboxId, sessionId: current.sessionId };
@@ -2287,7 +2306,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           }
         }
         await renew();
-        if (handoff) await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(30_000)]), claim.token);
+        if (handoff) await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS)]), claim.token);
         const outputs = await input.runtime.collectOutputs({
           capture: { create: capture.create, id: capture.id },
           modelRunId: runId,

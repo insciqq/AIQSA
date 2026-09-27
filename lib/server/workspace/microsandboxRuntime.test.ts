@@ -185,6 +185,24 @@ describe("Microsandbox Workspace lifecycle", () => {
     await Promise.all(skillDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
   });
 
+  it("offers browser states above 512 KiB and stops hashing at the per-file and aggregate budgets", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const megabytes = (count: number) => count * 1024 * 1024;
+    const full = new Uint8Array(megabytes(8));
+    const sizes: Array<[string, number]> = [["a-large.json", 600 * 1024], ...Array.from({ length: 7 }, (_, index): [string, number] => [`b-${index}.json`, megabytes(8)]),
+      ["c-over-budget.json", megabytes(8)], ["d-too-large.json", megabytes(8) + 1]];
+    for (const [name, size] of sizes) value.files.set(`/workspace/secrets/browser/${name}`, size === megabytes(8) ? full : new Uint8Array(size));
+    const listing = JSON.stringify({ entries: sizes.map(([name, size]) => ({ name, size, file: true })) });
+    value.sandbox.execWith.mockResolvedValueOnce({ success: true, stdout: () => listing, stdoutBytes: () => Buffer.from(listing) });
+    const collection = await value.runtime.collectBrowserSessions({ ...sessionInput, modelRunId: "run_fixture" });
+    expect(collection.files.map((file) => file.relativePath)).toEqual(["a-large.json", ...Array.from({ length: 7 }, (_, index) => `b-${index}.json`)]);
+    expect(collection.skipped).toEqual(["browser_session_total_limit", "browser_session_too_large"]);
+    expect(value.fs.readStream).not.toHaveBeenCalledWith("/workspace/secrets/browser/c-over-budget.json");
+    expect(value.fs.readStream).not.toHaveBeenCalledWith("/workspace/secrets/browser/d-too-large.json");
+    await Promise.all(collection.files.map((file) => file.body.cancel()));
+  });
+
   it.each(["valid", "corrupt", "short", "disk_full"])("publishes only verified originals and cleans temporary staging on %s", async outcome => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);

@@ -4,6 +4,19 @@ const ALGORITHM = "aes-256-gcm";
 const ENVELOPE_VERSION = "v2";
 const MAX_CONTEXT_PART_BYTES = 512;
 const MAX_PLAINTEXT_BYTES = 1_048_576;
+/** Hard ceiling for a purpose that declares a larger bounded plaintext. */
+const MAX_PLAINTEXT_BYTES_CEILING = 16 * 1_048_576;
+
+export type SecretEnvelopeOptions = Readonly<{
+  /** The caller's own serialized value bound; defaults to 1 MiB. */
+  maxPlaintextBytes?: number;
+}>;
+
+function plaintextLimit(options: SecretEnvelopeOptions): number {
+  const limit = options.maxPlaintextBytes ?? MAX_PLAINTEXT_BYTES;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PLAINTEXT_BYTES_CEILING) throw new Error("invalid");
+  return limit;
+}
 
 export type SecretEnvelopeContext = {
   ownerId: string;
@@ -95,11 +108,13 @@ export function getSecretEncryptionKey(
 export function encryptSecretEnvelope(
   value: unknown,
   key: Buffer,
-  context: SecretEnvelopeContext
+  context: SecretEnvelopeContext,
+  options: SecretEnvelopeOptions = {}
 ): string {
   try {
+    const limit = plaintextLimit(options);
     const plaintext = Buffer.from(JSON.stringify(value), "utf8");
-    if (plaintext.length > MAX_PLAINTEXT_BYTES) {
+    if (plaintext.length > limit) {
       throw new Error("invalid");
     }
 
@@ -126,18 +141,21 @@ export function encryptSecretEnvelope(
 export function decryptSecretEnvelope<T>(
   envelope: string,
   key: Buffer,
-  context: SecretEnvelopeContext
+  context: SecretEnvelopeContext,
+  options: SecretEnvelopeOptions = {}
 ): T {
   try {
+    const limit = plaintextLimit(options);
     const [version, nonceValue, ciphertextValue, tagValue, extra] = envelope.split(".");
-    if (version !== ENVELOPE_VERSION || !nonceValue || !ciphertextValue || !tagValue || extra) {
+    if (version !== ENVELOPE_VERSION || !nonceValue || !ciphertextValue || !tagValue || extra ||
+      ciphertextValue.length > Math.ceil(limit / 3) * 4) {
       throw new Error("invalid");
     }
 
     const nonce = decodeBase64Url(nonceValue);
     const ciphertext = decodeBase64Url(ciphertextValue);
     const tag = decodeBase64Url(tagValue);
-    if (nonce.length !== 12 || tag.length !== 16 || ciphertext.length > MAX_PLAINTEXT_BYTES) {
+    if (nonce.length !== 12 || tag.length !== 16 || ciphertext.length > limit) {
       throw new Error("invalid");
     }
 
@@ -145,7 +163,7 @@ export function decryptSecretEnvelope<T>(
     decipher.setAAD(authenticatedContext(context));
     decipher.setAuthTag(tag);
     const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    if (plaintext.length > MAX_PLAINTEXT_BYTES) {
+    if (plaintext.length > limit) {
       throw new Error("invalid");
     }
 

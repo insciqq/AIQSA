@@ -210,7 +210,10 @@ describe("remote Workspace runner protocol", () => {
   it.each([
     { outputs: [], skipped: ["private-cookie-value"] },
     { outputs: Array(51).fill({}), skipped: [] },
-    { outputs: [], skipped: Array(131).fill("browser_session_invalid") }
+    { outputs: [], skipped: Array(131).fill("browser_session_invalid") },
+    // Each state is within the per-file limit, but together they exceed the aggregate budget.
+    { outputs: Array.from({ length: 9 }, (_, index) => ({ batchId: "a".repeat(32), byteSize: 8 * 1024 * 1024, checksum: "b".repeat(64),
+      mimeType: "application/json", opaqueFileId: String(index).padStart(64, "c"), relativePath: `site-${index}.json` })), skipped: [] }
   ])("rejects invalid browser collection metadata before opening a byte stream", async (response) => {
     const fetch = vi.fn(async () => Response.json(response)); vi.stubGlobal("fetch", fetch);
     const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token, runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
