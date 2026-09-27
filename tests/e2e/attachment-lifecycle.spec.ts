@@ -108,3 +108,40 @@ test("keeps the draft editable and gates send across attachment processing, retr
   await chip.getByRole("button", { name: "Remove lifecycle-report.docx" }).click();
   await expect(chip).toHaveCount(0);
 });
+
+for (const theme of ["light", "dark"] as const) {
+  test(`truncated text keeps Send reachable in a short landscape viewport · ${theme}`, async ({ page, context, baseURL }, testInfo) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await context.addCookies([{ name: "aiqsa.theme", value: theme, url: baseURL! }]);
+    await installMatrixCatalogFixture(page);
+    const ready = { attachment: { ...attachment("ready").attachment, metadata: { document: {
+      engine: "inline", status: "partial", truncated: true, characterCount: 1_000_000,
+      extractedTextMaxChars: 1_000_000, warnings: ["partial_parse", "truncated_oversized_section"]
+    } } } };
+    await page.route("**/api/uploads", route => route.fulfill({ status: 201, json: ready }));
+    await signInWithLocalToken(page);
+    await page.getByRole("textbox", { name: "Message" }).fill("Summarize the available document text.");
+    await page.getByLabel("Attach files").setInputFiles({
+      buffer: Buffer.from("Synthetic limited-text fixture"),
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      name: ready.attachment.fileName
+    });
+    const chip = page.getByRole("region", { name: "Attachments" }).getByRole("listitem");
+    await expect(chip).toContainText("Text limited");
+    await expect(chip).toContainText("The model is told the rest is missing.");
+    const send = page.getByRole("button", { name: "Send message" });
+    await expect(send).toBeEnabled();
+    await send.scrollIntoViewIfNeeded();
+    await expect.poll(async () => {
+      const box = await send.boundingBox();
+      return Boolean(box && box.y >= 0 && box.y + box.height <= 390);
+    }).toBe(true);
+    // A scroll event must not snap the empty conversation back to its heading.
+    await page.waitForTimeout(100);
+    await expect.poll(() => page.locator(".v2-conversation-scroll").evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    await send.click({ trial: true });
+    await page.screenshot({ path: testInfo.outputPath(`truncated-text-landscape-${theme}.png`) });
+    await chip.getByRole("button", { name: `Remove ${ready.attachment.fileName}` }).click();
+    await expect(chip).toHaveCount(0);
+  });
+}
