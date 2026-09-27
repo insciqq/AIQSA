@@ -638,6 +638,17 @@ describe("chat wire contracts", () => {
     });
     expect(decode({
       citations: [],
+      memoryStatus: "INPUT_TOO_LONG",
+      reasoningText: [],
+      sources: []
+    })?.messages[0]?.artifactSummary).toEqual({
+      citations: [],
+      memoryStatus: "INPUT_TOO_LONG",
+      reasoningText: [],
+      sources: []
+    });
+    expect(decode({
+      citations: [],
       memoryStatus: "FAILED_SAFE",
       reasoningText: [],
       sources: []

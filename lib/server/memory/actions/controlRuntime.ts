@@ -33,12 +33,18 @@ import { memorySha256 } from "../persistence/lexical";
 import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import {
   buildMemoryActionIntentRequest,
+  memoryActionIntentInputFitsContext,
   type MemoryActionIntentContext
 } from "./intentService";
 
 export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v30";
 export const MEMORY_CONTROL_REASONING_POLICY = "accepted-system-model-parameters" as const;
 export const MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR = 2_048 as const;
+/** The whole turn cannot fit the admitted model's context with its reserve. */
+export const MEMORY_CONTROL_INPUT_TOO_LONG = "memory_action_intent_input_too_long" as const;
+/** The requested statement exceeds the stored statement bound. */
+export const MEMORY_CONTROL_STATEMENT_TOO_LONG =
+  "memory_action_intent_statement_too_long" as const;
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
@@ -145,11 +151,27 @@ function providerRequest(
     request.maxOutputTokens ?? 1_024,
     model.capabilities.defaultMaxOutputTokens ?? 1_024
   );
+  const tools = [controlTool()];
+  const content = { blocks: [{ text: request.userPrompt, type: "text" as const }] };
+  const prompt = { developer: null, system: request.systemPrompt };
+  // Never dispatch a partial turn: the whole request and a usable decision
+  // must fit the admitted model's actual context before any provider call.
+  if (!memoryActionIntentInputFitsContext({
+    contextWindow: model.capabilities.contextWindow,
+    providerInput: { content, prompt, tools },
+    responseReserveTokens: model.capabilities.reasoning
+      ? Math.max(maxOutputTokens, MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR)
+      : maxOutputTokens
+  })) {
+    throw Object.assign(new Error(MEMORY_CONTROL_INPUT_TOO_LONG), {
+      code: MEMORY_CONTROL_INPUT_TOO_LONG
+    });
+  }
   return {
     attachmentIds: [],
     attachments: [],
     chatId: "memory-control",
-    content: { blocks: [{ text: request.userPrompt, type: "text" }] },
+    content,
     forceNonStreaming: true,
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: model.capabilities,
@@ -163,12 +185,12 @@ function providerRequest(
       store: false,
       stream: false
     },
-    prompt: { developer: null, system: request.systemPrompt },
+    prompt,
     provider: snapshot.providerFamily,
     searchPlan: { mode: "all_selected", options: [] },
     toolChoice: "required",
     toolMode: "auto",
-    tools: [controlTool()]
+    tools
   };
 }
 
@@ -194,11 +216,14 @@ function providerEvidence(
 function decodeProviderResult(
   result: MemoryLearningProviderResult,
   currentUserMessage: string
-): MemoryActionIntent | null {
+): MemoryActionIntent | typeof MEMORY_CONTROL_STATEMENT_TOO_LONG | null {
   const call = result.toolCalls?.[0];
   if (result.toolCalls?.length !== 1 || call?.name !== MEMORY_ACTION_INTENT_NAME) return null;
   const decoded = decodeMemoryActionControlDecision(call.arguments, currentUserMessage);
-  return decoded.ok ? decoded.value : null;
+  if (decoded.ok) return decoded.value;
+  return decoded.code === MEMORY_CONTROL_STATEMENT_TOO_LONG
+    ? MEMORY_CONTROL_STATEMENT_TOO_LONG
+    : null;
 }
 
 function safeNullableControlText(value: string | null): string | null {
@@ -425,15 +450,16 @@ export function createMemoryControlService(input: Readonly<{
           requestInput.signal
         );
         const decodedIntent = decodeProviderResult(result, safeContext.currentUserMessage);
-        if (!decodedIntent) {
+        if (!decodedIntent || decodedIntent === MEMORY_CONTROL_STATEMENT_TOO_LONG) {
+          const reason = decodedIntent ?? "memory_action_intent_invalid";
           await input.execution.lifecycle.settle(requestInput.userId, binding.id, {
             acceptedOutputHash: null,
-            errorCode: "memory_action_intent_invalid",
+            errorCode: reason,
             providerResponseId: result.providerResponseId,
             state: "FAILED",
             usage: reportedUsage(result.usage)
           });
-          return { bindingId: binding.id, reason: "memory_action_intent_invalid", status: "UNAVAILABLE" };
+          return { bindingId: binding.id, reason, status: "UNAVAILABLE" };
         }
         const intent = sanitizeProviderIntent(decodedIntent);
         if (!intent) {
@@ -471,9 +497,15 @@ export function createMemoryControlService(input: Readonly<{
         const providerFailure = error instanceof MemoryControlProviderCallError
           ? error
           : null;
+        // Both checks run before dispatch, so nothing reached the provider.
+        const contextOverflow = typeof error === "object" && error !== null &&
+          "code" in error && (error.code === MEMORY_CONTROL_INPUT_TOO_LONG ||
+            error.code === "provider_context_limit_exceeded");
         const errorCode = requestInput.signal.aborted
           ? "memory_action_intent_outcome_unknown"
-          : providerFailure?.message ?? "memory_action_intent_unavailable";
+          : contextOverflow
+            ? MEMORY_CONTROL_INPUT_TOO_LONG
+            : providerFailure?.message ?? "memory_action_intent_unavailable";
         if (bindingId) {
           await input.execution.lifecycle.settle(requestInput.userId, bindingId, {
             acceptedOutputHash: null,

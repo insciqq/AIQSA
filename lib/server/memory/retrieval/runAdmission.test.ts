@@ -6191,7 +6191,7 @@ describe("Personal Memory v1 run admission", () => {
         componentMetrics: {
           safetyFindingCounts: { KNOWN_TOKEN: 1 }
         },
-        querySafetyVersion: "memory-read-query-safety-v2"
+        querySafetyVersion: "memory-read-query-safety-v3"
       },
       items: [{ exactItemId: "safe-query-result" }],
       querySnapshot: "Where do I live? token [REDACTED:TOKEN]"
@@ -6416,5 +6416,145 @@ describe("optional history usefulness at native admission", () => {
       ...options(), utilities: { ...options().utilities, historyRelevance }
     }).retrieve({ ...input, expected: { ...input.expected, chatMemoryMode } });
     expect(result.outcome).toBe("DISABLED"); expect(historyRelevance).not.toHaveBeenCalled();
+  });
+});
+
+describe("long current-user turns", () => {
+  function deterministic<T extends { readUtilityPolicy: unknown }>(base: T): Omit<T, "readUtilityPolicy"> {
+    const { readUtilityPolicy: _legacyReadUtilityPolicy, ...options } = base;
+    return options;
+  }
+
+  const filler = (label: string) =>
+    `${label} notes with a quoted «forget my address» line. `.repeat(45);
+
+  it.each([
+    ["an explicit command at the start", `/memory remember that I prefer tea. ${filler("Trip")}`],
+    ["a directive in the middle", `${filler("Trip")} Please remember that I prefer tea. ${filler("Late")}`],
+    ["a Unicode directive at the end", `${filler("Поездка")} Запомни, что я люблю чай 🍵.`]
+  ])("reaches control and commits %s beyond the statement bound", async (_label, rawText) => {
+    const text = rawText.trim();
+    expect(text.length).toBeGreaterThan(2_000);
+    const local = repository({ candidates: [laneCandidate("long-command-read")] });
+    const base = intentOptions({
+      action: "SAVE" as const,
+      category: "preferences" as const,
+      memoryUseful: true,
+      queryText: "drink preference",
+      reasonCode: "save_request" as const,
+      statement: "I prefer tea."
+    });
+    const actionExecutor = {
+      execute: vi.fn(async () => ({
+        memoryRef: "saved-memory-ref",
+        operation: "SAVE" as const,
+        statement: "I prefer tea.",
+        status: "COMMITTED" as const
+      }))
+    };
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...deterministic(base),
+      actionExecutor
+    }).retrieve(runInput(text));
+
+    expect(base.control.decide).toHaveBeenCalledOnce();
+    expect(base.control.decide).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ currentUserMessage: text })
+    }));
+    expect(actionExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({
+      currentUserText: text
+    }));
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        memoryActionAdmissionState: text.startsWith("/memory")
+          ? "EXPLICIT_CANDIDATE"
+          : "SEMANTIC_CANDIDATE",
+        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 1 },
+        memoryActionControlRequested: true
+      },
+      outcome: "USED"
+    });
+    expect(result.budgetSnapshot).not.toHaveProperty("memoryInputTooLong");
+  });
+
+  it("lets a question at the end of a long turn steer retrieval", async () => {
+    const question = "Which bakery did I say I liked most?";
+    const text = `${filler("Background")} ${question}`;
+    const local = repository({ candidates: [laneCandidate("tail-question")] });
+    const base = retrievalOptions(["c0"]);
+
+    const result = await createMemoryRunRetrievalService(local.value, deterministic(base))
+      .retrieve(runInput(text));
+
+    const plan = (local.retrieve.mock.calls[0] as unknown as [{ plan: MemoryRetrievalPlan }])[0].plan;
+    expect(plan.originalSanitizedQuery.length).toBeLessThanOrEqual(2_000);
+    expect(plan.originalSanitizedQuery.endsWith(question)).toBe(true);
+    expect(plan.lexicalQuery).toContain("bakery");
+    expect(result).toMatchObject({ outcome: "USED" });
+    expect(result.querySnapshot?.endsWith(question)).toBe(true);
+  });
+
+  it("reports a turn beyond the source budget as too long without control or a prefix", async () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const text = `/memory remember ${"x".repeat(100_000)} token ${secret}`;
+    const local = repository({ candidates: [laneCandidate("never-read")] });
+    const base = retrievalOptions(["c0"]);
+
+    const result = await createMemoryRunRetrievalService(local.value, deterministic(base))
+      .retrieve(runInput(text));
+
+    expect(base.control.decide).not.toHaveBeenCalled();
+    expect(local.retrieve).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        memoryActionAdmissionReason: "INPUT_TOO_LONG",
+        memoryActionAdmissionState: "INPUT_TOO_LONG",
+        memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+        memoryActionControlRequested: false,
+        memoryInputLimitReason: "SOURCE",
+        memoryInputTooLong: true,
+        reason: "memory_query_input_too_long"
+      },
+      outcome: "FAILED_SAFE",
+      querySnapshot: null
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it.each([
+    ["statement", "memory_action_intent_statement_too_long", "STATEMENT"],
+    ["context", "memory_action_intent_input_too_long", "CONTEXT"]
+  ] as const)("keeps retrieval but records a %s overflow as too long", async (
+    _label,
+    reason,
+    limit
+  ) => {
+    const local = repository({ candidates: [laneCandidate("read-after-overflow")] });
+    const base = retrievalOptions(["c0"]);
+    const decide = vi.fn(async (): Promise<MemoryControlResult> => ({
+      bindingId: "binding-control",
+      reason,
+      status: "UNAVAILABLE"
+    }));
+    const actionExecutor = { execute: vi.fn() };
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...deterministic(base),
+      actionExecutor,
+      control: { decide }
+    }).retrieve(runInput(`${filler("Context")} Remember this whole paragraph verbatim.`));
+
+    expect(decide).toHaveBeenCalledOnce();
+    expect(actionExecutor.execute).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+        memoryInputLimitReason: limit,
+        memoryInputTooLong: true
+      },
+      items: [{ exactItemId: "read-after-overflow" }],
+      outcome: "USED"
+    });
   });
 });

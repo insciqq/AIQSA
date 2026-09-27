@@ -548,6 +548,24 @@ describe("answer outputs v2", () => {
       .not.toBeInTheDocument();
   });
 
+  it("says a message was too long for Memory instead of a generic unavailable notice", () => {
+    render(<AnswerOutputsV2 artifact={{
+      citations: [],
+      memoryStatus: "INPUT_TOO_LONG",
+      reasoningText: [],
+      sources: []
+    }} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "This message was too long for Memory to process in full. No Memory changes were made from it."
+    );
+    expect(screen.getByTestId("memory-input-too-long-status")).not.toHaveTextContent(
+      /INPUT_TOO_LONG|FAILED_SAFE|error|code/i
+    );
+    expect(screen.queryByText("Memory was unavailable for this response."))
+      .not.toBeInTheDocument();
+  });
+
   it("renders settled generated files with safe metadata and authorized downloads", () => {
     render(<AnswerOutputsV2 artifact={{
       citations: [],

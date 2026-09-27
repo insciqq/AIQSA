@@ -3162,6 +3162,76 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
+  it("shows a turn beyond the Memory source budget as too long, not as unavailable", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0,
+        useMemoryFacts: true
+      });
+      const chat = await prisma.chat.create({ data: { title: "Oversized turn", userId } });
+      const request = normalizedRequest(
+        chat.id,
+        `${"Pasted log line. ".repeat(6_000)}Please remember that I prefer tea.`
+      );
+      const repository = createPrismaRunRepository(prisma, { memoryExecutionAuthority: {} });
+      const created = await repository.createRun({
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        memoryMaterializer(personalContext, memoryActionAnswerResult) {
+          const finalRequest: NormalizedRunRequest = {
+            ...request,
+            ...(personalContext ? { personalContext } : {}),
+            prompt: {
+              ...request.prompt,
+              ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
+            }
+          };
+          return {
+            contextTruncation: null,
+            normalizedRequest: finalRequest,
+            providerRequest: { ...finalRequest, attachments: [] },
+            providerRequestPreview: {
+              memoryActionAnswerResult: memoryActionAnswerResult ?? null,
+              personalContext: personalContext?.text ?? null
+            }
+          };
+        },
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: { request: "base" },
+        userId
+      });
+
+      const [attempt, binding, controls] = await Promise.all([
+        prisma.memoryRetrievalAttempt.findFirstOrThrow({ where: { modelRunId: created.runId } }),
+        prisma.modelRunMemoryBinding.findUniqueOrThrow({ where: { modelRunId: created.runId } }),
+        prisma.memoryExecutionBinding.count({ where: { logicalRole: "MEMORY_CONTROL", userId } })
+      ]);
+      expect(attempt).toMatchObject({ boundedSafeQuerySnapshot: null, outcome: "FAILED_SAFE" });
+      expect(attempt.budgetSnapshot).toMatchObject({
+        memoryActionAdmissionState: "INPUT_TOO_LONG",
+        memoryActionControlRequested: false,
+        memoryInputLimitReason: "SOURCE",
+        memoryInputTooLong: true,
+        reason: "memory_query_input_too_long"
+      });
+      expect(binding).toMatchObject({ outcome: "FAILED_SAFE", retrievalAttemptId: attempt.id });
+      expect(controls).toBe(0);
+
+      const chatUpdate = await repository.getChatUpdateForRun({
+        assistantMessageId: created.assistantMessageId,
+        chatId: chat.id,
+        userId,
+        userMessageId: created.userMessageId
+      });
+      expect(chatUpdate?.messages.find(({ id }) => id === created.assistantMessageId)
+        ?.artifactSummary?.memoryStatus).toBe("INPUT_TOO_LONG");
+    });
+  });
+
   it("freezes archived previous-chat chunks and rejects source drift", async () => {
     await withPreparingUser(async ({ userId }) => {
       const history = await createPreparingHistoryFixture(userId);

@@ -16,8 +16,19 @@ import {
 } from "./temporal";
 import { normalizeMemoryLexicalProjection } from "./lexical";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v19";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v20";
+/** Shared budget of one query projection, including its fragment separators. */
 export const MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS = 2_000;
+/** Joins non-adjacent fragments of a long turn; stable under NFKC and trim. */
+export const MEMORY_RETRIEVAL_QUERY_FRAGMENT_SEPARATOR = "\n\n";
+/** Evenly spaced interior windows between the head and the tail. */
+const MEMORY_RETRIEVAL_QUERY_INTERIOR_WINDOWS = 3;
+/** Budget weights: head 1, each interior window 1, tail 2. A trailing question
+ * or directive gets the largest share without any language interpretation. */
+const MEMORY_RETRIEVAL_QUERY_TAIL_WEIGHT = 2;
+/** A boundary moves to a nearby Unicode white space so a fragment does not
+ * begin or end with a partial word; it never moves further than this. */
+const MEMORY_RETRIEVAL_QUERY_BOUNDARY_SNAP = 32;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
 export const MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS = 4;
@@ -41,6 +52,79 @@ function boundedUnicode(value: string): string {
     bounded += character;
   }
   return bounded;
+}
+
+function splitsSurrogatePair(text: string, index: number): boolean {
+  if (index <= 0 || index >= text.length) return false;
+  const previous = text.charCodeAt(index - 1);
+  const next = text.charCodeAt(index);
+  return previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
+}
+
+function snappedStart(text: string, start: number): number {
+  const index = splitsSurrogatePair(text, start) ? start + 1 : start;
+  if (index === 0) return 0;
+  for (let offset = 0; offset < MEMORY_RETRIEVAL_QUERY_BOUNDARY_SNAP; offset += 1) {
+    const at = index + offset;
+    if (at >= text.length) break;
+    if (/\s/u.test(text[at]!)) return at + 1;
+  }
+  return index;
+}
+
+function snappedEnd(text: string, end: number): number {
+  const index = splitsSurrogatePair(text, end) ? end - 1 : end;
+  if (index >= text.length) return text.length;
+  for (let offset = 0; offset < MEMORY_RETRIEVAL_QUERY_BOUNDARY_SNAP; offset += 1) {
+    const at = index - offset;
+    if (at <= 0) break;
+    if (/\s/u.test(text[at - 1]!)) return at - 1;
+  }
+  return index;
+}
+
+/**
+ * Deterministic structural projection of one current-user turn. A turn within
+ * the shared budget is kept whole. A longer turn keeps its head, evenly spaced
+ * interior windows and its tail, in source order, so a question or directive
+ * anywhere in it still reaches every retrieval lane. Positions are measured in
+ * UTF-16 code units and never split a surrogate pair; no language, keyword or
+ * sentence model participates. Planning the result again returns it unchanged.
+ */
+export function memoryRetrievalQueryText(value: string): string {
+  const text = value.normalize("NFKC").trim();
+  const budget = MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS;
+  if (text.length <= budget) return text;
+  const fragmentCount = MEMORY_RETRIEVAL_QUERY_INTERIOR_WINDOWS + 2;
+  const available = budget -
+    MEMORY_RETRIEVAL_QUERY_FRAGMENT_SEPARATOR.length * (fragmentCount - 1);
+  const unit = Math.floor(available /
+    (MEMORY_RETRIEVAL_QUERY_INTERIOR_WINDOWS + 1 + MEMORY_RETRIEVAL_QUERY_TAIL_WEIGHT));
+  const tailLength = unit * MEMORY_RETRIEVAL_QUERY_TAIL_WEIGHT;
+  const ranges: Array<{ end: number; start: number }> = [
+    { end: snappedEnd(text, unit), start: 0 }
+  ];
+  for (let window = 1; window <= MEMORY_RETRIEVAL_QUERY_INTERIOR_WINDOWS; window += 1) {
+    const center = Math.round(text.length * window / (MEMORY_RETRIEVAL_QUERY_INTERIOR_WINDOWS + 1));
+    const start = Math.max(0, center - Math.floor(unit / 2));
+    const end = Math.min(text.length, start + unit);
+    ranges.push({ end: snappedEnd(text, end), start: snappedStart(text, start) });
+  }
+  ranges.push({ end: text.length, start: snappedStart(text, text.length - tailLength) });
+  const merged: Array<{ end: number; start: number }> = [];
+  for (const range of ranges.sort((left, right) => left.start - right.start)) {
+    if (range.end <= range.start) continue;
+    const previous = merged[merged.length - 1];
+    if (previous && range.start <= previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged
+    .map(({ end, start }) => text.slice(start, end).trim())
+    .filter(Boolean)
+    .join(MEMORY_RETRIEVAL_QUERY_FRAGMENT_SEPARATOR);
 }
 
 function lexicalQuery(values: readonly string[]): string | null {
@@ -284,7 +368,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
   if (profileRequested && input.recencyRequested === true) {
     throw new Error("memory_retrieval_plan_invalid");
   }
-  const normalizedQuery = boundedUnicode(input.currentUserText);
+  const normalizedQuery = memoryRetrievalQueryText(input.currentUserText);
   const temporalQuery = parseMemoryTemporalQuery({
     now: input.now,
     query: normalizedQuery,
