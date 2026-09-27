@@ -10,6 +10,7 @@ import {
 } from "./composerSessionStore";
 import type { ConsumeMessageRunStream } from "./messageRunLifecycle";
 import { useMessageRunActions } from "./messageRunActions";
+import { chatRouteForState } from "./chatRoute";
 import { useRunLifecycleStore } from "./runLifecycleStore";
 import {
   selectRunSurface,
@@ -2440,7 +2441,7 @@ describe("message run actions", () => {
         })
       ]
     });
-    expect(actions.fetchRun).toHaveBeenCalledWith("run-edit", "chat-a");
+    expect(actions.fetchRun).toHaveBeenCalledWith("run-edit", "chat-a", { producer: expect.any(String) });
     expect(actions.notifyAnswerReady).toHaveBeenCalledOnce();
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
@@ -2983,7 +2984,7 @@ describe("message run actions", () => {
     ]);
     expect(thread.messages.some((message) => message.id === "user-321" || message.id === "assistant-321")).toBe(false);
     expect(useWorkspaceStore.getState().chats[0]?.activeLeafMessageId).toBe("assistant-send-persisted");
-    expect(actions.fetchRun).toHaveBeenCalledWith("run-send", "chat-a");
+    expect(actions.fetchRun).toHaveBeenCalledWith("run-send", "chat-a", { producer: expect.any(String) });
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       attachments: [],
       draft: ""
@@ -3226,7 +3227,7 @@ describe("message run actions", () => {
       ]
     });
     expect(useWorkspaceStore.getState().chats[0]?.activeLeafMessageId).toBe("assistant-persisted");
-    expect(actions.fetchRun).toHaveBeenCalledWith("run-regenerated", "chat-a");
+    expect(actions.fetchRun).toHaveBeenCalledWith("run-regenerated", "chat-a", { producer: expect.any(String) });
     expect(actions.notifyAnswerReady).toHaveBeenCalledOnce();
     expect(actions.resetThreadToLatest).toHaveBeenCalledOnce();
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
@@ -3372,16 +3373,54 @@ describe("message run actions", () => {
     expect(useWorkspaceStore.getState().chats[0]?.activeLeafMessageId).toBe(
       "assistant-original"
     );
-    expect(actions.surface("chat-a").events).toEqual([
-      {
-        data: {
-          message: "Regeneration failed with HTTP 500 (regenerate_failed_500)"
-        },
-        type: "error"
-      }
-    ]);
+    // The rollback removes the optimistic answer that carried the failure
+    // text, and the surface event has no run to render under; the reason
+    // stays visible as a notice beside the preserved original answer.
+    expect(actions.setNotice).toHaveBeenCalledExactlyOnceWith({
+      kind: "error",
+      text: "Regeneration failed with HTTP 500 (regenerate_failed_500)"
+    });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages.at(-1)).toMatchObject({
+      content: "Original answer", id: "assistant-original"
+    });
     expect(actions.notifyAnswerReady).not.toHaveBeenCalled();
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
+  });
+
+  it("keeps a rejected starter's reason visible after the draft returns to its blank route", async () => {
+    const pending = { ...chat(), pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" as const } };
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      Response.json({ actual: 12, error: "skills_count_exceeded", limit: 10 }, { status: 409 })));
+    const actions = useMessageRunActionsForTest({
+      activeChat: pending,
+      attachments: [],
+      draft: ""
+    });
+
+    await actions.sendStarterPrompt("Summarize our launch plan");
+
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([]);
+    expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
+    expect(chatRouteForState()).toEqual({ chatId: null, projectId: null });
+    expect(actions.setNotice).toHaveBeenCalledExactlyOnceWith({
+      kind: "error",
+      text: "12 Skills are pinned; the limit is 10, including Assistant Skills. Unpin Skills and try again."
+    });
+    expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a")).draft).toBe("");
+  });
+
+  it("does not paint a rejected regenerate reason into a chat the user left", async () => {
+    let reject!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { reject = resolve; })));
+    const actions = useMessageRunActionsForTest({ attachments: [] });
+    prepareRegenerationThread();
+
+    const regeneration = actions.regenerateMessage("assistant-original");
+    actions.activeChatIdRef.current = "chat-b";
+    reject(Response.json({ error: "regenerate_failed_500" }, { status: 500 }));
+    await regeneration;
+
+    expect(actions.setNotice).not.toHaveBeenCalled();
   });
 
   it("records regenerate cancellation as a done event without an error notice", async () => {
@@ -3451,7 +3490,7 @@ describe("message run actions", () => {
 
     await actions.regenerateMessage("assistant-original");
 
-    expect(actions.fetchRun).toHaveBeenCalledWith("run-background", "chat-a");
+    expect(actions.fetchRun).toHaveBeenCalledWith("run-background", "chat-a", { producer: expect.any(String) });
     expect(actions.refreshActiveChat).toHaveBeenCalledWith("chat-a", {
       forceDetail: true,
       preserveControls: true

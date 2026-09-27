@@ -209,6 +209,26 @@ export function ComposerOperationErrorV2({
   ) : null;
 }
 
+/**
+ * Persistent state of a resumed run that outlived frequent polling. It stays
+ * beside the composer (whose Stop remains available) until the run is
+ * terminal, independent of transient shell notices.
+ */
+export function BackgroundRunStatusV2({
+  onCheck,
+  waiting
+}: Readonly<{
+  onCheck?(): void;
+  waiting: boolean;
+}>) {
+  return waiting ? (
+    <div className="v2-live-composer-error v2-live-background-run" role="status">
+      <span>Run is still active in the background.</span>
+      {onCheck ? <UiV2Button onClick={onCheck}>Check run</UiV2Button> : null}
+    </div>
+  ) : null;
+}
+
 function messageText(message: ThreadMessage): string {
   return textFromThreadContent(message.content);
 }
@@ -992,12 +1012,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     />
   );
   const composerOperationError = (
-    <ComposerOperationErrorV2
-      error={composer.operationError}
-      live={composer.operationErrorLive}
-      onRetry={() => followupSubmission ? void composer.submitFollowup?.(followupSubmission.runId) : void composer.submitComposer()}
-      retryable={Boolean(composer.operationErrorRetryable || followupSubmission && !followupSubmission.inFlight)}
-    />
+    <>
+      <BackgroundRunStatusV2 onCheck={thread.checkBackgroundRun} waiting={Boolean(thread.backgroundRunWaiting)} />
+      <ComposerOperationErrorV2
+        error={composer.operationError}
+        live={composer.operationErrorLive}
+        onRetry={() => followupSubmission ? void composer.submitFollowup?.(followupSubmission.runId) : void composer.submitComposer()}
+        retryable={Boolean(composer.operationErrorRetryable || followupSubmission && !followupSubmission.inFlight)}
+      />
+    </>
   );
   const shellNotice = session.notice ? (
     <div className="v2-live-notice">

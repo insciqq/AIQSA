@@ -16,6 +16,7 @@ import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import { latestResumableRunId } from "@/components/app-shell/threadPath";
 import type { ChatDetail, WorkspaceChatSummary, Notice } from "@/components/app-shell/types";
 import {
+  RESUME_POLL_BACKGROUND_DELAY_MS,
   RESUME_POLL_HORIZON_MS,
   RESUME_POLL_INITIAL_DELAY_MS,
   RESUME_POLL_MAX_DELAY_MS
@@ -55,6 +56,41 @@ function isTerminalRunFetchOutcome(outcome: RunFetchOutcome): boolean {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wakes the pending wait of the resume owner of a chat (Check run). */
+const resumeWakers = new Map<string, () => void>();
+
+/**
+ * One resume cadence step. Regaining focus, visibility or connectivity and an
+ * explicit Check run end the wait early, so a run that settled while the tab
+ * was hidden or offline is observed at once instead of after a full cadence.
+ */
+function waitForResumeCheck(chatId: string, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const hasWindow = typeof window !== "undefined";
+    const hasDocument = typeof document !== "undefined";
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") finish();
+    };
+    const finish = () => {
+      clearTimeout(timer);
+      if (hasWindow) {
+        window.removeEventListener("focus", finish);
+        window.removeEventListener("online", finish);
+      }
+      if (hasDocument) document.removeEventListener("visibilitychange", onVisibility);
+      if (resumeWakers.get(chatId) === finish) resumeWakers.delete(chatId);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    if (hasWindow) {
+      window.addEventListener("focus", finish);
+      window.addEventListener("online", finish);
+    }
+    if (hasDocument) document.addEventListener("visibilitychange", onVisibility);
+    resumeWakers.set(chatId, finish);
+  });
 }
 
 const attachmentPolls = new Map<string, Promise<void>>();
@@ -392,7 +428,11 @@ export function useRunLifecycleActions({
     }
   }
 
-  async function fetchRunOutcome(runId: string, chatId: string): Promise<RunFetchOutcome> {
+  async function fetchRunOutcome(
+    runId: string,
+    chatId: string,
+    producer?: string
+  ): Promise<RunFetchOutcome> {
     const outcome = await requestRunOutcome(runId, chatId);
     if (outcome.kind !== "found") return outcome;
     const { run } = outcome;
@@ -412,16 +452,19 @@ export function useRunLifecycleActions({
       if (nextCount < currentCount || wasTerminal && !next.some((item) => item.phase === "failed" || item.phase === "cancelled")) return message;
       return { ...message, pdfPreparation: next };
     }));
-    const activeStream = useRunLifecycleStore.getState().activeStreams[chatId];
-    if (activeStream && (!activeStream.runId || activeStream.runId === run.id)) {
-      useRunLifecycleStore.getState().runIdReceived({ chatId, runId: run.id });
-      if (run.answerComplete) useRunLifecycleStore.getState().answerCompleted({ chatId, runId: run.id });
+    // Only the record's own producer may bind a run id to it; any other
+    // caller merely confirms answer completion of the run the record already
+    // names. The store enforces both rules.
+    const lifecycle = useRunLifecycleStore.getState();
+    if (producer) lifecycle.runIdReceived({ chatId, producer, runId: run.id });
+    if (run.answerComplete) {
+      lifecycle.answerCompleted({ chatId, ...(producer ? { producer } : {}), runId: run.id });
     }
     return { kind: "found", run };
   }
 
-  async function fetchRun(runId: string, chatId: string) {
-    const outcome = await fetchRunOutcome(runId, chatId);
+  async function fetchRun(runId: string, chatId: string, options: { producer?: string } = {}) {
+    const outcome = await fetchRunOutcome(runId, chatId, options.producer);
     return outcome.kind === "found" ? outcome.run : null;
   }
 
@@ -447,12 +490,16 @@ export function useRunLifecycleActions({
     let answerNotified = selectThreadSnapshot(useThreadStore.getState(), chat.id).messages.some(
       (message) => message.runId === runId && message.workspaceSettling);
     if (answerNotified) useRunLifecycleStore.getState().answerCompleted({ chatId: chat.id, runId });
-    let retainResumeGate = false;
     try {
       let startedAt = Date.now();
       let delayMs = RESUME_POLL_INITIAL_DELAY_MS;
 
-      while (Date.now() - startedAt < RESUME_POLL_HORIZON_MS) {
+      // Frequent polling up to the horizon, then rare checks until the run is
+      // terminal: the gate (and its Stop) never outlives observation, and a
+      // long run still releases the chat on its own. Unknown reads (offline,
+      // 5xx) are not terminal. Leaving the chat ends the loop within one
+      // cadence; returning to it starts a new owner.
+      for (;;) {
         if (
           activeChatIdRef.current !== chat.id ||
           useRunLifecycleStore.getState().cancelledRunIds.has(runId) ||
@@ -476,44 +523,25 @@ export function useRunLifecycleActions({
           return;
         }
 
-        await wait(delayMs);
+        const background = Date.now() - startedAt >= RESUME_POLL_HORIZON_MS;
+        if (background && ownsResume(chat.id, runId)) {
+          useRunLifecycleStore.getState().resumeBackgrounded({ chatId: chat.id, runId });
+        }
+        await waitForResumeCheck(chat.id, background ? RESUME_POLL_BACKGROUND_DELAY_MS : delayMs);
         delayMs = Math.min(Math.round(delayMs * 1.6), RESUME_POLL_MAX_DELAY_MS);
       }
-
-      if (
-        activeChatIdRef.current === chat.id &&
-        !useRunLifecycleStore.getState().cancelledRunIds.has(runId) &&
-        ownsResume(chat.id, runId)
-      ) {
-        retainResumeGate = true;
-        setNotice({
-          action: {
-            label: "Check run",
-            onClick: () => {
-              void (async () => {
-                const outcome = await inspectResumedRun(chat, runId);
-                if (isTerminalRunFetchOutcome(outcome) && ownsResume(chat.id, runId)) {
-                  useRunLifecycleStore.getState().resumeExited({ chatId: chat.id, runId });
-                  if (outcome.kind === "found" && outcome.run.status === "complete" && !answerNotified) {
-                    void notifyAnswerReady();
-                  }
-                }
-              })();
-            }
-          },
-          kind: "error",
-          text: "Run is still active in the background."
-        });
-      }
     } finally {
-      if (!retainResumeGate) {
-        useRunLifecycleStore.getState().resumeExited({ chatId: chat.id, runId });
-      }
+      useRunLifecycleStore.getState().resumeExited({ chatId: chat.id, runId });
 
       if (activeChatIdRef.current === chat.id) {
         await refreshActiveChat(chat.id, { preserveControls: true, resumeRuns: false });
       }
     }
+  }
+
+  /** Checks the chat's background run now instead of at its next cadence. */
+  function checkBackgroundRun(chatId: string) {
+    resumeWakers.get(chatId)?.();
   }
 
   async function stopCurrentRun(expectedRunId?: string | null) {
@@ -602,6 +630,7 @@ export function useRunLifecycleActions({
   }
 
   return {
+    checkBackgroundRun,
     fetchRun,
     retryAttachment,
     reuseFile,

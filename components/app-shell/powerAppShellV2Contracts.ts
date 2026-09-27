@@ -135,6 +135,13 @@ export type ShellThreadView = {
   activeChatStreaming: boolean;
   /** A verified answer may be complete while its Workspace still settles. */
   answerComplete?: boolean;
+  /**
+   * The resumed run of the active chat is still active after the frequent
+   * polling horizon; it is checked rarely until terminal.
+   */
+  backgroundRunWaiting?: boolean;
+  /** Checks the active chat's background run now (persistent Check run). */
+  checkBackgroundRun?(): void;
   /** Copies the complete visible branch of the active chat, or of `chat` when given. */
   copyVisibleThread(chat?: Readonly<{ id: string; title: string }>): Promise<void> | void;
   cancelMessageEdit(messageId: string): void;
