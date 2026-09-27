@@ -46,7 +46,8 @@ function acquire(signal?: AbortSignal): Promise<() => void> {
 
 /** Canvas/image allocations are outside V8's per-worker heap limit. Share one
  * local PDF worker slot across consumers, including worker termination, before
- * copying input bytes. Remote Vision requests do not hold this memory slot. */
+ * copying input bytes. Isolated spreadsheet/HTML parser processes hold the same
+ * slot until their process group exits. Remote Vision requests do not hold it. */
 export async function withPdfWorkerAdmission<T>(
   operation: () => Promise<T>,
   signal?: AbortSignal
