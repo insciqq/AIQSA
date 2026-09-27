@@ -21,9 +21,7 @@ describe("document parser configuration", () => {
       AIQSA_DOCLING_RESPONSE_MAX_BYTES: String(PARSER_RESPONSE_MAX_BYTES_CEILING),
       AIQSA_DOCLING_TIMEOUT_MS: String(PARSER_TIMEOUT_MS_CEILING),
       AIQSA_DOCLING_URL: "http://docling:5001/base",
-      AIQSA_TIKA_REQUEST_MAX_BYTES: "0",
-      AIQSA_TIKA_RESPONSE_MAX_BYTES: "999999999",
-      AIQSA_TIKA_TIMEOUT_MS: "1.5",
+      AIQSA_TIKA_REQUEST_MAX_BYTES: "",
       AIQSA_TIKA_URL: "https://parsers.example/tika/"
     });
 
@@ -35,6 +33,24 @@ describe("document parser configuration", () => {
     expect(config.docling?.baseUrl.toString()).toBe("http://docling:5001/base/");
     expect(config.tika).toMatchObject(DEFAULT_DOCUMENT_PARSER_LIMITS.tika);
     expect(config.tika?.baseUrl.toString()).toBe("https://parsers.example/tika/");
+  });
+
+  it.each([
+    ["AIQSA_TIKA_REQUEST_MAX_BYTES", "0"],
+    ["AIQSA_TIKA_RESPONSE_MAX_BYTES", String(PARSER_RESPONSE_MAX_BYTES_CEILING + 1)],
+    ["AIQSA_TIKA_TIMEOUT_MS", "1.5"],
+    ["AIQSA_DOCLING_TIMEOUT_MS", String(PARSER_TIMEOUT_MS_CEILING + 1)],
+    ["AIQSA_DOCLING_RESPONSE_MAX_BYTES", " 4"]
+  ])("rejects %s=%j instead of silently applying the default", (name, value) => {
+    expect(() => getDocumentParserConfig({
+      AIQSA_DOCLING_URL: "http://docling:5001",
+      AIQSA_TIKA_URL: "http://tika:9998",
+      [name]: value
+    })).toThrow(expect.objectContaining({
+      code: "document_parser_config_invalid",
+      message: expect.stringContaining(name),
+      setting: name
+    }));
   });
 
   it("inherits the effective upload cap unless an engine override is explicit", () => {

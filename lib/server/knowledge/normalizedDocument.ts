@@ -38,6 +38,7 @@ import {
   SPREADSHEET_MAX_SHEETS
 } from "../parsing/spreadsheetLimits";
 import { isSpreadsheetDateValue } from "../parsing/spreadsheetDate";
+import { parsedTableShapeValid } from "../parsing/tableLimits";
 import { utils as spreadsheetUtils } from "xlsx";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { withLayoutAwareInlineReferences } from "./layoutInlineReferences";
@@ -402,21 +403,10 @@ function normalizedFieldGroups(
 
 function normalizedTable(table: ParsedTable | null): ParsedTable | null {
   if (!table) return null;
-  if (
-    !Number.isSafeInteger(table.rowCount) || table.rowCount < 1 || table.rowCount > 2_000 ||
-    !Number.isSafeInteger(table.columnCount) || table.columnCount < 1 || table.columnCount > 200 ||
-    table.cells.length > 10_000
-  ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
+  if (!parsedTableShapeValid(table)) throw new KnowledgeNormalizedDocumentError("parser_rejected");
   const cells: ParsedTableCell[] = [];
   for (const cell of table.cells) {
     const text = normalizedText(cell.text);
-    if (
-      !Number.isSafeInteger(cell.row) || cell.row < 0 || cell.row >= table.rowCount ||
-      !Number.isSafeInteger(cell.column) || cell.column < 0 || cell.column >= table.columnCount ||
-      !Number.isSafeInteger(cell.rowSpan) || cell.rowSpan < 1 || cell.row + cell.rowSpan > table.rowCount ||
-      !Number.isSafeInteger(cell.columnSpan) || cell.columnSpan < 1 ||
-      cell.column + cell.columnSpan > table.columnCount
-    ) throw new KnowledgeNormalizedDocumentError("parser_rejected");
     cells.push(Object.freeze({
       column: cell.column,
       columnSpan: cell.columnSpan,

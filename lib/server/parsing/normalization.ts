@@ -1,18 +1,21 @@
 import { parse, type DefaultTreeAdapterMap } from "parse5";
 import { finalizeParsedDocument, parsedLanguageHints } from "./assessment";
 import { DocumentParserError } from "./errors";
+import { parsedTableText, portionParsedTable } from "./tableLimits";
 import type {
   ParsedBoundingBox,
   ParsedDocument,
   ParsedDocumentAsset,
   ParsedDocumentBlock,
   ParsedDocumentBlockType,
+  ParsedDocumentWarningCode,
   ParsedFieldCell,
   ParsedFieldCellLabel,
   ParsedFieldGroup,
   ParsedFieldLink,
   ParsedFieldLinkLabel,
   ParsedTable,
+  ParsedTableCell,
   SidecarParserEngine
 } from "./types";
 
@@ -41,9 +44,9 @@ const MAX_FIELD_LINKS = 200_000;
 const MAX_FIELD_LINKS_PER_GROUP = 20_000;
 const MAX_FIELD_REF_LENGTH = 512;
 const MAX_FIELD_TEXT_LENGTH = 32_767;
-const MAX_TABLE_CELLS = 10_000;
-const MAX_TABLE_COLUMNS = 200;
-const MAX_TABLE_ROWS = 2_000;
+/** HTML clamps: https://html.spec.whatwg.org/#attr-tdth-colspan */
+const HTML_MAX_COLUMN_SPAN = 1_000;
+const HTML_MAX_ROW_SPAN = 65_534;
 const FIELD_CELL_LABELS: readonly ParsedFieldCellLabel[] = [
   "checkbox",
   "key",
@@ -213,6 +216,7 @@ function finalizedDocument(input: Readonly<{
   mediaType: string;
   pageCount: number;
   status: "complete" | "partial";
+  warnings?: readonly ParsedDocumentWarningCode[];
 }>): ParsedDocument {
   const blocks: ParsedDocumentBlock[] = input.blocks.map((block, index) => Object.freeze({
     assetIds: Object.freeze([...(block.assetIds ?? [])]),
@@ -239,24 +243,46 @@ function finalizedDocument(input: Readonly<{
     fieldGroups: input.fieldGroups ?? [],
     mediaType: input.mediaType,
     pageCount,
-    status: input.status
+    status: input.status,
+    warnings: input.warnings ?? []
   });
 }
 
-function doclingTable(item: Record<string, unknown>): ParsedTable | null {
-  if (!isRecord(item.data) || !Array.isArray(item.data.table_cells)) return null;
+type NormalizedTableBlocks = Readonly<{
+  degraded: boolean;
+  parts: readonly Readonly<{ table: ParsedTable | null; text: string }>[];
+}>;
+
+/** Applies the shared table bounds: lossless row portions, or unstructured
+ * text for a table wider than the column bound. Both are reported. */
+function tableBlocks(
+  cells: readonly ParsedTableCell[],
+  rowCount: number,
+  columnCount: number
+): NormalizedTableBlocks {
+  const portioning = portionParsedTable({ cells, columnCount, rowCount });
+  if (!portioning) return { degraded: false, parts: [] };
+  if (portioning.kind === "text_only") {
+    return {
+      degraded: portioning.text !== "",
+      parts: [{ table: null, text: portioning.text }]
+    };
+  }
+  return {
+    degraded: portioning.portions.length > 1,
+    parts: portioning.portions.map((table) => ({ table, text: parsedTableText(table) }))
+  };
+}
+
+function doclingTable(item: Record<string, unknown>): NormalizedTableBlocks {
+  if (!isRecord(item.data) || !Array.isArray(item.data.table_cells)) {
+    return { degraded: false, parts: [] };
+  }
   const cells = item.data.table_cells;
-  if (cells.length > MAX_TABLE_CELLS) invalid("docling");
 
   let rowCount = 0;
   let columnCount = 0;
-  const values: Array<{
-    column: number;
-    columnSpan: number;
-    row: number;
-    rowSpan: number;
-    text: string;
-  }> = [];
+  const values: ParsedTableCell[] = [];
 
   for (const candidate of cells) {
     if (!isRecord(candidate)) continue;
@@ -273,8 +299,6 @@ function doclingTable(item: Record<string, unknown>): ParsedTable | null {
       || (column as number) < 0
       || (endRow as number) <= (row as number)
       || (endColumn as number) <= (column as number)
-      || (endRow as number) > MAX_TABLE_ROWS
-      || (endColumn as number) > MAX_TABLE_COLUMNS
     ) {
       invalid("docling");
     }
@@ -291,20 +315,7 @@ function doclingTable(item: Record<string, unknown>): ParsedTable | null {
     });
   }
 
-  if (rowCount * columnCount > MAX_TABLE_CELLS * 4) invalid("docling");
-  if (rowCount === 0 || columnCount === 0) return null;
-  return Object.freeze({
-    cells: Object.freeze(values.map((value) => Object.freeze(value))),
-    columnCount,
-    rowCount
-  });
-}
-
-function tableText(table: ParsedTable | null): string {
-  if (!table) return "";
-  const rows = Array.from({ length: table.rowCount }, () => Array<string>(table.columnCount).fill(""));
-  for (const cell of table.cells) rows[cell.row]![cell.column] = cell.text;
-  return rows.map((row) => row.join("\t").trimEnd()).filter(Boolean).join("\n");
+  return tableBlocks(values, rowCount, columnCount);
 }
 
 function doclingFieldGroup(
@@ -434,6 +445,7 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
   const fieldGroups: ParsedFieldGroup[] = [];
   const headingPath: string[] = [];
   let hasTitle = false;
+  let tableDegraded = false;
   let totalFieldCells = 0;
   let totalFieldLinks = 0;
   const visitedContainers = new Set<string>();
@@ -520,18 +532,22 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     }
 
     if (collectionName === "tables") {
-      const table = doclingTable(item);
+      const normalized = doclingTable(item);
+      tableDegraded ||= normalized.degraded;
       const { page, pageEnd } = pageRangeOf(item);
-      addBlock(blocks, {
-        boundingBoxes: boundingBoxesOf(item),
-        headingPath,
-        isTable: true,
-        page,
-        pageEnd,
-        table,
-        text: tableText(table),
-        type: "table"
-      }, "docling");
+      const boundingBoxes = boundingBoxesOf(item);
+      for (const part of normalized.parts) {
+        addBlock(blocks, {
+          boundingBoxes,
+          headingPath,
+          isTable: true,
+          page,
+          pageEnd,
+          table: part.table,
+          text: part.text,
+          type: "table"
+        }, "docling");
+      }
       return;
     }
 
@@ -559,7 +575,8 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
     fieldGroups,
     mediaType,
     pageCount: doclingPageCount(document),
-    status: status === "partial_success" ? "partial" : "complete"
+    status: status === "partial_success" ? "partial" : "complete",
+    warnings: tableDegraded ? ["table_extraction_degraded"] : []
   });
 }
 
@@ -615,51 +632,34 @@ function descendants(element: HtmlElement, tagName: string): HtmlElement[] {
   return result;
 }
 
-function tikaTable(table: HtmlElement): ParsedTable | null {
-  const rows = descendants(table, "tr").slice(0, MAX_TABLE_ROWS);
-  if (rows.length === 0) return null;
-  let cellCount = 0;
+function htmlSpan(value: string | undefined, maximum: number): number {
+  const parsed = Number(value ?? "1");
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? Math.min(parsed, maximum) : 1;
+}
+
+function tikaTable(table: HtmlElement): NormalizedTableBlocks {
+  const rows = descendants(table, "tr");
   let columnCount = 0;
-  const values: Array<{
-    column: number;
-    columnSpan: number;
-    row: number;
-    rowSpan: number;
-    text: string;
-  }> = [];
+  const values: ParsedTableCell[] = [];
   rows.forEach((row, rowIndex) => {
     const cells = childNodes(row).filter((node): node is HtmlElement =>
       isElement(node) && (node.tagName === "td" || node.tagName === "th")
     );
-    cellCount += cells.length;
-    if (cellCount > MAX_TABLE_CELLS || cells.length > MAX_TABLE_COLUMNS) invalid("tika");
     let column = 0;
     for (const cell of cells) {
-      const parsedColumnSpan = Number(attribute(cell, "colspan") ?? "1");
-      const parsedRowSpan = Number(attribute(cell, "rowspan") ?? "1");
-      const columnSpan = Number.isSafeInteger(parsedColumnSpan) && parsedColumnSpan >= 1 && parsedColumnSpan <= MAX_TABLE_COLUMNS
-        ? parsedColumnSpan
-        : 1;
-      const rowSpan = Number.isSafeInteger(parsedRowSpan) && parsedRowSpan >= 1 && parsedRowSpan <= MAX_TABLE_ROWS
-        ? parsedRowSpan
-        : 1;
+      const columnSpan = htmlSpan(attribute(cell, "colspan"), HTML_MAX_COLUMN_SPAN);
       values.push({
         column,
         columnSpan,
         row: rowIndex,
-        rowSpan,
+        rowSpan: htmlSpan(attribute(cell, "rowspan"), HTML_MAX_ROW_SPAN),
         text: normalizedText(htmlText(cell))
       });
       column += columnSpan;
     }
     columnCount = Math.max(columnCount, column);
   });
-  if (columnCount === 0) return null;
-  return Object.freeze({
-    cells: Object.freeze(values.map((value) => Object.freeze(value))),
-    columnCount,
-    rowCount: rows.length
-  });
+  return tableBlocks(values, rows.length, columnCount);
 }
 
 function tikaBlocksForPage(
@@ -667,7 +667,8 @@ function tikaBlocksForPage(
   page: number,
   headingPath: string[],
   blocks: MutableBlock[],
-  assets: ParsedDocumentAsset[]
+  assets: ParsedDocumentAsset[],
+  tables: { degraded: boolean }
 ): void {
   let emitted = false;
 
@@ -690,9 +691,10 @@ function tikaBlocksForPage(
     }
 
     if (node.tagName === "table") {
-      const table = tikaTable(node);
-      const text = tableText(table);
-      if (text) {
+      const normalized = tikaTable(node);
+      tables.degraded ||= normalized.degraded;
+      for (const { table, text } of normalized.parts) {
+        if (!text) continue;
         addBlock(blocks, { headingPath, isTable: true, page, table, text, type: "table" }, "tika");
         emitted = true;
       }
@@ -769,13 +771,15 @@ export function normalizeTikaResponse(value: unknown, mediaType: string): Parsed
   const blocks: MutableBlock[] = [];
   const assets: ParsedDocumentAsset[] = [];
   const headingPath: string[] = [];
+  const tables = { degraded: false };
 
   roots.forEach((root, index) => tikaBlocksForPage(
     root,
     index + 1,
     headingPath,
     blocks,
-    assets
+    assets,
+    tables
   ));
 
   return finalizedDocument({
@@ -784,6 +788,7 @@ export function normalizeTikaResponse(value: unknown, mediaType: string): Parsed
     engine: "tika",
     mediaType,
     pageCount: roots.length,
-    status: "complete"
+    status: "complete",
+    warnings: tables.degraded ? ["table_extraction_degraded"] : []
   });
 }
