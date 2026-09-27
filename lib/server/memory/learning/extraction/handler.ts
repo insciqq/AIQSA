@@ -105,16 +105,19 @@ function terminalResult(
 }
 
 /** A page that settled without applying a plan still hands coverage to the
- * next page (its own gap stays recorded by its stage). A page that applied
- * enqueued its continuation atomically with that apply. */
+ * next page (its own gap stays recorded by its stage); the next page
+ * revalidates every source fence before any provider call. A page that
+ * applied enqueued its continuation atomically with that apply. */
 function continuingCoverage(
   deps: MemoryFactExtractionHandlerDependencies,
   result: MemoryJobExecutionResult,
-  input: MemoryFactExtractionInput
+  input: MemoryFactExtractionInput,
+  coverageEnd?: number
 ): MemoryJobExecutionResult {
   return {
     ...result,
-    apply: (tx, claim) => deps.repository.continueCoverage(tx, claim, input)
+    apply: (tx, claim) =>
+      deps.repository.continueCoverage(tx, claim, input, coverageEnd)
   };
 }
 
@@ -633,7 +636,12 @@ export function createMemoryFactExtractionHandler(
           )
         );
         if (applied === "STALE") {
-          return terminalResult(job, input, "fact_apply_stale", plan.outputHash);
+          return continuingCoverage(
+            deps,
+            terminalResult(job, input, "fact_apply_stale", plan.outputHash),
+            input,
+            plan.coverageEnd
+          );
         }
         return {
           acceptedResultHash: plan.outputHash,
