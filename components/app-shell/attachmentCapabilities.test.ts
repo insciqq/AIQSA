@@ -271,4 +271,43 @@ describe("attachment capabilities", () => {
       }
     })).toBeNull();
   });
+
+  it("warns about an incomplete non-PDF document without blocking it", () => {
+    const document = (processing: Record<string, unknown>) => ({
+      fileName: "large.txt",
+      id: "large",
+      kind: "document" as const,
+      metadata: {
+        document: {
+          characterCount: 1_000_000,
+          engine: "inline",
+          extractedTextMaxChars: 1_000_000,
+          ...processing
+        }
+      },
+      status: "ready" as const
+    });
+    const selected = model("pdf_text_extraction", false);
+
+    expect(attachmentWarningsForModel([
+      document({ status: "partial", truncated: true, warnings: ["partial_parse", "truncated_oversized_section"] })
+    ], selected)).toEqual([{
+      attachmentId: "large",
+      blocking: false,
+      label: "Text limited",
+      message: "Only the first 1,000,000 characters of text were extracted. The model is told the rest is missing."
+    }]);
+    expect(attachmentWarningsForModel([
+      document({ status: "partial", truncated: false })
+    ], selected)).toMatchObject([{ blocking: false, label: "Text limited" }]);
+    expect(attachmentWarningsForModel([
+      document({ status: "complete", truncated: false })
+    ], selected)).toEqual([]);
+    expect(attachmentWarningsForModel([
+      document({ status: "complete", truncated: true })
+    ], selected)).toEqual([]);
+    expect(firstBlockingAttachmentWarning([
+      document({ status: "partial", truncated: true })
+    ], selected)).toBeNull();
+  });
 });

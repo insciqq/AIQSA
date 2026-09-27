@@ -5,7 +5,11 @@ import type {
   ComposerPdfProcessing
 } from "@/components/app-shell/attachmentContracts";
 import type { ComposerAttachmentPolicy } from "@/components/app-shell/attachmentSelection";
-import { decodePdfProcessing } from "@/lib/contracts/uploads";
+import {
+  decodePdfProcessing,
+  documentProcessingFromMetadata,
+  type DocumentProcessingWire
+} from "@/lib/contracts/uploads";
 
 const directPdfStorageFailureCodes = new Set([
   "attachment_checksum_mismatch",
@@ -24,6 +28,14 @@ export function pdfProcessingForAttachment(
   return decodePdfProcessing(attachment.processing);
 }
 
+export function documentProcessingForAttachment(
+  attachment: ComposerAttachment
+): DocumentProcessingWire | null {
+  return attachment.kind === "document"
+    ? documentProcessingFromMetadata(attachment.metadata)
+    : null;
+}
+
 export function attachmentWarningsForModel(
   attachments: readonly ComposerAttachment[],
   model: CatalogModel | undefined,
@@ -33,6 +45,19 @@ export function attachmentWarningsForModel(
   const warnings: ComposerAttachmentWarning[] = [];
 
   for (const attachment of attachments) {
+    const document = documentProcessingForAttachment(attachment);
+    if (document?.status === "partial") {
+      warnings.push({
+        attachmentId: attachment.id,
+        blocking: false,
+        label: "Text limited",
+        message: document.truncated
+          ? `Only the first ${document.characterCount.toLocaleString("en-US")} characters of text were extracted. The model is told the rest is missing.`
+          : "Part of this file could not be read. The model is told its text is incomplete."
+      });
+      continue;
+    }
+
     const processing = pdfProcessingForAttachment(attachment);
     if (!processing || processing.status === "complete") {
       continue;

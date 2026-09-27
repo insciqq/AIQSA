@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeAttachmentLibraryResponse,
+  decodeDocumentProcessing,
   decodePdfProcessing,
+  documentProcessingFromMetadata,
   decodeUploadAttachmentResponse,
   decodeUploadErrorResponse
 } from "./uploads";
@@ -390,5 +392,45 @@ describe("upload wire decoders", () => {
         message: "raw parser detail\nprivate path"
       })
     ).toBeNull();
+  });
+
+  it("decodes non-PDF document completeness with explicit invariants", () => {
+    const truncated = {
+      characterCount: 1_000_000,
+      engine: "inline",
+      extractedTextMaxChars: 1_000_000,
+      pageCount: 1,
+      parserStatus: "partial",
+      status: "partial",
+      truncated: true,
+      warnings: ["partial_parse", "truncated_oversized_section"]
+    };
+    expect(decodeDocumentProcessing(truncated)).toEqual({
+      characterCount: 1_000_000,
+      extractedTextMaxChars: 1_000_000,
+      status: "partial",
+      truncated: true,
+      warnings: ["partial_parse", "truncated_oversized_section"]
+    });
+    expect(documentProcessingFromMetadata({ document: truncated })?.truncated).toBe(true);
+    // The isolated HTML fallback shape carries no warnings list.
+    expect(decodeDocumentProcessing({
+      characterCount: 32, engine: "inline", extractedTextMaxChars: 1_000_000,
+      kind: "html", status: "complete", truncated: false
+    })).toMatchObject({ status: "complete", truncated: false, warnings: [] });
+
+    for (const malformed of [
+      { ...truncated, status: "complete" },
+      { ...truncated, characterCount: 1_000_001, extractedTextMaxChars: 1_000_001 },
+      { ...truncated, characterCount: 11, extractedTextMaxChars: 10 },
+      { ...truncated, extractedTextMaxChars: 0, characterCount: 0 },
+      { ...truncated, truncated: "yes" },
+      { ...truncated, status: "no_text", truncated: false },
+      { ...truncated, warnings: ["private_detail"] },
+      { ...truncated, warnings: ["partial_parse", "partial_parse"] }
+    ]) {
+      expect(decodeDocumentProcessing(malformed)).toBeNull();
+    }
+    expect(documentProcessingFromMetadata(null)).toBeNull();
   });
 });
