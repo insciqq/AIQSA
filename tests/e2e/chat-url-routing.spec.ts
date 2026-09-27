@@ -727,8 +727,18 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     await expect(page).toHaveURL(exactPath(`/p/${projectOne}/c/${projectChat}`));
     await expect(header).toHaveText(projectChatTitle, { timeout: 20_000 });
     await expect(composer).toHaveValue("Project one saved draft");
-    await expectNoHorizontalOverflow(page);
-    await page.screenshot({ path: testInfo.outputPath("scope-project-draft-kept-light-1440.png") });
+    for (const theme of ["light", "dark"] as const) {
+      await context.addCookies([{ name: "aiqsa.theme", value: theme, url: baseURL! }]);
+      await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+      for (const size of [desktop, { width: 768, height: 1024 }, { width: 1024, height: 768 }, phone, { width: 844, height: 390 }]) {
+        await page.setViewportSize(size);
+        await expect(composer).toHaveValue("Project one saved draft");
+        await expect(composer).toBeEnabled();
+        await expectNoHorizontalOverflow(page);
+        await composer.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: testInfo.outputPath(`scope-project-draft-kept-${theme}-${size.width}x${size.height}.png`) });
+      }
+    }
   } finally {
     await deleteChats(page, [alpha, beta, late]);
     for (const projectId of [projectOne, projectTwo]) {
