@@ -651,6 +651,7 @@
   "provider_refresh_failed",
   "provider_refresh_unavailable",
   "provider_refused",
+  "provider_request_outcome_unknown",
   "provider_request_timed_out",
   "provider_response_cancelled",
   "provider_response_failed",

@@ -17,6 +17,7 @@ import {
   isRetryableProviderNetworkError,
   type ProviderRetryOptions
 } from "./providerRetry";
+import { providerRequestNotSent } from "./providerSafeFetch";
 import { parseRetryAfterMs } from "../retryAfter";
 import { randomUUID } from "node:crypto";
 import { parseSseStream } from "./sse";
@@ -42,6 +43,19 @@ export type OpenAIRetryableErrorPayload = {
 };
 
 const retryableHttpStatuses = new Set([408, 409, 429, 500, 502, 503, 504]);
+
+export const PROVIDER_REQUEST_OUTCOME_UNKNOWN = "provider_request_outcome_unknown";
+
+/** A compatible create lost its transport after the provider may have received
+ * it. Neither success, zero usage nor a completed replay may be inferred. */
+export class ProviderRequestOutcomeUnknownError extends Error {
+  readonly code = PROVIDER_REQUEST_OUTCOME_UNKNOWN;
+
+  constructor(cause: unknown) {
+    super(PROVIDER_REQUEST_OUTCOME_UNKNOWN, { cause });
+    this.name = "ProviderRequestOutcomeUnknownError";
+  }
+}
 
 class OpenAIHttpError extends Error {
   readonly retryAfterMs: number | null;
@@ -146,15 +160,34 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
     : {});
 }
 
+/**
+ * A compatible create is a paid POST without verified provider idempotency;
+ * each attempt carries a fresh routing key, not an idempotency key. Replay only
+ * failures that prove the provider did not accept the request: a transport
+ * failure before the connection existed, a 429 refusal, or 408/503 whose
+ * Retry-After explicitly asks for a new attempt. 409, 500, 502 and 504 (and
+ * 408/503 without Retry-After) may follow acceptance and are never replayed.
+ */
 function initialRequestRetryDecision(
   error: unknown,
   signal: AbortSignal
 ): Readonly<{ retryAfterMs: number | null }> | null {
   if (signal.aborted) return null;
-  if (error instanceof OpenAIHttpError && error.retryable) {
-    return { retryAfterMs: error.retryAfterMs };
+  if (error instanceof OpenAIHttpError) {
+    if (error.status === 429) return { retryAfterMs: error.retryAfterMs };
+    return (error.status === 408 || error.status === 503) && error.retryAfterMs !== null
+      ? { retryAfterMs: error.retryAfterMs }
+      : null;
   }
-  return isRetryableProviderNetworkError(error) ? { retryAfterMs: null } : null;
+  return providerRequestNotSent(error) ? { retryAfterMs: null } : null;
+}
+
+/** A transport failure without proof of non-delivery leaves the create's
+ * outcome and billing unknown; aborts and deadlines keep their own identity. */
+function initialRequestTransportFailure(error: unknown, signal: AbortSignal): unknown {
+  return signal.aborted || providerRequestNotSent(error) || !isRetryableProviderNetworkError(error)
+    ? error
+    : new ProviderRequestOutcomeUnknownError(error);
 }
 
 export function openAIRetryableErrorPayload(error: unknown): OpenAIRetryableErrorPayload | null {
@@ -175,7 +208,10 @@ export function createFetchOpenAIResponsesClient(input: {
   defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
   /**
-   * Opt-in only for stateless/replayable Responses requests. Native
+   * Opt-in only for stateless compatible Responses requests. It replays only
+   * failures proven undelivered (`initialRequestRetryDecision`) and, unless
+   * `maxAttempts` is 1, reports any other transport loss as
+   * `provider_request_outcome_unknown`. Native
    * background Responses deliberately leave this unset because a failed
    * create can have crash-ambiguous provider state without a response id.
    */
@@ -187,6 +223,11 @@ export function createFetchOpenAIResponsesClient(input: {
 }): OpenAIResponsesClient {
   const baseUrl = input.baseUrl?.trim() || "https://api.openai.com/v1";
   const fetchFn = input.fetchFn ?? fetch;
+  // Only a transport that owns replay reports its refusal to replay as an
+  // unknown outcome. Native background create and callers that disable replay
+  // (they own dispatch recovery or their own paid-probe policy) receive the
+  // raw transport failure and classify it themselves.
+  const transportOwnsReplay = input.initialRequestRetry !== undefined && input.initialRequestRetry.maxAttempts !== 1;
   const headers: Record<string, string> = {
     "content-type": "application/json"
   };
@@ -209,12 +250,17 @@ export function createFetchOpenAIResponsesClient(input: {
         const requestBody = input.requestIsolation
           ? { ...body, prompt_cache_key: randomUUID() }
           : body;
-        const response = await fetchFn(`${baseUrl}/responses`, {
-          body: JSON.stringify(requestBody),
-          headers,
-          method: "POST",
-          signal: timeout.signal
-        });
+        let response: Response;
+        try {
+          response = await fetchFn(`${baseUrl}/responses`, {
+            body: JSON.stringify(requestBody),
+            headers,
+            method: "POST",
+            signal: timeout.signal
+          });
+        } catch (error) {
+          throw transportOwnsReplay ? initialRequestTransportFailure(error, timeout.signal) : error;
+        }
         if (!response.ok) {
           return await throwOpenAIHttpError(response, timeout.signal);
         }

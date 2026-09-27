@@ -28,12 +28,25 @@ const PROVIDER_HTTP_REQUEST_MAX_BYTES = 512 * 1_024 * 1_024;
 
 export class ProviderSafeFetchError extends Error {
   readonly code: ProviderSafeFetchErrorCode;
+  /** See `McpSafeFetchError.requestNotSent`: set only on proof. */
+  declare readonly requestNotSent?: true;
 
-  constructor(code: ProviderSafeFetchErrorCode) {
+  constructor(code: ProviderSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean }>) {
     super(code);
     this.code = code;
     this.name = "ProviderSafeFetchError";
+    if (options?.requestNotSent === true) {
+      Object.defineProperty(this, "requestNotSent", { enumerable: true, value: true });
+    }
   }
+}
+
+/** True only when the transport proves that the provider never received the
+ * request: DNS failed before dispatch, or the pinned connection was never
+ * established. Every other transport failure may follow delivery. */
+export function providerRequestNotSent(error: unknown): boolean {
+  return error instanceof ProviderSafeFetchError &&
+    (error.code === "provider_http_dns_failed" || error.requestNotSent === true);
 }
 
 export type ProviderSafeFetchOptions = {
@@ -64,7 +77,7 @@ function mapSafeFetchError(error: McpSafeFetchError): ProviderSafeFetchError {
     case "mcp_http_too_many_redirects":
       return new ProviderSafeFetchError("provider_http_redirect_forbidden");
     case "mcp_http_request_failed":
-      return new ProviderSafeFetchError("provider_http_request_failed");
+      return new ProviderSafeFetchError("provider_http_request_failed", { requestNotSent: error.requestNotSent });
     case "mcp_http_request_body_too_large":
       return new ProviderSafeFetchError("provider_http_request_body_too_large");
     case "mcp_http_protocol_forbidden":
