@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chromium, type Page } from "@playwright/test";
+import { parseChatRoutePath } from "../lib/domain/chatRoute";
 import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
 
 /**
@@ -300,7 +301,11 @@ async function main(): Promise<void> {
     const activity = page.getByTestId("tool-activity-disclosure").last();
     // The live label and the timeline row both carry the command text.
     await activity.getByText("Running sleep 300", { exact: false }).first().waitFor({ timeout: 300_000 });
-    chatId = uuidOrThrow(await page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId")), "chat_id_missing");
+    // The address names the open chat once its first send is under way.
+    chatId = uuidOrThrow(
+      parseChatRoutePath(await page.evaluate(() => window.location.pathname))?.chatId ?? null,
+      "chat_id_missing"
+    );
     const sessionId = sql(`select id from "WorkspaceSession" where "chatId" = '${chatId}';`);
     if (!/^ws_[0-9a-f]{40}$/u.test(sessionId)) throw new Error("workspace_session_missing");
     const activeAsyncBefore = Number(sql(

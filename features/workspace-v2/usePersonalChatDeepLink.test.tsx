@@ -11,29 +11,63 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+type DeepLinkProps = Parameters<typeof usePersonalChatDeepLink>[0];
+
+function renderDeepLink(overrides: Partial<DeepLinkProps> = {}) {
+  const props: DeepLinkProps = {
+    activeChatId: "chat-1",
+    detailLoading: false,
+    onAnchor: vi.fn(),
+    onUnavailable: vi.fn(),
+    ready: true,
+    revealMessage: vi.fn(async () => true),
+    ...overrides
+  };
+  const hook = renderHook((next: DeepLinkProps) => usePersonalChatDeepLink(next), { initialProps: props });
+  return { ...hook, props };
+}
+
 describe("usePersonalChatDeepLink", () => {
-  it("opens an artifact's source chat without requiring a message anchor", async () => {
-    window.history.replaceState(null, "", "/?chat=artifact-chat&artifactEdit=edit&artifactId=artifact&versionId=version");
-    const activateChat = vi.fn(async () => true);
-    const revealMessage = vi.fn(async () => true);
-    const onAnchor = vi.fn();
-    const onUnavailable = vi.fn();
-    const { rerender } = renderHook(() => usePersonalChatDeepLink({ activateChat, revealMessage, onAnchor, onUnavailable, ready: true }));
-    await waitFor(() => expect(activateChat).toHaveBeenCalledWith("artifact-chat"));
-    rerender();
-    expect(activateChat).toHaveBeenCalledOnce();
-    expect(revealMessage).not.toHaveBeenCalled();
-    expect(onAnchor).not.toHaveBeenCalled();
-    expect(onUnavailable).not.toHaveBeenCalled();
-    expect(window.location.search).toContain("artifactEdit=edit");
+  it("anchors a message once the route owner shows the addressed chat with its thread", async () => {
+    window.history.replaceState(null, "", "/c/chat-1?message=message-1&keep=yes");
+    const { props, rerender } = renderDeepLink({ activeChatId: null });
+    rerender({ ...props, activeChatId: "chat-1", detailLoading: true });
+    expect(props.revealMessage).not.toHaveBeenCalled();
+    rerender({ ...props, activeChatId: "chat-1", detailLoading: false });
+    await waitFor(() => expect(props.onAnchor).toHaveBeenCalledWith("chat-1", "message-1"));
+    rerender({ ...props, activeChatId: "chat-1", detailLoading: false });
+    expect(props.revealMessage).toHaveBeenCalledOnce();
+    expect(props.onUnavailable).not.toHaveBeenCalled();
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/c/chat-1?message=message-1&keep=yes");
   });
 
-  it("fails closed when a plain chat link cannot be opened", async () => {
-    window.history.replaceState(null, "", "/?chat=unavailable&keep=yes");
-    const onUnavailable = vi.fn();
-    renderHook(() => usePersonalChatDeepLink({ activateChat: vi.fn(async () => false), revealMessage: vi.fn(async () => true), onAnchor: vi.fn(), onUnavailable, ready: true }));
-    await waitFor(() => expect(onUnavailable).toHaveBeenCalledOnce());
-    expect(window.location.search).toBe("?keep=yes");
+  it("drops a message that cannot be revealed with the privacy-neutral notice", async () => {
+    window.history.replaceState(null, "", "/c/chat-1?message=gone&keep=yes#answer");
+    const { props } = renderDeepLink({ revealMessage: vi.fn(async () => false) });
+    await waitFor(() => expect(props.onUnavailable).toHaveBeenCalledOnce());
+    expect(props.onAnchor).not.toHaveBeenCalled();
+    expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe("/c/chat-1?keep=yes#answer");
+
+    window.history.replaceState(null, "", `/c/chat-1?message=${"x".repeat(257)}`);
+    const unbounded = renderDeepLink();
+    await waitFor(() => expect(unbounded.props.onUnavailable).toHaveBeenCalledOnce());
+    expect(unbounded.props.revealMessage).not.toHaveBeenCalled();
+    expect(window.location.search).toBe("");
+  });
+
+  it("ignores a reveal that settles after the chat changed", async () => {
+    window.history.replaceState(null, "", "/c/chat-1?message=message-1");
+    let finish!: (revealed: boolean) => void;
+    const { props, rerender } = renderDeepLink({
+      revealMessage: vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve; }))
+    });
+    await waitFor(() => expect(props.revealMessage).toHaveBeenCalledOnce());
+    window.history.replaceState(null, "", "/c/chat-2");
+    rerender({ ...props, activeChatId: "chat-2" });
+    finish(false);
+    await Promise.resolve();
+    expect(props.onAnchor).not.toHaveBeenCalled();
+    expect(props.onUnavailable).not.toHaveBeenCalled();
   });
 
   it("opens and anchors an explicit Library file source only after it is revealed", async () => {
@@ -85,61 +119,26 @@ describe("usePersonalChatDeepLink", () => {
     expect(loadEarlier).toHaveBeenCalledOnce();
   });
 
-  it("opens and anchors a Personal chat only once while leaving Project links alone", async () => {
-    window.history.replaceState(null, "", "/?chat=chat-1&message=message-1");
-    const activateChat = vi.fn(async () => true);
-    const revealMessage = vi.fn(async () => true);
-    const onAnchor = vi.fn();
-    const onUnavailable = vi.fn();
-    const { rerender, unmount } = renderHook(() => usePersonalChatDeepLink({
-      activateChat,
-      onAnchor,
-      onUnavailable,
-      ready: true,
-      revealMessage
-    }));
-
-    await waitFor(() => expect(onAnchor).toHaveBeenCalledWith("chat-1", "message-1"));
-    rerender();
-    expect(activateChat).toHaveBeenCalledOnce();
-    expect(revealMessage).toHaveBeenCalledOnce();
-    expect(onUnavailable).not.toHaveBeenCalled();
-    unmount();
-
-    window.history.replaceState(
-      null,
-      "",
-      "/?project=project-1&chat=project-chat&message=project-message"
-    );
-    const projectActivate = vi.fn(async () => true);
-    renderHook(() => usePersonalChatDeepLink({
-      activateChat: projectActivate,
-      onAnchor: vi.fn(),
-      onUnavailable: vi.fn(),
-      ready: true,
-      revealMessage: vi.fn(async () => true)
-    }));
-
-    expect(projectActivate).not.toHaveBeenCalled();
-    expect(window.location.search).toContain("project=project-1");
+  it("leaves Project chat routes and the new chat alone", () => {
+    for (const address of ["/p/project-1/c/chat-1?message=message-1", "/?message=message-1"]) {
+      window.history.replaceState(null, "", address);
+      const { props, unmount } = renderDeepLink();
+      expect(props.revealMessage).not.toHaveBeenCalled();
+      expect(props.onUnavailable).not.toHaveBeenCalled();
+      unmount();
+    }
   });
 
   it("announces and clears the one-shot unavailable marker without exposing details", () => {
     window.history.replaceState(
       null,
       "",
-      "/?memorySource=unavailable&keep=yes#answer"
+      "/c/chat-1?memorySource=unavailable&keep=yes#answer"
     );
-    const onUnavailable = vi.fn();
-    renderHook(() => usePersonalChatDeepLink({
-      activateChat: vi.fn(async () => true),
-      onAnchor: vi.fn(),
-      onUnavailable,
-      ready: false,
-      revealMessage: vi.fn(async () => true)
-    }));
+    const { props } = renderDeepLink({ activeChatId: null, ready: false });
 
-    expect(onUnavailable).toHaveBeenCalledOnce();
+    expect(props.onUnavailable).toHaveBeenCalledOnce();
+    expect(window.location.pathname).toBe("/c/chat-1");
     expect(window.location.search).toBe("?keep=yes");
     expect(window.location.hash).toBe("#answer");
   });

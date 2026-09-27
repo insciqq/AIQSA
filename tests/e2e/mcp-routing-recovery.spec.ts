@@ -23,7 +23,6 @@ for (const viewport of [
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.emulateMedia({ colorScheme: viewport.theme });
     await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: "http://127.0.0.1:3000" }]);
-    await page.addInitScript((id) => window.localStorage.setItem("aiqsa.activeChatId", id), chatId);
     const stream = createGatedRunStreamFixture({
       abortMessage: "Synthetic MCP stream stopped", key: "mcp-routing-recovery", notReadyError: "synthetic_stream_not_ready"
     });
@@ -47,7 +46,7 @@ for (const viewport of [
       // Inspect the user's selected policy without contacting a provider/MCP.
       return route.fulfill({ status: 409, json: { error: "synthetic_regeneration_recorded" } });
     });
-    await signInWithLocalToken(page);
+    await signInWithLocalToken(page, `/c/${chatId}`);
     await page.getByRole("textbox", { name: "Message" }).fill(question);
     await page.getByRole("textbox", { name: "Message" }).press("Enter");
     await stream.waitForRequestCount(page, 1);

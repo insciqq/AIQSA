@@ -1,5 +1,6 @@
 "use client";
 
+import { useControlCenterHref } from "@/components/app-shell/chatRoute";
 import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import {
   UiV2Icon,
@@ -38,6 +39,7 @@ export function AccountMenuV2({
   variant?: "avatar" | "row";
 }>) {
   const [open, setOpen] = useState(false);
+  const controlCenterHref = useControlCenterHref();
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const { menuRef, triggerRef } = useMenuDismissalV2({
@@ -100,7 +102,7 @@ export function AccountMenuV2({
             </UiV2MenuItem>
           ) : null}
           {adminEntryVisible ? (
-            <UiV2MenuLink href="/admin" icon="monitor">Control Center</UiV2MenuLink>
+            <UiV2MenuLink href={controlCenterHref} icon="monitor">Control Center</UiV2MenuLink>
           ) : null}
           <UiV2MenuItem disabled={signingOut} icon="logout" onClick={() => void signOut()}>
             {signingOut ? "Signing out…" : "Sign out"}

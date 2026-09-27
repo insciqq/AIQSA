@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
+import { mcpFindToolsTool } from "../mcp/discovery";
+import { analyzeImageTool } from "../tools/analyzeImage";
+import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
+import { checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { readToolResultTool } from "../tools/readToolResult";
+import { sessionStatusTool } from "../tools/sessionStatus";
+import { loadSkillTool, readSkillFileTool } from "../tools/skill";
 import type { RunTool } from "../tools/types";
+import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import {
   buildGeminiInteractionsRequest,
   buildGeminiInteractionsRequestPreview
@@ -95,6 +104,37 @@ describe("Gemini Interactions request builder", () => {
       toolChoice: "required",
       tools: [tool]
     })).generation_config.tool_choice).toBe("any");
+  });
+
+  it("narrows only a forced Knowledge round over the ordinary first-party tool set", () => {
+    const knowledge = knowledgeRetrievalToolsForRequest({ knowledgeSearchInstructionVersion: 3 });
+    const firstParty = [loadSkillTool, readSkillFileTool, sessionStatusTool, readToolResultTool, checkpointOutputsTool,
+      analyzeImageTool(), viewWorkspaceImageTool, artifactTool(describeArtifactTool()), readArtifactTool(), mcpFindToolsTool];
+    const forced = buildGeminiInteractionsRequest(request({
+      forcedToolName: "search_knowledge",
+      toolChoice: "required",
+      tools: [...knowledge, ...firstParty]
+    }));
+    expect(forced.generation_config.tool_choice).toEqual({
+      allowed_tools: { mode: "any", tools: ["search_knowledge"] }
+    });
+    // Narrowing restricts the choice, never the advertised declarations.
+    expect(forced.tools?.map((declaration) => declaration.name)).toEqual(
+      [...knowledge, ...firstParty].map((declaration) => declaration.name));
+
+    // A forced round without the named Knowledge tool keeps Gemini's `any`.
+    expect(buildGeminiInteractionsRequest(request({
+      forcedToolName: "search_knowledge", toolChoice: "required", tools: firstParty
+    })).generation_config.tool_choice).toBe("any");
+    expect(buildGeminiInteractionsRequest(request({
+      toolChoice: "required", tools: [...knowledge, ...firstParty]
+    })).generation_config.tool_choice).toBe("any");
+    // Non-forced rounds ignore a stray name and keep `auto`/`none`.
+    for (const toolChoice of ["auto", "none", undefined] as const) {
+      expect(buildGeminiInteractionsRequest(request({
+        forcedToolName: "search_knowledge", ...(toolChoice ? { toolChoice } : {}), tools: [...knowledge, ...firstParty]
+      })).generation_config.tool_choice).toBe(toolChoice ?? "auto");
+    }
   });
 
   it("builds the stable stateless native body with flat function tools", () => {

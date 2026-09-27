@@ -269,6 +269,93 @@ describe("MCP OAuth web handlers", () => {
     expect(onRuntimeChanged).toHaveBeenCalledWith(USER.userId);
   });
 
+  it.each([
+    ["connected", "code=secret-code", "connected"],
+    ["cancelled", "error=access_denied", "cancelled"],
+    ["failed", "error=server_error", "failed"]
+  ])("returns a %s personal authorization to the chat it started from", async (_label, outcomeQuery, outcome) => {
+    const handlerDeps = deps({ service: service(), settleAuthorization: vi.fn(async () => ({ kind: "ok" as const })) });
+    const start = createMcpOAuthStartHandler(handlerDeps, { forceReconnect: false, purpose: "user" });
+    const startResponse = await start(new Request(
+      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=%2Fp%2Fproject-1%2Fc%2Fchat-1"
+    ), routeContext());
+    expect(startResponse.headers.get("location")).toBe("https://auth.example.test/authorize?state=fixture-state");
+    const callback = createMcpOAuthCallbackHandler(handlerDeps, "user");
+    const response = await callback(new Request(
+      `https://aiqsa.example.test/api/me/mcp/server-1/oauth/callback?state=fixture-state&${outcomeQuery}`,
+      { headers: { cookie: cookieHeader(startResponse) } }
+    ), routeContext());
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(location.origin).toBe("https://aiqsa.example.test");
+    expect(location.pathname).toBe("/p/project-1/c/chat-1");
+    expect(Object.fromEntries(location.searchParams)).toEqual({ library: "mcp", oauth: outcome, server: SERVER_ID });
+  });
+
+  it.each([
+    "https%3A%2F%2Fevil.example.test%2Fc%2Fchat-1",
+    "%2F%2Fevil.example.test%2Fc%2Fchat-1",
+    "%2Fadmin",
+    "%2Fc%2Fchat-1%3Flibrary%3Dartifacts",
+    "%2Fapi%2Fme%2Fmcp%2Fserver-1%2Foauth%2Fconnect"
+  ])("falls back to the new chat for the tampered return %s", async (returnValue) => {
+    const operations = service({
+      startAuthorization: vi.fn(async () => ({ configurationIdentity: "revision-1", kind: "already_connected" as const }))
+    });
+    const start = createMcpOAuthStartHandler(deps({ service: operations }), { forceReconnect: false, purpose: "user" });
+    const response = await start(new Request(
+      `https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=${returnValue}`
+    ), routeContext());
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(location.origin).toBe("https://aiqsa.example.test");
+    expect(location.pathname).toBe("/");
+    expect(location.searchParams.get("oauth")).toBe("connected");
+  });
+
+  it("returns an already connected authorization to its chat and ignores a foreign flow's return", async () => {
+    const connected = service({
+      startAuthorization: vi.fn(async () => ({ configurationIdentity: "revision-1", kind: "already_connected" as const }))
+    });
+    const start = createMcpOAuthStartHandler(deps({ service: connected }), { forceReconnect: false, purpose: "user" });
+    const response = await start(new Request(
+      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=%2Fc%2Fchat-1",
+      { method: "POST" }
+    ), routeContext());
+    expect(new URL(response.headers.get("location") ?? "").pathname).toBe("/c/chat-1");
+
+    const foreignCookie = `aiqsa_mcp_oauth_flow=${await signMcpOAuthFlow({
+      flow: { ...flow(), userId: "someone-else" },
+      now: NOW,
+      returnPath: "/c/foreign-chat",
+      sessionSecret: SESSION_SECRET
+    })}`;
+    const callback = createMcpOAuthCallbackHandler(deps(), "user");
+    const failed = await callback(new Request(
+      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/callback?state=fixture-state&code=secret-code",
+      { headers: { cookie: foreignCookie } }
+    ), routeContext());
+    const location = new URL(failed.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/");
+    expect(location.searchParams.get("oauth")).toBe("failed");
+  });
+
+  it("keeps administrator validation outcomes in Control Center", async () => {
+    const admin: AuthenticatedSession = { ...USER, user: { ...USER.user, role: "admin" } };
+    const operations = service({
+      startAuthorization: vi.fn(async () => ({ configurationIdentity: "revision-1", kind: "already_connected" as const }))
+    });
+    const start = createMcpOAuthStartHandler(deps({ resolveAuth: async () => admin, service: operations }), {
+      forceReconnect: false,
+      purpose: "validation"
+    });
+    const response = await start(new Request(
+      "https://aiqsa.example.test/api/admin/mcp/server-1/oauth/validation/connect?return=%2Fc%2Fchat-1",
+      { method: "POST" }
+    ), routeContext());
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/admin");
+    expect(Object.fromEntries(location.searchParams)).toEqual({ oauth: "connected", section: "mcp", server: SERVER_ID });
+  });
+
   it("keeps administrator validation routes unavailable to ordinary users", async () => {
     const operations = service();
     const start = createMcpOAuthStartHandler(deps({ service: operations }), {

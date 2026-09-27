@@ -867,7 +867,9 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         const activeChat = store.activeChatId
           ? store.chats.find((chat) => chat.id === store.activeChatId) ?? null
           : null;
-        if (projectId && activeChat?.projectId === projectId) input.activateBlankWorkspace();
+        // Leaving the Project's chat or its blank chat returns to the personal
+        // new chat, so no Project composer session or address outlives it.
+        if (projectId && (!activeChat || activeChat.projectId === projectId)) input.activateBlankWorkspace();
         input.onProjectContextLeft();
         selectedRef.current = null;
         realtimeChatRevisionsRef.current.clear();

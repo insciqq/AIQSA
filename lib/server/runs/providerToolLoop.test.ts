@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
-import { createAnthropicMessagesAdapter, type AnthropicStreamEvent } from "../providers/anthropicMessages";
+import {
+  createAnthropicMessagesAdapter,
+  createFetchAnthropicMessagesClient,
+  type AnthropicStreamEvent
+} from "../providers/anthropicMessages";
+import { calculateContextBudgetLimits } from "../../domain/contextBudget";
+import { createCompatibleResponsesAdapter } from "../providers/compatibleResponses";
 import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 import { runProviderToolLoop } from "./providerToolLoop";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
@@ -17,6 +23,7 @@ import { createContextCompactionPublisher } from "./contextCompactionEvents";
 import { contextObservationsFromResults } from "./contextCompactionPlanner";
 import { applyContextSummaryToRequest } from "./contextCompactionSummarizer";
 import type { ProviderToolLoopContinuation } from "./providerToolLoop";
+import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -502,7 +509,7 @@ describe("provider tool loop", () => {
           status: "complete"
         }
       }),
-      initialRequest: request({ toolChoice: "required" }),
+      initialRequest: request({ forcedToolName: "alpha", toolChoice: "required" }),
       parallelToolCalls: false,
       tools: [{
         capability: "mcp",
@@ -514,6 +521,9 @@ describe("provider tool loop", () => {
 
     expect(outcome).toMatchObject({ final: { finalText: "grounded answer" }, status: "complete" });
     expect(requests.map((candidate) => candidate.toolChoice)).toEqual(["required", "auto"]);
+    // Only the forced round names its tool; the next round cannot inherit it.
+    expect(requests.map((candidate) => candidate.forcedToolName)).toEqual(["alpha", undefined]);
+    expect(requests[1]).not.toHaveProperty("forcedToolName");
   });
 
   it("replays the complete recovered provider transcript without a hidden provider chain", async () => {
@@ -950,5 +960,239 @@ describe("provider tool loop with transcript compaction", () => {
     // The recovered round reuses the checkpoint notes instead of buying them again.
     expect(recovered.dispatched[0]!.contextCompactionSummary?.id).toBe(checkpointSummary.id);
     expect(recovered.dispatched[0]!.contextCompactionSummary?.id).toBe(live.dispatched[reducedRound + 1]!.contextCompactionSummary?.id);
+  });
+});
+
+describe("context-length rejection rebuild", () => {
+  const alpha: RunTool = { capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" };
+  const turn = (id: string, index: number) => ({ content: { blocks: [{ text: `${id} ${"h".repeat(5_000)}`, type: "text" as const }] },
+    id, role: index % 2 ? "assistant" as const : "user" as const });
+  // About half of a 17,488-token budget: the planner judged every round fitting.
+  const initial = (overrides: Partial<ProviderRunRequest> = {}) => request({
+    context: { messages: [...Array.from({ length: 6 }, (_, index) => turn(`h${index}`, index)),
+      { content: { blocks: [{ text: "question", type: "text" }] }, id: "current", role: "user" }], mode: "branch_path" },
+    modelCapabilities: { ...request().modelCapabilities, contextWindow: 20_000, defaultMaxOutputTokens: 512, toolCalling: true },
+    params: { stream: true },
+    toolObservationVersion: 1,
+    ...overrides
+  });
+  const rejection = (counts: Readonly<Record<string, number>> = {}) => Object.assign(new Error("OpenAI request failed with status 400"),
+    { code: "provider_context_length_exceeded", status: 400, providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY", ...counts });
+  const estimate = (value: ProviderRunRequest) =>
+    measureSessionContext({ bridge: openAIResponsesToolBridge, request: value }).approximateInputTokens;
+
+  function harness(steps: readonly ("final" | "reject" | "text_reject" | "tool" | "unknown_usage_reject" | "billed_reject")[], input: Readonly<{
+    allowContextRebuild?: boolean;
+    initialRequest?: ProviderRunRequest;
+  }> = {}) {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        requests.push(roundRequest);
+        const step = steps[requests.length - 1];
+        if (step === "reject") throw rejection();
+        // The follow-up executor forwards an unknown partial report for every failed dispatch.
+        if (step === "unknown_usage_reject" || step === "billed_reject") {
+          yield { data: step === "billed_reject" ? { inputTokens: 900 } : { completeness: "partial" }, type: "usage" };
+          throw rejection();
+        }
+        if (step === "text_reject") {
+          yield { data: { delta: "partial" }, type: "token" };
+          throw rejection();
+        }
+        return {
+          finalProviderResponsePreview: {},
+          finalText: step === "tool" ? "" : "answer",
+          ...(step === "tool" ? { toolCalls: [{ arguments: {}, id: `call-${requests.length}`, name: "alpha" }] } : {}),
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+        };
+      }
+    };
+    const prepared: ProviderRunRequest[] = [];
+    const executeTool = vi.fn(async (call: { id: string; name: string }) => ({ status: "complete" as const,
+      value: { callId: call.id, content: [{ text: "evidence", type: "text" as const }], name: call.name, status: "complete" as const } }));
+    const onUsage = vi.fn();
+    const beforeProviderRound = vi.fn();
+    const run = () => runProviderToolLoop({
+      adapter,
+      ...(input.allowContextRebuild === false ? {} : { allowContextRebuild: true }),
+      beforeProviderRound,
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 4, maxToolRounds: 3 },
+      executeTool,
+      initialRequest: input.initialRequest ?? initial(),
+      onUsage: (usage, _request, context) => onUsage(context),
+      parallelToolCalls: false,
+      prepareRequest: (roundRequest) => {
+        prepared.push(roundRequest);
+        const budgeted = applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: roundRequest });
+        if (!budgeted.ok) throw Object.assign(new Error(budgeted.error.message), { code: budgeted.error.code });
+        return budgeted.request;
+      },
+      tools: [alpha]
+    });
+    return { beforeProviderRound, executeTool, onUsage, prepared, requests, run };
+  }
+
+  it("rebuilds a rejected round once under a tightened budget and dispatches the smaller request", async () => {
+    const loop = harness(["tool", "reject", "final"]);
+    const outcome = await loop.run();
+
+    expect(outcome).toMatchObject({ final: { finalText: "answer" }, status: "complete", toolCalls: 1 });
+    expect(loop.requests).toHaveLength(3);
+    const [, rejected, rebuilt] = loop.requests as [ProviderRunRequest, ProviderRunRequest, ProviderRunRequest];
+    const budgetTokens = Math.floor(estimate(rejected) * 0.75);
+    expect(rejected).not.toHaveProperty("contextCompactionRebuild");
+    expect(rebuilt.contextCompactionRebuild).toEqual({ version: 1, round: 2, budgetTokens });
+    expect(rebuilt.context!.messages.length).toBeLessThan(rejected.context!.messages.length);
+    expect(estimate(rebuilt)).toBeLessThanOrEqual(budgetTokens);
+    // The settled tool result stays; the tool is never executed again.
+    expect(JSON.stringify(rebuilt.providerToolMessages)).toContain("evidence");
+    expect(loop.executeTool).toHaveBeenCalledOnce();
+    // The rejected dispatch invents no usage; the round keeps one terminal record.
+    expect(loop.onUsage.mock.calls.map(([context]) => context)).toEqual([
+      { completeness: "terminal", round: 1 }, { completeness: "terminal", round: 2 }
+    ]);
+    expect(loop.beforeProviderRound.mock.calls.map(([value]) => value.round)).toEqual([1, 2]);
+    expect(loop.prepared.map((value) => value.contextCompactionRebuild?.round)).toEqual([undefined, undefined, 2]);
+  });
+
+  it("fails a second rejection with the precise code and never rebuilds twice in a run", async () => {
+    for (const steps of [["tool", "reject", "reject"], ["reject", "tool", "reject"]] as const) {
+      const loop = harness(steps);
+      const outcome = await loop.run();
+      expect(outcome).toMatchObject({ failure: { code: "provider_context_length_exceeded", stage: "provider",
+        message: expect.stringContaining("context window (HTTP 400)") }, status: "failed" });
+      expect(loop.requests).toHaveLength(3);
+      // A rebuilt round's record stays on every later round of the run.
+      expect(loop.requests[2]?.contextCompactionRebuild).toEqual(loop.requests[1]?.contextCompactionRebuild ?? expect.anything());
+      expect(loop.executeTool).toHaveBeenCalledOnce();
+      expect(loop.onUsage.mock.calls.map(([context]) => context.completeness)).toEqual(["terminal"]);
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+    }
+  });
+
+  it("rebuilds from the counts a real Anthropic refusal states, past the adapter's lifecycle summary", async () => {
+    const requests: ProviderRunRequest[] = [];
+    // The production transport classifies the provider's 400 in memory.
+    const refusing = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () => Response.json({ type: "error",
+      error: { type: "invalid_request_error", message: "prompt is too long: 250000 tokens > 200000 maximum PRIVATE_PROVIDER_MESSAGE_CANARY" } },
+    { status: 400 }) });
+    const adapter = createAnthropicMessagesAdapter({ client: { async *stream(body, options) {
+      if (requests.length === 1) return yield* refusing.stream(body, options);
+      yield { message: { id: "msg-rebuilt", usage: { input_tokens: 5 } }, type: "message_start" };
+      yield { content_block: { text: "", type: "text" }, index: 0, type: "content_block_start" };
+      yield { delta: { text: "answer", type: "text_delta" }, index: 0, type: "content_block_delta" };
+      yield { index: 0, type: "content_block_stop" };
+      yield { delta: { stop_reason: "end_turn" }, type: "message_delta", usage: { output_tokens: 1 } };
+      yield { type: "message_stop" };
+    } } });
+    const recording: ProviderAdapter = { buildRequestPreview: adapter.buildRequestPreview,
+      stream: (roundRequest, options) => { requests.push(roundRequest); return adapter.stream(roundRequest, options); } };
+    const onEvent = vi.fn();
+    const outcome = await runProviderToolLoop({
+      adapter: recording, allowContextRebuild: true, bridge: anthropicMessagesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 }, executeTool: vi.fn(),
+      initialRequest: initial({ modelId: "claude-test", params: { maxTokens: 512, stream: true, thinking: { enabled: false } },
+        provider: "anthropic" }),
+      onEvent, parallelToolCalls: false,
+      prepareRequest: (roundRequest) => {
+        const budgeted = applyProviderRequestContextBudget({ bridge: anthropicMessagesToolBridge, request: roundRequest });
+        if (!budgeted.ok) throw Object.assign(new Error(budgeted.error.message), { code: budgeted.error.code });
+        return budgeted.request;
+      },
+      tools: [alpha]
+    });
+    expect(outcome).toMatchObject({ final: { finalText: "answer" }, status: "complete" });
+    expect(requests).toHaveLength(2);
+    const reported = calculateContextBudgetLimits({ contextWindow: 200_000, maxOutputTokens: 512, provider: "anthropic" }).budgetTokens;
+    const requestTokens = measureSessionContext({ bridge: anthropicMessagesToolBridge, request: requests[0]! }).approximateInputTokens;
+    expect(requests[1]?.contextCompactionRebuild).toEqual({ version: 1, round: 1,
+      budgetTokens: Math.floor(reported * requestTokens / 250_000) });
+    // Its lifecycle summary reached the owner before the refusal and is no answer output.
+    expect(onEvent.mock.calls.filter(([event]) => event.type === "artifact" && event.data.artifactType === "summary").length)
+      .toBeGreaterThan(1);
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+  });
+
+  it("rebuilds after a compatible Responses stream fails with context_length_exceeded before any output", async () => {
+    let posts = 0;
+    const sse = (events: readonly Record<string, unknown>[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`)
+      .join(""), { headers: { "content-type": "text/event-stream" } });
+    const adapter = createCompatibleResponsesAdapter({ client: {
+      cancel: vi.fn(), create: vi.fn(), retrieve: vi.fn(),
+      async stream() {
+        posts += 1;
+        return posts === 1
+          // A refusal delivered in the stream: created, then failed without usage or output.
+          ? sse([{ response: { id: "resp-refused", status: "in_progress" }, type: "response.created" },
+            { response: { error: { code: "context_length_exceeded", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" }, id: "resp-refused",
+              output: [], status: "failed", usage: null }, type: "response.failed" }])
+          : sse([{ response: { id: "resp-rebuilt", status: "in_progress" }, type: "response.created" },
+            { delta: "answer", type: "response.output_text.delta" },
+            { response: { id: "resp-rebuilt", output: [{ content: [{ text: "answer", type: "output_text" }], role: "assistant",
+              type: "message" }], status: "completed", usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 } },
+            type: "response.completed" }]);
+      }
+    } });
+    const dispatched: ProviderRunRequest[] = [];
+    const outcome = await runProviderToolLoop({
+      adapter: { buildRequestPreview: adapter.buildRequestPreview,
+        stream: (roundRequest, options) => { dispatched.push(roundRequest); return adapter.stream(roundRequest, options); } },
+      allowContextRebuild: true, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 }, executeTool: vi.fn(),
+      initialRequest: initial({ provider: "openai-compatible" }), parallelToolCalls: false,
+      prepareRequest: (roundRequest) => {
+        const budgeted = applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: roundRequest });
+        if (!budgeted.ok) throw Object.assign(new Error(budgeted.error.message), { code: budgeted.error.code });
+        return budgeted.request;
+      },
+      tools: [alpha]
+    });
+    expect(outcome).toMatchObject({ final: { finalText: "answer" }, status: "complete" });
+    expect(dispatched).toHaveLength(2);
+    expect(dispatched[1]?.contextCompactionRebuild).toEqual({ version: 1, round: 1,
+      budgetTokens: Math.floor(estimate(dispatched[0]!) * 0.75) });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+  });
+
+  it("fails with the provider's refusal when the tightened budget cannot hold the irreducible request", async () => {
+    // Nearly all of the estimate is the current message, which never leaves.
+    const loop = harness(["reject", "final"], { initialRequest: initial({ context: { messages: [turn("h0", 0), turn("h1", 1),
+      { content: { blocks: [{ text: "h".repeat(40_000), type: "text" }] }, id: "current", role: "user" }], mode: "branch_path" } }) });
+    const outcome = await loop.run();
+    expect(outcome).toMatchObject({ failure: { code: "provider_context_length_exceeded", stage: "provider" }, status: "failed" });
+    expect(loop.requests).toHaveLength(1);
+    expect(loop.prepared).toHaveLength(2);
+    expect(loop.prepared[1]?.contextCompactionRebuild).toMatchObject({ round: 1 });
+    expect(loop.onUsage).not.toHaveBeenCalled();
+  });
+
+  it("treats an unknown usage report as unpaid but never rebuilds a round that billed", async () => {
+    const unknown = harness(["unknown_usage_reject", "final"]);
+    expect(await unknown.run()).toMatchObject({ final: { finalText: "answer" }, status: "complete" });
+    expect(unknown.requests).toHaveLength(2);
+    expect(unknown.onUsage.mock.calls.map(([context]) => context)).toEqual([{ completeness: "terminal", round: 1 }]);
+
+    const billed = harness(["billed_reject", "final"]);
+    expect(await billed.run()).toMatchObject({ failure: { code: "provider_context_length_exceeded" }, status: "failed" });
+    expect(billed.requests).toHaveLength(1);
+    expect(billed.onUsage.mock.calls.map(([context]) => context)).toEqual([{ completeness: "partial", round: 1 }]);
+  });
+
+  it("never rebuilds after accepted output, without the owner's opt-in or outside v1", async () => {
+    const emitted = harness(["text_reject"]);
+    expect(await emitted.run()).toMatchObject({ failure: { code: "provider_context_length_exceeded" }, status: "failed" });
+    expect(emitted.requests).toHaveLength(1);
+    // Output reached the user: the round is paid evidence, not an unpaid refusal.
+    expect(emitted.onUsage.mock.calls.map(([context]) => context)).toEqual([{ completeness: "partial", round: 1 }]);
+
+    for (const loop of [harness(["reject", "final"], { allowContextRebuild: false }),
+      harness(["reject", "final"], { initialRequest: initial({ toolObservationVersion: 0 }) })]) {
+      expect(await loop.run()).toMatchObject({ failure: { code: "provider_context_length_exceeded" }, status: "failed" });
+      expect(loop.requests).toHaveLength(1);
+      expect(loop.onUsage).not.toHaveBeenCalled();
+    }
   });
 });

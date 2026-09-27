@@ -6,7 +6,7 @@ import { mcpObservationMaximumBytes, TOOL_OBSERVATION_LIMITS, type ToolObservati
 import type { createToolObservationService, ToolObservationProjection } from "./service";
 import { boundedRenderedSearchToolResultText, boundedRetainedSearchToolResultText, boundedSearchToolResultText,
   searchExecutionsFromToolResult, shortenedSearchToolResultText, type SearchExecutionEvidence } from "../search/toolResult";
-import { SearchToolCancelledError } from "../search/toolExecutor";
+import { fitDurableSearchToolResult, SearchToolCancelledError } from "../search/toolExecutor";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { SEARCH_OBSERVATION_MAX_BYTES, searchObservationOriginal, type SearchObservationOriginal } from "./searchOriginal";
@@ -18,13 +18,22 @@ import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { isStoredObjectMissingError } from "../uploads/storage";
 
 export type ToolObservationService = ReturnType<typeof createToolObservationService>;
-/** The estimated tokens an MCP/Workspace tool batch may still receive whole:
- * one share of the admitted input budget (Infinity for an unknown window),
+/** One share of the admitted input budget (Infinity for an unknown window),
+ * with the request's context estimate that measures it; a bare number keeps
+ * the character-weight estimate. */
+export type WholeDeliveryShare = number | Readonly<{ estimateTokens: (value: unknown) => number; tokens: number }>;
+/** The estimated tokens an MCP/Workspace tool batch may still receive whole,
  * shared by the batch's concurrent captures, restores and replayed results. */
-export type WholeDeliveryAllowance = { remainingTokens: number };
+export type WholeDeliveryAllowance = { estimateTokens?: (value: unknown) => number; remainingTokens: number };
 
-export function wholeDeliveryAllowance(shareTokens: number): WholeDeliveryAllowance {
-  return { remainingTokens: shareTokens };
+export function wholeDeliveryAllowance(share: WholeDeliveryShare): WholeDeliveryAllowance {
+  return typeof share === "number"
+    ? { remainingTokens: share }
+    : { estimateTokens: share.estimateTokens, remainingTokens: share.tokens };
+}
+
+function allowanceTokens(allowance: WholeDeliveryAllowance, result: ToolExecutionResult): number {
+  return (allowance.estimateTokens ?? estimateApproxTokens)(projectObservationForProvider(result).content);
 }
 
 type CaptureContext = Readonly<{
@@ -67,7 +76,7 @@ function deliveredWhole(context: CaptureContext, byteSize: number, whole: () => 
   if (byteSize > OBSERVATION_WHOLE_ORIGINAL_BYTES) return null;
   const result = whole();
   if (!snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)) return null;
-  const tokens = estimateApproxTokens(projectObservationForProvider(result).content);
+  const tokens = allowanceTokens(allowance, result);
   if (tokens > allowance.remainingTokens) return null;
   allowance.remainingTokens -= tokens;
   return result;
@@ -78,23 +87,27 @@ function deliveredWhole(context: CaptureContext, byteSize: number, whole: () => 
  * delivered whole keeps its tokens counted. Batches never overlap. */
 export function observationWholeDeliveryBatches() {
   let current: Readonly<{ round: number; allowance: WholeDeliveryAllowance }> | undefined;
-  const allowance = (round: number, shareTokens: number): WholeDeliveryAllowance => {
-    if (current?.round !== round) current = { round, allowance: wholeDeliveryAllowance(shareTokens) };
+  const allowance = (round: number, share: WholeDeliveryShare): WholeDeliveryAllowance => {
+    if (current?.round !== round) current = { round, allowance: wholeDeliveryAllowance(share) };
     return current.allowance;
   };
   return {
     allowance,
-    replay(round: number, shareTokens: number, result: ToolExecutionResult): void {
+    replay(round: number, share: WholeDeliveryShare, result: ToolExecutionResult): void {
       const source = result.observation?.source;
       if (source !== "mcp" && source !== "workspace") return;
       const projected = projectObservationForProvider(result);
       // A bounded preview already carries its descriptor part.
       if (projected.content.length === result.content.length) return;
-      allowance(round, shareTokens).remainingTokens -= estimateApproxTokens(projected.content);
+      const batch = allowance(round, share);
+      batch.remainingTokens -= allowanceTokens(batch, result);
     }
   };
 }
 
+/** MCP, Workspace and Search calls beyond the retained-bytes budget still
+ * run: the model receives exactly Off's result, bounded as its caller bounds
+ * Off's, without a descriptor and outside the batch's whole allowance. */
 export async function captureMcpObservation(context: CaptureContext,
   call: ModelToolCall, sourceBinding: Extract<ToolObservationSourceBinding, { source: "mcp" }>,
   execute: () => Promise<AiqsaMcpToolCallResult>): Promise<ToolExecutionResult> {
@@ -102,7 +115,12 @@ export async function captureMcpObservation(context: CaptureContext,
     // The validated semantic result fits the wire cap plus its small envelope.
     maximumBytes: mcpObservationMaximumBytes() }, async receipt => {
     const original = await execute();
-    const projection = await receipt.store({ original, outcome: original.isError ? "error" : "complete",
+    const outcome = original.isError ? "error" : "complete";
+    if (!receipt.retained) {
+      await receipt.recordUnretained(outcome);
+      return mcpToolExecutionResult(call, original);
+    }
+    const projection = await receipt.store({ original, outcome,
       sourceTruncated: false, maskable: original.unsupportedContentTypes.length === 0 });
     // Normalize only after the exact accepted original is durable.
     return mcpObservationProjection(context, call, original, projection);
@@ -123,6 +141,10 @@ export async function captureWorkspaceObservation(context: CaptureContext, call:
     // bytes per accepted byte; this ceiling is independent of the MCP cap.
     maximumBytes: 6 * 1024 * 1024 + 64 * 1024 }, async receipt => {
     const result = await execute();
+    if (!receipt.retained) {
+      await receipt.recordUnretained(result.status);
+      return { ...result, callId: call.id, name: call.name };
+    }
     const original = { status: result.status, content: result.content, ...(result.rawPreview ? { rawPreview: result.rawPreview } : {}) };
     const projection = await receipt.store({ original, outcome: result.status,
       sourceTruncated: result.rawPreview?.truncated === true, maskable: true });
@@ -160,10 +182,25 @@ export async function captureSearchObservation(context: CaptureContext, call: Mo
     if (!noProviderCall) await recordSearch(result);
     const original = searchObservationOriginal(result);
     if (!original) throw new ObservationStoreError("tool_observation_unavailable");
+    const evidence = { original, providerCall: !noProviderCall, executions: searchExecutionsFromToolResult(result) };
+    if (!receipt.retained) {
+      await receipt.recordUnretained(result.status);
+      return unretainedSearchResult(call, evidence);
+    }
     const projection = await receipt.store({ original, outcome: result.status, sourceTruncated: false, maskable: true });
-    return searchObservationProjection(call, { original, providerCall: !noProviderCall,
-      executions: searchExecutionsFromToolResult(result) }, projection);
+    return searchObservationProjection(call, evidence, projection);
   });
+}
+
+/** Off's canonical Search text when nothing is retained: whole while Off
+ * keeps it whole, otherwise Off's own bound, which drops the largest engines'
+ * findings; never a reader. Usage and thread sources stay in the receipt. */
+function unretainedSearchResult(call: ModelToolCall, value: Readonly<{ original: SearchObservationOriginal;
+  providerCall: boolean; executions: readonly SearchExecutionEvidence[] }>): ToolExecutionResult {
+  const off = value.executions.length ? fitDurableSearchToolResult({ call, executions: value.executions, name: call.name })
+    : value.original;
+  return { callId: call.id, name: call.name, status: off.status, content: [...off.content],
+    ...(!value.providerCall ? { rawPreview: { providerCall: false } } : {}) };
 }
 
 /** Findings budget for a Search result too large to deliver whole. */

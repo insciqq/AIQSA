@@ -19,6 +19,7 @@ import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
 import { imageModelConfiguration, initialImageModels } from "../../lib/domain/imageModels";
 import { chooseSearchStrategy, selectModel } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
+import { activeChatId } from "./support/workspace";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(60_000);
@@ -467,15 +468,6 @@ async function cleanupQuickChatFixture(
     await tx.providerModel.deleteMany({ where: { id: fixture.modelId } });
     await tx.providerConnection.deleteMany({ where: { id: fixture.connectionId } });
   });
-}
-
-async function waitForActiveChatId(page: Page): Promise<string> {
-  let chatId: string | null = null;
-  await expect.poll(async () => {
-    chatId = await page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId"));
-    return chatId;
-  }).not.toBeNull();
-  return chatId!;
 }
 
 test.afterAll(async () => {
@@ -1019,7 +1011,7 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   await page.getByRole("button", { name: "Send message" }).click();
   const completedMessageResponse = await messageResponse;
   expect(completedMessageResponse.ok(), await completedMessageResponse.text()).toBe(true);
-  const chatId = await waitForActiveChatId(page);
+  const chatId = await activeChatId(page);
   trackedChatIds.push(chatId);
   await expect.poll(() => messageRequests.length).toBe(1);
   expect(messageRequests[0]).toMatchObject({

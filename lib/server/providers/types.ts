@@ -324,7 +324,16 @@ export type ProviderRunRequest = NormalizedRunRequest & {
   contextCompactionSummary?: import("../../contracts/contextCompaction").ContextSummary;
   /** Bounded attempt receipts carried into the next durable tool-loop fence. */
   contextCompactionSummaryAttempts?: readonly import("../../contracts/contextCompaction").ContextSummaryAttempt[];
+  /** Ephemeral server-owned record of the run's one context-rejection
+   * rebuild. Its tightened budget applies to the rebuilt round and every later
+   * round; tool-loop checkpoints carry it so recovery re-derives the budget. */
+  contextCompactionRebuild?: import("../../contracts/contextCompaction").ContextRejectionRebuild;
   forceNonStreaming?: boolean;
+  /** Ephemeral server-owned name of the advertised tool a `required` round
+   * exists to obtain. Only `toolChoice: "required"` rounds carry it. Adapters
+   * that can restrict a forced choice narrow it to this tool; others keep
+   * their ordinary `required` mapping over every advertised tool. */
+  forcedToolName?: string;
   parallelToolCalls?: boolean;
   previousProviderResponseId?: string;
   providerToolMessages?: unknown[];

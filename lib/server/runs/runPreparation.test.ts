@@ -2508,6 +2508,110 @@ describe("run preparation", () => {
     ]);
   });
 
+  it("names connected Auto services once in the admitted system prompt and freezes them with the run", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const server = (serverName: string, serverId: string) => ({
+      description: "ADMIN_DESCRIPTION_CANARY", instructions: "SERVER_INSTRUCTIONS_CANARY", namespace: serverId,
+      revisionId: `revision-${serverId}`, serverId, serverName,
+      tools: [{ description: "TOOL_DESCRIPTION_CANARY", namespacedName: `mcp_${serverId}_read_1`, originalName: "read_issue" }]
+    });
+    let servers = [server("GitLab", "gitlab"), server("Jira", "jira")];
+    const prepare = vi.fn(async () => readyMcpPlan());
+    const catalog = vi.fn(async () => ({ servers, version: 1 as const }));
+    const deps = { ...harness.deps, mcp: { filterTools: allowMcpTools, catalog, prepare } };
+    const body = successBody({ modelId: "openai-tool-model", provider: "openai" });
+    const hint = "Connected MCP services for this run";
+
+    const accepted = materializePreparedRunData(preparedFrom(await prepareRun(deps, sendInput(body))));
+    const system = accepted.normalizedRequest.prompt.system ?? "";
+    expect(system.split(hint)).toHaveLength(2);
+    expect(system).toContain('["GitLab","Jira"]');
+    expect(system).toContain("Requests unrelated to these services do not need find_tools.");
+    expect(system).not.toMatch(/ADMIN_DESCRIPTION_CANARY|SERVER_INSTRUCTIONS_CANARY|TOOL_DESCRIPTION_CANARY|read_issue/u);
+    expect(accepted.providerRequest.prompt.system).toBe(system);
+
+    // Execution and recovery reuse the persisted prompt; only a new admission reads the current catalog.
+    servers = [server("Linear", "linear")];
+    const later = preparedFrom(await prepareRun(deps, sendInput(body)));
+    expect(later.normalizedRequest.prompt.system).toContain('["Linear"]');
+    expect(accepted.normalizedRequest.prompt.system).toBe(system);
+    expect(accepted.normalizedRequest.mcpDiscovery?.catalog.servers.map((entry) => entry.serverName)).toEqual(["GitLab", "Jira"]);
+
+    servers = [];
+    const empty = preparedFrom(await prepareRun(deps, sendInput(body)));
+    expect(empty.normalizedRequest.prompt.system).not.toContain(hint);
+    expect(empty.normalizedRequest.prompt.system).not.toContain("find_tools");
+    expect(empty.providerRequest.tools?.some((tool) => tool.name === "find_tools")).toBe(false);
+
+    servers = [server("GitLab", "gitlab")];
+    for (const mode of ["off", "load_all"] as const) {
+      const other = preparedFrom(await prepareRun(deps, sendInput(successBody({
+        mcp: { mode }, modelId: "openai-tool-model", provider: "openai"
+      }))));
+      expect(other.normalizedRequest.prompt.system).not.toContain(hint);
+    }
+    const project = projectAdmission({
+      defaults: { ...projectAdmission().defaults, mcpMode: "auto", providerModelId: "openai-tool-model" },
+      modelIds: ["openai-tool-model"]
+    });
+    const projectRun = preparedFrom(await prepareRun(deps, sendInput(successBody({
+      modelId: "openai-tool-model", params: { background: false }, provider: "openai", tools: "auto"
+    }), { project })));
+    expect(projectRun.normalizedRequest.prompt.system).not.toContain(hint);
+    const assistants: NonNullable<RunPreparationDeps["assistants"]> = {
+      async resolveForRun() {
+        return { ok: true as const, assistant: {
+          assistantId: "assistant-1", definitionVersion: 1, developerPrompt: "", knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
+          identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+            paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+          mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
+          searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
+        } };
+      }
+    };
+    const assistantRun = preparedFrom(await prepareRun({ ...deps, assistants }, sendInput({
+      assistantId: "assistant-1", content: textMessageContent("Read my GitLab issue"), timeZone: "Europe/Berlin"
+    })));
+    expect(assistantRun.normalizedRequest.prompt.system).not.toContain(hint);
+    expect(catalog).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives an Auto Agent the connected-services hint once and no find_tools instruction without a catalog", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
+        normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+      } })) };
+      let servers: import("../mcp/runPlan").McpCapabilityCatalog["servers"] = [{ description: "Code hosting", instructions: "", namespace: "gitlab",
+        revisionId: "revision-gitlab", serverId: "server-gitlab", serverName: "GitLab",
+        tools: [{ description: "Read an issue", namespacedName: "mcp_gitlab_read_issue_1", originalName: "read_issue" }] }];
+      const deps = { ...harness.deps, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
+        mcp: { filterTools: allowMcpTools, catalog: async () => ({ servers, version: 1 as const }), prepare: async () => readyMcpPlan() } };
+      const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" });
+      const connected = agentPrompts(materializePreparedRunData(preparedFrom(await prepareRun(deps, sendInput(body)))).providerRequest);
+      expect(connected.developerInstructions.split("Connected MCP services for this run")).toHaveLength(2);
+      expect(connected.developerInstructions).toContain('["GitLab"]');
+      expect(connected.developerInstructions).toContain("Use find_tools to discover the relevant capabilities.");
+      expect(connected.resumePrompt).toContain("discovery_required");
+      expect(connected.prompt).not.toContain("GitLab");
+
+      servers = [];
+      const prepared = preparedFrom(await prepareRun(deps, sendInput(body)));
+      expect(prepared.normalizedRequest.agent?.mcpMode).toBe("auto");
+      const empty = agentPrompts(materializePreparedRunData(prepared).providerRequest);
+      for (const text of [empty.developerInstructions, empty.prompt, empty.resumePrompt]) {
+        expect(text).not.toContain("find_tools");
+        expect(text).not.toContain("Connected MCP services");
+      }
+      expect(empty.developerInstructions).toContain("not an authorization denial");
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each(["off", "v1"] as const)("freezes the operator observation policy at acceptance: %s", async policy => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const load = vi.fn(async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: policy }));
@@ -3103,6 +3207,7 @@ describe("run preparation", () => {
       expect.objectContaining({ id: "knowledge-evidence:v2", purpose: "knowledge_evidence" })
     ]));
     expect(prepared.providerRequest.toolChoice).toBeUndefined();
+    expect(prepared.providerRequest).not.toHaveProperty("forcedToolName");
     expect(prepared.knowledgeAdmissionPlan?.answeringPlan?.route).toBe("full_context_v1");
   });
 
@@ -3193,6 +3298,8 @@ describe("run preparation", () => {
       "search_knowledge"
     );
     expect(prepared.providerRequest.toolChoice).toBe("required");
+    expect(prepared.providerRequest.forcedToolName).toBe("search_knowledge");
+    expect(prepared.normalizedRequest).not.toHaveProperty("forcedToolName");
   });
 
   it("does not synthesize a hidden Knowledge query from conversation history", async () => {

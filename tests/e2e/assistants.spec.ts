@@ -6,6 +6,7 @@ import {
 import { chooseReasoningEffort } from "./shell/composer";
 import { runAccountMenuAction } from "./shell/page";
 import { assistantContentWithText } from "./shell/thread";
+import { activeChatId } from "./support/workspace";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(60_000);
@@ -63,9 +64,7 @@ const assistantAvatar = {
 } as const;
 
 async function signIn(page: Page) {
-  await page.addInitScript(() => {
-    window.localStorage.removeItem("aiqsa.activeChatId");
-  });
+  // `/` always opens a new chat.
   await page.goto("/");
   await expect(page).toHaveURL(/\/login/);
   const response = await page.request.post("/api/auth/token", {
@@ -147,18 +146,6 @@ async function archiveE2eAssistants(page: Page): Promise<void> {
       await archiveAssistantById(page, assistant.id);
     }
   }
-}
-
-async function waitForActiveChatId(page: Page): Promise<string> {
-  let chatId: string | null = null;
-  await expect
-    .poll(async () => {
-      chatId = await page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId"));
-      return chatId;
-    })
-    .not.toBeNull();
-
-  return chatId!;
 }
 
 async function deleteChat(page: Page, chatId: string | null): Promise<void> {
@@ -278,7 +265,7 @@ test("uses an assistant from the Library and completes an identified run", async
     await expect(page.getByTestId("composer-v2-assistant-lock")).toContainText(name);
 
     await starter.click();
-    chatId = await waitForActiveChatId(page);
+    chatId = await activeChatId(page);
     await expect(assistantContentWithText(page, "Fake answer: Say hello")).toBeVisible({
       timeout: 20_000
     });
@@ -349,7 +336,7 @@ test("keeps accepted answers on their historical identity after an edit", async 
     await selectAssistantFromPicker(page, assistant.id);
     await page.getByRole("textbox", { name: "Message" }).fill(question);
     await page.getByRole("textbox", { name: "Message" }).press("Enter");
-    chatId = await waitForActiveChatId(page);
+    chatId = await activeChatId(page);
     await expect(assistantContentWithText(page, `Fake answer: ${question}`)).toBeVisible({
       timeout: 20_000
     });

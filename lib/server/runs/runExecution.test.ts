@@ -25,6 +25,7 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { McpSemanticRouterError } from "../mcp/router";
+import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
@@ -1439,6 +1440,8 @@ function compactionLoopFixture(input: Readonly<{
   callsPerRound?: number;
   mutate?(request: NormalizedRunRequest): NormalizedRunRequest;
   onToolCall?(count: number): void;
+  /** Answer dispatches (1-based) the provider rejects for context length. */
+  rejectAnswers?: readonly number[];
   repository?: ReturnType<typeof createRepository>;
 }>) {
   const repository = input.repository ?? createRepository();
@@ -1476,9 +1479,14 @@ function compactionLoopFixture(input: Readonly<{
       return providerResult({ finalText: output });
     }
     answers.push(request);
-    if (answers.length < 3) {
+    if (input.rejectAnswers?.includes(answers.length)) {
+      throw Object.assign(new Error("OpenAI request failed with status 400"), { code: "provider_context_length_exceeded",
+        status: 400, providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY" });
+    }
+    const accepted = answers.length - (input.rejectAnswers?.filter(index => index < answers.length).length ?? 0);
+    if (accepted < 3) {
       return providerResult({ finalText: "", toolCalls: Array.from({ length: input.callsPerRound ?? 1 }, (_, index) =>
-        ({ id: `read-${answers.length}${index ? `-${index}` : ""}`, name, arguments: {} })) });
+        ({ id: `read-${accepted}${index ? `-${index}` : ""}`, name, arguments: {} })) });
     }
     yield { type: "token", data: { delta: "Done." } };
     return providerResult({ finalText: "Done." });
@@ -1504,7 +1512,7 @@ function compactionLoopFixture(input: Readonly<{
       ? decodeContextCompactionStatus(event.data.payload) : null;
     return status ? [status] : [];
   });
-  return { answers, batchCheckpoints, compactionStatuses, repository, roundCheckpoints, run, summaries };
+  return { answers, batchCheckpoints, callTool, compactionStatuses, repository, roundCheckpoints, run, summaries };
 }
 
 function followupFixture(repository: RunExecutionRepository) {
@@ -1710,6 +1718,55 @@ describe("run execution", () => {
     expect(loop.answers.every(answer => answer.personalContext?.text.includes("PRIVATE_MEMORY_FACT"))).toBe(true);
     // Session context describes answer dispatches only: one per answer plus the settled answer.
     expect(events.filter(isContextEvent)).toHaveLength(loop.answers.length + 1);
+  });
+
+  it("rebuilds a context-rejected round once under a tightened budget and checkpoints the record", async () => {
+    // Round 2 fits the admitted budget but the provider refuses it: the
+    // tighter budget needs the summary the hybrid policy buys, and the
+    // settled round-1 tool is never called again.
+    const loop = compactionLoopFixture({ historyTokens: 3_000, resultChars: 2_000, rejectAnswers: [2] });
+    const events = await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
+    expect(loop.answers).toHaveLength(4);
+    const [, rejected, rebuilt, next] = loop.answers;
+    expect(rejected?.contextCompaction).toMatchObject({ outcome: "already_fits" });
+    expect(rejected).not.toHaveProperty("contextCompactionRebuild");
+    const rebuild = rebuilt?.contextCompactionRebuild;
+    expect(rebuild).toMatchObject({ version: 1, round: 2 });
+    expect(rebuild!.budgetTokens).toBeLessThan(rejected!.contextCompaction!.afterTokens);
+    expect(rebuilt?.contextCompaction).toMatchObject({ budgetTokens: rebuild!.budgetTokens });
+    expect(rebuilt!.contextCompaction!.afterTokens).toBeLessThanOrEqual(rebuild!.budgetTokens);
+    expect(loop.summaries.length).toBeGreaterThan(0);
+    expect(JSON.stringify(rebuilt?.context)).not.toContain("OLD_HISTORY");
+    expect(next?.contextCompactionRebuild).toEqual(rebuild);
+    expect(loop.callTool).toHaveBeenCalledTimes(2);
+    // The rebuilt round's batch checkpoint carries the record for recovery.
+    expect(loop.batchCheckpoints.find(batch => batch.roundIndex === 2)?.contextCompaction?.rebuild).toEqual(rebuild);
+    expect(loop.batchCheckpoints.find(batch => batch.roundIndex === 1)?.contextCompaction).not.toHaveProperty("rebuild");
+    // The refused dispatch invents no usage: each round has one terminal record.
+    expect(loop.repository.recordedRunUsageEvents.flatMap(entry => entry.answerRoundUsage ? [entry.answerRoundUsage] : [])
+      .map(({ completeness, roundIndex }) => [roundIndex, completeness])).toEqual([[1, "terminal"], [2, "terminal"], [3, "terminal"]]);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_PROVIDER_MESSAGE_CANARY");
+  });
+
+  it("fails a second rejection of the rebuilt round with the precise code and safe wording", async () => {
+    const loop = compactionLoopFixture({ historyTokens: 3_000, resultChars: 2_000, rejectAnswers: [2, 3] });
+    const events = await loop.run();
+    const expected = {
+      code: "provider_context_length_exceeded",
+      message: "The model provider rejected the request as too long for the model's context window (HTTP 400). Reduce the context or choose a model with a larger context window."
+    };
+    expect(loop.answers).toHaveLength(3);
+    expect(loop.answers[2]?.contextCompactionRebuild).toMatchObject({ round: 2 });
+    expect(loop.callTool).toHaveBeenCalledOnce();
+    expect(loop.repository.failedRuns).toEqual([{ assistantMessageId: "assistant-1", error: expected, runId: "run-1" }]);
+    expect(events.at(-1)).toMatchObject({ data: expected, type: "error" });
+    // Only the answer rounds that returned carry usage; both refusals are unpaid.
+    expect(loop.repository.recordedRunUsageEvents.flatMap(entry => entry.answerRoundUsage ? [entry.answerRoundUsage] : [])
+      .map(({ completeness, roundIndex }) => [roundIndex, completeness])).toEqual([[1, "terminal"]]);
+    expect(JSON.stringify([events, loop.repository.failedRuns, loop.repository.recordedRunUsageEvents]))
+      .not.toContain("PRIVATE_PROVIDER_MESSAGE_CANARY");
   });
 
   it("masks an older settled result live from the run's own server observations", async () => {
@@ -6137,8 +6194,10 @@ describe("run execution", () => {
     const modelCapabilities = { ...base.normalizedRequest.modelCapabilities, contextWindow: 128_000 };
     const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, modelCapabilities, toolObservationVersion: 1 as const },
       providerRequest: { ...base.providerRequest, modelCapabilities, toolObservationVersion: 1 as const } };
-    // About two fifths of the batch share each: two fit whole, the rest keep previews.
-    const bytes = Math.floor(observationWholeResultTokens(prepared.providerRequest) * 4 * 0.4);
+    // About two fifths of the batch share each, measured like the share: two fit whole, the rest keep previews.
+    const share = observationWholeResultTokens(prepared.providerRequest);
+    const sample = Array.from({ length: 128 }, (_, index) => createHash("sha256").update(`density:${index}`).digest("hex")).join("");
+    const bytes = Math.floor(share.tokens * 0.4 * sample.length / share.estimateTokens(sample));
     let dispatched = 0;
     const callTool = vi.fn(async () => {
       dispatched += 1;
@@ -6709,6 +6768,63 @@ describe("run execution", () => {
     expect(repository.recordedRunUsageEvents.flatMap(event => event.usageAttributions ?? [])).toEqual(expect.arrayContaining([
       expect.objectContaining({ modelId: "perplexity/sonar-pro-search", usage: expect.objectContaining({ inputTokens: 3, outputTokens: 2 }) })
     ]));
+  });
+
+  it("persists a reviewed Gemini HTTP identity as the run outcome without provider text", async () => {
+    const rejected = () => Object.assign(new GeminiHttpError(400, "invalid_request"), {
+      providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY"
+    });
+    const expected = {
+      code: "provider_http_invalid_request",
+      message: "The model provider rejected the request (Gemini HTTP 400: invalid_request)."
+    };
+    const adapter = createAdapter(async function* () { throw rejected(); });
+    // The client Search tool routes the first request through the tool loop;
+    // the plain request fails on the direct stream path.
+    for (const prepared of [
+      preparedData({ modelId: "openai-answer-model", provider: "openai", searchPlan: perplexityClientSearchPlan() }),
+      preparedData()
+    ]) {
+      const repository = createRepository();
+      const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+        searchAdapter: { buildRequestPreview: () => ({}), search: vi.fn() } })).text());
+      expect(events.at(-1)).toMatchObject({ data: expected, type: "error" });
+      expect(repository.failedRuns).toEqual([{ assistantMessageId: "assistant-1", error: expected, runId: "run-1" }]);
+      expect(JSON.stringify([events, repository.failedRuns])).not.toContain("PRIVATE_");
+    }
+  });
+
+  it("persists a context-length rejection outside the v1 rebuild as its stable code, unpaid and without provider text", async () => {
+    const expected = {
+      code: "provider_context_length_exceeded",
+      message: "The model provider rejected the request as too long for the model's context window (HTTP 400). Reduce the context or choose a model with a larger context window."
+    };
+    let dispatches = 0;
+    const adapter = createAdapter(async function* () {
+      dispatches += 1;
+      throw Object.assign(new Error("OpenAI request failed with status 400"), { code: "provider_context_length_exceeded", status: 400,
+        reportedMaximumTokens: 128_000, reportedPromptTokens: 130_000, providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY" });
+    });
+    // The client Search tool routes the first request through the tool loop;
+    // the plain request fails on the direct stream path, also through the
+    // follow-up executor that production uses for every non-Agent dispatch.
+    for (const [prepared, withFollowups] of [
+      [preparedData({ modelId: "openai-answer-model", provider: "openai", searchPlan: perplexityClientSearchPlan() }), false],
+      [preparedData(), false],
+      [preparedData(), true]
+    ] as const) {
+      dispatches = 0;
+      const repository = createRepository();
+      if (withFollowups) followupFixture(repository.repository);
+      const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+        searchAdapter: { buildRequestPreview: () => ({}), search: vi.fn() } })).text());
+      expect(dispatches).toBe(1);
+      expect(events.at(-1)).toMatchObject({ data: expected, type: "error" });
+      expect(repository.failedRuns).toEqual([{ assistantMessageId: "assistant-1", error: expected, runId: "run-1" }]);
+      expect(repository.recordedRunUsageEvents.flatMap(entry => [...entry.usageAttributions, ...(entry.answerRoundUsage ? [entry.answerRoundUsage] : [])]))
+        .toEqual([]);
+      expect(JSON.stringify([events, repository.failedRuns])).not.toContain("PRIVATE_");
+    }
   });
 
   it("retains completed and partial answer usage with Search when a later tool round fails", async () => {

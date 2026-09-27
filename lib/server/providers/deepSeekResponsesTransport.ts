@@ -5,6 +5,11 @@ import {
   readBoundedResponseText,
   withTimeoutSignal
 } from "./network";
+import {
+  PROVIDER_CONTEXT_LENGTH_EXCEEDED,
+  providerContextLengthRejection,
+  type ProviderContextLengthCounts
+} from "./responseFailure";
 
 export type DeepSeekResponseObject = Record<string, unknown>;
 
@@ -62,13 +67,27 @@ async function parseJsonResponse(
   return parsed as DeepSeekResponseObject;
 }
 
+/** DeepSeek states an OpenAI-style "maximum context length" rejection. Only
+ * the stable identity and the stated counts leave the body. */
+function contextLengthRejection(text: string): ProviderContextLengthCounts | null {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return null; }
+  const error = typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>).error : null;
+  return typeof error === "object" && error !== null && !Array.isArray(error)
+    ? providerContextLengthRejection(error as Record<string, unknown>) : null;
+}
+
 async function throwHttpError(response: Response, signal: AbortSignal): Promise<never> {
+  let contextLength: ProviderContextLengthCounts | null = null;
   try {
-    await readBoundedResponseText(response, { signal });
+    const text = await readBoundedResponseText(response, { signal });
+    if (response.status === 400) contextLength = contextLengthRejection(text);
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) throw error;
   }
-  throw new DeepSeekHttpError(response.status);
+  throw Object.assign(new DeepSeekHttpError(response.status),
+    contextLength ? { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLength } : {});
 }
 
 export function createFetchDeepSeekResponsesClient(input: Readonly<{

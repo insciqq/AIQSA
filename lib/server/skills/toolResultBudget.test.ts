@@ -14,8 +14,9 @@ const request: ProviderRunRequest = {
   modelId: "model", provider: "openai", params: {}, prompt: { system: null, developer: null },
   searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"
 };
+// The "h" fill encodes at four characters per o200k token.
 const result = (callId: string, name: string, size: number): ToolExecutionResult => ({
-  callId, name, status: "complete", content: [{ type: "json", value: { instructions: "x".repeat(size) } }]
+  callId, name, status: "complete", content: [{ type: "json", value: { instructions: "h".repeat(size) } }]
 });
 
 describe("Skill result context admission", () => {

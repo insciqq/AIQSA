@@ -1,4 +1,5 @@
 import { AdminPanel } from "@/components/admin/AdminPanel";
+import { chatReturnPath } from "@/lib/domain/chatRoute";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { authSessionStore } from "@/lib/server/auth/defaultAuth";
 import { resolveAuthToken } from "@/lib/server/auth/requestAuth";
@@ -14,11 +15,32 @@ export const metadata: Metadata = {
   title: "Control Center"
 };
 
-export default async function AdminPage() {
+type AdminPageSearchParams = Record<string, string | string[] | undefined>;
+
+type AdminPageProps = Readonly<{
+  searchParams?: Promise<AdminPageSearchParams>;
+}>;
+
+/** Sign-in returns to the same Control Center address, including its `return` chat route. */
+function adminLoginHref(params: AdminPageSearchParams): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    for (const entry of Array.isArray(value) ? value : value === undefined ? [] : [value]) {
+      query.append(key, entry);
+    }
+  }
+  return query.size > 0
+    ? `/login?${new URLSearchParams({ next: `/admin?${query}` })}`
+    : "/login?next=/admin";
+}
+
+export default async function AdminPage({ searchParams }: AdminPageProps = {}) {
+  const params = (await searchParams) ?? {};
   const config = getAuthConfig();
+  const loginHref = adminLoginHref(params);
 
   if (!config.configured) {
-    redirect("/login?next=/admin");
+    redirect(loginHref);
   }
 
   const cookieStore = await cookies();
@@ -27,7 +49,7 @@ export default async function AdminPage() {
   });
 
   if (!session) {
-    redirect("/login?next=/admin");
+    redirect(loginHref);
   }
 
   const user = await prisma.user.findUnique({
@@ -43,7 +65,7 @@ export default async function AdminPage() {
   });
 
   if (!user || user.status !== "active") {
-    redirect("/login?next=/admin");
+    redirect(loginHref);
   }
 
   if (user.role !== "admin") {
@@ -73,5 +95,13 @@ export default async function AdminPage() {
     );
   }
 
-  return <AdminPanel adminEmail={user.email ?? user.displayName} adminUserId={session.userId} />;
+  // Validated here so the first server render already links back to the origin chat.
+  const requestedReturn = params.return;
+  return (
+    <AdminPanel
+      adminEmail={user.email ?? user.displayName}
+      adminUserId={session.userId}
+      returnPath={chatReturnPath(typeof requestedReturn === "string" ? requestedReturn : null)}
+    />
+  );
 }

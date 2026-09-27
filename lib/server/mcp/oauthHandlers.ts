@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { chatReturnPath } from "@/lib/domain/chatRoute";
 import type { AuthConfig } from "@/lib/server/auth/config";
 import type {
   AuthenticatedSession,
@@ -67,13 +68,21 @@ function callbackPath(serverId: string, purpose: McpOAuthPurpose): string {
     : `/api/me/mcp/${encoded}/oauth/callback`;
 }
 
+/**
+ * A personal outcome opens the MCP tab over the chat route the authorization
+ * started from; anything but a validated chat route is the new chat.
+ */
 function outcomeUrl(input: Readonly<{
   appBaseUrl: string;
   outcome: "cancelled" | "connected" | "failed";
   purpose: McpOAuthPurpose;
+  returnPath?: string | null;
   serverId: string;
 }>): string {
-  const url = new URL(input.purpose === "validation" ? "/admin" : "/", input.appBaseUrl);
+  const url = new URL(
+    input.purpose === "validation" ? "/admin" : chatReturnPath(input.returnPath),
+    input.appBaseUrl
+  );
   if (input.purpose === "validation") url.searchParams.set("section", "mcp");
   else url.searchParams.set("library", "mcp");
   url.searchParams.set("oauth", input.outcome);
@@ -147,6 +156,9 @@ export function createMcpOAuthStartHandler(
     if (!validServerId(serverId)) return errorResponse("mcp_not_found", 404);
     const redirectUri = new URL(callbackPath(serverId, options.purpose), config.appBaseUrl).toString();
     const state = (deps.randomState ?? randomState)();
+    const returnPath = options.purpose === "user"
+      ? chatReturnPath(singleValue(new URL(request.url).searchParams, "return"))
+      : undefined;
     try {
       const result = await deps.service.startAuthorization({
         forceReconnect: options.forceReconnect,
@@ -168,6 +180,7 @@ export function createMcpOAuthStartHandler(
             appBaseUrl: config.appBaseUrl,
             outcome: "failed",
             purpose: options.purpose,
+            returnPath,
             serverId
           }));
         }
@@ -176,12 +189,14 @@ export function createMcpOAuthStartHandler(
           appBaseUrl: config.appBaseUrl,
           outcome: "connected",
           purpose: options.purpose,
+          returnPath,
           serverId
         }));
       }
       const signed = await signMcpOAuthFlow({
         flow: result.flow,
         now: deps.now?.() ?? new Date(),
+        returnPath,
         sessionSecret: config.sessionSecret
       });
       return redirect(result.authorizationUrl, mcpOAuthFlowCookie({
@@ -203,45 +218,50 @@ export function createMcpOAuthCallbackHandler(
     const config = deps.getConfig();
     const { serverId } = await context.params;
     const clearCookie = clearMcpOAuthFlowCookie(config.cookieSecure);
-    const failed = () => redirect(outcomeUrl({
+    const failed = (returnPath: string | null = null) => redirect(outcomeUrl({
       appBaseUrl: config.appBaseUrl,
       outcome: "failed",
       purpose,
+      returnPath,
       serverId
     }), clearCookie);
     if (!config.configured || !validServerId(serverId)) return failed();
     const auth = await authorizedSession(request, deps, purpose);
     const session = auth.session;
-    const flow = await readMcpOAuthFlow({
+    const flowState = await readMcpOAuthFlow({
       now: deps.now?.() ?? new Date(),
       request,
       sessionSecret: config.sessionSecret
     });
+    const flow = flowState?.flow ?? null;
     const query = new URL(request.url).searchParams;
     const state = singleValue(query, "state");
-    if (!session || !flow || flow.userId !== session.userId || flow.serverId !== serverId ||
+    if (!session || !flowState || !flow || flow.userId !== session.userId || flow.serverId !== serverId ||
       flow.purpose !== purpose || !state || !exactMcpOAuthState(state, flow.state) ||
       flow.redirectUri !== new URL(callbackPath(serverId, purpose), config.appBaseUrl).toString()) {
       return failed();
     }
+    // Only a flow bound to this session and server returns to its signed chat route.
+    const returnPath = flowState.returnPath;
     const errors = query.getAll("error");
     const codes = query.getAll("code");
     const issuers = query.getAll("iss");
     if (errors.length > 1 || codes.length > 1 || issuers.length > 1 ||
       (errors.length && codes.length) ||
       (issuers.length === 1 && (!issuers[0] || issuers[0].length > 8_192))) {
-      return failed();
+      return failed(returnPath);
     }
     if (errors[0]) {
       return redirect(outcomeUrl({
         appBaseUrl: config.appBaseUrl,
         outcome: errors[0] === "access_denied" ? "cancelled" : "failed",
         purpose,
+        returnPath,
         serverId
       }), clearCookie);
     }
     const authorizationCode = codes[0];
-    if (!authorizationCode || authorizationCode.length > 8_192) return failed();
+    if (!authorizationCode || authorizationCode.length > 8_192) return failed(returnPath);
     try {
       await deps.service.completeAuthorization({
         authorizationCode,
@@ -254,17 +274,18 @@ export function createMcpOAuthCallbackHandler(
         serverId,
         userId: session.userId
       });
-      if (!settled) return failed();
+      if (!settled) return failed(returnPath);
       notifyRuntimeChanged(deps, purpose === "user" ? session.userId : undefined);
       return redirect(outcomeUrl({
         appBaseUrl: config.appBaseUrl,
         outcome: "connected",
         purpose,
+        returnPath,
         serverId
       }), clearCookie);
     } catch {
       // Provider and policy failures intentionally collapse to a browser-safe outcome.
-      return failed();
+      return failed(returnPath);
     }
   };
 }

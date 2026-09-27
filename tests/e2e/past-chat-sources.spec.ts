@@ -46,7 +46,6 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length,
       messages, usageStats: null
     };
-    await page.addInitScript(() => window.localStorage.setItem("aiqsa.activeChatId", "recall-ui-chat"));
     await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
     await page.route("**/api/me/memory/settings", (route) => route.fulfill({ json: memoryConsumerSettingsFixture() }));
     await page.route("**/api/me/memory/source-actions", (route) => route.fulfill({ json: { status: "COMMITTED" } }));
@@ -55,7 +54,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       openedRefs.push(new URL(route.request().url()).searchParams.get("memoryRef")!);
       await route.fulfill({ contentType: "text/html", body: "<p>Authenticated source destination</p>" });
     });
-    await signInWithLocalToken(page);
+    await signInWithLocalToken(page, "/c/recall-ui-chat");
     const process = page.getByTestId("tool-activity-disclosure");
     await expect(process.locator(":scope > summary")).toContainText("Past chats · 4 · Memory · 1");
     await process.locator(":scope > summary").click();

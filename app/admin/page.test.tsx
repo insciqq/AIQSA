@@ -109,6 +109,18 @@ describe("AdminPage", () => {
     expect(adminPageMocks.adminPanel).not.toHaveBeenCalled();
   });
 
+  it("returns a stale session to the same Control Center address, including its chat return", async () => {
+    adminPageMocks.resolveAuthToken.mockResolvedValue(null);
+
+    await expect(AdminPage({
+      searchParams: Promise.resolve({ return: "/c/chat-1", section: "mcp" })
+    })).rejects.toBe(redirectSignal);
+
+    const location = new URL(adminPageMocks.redirect.mock.calls[0]![0] as string, "https://aiqsa.invalid");
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("next")).toBe("/admin?return=%2Fc%2Fchat-1&section=mcp");
+  });
+
   it("redirects an authenticated user whose account is inactive", async () => {
     adminPageMocks.findUnique.mockResolvedValue({
       displayName: "Disabled User",
@@ -186,8 +198,28 @@ describe("AdminPage", () => {
     expect(adminPageMocks.adminPanel).toHaveBeenCalledTimes(1);
     expect(adminPageMocks.adminPanel.mock.calls[0]?.[0]).toEqual({
       adminEmail: "admin@example.com",
-      adminUserId: "admin-1"
+      adminUserId: "admin-1",
+      returnPath: "/"
     });
     expect(adminPageMocks.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ return: "/p/project-1/c/chat-1", section: "users" }, "/p/project-1/c/chat-1"],
+    [{ return: "https://evil.example/c/foreign" }, "/"],
+    [{ return: "/admin?section=users" }, "/"],
+    [{ return: ["/c/chat-1", "/c/chat-2"] }, "/"]
+  ])("hands the validated chat return %o to the admin client", async (searchParams, returnPath) => {
+    adminPageMocks.resolveAuthToken.mockResolvedValue({ userId: "admin-1" });
+    adminPageMocks.findUnique.mockResolvedValue({
+      displayName: "Admin User",
+      email: "admin@example.com",
+      role: "admin",
+      status: "active"
+    });
+
+    render(await AdminPage({ searchParams: Promise.resolve(searchParams) }));
+
+    expect(adminPageMocks.adminPanel.mock.calls[0]?.[0]).toMatchObject({ returnPath });
   });
 });
