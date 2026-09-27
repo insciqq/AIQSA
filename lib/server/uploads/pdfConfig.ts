@@ -2,6 +2,7 @@ import {
   ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS,
   PDF_PROCESSING_MAX_PAGES
 } from "../../contracts/uploads";
+import { getAttachmentTextConfig } from "./attachmentTextConfig";
 
 export const DEFAULT_PDF_MAX_PAGES = PDF_PROCESSING_MAX_PAGES;
 export const DEFAULT_PDF_EXTRACTION_TIMEOUT_MS = 300_000;
@@ -42,24 +43,25 @@ function configuredTimeout(value: string | undefined): number {
   return pdfExtractionTimeoutMs(Number(value));
 }
 
-function reductionOnlyPositiveInteger(value: string | undefined, fallback: number): number {
-  if (value === undefined || !/^\d+$/.test(value)) {
-    return fallback;
+/** Reduction-only page bound: a malformed or larger value is rejected, never
+ * silently replaced; Compose forwards an unset optional value as "". */
+function configuredMaxPages(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") return DEFAULT_PDF_MAX_PAGES;
+  const parsed = /^\d+$/u.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > DEFAULT_PDF_MAX_PAGES) {
+    throw Object.assign(
+      new Error(`pdf_page_limit_config_invalid: AIQSA_PDF_MAX_PAGES must be an integer from 1 to ${DEFAULT_PDF_MAX_PAGES}`),
+      { code: "pdf_page_limit_config_invalid", setting: "AIQSA_PDF_MAX_PAGES" }
+    );
   }
-
-  const parsed = Number(value);
-
-  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= fallback ? parsed : fallback;
+  return parsed;
 }
 
 export function getPdfExtractionConfig(env: PdfExtractionEnvironment = process.env): PdfExtractionConfig {
   return {
     chunkMaxChars: DEFAULT_PDF_CHUNK_MAX_CHARS,
-    extractedTextMaxChars: reductionOnlyPositiveInteger(
-      env.AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS,
-      DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS
-    ),
-    maxPages: reductionOnlyPositiveInteger(env.AIQSA_PDF_MAX_PAGES, DEFAULT_PDF_MAX_PAGES),
+    extractedTextMaxChars: getAttachmentTextConfig(env).extractedTextMaxChars,
+    maxPages: configuredMaxPages(env.AIQSA_PDF_MAX_PAGES),
     timeoutMs: configuredTimeout(env.AIQSA_PDF_EXTRACTION_TIMEOUT_MS),
     workerResourceLimits: PDF_WORKER_RESOURCE_LIMITS
   };

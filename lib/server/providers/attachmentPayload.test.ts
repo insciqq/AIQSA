@@ -9,6 +9,7 @@ import {
   providerAttachmentBudgetTokens,
   providerAttachmentPreviewText,
   providerAttachmentText,
+  providerAttachmentTextLabel,
   truncateProviderAttachmentText
 } from "./attachmentPayload";
 import type { ProviderAttachment, ProviderModelCapabilities, ProviderRunRequest } from "./types";
@@ -91,6 +92,25 @@ describe("provider attachment payload helpers", () => {
         modelCapabilities: textCapabilities
       })
     ).toBe(estimateApproxTokens(providerAttachmentText(doc)));
+  });
+
+  it("tells the model when processing kept only part of a document", () => {
+    const document = (processing: Record<string, unknown>) => attachment({
+      extractedText: "retained prefix",
+      metadata: { document: { characterCount: 15, engine: "inline", extractedTextMaxChars: 15, ...processing } }
+    });
+    const truncated = document({ status: "partial", truncated: true, warnings: ["truncated_oversized_section"] });
+
+    expect(providerAttachmentTextLabel(truncated)).toBe(
+      "Attached document: attachment.txt (text/plain); incomplete text: extraction kept only the first 15 characters; the rest of the original file is not included"
+    );
+    expect(providerAttachmentText(truncated)).toBe(`[${providerAttachmentTextLabel(truncated)}]\nretained prefix`);
+    expect(providerAttachmentBudgetTokens({ attachments: [truncated], modelCapabilities: textCapabilities }))
+      .toBe(estimateApproxTokens(providerAttachmentText(truncated)));
+    expect(providerAttachmentTextLabel(document({ status: "partial", truncated: false })))
+      .toContain("; incomplete text: part of the original file could not be read");
+    expect(providerAttachmentTextLabel(document({ status: "complete", truncated: false })))
+      .toBe("Attached document: attachment.txt (text/plain)");
   });
 
   it("truncates extracted attachment text consistently", () => {

@@ -1,6 +1,14 @@
+import {
+  KNOWLEDGE_PROCESSING_WARNING_CODES,
+  type KnowledgeProcessingWarningCode
+} from "./knowledge";
+
 export type AttachmentPreviewKind = "image" | "text" | "pdf" | null;
 
 export const PDF_PROCESSING_MAX_PAGES = 500;
+/** Upper bound of retained attachment text. The operator setting may only
+ * lower it (invalid values are rejected), so every decoder below can bound
+ * persisted counts by this constant. */
 export const ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS = 1_000_000;
 
 export type PdfProcessingWire = {
@@ -9,6 +17,16 @@ export type PdfProcessingWire = {
   pagesProcessed: number;
   status: "complete" | "partial" | "no_text";
   truncationReason?: "text_limit";
+};
+
+/** Completeness of a non-PDF attachment's retained text (`metadata.document`).
+ * `truncated` means text beyond `characterCount` exists but was not kept. */
+export type DocumentProcessingWire = {
+  characterCount: number;
+  extractedTextMaxChars: number;
+  status: "complete" | "partial" | "no_text";
+  truncated: boolean;
+  warnings: KnowledgeProcessingWarningCode[];
 };
 
 export type UploadedAttachmentWire = {
@@ -187,6 +205,44 @@ export function decodePdfProcessing(value: unknown): PdfProcessingWire | null {
     status: value.status,
     ...(value.status === "partial" ? { truncationReason: "text_limit" as const } : {})
   };
+}
+
+export function decodeDocumentProcessing(value: unknown): DocumentProcessingWire | null {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeSafeInteger(value.characterCount) ||
+    !isPositiveSafeInteger(value.extractedTextMaxChars) ||
+    value.extractedTextMaxChars > ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS ||
+    value.characterCount > value.extractedTextMaxChars ||
+    (value.status !== "complete" && value.status !== "partial" && value.status !== "no_text") ||
+    typeof value.truncated !== "boolean" ||
+    (value.truncated && value.status !== "partial") ||
+    (value.status === "no_text" && value.characterCount !== 0)
+  ) {
+    return null;
+  }
+  const warnings = value.warnings === undefined ? [] : value.warnings;
+  if (
+    !Array.isArray(warnings) ||
+    warnings.length > KNOWLEDGE_PROCESSING_WARNING_CODES.length ||
+    new Set(warnings).size !== warnings.length ||
+    !warnings.every((warning) =>
+      (KNOWLEDGE_PROCESSING_WARNING_CODES as readonly unknown[]).includes(warning))
+  ) {
+    return null;
+  }
+  return {
+    characterCount: value.characterCount,
+    extractedTextMaxChars: value.extractedTextMaxChars,
+    status: value.status,
+    truncated: value.truncated,
+    warnings: [...warnings as KnowledgeProcessingWarningCode[]]
+  };
+}
+
+/** The decoded `metadata.document` of a non-PDF attachment, if well formed. */
+export function documentProcessingFromMetadata(metadata: unknown): DocumentProcessingWire | null {
+  return isRecord(metadata) ? decodeDocumentProcessing(metadata.document) : null;
 }
 
 export function decodeUploadAttachmentResponse(value: unknown): UploadAttachmentResponseWire | null {
