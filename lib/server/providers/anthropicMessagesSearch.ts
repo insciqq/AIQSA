@@ -81,7 +81,7 @@ export type AnthropicMessagesSearchRequestBody = Readonly<{
   output_config?: Readonly<{ effort: string }>;
   stream: false;
   system: string;
-  thinking?: Readonly<{ type: "adaptive" }>;
+  thinking?: Readonly<{ display: "summarized"; type: "adaptive" }>;
   tools: readonly [Readonly<{
     allowed_callers: readonly ["direct"];
     max_uses: 3;
@@ -273,7 +273,7 @@ export function buildAnthropicMessagesSearchRequest(
     ...(effort
       ? {
           output_config: { effort },
-          thinking: { type: "adaptive" as const }
+          thinking: { display: "summarized" as const, type: "adaptive" as const }
         }
       : {}),
     stream: false,

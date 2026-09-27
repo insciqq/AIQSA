@@ -143,7 +143,7 @@ describe("Anthropic Messages query-only Search adapter", () => {
       output_config: { effort: "low" },
       stream: false,
       system: "Use Web Search for the query and return concise source-backed findings.",
-      thinking: { type: "adaptive" },
+      thinking: { display: "summarized", type: "adaptive" },
       tools: [{
         allowed_callers: ["direct"],
         max_uses: 3,
