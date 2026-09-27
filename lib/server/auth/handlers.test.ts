@@ -2,9 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "./config";
 import { DIRECT_PEER_HEADER } from "./clientIdentity";
-import { createLogoutHandler, createMeHandler, createPasswordLoginHandler, createPasswordResetCompleteHandler, createPasswordResetRequestHandler, createTokenLoginHandler, getLoginRateLimitKey, type SafeUserWithGroups } from "./handlers";
+import { createLogoutHandler, createMeHandler, createPasswordLoginHandler, createPasswordResetCompleteHandler, createPasswordResetRequestHandler, createTokenLoginHandler, getLoginRateLimitKey, PASSWORD_LOGIN_DISTRIBUTED_CEILING, type SafeUserWithGroups } from "./handlers";
 import { createMemoryAuthMailer } from "@/tests/support/authMailers";
 import { hashPassword, verifyPassword } from "./password";
+import type { PasswordIdentityRecord } from "./passwordRepository";
 import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { createAuthSession } from "./requestAuth";
 import { readCookie, SESSION_COOKIE_NAME } from "./session";
@@ -102,6 +103,25 @@ function deferred() {
   });
 
   return { promise, resolve };
+}
+
+/** Password logins behind one trusted proxy, each from the given client address. */
+function passwordAttempts(input: {
+  identity: PasswordIdentityRecord | null;
+  verifyPassword?: (password: string, passwordHash: string | null | undefined) => Promise<boolean>;
+}) {
+  const POST = createPasswordLoginHandler({
+    getConfig: () => proxyConfig,
+    loginRateLimiter: createFixedWindowLoginRateLimiter({ clock: () => 0 }),
+    repository: createMemoryPasswordAuthRepository({ identity: input.identity }),
+    verifyPassword: input.verifyPassword
+  });
+
+  return (source: string, password: string, email = "operator@aiqsa.local") => {
+    const request = jsonRequest("/api/auth/login", { email, password });
+    request.headers.set("x-forwarded-for", source);
+    return POST(request);
+  };
 }
 
 describe("auth route handlers", () => {
@@ -363,7 +383,7 @@ describe("auth route handlers", () => {
     const verifyPassword = vi.fn(async () => false);
     const passwordHasher = vi.fn(async () => "password-hash");
     const verifyTokenHash = vi.fn(() => false);
-    const rateLimiter = { check: vi.fn(), reset: vi.fn() };
+    const rateLimiter = { check: vi.fn(), release: vi.fn(), reset: vi.fn() };
     const handlers = [
       createPasswordLoginHandler({ getConfig: () => proxyConfig, repository, verifyPassword, loginRateLimiter: rateLimiter }),
       createPasswordResetRequestHandler({ getConfig: () => proxyConfig, repository, mailer, resetRateLimiter: rateLimiter }),
@@ -384,6 +404,7 @@ describe("auth route handlers", () => {
       expect(readBody).not.toHaveBeenCalled();
     }
     expect(rateLimiter.check).not.toHaveBeenCalled();
+    expect(rateLimiter.release).not.toHaveBeenCalled();
     expect(verifyPassword).not.toHaveBeenCalled();
     expect(passwordHasher).not.toHaveBeenCalled();
     expect(verifyTokenHash).not.toHaveBeenCalled();
@@ -573,36 +594,125 @@ describe("auth route handlers", () => {
     expect(valid.status).toBe(200);
   });
 
-  it("keeps an account-bound password limit across changing trusted client identities", async () => {
-    const loginRateLimiter = createFixedWindowLoginRateLimiter({ clock: () => 0 });
-    const verifyPasswordMock = vi.fn(async () => false);
-    const POST = createPasswordLoginHandler({
-      getConfig: () => proxyConfig,
-      loginRateLimiter,
-      repository: createMemoryPasswordAuthRepository({ identity: null }),
+  it("lets the owner's correct password through while an attacker exhausts its own attempts", async () => {
+    const verifyPasswordMock = vi.fn(verifyPassword);
+    const attempt = passwordAttempts({
+      identity: createTestPasswordIdentity({ passwordHash: await hashPassword("correct-password") }),
       verifyPassword: verifyPasswordMock
     });
 
     for (let index = 0; index < 10; index += 1) {
-      const request = jsonRequest("/api/auth/login", {
-        email: "target@aiqsa.local",
-        password: `wrong-password-${index}`
-      });
-      request.headers.set("x-forwarded-for", `203.0.113.${index + 1}`);
-      expect(
-        (await POST(request)).status
-      ).toBe(401);
+      expect((await attempt("203.0.113.66", `wrong-password-${index}`)).status).toBe(401);
+    }
+    expect((await attempt("203.0.113.66", "correct-password")).status).toBe(429);
+    expect((await attempt("198.51.100.20", "correct-password")).status).toBe(200);
+    expect(verifyPasswordMock).toHaveBeenCalledTimes(11);
+  });
+
+  it("bounds distributed guessing past the account ceiling without locking out a clean source", async () => {
+    const verifyPasswordMock = vi.fn(verifyPassword);
+    const attempt = passwordAttempts({
+      identity: createTestPasswordIdentity({ passwordHash: await hashPassword("correct-password") }),
+      verifyPassword: verifyPasswordMock
+    });
+
+    // Two sources spend their whole budgets and together reach the account ceiling.
+    for (const source of ["203.0.113.1", "203.0.113.2"]) {
+      for (let index = 0; index < 10; index += 1) {
+        expect((await attempt(source, `wrong-password-${index}`)).status).toBe(401);
+      }
+    }
+    // Past it every further source keeps exactly one attempt in the window.
+    for (const source of ["203.0.113.3", "2001:db8:3::1"]) {
+      expect((await attempt(source, "wrong-password")).status).toBe(401);
+      expect((await attempt(source, "correct-password")).status).toBe(429);
+    }
+    expect(verifyPasswordMock).toHaveBeenCalledTimes(PASSWORD_LOGIN_DISTRIBUTED_CEILING + 2);
+
+    expect((await attempt("198.51.100.20", "correct-password")).status).toBe(200);
+  });
+
+  it("does not restore a source's spraying budget when it logs into its own account", async () => {
+    const attempt = passwordAttempts({
+      identity: createTestPasswordIdentity({ passwordHash: await hashPassword("own-password") })
+    });
+    const source = "203.0.113.77";
+    const sprays: number[] = [];
+    const ownLogins: number[] = [];
+
+    for (let round = 0; round < 5; round += 1) {
+      for (let index = 0; index < 3; index += 1) {
+        sprays.push((await attempt(source, "guess", `spray-${sprays.length}@aiqsa.local`)).status);
+      }
+      ownLogins.push((await attempt(source, "own-password")).status);
     }
 
-    const blockedRequest = jsonRequest("/api/auth/login", {
-      email: "target@aiqsa.local",
-      password: "another-password"
+    expect(sprays).toEqual([...Array<number>(10).fill(401), ...Array<number>(5).fill(429)]);
+    expect(ownLogins).toEqual([200, 200, 200, 429, 429]);
+  });
+
+  it("keys an IPv6 client by its /64 so rotating addresses cannot extend a spray", async () => {
+    const attempt = passwordAttempts({ identity: null });
+
+    for (let index = 0; index < 10; index += 1) {
+      const address = `2001:db8:5:6:${(index + 1).toString(16)}::${index + 1}`;
+      expect((await attempt(address, "guess", `ipv6-spray-${index}@aiqsa.local`)).status).toBe(401);
+    }
+    expect((await attempt("2001:db8:5:6:ffff::ff", "guess", "ipv6-spray-10@aiqsa.local")).status).toBe(429);
+    expect((await attempt("2001:db8:5:7::1", "guess", "ipv6-spray-11@aiqsa.local")).status).toBe(401);
+  });
+
+  it.each([
+    { name: "without a source identity", getConfig: () => config },
+    { name: "after a distributed attack", getConfig: () => proxyConfig }
+  ])("lets a completed password reset lift the login lock $name", async ({ getConfig }) => {
+    const loginRateLimiter = createFixedWindowLoginRateLimiter({ clock: () => 0 });
+    const repository = createMemoryPasswordAuthRepository({
+      identity: createTestPasswordIdentity({ passwordHash: await hashPassword("old-password") })
     });
-    blockedRequest.headers.set("x-forwarded-for", "203.0.113.250");
-    expect(
-      (await POST(blockedRequest)).status
-    ).toBe(429);
-    expect(verifyPasswordMock).toHaveBeenCalledTimes(10);
+    const owner = "198.51.100.30";
+    const proxied = getConfig().clientIdentityMode === "trusted_proxy";
+    const withSource = (request: Request, source: string) => {
+      if (proxied) request.headers.set("x-forwarded-for", source);
+      return request;
+    };
+    const login = createPasswordLoginHandler({ getConfig, loginRateLimiter, repository });
+    const attempt = (source: string, password: string) =>
+      login(withSource(jsonRequest("/api/auth/login", { email: "operator@aiqsa.local", password }), source));
+    const completeReset = createPasswordResetCompleteHandler({
+      getConfig,
+      loginRateLimiter,
+      now: () => new Date("2026-06-14T00:05:00.000Z"),
+      repository,
+      resetCompleteRateLimiter: createFixedWindowLoginRateLimiter({ clock: () => 0 })
+    });
+
+    await repository.createPasswordResetToken({
+      expiresAt: new Date("2026-06-14T01:00:00.000Z"),
+      identityId: repository.identity!.id,
+      normalizedEmail: repository.identity!.normalizedEmail,
+      sentToEmail: repository.identity!.normalizedEmail,
+      tokenHash: hashToken("lock-lifting-reset-token"),
+      userId: user.id
+    });
+    // Unidentified callers share the plain account limit; identified sources first have to
+    // push the account past its distributed ceiling, after which the owner's source has
+    // spent its one attempt. Either way the owner is locked out even with the right password.
+    for (let index = 0; index < (proxied ? PASSWORD_LOGIN_DISTRIBUTED_CEILING : 10); index += 1) {
+      expect((await attempt(`203.0.113.${Math.floor(index / 10) + 1}`, `wrong-${index}`)).status).toBe(401);
+    }
+    if (proxied) {
+      expect((await attempt(owner, "mistyped-password")).status).toBe(401);
+    }
+    expect((await attempt(owner, "old-password")).status).toBe(429);
+
+    const reset = await completeReset(withSource(jsonRequest("/api/auth/password-reset/complete", {
+      password: "new-password",
+      token: "lock-lifting-reset-token"
+    }), owner));
+
+    expect(reset.status).toBe(200);
+    expect((await attempt(owner, "new-password")).status).toBe(200);
   });
 
   it("creates and emails one-time password reset tokens without revealing unknown accounts", async () => {
@@ -693,6 +803,49 @@ describe("auth route handlers", () => {
     } finally {
       pendingMail.resolve();
     }
+  });
+
+  it("keeps the owner's reset request answerable after third parties spend the account's mail budget", async () => {
+    const repository = createMemoryPasswordAuthRepository({
+      identity: createTestPasswordIdentity()
+    });
+    const findIdentity = vi.spyOn(repository, "findPasswordIdentityByEmail");
+    const mailer = createMemoryAuthMailer();
+    const POST = createPasswordResetRequestHandler({
+      getConfig: () => proxyConfig,
+      mailer,
+      now: () => new Date("2026-06-14T00:00:00.000Z"),
+      repository,
+      resetRateLimiter: createFixedWindowLoginRateLimiter({ clock: () => 0 }),
+      responseFloorMs: 0
+    });
+    const request = (source: string, email: string) => {
+      const reset = jsonRequest("/api/auth/password-reset/request", { email });
+      reset.headers.set("x-forwarded-for", source);
+      return POST(reset);
+    };
+
+    for (const source of ["203.0.113.1", "203.0.113.2"]) {
+      for (let index = 0; index < 5; index += 1) {
+        expect((await request(source, "operator@aiqsa.local")).status).toBe(200);
+        expect((await request(source, "missing@aiqsa.local")).status).toBe(200);
+      }
+    }
+    expect(mailer.sent).toHaveLength(10);
+    expect(findIdentity).toHaveBeenCalledTimes(20);
+
+    // Every one of those links reached the owner and outlives the window, so the owner's own
+    // request gets the generic answer instead of a 429, without minting further mail.
+    const owner = await request("198.51.100.40", "operator@aiqsa.local");
+    const unknown = await request("198.51.100.40", "missing@aiqsa.local");
+
+    expect(owner.status).toBe(200);
+    await expect(owner.json()).resolves.toEqual({ ok: true });
+    expect(unknown.status).toBe(200);
+    await expect(unknown.json()).resolves.toEqual({ ok: true });
+    expect(mailer.sent).toHaveLength(10);
+    expect(repository.resetTokens.size).toBe(10);
+    expect(findIdentity).toHaveBeenCalledTimes(20);
   });
 
   it("sets a password from a reset token, consumes sibling tokens, and rejects replay", async () => {

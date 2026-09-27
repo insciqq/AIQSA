@@ -226,7 +226,7 @@ describe("Prisma-backed password reset completion", () => {
           passwordHash: await hashPassword(newPassword),
           tokenHash: hashToken(target.rawTokens[0]!)
         })
-      ).resolves.toEqual({ userId: target.userId });
+      ).resolves.toEqual({ normalizedEmail: target.email, userId: target.userId });
 
       const [identity, targetTokens, targetSessions, otherIdentity, otherTokens, otherSessions] = await Promise.all([
         prisma.authIdentity.findUniqueOrThrow({ where: { id: target.identityId } }),
@@ -284,7 +284,7 @@ describe("Prisma-backed password reset completion", () => {
           passwordHash: await hashPassword("reset-revokes-inbound-grants"),
           tokenHash: hashToken(target.rawTokens[0]!)
         })
-      ).resolves.toEqual({ userId: target.userId });
+      ).resolves.toEqual({ normalizedEmail: target.email, userId: target.userId });
 
       await expect(pendingClient.exchange(pendingMemoryCode)).resolves.toBeNull();
       await expectInboundMcpRevokedAndReconsentable({
@@ -392,7 +392,7 @@ describe("Prisma-backed password reset completion", () => {
           passwordHash: await hashPassword("replacement-password"),
           tokenHash: hashToken(fixture.rawTokens[0]!)
         })
-      ).resolves.toEqual({ userId: fixture.userId });
+      ).resolves.toEqual({ normalizedEmail: fixture.email, userId: fixture.userId });
       releaseVerification.resolve();
 
       const response = await loginPromise;

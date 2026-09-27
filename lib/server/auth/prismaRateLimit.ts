@@ -9,6 +9,11 @@ import {
 const AUTH_RATE_LIMIT_KEY_DOMAIN = "aiqsa:auth-rate-limit-key:v1\0";
 
 export type DurableLoginRateLimitStore = {
+  /**
+   * Counts one attempt in the open window, stopping one above `maxAttempts` so the result
+   * shows a refusal. A count already above this call's ceiling is left unchanged, never
+   * lowered, because callers may check one key under different ceilings.
+   */
   consume(input: {
     keyHash: string;
     maxAttempts: number;
@@ -17,6 +22,8 @@ export type DurableLoginRateLimitStore = {
   }): Promise<{ attemptCount: number; resetAt: Date }>;
   delete(keyHash: string): Promise<void>;
   pruneExpired(now: Date): Promise<void>;
+  /** Gives back one counted attempt if the key's window is still open. */
+  release(input: { keyHash: string; now: Date }): Promise<void>;
 };
 
 type DurableLoginRateLimiterOptions = {
@@ -67,26 +74,30 @@ export function createDurableLoginRateLimiter(
   }
 
   return {
-    async check(key) {
+    async check(key, checkOptions = {}) {
       const nowMs = clock();
       const now = new Date(nowMs);
       const hashedKey = keyHash(key);
+      const limit = Math.max(1, checkOptions.maxAttempts ?? maxAttempts);
 
       await maybePruneExpired(nowMs);
       const bucket = await options.store.consume({
         keyHash: hashedKey,
-        maxAttempts,
+        maxAttempts: limit,
         now,
         resetAt: new Date(nowMs + windowMs)
       });
 
       return {
-        allowed: bucket.attemptCount <= maxAttempts,
+        allowed: bucket.attemptCount <= limit,
         retryAfterSeconds: Math.max(
-          bucket.attemptCount <= maxAttempts ? 0 : 1,
+          bucket.attemptCount <= limit ? 0 : 1,
           Math.ceil((bucket.resetAt.getTime() - nowMs) / 1000)
         )
       };
+    },
+    async release(key) {
+      await options.store.release({ keyHash: keyHash(key), now: new Date(clock()) });
     },
     async reset(key) {
       await options.store.delete(keyHash(key));
@@ -117,10 +128,9 @@ export function createPrismaLoginRateLimitStore(
           SET
             "attemptCount" = CASE
               WHEN "AuthRateLimitBucket"."resetAt" <= ${input.now} THEN 1
-              ELSE LEAST(
-                "AuthRateLimitBucket"."attemptCount" + 1,
-                CAST(${input.maxAttempts + 1} AS INTEGER)
-              )
+              WHEN "AuthRateLimitBucket"."attemptCount" > CAST(${input.maxAttempts} AS INTEGER)
+                THEN "AuthRateLimitBucket"."attemptCount"
+              ELSE "AuthRateLimitBucket"."attemptCount" + 1
             END,
             "resetAt" = CASE
               WHEN "AuthRateLimitBucket"."resetAt" <= ${input.now} THEN ${input.resetAt}
@@ -146,6 +156,17 @@ export function createPrismaLoginRateLimitStore(
     async pruneExpired(now) {
       await prisma.$executeRaw(
         Prisma.sql`DELETE FROM "AuthRateLimitBucket" WHERE "resetAt" <= ${now}`
+      );
+    },
+    async release(input) {
+      await prisma.$executeRaw(
+        Prisma.sql`
+          UPDATE "AuthRateLimitBucket"
+          SET
+            "attemptCount" = GREATEST("attemptCount" - 1, 0),
+            "updatedAt" = ${input.now}
+          WHERE "keyHash" = ${input.keyHash} AND "resetAt" > ${input.now}
+        `
       );
     }
   };

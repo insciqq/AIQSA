@@ -631,7 +631,7 @@ describe("registration auth handlers", () => {
     const repository = createMemoryRegistrationRepository();
     const mailer = createMemoryAuthMailer();
     const passwordHasher = vi.fn(async () => "password-hash");
-    const rateLimiter = { check: vi.fn(), reset: vi.fn() };
+    const rateLimiter = { check: vi.fn(), release: vi.fn(), reset: vi.fn() };
     const handlers = [
       createRegisterHandler({ getConfig: () => proxyHandlerConfig, repository, mailer, registrationRateLimiter: rateLimiter }),
       createInviteAcceptanceHandler({ getConfig: () => proxyHandlerConfig, repository, inviteAcceptanceRateLimiter: rateLimiter }),
@@ -653,6 +653,28 @@ describe("registration auth handlers", () => {
     expect(repository.acceptances).toHaveLength(0);
     expect(repository.verifications).toHaveLength(0);
     expect(mailer.sent).toHaveLength(0);
+  });
+
+  it("does not restore a source's invite guesses when it accepts a valid invite", async () => {
+    const repository = createMemoryRegistrationRepository();
+    const acceptInvite = vi.spyOn(repository, "acceptInvite").mockImplementation(async (input) =>
+      input.inviteTokenHash === hashToken("valid-invite") ? { userId: "user-1" } : null
+    );
+    const POST = createInviteAcceptanceHandler({
+      getConfig: () => proxyHandlerConfig,
+      inviteAcceptanceRateLimiter: createFixedWindowLoginRateLimiter({ clock: () => 0, maxAttempts: 3 }),
+      repository
+    });
+    const accept = (token: string) => POST(
+      jsonRequest("/api/auth/invite/accept", { password: "invited-password", token }, "203.0.113.55")
+    );
+
+    expect((await accept("guessed-invite-1")).status).toBe(400);
+    expect((await accept("guessed-invite-2")).status).toBe(400);
+    expect((await accept("valid-invite")).status).toBe(200);
+    expect((await accept("guessed-invite-3")).status).toBe(400);
+    expect((await accept("guessed-invite-4")).status).toBe(429);
+    expect(acceptInvite).toHaveBeenCalledTimes(4);
   });
 
   it("keeps successful registration attempts in the account bucket", async () => {

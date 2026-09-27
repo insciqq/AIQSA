@@ -17,7 +17,9 @@ function createMemoryDurableStore(): DurableLoginRateLimitStore & {
       const bucket =
         existing && existing.resetAt > input.now
           ? {
-              attemptCount: Math.min(existing.attemptCount + 1, input.maxAttempts + 1),
+              attemptCount: existing.attemptCount > input.maxAttempts
+                ? existing.attemptCount
+                : existing.attemptCount + 1,
               resetAt: existing.resetAt
             }
           : {
@@ -36,6 +38,13 @@ function createMemoryDurableStore(): DurableLoginRateLimitStore & {
         if (bucket.resetAt <= now) {
           buckets.delete(keyHash);
         }
+      }
+    },
+    async release(input) {
+      const bucket = buckets.get(input.keyHash);
+
+      if (bucket && bucket.resetAt > input.now) {
+        bucket.attemptCount = Math.max(bucket.attemptCount - 1, 0);
       }
     }
   };
@@ -90,5 +99,37 @@ describe("durable auth rate limiter", () => {
 
     now = 1_001;
     expect((await restartedProcess.check("account-key")).allowed).toBe(true);
+  });
+
+  it("checks one shared count under per-check ceilings and releases only open windows", async () => {
+    let now = 0;
+    const store = createMemoryDurableStore();
+    const limiter = createDurableLoginRateLimiter({
+      clock: () => now,
+      keySecret: () => "installation-secret",
+      maxAttempts: 3,
+      store,
+      windowMs: 1_000
+    });
+    const count = () => [...store.buckets.values()][0]?.attemptCount;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      expect((await limiter.check("pair")).allowed).toBe(true);
+    }
+    expect(await limiter.check("pair", { maxAttempts: 1 })).toEqual({ allowed: false, retryAfterSeconds: 1 });
+    // A refusal under a lower ceiling never lowers the count kept for the normal ceiling.
+    expect(count()).toBe(3);
+    expect((await limiter.check("pair")).allowed).toBe(false);
+    expect(count()).toBe(4);
+
+    await limiter.release("pair");
+    await limiter.release("pair");
+    expect((await limiter.check("pair")).allowed).toBe(true);
+
+    now = 1_000;
+    await limiter.release("pair");
+    expect(count()).toBe(3);
+    expect((await limiter.check("pair")).allowed).toBe(true);
+    expect(count()).toBe(1);
   });
 });
