@@ -28,6 +28,13 @@ export function agentTokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/** Every `codex exec [resume]` process restarts JSON-RPC ids and receives a
+ * fresh bearer. Scope a gateway delivery to that incarnation (the bearer hash),
+ * so only a retry inside one process reuses its durable claim. */
+export function agentMcpDeliveryId(incarnation: string, rpcId: unknown): string {
+  return `agent-mcp:${hashCanonicalMcpValue({ incarnation, rpcId: rpcId ?? null })}`;
+}
+
 const ACTIVE = ["queued", "in_progress", "streaming"] as const;
 
 /** Raw bearer exists only in the live executor and guest; persistence keeps its hash. */
@@ -176,12 +183,24 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
           hashCanonicalMcpValue(binding.configuration) !== hashCanonicalMcpValue(configuration)) {
           throw new Error("agent_binding_invalid");
         }
-        const previous = previousAssistantMessageId && binding.workspaceRun.workspaceSession.runtimeSandboxId
+        const candidate = previousAssistantMessageId && binding.workspaceRun.workspaceSession.runtimeSandboxId
           ? await tx.agentRunBinding.findFirst({ where: {
               compatibilityHash: configuration.compatibilityHash, completedAt: { not: null }, threadId: { not: null },
               workspaceRun: { workspaceSessionId: binding.workspaceRun.workspaceSessionId,
                 modelRun: { userId, assistantMessageId: previousAssistantMessageId, status: "complete" } }
             } }) : null;
+        // One native rollout per thread serves every branch. Any other run that
+        // resumed this predecessor, or used its thread after it completed, may
+        // have appended turns (a sibling, or a failed attempt absent from the
+        // branch context). Such a thread is not this branch's history: start a
+        // fresh thread from the full prompt. Lock the predecessor so concurrent
+        // arms observe each other's claim.
+        if (candidate) await tx.$queryRaw`SELECT "modelRunId" FROM "AgentRunBinding" WHERE "modelRunId" = ${candidate.modelRunId} FOR UPDATE`;
+        const advanced = candidate && await tx.agentRunBinding.findFirst({ where: { modelRunId: { not: runId }, OR: [
+          { resumedFromRunId: candidate.modelRunId },
+          { threadId: candidate.threadId, startedAt: { gt: candidate.completedAt! } }
+        ] }, select: { modelRunId: true } });
+        const previous = advanced ? null : candidate;
         const now = new Date();
         await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: {
           tokenHash: agentTokenHash(token), startedAt: now,
@@ -463,7 +482,8 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     async resumedMcpTools() {
       const current = await assertActive();
       if (configuration.mcpMode !== "auto" || !current.resumedFromRunId) return [];
-      // arm alone establishes this exact compatible active-branch predecessor.
+      // arm records a compatible predecessor only while its native thread has
+      // not advanced past it (no sibling or failed successor resumed or used it).
       // Its identifiers are candidates, never transferable execution authority.
       return database.agentMcpTool.findMany({ where: { modelRunId: current.resumedFromRunId,
         binding: { compatibilityHash: configuration.compatibilityHash, completedAt: { not: null },

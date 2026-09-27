@@ -22,7 +22,7 @@ import { normalizeMcpResultForModel } from "../mcp/resultNormalization";
 import { getMcpResponseWireLimits, getMcpRequestMaxBytes, mcpRequestSizeFailure } from "../mcp/responseLimits";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { NormalizedRunRequest } from "../providers/types";
-import type { createAgentRunStore } from "./store";
+import { agentMcpDeliveryId, type createAgentRunStore } from "./store";
 import { agentBuiltinTools, createAgentBuiltinDispatcher } from "./builtinTools";
 import { restoreAgentMcpTools } from "./mcpResume";
 import { logEvent, runWithContext } from "../observability";
@@ -64,6 +64,8 @@ export async function createAgentMcpGateway(input: Readonly<{
   request: NormalizedRunRequest;
   runId: string;
   userId: string;
+  /** Hash of this executor process's bearer; it rotates with every native process. */
+  incarnation: string;
   store: ReturnType<typeof createAgentRunStore>;
   signal: AbortSignal;
   onFailure(code: string): Promise<void>;
@@ -162,7 +164,7 @@ export async function createAgentMcpGateway(input: Readonly<{
       const parsedBody: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
       if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) return new Response(null, { status: 400 });
       const rpc = parsedBody as Record<string, unknown>;
-      const deliveryId = `agent-mcp:${hashCanonicalMcpValue(rpc.id ?? null)}`;
+      const deliveryId = agentMcpDeliveryId(input.incarnation, rpc.id);
       const execute = async (name: string, args: unknown, action: (authority: Authority) => Promise<CallToolResult>) => {
         let callId: string | null = null;
         let dispatched = false;
