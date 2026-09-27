@@ -1677,9 +1677,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (!result.success) throw new WorkspaceRuntimeError(result.code === 65 ? "workspace_archive_invalid" :
         result.code === 67 ? "workspace_archive_limit_exceeded" : result.code === 69 ? "workspace_execution_cleanup_failed" : "workspace_archive_restore_failed");
     } catch (error) {
-      // The script validates before touching /project and commits a complete
-      // staging tree by rename. Recovery only rolls back an interrupted swap
-      // and removes staging; it never clears the project.
+      // The script keeps /project in place and journals its content replacement.
+      // Recovery restores an interrupted replacement from the unchanged backup;
+      // a committed journal keeps the new tree. Unproven recovery fences reuse.
       const recovered = await script("recover").catch(() => null);
       if (!recovered?.success) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
       if (error instanceof WorkspaceRuntimeError) throw error;
