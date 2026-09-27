@@ -597,6 +597,35 @@ describe("deriveAdminAttentionItems", () => {
     ]);
   });
 
+  it("asks for a new check when enabled servers hold back changed tools or were checked without definitions", () => {
+    const revision = (toolVerification: "definitions" | "invalid" | "names") => ({
+      artifactStatus: "not_applicable" as const, createdAt: at, draftHash: "hash", id: "revision-1", identityHash: "identity",
+      resolvedArtifact: null, revisionNumber: 1, toolVerification,
+      validationEvidence: { evidence: {}, testedAt: at, toolInventory: [] }
+    });
+    const result = items({
+      mcp: [
+        mcpServer({ activeRevision: revision("definitions"), id: "mcp-changed", name: "Repos",
+          inventoryDifferences: [{ connections: 2, name: "delete_repo", reason: "unpublished_addition" }] }),
+        mcpServer({ activeRevision: revision("names"), id: "mcp-legacy", name: "Notes" }),
+        mcpServer({ activeRevision: revision("invalid"), id: "mcp-invalid", name: "Tasks",
+          inventoryDifferences: [{ connections: 1, name: null, reason: "unpublished_addition" }] }),
+        mcpServer({ activeRevision: revision("definitions"), enabled: false, id: "mcp-disabled",
+          inventoryDifferences: [{ connections: 1, name: "search", reason: "definition_drift" }] }),
+        mcpServer({ activeRevision: revision("definitions"), id: "mcp-current", inventoryDifferences: [] })
+      ]
+    });
+    expect(result).toEqual([
+      expect.objectContaining({ detail: "Repos · Server tools changed since the last check",
+        id: "mcp_server_needs_attention:mcp-changed", severity: "warn", target: { resource: "mcp-changed", section: "mcp" } }),
+      expect.objectContaining({ detail: "Notes · Check again to guard against tool changes",
+        id: "mcp_server_needs_attention:mcp-legacy", severity: "warn" }),
+      expect.objectContaining({ detail: "Tasks · Check again to restore this server's tools",
+        id: "mcp_server_needs_attention:mcp-invalid", severity: "warn" })
+    ]);
+    expect(JSON.stringify(result)).not.toContain("delete_repo");
+  });
+
   it("distinguishes unconfigured email from failing delivery and stays quiet when disabled on purpose", () => {
     expect(items({ email: email() })).toEqual([
       expect.objectContaining({

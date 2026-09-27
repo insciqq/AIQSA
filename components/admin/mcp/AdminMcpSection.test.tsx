@@ -217,6 +217,8 @@ function fakeApi(state: ApiState) {
         draftTest: testedDraft("identity-next"),
         draftTested: true,
         enabled: true,
+        // Publication replaces every desired runtime; none holds anything back yet.
+        inventoryDifferences: [],
         revisions: [active, ...current.revisions]
       }) });
     }
@@ -426,6 +428,53 @@ describe("AdminMcpSection", () => {
     fireEvent.click(within(usersList).getByRole("switch", { name: "Working Tools for Alice" }));
     await waitFor(() => expect(within(usersList).getByRole("switch", { name: "Working Tools for Alice" })).toBeChecked());
     expect(calls.at(-1)).toMatchObject({ body: { canUse: true, personalSlotKeys: [], userId: "user-1" }, method: "PUT" });
+  });
+
+  it("names each held-back tool with its reason and checks the server again from the tools section", async () => {
+    state.servers = [workingServer({
+      inventoryDifferences: [
+        { connections: 2, name: "forget", reason: "definition_drift" },
+        { connections: 1, name: "remember", reason: "missing_upstream" },
+        { connections: 3, name: "delete_repo", reason: "unpublished_addition" },
+        { connections: 1, name: null, reason: "unpublished_addition" }
+      ]
+    })];
+    const { calls, view } = renderSection(state, "server-1");
+    const page = await screen.findByTestId("mcp-server-page");
+
+    expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent("Needs attention · Server tools changed since the last check");
+    const differences = within(page).getByTestId("mcp-tool-differences");
+    const items = within(within(differences).getByRole("list", { name: "Tool changes on Working Tools" })).getAllByRole("listitem");
+    expect(items).toHaveLength(4);
+    expect(items[0]).toHaveTextContent(/^forget.*Changed on the server since the last check.*2 connections$/u);
+    expect(items[1]).toHaveTextContent(/^remember.*No longer offered by the server.*1 connection$/u);
+    expect(items[2]).toHaveTextContent(/^delete_repo.*New on the server, not checked yet.*3 connections$/u);
+    expect(items[3]).toHaveTextContent(/^Hidden · seen in personal accounts.*New on the server, not checked yet.*1 connection$/u);
+    expect(within(page).getByTestId("mcp-tool-unavailable-forget")).toHaveTextContent("Unavailable · Changed on the server since the last check");
+    expect(within(page).getByTestId("mcp-tool-unavailable-remember")).toHaveTextContent("Unavailable · No longer offered by the server");
+    expect(within(page).getByRole("switch", { name: "Use forget" })).toBeChecked();
+    expect(view.container.textContent).not.toMatch(bannedWords);
+
+    fireEvent.click(within(differences).getByRole("button", { name: "Test & Save" }));
+    await waitFor(() => expect(calls.at(-1)?.url).toBe("/api/admin/mcp/server-1/test"));
+    expect(calls.at(-1)?.body).toMatchObject({ expectedUpdatedAt: NOW, publish: true });
+    await waitFor(() => expect(within(page).queryByTestId("mcp-tool-differences")).not.toBeInTheDocument());
+    expect(within(page).queryByTestId("mcp-tool-unavailable-forget")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["names", "matched by name only", "Check again to guard against tool changes"],
+    ["invalid", "none of its tools are offered in chats", "Check again to restore this server's tools"]
+  ] as const)("explains a %s tool check with the next action", async (toolVerification, note, status) => {
+    const server = workingServer();
+    state.servers = [{ ...server, activeRevision: { ...server.activeRevision!, toolVerification } }];
+    const { view } = renderSection(state, "server-1");
+    const page = await screen.findByTestId("mcp-server-page");
+
+    expect(within(page).getByTestId("mcp-tool-verification")).toHaveTextContent(note);
+    expect(within(page).getByTestId("mcp-tool-verification")).toHaveTextContent("Test & Save");
+    expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent(`Needs attention · ${status}`);
+    expect(view.container.textContent).not.toMatch(bannedWords);
   });
 
   it("searches and collapses a long inventory, filters enabled tools and keeps focus after disabling a filtered tool", async () => {

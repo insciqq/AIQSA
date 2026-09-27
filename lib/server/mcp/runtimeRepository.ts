@@ -17,11 +17,13 @@ import {
 } from "./access";
 import {
   mcpEndpointBinding,
+  mcpPublishedToolDefinitions,
   mcpValuesForEndpoint,
   parseMcpEndpointBindings,
   validateMcpDraft,
   validateMcpSlotValue,
-  type McpEndpointBinding
+  type McpEndpointBinding,
+  type McpPublishedToolDefinitions
 } from "./definitions";
 import {
   decryptMcpEnvelope,
@@ -36,6 +38,7 @@ import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type {
   McpRuntimeCoordinatorRepository,
+  McpRuntimeGenerationLaunch,
   McpRuntimeLaunch
 } from "./runtimeCoordinator";
 
@@ -168,6 +171,7 @@ export type RemoteRuntimeCandidate = {
   fingerprint: string;
   headers: Record<string, string>;
   oauthConnectionId?: string;
+  publishedTools: McpPublishedToolDefinitions;
   revisionId: string;
   redactionValues: readonly string[];
   startupTimeoutMs: number;
@@ -188,6 +192,7 @@ export type LocalRuntimeCandidate = {
   externalAccountLabel: null;
   fingerprint: string;
   oauthConnectionId?: undefined;
+  publishedTools: McpPublishedToolDefinitions;
   revisionId: string;
   redactionValues: readonly string[];
   startupTimeoutMs: number;
@@ -357,6 +362,7 @@ export function remoteRuntimeCandidate(input: {
     fingerprint: base.fingerprint,
     headers,
     ...(base.oauthConnectionId ? { oauthConnectionId: base.oauthConnectionId } : {}),
+    publishedTools: mcpPublishedToolDefinitions(base.revision.validationEvidence),
     redactionValues: effectiveRedactionValues(configuration, base.effectiveEnvelope.values),
     revisionId: base.revision.id,
     startupTimeoutMs: configuration.runtime.startupTimeoutMs,
@@ -392,6 +398,7 @@ export function localRuntimeCandidate(input: {
     effectiveEnvelope: base.effectiveEnvelope,
     externalAccountLabel: null,
     fingerprint: base.fingerprint,
+    publishedTools: mcpPublishedToolDefinitions(base.revision.validationEvidence),
     redactionValues: effectiveRedactionValues(base.configuration, base.effectiveEnvelope.values),
     revisionId: base.revision.id,
     startupTimeoutMs: base.configuration.runtime.startupTimeoutMs,
@@ -434,7 +441,7 @@ export function createPrismaMcpRuntimeRepository(input: {
       const generation = await client.mcpRuntimeGeneration.findFirst({
         include: {
           revision: {
-            select: { configuration: true, id: true, resolvedArtifact: true, serverId: true }
+            select: { configuration: true, id: true, resolvedArtifact: true, serverId: true, validationEvidence: true }
           },
           userServer: {
             select: { serverId: true, userId: true }
@@ -481,6 +488,8 @@ export function createPrismaMcpRuntimeRepository(input: {
           headers: {},
           inventoryRefreshRequired: !generation.inventoryUpdatedAt ||
             now.getTime() - generation.inventoryUpdatedAt.getTime() >= INVENTORY_FRESH_MS,
+          // The accepted revision, not the active one, bounds what this generation offers.
+          publishedTools: mcpPublishedToolDefinitions(generation.revision.validationEvidence),
           redactionValues: effectiveRedactionValues(configuration, snapshot.values),
           retryAt: generation.retryAt,
           startupTimeoutMs: configuration.runtime.startupTimeoutMs
@@ -614,7 +623,7 @@ export function createPrismaMcpRuntimeRepository(input: {
         }
       }).catch(retainDatabaseFailure);
       const key = encryptionKey();
-      const launches: McpRuntimeLaunch[] = [];
+      const launches: McpRuntimeGenerationLaunch[] = [];
       for (const record of records) {
         const candidate = runtimeCandidate({
           key,
@@ -700,6 +709,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           headers: {},
           inventoryRefreshRequired: !generation.inventoryUpdatedAt ||
             now.getTime() - generation.inventoryUpdatedAt.getTime() >= INVENTORY_FRESH_MS,
+          publishedTools: candidate.publishedTools,
           redactionValues: candidate.redactionValues,
           retryAt: generation.retryAt,
           startupTimeoutMs: candidate.startupTimeoutMs

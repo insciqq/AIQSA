@@ -1733,7 +1733,7 @@ describe("Prisma-backed run repository", () => {
         await expect(runtime.markReady({
           fingerprint: fixture.generation.fingerprint,
           generationId: fixture.generation.id,
-          inventory: { tools: [], version: 1 },
+          inventory: { exclusions: [], tools: [], version: 1 },
           now
         })).resolves.toBe(true);
 

@@ -3,9 +3,15 @@ import { logEvent } from "../observability";
 import { loadMcpToolAccess } from "./toolAccess";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { mcpRuntimeErrorCode, mcpValidationIssue } from "@/lib/contracts/mcp";
+import {
+  isMcpInventoryDifferenceReason,
+  isMcpToolName,
+  mcpRuntimeErrorCode,
+  mcpValidationIssue
+} from "@/lib/contracts/mcp";
 import type {
   AdminMcpActivationSummary,
+  AdminMcpInventoryDifference,
   AdminMcpServer,
   McpConfigurationSlot,
   McpDraftConfiguration,
@@ -15,6 +21,7 @@ import type {
   McpRevisionSummary,
   McpSlotValue,
   McpToolInventoryEntry,
+  McpUnavailableTool,
   McpValidationEvidence,
   McpValidationIssue,
   UserMcpConfigurationField,
@@ -25,6 +32,7 @@ import { resolveEffectiveMcpGrant, resolveEffectiveMcpValues } from "./access";
 import {
   hashCanonicalMcpValue,
   mcpEndpointBinding,
+  mcpPublishedToolDefinitions,
   mcpValuesForEndpoint,
   parseMcpEndpointBindings,
   validateMcpDraft,
@@ -46,6 +54,7 @@ import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import { correctedMcpDraft } from "./endpointCorrection";
 import { McpEndpointBindingChangedError, rebindMcpValidationEndpoint } from "./oauthRepository";
 import { parseMcpLocalResolvedArtifact } from "./localArtifact";
+import { mcpInventoryExclusions } from "./runPlan";
 import type {
   McpActivationClaim,
   McpActivationCoordinatorRepository,
@@ -134,7 +143,7 @@ const adminServerInclude = {
 type AdminServerRecord = Prisma.McpServerGetPayload<{ include: typeof adminServerInclude }>;
 type McpDataClient = Pick<
   Prisma.TransactionClient,
-  "group" | "mcpGrant" | "mcpServer" | "mcpUserServer" | "user"
+  "$queryRaw" | "group" | "mcpGrant" | "mcpServer" | "mcpUserServer" | "user"
 >;
 
 type StoredValues = {
@@ -483,6 +492,7 @@ function serializeRevision(revision: RevisionRecord): McpRevisionSummary {
     identityHash: storedRevisionIdentityHash(revision),
     resolvedArtifact: jsonObjectFrom(revision.resolvedArtifact),
     revisionNumber: revision.revisionNumber,
+    toolVerification: mcpPublishedToolDefinitions(revision.validationEvidence).kind,
     validationEvidence: validationEvidenceFrom(revision.validationEvidence, revision.createdAt)
   };
 }
@@ -520,11 +530,89 @@ async function loadAdminServer(client: McpDataClient, serverId: string): Promise
   return client.mcpServer.findUnique({ include: adminServerInclude, where: { id: serverId } });
 }
 
+const INVENTORY_DIFFERENCE_ORDER: Readonly<Record<AdminMcpInventoryDifference["reason"], number>> = {
+  definition_drift: 0,
+  missing_upstream: 1,
+  unpublished_addition: 2
+};
+
+/**
+ * What current connections of each server's active configuration hold back
+ * from its checked tools, counted per connection. Names of additions seen only
+ * through personal or OAuth connections belong to those accounts and are
+ * reported as a count.
+ */
+async function loadInventoryDifferences(
+  client: McpDataClient,
+  serverIds: readonly string[]
+): Promise<Map<string, AdminMcpInventoryDifference[]>> {
+  const differences = new Map<string, AdminMcpInventoryDifference[]>();
+  if (!serverIds.length) return differences;
+  const rows = await client.$queryRaw<Array<{
+    connections: number;
+    name: string | null;
+    reason: string;
+    serverId: string;
+  }>>`
+    SELECT difference."serverId", difference."name", difference."reason",
+           COUNT(DISTINCT difference."generationId")::int AS "connections"
+    FROM (
+      SELECT preference."serverId" AS "serverId",
+             generation."id" AS "generationId",
+             exclusion.value->>'reason' AS "reason",
+             CASE
+               WHEN exclusion.value->>'reason' = 'unpublished_addition' AND (
+                 generation."oauthConnectionId" IS NOT NULL
+                 OR preference."personalConfigEnvelope" IS NOT NULL
+                 OR NOT (generation."credentialSources" <@ ARRAY['shared', 'none']::text[])
+               ) THEN NULL
+               ELSE exclusion.value->>'name'
+             END AS "name"
+      FROM "McpRuntimeGeneration" AS generation
+      JOIN "McpUserServer" AS preference
+        ON preference."id" = generation."userServerId"
+       AND preference."desiredRuntimeGenerationId" = generation."id"
+       AND preference."enabled" = true
+      JOIN "McpServer" AS server
+        ON server."id" = preference."serverId"
+       AND server."activeRevisionId" = generation."revisionId"
+      JOIN "User" AS owner
+        ON owner."id" = preference."userId"
+       AND owner."status" = 'active'
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(generation."inventory"->'exclusions') = 'array'
+          THEN generation."inventory"->'exclusions'
+          ELSE '[]'::jsonb
+        END
+      ) AS exclusion(value)
+      WHERE generation."state" = 'ready'
+        AND preference."serverId" IN (${Prisma.join(serverIds)})
+        AND exclusion.value->>'reason' IN ('definition_drift', 'missing_upstream', 'unpublished_addition')
+    ) AS difference
+    GROUP BY difference."serverId", difference."name", difference."reason"
+  `;
+  for (const row of rows) {
+    if (!isMcpInventoryDifferenceReason(row.reason) || !Number.isSafeInteger(row.connections) ||
+      row.connections < 1) continue;
+    const list = differences.get(row.serverId) ?? [];
+    // A malformed name still counts; it is never echoed.
+    list.push({ connections: row.connections, name: isMcpToolName(row.name) ? row.name : null, reason: row.reason });
+    differences.set(row.serverId, list);
+  }
+  for (const list of differences.values()) {
+    list.sort((left, right) =>
+      INVENTORY_DIFFERENCE_ORDER[left.reason] - INVENTORY_DIFFERENCE_ORDER[right.reason] ||
+      (left.name === right.name ? 0 : left.name === null ? 1 : right.name === null ? -1 : left.name < right.name ? -1 : 1));
+  }
+  return differences;
+}
+
 function serializeAdminServer(
   record: AdminServerRecord,
   key: Buffer,
   oauthValidationRedirectUri?: (serverId: string) => string,
-  validationUserId?: string
+  validationUserId?: string,
+  inventoryDifferences: readonly AdminMcpInventoryDifference[] = []
 ): AdminMcpServer {
   const draft = draftFrom(record.draft);
   const draftHash = hashCanonicalMcpValue(draft);
@@ -597,6 +685,7 @@ function serializeAdminServer(
       userName: grant.user?.displayName ?? null
     })),
     id: record.id,
+    inventoryDifferences: [...inventoryDifferences],
     name: record.displayName,
     namespace: record.namespace,
     revisions: record.revisions.map(serializeRevision),
@@ -632,9 +721,12 @@ async function adminResult(
   oauthValidationRedirectUri?: (serverId: string) => string
 ): Promise<McpRepositoryResult<AdminMcpServer>> {
   const server = await loadAdminServer(client, serverId);
-  return server
-    ? { kind: "ok", value: serializeAdminServer(server, key, oauthValidationRedirectUri) }
-    : { kind: "not_found" };
+  if (!server) return { kind: "not_found" };
+  const differences = await loadInventoryDifferences(client, [server.id]);
+  return {
+    kind: "ok",
+    value: serializeAdminServer(server, key, oauthValidationRedirectUri, undefined, differences.get(server.id))
+  };
 }
 
 function toolInventory(value: Prisma.JsonValue | null): UserMcpServer["tools"] | null {
@@ -672,28 +764,35 @@ export function deriveMcpUserReadiness(input: {
   oauthState: string | null;
   preferenceUpdatedAt: Date | null;
   runtime: { errorCode: string | null; inventory: Prisma.JsonValue | null; state: string } | null;
-}): Pick<McpUserServerState, "errorCode" | "readiness" | "tools"> {
-  if (!input.enabled) return { errorCode: null, readiness: "disabled", tools: [] };
+}): Pick<McpUserServerState, "errorCode" | "readiness" | "tools" | "unavailableTools"> {
+  const none = { tools: [], unavailableTools: [] };
+  if (!input.enabled) return { errorCode: null, readiness: "disabled", ...none };
   if (input.hasInvalidValues || input.hasMissingValues) {
-    return { errorCode: "configuration_required", readiness: "needs_setup", tools: [] };
+    return { errorCode: "configuration_required", readiness: "needs_setup", ...none };
   }
   if (input.oauthMode && input.oauthState !== "ready") {
     return {
       errorCode: input.oauthState === "reauthorization_required" ? "oauth_reauthorization_required" : "oauth_required",
       readiness: input.oauthState === "reauthorization_required" ? "reauthorization_required" : "needs_authorization",
-      tools: []
+      ...none
     };
   }
   if (!input.runtime) {
-    return { errorCode: null, readiness: "idle", tools: [] };
+    return { errorCode: null, readiness: "idle", ...none };
   }
   if (input.runtime.state === "ready") {
-    return { errorCode: null, readiness: "ready", tools: toolInventory(input.runtime.inventory) ?? [] };
+    // Every tool the runtime holds back is listed with its reason, never dropped.
+    return {
+      errorCode: null,
+      readiness: "ready",
+      tools: toolInventory(input.runtime.inventory) ?? [],
+      unavailableTools: mcpInventoryExclusions(input.runtime.inventory) ?? []
+    };
   }
-  if (input.runtime.state === "starting") return { errorCode: null, readiness: "starting", tools: [] };
-  if (input.runtime.state === "idle") return { errorCode: null, readiness: "idle", tools: [] };
-  if (input.runtime.state === "stopping") return { errorCode: null, readiness: "restarting", tools: [] };
-  return { errorCode: input.runtime.errorCode ?? "runtime_unavailable", readiness: "unavailable", tools: [] };
+  if (input.runtime.state === "starting") return { errorCode: null, readiness: "starting", ...none };
+  if (input.runtime.state === "idle") return { errorCode: null, readiness: "idle", ...none };
+  if (input.runtime.state === "stopping") return { errorCode: null, readiness: "restarting", ...none };
+  return { errorCode: input.runtime.errorCode ?? "runtime_unavailable", readiness: "unavailable", ...none };
 }
 
 type UserServerRecord = Prisma.McpServerGetPayload<{
@@ -816,7 +915,25 @@ function serializeUserServer(input: {
     oauthState: draft.auth.mode === "oauth" ? oauth?.state ?? "disconnected" : null,
     runtimeGenerationId: preference?.desiredRuntimeGeneration?.id ?? null,
     ...readiness,
-    tools: readiness.tools.filter((tool) => input.toolAllowed({ serverId: input.record.id, originalName: tool.name }))
+    ...userToolAvailability(readiness, (name) => input.toolAllowed({ serverId: input.record.id, originalName: name }))
+  };
+}
+
+/**
+ * This user's restriction outranks the runtime reason for a tool: after the
+ * next check it would still be unavailable to them.
+ */
+function userToolAvailability(
+  runtime: Pick<McpUserServerState, "tools" | "unavailableTools">,
+  allowed: (name: string) => boolean
+): Pick<McpUserServerState, "tools" | "unavailableTools"> {
+  const unavailableTools: McpUnavailableTool[] = [
+    ...runtime.tools.filter((tool) => !allowed(tool.name)).map((tool) => ({ name: tool.name, reason: "restricted" as const })),
+    ...(runtime.unavailableTools ?? []).map((tool) => allowed(tool.name) ? tool : { name: tool.name, reason: "restricted" as const })
+  ];
+  return {
+    tools: runtime.tools.filter((tool) => allowed(tool.name)),
+    unavailableTools: unavailableTools.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
   };
 }
 
@@ -1249,11 +1366,13 @@ export function createPrismaMcpRepository(input: {
         orderBy: { displayName: "asc" },
         where: { archivedAt: null }
       });
+      const differences = await loadInventoryDifferences(client, records.map((record) => record.id));
       return records.map((record) => serializeAdminServer(
         record,
         key,
         input.oauthValidationRedirectUri,
-        validationUserId
+        validationUserId,
+        differences.get(record.id)
       ));
     },
 
