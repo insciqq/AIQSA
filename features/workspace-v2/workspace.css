@@ -591,6 +591,11 @@
   padding: 0.25rem 0.625rem;
 }
 
+.v2-live-composer-error.v2-live-background-run {
+  border-color: var(--v2-color-border);
+  color: var(--v2-color-text2);
+}
+
 .v2-live-notice {
   width: min(var(--v2-measure), calc(100% - 2rem));
   margin: 0 auto;

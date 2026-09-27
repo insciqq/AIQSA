@@ -1758,11 +1758,15 @@ export function PowerAppShellV2({
     activeChatDetailLoading,
     activeChatStreaming,
     answerComplete: activeChatStream?.answerComplete === true,
+    backgroundRunWaiting: activeChatStream?.waitingInBackground === true,
     cancelMessageEdit(messageId: string) {
       const sessionStore = useComposerSessionStore.getState();
       sessionStore.cancelEdit(sessionStore.activeSessionKey, messageId);
     },
     changeEditingMessageDraft: setEditingDraft,
+    checkBackgroundRun() {
+      if (activeChatId) runLifecycleActions.checkBackgroundRun(activeChatId);
+    },
     copyVisibleThread,
     currentRunId,
     editingMessageDraft,
