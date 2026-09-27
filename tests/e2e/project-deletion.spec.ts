@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { workspaceSandboxName } from "../../lib/domain/workspace";
 import { getWorkspaceConfig } from "../../lib/server/workspace/config";
@@ -11,6 +11,16 @@ test.describe.configure({ mode: "serial" });
 test.setTimeout(180_000);
 test.use({ trace: "off" });
 test.afterAll(async () => { await prisma.$disconnect(); });
+
+async function openProjectOverview(page: Page, name: string) {
+  await page.getByRole("button", { exact: true, name: "Projects" }).click();
+  const projects = page.locator('section[aria-label="Shared projects"]');
+  await expect(projects).toBeVisible();
+  await projects.locator(".v2-project-row").filter({ hasText: name }).click();
+  const overview = page.getByTestId("project-overview-page");
+  await expect(overview.getByRole("heading", { name, exact: true })).toBeVisible();
+  return overview;
+}
 
 test("Owner can reload a failed deletion, inspect pending status, and retry without exposing Project content", async ({ page }, testInfo) => {
   const name = `Deletion ${randomUUID()}`;
@@ -35,12 +45,7 @@ test("Owner can reload a failed deletion, inspect pending status, and retry with
       expiresAt: new Date(Date.now() + 3_600_000), imageRef: getWorkspaceConfig().imageRef,
       internetEnabled: false, policyRevision: 1, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId),
       state: "READY", operationOwner: `fixture:${randomUUID()}`, operationExpiresAt: new Date(Date.now() + 3_600_000) } });
-    await page.getByRole("button", { exact: true, name: "Projects" }).click();
-    const projects = page.locator('section[aria-label="Shared projects"]');
-    await expect(projects).toBeVisible();
-    await projects.locator(".v2-project-row").filter({ hasText: name }).click();
-    const overview = page.getByTestId("project-overview-page");
-    await expect(overview.getByRole("heading", { name, exact: true })).toBeVisible();
+    const overview = await openProjectOverview(page, name);
     await overview.getByRole("button", { name: `${name} details`, exact: true }).click();
     await page.getByRole("button", { name: "Delete project", exact: true }).click();
     const confirmation = page.getByRole("alertdialog", { name: "Confirm project deletion" });
@@ -48,6 +53,7 @@ test("Owner can reload a failed deletion, inspect pending status, and retry with
     await confirmation.getByRole("button", { name: "Delete permanently" }).click();
     await expect(overview.getByRole("status")).toHaveText(/Deletion needs another attempt/);
     await page.reload();
+    await openProjectOverview(page, name);
     await expect(overview.getByRole("button", { name: "Retry deletion" })).toBeVisible();
     await expect(overview.getByText("Private deletion chat")).toHaveCount(0);
     await expect(overview.getByText("Private deletion fixture")).toHaveCount(0);
@@ -64,12 +70,14 @@ test("Owner can reload a failed deletion, inspect pending status, and retry with
     await prisma.project.update({ where: { id: projectId }, data: { deletionLastErrorCode: null,
       deletionClaimToken: randomUUID(), deletionClaimExpiresAt: new Date(Date.now() + 3_600_000) } });
     await page.reload();
+    await openProjectOverview(page, name);
     await expect(overview.getByRole("status")).toHaveText(/Deletion in progress/);
     await expect(overview.getByRole("button", { name: "Retry deletion" })).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("deletion-pending.png") });
     await prisma.project.update({ where: { id: projectId }, data: { deletionLastErrorCode: "project_deletion_failed",
       deletionClaimToken: null, deletionClaimExpiresAt: null } });
     await page.reload();
+    await openProjectOverview(page, name);
     const retry = overview.getByRole("button", { name: "Retry deletion" });
     await expect(retry).toBeVisible();
     await prisma.workspaceSession.update({ where: { id: sessionId }, data: { operationOwner: null, operationExpiresAt: null } });
