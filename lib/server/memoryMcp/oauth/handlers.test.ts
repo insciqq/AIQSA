@@ -9,7 +9,7 @@ import {
   createInboundMcpRevocationHandler,
   createInboundMcpTokenHandler
 } from "./handlers";
-import { inboundMcpOAuthConfiguration } from "./service";
+import { inboundMcpOAuthConfiguration, InboundMcpOAuthError } from "./service";
 
 const require = createRequire(import.meta.url);
 const launcher = require("../../../../scripts/runtime-launcher.cjs") as {
@@ -100,6 +100,32 @@ function formRequest(url: string, body: URLSearchParams, origin = "http://localh
   });
 }
 
+function htmlUnescape(value: string): string {
+  return value.replace(/&(amp|lt|gt|quot|#39);/gu, (_entity, name: string) => ({
+    "#39": "'", amp: "&", gt: ">", lt: "<", quot: "\""
+  })[name] ?? "");
+}
+
+/**
+ * Approval answers with a same-origin page instead of a 303, because the
+ * enforced `form-action 'self'` blocks redirects of the consent submission.
+ */
+async function interstitialTarget(response: Response): Promise<URL> {
+  expect(response.status).toBe(200);
+  expect(response.headers.get("location")).toBeNull();
+  expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  const html = await response.text();
+  expect(html).not.toContain("<script");
+  expect(html).not.toContain("<form");
+  const refresh = /<meta http-equiv="refresh" content="0;url=([^"]+)">/u.exec(html)?.[1];
+  const link = /<a href="([^"]+)" rel="noreferrer">Continue to your app<\/a>/u.exec(html)?.[1];
+  expect(refresh).toBeTruthy();
+  expect(link).toBe(refresh);
+  return new URL(htmlUnescape(refresh!));
+}
+
 function setDirectPeer(request: Request, peerAddress = "192.168.1.20"): Request {
   const stamp = launcher.createCurrentPeerStamp(peerAddress);
   if (!stamp) throw new Error("handler_direct_peer_stamp_unavailable");
@@ -148,8 +174,7 @@ describe("inbound Memory MCP OAuth HTTP handlers", () => {
       body,
       url.origin
     )));
-    expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe(
+    expect((await interstitialTarget(response)).toString()).toBe(
       "http://192.168.1.20/oauth/callback?code=" +
       `aiqsa_mc_${"A".repeat(43)}` +
       "&state=client-state&iss=http%3A%2F%2F192.168.1.10%3A3000"
@@ -174,7 +199,8 @@ describe("inbound Memory MCP OAuth HTTP handlers", () => {
     expect(html.includes('name="scope" value="mcp:hub"')).toBe(Boolean(scope));
     url.searchParams.set("consent_token", `abcdefghi.${"A".repeat(43)}`);
     url.searchParams.set("decision", "approve");
-    expect((await handlers.POST(formRequest(url.origin + url.pathname, url.searchParams))).status).toBe(303);
+    expect((await interstitialTarget(await handlers.POST(formRequest(url.origin + url.pathname, url.searchParams))))
+      .searchParams.get("state")).toBe("client-state");
     expect(oauth.approveAuthorization).toHaveBeenCalledWith(expect.objectContaining({
       request: expect.objectContaining({ resource: "http://localhost:3000/mcp/hub", ...(scope ? { scope } : {}) })
     }));
@@ -203,9 +229,9 @@ describe("inbound Memory MCP OAuth HTTP handlers", () => {
       "http://localhost:3000/oauth/authorize",
       body
     ));
-    const redirect = new URL(response.headers.get("location")!);
-    expect(response.status).toBe(303);
+    const redirect = await interstitialTarget(response);
     expect(redirect.origin).toBe("http://127.0.0.1:43119");
+    expect(redirect.pathname).toBe("/callback");
     expect(redirect.searchParams.get("code")).toMatch(/^aiqsa_mc_/u);
     expect(redirect.searchParams.get("state")).toBe("client-state");
     expect(redirect.searchParams.get("iss")).toBe("http://localhost:3000");
@@ -232,6 +258,46 @@ describe("inbound Memory MCP OAuth HTTP handlers", () => {
     expect(oauth.approveAuthorization).not.toHaveBeenCalled();
   });
 
+  it("keeps a hostile client state inert in the approval page", async () => {
+    const handlers = createInboundMcpAuthorizationHandlers({
+      getConfig: () => config, resolveAuth: async () => authSession(), service: service() as never
+    });
+    const state = "\"><script>alert(1)</script>&x='y";
+    const body = new URLSearchParams(authorizationUrl().searchParams);
+    body.set("state", state);
+    body.set("consent_token", `abcdefghi.${"A".repeat(43)}`);
+    body.set("decision", "approve");
+    const target = await interstitialTarget(await handlers.POST(formRequest(
+      "http://localhost:3000/oauth/authorize",
+      body
+    )));
+    expect(target.origin).toBe("http://127.0.0.1:43119");
+    expect(target.searchParams.get("state")).toBe(state);
+  });
+
+  it.each(["invalid_request", "invalid_client"] as const)(
+    "never navigates to a redirect_uri the service rejects with %s",
+    async (code) => {
+      const oauth = {
+        ...service(),
+        approveAuthorization: vi.fn(async () => { throw new InboundMcpOAuthError(code); })
+      };
+      const handlers = createInboundMcpAuthorizationHandlers({
+        getConfig: () => config, resolveAuth: async () => authSession(), service: oauth as never
+      });
+      const body = new URLSearchParams(authorizationUrl().searchParams);
+      body.set("redirect_uri", "https://attacker.example/callback");
+      body.set("consent_token", `abcdefghi.${"A".repeat(43)}`);
+      body.set("decision", "approve");
+      const response = await handlers.POST(formRequest("http://localhost:3000/oauth/authorize", body));
+      const html = await response.text();
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+      expect(html).not.toContain("attacker.example");
+      expect(html).not.toContain("http-equiv=\"refresh\"");
+    }
+  );
+
   it("returns an explicit client denial on cancel and a local retry page for invalid input", async () => {
     const oauth = service();
     const handlers = createInboundMcpAuthorizationHandlers({
@@ -248,9 +314,9 @@ describe("inbound Memory MCP OAuth HTTP handlers", () => {
       "http://localhost:3000/oauth/authorize",
       body
     ));
-    const redirect = new URL(cancelled.headers.get("location")!);
-    expect(cancelled.status).toBe(303);
+    const redirect = await interstitialTarget(cancelled);
     expect(redirect.searchParams.get("error")).toBe("access_denied");
+    expect(redirect.searchParams.has("code")).toBe(false);
     expect(redirect.searchParams.get("state")).toBe("client-state");
     expect(oauth.denyAuthorization).toHaveBeenCalledOnce();
     expect(oauth.approveAuthorization).not.toHaveBeenCalled();

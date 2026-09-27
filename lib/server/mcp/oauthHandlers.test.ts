@@ -2,6 +2,12 @@
 
 import type { AuthenticatedSession } from "@/lib/server/auth/requestAuth";
 import { describe, expect, it, vi } from "vitest";
+
+// The start routes are imported only to inspect their method exports.
+vi.mock("@/lib/server/auth/defaultAuth", () => ({ resolveRequestAuth: vi.fn() }));
+vi.mock("@/lib/server/mcp/defaultActivation", () => ({ settleDefaultMcpOAuth: vi.fn() }));
+vi.mock("@/lib/server/mcp/defaultOAuth", () => ({ mcpOAuthService: {} }));
+vi.mock("@/lib/server/mcp/defaultRuntime", () => ({ kickDefaultMcpRuntime: vi.fn() }));
 import {
   createMcpOAuthCallbackHandler,
   createMcpOAuthDisconnectHandler,
@@ -83,6 +89,21 @@ function cookieHeader(response: Response): string {
   return response.headers.get("set-cookie")?.split(";")[0] ?? "";
 }
 
+async function startLocation(response: Response): Promise<URL> {
+  expect(response.status).toBe(200);
+  const body = await response.json() as { location?: unknown };
+  expect(Object.keys(body)).toEqual(["location"]);
+  return new URL(String(body.location));
+}
+
+const START_ROUTES = [
+  ["user connect", "https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect", false, "user"],
+  ["user reconnect", "https://aiqsa.example.test/api/me/mcp/server-1/oauth/reconnect", true, "user"],
+  ["validation connect", "https://aiqsa.example.test/api/admin/mcp/server-1/oauth/validation/connect", false, "validation"],
+  ["validation reconnect", "https://aiqsa.example.test/api/admin/mcp/server-1/oauth/validation/reconnect", true, "validation"]
+] as const;
+const ADMIN: AuthenticatedSession = { ...USER, user: { ...USER.user, role: "admin" } };
+
 describe("MCP OAuth web handlers", () => {
   it("signs the server-side flow fixture", async () => {
     await expect(signMcpOAuthFlow({
@@ -92,29 +113,62 @@ describe("MCP OAuth web handlers", () => {
     })).resolves.toMatch(/^ey/u);
   });
 
-  it.each(["GET", "POST"])("starts a user flow over %s with a signed HttpOnly cookie and no token response", async (method) => {
+  it.each(START_ROUTES)("starts a %s flow over POST with a signed HttpOnly cookie and no token response", async (_label, url, forceReconnect, purpose) => {
     const operations = service();
-    const handler = createMcpOAuthStartHandler(deps({ service: operations }), {
-      forceReconnect: false,
-      purpose: "user"
-    });
-    const response = await handler(
-      new Request("https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect", { method }),
-      routeContext()
-    );
-    expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe(
-      "https://auth.example.test/authorize?state=fixture-state"
-    );
+    const handler = createMcpOAuthStartHandler(deps({
+      resolveAuth: async () => purpose === "validation" ? ADMIN : USER,
+      service: operations
+    }), { forceReconnect, purpose });
+    const response = await handler(new Request(url, { method: "POST" }), routeContext());
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("set-cookie")).toContain("HttpOnly");
     expect(response.headers.get("set-cookie")).toContain("SameSite=Lax");
     expect(response.headers.get("set-cookie")).toContain("Secure");
-    expect(await response.text()).toBe("");
+    expect((await startLocation(response)).toString()).toBe(
+      "https://auth.example.test/authorize?state=fixture-state"
+    );
     expect(operations.startAuthorization).toHaveBeenCalledWith(expect.objectContaining({
-      redirectUri: flow().redirectUri,
+      forceReconnect,
+      purpose,
       serverId: SERVER_ID,
       userId: USER.userId
     }));
+  });
+
+  it.each(START_ROUTES)("GET start does not call settleAuthorization or startAuthorization on %s", async (_label, url, forceReconnect, purpose) => {
+    const operations = service({
+      startAuthorization: vi.fn(async () => ({ configurationIdentity: "revision-1", kind: "already_connected" as const }))
+    });
+    const settleAuthorization = vi.fn(async () => ({ kind: "ok" as const }));
+    const onRuntimeChanged = vi.fn();
+    const resolveAuth = vi.fn(async () => purpose === "validation" ? ADMIN : USER);
+    const handler = createMcpOAuthStartHandler(deps({
+      onRuntimeChanged,
+      resolveAuth,
+      service: operations,
+      settleAuthorization
+    }), { forceReconnect, purpose });
+    const response = await handler(new Request(`${url}?return=%2Fc%2Fchat-1`), routeContext());
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("POST");
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(resolveAuth).not.toHaveBeenCalled();
+    expect(operations.startAuthorization).not.toHaveBeenCalled();
+    expect(settleAuthorization).not.toHaveBeenCalled();
+    expect(onRuntimeChanged).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["user connect", () => import("@/app/api/me/mcp/[serverId]/oauth/connect/route")],
+    ["user reconnect", () => import("@/app/api/me/mcp/[serverId]/oauth/reconnect/route")],
+    ["validation connect", () => import("@/app/api/admin/mcp/[serverId]/oauth/validation/connect/route")],
+    ["validation reconnect", () => import("@/app/api/admin/mcp/[serverId]/oauth/validation/reconnect/route")]
+  ])("exposes the %s start route only over POST", async (_label, load) => {
+    const route: Record<string, unknown> = await load();
+    expect(typeof route.POST).toBe("function");
+    expect(route.GET).toBeUndefined();
   });
 
   it("rejects state mismatch before exchanging a code and consumes the cookie", async () => {
@@ -258,8 +312,10 @@ describe("MCP OAuth web handlers", () => {
       routeContext()
     );
 
-    expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toContain("oauth=connected");
+    const location = await startLocation(response);
+    expect(location.origin).toBe("https://aiqsa.example.test");
+    expect(location.searchParams.get("oauth")).toBe("connected");
+    expect(response.headers.get("set-cookie")).toBeNull();
     expect(settleAuthorization).toHaveBeenCalledWith({
       configurationIdentity: "revision-1",
       purpose: "user",
@@ -277,9 +333,10 @@ describe("MCP OAuth web handlers", () => {
     const handlerDeps = deps({ service: service(), settleAuthorization: vi.fn(async () => ({ kind: "ok" as const })) });
     const start = createMcpOAuthStartHandler(handlerDeps, { forceReconnect: false, purpose: "user" });
     const startResponse = await start(new Request(
-      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=%2Fp%2Fproject-1%2Fc%2Fchat-1"
+      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=%2Fp%2Fproject-1%2Fc%2Fchat-1",
+      { method: "POST" }
     ), routeContext());
-    expect(startResponse.headers.get("location")).toBe("https://auth.example.test/authorize?state=fixture-state");
+    expect((await startLocation(startResponse)).toString()).toBe("https://auth.example.test/authorize?state=fixture-state");
     const callback = createMcpOAuthCallbackHandler(handlerDeps, "user");
     const response = await callback(new Request(
       `https://aiqsa.example.test/api/me/mcp/server-1/oauth/callback?state=fixture-state&${outcomeQuery}`,
@@ -303,9 +360,10 @@ describe("MCP OAuth web handlers", () => {
     });
     const start = createMcpOAuthStartHandler(deps({ service: operations }), { forceReconnect: false, purpose: "user" });
     const response = await start(new Request(
-      `https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=${returnValue}`
+      `https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=${returnValue}`,
+      { method: "POST" }
     ), routeContext());
-    const location = new URL(response.headers.get("location") ?? "");
+    const location = await startLocation(response);
     expect(location.origin).toBe("https://aiqsa.example.test");
     expect(location.pathname).toBe("/");
     expect(location.searchParams.get("oauth")).toBe("connected");
@@ -320,7 +378,7 @@ describe("MCP OAuth web handlers", () => {
       "https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=%2Fc%2Fchat-1",
       { method: "POST" }
     ), routeContext());
-    expect(new URL(response.headers.get("location") ?? "").pathname).toBe("/c/chat-1");
+    expect((await startLocation(response)).pathname).toBe("/c/chat-1");
 
     const foreignCookie = `aiqsa_mcp_oauth_flow=${await signMcpOAuthFlow({
       flow: { ...flow(), userId: "someone-else" },
@@ -339,11 +397,10 @@ describe("MCP OAuth web handlers", () => {
   });
 
   it("keeps administrator validation outcomes in Control Center", async () => {
-    const admin: AuthenticatedSession = { ...USER, user: { ...USER.user, role: "admin" } };
     const operations = service({
       startAuthorization: vi.fn(async () => ({ configurationIdentity: "revision-1", kind: "already_connected" as const }))
     });
-    const start = createMcpOAuthStartHandler(deps({ resolveAuth: async () => admin, service: operations }), {
+    const start = createMcpOAuthStartHandler(deps({ resolveAuth: async () => ADMIN, service: operations }), {
       forceReconnect: false,
       purpose: "validation"
     });
@@ -351,7 +408,7 @@ describe("MCP OAuth web handlers", () => {
       "https://aiqsa.example.test/api/admin/mcp/server-1/oauth/validation/connect?return=%2Fc%2Fchat-1",
       { method: "POST" }
     ), routeContext());
-    const location = new URL(response.headers.get("location") ?? "");
+    const location = await startLocation(response);
     expect(location.pathname).toBe("/admin");
     expect(Object.fromEntries(location.searchParams)).toEqual({ oauth: "connected", section: "mcp", server: SERVER_ID });
   });

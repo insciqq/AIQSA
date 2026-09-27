@@ -1,15 +1,28 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpSettingsSection } from "./McpSettingsSection";
+import { followMcpOAuthStart } from "./mcpSettingsApi";
 import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing } from "./mcpSettingsStore";
 import { MCP_RUN_PLAN_LIMITS, type UserMcpServer } from "@/lib/contracts/mcp";
 import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
 
-function response(body: unknown): Response {
+// jsdom cannot navigate; the start answer is observed where the browser would follow it.
+vi.mock("./mcpSettingsApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./mcpSettingsApi")>(),
+  followMcpOAuthStart: vi.fn()
+}));
+
+function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     headers: { "content-type": "application/json" },
-    status: 200
+    status
   });
+}
+
+function oauthStarts(fetchMock: Readonly<{ mock: Readonly<{ calls: readonly (readonly unknown[])[] }> }>): string[] {
+  return fetchMock.mock.calls
+    .filter(([input, init]) => String(input).includes("/oauth/") && (init as RequestInit | undefined)?.method === "POST")
+    .map(([input]) => String(input));
 }
 
 function userServer(id: string, name: string): UserMcpServer {
@@ -48,6 +61,7 @@ describe("McpSettingsSection", () => {
     resetMcpSettingsStoreForTest();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    vi.mocked(followMcpOAuthStart).mockClear();
   });
 
   it("keeps the data warning visible and collapses exact tool and run details until requested", async () => {
@@ -151,7 +165,7 @@ describe("McpSettingsSection", () => {
     expect(screen.getByText("2 of 2 servers enabled · 2 tools")).toBeVisible();
   });
 
-  it("clears the transient authorizing state when OAuth navigation is cancelled", async () => {
+  it("starts OAuth with a same-origin POST and follows the returned location", async () => {
     const notion: UserMcpServer = {
       ...userServer("notion", "Notion"),
       enabled: true,
@@ -159,22 +173,57 @@ describe("McpSettingsSection", () => {
       oauthState: "disconnected",
       readiness: "needs_authorization"
     };
-    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [notion] })));
+    let answer: (value: Response) => void = () => undefined;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
+      ? new Promise<Response>((resolve) => { answer = resolve; })
+      : response({ servers: [notion] }));
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
     await openServer("Notion");
-    const connect = screen.getByRole("link", { name: "Connect" });
-    expect(connect).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
-    connect.addEventListener("click", (event) => event.preventDefault());
+    const connect = screen.getByRole("button", { name: "Connect" });
+    expect(connect).not.toHaveAttribute("href");
     fireEvent.click(connect);
 
     expect(screen.getByText("Authorizing in your browser…")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Authorizing" })).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByRole("link", { name: "Authorizing" })).toHaveAttribute("aria-busy", "true");
+    const authorizing = screen.getByRole("button", { name: "Authorizing" });
+    expect(authorizing).toHaveAttribute("aria-disabled", "true");
+    expect(authorizing).toHaveAttribute("aria-busy", "true");
     expect(isMcpOAuthAuthorizing("notion")).toBe(true);
-    await waitFor(() => expect(screen.getByRole("link", { name: "Connect" })).toBeEnabled());
+    // A second press while the start request is in flight sends nothing.
+    fireEvent.click(authorizing);
+    expect(oauthStarts(fetchMock)).toEqual(["/api/me/mcp/notion/oauth/connect"]);
+    const init = fetchMock.mock.calls.find(([, candidate]) => candidate?.method === "POST")?.[1];
+    expect(init).toMatchObject({ credentials: "same-origin", method: "POST" });
+    expect(init?.body).toBeUndefined();
+
+    await act(async () => { answer(response({ location: "https://auth.example.test/authorize?state=s" })); });
+    await waitFor(() => expect(followMcpOAuthStart).toHaveBeenCalledWith("https://auth.example.test/authorize?state=s"));
+    expect(screen.getByRole("button", { name: "Authorizing" })).toBeVisible();
+  });
+
+  it.each([
+    ["an error answer", () => response({ error: "mcp_oauth_unavailable" }, 503)],
+    ["a location outside http(s)", () => response({ location: "javascript:alert(1)" })],
+    ["a network failure", () => { throw new TypeError("Failed to fetch"); }]
+  ])("restores the OAuth control with a visible error after %s", async (_label, answer) => {
+    const notion: UserMcpServer = {
+      ...userServer("notion", "Notion"), enabled: true, oauthAvailable: true,
+      oauthState: "disconnected", readiness: "needs_authorization"
+    };
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "POST" ? answer() : response({ servers: [notion] })));
+
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Notion" });
+    const sheet = await openServer("Notion");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Connect" }));
+
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("Authorization for Notion could not be started. Try again.");
+    expect(within(sheet).getByRole("button", { name: "Connect" })).not.toHaveAttribute("aria-disabled");
     expect(isMcpOAuthAuthorizing("notion")).toBe(false);
+    expect(followMcpOAuthStart).not.toHaveBeenCalled();
   });
 
   it("recovers OAuth controls when the current document survives navigation", async () => {
@@ -190,7 +239,7 @@ describe("McpSettingsSection", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
     expect(isMcpOAuthAuthorizing("notion")).toBe(false);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open Notion" })); });
-    expect(screen.getByRole("link", { name: "Connect" })).toHaveAttribute("href");
+    expect(screen.getByRole("button", { name: "Connect" })).not.toHaveAttribute("aria-disabled");
   });
 
   it("blocks OAuth on every server while any personal values have an unsaved draft", async () => {
@@ -198,19 +247,21 @@ describe("McpSettingsSection", () => {
       ...userServer("notion", "Notion"), oauthAvailable: true,
       oauthState: "disconnected", readiness: "needs_authorization"
     };
-    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [userServer("mem0", "Mem0"), notion] })));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      response({ servers: [userServer("mem0", "Mem0"), notion] }));
+    vi.stubGlobal("fetch", fetchMock);
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
     await openServer("Mem0");
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "synthetic-draft" } });
-    const connect = screen.getByRole("link", { name: "Connect Notion to enable", hidden: true });
+    const connect = screen.getByRole("button", { name: "Connect Notion to enable", hidden: true });
     expect(connect).toHaveAttribute("aria-disabled", "true");
-    expect(connect).not.toHaveAttribute("href");
     expect(screen.getByText("Save or clear your personal values first")).toBeVisible();
     fireEvent.click(connect);
     expect(isMcpOAuthAuthorizing("notion")).toBe(false);
+    expect(oauthStarts(fetchMock)).toEqual([]);
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "" } });
-    expect(connect).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
+    expect(connect).not.toHaveAttribute("aria-disabled");
   });
 
   it("routes a disconnected OAuth server through Connect instead of sending an invalid enable patch", async () => {
@@ -219,23 +270,25 @@ describe("McpSettingsSection", () => {
       oauthAvailable: true,
       oauthState: "disconnected"
     };
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      response({ servers: [notion] }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
+      ? response({ location: "https://auth.example.test/authorize?state=s" })
+      : response({ servers: [notion] }));
     vi.stubGlobal("fetch", fetchMock);
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
-    const connectToEnable = screen.getByRole("link", { name: "Connect Notion to enable" });
+    const connectToEnable = screen.getByRole("button", { name: "Connect Notion to enable" });
     expect(screen.getByText("Inactive")).toBeVisible();
     expect(connectToEnable).toHaveAttribute("data-tone", "primary");
-    expect(connectToEnable).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
-    connectToEnable.addEventListener("click", (event) => event.preventDefault());
     fireEvent.click(connectToEnable);
 
     expect(screen.getAllByText("Authorizing in your browser…")).toHaveLength(1);
+    await waitFor(() => expect(followMcpOAuthStart).toHaveBeenCalledOnce());
+    expect(oauthStarts(fetchMock)).toEqual(["/api/me/mcp/notion/oauth/connect"]);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
     expect(screen.queryByText(/invalid_mcp_values/u)).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText("Authorizing in your browser…")).toBeNull());
+    // A navigation that never leaves this document releases the control again.
+    await waitFor(() => expect(screen.queryByText("Authorizing in your browser…")).toBeNull(), { timeout: 3_000 });
   });
 
   it("orders personal setup before OAuth connection when both are required", async () => {
@@ -262,15 +315,15 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
     expect(screen.getByRole("button", { name: "Complete setup for Notion" })).toBeVisible();
-    expect(screen.queryByRole("link", { name: "Connect Notion to enable" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect Notion to enable" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Complete setup for Notion" }));
     const sheet = await screen.findByRole("dialog", { name: "Notion" });
-    expect(within(sheet).getByRole("link", { name: "Connect" })).not.toHaveAttribute("href");
+    expect(within(sheet).getByRole("button", { name: "Connect" })).toHaveAttribute("aria-disabled", "true");
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-token" } });
     fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
-    await waitFor(() => expect(within(sheet).getByRole("link", { name: "Connect" })).toHaveAttribute("href"));
+    await waitFor(() => expect(within(sheet).getByRole("button", { name: "Connect" })).not.toHaveAttribute("aria-disabled"));
     fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
-    expect(await screen.findByRole("link", { name: "Connect Notion to enable" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Connect Notion to enable" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Complete setup for Notion" })).not.toBeInTheDocument();
   });
 
@@ -298,8 +351,8 @@ describe("McpSettingsSection", () => {
 
     expect(await screen.findByText("Connect Notion to an external account before enabling it.")).toBeVisible();
     await openServer("Notion");
-    const reconnect = screen.getByRole("link", { name: "Reconnect" });
-    expect(reconnect).toHaveAttribute("href", "/api/me/mcp/notion/oauth/reconnect");
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await waitFor(() => expect(oauthStarts(fetchMock)).toEqual(["/api/me/mcp/notion/oauth/reconnect"]));
     expect(screen.queryByText(/invalid_mcp_values/u)).not.toBeInTheDocument();
   });
 
@@ -518,7 +571,7 @@ describe("McpSettingsSection", () => {
     expect(within(card!).getByRole("switch", { name: "Enable Notion" })).toHaveAttribute("aria-checked", "true");
     expect(within(card!).getByText("Needs authorization")).toHaveAttribute("data-tone", "warn");
     const sheet = await openServer("Notion");
-    expect(within(sheet).getByRole("link", { name: "Connect" })).toBeVisible();
+    expect(within(sheet).getByRole("button", { name: "Connect" })).toBeVisible();
   });
 
   it("filters the catalog locally, opens details without fetching or starting servers, and keeps Hub lazy", async () => {
