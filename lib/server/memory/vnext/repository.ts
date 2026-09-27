@@ -7,6 +7,8 @@ import {
   memoryFactEvidenceFingerprint,
   memoryFactNormalizedValue,
   memoryFactObservationFingerprint,
+  memoryFactTargetSourceHash,
+  memoryFactTargetTextOffset,
   type MemoryExtractedCandidate,
   type MemoryFactCandidateDependency,
   type MemoryFactExtractionInput,
@@ -129,17 +131,22 @@ function exactEvidence(
     ? eligible[0]
     : null;
   if (!message) throw new Error("memory_vnext_source_message_invalid");
+  // Evidence is recorded at full-text offsets; a paged input shows the target
+  // text (and its redaction spans) from the page offset.
+  const offset = memoryFactTargetTextOffset(input);
+  const sourceHash = memoryFactTargetSourceHash(input, message);
   return candidate.evidence.map((evidence) => {
-    const quote = message.text.slice(evidence.startOffset, evidence.endOffset);
+    const start = evidence.startOffset - offset;
+    const end = evidence.endOffset - offset;
+    const quote = message.text.slice(start, end);
     if (
       evidence.messageId !== message.id ||
-      evidence.sourceTextHash !== memorySha256(message.text) ||
-      evidence.startOffset < 0 ||
-      evidence.endOffset <= evidence.startOffset ||
-      evidence.endOffset > message.text.length ||
+      evidence.sourceTextHash !== sourceHash ||
+      start < 0 ||
+      end <= start ||
+      end > message.text.length ||
       message.redactionSpans.some((redacted) =>
-        evidence.startOffset < redacted.endOffset &&
-        evidence.endOffset > redacted.startOffset) ||
+        start < redacted.endOffset && end > redacted.startOffset) ||
       !quote || evidence.quote !== quote
     ) {
       throw new Error("memory_vnext_evidence_invalid");
