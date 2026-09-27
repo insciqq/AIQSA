@@ -351,6 +351,20 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool).toHaveBeenCalledTimes(2);
   });
 
+  it("returns a failed command's mid-log cause within the configured output budget from one dispatch", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const half = "passing test line\n".repeat(1200);
+    sdk.callTool.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false,
+      error: { code: "exec_failed", message: "PRIVATE", details: { exitCode: 1, stdout: `${half}ROOT_CAUSE_CANARY\n${half}`, stderr: "1 failed" } } }) }] });
+    const result = await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell" });
+    expect(result).toMatchObject({ status: "error", exitCode: 1, errorCode: "workspace_command_failed", truncated: false });
+    expect(result.content[0]!.text).toContain("ROOT_CAUSE_CANARY");
+    expect(Buffer.byteLength(result.content[0]!.text!)).toBeGreaterThan(40 * 1_024);
+    expect(Buffer.byteLength(result.content[0]!.text!)).toBeLessThanOrEqual(config.toolOutputMaxBytes);
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+  });
+
   it("delivers accepted env to separate exec, shell and long-lived commands, then removes it for the next run", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
