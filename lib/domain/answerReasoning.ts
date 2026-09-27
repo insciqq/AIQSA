@@ -34,9 +34,9 @@ const readableReasoningDepthLimit = 12;
  * Pre-merge rows lost the whitespace around each provider delta, which
  * cannot be restored. Adjacent rows (no other output between them) are one
  * streamed block: they rejoin with one space, or with a paragraph break when
- * the next row opens a Markdown block (heading, list, quote, fence, bold title).
+ * the next row opens a Markdown block (heading, list item, fence, bold title).
  */
-const legacyBlockStart = /^(?:#{1,6}\s|[-*+]\s|\d{1,9}[.)]\s|>|```|~~~|\*\*[^*\n]+\*\*(?:\n|$))/u;
+const legacyBlockStart = /^(?:#{1,6}\s|[-*+]\s|\d{1,9}[.)]\s|```|~~~|\*\*[^*\n]+\*\*(?:\n|$))/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
