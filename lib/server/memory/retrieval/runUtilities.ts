@@ -49,6 +49,7 @@ import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   type MemoryVectorProfile
 } from "./vector";
+import { MEMORY_OPTIONAL_TAIL_RESERVE_MS } from "./deadline";
 import {
   createAcceptedMemoryRunUtilityProvider,
   memoryRunUtilityProviderEvidence,
@@ -153,8 +154,10 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     nearZeroAdmissionGate: "complete_coverage_only_with_exact_profile_exemptions",
     transientReadOnlyRetry:
       "one_fresh_binding_same_snapshot_only_before_interactive_soft_deadline",
-    interactiveSoftDeadlineMs: 20_000,
-    interactiveHardDeadlineMs: 26_000,
+    // Hard deadline is the configured admission budget; the soft window is
+    // that budget minus a fixed local tail, shrunk proportionally when short.
+    interactiveDeadlinePolicy: "configured_admission_budget_minus_local_tail_v1",
+    interactiveOptionalTailReserveMs: MEMORY_OPTIONAL_TAIL_RESERVE_MS,
     logicalOperationCount: 1,
     dedicatedRerankerAdapter: "openrouter-rerank-v2",
     dedicatedRerankerRoutePolicyVersion: RERANKER_ROUTE_POLICY_VERSION,
@@ -164,7 +167,7 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     toolObservationContract: "source=tool_observation,speaker=tool,authority=supporting",
     dedicatedWireEnvelopeReserveBytes: MEMORY_DEDICATED_RERANK_WIRE_RESERVE_BYTES,
     generativeCompatibilityPath: "structured-output-v19",
-    version: 31
+    version: 32
   }),
   schemaVersion: "memory-relevance-result-v7"
 });
