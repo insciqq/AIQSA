@@ -8,6 +8,160 @@ import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { summarizeThreadArtifacts } from "../../../components/app-shell/threadContent";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
+import {
+  THREAD_CITATION_MAX_ITEMS,
+  THREAD_REASONING_MAX_CHARACTERS,
+  decodeChatMessagesPageResponse
+} from "../../contracts/chats";
+import { createReasoningFragmentBuffer } from "../../domain/answerReasoning";
+import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+
+/** Provider events → durable rows → reload summary → browser decoder, beside the live summary. */
+function roundTrip(providerEvents: readonly ModelRunSseEvent[], storedRows: readonly unknown[] = []) {
+  const durable = providerEvents.flatMap((event) => {
+    const projected = projectRunOutputArtifactEvent(event);
+    return projected ? [projected] : [];
+  });
+  const reloaded = summarizeMessageRunArtifacts({
+    events: [
+      ...storedRows.map((payload) => ({ eventType: "artifact", payload })),
+      ...durable.map((event) => ({ eventType: event.type, payload: event.data }))
+    ],
+    searchRuns: []
+  });
+  const page = decodeChatMessagesPageResponse(JSON.parse(JSON.stringify({
+    messages: [{
+      artifactSummary: reloaded,
+      citationMessageId: null,
+      content: { blocks: [{ text: "Answer", type: "text" }] },
+      createdAt: "2026-09-27T00:00:00.000Z",
+      errorMessage: null,
+      id: "message-1",
+      modelId: "model",
+      modelRunId: "run-1",
+      parentMessageId: null,
+      provider: "provider",
+      role: "assistant",
+      status: "complete"
+    }],
+    pageInfo: {
+      activeLeafMessageId: "message-1",
+      beforeCursor: null,
+      hasOlder: false,
+      snapshotUpdatedAt: "2026-09-27T00:00:00.000Z"
+    }
+  })) as unknown);
+  return {
+    decoded: page?.messages[0]?.artifactSummary,
+    live: summarizeThreadArtifacts([...providerEvents]),
+    page,
+    reloaded
+  };
+}
+
+function reasoningEvent(payload: unknown): ModelRunSseEvent {
+  return { data: { artifactType: "reasoning", payload }, type: "artifact" };
+}
+
+describe("answer artifact reload round trip", () => {
+  it("merges more than 100 streamed thinking deltas into one exact, reloadable entry", () => {
+    const deltas = Array.from({ length: 150 }, (_, index) =>
+      index % 50 === 49 ? `step ${index}.\n\n` : `step ${index} 思考 😀 `);
+    const fragments = createReasoningFragmentBuffer(64);
+    const events = [
+      ...deltas.flatMap((delta) => fragments.append(delta)),
+      ...fragments.finish()
+    ].map(reasoningEvent);
+    expect(events.length).toBeGreaterThan(1);
+    expect(events.length).toBeLessThan(deltas.length);
+
+    const { decoded, live, page, reloaded } = roundTrip(events);
+    expect(reloaded?.reasoningText).toEqual([deltas.join("").trim()]);
+    expect(reloaded).not.toHaveProperty("reasoningTruncated");
+    expect(page).not.toBeNull();
+    expect(decoded?.reasoningText).toEqual(reloaded?.reasoningText);
+    expect(live?.reasoningText).toEqual(reloaded?.reasoningText);
+  });
+
+  it("reads historical per-delta rows as one block without rewriting them", () => {
+    const rows = Array.from({ length: 101 }, (_, index) => ({
+      artifactType: "reasoning",
+      payload: { text: index === 60 ? "1. A listed step" : `delta ${index}` }
+    }));
+    const snapshot = structuredClone(rows);
+    const { decoded, page } = roundTrip([], [
+      ...rows,
+      { artifactType: "citation", payload: { index: 1, title: "Between", url: "https://example.com/between" } },
+      { artifactType: "reasoning", payload: { text: "A later block" } }
+    ]);
+    expect(page).not.toBeNull();
+    expect(decoded?.reasoningText).toHaveLength(2);
+    expect(decoded?.reasoningText[0]).toMatch(/^delta 0 delta 1 delta 2 /u);
+    expect(decoded?.reasoningText[0]).toContain("delta 59\n\n1. A listed step delta 61");
+    expect(decoded?.reasoningText[1]).toBe("A later block");
+    expect(rows).toEqual(snapshot);
+  });
+
+  it("keeps more than 100 citations and every valid source across rounds", () => {
+    const citations = Array.from({ length: 150 }, (_, index): ModelRunSseEvent => ({
+      data: { artifactType: "citation", payload: {
+        title: `Cited ${index}`, type: "url_citation", url: `https://example.com/${index % 120}`
+      } },
+      type: "artifact"
+    }));
+    const search = (sources: unknown[]): ModelRunSseEvent => ({
+      data: { artifactType: "search", payload: { action: { sources }, id: "private-call" } },
+      type: "artifact"
+    });
+    const rounds = Array.from({ length: 3 }, (_, round) => search(Array.from({ length: 20 }, (_, index) => ({
+      type: "url", url: `https://round-${round}.example.com/${"p".repeat(index === 0 ? 600 : 1)}${index}`
+    }))));
+    const { decoded, live, page, reloaded } = roundTrip([
+      ...citations,
+      ...rounds,
+      search([{ title: "Too long", url: `https://example.com/${"x".repeat(2_049)}` }])
+    ]);
+    expect(page).not.toBeNull();
+    expect(reloaded?.citations).toHaveLength(120);
+    expect(reloaded?.sources).toHaveLength(60);
+    expect(reloaded?.sources[0]).toMatchObject({ rank: 1, title: "round-0.example.com" });
+    expect(reloaded?.sources.some((source) => source.url.length > 2_048)).toBe(false);
+    expect(decoded).toEqual(reloaded);
+    expect(live).toEqual({ ...reloaded, groundingDisplay: null, knowledgeCitations: undefined });
+    expect(JSON.stringify(decoded)).not.toMatch(/private-call|url_citation/u);
+  });
+
+  it("marks, rather than silently drops, what the reader bounds leave out", () => {
+    const citations = Array.from({ length: THREAD_CITATION_MAX_ITEMS + 1 }, (_, index): ModelRunSseEvent => ({
+      data: { artifactType: "citation", payload: { title: `Cited ${index}`, url: `https://example.com/${index}` } },
+      type: "artifact"
+    }));
+    const thinking = [
+      reasoningEvent({ entry: "start", text: "a".repeat(THREAD_REASONING_MAX_CHARACTERS - 10) }),
+      reasoningEvent({ entry: "start", text: `${"b".repeat(20)} tail` })
+    ];
+    const { decoded, live, reloaded } = roundTrip([...citations, ...thinking]);
+    expect(reloaded?.citations).toHaveLength(THREAD_CITATION_MAX_ITEMS);
+    expect(reloaded).toMatchObject({ citationsTruncated: true, reasoningTruncated: true });
+    expect(reloaded?.reasoningText).toEqual(["a".repeat(THREAD_REASONING_MAX_CHARACTERS - 10), "b".repeat(10)]);
+    expect(decoded).toMatchObject({ citationsTruncated: true, reasoningTruncated: true });
+    expect(live).toMatchObject({ citationsTruncated: true, reasoningTruncated: true });
+  });
+
+  it("skips a corrupted optional row without losing the rest of the answer outputs", () => {
+    const { decoded, page } = roundTrip([], [
+      { artifactType: "reasoning", payload: { entry: "start", text: 42 } },
+      { artifactType: "reasoning", payload: { encryptedContent: "private", id: "private-id" } },
+      { artifactType: "citation", payload: { title: "Unsafe", url: "javascript:alert(1)" } },
+      { artifactType: "citation", payload: { title: `${"t".repeat(600)}`, url: "https://example.com/kept" } },
+      { artifactType: "reasoning", payload: { entry: "start", text: "Kept thinking" } }
+    ]);
+    expect(page).not.toBeNull();
+    expect(decoded?.reasoningText).toEqual(["Kept thinking"]);
+    expect(decoded?.citations).toEqual([{ index: 1, title: "t".repeat(500), url: "https://example.com/kept" }]);
+    expect(JSON.stringify(decoded)).not.toMatch(/private|javascript/u);
+  });
+});
 
 describe("summarizeMessageRunArtifacts", () => {
   it("keeps the newest successful version per answer in first-appearance order across live replay and reload", () => {

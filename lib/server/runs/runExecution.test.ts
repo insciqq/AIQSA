@@ -39,6 +39,7 @@ import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { runWithContext } from "../observability";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import { createPrismaRunRepository } from "./prismaRepository";
+import { isRunOutputArtifactEvent } from "./runOutputEvents";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -3100,6 +3101,55 @@ describe("run execution", () => {
       })
     ]);
     expect(egress.completed).toEqual(["egress-1"]);
+  });
+
+  it("keeps a hosted Search source with a long bare URL instead of failing the answer at the durable boundary", async () => {
+    const repository = createRepository();
+    const append = repository.repository.appendRunOutputEvent.bind(repository.repository);
+    // The Prisma repository refuses anything but an exact projection.
+    vi.spyOn(repository.repository, "appendRunOutputEvent").mockImplementation(async (runId, event) => {
+      if (!isRunOutputArtifactEvent(event)) throw new Error("run_output_event_invalid");
+      return append(runId, event);
+    });
+    const longBare = `https://news.example.com/${"a".repeat(600)}`;
+    const adapter = createAdapter(async function* () {
+      yield {
+        data: {
+          artifactType: "search",
+          payload: {
+            action: {
+              sources: [
+                { type: "url", url: longBare },
+                { type: "url", url: `https://news.example.com/${"b".repeat(2_100)}` }
+              ],
+              type: "search"
+            },
+            id: "ws_long_source",
+            status: "completed",
+            type: "web_search_call"
+          }
+        },
+        type: "artifact"
+      };
+      yield { data: { delta: "Sourced answer" }, type: "token" };
+      return providerResult({ finalText: "Sourced answer" });
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      repository: repository.repository
+    })).text());
+
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: "done", data: { status: "complete" } });
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event)).map(({ event }) => event)).toEqual([{
+      data: {
+        artifactType: "search",
+        payload: { action: { sources: [{ rank: 1, title: "news.example.com", url: longBare }] } }
+      },
+      type: "artifact"
+    }]);
   });
 
   it("persists grounded text and safe display while live completion matches the refetched answer", async () => {

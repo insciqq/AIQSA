@@ -3719,7 +3719,7 @@ describe("Prisma-backed run repository", () => {
           {
             data: {
               artifactType: "reasoning",
-              payload: { text: "Recovered reasoning" }
+              payload: { entry: "start", text: "Recovered reasoning" }
             },
             type: "artifact"
           }
@@ -4288,7 +4288,7 @@ describe("Prisma-backed run repository", () => {
       await repository.appendRunOutputEvent(created.runId, {
         data: {
           artifactType: "reasoning",
-          payload: { text: "Streamed reasoning" }
+          payload: { entry: "start", text: "Streamed reasoning" }
         },
         type: "artifact"
       });
