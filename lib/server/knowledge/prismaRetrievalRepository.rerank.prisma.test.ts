@@ -548,7 +548,8 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
     const fixture = await createRunFixture("rerank question");
     const store = createPrismaKnowledgeRetrievalStore(prisma);
     const toolCallId = await createSearchToolCall(fixture.runId, 0);
-    const top = passage(fixture, "Exports are retained for 30 days.");
+    // No hosted rerank ran, so the passage carries no rerank score.
+    const { rerankScore: _rerankScore, ...top } = passage(fixture, "Exports are retained for 30 days.");
     const truncated = { ...top, sourceTextBytes: top.includedTextBytes + 6_000, textTruncated: true };
     const omittedPassages = [
       { reason: "over_budget" as const, sourceTextBytes: 3_072 },
