@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type WorkspaceSecretValue as StoredValue } from "@prisma/client";
 import {
   WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES, WORKSPACE_SECRET_ENV_MAX_BYTES,
-  WORKSPACE_BROWSER_SESSION_MAX_COUNT,
-  type WorkspaceSecretMutation, type WorkspaceSecretSummary, type WorkspaceSecretValue
+  WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES,
+  decodeWorkspaceBrowserAutosaveReport,
+  type WorkspaceBrowserAutosaveReport, type WorkspaceSecretMutation, type WorkspaceSecretSummary, type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
 import { decryptSecretEnvelope, encryptSecretEnvelope, getSecretEncryptionKey } from "../../secrets/envelope";
 import { parseWorkspaceSecretMutation, parseWorkspaceSecretValue, WorkspaceSecretError } from "./validation";
@@ -11,6 +12,9 @@ import { validateWorkspaceSshKey } from "./sshKey";
 import { workspaceBrowserSessionChecksum } from "./browserSession";
 
 const PURPOSE = "workspace-user-secret";
+// The largest serialized value of this purpose; kind limits are enforced by
+// parseWorkspaceSecretValue before encryption and after decryption.
+const ENVELOPE_OPTIONS = { maxPlaintextBytes: WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES } as const;
 const summarySelect = {
   id: true, secretId: true, kind: true, name: true, description: true, byteSize: true,
   envNames: true, originalName: true, sshProtected: true, createdAt: true, autoSaved: true
@@ -26,7 +30,18 @@ export type AcceptedWorkspaceSecret = Readonly<{
 
 export interface WorkspaceSecretStore {
   list(userId: string): Promise<readonly WorkspaceSecretSummary[]>;
+  /** Latest recorded personal browser autosave outcome, content-free. */
+  browserAutosave(userId: string): Promise<WorkspaceBrowserAutosaveReport | null>;
   mutate(userId: string, mutation: WorkspaceSecretMutation): Promise<void>;
+}
+
+/** Raw bytes of the current saved browser sessions, optionally excluding one secret being replaced. */
+export async function workspaceBrowserSessionBytes(tx: Prisma.TransactionClient, userId: string, excludeSecretId?: string): Promise<number> {
+  const rows = await tx.workspaceSecret.findMany({
+    select: { value: { select: { byteSize: true } } },
+    where: { userId, browserFileName: { not: null }, ...(excludeSecretId ? { id: { not: excludeSecretId } } : {}) }
+  });
+  return rows.reduce((total, row) => total + row.value.byteSize, 0);
 }
 
 export async function lockWorkspaceSecretOwner(tx: Prisma.TransactionClient, userId: string, write = false): Promise<void> {
@@ -67,7 +82,7 @@ export async function createWorkspaceSecretRevision(tx: Prisma.TransactionClient
     sshProtected: value.kind === "ssh_key" && value.passphrase.length > 0,
     autoSaved: value.kind === "browser_session" && input.autoSaved === true,
     checksum: browserBytes ? workspaceBrowserSessionChecksum(browserBytes) : null,
-    payloadEnvelope: encryptSecretEnvelope(value, key, { ownerId: userId, purpose: PURPOSE, valueId: versionId })
+    payloadEnvelope: encryptSecretEnvelope(value, key, { ownerId: userId, purpose: PURPOSE, valueId: versionId }, ENVELOPE_OPTIONS)
   } });
   return versionId;
 }
@@ -84,10 +99,11 @@ export async function bindWorkspaceSecrets(tx: Prisma.TransactionClient, input: 
   if (chat.userId !== input.userId) throw new WorkspaceSecretError("workspace_secret_unavailable");
   await lockWorkspaceSecretOwner(tx, input.userId);
   const secrets = await tx.workspaceSecret.findMany({
-    select: { id: true, valueId: true, browserFileName: true }, where: { userId: input.userId }, orderBy: { id: "asc" }
+    select: { id: true, valueId: true, browserFileName: true, value: { select: { byteSize: true } } }, where: { userId: input.userId }, orderBy: { id: "asc" }
   });
-  if (secrets.filter((entry) => entry.browserFileName === null).length > WORKSPACE_SECRET_MAX_COUNT ||
-    secrets.filter((entry) => entry.browserFileName !== null).length > WORKSPACE_BROWSER_SESSION_MAX_COUNT) throw new WorkspaceSecretError("workspace_secret_limit");
+  const browsers = secrets.filter((entry) => entry.browserFileName !== null);
+  if (secrets.length - browsers.length > WORKSPACE_SECRET_MAX_COUNT || browsers.length > WORKSPACE_BROWSER_SESSION_MAX_COUNT ||
+    browsers.reduce((total, entry) => total + entry.value.byteSize, 0) > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES) throw new WorkspaceSecretError("workspace_secret_limit");
   if (secrets.length) await tx.workspaceRunSecret.createMany({
     data: secrets.map(({ id, valueId }) => ({ modelRunId: input.runId, secretId: id, valueId }))
   });
@@ -98,7 +114,7 @@ export function decryptWorkspaceSecret(value: StoredValue, userId: string, key =
   try {
     const content = parseWorkspaceSecretValue(decryptSecretEnvelope(value.payloadEnvelope, key, {
       ownerId: userId, purpose: PURPOSE, valueId: value.id
-    }));
+    }, ENVELOPE_OPTIONS));
     if (content.kind !== value.kind) throw new Error("kind_mismatch");
     return { id: value.secretId, versionId: value.id, name: value.name, description: value.description, value: content };
   } catch { throw new WorkspaceSecretError("workspace_secret_unavailable"); }
@@ -124,6 +140,17 @@ export function createWorkspaceSecretStore(prisma: PrismaClient, options: Readon
         envNames: value.envNames, originalName: value.originalName, sshProtected: value.sshProtected,
         ...(value.kind === "browser_session" ? { browserSession: { autoSaved: value.autoSaved } } : {})
       }));
+    },
+    async browserAutosave(userId) {
+      // Acceptance order, not row update time: a later export update of an
+      // older run must not replace the newest recorded outcome.
+      const latest = await prisma.workspaceRunBinding.findFirst({
+        select: { browserSessionSave: true },
+        where: { browserSessionSave: { not: Prisma.DbNull }, browserSessionSequence: { not: null },
+          modelRun: { userId, chat: { userId, projectId: null } } },
+        orderBy: { browserSessionSequence: "desc" }
+      });
+      return latest ? decodeWorkspaceBrowserAutosaveReport(latest.browserSessionSave) : null;
     },
     async mutate(userId, raw) {
       const mutation = parseWorkspaceSecretMutation(raw);
@@ -155,7 +182,8 @@ export function createWorkspaceSecretStore(prisma: PrismaClient, options: Readon
           if (value.kind === "browser_session" && browsers.some((entry) => entry.browserFileName === value.originalName)) {
             throw new WorkspaceSecretError("workspace_browser_session_conflict");
           }
-          if ((value.kind === "browser_session" ? browsers.length >= WORKSPACE_BROWSER_SESSION_MAX_COUNT :
+          if ((value.kind === "browser_session" ? browsers.length >= WORKSPACE_BROWSER_SESSION_MAX_COUNT ||
+            browsers.reduce((total, entry) => total + entry.value.byteSize, Buffer.byteLength(value.base64, "base64")) > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES :
             ordinary.length >= WORKSPACE_SECRET_MAX_COUNT || ordinary.reduce((total, entry) => total + entry.value.byteSize, bytes) > WORKSPACE_SECRET_TOTAL_MAX_BYTES) ||
             others.reduce((total, entry) => total + (entry.value.kind === "env" ? entry.value.byteSize : 0), value.kind === "env" ? bytes : 0) > WORKSPACE_SECRET_ENV_MAX_BYTES) {
             throw new WorkspaceSecretError("workspace_secret_limit");

@@ -47,7 +47,7 @@ import { AGENT_PROMPT_MAX_BYTES, INSTALL_CODEX_PROFILE } from "../agents/guest";
 import { CODEX_HOME_DIRECTORY, CODEX_RUN_TOKEN_ENV, codexExecArguments, renderCodexManagedProfile } from "../agents/codexProfile";
 import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
-import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
@@ -1436,6 +1436,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     if (terminated.some((entry) => entry.outcome === "unknown")) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
     const files: WorkspaceOutputStream[] = [];
     const skipped: WorkspaceBrowserSkipCode[] = [];
+    let offeredBytes = 0;
     const listed = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder.args(["-I", "-c", LIST_WORKSPACE_BROWSER_SESSIONS]).timeout(10_000));
     input.signal?.throwIfAborted();
     if (!listed.success || listed.stdoutBytes().byteLength > 256 * 1024) return { files, skipped: ["browser_session_read_failed"] };
@@ -1451,12 +1452,15 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       }
       if (entry.size > WORKSPACE_BROWSER_SESSION_MAX_BYTES) { skipped.push("browser_session_too_large"); continue; }
       if (files.length >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) { skipped.push("browser_session_limit"); continue; }
+      // Hash and offer no more than one save can store.
+      if (offeredBytes + entry.size > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES) { skipped.push("browser_session_total_limit"); continue; }
       const path = workspaceBrowserSessionPath(entry.name);
       try {
         const checksum = await hashGuestFile(session.sandbox, path, entry.size, input.signal);
         files.push({ byteSize: entry.size, checksum, body: readStreamBody(() => session.sandbox.fs().readStream(path)),
           mimeType: "application/json", relativePath: entry.name,
           opaqueFileId: createHash("sha256").update(`${session.runtimeSandboxId}\0${input.modelRunId}\0browser\0${entry.name}`).digest("hex") });
+        offeredBytes += entry.size;
       } catch {
         input.signal?.throwIfAborted();
         skipped.push("browser_session_read_failed");

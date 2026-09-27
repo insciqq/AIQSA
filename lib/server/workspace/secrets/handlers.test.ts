@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { createWorkspaceSecretHandlers } from "./handlers";
-import { WorkspaceSecretError } from "./validation";
+import { WORKSPACE_SECRET_MUTATION_MAX_BYTES, WorkspaceSecretError } from "./validation";
 
 function setup() {
   const userId = randomUUID();
   const summary = { id: randomUUID(), versionId: randomUUID(), kind: "text" as const, name: "Synthetic", description: "",
     byteSize: 40, updatedAt: new Date().toISOString(), envNames: [], originalName: null, sshProtected: false };
-  const store = { list: vi.fn().mockResolvedValue([summary]), mutate: vi.fn() };
+  const store = { list: vi.fn().mockResolvedValue([summary]), mutate: vi.fn(), browserAutosave: vi.fn().mockResolvedValue(null) };
   const resolveAuth = vi.fn().mockResolvedValue({ userId, user: { id: userId, status: "active" } });
   return { userId, summary, store, resolveAuth, handlers: createWorkspaceSecretHandlers({ resolveAuth, store }) };
 }
@@ -42,5 +43,28 @@ describe("personal Workspace secrets API", () => {
     const get = await fixture.handlers.GET(new Request(request().url));
     expect(get.headers.get("cache-control")).toBe("private, no-store");
     expect(await get.text()).not.toContain("synthetic-value");
+  });
+
+  it("accepts a maximum browser-session import beyond the generic JSON cap and rejects a larger body", async () => {
+    const fixture = setup();
+    const state = Buffer.from(JSON.stringify({ cookies: [], origins: [] }));
+    const bytes = Buffer.concat([state, Buffer.alloc(WORKSPACE_BROWSER_SESSION_MAX_BYTES - state.length, 32)]);
+    const mutation = { action: "create", name: "Shop", description: "", value: { kind: "browser_session", originalName: "shop.example.json", base64: bytes.toString("base64") } };
+    const url = "http://localhost/api/me/workspace/secrets";
+    const accepted = await fixture.handlers.POST(new Request(url, { method: "POST", body: JSON.stringify(mutation) }));
+    expect(accepted.status).toBe(200);
+    expect(fixture.store.mutate).toHaveBeenCalledOnce();
+    const oversized = await fixture.handlers.POST(new Request(url, { method: "POST", body: "x".repeat(WORKSPACE_SECRET_MUTATION_MAX_BYTES + 1) }));
+    expect(oversized.status).toBe(413);
+    expect(fixture.store.mutate).toHaveBeenCalledOnce();
+  });
+
+  it("returns the latest content-free browser autosave outcome with the list", async () => {
+    const fixture = setup();
+    const report = { saved: 0, unchanged: 1, skipped: { browser_session_too_large: 1 } };
+    fixture.store.browserAutosave.mockResolvedValueOnce(report);
+    const response = await fixture.handlers.GET(new Request("http://localhost/api/me/workspace/secrets"));
+    expect(await response.json()).toEqual({ secrets: [fixture.summary], browserAutosave: report });
+    expect(fixture.store.browserAutosave).toHaveBeenCalledWith(fixture.userId);
   });
 });

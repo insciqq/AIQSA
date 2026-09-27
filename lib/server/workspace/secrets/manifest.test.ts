@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./manifest";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
+import {
+  parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide,
+  WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES, WORKSPACE_SECRETS_REQUEST_MAX_BYTES
+} from "./manifest";
 import type { AcceptedWorkspaceSecret } from "./store";
 
 describe("accepted Workspace secret installation", () => {
@@ -65,4 +69,29 @@ describe("accepted Workspace secret installation", () => {
     expect(() => parseAcceptedWorkspaceSecrets([...sessions, { ...sessions[0]!, id: randomUUID() }])).toThrow("workspace_secret_limit");
     expect(() => parseAcceptedWorkspaceSecrets([sessions[0], { ...sessions[0]!, id: randomUUID() }])).toThrow("workspace_secret_invalid");
   });
+
+  it("fits the full browser aggregate plus maximum ordinary secrets within the runner request and guest input", () => {
+    const template = JSON.stringify({ cookies: [], origins: [], syntheticPadding: "" });
+    const bytes = Buffer.from(template.replace('"syntheticPadding":""', `"syntheticPadding":"${"x".repeat(WORKSPACE_BROWSER_SESSION_MAX_BYTES - Buffer.byteLength(template))}"`));
+    expect(bytes.length).toBe(WORKSPACE_BROWSER_SESSION_MAX_BYTES);
+    const base64 = bytes.toString("base64");
+    // Control characters make each description's JSON escaping as large as the contract allows.
+    const description = "\u0001".repeat(2000);
+    const sessions: AcceptedWorkspaceSecret[] = Array.from({ length: WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES / WORKSPACE_BROWSER_SESSION_MAX_BYTES },
+      (_, index) => ({ id: randomUUID(), versionId: randomUUID(), name: `Site ${index}`, description,
+        value: { kind: "browser_session", originalName: `site-${index}.example.json`, base64 } }));
+    const text = "\n".repeat(128 * 1024);
+    const ordinary: AcceptedWorkspaceSecret[] = Array.from({ length: 15 }, () => ({ id: randomUUID(), versionId: randomUUID(),
+      name: "Large literal", description, value: { kind: "text" as const, text } }));
+    const secrets = [...sessions, ...ordinary];
+    expect(parseAcceptedWorkspaceSecrets(secrets)).toEqual(secrets);
+    const request = Buffer.byteLength(JSON.stringify({ secrets, modelRunId: randomUUID(), runtimeSandboxId: "fixture", operation: { owner: "run:fixture", generation: 1 } }));
+    expect(request).toBeLessThan(WORKSPACE_SECRETS_REQUEST_MAX_BYTES);
+    const guide = workspaceSecretsGuide(secrets);
+    expect(Buffer.byteLength(JSON.stringify({ secrets, environment: workspaceSecretEnvironment(secrets), guide, runId: "fixture" })))
+      .toBeLessThan(WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES);
+    const small: AcceptedWorkspaceSecret = { id: randomUUID(), versionId: randomUUID(), name: "Small", description: "",
+      value: { kind: "browser_session", originalName: "small.example.json", base64: Buffer.from(template).toString("base64") } };
+    expect(() => parseAcceptedWorkspaceSecrets([...sessions, small])).toThrow("workspace_secret_limit");
+  }, 30_000);
 });

@@ -1,31 +1,45 @@
 import {
   isWorkspaceSecretId, WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES,
-  WORKSPACE_SECRET_ENV_MAX_BYTES, workspaceSecretAssetPath,
-  WORKSPACE_BROWSER_SESSION_MAX_COUNT, workspaceBrowserSessionPath
+  WORKSPACE_SECRET_ENV_MAX_BYTES, workspaceSecretAssetPath, WORKSPACE_BROWSER_SESSION_LIMIT_TEXT,
+  WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, workspaceBrowserSessionPath
 } from "@/lib/contracts/workspaceSecrets";
 import type { AcceptedWorkspaceSecret } from "./store";
 import { parseWorkspaceSecretMutation, WorkspaceSecretError } from "./validation";
 
-export const WORKSPACE_SECRETS_REQUEST_MAX_BYTES = 48 * 1024 * 1024;
-// The guest bundle includes both originals and their escaped Markdown guide.
-export const WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES = 64 * 1024 * 1024;
+const ENTRY_COUNT = WORKSPACE_SECRET_MAX_COUNT + WORKSPACE_BROWSER_SESSION_MAX_COUNT;
+/** Ids, field names, name and a description whose JSON escaping is at most six bytes per character. */
+const ENTRY_METADATA_MAX_BYTES = 64 * 1024;
+/**
+ * Accepted set sent to the runner: browser states travel as base64, ordinary
+ * values within their serialized total, plus per-entry metadata.
+ */
+export const WORKSPACE_SECRETS_REQUEST_MAX_BYTES = Math.ceil(WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES / 3) * 4 +
+  WORKSPACE_SECRET_TOTAL_MAX_BYTES + ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 64 * 1024;
+/** The guest bundle adds the environment map and a guide repeating ordinary values and descriptions. */
+export const WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES = WORKSPACE_SECRETS_REQUEST_MAX_BYTES + WORKSPACE_SECRET_ENV_MAX_BYTES +
+  WORKSPACE_SECRET_TOTAL_MAX_BYTES + ENTRY_COUNT * ENTRY_METADATA_MAX_BYTES + 256 * 1024;
 
 export function parseAcceptedWorkspaceSecrets(value: unknown): readonly AcceptedWorkspaceSecret[] {
-  if (!Array.isArray(value) || value.length > WORKSPACE_SECRET_MAX_COUNT + WORKSPACE_BROWSER_SESSION_MAX_COUNT) throw new WorkspaceSecretError("workspace_secret_invalid");
+  if (!Array.isArray(value) || value.length > ENTRY_COUNT) throw new WorkspaceSecretError("workspace_secret_invalid");
   const ids = new Set<string>();
   const envNames = new Set<string>();
   let total = 0;
   let envBytes = 0;
   let browserCount = 0;
+  let browserBytes = 0;
   for (const item of value) {
     if (typeof item !== "object" || item === null || Array.isArray(item) || Object.keys(item).length !== 5 ||
       !isWorkspaceSecretId(item.id) || ids.has(item.id) || !isWorkspaceSecretId(item.versionId)) throw new WorkspaceSecretError("workspace_secret_invalid");
     ids.add(item.id);
     const mutation = parseWorkspaceSecretMutation({ action: "create", name: item.name, description: item.description, value: item.value });
     if (mutation.action !== "create") throw new WorkspaceSecretError("workspace_secret_invalid");
+    if (mutation.value.kind === "browser_session") {
+      browserCount++;
+      browserBytes += Buffer.byteLength(mutation.value.base64, "base64");
+      continue;
+    }
     const bytes = Buffer.byteLength(JSON.stringify(mutation.value), "utf8");
-    if (mutation.value.kind === "browser_session") browserCount++;
-    else total += bytes;
+    total += bytes;
     if (mutation.value.kind === "env") {
       envBytes += bytes;
       for (const { name } of mutation.value.entries) {
@@ -35,6 +49,7 @@ export function parseAcceptedWorkspaceSecrets(value: unknown): readonly Accepted
     }
   }
   if (browserCount > WORKSPACE_BROWSER_SESSION_MAX_COUNT || value.length - browserCount > WORKSPACE_SECRET_MAX_COUNT ||
+    browserBytes > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES ||
     total > WORKSPACE_SECRET_TOTAL_MAX_BYTES || envBytes > WORKSPACE_SECRET_ENV_MAX_BYTES) throw new WorkspaceSecretError("workspace_secret_limit");
   const browserNames = value.flatMap((entry: AcceptedWorkspaceSecret) => entry.value.kind === "browser_session" ? [entry.value.originalName] : []);
   if (new Set(browserNames).size !== browserNames.length) throw new WorkspaceSecretError("workspace_secret_invalid");
@@ -85,7 +100,7 @@ export function workspaceSecretsGuide(secrets: readonly AcceptedWorkspaceSecret[
       case "file": lines.push(`Original file: ${heading(secret.value.originalName)}`, `Path: \`${workspaceSecretAssetPath(secret.id, "file")}\``, "Use the original bytes at this path; no reconstruction is needed.", ""); break;
     }
   }
-  lines.push("## Browser sessions", "", "Save Playwright storage_state JSON in /workspace/secrets/browser/<host>.json. AIQSA encrypts valid files after a personal run settles and restores them in later Workspaces. Verify that a restored session is still logged in; use saved credentials if it expired. Guest file deletion does not delete settings. Each state is limited to 512 KiB; at most 50 sessions are saved.", "");
+  lines.push("## Browser sessions", "", `Save Playwright storage_state JSON in /workspace/secrets/browser/<host>.json. AIQSA encrypts valid files after a personal run settles and restores them in later Workspaces. Verify that a restored session is still logged in; use saved credentials if it expired. Guest file deletion does not delete settings. ${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT} A larger state is not saved and its previous version stays.`, "");
   for (const secret of secrets) if (secret.value.kind === "browser_session") {
     lines.push(`### ${heading(secret.name)}`, `Host/file: ${heading(secret.value.originalName)}`,
       `Path: \`${workspaceBrowserSessionPath(secret.value.originalName)}\``, "");
