@@ -135,6 +135,16 @@ describe("adminMcpApi", () => {
     }));
   });
 
+  it("decodes a disabled-tool policy up to the per-server tool bound", async () => {
+    const names = (count: number) => Array.from({ length: count }, (_, index) => `tool_${index}`);
+    const maximal = { ...server, draft: { ...server.draft, disabledToolNames: names(1_024) } };
+    await expect(updateAdminMcpServer(server.id, { enabled: true }, vi.fn().mockResolvedValue(response({ server: maximal }))))
+      .resolves.toEqual({ data: maximal, ok: true });
+    const beyond = { ...server, draft: { ...server.draft, disabledToolNames: names(1_025) } };
+    await expect(updateAdminMcpServer(server.id, { enabled: true }, vi.fn().mockResolvedValue(response({ server: beyond }))))
+      .resolves.toMatchObject({ ok: false });
+  });
+
   it("uses the narrow server endpoint for irreversible deletion", async () => {
     const tombstone = { ...server, archivedAt: "2026-07-23T01:00:00.000Z", enabled: false };
     const fetcher = vi.fn().mockResolvedValue(response({ server: tombstone }));

@@ -71,7 +71,8 @@ export type McpRuntimeSession = {
   exactKnownSecrets?(): readonly string[];
   fatalResponseErrorCode?(): McpFatalResponseErrorCode | null;
   isClosed?(): boolean;
-  listTools(signal?: AbortSignal): Promise<McpRuntimeInventoryTool[]>;
+  /** `requestTimeoutMs` bounds each tools/list page; the session bounds the whole traversal. */
+  listTools(signal?: AbortSignal, options?: { requestTimeoutMs?: number }): Promise<McpRuntimeInventoryTool[]>;
   ping(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
   serverEvidence?(): AiqsaMcpServerEvidence | null;
 };
@@ -211,8 +212,23 @@ const DEFAULT_INTERVAL_MS = 30_000;
 const MAX_PARALLEL_STARTS = 4;
 export const MCP_HEALTH_CADENCE_MS = 30_000;
 export const MCP_HEALTH_DEADLINE_MS = 2_000;
+/**
+ * Inventory health reads a paginated tools/list. Each page must answer within
+ * MCP_HEALTH_DEADLINE_MS as liveness proof, while the complete traversal of a
+ * maximal inventory gets one health cadence rather than a single ping deadline.
+ */
+export const MCP_HEALTH_INVENTORY_DEADLINE_MS = MCP_HEALTH_CADENCE_MS;
 const MAX_PARALLEL_PROBES = 4;
 type HealthProbe = { runtime: LiveRuntime; controller: AbortController | null };
+/** Inventory bounds keep their own cause instead of the generic invalid-inventory code. */
+const EXACT_INVENTORY_ERROR_CODES: ReadonlySet<McpClientSessionError["code"]> = new Set([
+  "mcp_inventory_cursor_cycle",
+  "mcp_inventory_metadata_limit",
+  "mcp_inventory_page_limit",
+  "mcp_inventory_schema_limit",
+  "mcp_inventory_time_limit",
+  "mcp_inventory_tool_limit"
+]);
 const RESPONSE_LIMIT_ERROR_CODES: ReadonlySet<McpClientSessionError["code"]> = new Set([
   "mcp_call_result_too_large",
   "mcp_initialize_response_too_large",
@@ -246,6 +262,7 @@ function stableRuntimeError(error: unknown): string {
     if (error.code === "mcp_request_timeout" || error.code === "mcp_request_cancelled") return "mcp_timeout";
     if (error.code === "mcp_authorization_required") return "mcp_authorization_required";
     if (error.code === "mcp_session_closed") return error.code;
+    if (EXACT_INVENTORY_ERROR_CODES.has(error.code)) return error.code;
     if (error.code.startsWith("mcp_inventory_")) return "mcp_inventory_invalid";
     if (error.operation === "ping") return "mcp_health_check_failed";
   }
@@ -574,7 +591,8 @@ export class McpRuntimeCoordinator {
   async #probe(generationId: string, probe: HealthProbe, controller: AbortController): Promise<void> {
     const runtime = probe.runtime;
     const timeoutError = new McpClientSessionError({ code: "mcp_request_timeout", operation: "ping" });
-    const timer = setTimeout(() => controller.abort(timeoutError), MCP_HEALTH_DEADLINE_MS);
+    const abortAfter = (deadlineMs: number) => setTimeout(() => controller.abort(timeoutError), deadlineMs);
+    let timer = abortAfter(runtime.healthUsesToolList ? MCP_HEALTH_INVENTORY_DEADLINE_MS : MCP_HEALTH_DEADLINE_MS);
     let onAbort!: () => void;
     const cancelled = new Promise<never>((_resolve, reject) => {
       onAbort = () => reject(controller.signal.reason);
@@ -590,10 +608,12 @@ export class McpRuntimeCoordinator {
             } catch (error) {
               if (!(error instanceof McpClientSessionError) || error.code !== "mcp_ping_unsupported") throw error;
               runtime.healthUsesToolList = true;
+              clearTimeout(timer);
+              timer = abortAfter(MCP_HEALTH_INVENTORY_DEADLINE_MS);
             }
           }
           controller.signal.throwIfAborted();
-          const tools = await runtime.session.listTools(controller.signal);
+          const tools = await runtime.session.listTools(controller.signal, { requestTimeoutMs: MCP_HEALTH_DEADLINE_MS });
           controller.signal.throwIfAborted();
           assertInventoryDoesNotExposeCredentials(tools, runtime.redactionValues, runtime.session);
           const hashes = new Map(tools.map((tool) => [tool.name, tool.definitionHash]));

@@ -3,7 +3,7 @@ import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { StructuredOutputDecodeError } from "../providers/structuredOutput";
 import { logEvent } from "../observability";
 import { mcpChatDiscoveryContext } from "./chatDiscoveryContext";
-import type { McpCapabilityCatalog } from "./runPlan";
+import { MCP_CATALOG_INSTRUCTIONS_BUDGET_CHARS, type McpCapabilityCatalog } from "./runPlan";
 import {
   buildMcpRouterPrompt,
   createMcpSemanticRouter,
@@ -563,6 +563,28 @@ describe("semantic MCP router", () => {
     expect(serialized).not.toContain("inputSchema");
     expect(serialized).not.toContain("credential-system");
     expect(serialized.length).toBeLessThan(64_000);
+  });
+
+  it("keeps long server instructions whole and bounds a catalog frozen before the shared budget", () => {
+    const whole = `Quote "keys", keep \\ paths,\nand ${"use scoped reads ".repeat(1_200)}`;
+    expect(whole.length).toBeGreaterThan(8_192);
+    const single = buildMcpRouterPrompt({ activeToolNames: new Set(), goals: ["Create the issue"], limit: 5,
+      catalog: { ...catalog, servers: [{ ...catalog.servers[0]!, instructions: whole }] } });
+    expect(JSON.parse(single.userPrompt).integrations[0].instructions).toBe(whole);
+
+    // Sixteen servers at the former 8,192-character filter exceed the shared budget.
+    const legacy = buildMcpRouterPrompt({ activeToolNames: new Set(), goals: ["Create the issue"], limit: 5,
+      catalog: { servers: Array.from({ length: 16 }, (_, index) => ({ ...catalog.servers[0]!,
+        instructions: `${index}:${"y".repeat(8_190)}`, namespace: `jira_${index}`, serverId: `server-${index}`,
+        serverName: `Jira ${index}`, tools: [{ ...catalog.servers[0]!.tools[0]!, namespacedName: `${jiraTool}_${index}` }] })),
+      version: 1 } });
+    const projected = JSON.parse(legacy.userPrompt).integrations as Array<{ instructions: string }>;
+    expect(projected).toHaveLength(16);
+    expect(projected.map(({ instructions }) => instructions).join("").length).toBeLessThanOrEqual(MCP_CATALOG_INSTRUCTIONS_BUDGET_CHARS);
+    for (const [index, { instructions }] of projected.entries()) {
+      expect(instructions.startsWith(`${index}:y`)).toBe(true);
+      expect(instructions).toMatch(/\[Server instructions truncated: \d+ of 819[23] characters shown\.\]$/u);
+    }
   });
 
   it("keeps every capability field and a stable catalog prefix across changed goals and context", () => {

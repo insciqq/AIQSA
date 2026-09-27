@@ -5,7 +5,9 @@ import {
   isMcpReadinessStartable,
   isMcpToolExclusionReason,
   isMcpToolName,
+  MCP_INVENTORY_EXCLUSION_LIMIT,
   MCP_RUN_PLAN_LIMITS,
+  MCP_SERVER_TOOL_LIMIT,
   type McpCredentialSource,
   type McpReadiness,
   type McpToolArgumentInventoryEntry,
@@ -125,7 +127,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function mcpInventoryExclusions(inventory: unknown): McpRuntimeInventoryExclusion[] | null {
   if (!isRecord(inventory)) return null;
   if (!Object.hasOwn(inventory, "exclusions")) return [];
-  if (!Array.isArray(inventory.exclusions)) return null;
+  if (!Array.isArray(inventory.exclusions) || inventory.exclusions.length > MCP_INVENTORY_EXCLUSION_LIMIT) return null;
   const names = new Set<string>();
   const exclusions: McpRuntimeInventoryExclusion[] = [];
   for (const candidate of inventory.exclusions) {
@@ -138,7 +140,8 @@ export function mcpInventoryExclusions(inventory: unknown): McpRuntimeInventoryE
 }
 
 function inventoryTools(value: unknown): McpRuntimeInventoryTool[] | null {
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.tools)) return null;
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.tools) ||
+    value.tools.length > MCP_SERVER_TOOL_LIMIT) return null;
   const exclusions = mcpInventoryExclusions(value);
   if (!exclusions) return null;
   const excluded = new Set(exclusions.map(({ name }) => name));
@@ -235,10 +238,51 @@ export function namespacedMcpToolName(namespace: string, originalName: string): 
   return `mcp_${token(namespace, 20)}_${token(originalName, 24)}_${suffix}`.slice(0, 64);
 }
 
+/**
+ * Characters of server-supplied instructions one Auto catalog carries to its
+ * router prompt, across all servers. Validation keeps each server's
+ * instructions whole; only this shared prompt projection is shortened.
+ */
+export const MCP_CATALOG_INSTRUCTIONS_BUDGET_CHARS = 32_768;
+
+function truncatedInstructions(text: string, maxCharacters: number): string {
+  const marker = (shown: number) => `\n[Server instructions truncated: ${shown} of ${text.length} characters shown.]`;
+  let shown = Math.max(0, maxCharacters - marker(maxCharacters).length);
+  // Never split a UTF-16 surrogate pair.
+  const last = text.charCodeAt(shown - 1);
+  if (shown > 0 && last >= 0xd800 && last <= 0xdbff) shown -= 1;
+  return `${text.slice(0, shown)}${marker(shown)}`;
+}
+
+/**
+ * Shares one character budget across server instructions without dropping
+ * any server: texts within an even share stay whole, the rest split what is
+ * left and end with a visible truncation marker.
+ */
+export function budgetMcpServerInstructions(
+  instructions: readonly string[],
+  budget = MCP_CATALOG_INSTRUCTIONS_BUDGET_CHARS
+): string[] {
+  const result = [...instructions];
+  const order = result.map((text, index) => ({ index, length: text.length }))
+    .sort((left, right) => left.length - right.length || left.index - right.index);
+  let remaining = budget;
+  for (const [position, { index, length }] of order.entries()) {
+    const share = Math.floor(remaining / (order.length - position));
+    if (length <= share) {
+      remaining -= length;
+      continue;
+    }
+    result[index] = truncatedInstructions(result[index]!, share);
+    remaining -= share;
+  }
+  return result;
+}
+
 export function buildMcpCapabilityCatalog(
   records: readonly McpRunPlanRecord[]
 ): McpCapabilityCatalog {
-  return {
+  const catalog: McpCapabilityCatalog = {
     servers: records
       .map((record) => ({
         description: record.serverDescription ?? "",
@@ -262,6 +306,10 @@ export function buildMcpCapabilityCatalog(
       ),
     version: 1
   };
+  // The frozen catalog is persisted with the run and is the router's input.
+  const instructions = budgetMcpServerInstructions(catalog.servers.map((server) => server.instructions ?? ""));
+  catalog.servers.forEach((server, index) => { server.instructions = instructions[index]!; });
+  return catalog;
 }
 
 function issues(records: readonly McpRunPlanRecord[]) {
