@@ -18,7 +18,8 @@ import { createToolObservationService } from "./service";
 import { createObservationAdmission } from "./admission";
 import { createObservationSourceOwners } from "./sourceOwners";
 import { knowledgeObservationOwner } from "../knowledge/observationOwner";
-import { captureMcpObservation, captureOwnedObservation, captureSearchObservation } from "./sourceAdapters";
+import { captureMcpObservation, captureOwnedObservation, captureSearchObservation, wholeDeliveryAllowance } from "./sourceAdapters";
+import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 import { namespacedMcpToolName } from "../mcp/runPlan";
 import { createPrismaSkillRepository } from "../skills/prismaRepository";
 import { SEARCH_TOOL_RESULT_VERSION, searchToolResultContent, type SearchExecutionEvidence } from "../search/toolResult";
@@ -272,7 +273,7 @@ describe("durable tool observation ownership", () => {
     await expect(prisma.toolObservation.update({ where: { id: row.id }, data: { executionReceipt: { changed: true } } })).rejects.toThrow();
   });
 
-  it("reserves one producer under competing claims and enforces aggregate space before dispatch", async () => {
+  it("reserves one producer under competing claims and degrades a call beyond the aggregate space before dispatch", async () => {
     // At the default wire cap the run bound is exactly its 64 MiB budget.
     vi.stubEnv("AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES", String(8 * 1024 * 1024));
     cleanups.push(async () => { vi.unstubAllEnvs(); });
@@ -283,8 +284,10 @@ describe("durable tool observation ownership", () => {
     expect(claims.filter(claim => claim.claimed)).toHaveLength(1);
     expect(new Set(claims.map(claim => claim.observation.id)).size).toBe(1);
     await f.repository.reserve(await f.call(), "mcp", 32 * 1024 * 1024);
-    await expect(f.repository.reserve(await f.call(), "mcp", 1)).rejects.toThrow("tool_observation_limit_exceeded");
-    expect(await prisma.toolObservation.count({ where: { modelRunId: f.run.id } })).toBe(2);
+    // Beyond the run's space the call is still claimed, reserving nothing.
+    expect(await f.repository.reserve(await f.call(), "mcp", 1)).toMatchObject({ claimed: true, degraded: true,
+      observation: { state: "RESERVED", reservedBytes: 0 } });
+    expect(await prisma.toolObservation.count({ where: { modelRunId: f.run.id } })).toBe(3);
   });
 
   it("recalls only settled results on the accepted branch, without a Workspace session", async () => {
@@ -535,10 +538,11 @@ describe("durable tool observation ownership", () => {
       executionOutcome: "unknown", reservedBytes: 0
     }) });
     const reserved = await f.repository.reserve(await f.call(), "mcp", 8 * 1024 * 1024 + 64 * 1024);
-    expect(reserved.claimed).toBe(true);
+    expect(reserved).toEqual({ claimed: true, observation: expect.objectContaining({ reservedBytes: 8 * 1024 * 1024 + 64 * 1024 }) });
     await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "complete" } });
     const next = await f.makeRun(f.run.assistantMessageId);
-    expect((await f.repository.reserve(await f.call(next.actor), "search", 8 * 1024 * 1024)).claimed).toBe(true);
+    expect(await f.repository.reserve(await f.call(next.actor), "search", 8 * 1024 * 1024))
+      .toEqual({ claimed: true, observation: expect.objectContaining({ reservedBytes: 8 * 1024 * 1024 }) });
   });
 
   it("admits new calls on a branch of 5000 small inline results while externalized bytes stay bounded", async () => {
@@ -563,7 +567,8 @@ describe("durable tool observation ownership", () => {
     const next = await f.makeRun(f.run.assistantMessageId);
     await inline(next.id, 2500);
     for (const source of ["mcp", "workspace", "search"] as const) {
-      expect((await f.repository.reserve(await f.call(next.actor), source, mcpObservationMaximumBytes())).claimed).toBe(true);
+      expect(await f.repository.reserve(await f.call(next.actor), source, mcpObservationMaximumBytes()))
+        .toEqual({ claimed: true, observation: expect.objectContaining({ reservedBytes: mcpObservationMaximumBytes() }) });
     }
     // Retained objects of the branch still consume its byte budget.
     const objects = Array.from({ length: 7 }, (_, index) => ({ id: randomUUID(), modelRunId: f.run.id, roundIndex: round,
@@ -575,9 +580,11 @@ describe("durable tool observation ownership", () => {
         reservedBytes: 32 * MiB, byteSize: 32 * MiB, checksum: "d".repeat(64), storageMode: "OBJECT",
         storageKey: `tool-observations/v1/${id}/${"e".repeat(32)}` };
     }) });
-    await expect(f.repository.reserve(await f.call(next.actor), "mcp", mcpObservationMaximumBytes()))
-      .rejects.toThrow("tool_observation_limit_exceeded");
-    expect((await f.repository.reserve(await f.call(next.actor), "mcp", MiB)).claimed).toBe(true);
+    // Beyond it a call is still claimed, reserving nothing; a smaller one fits.
+    expect(await f.repository.reserve(await f.call(next.actor), "mcp", mcpObservationMaximumBytes()))
+      .toMatchObject({ claimed: true, degraded: true, observation: { reservedBytes: 0 } });
+    expect(await f.repository.reserve(await f.call(next.actor), "mcp", MiB))
+      .toEqual({ claimed: true, observation: expect.objectContaining({ reservedBytes: MiB }) });
   });
 
   it("admits a full parallel MCP batch at the 16 MiB wire cap with nothing retained", async () => {
@@ -588,15 +595,113 @@ describe("durable tool observation ownership", () => {
     expect(ceiling).toBe(16 * 1024 * 1024 + 64 * 1024);
     const producers = await Promise.all(Array.from({ length: TOOL_OBSERVATION_LIMITS.concurrentCalls }, () => f.call()));
     const claims = await Promise.all(producers.map(producer => f.repository.reserve(producer, "mcp", ceiling)));
-    expect(claims.every(claim => claim.claimed)).toBe(true);
-    // A call beyond the accepted concurrency waits for a publication.
-    await expect(f.repository.reserve(await f.call(), "mcp", ceiling)).rejects.toThrow("tool_observation_limit_exceeded");
+    expect(claims.every(claim => claim.claimed && !claim.degraded && claim.observation.reservedBytes === ceiling)).toBe(true);
+    // A call beyond the accepted concurrency is claimed, reserving nothing.
+    expect(await f.repository.reserve(await f.call(), "mcp", ceiling)).toMatchObject({ claimed: true, degraded: true });
     // Publication releases the ceiling down to the exact inline size.
     await f.repository.recordOutcome(producers[0]!, "complete");
     const identity = measureObservationJson({ accepted: "small" }, ceiling, 8192);
     await f.repository.beginWrite(producers[0]!, { byteSize: identity.byteSize, checksum: identity.checksum,
       inlineText: identity.inline, storageMode: "INLINE", projection: null, sourceTruncated: false, maskable: true });
-    expect((await f.repository.reserve(await f.call(), "mcp", ceiling)).claimed).toBe(true);
+    expect(await f.repository.reserve(await f.call(), "mcp", ceiling))
+      .toEqual({ claimed: true, observation: expect.objectContaining({ reservedBytes: ceiling }) });
+  });
+
+  it("executes a 1 KiB MCP call and a Search on a branch at its budget, and an Agent call beyond its run budget, as Off delivers them", async () => {
+    vi.stubEnv("AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES", String(8 * 1024 * 1024));
+    cleanups.push(async () => { vi.unstubAllEnvs(); });
+    const MiB = 1024 * 1024;
+    let round = 20;
+    /** Settled objects retaining `count` x 32 MiB for `runId`. */
+    const retain = async (runId: string, count: number) => {
+      const roundIndex = round++;
+      const calls = Array.from({ length: count }, (_, index) => ({ id: randomUUID(), modelRunId: runId, roundIndex,
+        ordinal: index, providerCallId: randomUUID(), toolName: "synthetic_tool", arguments: {}, state: "complete" as const }));
+      await prisma.modelRunToolCall.createMany({ data: calls });
+      await prisma.toolObservation.createMany({ data: calls.map(call => {
+        const id = randomUUID().replaceAll("-", "");
+        return { id, modelRunId: runId, toolCallId: call.id, sourceKind: "mcp", state: "READY", executionOutcome: "complete",
+          reservedBytes: 32 * MiB, byteSize: 32 * MiB, checksum: "d".repeat(64), storageMode: "OBJECT",
+          storageKey: `tool-observations/v1/${id}/${"e".repeat(32)}` };
+      }) });
+    };
+    const call = { id: "degraded-provider-call", name: "synthetic_tool", arguments: {} };
+    const binding = { version: 1 as const, source: "mcp" as const, serverId: "server", originalName: "synthetic_tool",
+      revisionId: "revision", fingerprint: "a".repeat(64) };
+    const original = { isError: false, structuredContent: null, text: [`${"x".repeat(1000)} rare-degraded-tail`], unsupportedContentTypes: [] };
+    const unretained = { state: "UNAVAILABLE", reservedBytes: 0, failureCode: "tool_observation_budget_degraded",
+      byteSize: null, checksum: null, storageMode: null, storageKey: null, inlineText: null, projection: null, maskable: false };
+    const f = await fixture();
+    // The branch retains exactly its 256 MiB budget in an ancestor run.
+    await retain(f.run.id, 8);
+    await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "complete" } });
+    const next = await f.makeRun(f.run.assistantMessageId);
+    const producer = await f.call(next.actor);
+    const execute = vi.fn(async () => original);
+    const result = await captureMcpObservation({ service: f.service, producer,
+      wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) }, call, binding, execute);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result).toEqual(mcpToolExecutionResult(call, original));
+    expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
+    expect(await prisma.toolObservation.findUniqueOrThrow({ where: { toolCallId: producer.toolCallId } }))
+      .toMatchObject({ ...unretained, executionOutcome: "complete" });
+    // Its receipt still forbids a replay, and recovery has nothing to restore.
+    await expect(captureMcpObservation({ service: f.service, producer }, call, binding, execute)).rejects.toThrow("tool_observation_conflict");
+    await expect(f.service.restore(producer)).rejects.toThrow("tool_observation_unavailable");
+    expect(execute).toHaveBeenCalledOnce();
+    // A Search there keeps its usage receipt for accounting.
+    const searchProducer = await f.call(next.actor);
+    const sources = [{ optionId: "option-degraded", revisionId: "revision-degraded" }];
+    const execution: SearchExecutionEvidence = { ...sources[0]!, displayName: "Synthetic search", invocationId: searchProducer.toolCallId,
+      provider: "fake", modelId: "synthetic-search", status: "complete", findings: "Synthetic findings",
+      sources: [{ title: "Synthetic source", url: "https://example.com/synthetic", rank: 1 }],
+      usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11, reasoningTokens: 0 } };
+    const searchCall = { id: "degraded-search-call", name: "search_engine_1", arguments: { query: "synthetic" } };
+    const searched = await captureSearchObservation({ service: f.service, producer: searchProducer }, searchCall, sources,
+      async () => ({ callId: searchCall.id, name: searchCall.name, status: "complete", content: searchToolResultContent([execution]),
+        rawPreview: { searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: [execution] } }));
+    expect(searched).toEqual({ callId: searchCall.id, name: searchCall.name, status: "complete", content: searchToolResultContent([execution]) });
+    expect(await prisma.toolObservation.findUniqueOrThrow({ where: { toolCallId: searchProducer.toolCallId } }))
+      .toMatchObject({ ...unretained, executionOutcome: "complete" });
+    expect(await f.service.searchAccounting(searchProducer)).toEqual([expect.objectContaining({
+      invocationId: searchProducer.toolCallId, usage: expect.objectContaining({ totalTokens: 11 }) })]);
+
+    // An Agent run beyond its own 64 MiB budget on an otherwise roomy branch.
+    const g = await fixture();
+    const session = await prisma.workspaceSession.create({ data: { chatId: g.chat.id, sandboxName: `observation-${randomUUID()}`,
+      imageRef: "aiqsa-workspace:0.1.28", internetEnabled: false, policyRevision: 1, runtimeSandboxId: "fixture-runtime",
+      state: "RUNNING", expiresAt: new Date(Date.now() + 600_000) } });
+    cleanups.push(async () => {
+      // Binding -> session and session -> chat are RESTRICT: remove the run first.
+      await prisma.modelRun.deleteMany({ where: { id: g.run.id } });
+      await prisma.workspaceSession.deleteMany({ where: { id: session.id } });
+    });
+    await prisma.workspaceRunBinding.create({ data: { modelRunId: g.run.id, workspaceSessionId: session.id,
+      imageRef: session.imageRef, internetEnabled: false, policyRevision: 1, runtimeVersion: "0.6.16", mcpVersion: "0.6.16",
+      toolCatalogHash: "a".repeat(64), toolDefinitions: [{ originalName: "sandbox_exec_start", namespacedName: "workspace__sandbox_exec_start",
+        description: "Fixture", inputSchema: { type: "object" } }], outputDirectory: `/workspace/output/${g.run.id}` } });
+    await prisma.agentRunBinding.create({ data: { modelRunId: g.run.id, configuration: { mcpMode: "all" }, compatibilityHash: "a".repeat(64),
+      leaseExpiresAt: new Date(Date.now() + 600_000) } });
+    await retain(g.run.id, 2);
+    const agentProducer = await g.call();
+    const agentExecute = vi.fn(async () => original);
+    // The Agent gateway's capture: Codex owns its context, so no batch share.
+    const agentResult = await captureMcpObservation({ service: g.service, producer: agentProducer,
+      wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) }, call, binding, agentExecute);
+    expect(agentExecute).toHaveBeenCalledOnce();
+    expect(agentResult).toEqual(mcpToolExecutionResult(call, original));
+    expect(await prisma.toolObservation.findUniqueOrThrow({ where: { toolCallId: agentProducer.toolCallId } }))
+      .toMatchObject({ ...unretained, executionOutcome: "complete" });
+    // Nothing was evicted, and nothing new counts toward the run budget.
+    const counted = await prisma.toolObservation.aggregate({ where: { modelRunId: g.run.id, state: { in: ["RESERVED", "STORING", "READY"] } },
+      _sum: { reservedBytes: true } });
+    expect(counted._sum.reservedBytes).toBe(64 * MiB);
+    // Without the Agent lease the call is not started, never degraded.
+    await prisma.agentRunBinding.update({ where: { modelRunId: g.run.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+    const refused = vi.fn(async () => original);
+    await expect(captureMcpObservation({ service: g.service, producer: await g.call() }, call, binding, refused))
+      .rejects.toMatchObject({ code: "tool_observation_not_started" });
+    expect(refused).not.toHaveBeenCalled();
   });
 
   it("reports a reservation refused by run or call authority as not started", async () => {

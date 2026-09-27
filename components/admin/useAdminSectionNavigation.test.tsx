@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdminShell } from "./AdminShell";
 import {
@@ -118,6 +119,67 @@ describe("useAdminSectionNavigation", () => {
     await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=groups"));
     expect(screen.getByTestId("active-panel")).toHaveTextContent("Groups");
   });
+
+  it("keeps the origin chat return across section, resource and filter changes for the Chats links", async () => {
+    stubViewport(390);
+    window.history.replaceState(null, "", "/admin?return=%2Fp%2Fproject-1%2Fc%2Fchat-1&section=users");
+    const view = renderNavigation();
+    await waitFor(() => expect(view.navigation.activeSection).toBe("users"));
+    const chatsLinks = () => screen.getAllByRole("link", { name: "Chats" });
+    await waitFor(() => expect(chatsLinks()[0]).toHaveAttribute("href", "/p/project-1/c/chat-1"));
+    expect(chatsLinks().every((link) => link.getAttribute("href") === "/p/project-1/c/chat-1")).toBe(true);
+
+    act(() => { view.navigation.selectFilter("pending"); });
+    act(() => { view.navigation.selectSection("providers", "conn-1"); });
+    act(() => { view.navigation.selectResource(null); });
+    expect(new URLSearchParams(window.location.search).get("return")).toBe("/p/project-1/c/chat-1");
+    expect(chatsLinks()[0]).toHaveAttribute("href", "/p/project-1/c/chat-1");
+    act(() => window.history.back());
+    await waitFor(() => expect(view.navigation.activeResource).toBe("conn-1"));
+    expect(new URLSearchParams(window.location.search).get("return")).toBe("/p/project-1/c/chat-1");
+  });
+
+  it("links back to the origin chat from the server markup and follows the address once hydrated", async () => {
+    stubViewport(1440);
+    function ShellWithReturn() {
+      const navigation = useAdminSectionNavigation();
+      return (
+        <AdminShell
+          accountLabel="admin@example.com"
+          navigation={navigation}
+          releaseStatus={null}
+          returnPath="/p/project-1/c/chat-1"
+          topbar={{ title: navigation.activeSectionConfig.label }}
+        >
+          <section />
+        </AdminShell>
+      );
+    }
+    const server = document.createElement("div");
+    server.innerHTML = renderToString(<ShellWithReturn />);
+    const serverChats = [...server.querySelectorAll("a")].filter((link) =>
+      link.getAttribute("aria-label") === "Chats" || link.textContent?.trim() === "Chats");
+    expect(serverChats.length).toBeGreaterThan(0);
+    expect(serverChats.map((link) => link.getAttribute("href"))).toEqual(serverChats.map(() => "/p/project-1/c/chat-1"));
+    expect(server.querySelector('[data-testid="admin-nav-users"]'))
+      .toHaveAttribute("href", "/admin?return=%2Fp%2Fproject-1%2Fc%2Fchat-1&section=users");
+
+    // In the browser the address is the source: a return changed there is followed.
+    window.history.replaceState(null, "", "/admin?return=%2Fc%2Fchat-2");
+    render(<ShellWithReturn />);
+    await waitFor(() => expect(screen.getAllByRole("link", { name: "Chats" })[0]).toHaveAttribute("href", "/c/chat-2"));
+    expect(screen.getAllByRole("link", { name: "Users" })[0]).toHaveAttribute("href", "/admin?return=%2Fc%2Fchat-2&section=users");
+  });
+
+  it.each(["/admin", "/admin?return=https%3A%2F%2Fevil.example%2Fc%2Fx", "/admin?return=%2Fadmin%3Fsection%3Dusers", "/admin?return=%2Fc%2Fa&return=%2Fc%2Fb"])(
+    "returns Chats to the new chat from %s",
+    async (address) => {
+      stubViewport(1440);
+      window.history.replaceState(null, "", address);
+      renderNavigation();
+      await waitFor(() => expect(screen.getAllByRole("link", { name: "Chats" })[0]).toHaveAttribute("href", "/"));
+    }
+  );
 
   it("opens a resource page inside a section, keeps section links resource-free, and returns with Back", async () => {
     window.history.replaceState({ nextRouter: { marker: "keep" } }, "", "/admin?section=providers&resource=conn-1#top");

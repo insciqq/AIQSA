@@ -77,7 +77,7 @@ describe("Memory source navigation handler", () => {
 
     expect(response.status).toBe(303);
     expect(response.headers.get("location"))
-      .toBe("/?chat=source-chat-1&message=source-message-1");
+      .toBe("/c/source-chat-1?message=source-message-1");
     expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
     expect(response.headers.get("vary")).toBe("Cookie");
     expect(sourceService.resolveOpenSource).toHaveBeenCalledWith(

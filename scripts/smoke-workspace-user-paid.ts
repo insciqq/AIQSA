@@ -11,6 +11,7 @@ import {
   requirePaidStand, scheduleInput, scheduleRules, type PaidStand
 } from "./workspace-user-paid-support";
 import { runOfficeUserScenarios, type OfficeInput } from "./workspace-user-paid-office";
+import { parseChatRoutePath } from "../lib/domain/chatRoute";
 
 // Explicit opt-in, never a default Playwright/Vitest lane. Requires a fresh
 // task-owned Compose JSON, seeded DB, running dev app/runner/maintenance and
@@ -238,7 +239,8 @@ async function main() {
       step = "upload";
       if (files.length) await page.getByLabel("Attach files").setInputFiles(files.map(file => ({ name: file.name, mimeType: file.mimeType, buffer: file.buffer ?? Buffer.from(file.text ?? "") })));
       for (const file of files) await waitForAttachment(file.name, enableWorkspace);
-      const chatId = await page.evaluate(() => localStorage.getItem("aiqsa.activeChatId"));
+      // A new chat stays at `/` until its first send; an open chat names itself.
+      const chatId = parseChatRoutePath(await page.evaluate(() => window.location.pathname))?.chatId ?? null;
       if (chatId) {
         requireValue(/^[0-9a-f-]{36}$/u.test(chatId), "chat_identity_missing");
         ownedChats.push(chatId);

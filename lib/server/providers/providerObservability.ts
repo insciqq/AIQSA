@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { bindContext, logEvent, type EventFields } from "../observability";
 import { isProviderDeadlineExceededError } from "./network";
+import { GeminiHttpError, type GeminiHttpErrorCode } from "./geminiInteractionsTransport";
+import { PROVIDER_CONTEXT_LENGTH_EXCEEDED, reportedContextTokens } from "./responseFailure";
 import { isProviderSearchExecutionError } from "./types";
 import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import { ProviderStreamSafetyError } from "./streamSafety";
@@ -217,6 +219,67 @@ function transportTypeError(value: unknown): boolean {
   try { return value instanceof TypeError; } catch { return false; }
 }
 
+// The Gemini transport already reduced the envelope to one reviewed identity.
+// Only that identity and the numeric status cross; never its message or body.
+const geminiHttpFailureCodes: Readonly<Record<GeminiHttpErrorCode, ObservedFailureCode>> = {
+  context_length_exceeded: PROVIDER_CONTEXT_LENGTH_EXCEEDED,
+  invalid_request: "provider_http_invalid_request",
+  malformed_function_call: "provider_http_malformed_function_call",
+  malformed_tool_call: "provider_http_malformed_tool_call",
+  parameter_unknown: "provider_http_parameter_unknown"
+};
+
+function geminiHttpFailure(value: unknown): Readonly<{ code: ObservedFailureCode; identity: GeminiHttpErrorCode; httpStatus: number }> | null {
+  try {
+    if (!(value instanceof GeminiHttpError)) return null;
+    const identity = ownValue(value, "code");
+    const httpStatus = ownValue(value, "httpStatus");
+    if (typeof identity !== "string" || !Object.hasOwn(geminiHttpFailureCodes, identity) ||
+      typeof httpStatus !== "number" || !Number.isInteger(httpStatus) || httpStatus < 400 || httpStatus > 599) return null;
+    const code = geminiHttpFailureCodes[identity as GeminiHttpErrorCode];
+    return codeSet.has(code) ? { code, identity: identity as GeminiHttpErrorCode, httpStatus } : null;
+  } catch { return null; }
+}
+
+/** The content-free facts of a classified context-length rejection: the HTTP
+ * status when the provider refused the request itself (absent when the code
+ * arrived in a response stream or terminal) and the counts it stated. */
+export type ProviderContextRejection = Readonly<{
+  httpStatus?: number;
+  maximumTokens?: number;
+  promptTokens?: number;
+}>;
+
+export function providerContextRejection(value: unknown): ProviderContextRejection | null {
+  try {
+    const failure = observedFailure(value);
+    if (failure.code !== PROVIDER_CONTEXT_LENGTH_EXCEEDED) return null;
+    const maximumTokens = reportedContextTokens(ownValue(value, "reportedMaximumTokens"));
+    const promptTokens = reportedContextTokens(ownValue(value, "reportedPromptTokens"));
+    return {
+      ...(failure.httpStatus !== undefined && failure.httpStatus >= 400 && failure.httpStatus <= 499
+        ? { httpStatus: failure.httpStatus } : {}),
+      ...(maximumTokens !== undefined ? { maximumTokens } : {}),
+      ...(promptTokens !== undefined ? { promptTokens } : {})
+    };
+  } catch { return null; }
+}
+
+/** Safe user-facing wording for a reviewed provider HTTP identity, or null.
+ * It names only the provider, status and allow-listed code. */
+export function providerHttpFailureMessage(value: unknown): string | null {
+  const rejection = providerContextRejection(value);
+  if (rejection) {
+    return `${rejection.httpStatus !== undefined
+      ? `The model provider rejected the request as too long for the model's context window (HTTP ${rejection.httpStatus}).`
+      : "The request exceeded the model's context window."} Reduce the context or choose a model with a larger context window.`;
+  }
+  const failure = geminiHttpFailure(value);
+  return failure
+    ? `The model provider rejected the request (Gemini HTTP ${failure.httpStatus}: ${failure.identity}).`
+    : null;
+}
+
 export function observedFailureCode(value: unknown): ObservedFailureCode {
   const code = ownValue(value, "code");
   return typeof code === "string" && codeSet.has(code) ? code as ObservedFailureCode : "unknown";
@@ -263,7 +326,8 @@ export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<
     if (signal?.aborted) return { code: "model_run_cancelled", reason: "cancelled", abort_source: "parent_signal" };
     const capabilityReason = ownValue(value, "capabilityFailureReason");
     const code = capabilityReason === "refusal" ? "provider_refused"
-      : capabilityReason === "budget_exhausted" ? "provider_budget_exhausted" : observedFailureCode(value);
+      : capabilityReason === "budget_exhausted" ? "provider_budget_exhausted"
+      : geminiHttpFailure(value)?.code ?? observedFailureCode(value);
     // Search owns these typed fields. Only its closed status and cause values
     // cross this boundary; artifacts, usage and arbitrary reason text do not.
     const searchFailure = isProviderSearchExecutionError(value);
@@ -287,6 +351,7 @@ export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<
       : code === "provider_http_dns_failed" || code === "provider_http_request_failed" ||
         code === "agent_provider_dns_failed" || code === "agent_provider_connection_lost" ? "network"
       : status !== undefined ? "http"
+      : code === PROVIDER_CONTEXT_LENGTH_EXCEEDED ? "safety_limit"
       : code === "provider_response_failed" || code === "openai_response_incomplete" || code === "openai_response_failed" ||
         code === "openai_response_not_completed" || code === "knowledge_answer_contract_failed" || code === "knowledge_citation_contract_failed"
         ? "invalid_response"

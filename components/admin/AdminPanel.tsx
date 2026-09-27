@@ -49,6 +49,8 @@ import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNo
 type AdminPanelProps = Readonly<{
   adminEmail: string;
   adminUserId: string;
+  /** The validated chat route this Control Center visit returns to. */
+  returnPath?: string;
 }>;
 
 function assertNeverSection(section: never): never {
@@ -220,7 +222,7 @@ function AdminSectionContent({
   return assertNeverSection(activeSection);
 }
 
-export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
+export function AdminPanel({ adminEmail, adminUserId, returnPath = "/" }: AdminPanelProps) {
   const navigationBlockedRef = useRef(false);
   const canSelectSection = useCallback(() => !navigationBlockedRef.current, []);
   const canExitAdmin = useCallback(() => !navigationBlockedRef.current, []);
@@ -352,6 +354,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
           navigationBlocked={navigationLocked}
           onReturnToChat={requestReturnToChat}
           releaseStatus={releaseStatus}
+          returnPath={returnPath}
           topbar={sectionTopbar ?? {
             actions: resource.dashboard ? (
               <AdminTopbarActions

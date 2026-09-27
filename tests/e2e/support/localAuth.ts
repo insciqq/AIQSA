@@ -18,10 +18,11 @@ export async function authenticateWithLocalToken(
   expect(response.ok()).toBe(true);
 }
 
-export async function signInWithLocalToken(page: Page): Promise<void> {
-  await page.goto("/");
+/** Signs in and opens `destination`, a chat address such as `/c/<id>` or the new chat. */
+export async function signInWithLocalToken(page: Page, destination = "/"): Promise<void> {
+  await page.goto(destination);
   await expect(page).toHaveURL(/\/login/);
   await authenticateWithLocalToken(page.request);
-  await page.goto("/");
+  await page.goto(destination);
   await expect(page.getByTestId("app-shell")).toBeVisible();
 }

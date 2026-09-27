@@ -90,9 +90,13 @@ export function createToolObservationRepository(input: Readonly<{
   }
 
   return {
-    /** A repeated reservation is recovery evidence, not dispatch permission. */
+    /** A repeated reservation is recovery evidence, not dispatch permission.
+     * One the run or branch budget cannot admit is still claimed, `degraded`:
+     * its zero ceiling counts toward neither budget and can publish nothing,
+     * so its call dispatches while the store retains nothing new. */
     async reserve(context: ObservationProducer, sourceKind: ToolObservationSource, maximumBytes: number,
-      sourceBinding?: ToolObservationSourceBinding) {
+      sourceBinding?: ToolObservationSourceBinding): Promise<Readonly<{
+        claimed: boolean; observation: ToolObservation; degraded?: true }>> {
       if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > OBSERVATION_READ_LIMITS.documentBytes) throw conflict();
       if (sourceBinding && (!decodeToolObservationSourceBinding(sourceBinding, sourceKind) ||
         Buffer.byteLength(JSON.stringify(sourceBinding)) > 4096)) throw conflict();
@@ -125,7 +129,8 @@ export function createToolObservationRepository(input: Readonly<{
             AND ((o."state" = 'RESERVED' AND NOT ${activeToolLoopRunSql("producer")})
               OR (o."state" = 'STORING' AND o."leaseExpiresAt" <= CURRENT_TIMESTAMP))`;
         // Source-owned producers (Skill/Knowledge) keep their bytes in their
-        // owner: they neither consume nor are refused by the store budget.
+        // owner: they neither consume nor are degraded by the store budget.
+        let reservedBytes = maximumBytes;
         if (sourceKind !== "skill" && sourceKind !== "knowledge") {
           // Only externalized bytes and in-flight ceilings count: a ceiling
           // becomes the exact size of an object at publication, and nothing
@@ -141,14 +146,15 @@ export function createToolObservationRepository(input: Readonly<{
             WHERE r."chatId" = ${run.chatId} AND (r."id" = ${run.id} OR r."assistantMessageId" IN (SELECT "id" FROM path))
               AND o."sourceKind" IN ('mcp', 'workspace', 'search')
               AND (o."state" = 'RESERVED' OR o."state" IN ('STORING', 'READY') AND o."storageMode" = 'OBJECT')`;
-          if (!budget || !admitsToolObservationReservation(budget, maximumBytes)) {
-            throw new ObservationStoreError("tool_observation_limit_exceeded");
-          }
+          // Exhaustion never refuses the business call: beginWrite refuses any
+          // original above a zero ceiling, so nothing new is externalized.
+          if (!budget || !admitsToolObservationReservation(budget, maximumBytes)) reservedBytes = 0;
         }
-        return { claimed: true, observation: await tx.toolObservation.create({ data: {
-          id: identifier(), modelRunId: run.id, toolCallId: call.id, sourceKind, reservedBytes: maximumBytes,
+        const observation = await tx.toolObservation.create({ data: {
+          id: identifier(), modelRunId: run.id, toolCallId: call.id, sourceKind, reservedBytes,
           sourceBinding: sourceBinding ? sourceBinding as Prisma.InputJsonValue : Prisma.DbNull
-        } }) };
+        } });
+        return reservedBytes === 0 ? { claimed: true, observation, degraded: true as const } : { claimed: true, observation };
       });
     },
 

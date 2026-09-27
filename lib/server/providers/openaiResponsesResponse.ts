@@ -1,5 +1,5 @@
 import { observeStreamParseFailure } from "./providerObservability";
-import { providerResponseFailure } from "./responseFailure";
+import { providerContextLengthFacts, providerResponseFailure } from "./responseFailure";
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
@@ -473,6 +473,20 @@ function providerResponseIdsFromStreamPayload(
   ].filter((value): value is string => value !== undefined);
 }
 
+/** The classified context-length refusal of a failed stream event, from its
+ * response or from the event itself (an `error` event carries it at the top). */
+function contextLengthRefusal(
+  message: string,
+  response: Record<string, unknown> | null,
+  payload: Record<string, unknown>
+): Error | null {
+  for (const candidate of response && response !== payload ? [response, payload] : [payload]) {
+    const failure = providerResponseFailure(message, candidate);
+    if (providerContextLengthFacts(failure)) return failure;
+  }
+  return null;
+}
+
 function streamErrorCode(eventType: string, payload: Record<string, unknown>): string | null {
   if (eventType === "error") {
     return "openai_stream_error";
@@ -545,6 +559,11 @@ export async function* parseOpenAIResponsesSse(
     signal: input.signal
   })) {
     latestSnapshot = providerStreamSafetySnapshot(event);
+    // Every Responses event is JSON; a keepalive frame with empty data (as a
+    // proxy may send while its upstream works) carries nothing.
+    if (!event.data.trim()) {
+      continue;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(event.data) as unknown;
@@ -562,6 +581,20 @@ export async function* parseOpenAIResponsesSse(
         ? eventType.replace("response.", "")
         : null;
     const response = responseFromStreamPayload(eventType, parsed);
+    const errorCode = streamErrorCode(eventType, parsed);
+    if (failureStatus || errorCode) {
+      // A context-length refusal is terminal and carries no output, so it is
+      // classified before the identity check: a proxy such as codex-lb may
+      // re-issue the failed response under an identity of its own. Usage the
+      // failed response reports still counts.
+      const refusal = contextLengthRefusal(errorCode ?? `openai_response_${failureStatus}`, response, parsed);
+      if (refusal) {
+        if (response && isRecord(response.usage)) {
+          yield { data: extractOpenAIUsage(response), type: "usage" };
+        }
+        throw refusal;
+      }
+    }
     for (const candidateResponseId of providerResponseIdsFromStreamPayload(parsed, response)) {
       if (providerResponseId && candidateResponseId !== providerResponseId) {
         throw new Error("openai_response_identity_mismatch");
@@ -576,7 +609,6 @@ export async function* parseOpenAIResponsesSse(
       };
     }
 
-    const errorCode = streamErrorCode(eventType, parsed);
     if (errorCode) {
       throw providerResponseFailure(errorCode, response ?? parsed);
     }

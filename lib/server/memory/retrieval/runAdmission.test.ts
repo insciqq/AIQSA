@@ -4911,9 +4911,10 @@ describe("Personal Memory v1 run admission", () => {
       ...base,
       normalizedRequest: {
         ...base.normalizedRequest,
+        // An unrecognized provider takes the conservative estimate profile.
         modelCapabilities: {
           ...base.normalizedRequest.modelCapabilities,
-          contextWindow: 2_400,
+          contextWindow: 3_000,
           defaultMaxOutputTokens: 0
         }
       }

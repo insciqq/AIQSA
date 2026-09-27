@@ -159,6 +159,16 @@ export type ConversationContextPolicy = Readonly<{
   reuse?: ContextSummaryReuse;
 }>;
 
+/** The run's one bounded rebuild after a provider rejected a round for context
+ * length before any accepted output: the round it rebuilt and the tightened
+ * estimated budget that round and every later request of the run keep.
+ * Content-free; checkpoints written before it existed simply omit it. */
+export type ContextRejectionRebuild = Readonly<{
+  version: 1;
+  round: number;
+  budgetTokens: number;
+}>;
+
 export type ContextCompactionCheckpoint = Readonly<{
   version: 1;
   ownerId: string;
@@ -173,6 +183,7 @@ export type ContextCompactionCheckpoint = Readonly<{
   recentTailCallIds: readonly string[];
   providerProjectionRevision: number;
   measurement: ContextPlanMeasurement;
+  rebuild?: ContextRejectionRebuild;
   summary?: ContextSummary;
   summaryAttempts?: readonly ContextSummaryAttempt[];
 }>;

@@ -36,6 +36,7 @@ import {
   composerSessionKey,
   composerSessionModeFromKey,
   projectComposerSessionKey,
+  projectIdFromComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore,
@@ -160,7 +161,26 @@ import {
   usePersonalChatDeepLink
 } from "./usePersonalChatDeepLink";
 import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
-import { useProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
+import {
+  useProjectWorkspaceController,
+  type ProjectWorkspaceController
+} from "@/features/projects-v2/useProjectWorkspaceController";
+import {
+  beginChatRouteResolution,
+  cancelChatRouteResolution,
+  chatRouteForState,
+  currentChatRoute,
+  isCurrentChatRouteResolution,
+  navigateChatRoute,
+  resolveChatRoute,
+  settleChatRouteResolution,
+  useChatRouteHistory,
+  useShownChatRoute,
+  type ChatRoute,
+  type ChatRouteResolution,
+  type ChatRouteTargets
+} from "@/components/app-shell/chatRoute";
+import { formatChatRoutePath } from "@/lib/domain/chatRoute";
 import type { ProjectDetailWire } from "@/lib/contracts/projects";
 import type { ComposerConfigKnowledgeBase } from "@/lib/contracts/composerConfig";
 import type {
@@ -189,6 +209,23 @@ export function effectiveProjectCatalog(
 ): Catalog | null {
   return project ? project.composer?.catalog ?? null : catalog;
 }
+
+type ProjectRouteOutcome = Awaited<ReturnType<ChatRouteTargets["openProject"]>>;
+
+/** One Project address being opened across the renders that load its Project. */
+type ProjectRouteRequest = {
+  readonly chatId: string | null;
+  finish(outcome: ProjectRouteOutcome): void;
+  phase: "opening" | "selecting" | "waiting";
+  readonly projectId: string;
+  readonly resolution: ChatRouteResolution;
+};
+
+const CHAT_ROUTE_UNAVAILABLE_COPY = {
+  chat: "That chat is unavailable.",
+  project: "That Project is unavailable.",
+  projectChat: "That Project chat is unavailable."
+} as const;
 
 export function effectiveComposerDisabledHint(input: Readonly<{
   personalHint: string | null;
@@ -898,12 +935,17 @@ export function PowerAppShellV2({
     setNotice({ kind: "error", text: memoryUiCopy("source.unavailableBody") });
   });
   usePersonalChatDeepLink({
-    activateChat: activatePersonalChatDeepLink,
+    activeChatId,
+    detailLoading: activeChatDetailLoading,
     onAnchor: anchorPersonalChatMessage,
     onUnavailable: showUnavailableMemorySource,
     ready: workspaceReady,
     revealMessage: revealPersonalChatMessage
   });
+  // A local draft chat is addressable only while its first send is under
+  // way and after the server admitted it: a failed or stopped first send
+  // returns the address to the blank route it came from.
+  useShownChatRoute();
 
   useEffect(() => {
     pruneThreadCacheEvent();
@@ -951,6 +993,7 @@ export function PowerAppShellV2({
     applyControlDefaults,
     reapplyActiveChatDefaults,
     refreshWorkspace,
+    resolveInitialRoute,
     setCatalog,
     setCatalogError,
     setSelectedModelId,
@@ -1097,7 +1140,7 @@ export function PowerAppShellV2({
   });
 
   const activateProjectBlankWorkspace = useEventCallback((projectId: string) => {
-    activateBlankWorkspace();
+    activateBlankWorkspace(null, "NORMAL", projectId);
     // Personal blank activation intentionally resolves personal defaults when
     // no Assistant is selected. Re-apply the already-captured Project fence so
     // those defaults cannot become the loading projection for this Project.
@@ -1128,54 +1171,65 @@ export function PowerAppShellV2({
   });
   const selectProject = projectWorkspace.actions.selectProject;
   const selectProjectChat = projectWorkspace.actions.selectChat;
-  const projectDeepLinkRef = useRef<{ key: string; phase: "handled" | "opening" | "selecting" | "waiting" } | null>(null);
+  // A Project address opens through the Project owner. Selecting a Project
+  // updates selectedProjectId before its detail and workspace requests
+  // settle; that render moves the request back to "waiting" so the later
+  // workspace render can open the target chat. Mutating the request only
+  // from a completed promise would not itself cause another render.
+  const projectRouteRef = useRef<ProjectRouteRequest | null>(null);
+  const routeResolutionRef = useRef<ChatRouteResolution | null>(null);
+  const [projectRouteGeneration, setProjectRouteGeneration] = useState(0);
   useEffect(() => {
-    if (typeof window === "undefined" || projectWorkspace.listLoading) return;
-    const url = new URL(window.location.href);
-    const projectId = url.searchParams.get("project");
-    const chatId = url.searchParams.get("chat");
-    if (!projectId || !chatId) return;
-    const key = `${projectId}:${chatId}`;
-    if (projectDeepLinkRef.current?.key !== key) {
-      projectDeepLinkRef.current = { key, phase: "waiting" };
-    }
-    const request = projectDeepLinkRef.current;
-    if (!request || request.phase === "handled" || request.phase === "opening") {
+    const request = projectRouteRef.current;
+    if (!request || request.phase === "opening") return;
+    if (!isCurrentChatRouteResolution(request.resolution)) {
+      request.finish("superseded");
       return;
     }
-    // Selecting a Project updates selectedProjectId before its detail and
-    // workspace requests settle. Let that render advance the deep link back
-    // to "waiting" so the later workspace render can open the target chat;
-    // mutating the ref only from the completed promise would not itself cause
-    // another render.
+    if (projectWorkspace.listLoading) return;
     if (request.phase === "selecting") {
-      if (projectWorkspace.selectedProjectId !== projectId) return;
+      if (projectWorkspace.selectedProjectId !== request.projectId) return;
       request.phase = "waiting";
     }
-    if (projectWorkspace.selectedProjectId !== projectId) {
+    if (projectWorkspace.selectedProjectId !== request.projectId) {
       request.phase = "selecting";
-      void selectProject(projectId).then((selected) => {
-        if (selected) {
-          if (request.phase === "selecting") request.phase = "waiting";
+      void selectProject(request.projectId).then((selected) => {
+        if (projectRouteRef.current !== request) return;
+        if (!selected) {
+          request.finish("unavailable");
           return;
         }
-        request.phase = "handled";
-        setNotice({ kind: "error", text: "That Project chat is unavailable." });
+        if (request.phase === "selecting") request.phase = "waiting";
+        setProjectRouteGeneration((generation) => generation + 1);
       });
       return;
     }
     if (!projectWorkspace.detail || !projectWorkspace.workspace) return;
-    if (!projectWorkspace.workspace.chats.some((chat) => chat.id === chatId)) {
-      request.phase = "handled";
-      queueMicrotask(() => setNotice({ kind: "error", text: "That Project chat is unavailable." }));
+    const chatId = request.chatId;
+    if (!chatId || !projectWorkspace.workspace.chats.some((chat) => chat.id === chatId)) {
+      // The accessible Project stays open on its blank chat.
+      if (useWorkspaceStore.getState().activeChatId !== null) activateProjectBlankWorkspace(request.projectId);
+      request.finish(chatId ? "project" : "opened");
+      return;
+    }
+    if (useWorkspaceStore.getState().activeChatId === chatId) {
+      request.finish("opened");
       return;
     }
     request.phase = "opening";
     void selectProjectChat(chatId).then((opened) => {
-      request.phase = "handled";
-      if (!opened) setNotice({ kind: "error", text: "That Project chat is unavailable." });
+      if (!isCurrentChatRouteResolution(request.resolution)) {
+        request.finish("superseded");
+        return;
+      }
+      if (!opened && useWorkspaceStore.getState().activeChatId !== null) {
+        activateProjectBlankWorkspace(request.projectId);
+      }
+      request.finish(opened ? "opened" : "project");
     });
   }, [
+    activateProjectBlankWorkspace,
+    projectRouteGeneration,
     projectWorkspace.detail,
     projectWorkspace.listLoading,
     projectWorkspace.selectedProjectId,
@@ -1183,6 +1237,136 @@ export function PowerAppShellV2({
     selectProject,
     selectProjectChat
   ]);
+  useEffect(() => () => {
+    cancelChatRouteResolution(routeResolutionRef.current);
+    projectRouteRef.current?.finish("superseded");
+  }, []);
+
+  function openProjectRoute(
+    projectId: string,
+    chatId: string | null,
+    resolution: ChatRouteResolution
+  ): Promise<ProjectRouteOutcome> {
+    return new Promise((resolve) => {
+      projectRouteRef.current?.finish("superseded");
+      const request: ProjectRouteRequest = {
+        chatId,
+        finish(outcome) {
+          if (projectRouteRef.current === request) projectRouteRef.current = null;
+          resolve(outcome);
+        },
+        phase: "waiting",
+        projectId,
+        resolution
+      };
+      projectRouteRef.current = request;
+      setProjectRouteGeneration((generation) => generation + 1);
+    });
+  }
+
+  /** How an address becomes state: personal chats, Project routes and the blank chat. */
+  function chatRouteTargets(
+    catalogOverride: Catalog | null,
+    resolution: ChatRouteResolution
+  ): ChatRouteTargets {
+    const isCurrent = () => isCurrentChatRouteResolution(resolution);
+    return {
+      async openChat(chatId) {
+        const workspace = useWorkspaceStore.getState();
+        const known = workspace.workspaceReady
+          ? workspace.chats.find((chat) => chat.id === chatId)
+          : undefined;
+        if (known?.projectId) return { projectId: known.projectId };
+        projectWorkspace.actions.leave();
+        if (known) {
+          await activateChat(known);
+          return "opened";
+        }
+        const pending = workspaceRefreshPromiseRef.current;
+        if (pending) await pending;
+        // A readable Project chat opens in its Project; invisible and missing
+        // chats stay indistinguishable.
+        const target: { outcome: "missing" | Readonly<{ projectId: string }> | null } = { outcome: null };
+        await refreshWorkspace(chatId, {
+          catalogOverride,
+          isCurrent,
+          onTargetUnavailable: (projectId) => {
+            target.outcome = projectId ? { projectId } : "missing";
+          }
+        });
+        if (useWorkspaceStore.getState().activeChatId === chatId) return "opened";
+        return target.outcome ?? "failed";
+      },
+      openBlank() {
+        projectWorkspace.actions.leave();
+        if (
+          useWorkspaceStore.getState().activeChatId !== null ||
+          projectIdFromComposerSessionKey(useComposerSessionStore.getState().activeSessionKey)
+        ) {
+          activateBlankWorkspace();
+        }
+      },
+      openProject: (projectId, chatId) => openProjectRoute(projectId, chatId, resolution),
+      showUnavailable(target) {
+        setNotice({ kind: "error", text: CHAT_ROUTE_UNAVAILABLE_COPY[target] });
+      },
+      stateRoute: chatRouteForState
+    };
+  }
+
+  /** Resolves an address into state; a load failure keeps the address for a retry. */
+  async function resolveChatAddress(
+    route: ChatRoute | null,
+    resolution: ChatRouteResolution,
+    catalogOverride: Catalog | null
+  ): Promise<ChatRoute | null> {
+    routeResolutionRef.current = resolution;
+    if (!isCurrentChatRouteResolution(resolution)) return null;
+    if ((!route?.chatId || route.projectId) && !useWorkspaceStore.getState().workspaceReady) {
+      // Blank and Project addresses still need the personal workspace first.
+      const pending = workspaceRefreshPromiseRef.current;
+      if (pending) await pending;
+      if (!useWorkspaceStore.getState().workspaceReady && isCurrentChatRouteResolution(resolution)) {
+        await refreshWorkspace(null, {
+          catalogOverride,
+          isCurrent: () => isCurrentChatRouteResolution(resolution)
+        });
+      }
+      if (!useWorkspaceStore.getState().workspaceReady) {
+        settleChatRouteResolution(resolution, null);
+        return null;
+      }
+    }
+    return resolveChatRoute(route, resolution, chatRouteTargets(catalogOverride, resolution));
+  }
+
+  /**
+   * The page's address decides the first chat, identically for every entry
+   * route. It is held from the start, so owners reconciling while the
+   * workspace loads cannot rewrite it.
+   */
+  async function resolveInitialRoute(
+    catalog: Catalog | null | Promise<Catalog | null>
+  ): Promise<ChatRoute | null> {
+    const resolution = beginChatRouteResolution();
+    routeResolutionRef.current = resolution;
+    const route = currentChatRoute();
+    return resolveChatAddress(route, resolution, await catalog);
+  }
+
+  useChatRouteHistory({
+    currentRoute: chatRouteForState,
+    requestNavigation(proceed) {
+      if (studio.busy) return;
+      const studioOpen = !projectContext &&
+        Boolean(librarySnapshot.open || knowledgeSnapshot.open || memoryOpen);
+      if (studioOpen) studio.exit(proceed);
+      else proceed();
+    },
+    resolve(route, resolution) {
+      void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
+    }
+  });
   const studio = useStudioNavigation({
     available: ["assistants", "instructions", "skills", "knowledge", "memory", "files", "artifacts", "mcp", "secrets", "defaults"],
     onExit() {
@@ -1396,9 +1580,10 @@ export function PowerAppShellV2({
         return;
       }
       try {
-        const destination = new URL("/", window.location.origin);
-        destination.searchParams.set("project", chat.projectId);
-        destination.searchParams.set("chat", chat.id);
+        const destination = new URL(
+          formatChatRoutePath({ chatId: chat.id, projectId: chat.projectId }),
+          window.location.origin
+        );
         await writeClipboardText(destination.toString());
         setNotice({ kind: "success", text: "Project chat link copied." });
       } catch (error) {
@@ -1534,6 +1719,19 @@ export function PowerAppShellV2({
     }
   } satisfies ShellWorkspacePaneView;
 
+  // Project navigation chosen by the user adds a history entry; the address
+  // resolver and Studio use the owner's actions directly.
+  const projectNavigation: ProjectWorkspaceController = {
+    ...projectWorkspace,
+    actions: {
+      ...projectWorkspace.actions,
+      createChat: (folderId) => navigateChatRoute(() => projectWorkspace.actions.createChat(folderId)),
+      leave: () => navigateChatRoute(projectWorkspace.actions.leave),
+      selectChat: (chatId) => navigateChatRoute(() => projectWorkspace.actions.selectChat(chatId)),
+      selectProject: (projectId) => navigateChatRoute(() => projectWorkspace.actions.selectProject(projectId))
+    }
+  };
+
   const workspaceView = {
     archived: {
       onRestored: async (chatId: string) => {
@@ -1541,7 +1739,7 @@ export function PowerAppShellV2({
       }
     },
     pane: workspacePaneView,
-    projects: projectWorkspace,
+    projects: projectNavigation,
     projectSettings: {
       changeKnowledgeBaseIds: workspaceInteraction.projectSettings.changeKnowledgeBaseIds,
       close: workspaceInteraction.projectSettings.close,

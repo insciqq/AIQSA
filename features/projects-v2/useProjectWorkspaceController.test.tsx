@@ -400,6 +400,26 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
       .toBe(true);
   });
 
+  it("leaves a Project's blank chat for the personal new chat, and only when a Project is open", async () => {
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    act(() => result.current.actions.leave());
+    expect(input.activateBlankWorkspace).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+    act(() => result.current.actions.leave());
+
+    expect(result.current.selectedProjectId).toBeNull();
+    expect(input.activateBlankWorkspace).toHaveBeenCalledOnce();
+    expect(input.onProjectContextLeft).toHaveBeenCalledTimes(2);
+  });
+
   it("does not dispatch Manager-only folder or movement mutations for a Contributor", async () => {
     apiMocks.loadProjectWorkspace.mockResolvedValue({
       chats: [projectChat({ id: "chat-1", title: "Plan" })],

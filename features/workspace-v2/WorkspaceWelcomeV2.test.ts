@@ -1,12 +1,16 @@
-import { act, render } from "@testing-library/react";
+import { act, render, renderHook } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { observeMcpSettings } from "@/components/app-shell/mcpSettingsStore";
+import type { UserMcpServer } from "@/lib/contracts/mcp";
+import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
 import {
   CompactKnowledgePollingV2,
   compactKnowledgeRefreshPendingV2,
   dispatchAssistantUnavailableActionV2,
   knowledgeSummaryStatusV2,
-  memoryManagerErrorCopy
+  memoryManagerErrorCopy,
+  useStudioMcpAttentionV2
 } from "./WorkspaceWelcomeV2";
 
 afterEach(() => {
@@ -42,6 +46,62 @@ describe("Assistant unavailable action routing", () => {
 
     expect(onOpenMcpSettings).toHaveBeenCalledOnce();
     expect(onOpenEditor).not.toHaveBeenCalled();
+  });
+});
+
+describe("Studio MCP attention", () => {
+  afterEach(() => {
+    resetMcpSettingsStoreForTest();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("flags the tab from the shared observation and releases only the Studio observer", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const ready: UserMcpServer = {
+      accountLabel: null,
+      description: "Team tasks",
+      enabled: true,
+      fields: [],
+      id: "server-1",
+      knownToolCount: 1,
+      name: "Todoist",
+      oauthAvailable: true,
+      oauthState: "ready",
+      operationalStatus: "active",
+      readiness: "ready",
+      tools: []
+    };
+    let current: UserMcpServer = { ...ready, oauthState: "reauthorization_required", operationalStatus: "inactive",
+      readiness: "reauthorization_required" };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ servers: [current] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const releaseChatShell = observeMcpSettings();
+    const studio = renderHook(() => useStudioMcpAttentionV2("account-1"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(studio.result.current).toBe(true);
+
+    current = ready;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(studio.result.current).toBe(false);
+
+    studio.unmount();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    releaseChatShell();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // Studio alone keeps the catalog fresh while open and stops when left.
+    const alone = renderHook(() => useStudioMcpAttentionV2("account-1"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    alone.unmount();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 });
 

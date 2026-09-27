@@ -109,6 +109,12 @@ export type EventFields = {
     bytes?: number; chunks?: number; last_progress_ms?: number; timeout_ms?: number; attempt?: number;
   }>;
   provider_operation: ProviderFields;
+  /** Provider-reported input tokens of one dispatched round against the
+   * context budget's estimate of the same request (numbers only). */
+  context_estimate: Pick<ProviderIdentity, "providerFamily"> & Readonly<{
+    estimate_family: "anthropic" | "deepseek" | "gemini" | "openai" | "unknown";
+    estimated_tokens: number; reported_input_tokens: number; ratio_permille: number;
+  }>;
   provider_request: ProviderFields;
   provider_retry: ProviderFields;
   provider_stream_safety_terminated: ProviderIdentity & Readonly<{ code: string; durationMs: number; limit: number; observed: number; totalStreamBytes: number; termination: string; unit: string }>;

@@ -1,4 +1,3 @@
-/* eslint-disable @next/next/no-html-link-for-pages -- Control Center exits are full-document navigations so the native beforeunload guard owns document-level draft safety. */
 "use client";
 
 import {
@@ -20,6 +19,7 @@ import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { AccountMenuV2 } from "@/features/navigation-v2/AccountMenuV2";
 import type { AdminReleaseStatus } from "@/lib/contracts/adminRelease";
+import { chatReturnPath, controlCenterHref } from "@/lib/domain/chatRoute";
 import { ArrowUpCircle } from "lucide-react";
 import {
   createContext,
@@ -90,6 +90,11 @@ export type AdminShellProps = Readonly<{
   navigationBlocked?: boolean;
   onReturnToChat?(event: MouseEvent<HTMLAnchorElement>): void;
   releaseStatus: AdminReleaseStatus | null;
+  /**
+   * The validated chat route of the request's `?return=`, so the server
+   * markup already links back to the origin chat before hydration.
+   */
+  returnPath?: string;
   topbar: AdminShellTopbar;
 }>;
 
@@ -149,17 +154,20 @@ function SectionLink({
   blocked,
   count,
   navigation,
+  returnPath,
   section
 }: Readonly<{
   active: boolean;
   blocked: boolean;
   count: number;
   navigation: AdminSectionNavigation;
+  returnPath: string;
   section: (typeof adminSections)[number];
 }>) {
   const Icon = section.Icon;
   const browserReady = useSyncExternalStore(subscribeToBrowser, browserSnapshot, serverSnapshot);
-  const href = adminSectionPath(browserReady ? window.location.href : "/admin", section.id);
+  // Before hydration a click follows this href natively, so it keeps the return too.
+  const href = adminSectionPath(browserReady ? window.location.href : controlCenterHref(returnPath), section.id);
   const countId = `admin-nav-${section.id}-count`;
   return (
     <a
@@ -200,15 +208,31 @@ function SectionLink({
   );
 }
 
+/** One `?return=` names the origin chat; a missing, repeated or foreign one is the new chat. */
+function addressReturnPath(search: string): string {
+  const values = new URLSearchParams(search).getAll("return");
+  return chatReturnPath(values.length === 1 ? values[0] : null);
+}
+
+/**
+ * Chats returns to the validated chat route Control Center was opened from:
+ * the server markup carries the request's return, and the browser follows
+ * the address once hydrated. It is a full-document navigation so the native
+ * beforeunload guard owns document-level draft safety.
+ */
 function ChatsLink({
   className,
   onClick,
+  returnPath,
   variant
 }: Readonly<{
   className?: string;
   onClick?(event: MouseEvent<HTMLAnchorElement>): void;
+  returnPath: string;
   variant: "rail" | "row";
 }>) {
+  const browserReady = useSyncExternalStore(subscribeToBrowser, browserSnapshot, serverSnapshot);
+  const href = browserReady ? addressReturnPath(window.location.search) : returnPath;
   if (variant === "rail") {
     return (
       <a
@@ -216,7 +240,7 @@ function ChatsLink({
         className={`v2-rail-button v2-focusable ${className ?? ""}`.trim()}
         data-tooltip="Chats"
         data-tooltip-side="right"
-        href="/"
+        href={href}
         onClick={onClick}
       >
         <UiV2Icon name="chat" />
@@ -224,7 +248,7 @@ function ChatsLink({
     );
   }
   return (
-    <a className={`v2-navigation-destination v2-focusable ${className ?? ""}`.trim()} href="/" onClick={onClick}>
+    <a className={`v2-navigation-destination v2-focusable ${className ?? ""}`.trim()} href={href} onClick={onClick}>
       <UiV2Icon name="chat" />
       Chats
     </a>
@@ -239,6 +263,7 @@ export function AdminShell({
   navigationBlocked = false,
   onReturnToChat,
   releaseStatus,
+  returnPath = "/",
   topbar
 }: AdminShellProps) {
   const drawerComposition = useAdminDrawerComposition();
@@ -263,6 +288,7 @@ export function AdminShell({
           count={attentionCounts[section.id] ?? 0}
           key={section.id}
           navigation={navigation}
+          returnPath={returnPath}
           section={section}
         />
       ))}
@@ -278,6 +304,7 @@ export function AdminShell({
               count={attentionCounts[section.id] ?? 0}
               key={section.id}
               navigation={navigation}
+              returnPath={returnPath}
               section={section}
             />
           ))}
@@ -299,7 +326,7 @@ export function AdminShell({
           <UiV2Icon name="brand" />
         </span>
         <div className="v2-rail-group">
-          <ChatsLink onClick={onReturnToChat} variant="rail" />
+          <ChatsLink onClick={onReturnToChat} returnPath={returnPath} variant="rail" />
         </div>
         <div className="v2-rail-group v2-rail-bottom">
           <span
@@ -354,7 +381,7 @@ export function AdminShell({
           {sectionIndex}
         </div>
         <div className="v2-navigation-footer md:hidden">
-          <ChatsLink onClick={onReturnToChat} variant="row" />
+          <ChatsLink onClick={onReturnToChat} returnPath={returnPath} variant="row" />
           <AccountMenuV2 accountLabel={accountLabel} variant="row" />
         </div>
       </aside>
