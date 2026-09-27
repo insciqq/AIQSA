@@ -85,7 +85,7 @@ function useRunLifecycleActionsForTest(
     });
   }
   const selectedChatId = overrides.activeChatId ?? "chat-1";
-  const activeChatIdRef = { current: selectedChatId };
+  const activeChatIdRef: { current: string | null } = { current: selectedChatId };
   useComposerSessionStore.getState().activateSession(composerSessionKey(selectedChatId));
   const noticeRef: { current: Notice | null } = { current: null };
   const refreshActiveChat = vi.fn(async () => null);
