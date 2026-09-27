@@ -193,6 +193,69 @@ export type AdminMcpActivationSummary = {
   updatedAt: string;
 };
 
+const MCP_TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/u;
+
+/** The upstream tool-name grammar every validated or runtime inventory enforces. */
+export function isMcpToolName(value: unknown): value is string {
+  return typeof value === "string" && MCP_TOOL_NAME_PATTERN.test(value);
+}
+
+/**
+ * Why a ready runtime does not offer a tool, persisted with its inventory:
+ * the administrator turned it off, the server stopped offering a published
+ * tool, the server offers a tool that was never checked, or a published name
+ * now carries another definition.
+ */
+export type McpToolExclusionReason =
+  | "definition_drift"
+  | "disabled_by_policy"
+  | "missing_upstream"
+  | "unpublished_addition";
+
+/** A user's catalog adds their own tool restriction to the runtime reasons. */
+export type McpUnavailableToolReason = McpToolExclusionReason | "restricted";
+
+export type McpUnavailableTool = { name: string; reason: McpUnavailableToolReason };
+
+const MCP_TOOL_EXCLUSION_REASONS: ReadonlySet<string> = new Set<McpToolExclusionReason>([
+  "definition_drift",
+  "disabled_by_policy",
+  "missing_upstream",
+  "unpublished_addition"
+]);
+
+export function isMcpToolExclusionReason(value: unknown): value is McpToolExclusionReason {
+  return typeof value === "string" && MCP_TOOL_EXCLUSION_REASONS.has(value);
+}
+
+export function isMcpUnavailableToolReason(value: unknown): value is McpUnavailableToolReason {
+  return value === "restricted" || isMcpToolExclusionReason(value);
+}
+
+export type McpInventoryDifferenceReason = Exclude<McpToolExclusionReason, "disabled_by_policy">;
+
+/**
+ * Upstream tools of the active configuration that current connections do not
+ * offer. `name` is null for additions seen only through personal or OAuth
+ * connections: their inventory belongs to those accounts.
+ */
+export type AdminMcpInventoryDifference = {
+  connections: number;
+  name: string | null;
+  reason: McpInventoryDifferenceReason;
+};
+
+export function isMcpInventoryDifferenceReason(value: unknown): value is McpInventoryDifferenceReason {
+  return value !== "disabled_by_policy" && isMcpToolExclusionReason(value);
+}
+
+/**
+ * How runtime inventory is matched to this configuration's checked tools:
+ * exact definitions, names only for configurations checked before definitions
+ * were recorded, or nothing at all when the recorded definitions are unreadable.
+ */
+export type McpToolVerification = "definitions" | "invalid" | "names";
+
 export type McpRevisionSummary = {
   artifactStatus: "available" | "missing" | "not_applicable" | "unknown";
   createdAt: string;
@@ -202,6 +265,7 @@ export type McpRevisionSummary = {
   identityHash: string;
   resolvedArtifact: McpJsonObject | null;
   revisionNumber: number;
+  toolVerification?: McpToolVerification;
   validationEvidence: McpValidationEvidence;
 };
 
@@ -242,6 +306,7 @@ export function decodeMcpToolAccessPolicy(value: unknown): McpToolAccessPolicy |
 
 export type AdminMcpServer = {
   toolAccess?: McpToolAccessPolicy[];
+  inventoryDifferences?: AdminMcpInventoryDifference[];
   runtimeErrorCode?: McpRuntimeErrorCode | null;
   runtimeProblem?: "reauthorization_required" | "unavailable" | null;
   activation: AdminMcpActivationSummary | null;
@@ -329,6 +394,8 @@ export type UserMcpServer = {
   operationalStatus: McpOperationalStatus;
   readiness: McpReadiness;
   tools: { description: string | null; name: string }[];
+  /** Tools the ready runtime reports but this user cannot use, each with its reason. */
+  unavailableTools?: McpUnavailableTool[];
 };
 
 export type UserMcpCatalogResponse = {
@@ -466,8 +533,9 @@ export type AdminMcpAttention = {
 
 /**
  * What an administrator must still do for a server before it works for
- * everyone: connect or reconnect validation OAuth, review a failed check, or
- * repair a missing runtime artifact. `null` means nothing is owed.
+ * everyone: connect or reconnect validation OAuth, review a failed check,
+ * repair a missing runtime artifact, or check tools that changed on the
+ * server again. `null` means nothing is owed.
  */
 export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | null {
   if (server.archivedAt) return null;
@@ -493,6 +561,18 @@ export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | n
         ? "A user connection needs reconnecting" : mcpRuntimeErrorMessage(server.runtimeErrorCode),
       task: "runtime"
     };
+  }
+  if (server.enabled && server.activeRevision) {
+    // Unreadable recorded definitions fail closed: every runtime tool is held back.
+    if (server.activeRevision.toolVerification === "invalid") {
+      return { action: "Test & Save", href: null, label: "Check again to restore this server's tools", task: "validation" };
+    }
+    if (server.inventoryDifferences?.length) {
+      return { action: "Review tools", href: null, label: "Server tools changed since the last check", task: "validation" };
+    }
+    if (server.activeRevision.toolVerification === "names") {
+      return { action: "Test & Save", href: null, label: "Check again to guard against tool changes", task: "validation" };
+    }
   }
   return null;
 }

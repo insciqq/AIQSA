@@ -412,6 +412,54 @@ describe("McpSettingsSection", () => {
     expect(screen.getAllByRole("switch")).toHaveLength(3);
   });
 
+  it("lists every unavailable tool with its reason beside the usable ones", async () => {
+    const server: UserMcpServer = {
+      ...userServer("repos", "Repositories"),
+      enabled: true,
+      operationalStatus: "active",
+      readiness: "ready",
+      unavailableTools: [
+        { name: "delete_repo", reason: "unpublished_addition" },
+        { name: "list_repos", reason: "definition_drift" },
+        { name: "merge", reason: "restricted" },
+        { name: "search", reason: "missing_upstream" },
+        { name: "transfer", reason: "disabled_by_policy" }
+      ]
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [server] })));
+    render(<McpSettingsSection />);
+    const sheet = await openServer("Repositories");
+
+    expect(within(within(sheet).getByRole("list", { name: "Repositories tools" })).getByText("repos_tool")).toBeVisible();
+    expect(within(sheet).getByRole("heading", { name: "Unavailable · 5" })).toBeVisible();
+    const unavailable = within(within(sheet).getByRole("list", { name: "Repositories unavailable tools" })).getAllByRole("listitem");
+    expect(unavailable.map((item) => item.textContent)).toEqual([
+      "delete_repoNew on the server; waiting for an administrator to check it",
+      "list_reposChanged on the server; waiting for an administrator to check it",
+      "mergeRestricted by an administrator",
+      "searchThe server does not offer it right now",
+      "transferTurned off by an administrator"
+    ]);
+  });
+
+  it("explains an empty usable list when every reported tool is unavailable", async () => {
+    const server: UserMcpServer = {
+      ...userServer("locked", "Locked"),
+      enabled: true,
+      operationalStatus: "active",
+      readiness: "ready",
+      tools: [],
+      unavailableTools: [{ name: "merge", reason: "restricted" }]
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [server] })));
+    render(<McpSettingsSection />);
+    const sheet = await openServer("Locked");
+
+    expect(within(sheet).getByText("None of this server's tools are available to you right now.")).toBeVisible();
+    expect(within(sheet).queryByText("Tool names appear after the server reports them.")).not.toBeInTheDocument();
+    expect(within(sheet).getByText("Restricted by an administrator")).toBeVisible();
+  });
+
   it("omits internal failure details from ordinary settings", async () => {
     const server = { ...userServer("missing", "Unavailable server"), enabled: true,
       readiness: "unavailable", errorCode: "mcp_artifact_missing", artifact: "private-image" };

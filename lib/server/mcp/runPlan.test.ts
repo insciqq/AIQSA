@@ -3,10 +3,17 @@ import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import type { McpRunPlanRecord } from "./runPlan";
 import {
   isMcpRunPlanRecordStartable,
+  mcpInventoryExclusions,
   namespacedMcpToolName,
   prepareMcpRunPlan,
   projectMcpRunPlanStartability
 } from "./runPlan";
+import {
+  McpRuntimeCoordinator,
+  type McpRuntimeCoordinatorRepository,
+  type McpRuntimeInventoryTool,
+  type McpRuntimeSession
+} from "./runtimeCoordinator";
 
 const now = new Date("2026-07-22T18:00:00.000Z");
 const hash = "a".repeat(64);
@@ -244,5 +251,138 @@ describe("MCP run plans", () => {
       issues: [{ errorCode: "mcp_inventory_invalid", name: "Example", readiness: "unavailable" }],
       ok: false
     });
+  });
+});
+
+describe("MCP run plans over the runtime's admitted inventory", () => {
+  const HASHES = {
+    changed: "4".repeat(64),
+    delete_repo: "5".repeat(64),
+    echo: "1".repeat(64),
+    large: "2".repeat(64),
+    slow: "3".repeat(64)
+  } as const;
+
+  function upstreamTool(name: string, definitionHash: string): McpRuntimeInventoryTool {
+    return { definitionHash, description: `${name} tool`, inputSchema: { type: "object" }, name };
+  }
+
+  /** A real coordinator over a published revision {echo, large, slow} and a changed upstream server. */
+  async function admittedRuntime() {
+    const persisted = new Map<string, unknown>();
+    const session: McpRuntimeSession = {
+      callTool: vi.fn(async () => ({ isError: false, structuredContent: null, text: [], unsupportedContentTypes: [] })),
+      close: vi.fn(async () => undefined),
+      listTools: vi.fn(async () => [
+        upstreamTool("echo", HASHES.changed),
+        upstreamTool("large", HASHES.large),
+        upstreamTool("delete_repo", HASHES.delete_repo)
+      ]),
+      ping: vi.fn(async () => undefined)
+    };
+    const repository: McpRuntimeCoordinatorRepository = {
+      deleteDrainedGeneration: vi.fn(async () => true),
+      finalizeDeletedServers: vi.fn(async () => 0),
+      listDrainedGenerationIds: vi.fn(async () => []),
+      loadAcceptedGeneration: vi.fn(async () => null),
+      markFailed: vi.fn(async () => ({ applied: true, retryAt: null })),
+      markReady: vi.fn(async ({ generationId, inventory }) => {
+        persisted.set(generationId, JSON.parse(JSON.stringify(inventory)));
+        return true;
+      }),
+      markStarting: vi.fn(async () => true),
+      synchronizeDesired: vi.fn(async () => [{
+        callTimeoutMs: 1_000,
+        fingerprint: "fingerprint-1",
+        generationId: "generation-1",
+        headers: {},
+        publishedTools: {
+          hashes: new Map([["echo", HASHES.echo], ["large", HASHES.large], ["slow", HASHES.slow]]),
+          kind: "definitions" as const
+        },
+        redactionValues: [],
+        retryAt: null,
+        startupTimeoutMs: 1_000,
+        url: "https://mcp.example.test/mcp"
+      }]),
+      touchLastUsed: vi.fn(async () => undefined)
+    };
+    const coordinator = new McpRuntimeCoordinator({ now: () => now, repository, sessions: { create: async () => session } });
+    await coordinator.reconcileNow();
+    return { coordinator, record: record({ inventory: persisted.get("generation-1") }), session };
+  }
+
+  it("keeps additions and changed definitions out of load_all, Assistant and Project plans", async () => {
+    const { coordinator, record: admitted } = await admittedRuntime();
+    const isGenerationLive = (generationId: string) => coordinator.hasLiveGeneration(generationId);
+    expect(mcpInventoryExclusions(admitted.inventory)).toEqual([
+      { name: "delete_repo", reason: "unpublished_addition" },
+      { name: "echo", reason: "definition_drift" },
+      { name: "slow", reason: "missing_upstream" }
+    ]);
+
+    const plans = await Promise.all([
+      prepareMcpRunPlan({ isGenerationLive, load: async () => [admitted], now: () => now }),
+      prepareMcpRunPlan({ allowedServerIds: ["server-1"], isGenerationLive, load: async () => [admitted], now: () => now }),
+      prepareMcpRunPlan({
+        allowedServerIds: ["server-1"],
+        isGenerationLive,
+        load: async () => [{ ...admitted, credentialSources: ["shared"] }],
+        now: () => now
+      })
+    ]);
+    for (const plan of plans) {
+      expect(plan.ok).toBe(true);
+      if (plan.ok) expect(plan.snapshot.tools.map(({ originalName }) => originalName)).toEqual(["large"]);
+    }
+    await coordinator.stop();
+  });
+
+  it("fails an Auto selection of a held-back tool closed instead of substituting its runtime schema", async () => {
+    const { coordinator, record: admitted, session } = await admittedRuntime();
+    const select = (name: string) => prepareMcpRunPlan({
+      allowedServerIds: ["server-1"],
+      allowedToolNames: [namespacedMcpToolName(admitted.namespace, name)],
+      isGenerationLive: (generationId) => coordinator.hasLiveGeneration(generationId),
+      load: async () => [admitted],
+      now: () => now
+    });
+
+    for (const name of ["delete_repo", "echo", "slow"]) {
+      await expect(select(name)).resolves.toEqual({
+        code: "mcp_not_ready",
+        issues: [{ errorCode: "mcp_tool_not_available", name: "Selected MCP tool", readiness: "unavailable" }],
+        ok: false
+      });
+    }
+    await expect(select("large")).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "large" }] } });
+    expect(session.callTool).not.toHaveBeenCalled();
+    await coordinator.stop();
+  });
+
+  it("treats malformed held-back names as an invalid inventory and accepts inventories recorded before them", async () => {
+    const tools = [{ definitionHash: hash, description: null, inputSchema: { type: "object" }, name: "echo" }];
+    for (const exclusions of [
+      [{ name: "delete_repo", reason: "other" }],
+      [{ name: "not a tool", reason: "unpublished_addition" }],
+      [{ name: "echo", reason: "definition_drift" }],
+      [{ name: "a", reason: "missing_upstream" }, { name: "a", reason: "missing_upstream" }],
+      { name: "delete_repo", reason: "unpublished_addition" }
+    ]) {
+      await expect(prepareMcpRunPlan({
+        isGenerationLive: () => true,
+        load: async () => [record({ inventory: { exclusions, tools, version: 1 } })],
+        now: () => now
+      })).resolves.toEqual({
+        code: "mcp_not_ready",
+        issues: [{ errorCode: "mcp_inventory_invalid", name: "Example", readiness: "unavailable" }],
+        ok: false
+      });
+    }
+    await expect(prepareMcpRunPlan({
+      isGenerationLive: () => true,
+      load: async () => [record({ inventory: { tools, version: 1 } })],
+      now: () => now
+    })).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "echo" }] } });
   });
 });

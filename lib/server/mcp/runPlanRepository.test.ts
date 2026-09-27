@@ -442,3 +442,83 @@ describe("Prisma MCP run-plan loader", () => {
     ]);
   });
 });
+
+describe("Prisma MCP catalogs over held-back runtime tools", () => {
+  function checkedPreference(exclusions: unknown) {
+    const record = preference();
+    record.server.activeRevision!.validationEvidence = {
+      ...record.server.activeRevision!.validationEvidence,
+      toolInventory: [
+        { arguments: [], description: "Echo", name: "echo" },
+        { arguments: [], description: "Search", name: "search" }
+      ]
+    };
+    record.desiredRuntimeGeneration!.inventory = {
+      exclusions,
+      tools: [{ definitionHash: HASH, description: "Echo", inputSchema: { type: "object" }, name: "echo" }],
+      version: 1
+    };
+    return record;
+  }
+
+  it("offers Auto only the published tools the ready runtime does not hold back", async () => {
+    const record = checkedPreference([
+      { name: "delete_repo", reason: "unpublished_addition" },
+      { name: "search", reason: "definition_drift" }
+    ]);
+
+    const catalog = await loadMcpCapabilityCatalog("user-1", clientWith([record]).client);
+
+    expect(catalog.servers).toEqual([expect.objectContaining({
+      serverId: "server-1",
+      tools: [expect.objectContaining({ originalName: "echo" })]
+    })]);
+    expect(JSON.stringify(catalog)).not.toContain("delete_repo");
+  });
+
+  it("keeps the published catalog when the persisted inventory is malformed so materialization fails closed", async () => {
+    const [record] = await loadMcpRunPlanRecords("user-1", clientWith([
+      checkedPreference([{ name: "search", reason: "not_a_reason" }])
+    ]).client);
+
+    expect(record?.catalogTools?.map(({ name }) => name)).toEqual(["echo", "search"]);
+  });
+
+  it("subtracts the Project generation's held-back tools from its catalog", async () => {
+    const generation = projectGeneration({
+      inventory: {
+        exclusions: [{ name: "search", reason: "missing_upstream" }],
+        tools: [{ definitionHash: HASH, description: "Echo", inputSchema: { type: "object" }, name: "echo" }],
+        version: 1
+      }
+    });
+    (generation.revision as { validationEvidence: unknown }).validationEvidence = {
+      toolInventory: [
+        { arguments: [], description: "Echo", name: "echo" },
+        { arguments: [], description: "Search", name: "search" }
+      ]
+    };
+
+    const [record] = await loadMcpRunPlanRecordsForProjectServers(
+      "user-1", ["project-server-1"], projectClientWith([generation]).client
+    );
+
+    expect(record?.catalogTools?.map(({ name }) => name)).toEqual(["echo"]);
+  });
+
+  it("filters a restricted tool from the user's projection and keeps the runtime's held-back names", async () => {
+    const exclusions = [{ name: "search", reason: "definition_drift" }];
+    const { client } = clientWith([checkedPreference(exclusions)]);
+    const restricted = {
+      ...client,
+      mcpToolAccessPolicy: {
+        findMany: async () => [{ groups: [], restricted: true, serverId: "server-1", toolName: "echo", users: [] }]
+      }
+    } as unknown as PrismaClient;
+
+    const [record] = await loadMcpRunPlanRecords("user-1", restricted);
+
+    expect(record?.inventory).toEqual({ exclusions, tools: [], version: 1 });
+    expect(record?.catalogTools).toEqual([]);
+  });
+});
