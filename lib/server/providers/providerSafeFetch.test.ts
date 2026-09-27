@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -362,5 +362,112 @@ describe("provider SSRF-safe fetch", () => {
       { address: "93.184.216.34", family: 4 },
       { address: "1.1.1.1", family: 4 }
     ]);
+  });
+});
+
+describe("compatible create delivery phases on a loopback provider", () => {
+  type Phase = "complete" | "drop_after_body" | "drop_after_headers";
+
+  // Counts only requests whose complete body reached the provider.
+  function fixtureServer(phase: Phase) {
+    const received: string[] = [];
+    const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      for await (const chunk of request) body += String(chunk);
+      received.push(body);
+      if (phase === "drop_after_body") {
+        request.socket.destroy();
+        return;
+      }
+      if (phase === "drop_after_headers") {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write('data: {"type":"response.created","response":{"id":"resp-phase","status":"in_progress"}}\n\n',
+          () => response.socket?.destroy());
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: "resp-phase", status: "completed" }));
+    });
+    return { received, server };
+  }
+
+  const listen = (server: ReturnType<typeof createServer>, port = 0) => new Promise<number>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
+  });
+  const close = (server: ReturnType<typeof createServer>) => new Promise<void>((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  });
+
+  function client(port: number, sleep: (delayMs: number, signal: AbortSignal) => Promise<void> = async () => undefined) {
+    const root = `http://fixture.invalid:${port}/v1`;
+    const fetchFn = createProviderSafeFetch({
+      configuration: { allowPrivateNetwork: true, apiRoot: root },
+      lookupHostname: async () => [{ address: "127.0.0.1", family: 4 }]
+    });
+    return {
+      fetchFn,
+      responses: createFetchOpenAIResponsesClient({ apiKey: null, baseUrl: root, fetchFn, requestIsolation: true,
+        initialRequestRetry: { maxAttempts: 3, random: () => 0, sleep } })
+    };
+  }
+
+  it("replays a create refused before the connection existed exactly once it can be delivered", async () => {
+    const { received, server } = fixtureServer("complete");
+    const port = await listen(server);
+    await close(server);
+    try {
+      const refused = await client(port).fetchFn(`http://fixture.invalid:${port}/v1/responses`, { method: "POST", body: "{}" })
+        .catch((error: unknown) => error);
+      expect(refused).toBeInstanceOf(ProviderSafeFetchError);
+      expect(refused).toMatchObject({ code: "provider_http_request_failed", requestNotSent: true });
+
+      const sleeps: number[] = [];
+      const recovering = client(port, async (delayMs) => {
+        sleeps.push(delayMs);
+        await listen(server, port);
+      });
+      await expect(recovering.responses.create({ model: "fixture-model" })).resolves.toMatchObject({ id: "resp-phase" });
+      expect(sleeps).toHaveLength(1);
+      expect(received).toHaveLength(1);
+    } finally {
+      if (server.listening) await close(server);
+    }
+  });
+
+  it("does not send a second business POST after the provider received the first and the connection dropped", async () => {
+    const { received, server } = fixtureServer("drop_after_body");
+    const port = await listen(server);
+    try {
+      const { fetchFn, responses } = client(port);
+      const lost = await fetchFn(`http://fixture.invalid:${port}/v1/responses`, { method: "POST", body: "{}" })
+        .catch((error: unknown) => error);
+      expect(lost).toBeInstanceOf(ProviderSafeFetchError);
+      expect(lost).toMatchObject({ code: "provider_http_request_failed" });
+      expect(lost).not.toHaveProperty("requestNotSent");
+      received.length = 0;
+
+      for (const send of [() => responses.create({ model: "fixture-model" }), () => responses.stream!({ model: "fixture-model", stream: true })]) {
+        await expect(send()).rejects.toMatchObject({ code: "provider_request_outcome_unknown", cause: expect.any(ProviderSafeFetchError) });
+      }
+      expect(received).toHaveLength(2);
+      expect(received.map((body) => JSON.parse(body).model)).toEqual(["fixture-model", "fixture-model"]);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("leaves a stream lost after headers to its reader without another POST", async () => {
+    const { received, server } = fixtureServer("drop_after_headers");
+    const port = await listen(server);
+    try {
+      const response = await client(port).responses.stream!({ model: "fixture-model", stream: true });
+      expect(response.status).toBe(200);
+      await expect(response.text()).rejects.toThrow();
+      expect(received).toHaveLength(1);
+    } finally {
+      await close(server);
+    }
   });
 });
