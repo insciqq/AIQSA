@@ -1163,7 +1163,7 @@ export function PowerAppShellV2({
   const activateRemovedChatFallback = useEventCallback(async (
     scopeProjectId: string | null,
     next: WorkspaceChatSummary | null,
-    preserveControls = false
+    preserveControls: boolean = false
   ) => {
     if (scopeProjectId === null) {
       if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
