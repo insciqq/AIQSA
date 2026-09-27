@@ -4,6 +4,8 @@ import {
   openAIRetryableErrorPayload
 } from "./openaiResponsesTransport";
 import { ProviderResponseTooLargeError } from "./network";
+import { observedFailure, providerContextRejection, providerHttpFailureMessage } from "./providerObservability";
+import { ProviderSafeFetchError } from "./providerSafeFetch";
 
 function delayedResponse(input: {
   delayMs: number;
@@ -134,7 +136,7 @@ describe("OpenAI Responses transport", () => {
   it("assigns a fresh opaque prompt cache key to every isolated physical POST", async () => {
     const bodies: Record<string, unknown>[] = [];
     const responses = [
-      new Response("temporary", { status: 503 }),
+      new Response("rate limited", { status: 429 }),
       new Response(JSON.stringify({ id: "isolated" }), { status: 200 })
     ];
     const client = createFetchOpenAIResponsesClient({
@@ -270,16 +272,16 @@ describe("OpenAI Responses transport", () => {
     });
   });
 
-  it("bounded-retries only opted-in transient failures before a Responses request is accepted", async () => {
+  it("bounded-retries only opted-in refusals that prove the Responses request was not accepted", async () => {
     const calls: Array<{ body: string; url: string }> = [];
     const sleeps: number[] = [];
     const responses = [
-      new Response("gateway unavailable", {
+      new Response("rate limited", {
         headers: { "retry-after": "1" },
-        status: 502
+        status: 429
       }),
       new Response(JSON.stringify({ id: "response-json", status: "completed" })),
-      new Response("temporarily unavailable", { status: 503 }),
+      new Response("temporarily unavailable", { headers: { "retry-after": "1" }, status: 503 }),
       new Response("event: response.completed\ndata: {}\n\n")
     ];
     const client = createFetchOpenAIResponsesClient({
@@ -310,7 +312,83 @@ describe("OpenAI Responses transport", () => {
       { body: JSON.stringify({ model: "gpt-test", stream: true }), url: "https://api.openai.com/v1/responses" },
       { body: JSON.stringify({ model: "gpt-test", stream: true }), url: "https://api.openai.com/v1/responses" }
     ]);
-    expect(sleeps).toEqual([1_000, 125]);
+    expect(sleeps).toEqual([1_000, 1_000]);
+  });
+
+  describe("ambiguous compatible create", () => {
+    const retry = { maxAttempts: 3, random: () => 0, sleep: async () => undefined };
+
+    it.each<[number, string | null]>([
+      [500, null], [502, "1"], [504, null], [409, null], [503, null], [408, null]
+    ])("never replays HTTP %i (Retry-After %s) that may follow acceptance", async (status, retryAfter) => {
+      for (const send of ["create", "stream"] as const) {
+        const fetchFn = vi.fn<typeof fetch>(async () => new Response("upstream failure", {
+          status, ...(retryAfter ? { headers: { "retry-after": retryAfter } } : {}) }));
+        const client = createFetchOpenAIResponsesClient({ apiKey: "key", fetchFn, initialRequestRetry: retry, requestIsolation: true });
+        await expect(client[send]!({ model: "gpt-test" })).rejects.toMatchObject({
+          message: `OpenAI request failed with status ${status}`, status });
+        expect(fetchFn).toHaveBeenCalledOnce();
+      }
+    });
+
+    it.each([
+      ["a native fetch TypeError", () => new TypeError("synthetic connection lost after dispatch")],
+      ["a safe-fetch failure without delivery proof", () => new ProviderSafeFetchError("provider_http_request_failed")]
+    ])("reports %s as an unknown outcome without a second POST", async (_label, failure) => {
+      for (const send of ["create", "stream"] as const) {
+        const cause = failure();
+        const fetchFn = vi.fn<typeof fetch>(async () => { throw cause; });
+        const client = createFetchOpenAIResponsesClient({ apiKey: "key", fetchFn, initialRequestRetry: retry, requestIsolation: true });
+        const error = await client[send]!({ model: "gpt-test" }).catch((value: unknown) => value);
+        expect(error).toMatchObject({ code: "provider_request_outcome_unknown", message: "provider_request_outcome_unknown", cause });
+        expect(fetchFn).toHaveBeenCalledOnce();
+        // Not an unpaid context refusal, and no billing claim either way.
+        expect(providerContextRejection(error)).toBeNull();
+        expect(observedFailure(error)).toEqual({ code: "provider_request_outcome_unknown", reason: "network" });
+        expect(providerHttpFailureMessage(error)).toMatch(/outcome and any provider charge are unknown/u);
+      }
+    });
+
+    it("replays only transport failures proven undelivered, each with a fresh routing key", async () => {
+      const failures = [
+        new ProviderSafeFetchError("provider_http_dns_failed"),
+        new ProviderSafeFetchError("provider_http_request_failed", { requestNotSent: true })
+      ];
+      const bodies: Record<string, unknown>[] = [];
+      const client = createFetchOpenAIResponsesClient({ apiKey: "key", initialRequestRetry: retry, requestIsolation: true,
+        fetchFn: async (_input, init) => {
+          bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          const failure = failures.shift();
+          if (failure) throw failure;
+          return Response.json({ id: "delivered" });
+        } });
+      await expect(client.create({ model: "gpt-test" })).resolves.toEqual({ id: "delivered" });
+      expect(bodies).toHaveLength(3);
+      expect(new Set(bodies.map((body) => body.prompt_cache_key)).size).toBe(3);
+    });
+
+    it.each([
+      ["without the compatible opt-in", undefined],
+      ["when the caller disables transport replay", { maxAttempts: 1 }]
+    ] as const)("keeps an unproven transport failure's identity %s", async (_label, initialRequestRetry) => {
+      const cause = new ProviderSafeFetchError("provider_http_request_failed");
+      const fetchFn = vi.fn<typeof fetch>(async () => { throw cause; });
+      const client = createFetchOpenAIResponsesClient({ apiKey: "key", fetchFn, initialRequestRetry });
+      await expect(client.create({ model: "gpt-test" })).rejects.toBe(cause);
+      expect(fetchFn).toHaveBeenCalledOnce();
+    });
+
+    it("keeps caller cancellation distinct from an unknown outcome", async () => {
+      const controller = new AbortController();
+      const cancellation = new Error("caller_cancelled");
+      const fetchFn = vi.fn<typeof fetch>(async () => {
+        controller.abort(cancellation);
+        throw new TypeError("socket closed by abort");
+      });
+      const client = createFetchOpenAIResponsesClient({ apiKey: "key", fetchFn, initialRequestRetry: retry });
+      await expect(client.create({}, { signal: controller.signal })).rejects.toBe(cancellation);
+      expect(fetchFn).toHaveBeenCalledOnce();
+    });
   });
 
   it("does not replay an initial Responses failure without the stateless opt-in", async () => {
@@ -327,7 +405,7 @@ describe("OpenAI Responses transport", () => {
 
   it.each([false, true])("keeps retry backoff inside the original Responses request deadline (isolation=%s)", async (requestIsolation) => {
     const fetchFn = vi.fn<typeof fetch>(async () =>
-      new Response("gateway unavailable", { status: 502 })
+      new Response("rate limited", { status: 429 })
     );
     const client = createFetchOpenAIResponsesClient({
       apiKey: "key",
