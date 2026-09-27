@@ -107,7 +107,7 @@ export type ThreadArtifactSummary = {
   knowledgeState?: ThreadKnowledgeAnswerState;
   knowledgeCitations?: ThreadKnowledgeCitation[];
   memoryAction?: MemoryActionFeedback;
-  memoryStatus?: "LIMITED" | "UNAVAILABLE";
+  memoryStatus?: "INPUT_TOO_LONG" | "LIMITED" | "UNAVAILABLE";
   memorySources?: MemoryAnswerSource[];
   reasoningText: string[];
   sources: ThreadSearchSource[];
@@ -861,9 +861,10 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     memorySources = decoded.flatMap((source) => source.ok ? [source.value] : []);
   }
 
-  let memoryStatus: "LIMITED" | "UNAVAILABLE" | undefined;
+  let memoryStatus: "INPUT_TOO_LONG" | "LIMITED" | "UNAVAILABLE" | undefined;
   if (value.memoryStatus !== undefined) {
-    if (value.memoryStatus !== "LIMITED" && value.memoryStatus !== "UNAVAILABLE") return null;
+    if (value.memoryStatus !== "INPUT_TOO_LONG" && value.memoryStatus !== "LIMITED" &&
+      value.memoryStatus !== "UNAVAILABLE") return null;
     memoryStatus = value.memoryStatus;
   }
 

@@ -58,6 +58,8 @@ import type { MemoryExecutionAuthorityDependencies } from "../execution";
 import { memorySha256 } from "../persistence/lexical";
 import { redactMemorySecrets } from "../explicit/safety";
 import {
+  MEMORY_CONTROL_INPUT_TOO_LONG,
+  MEMORY_CONTROL_STATEMENT_TOO_LONG,
   createMemoryReadOnlyControlReuseProof,
   createPrismaMemoryControlService,
   memoryControlInputHash,
@@ -67,6 +69,7 @@ import {
 } from "../actions/controlRuntime";
 import {
   admitMemoryAction,
+  memoryActionControlAdmitted,
   type MemoryActionAdmission
 } from "../actions/actionAdmission";
 import { defaultMemoryIntentActionExecutor } from "../actions/defaultAction";
@@ -131,7 +134,7 @@ import {
 } from "./deadline";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v59";
+  "memory-run-retrieval-admission-v60";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v19";
 const MEMORY_QUERY_EMBEDDING_DEADLINE_REASON =
@@ -807,6 +810,30 @@ function baseBudget(
     utilityEgressMode: "LOCAL_ONLY",
     ...extras
   };
+}
+
+type MemoryInputLimitReason = "CONTEXT" | "SOURCE" | "STATEMENT";
+
+/** Content-free record that Memory could not process the whole current turn:
+ * the turn exceeds the local source budget, the admitted control model's
+ * actual context with its response reserve, or a requested statement exceeds
+ * the stored statement bound. Nothing was classified from a prefix or
+ * truncated, and no Memory change was made from it. Presentation reads this
+ * marker; it grants no authority. */
+function memoryInputLimitEvidence(
+  admission: MemoryActionAdmission,
+  control: MemoryControlResult | null = null
+): Readonly<{ memoryInputLimitReason: MemoryInputLimitReason; memoryInputTooLong: true }> |
+  Readonly<Record<string, never>> {
+  const reason: MemoryInputLimitReason | null = admission.state === "INPUT_TOO_LONG"
+    ? "SOURCE"
+    : control?.status === "UNAVAILABLE" && control.reason === MEMORY_CONTROL_INPUT_TOO_LONG
+      ? "CONTEXT"
+      : control?.status === "UNAVAILABLE" &&
+          control.reason === MEMORY_CONTROL_STATEMENT_TOO_LONG
+        ? "STATEMENT"
+        : null;
+  return reason ? { memoryInputLimitReason: reason, memoryInputTooLong: true } : {};
 }
 
 function emptyAttempt(
@@ -2442,17 +2469,25 @@ export function createMemoryRunRetrievalService(
       const currentUserText = exactCurrentUserText(input.normalizedRequest);
       const querySafety = sanitizeMemoryUtilityText(currentUserText);
       const actionAdmission: MemoryActionAdmission = admitMemoryAction(
-        querySafety.safeText
+        querySafety.safeText,
+        { sourceTooLong: querySafety.tooLong }
       );
-      const actionControlRequested = !deterministicRead ||
-        actionAdmission.state !== "ORDINARY";
+      const actionControlRequested = memoryActionControlAdmitted(
+        actionAdmission,
+        deterministicRead
+      );
+      // Retrieval reads deterministic head, interior and tail fragments of the
+      // locally redacted turn, so a trailing question is never cut away.
       const provisionalPlan = planMemoryRetrieval({
         currentUserText: querySafety.safeText,
         now: input.now,
         timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
       });
       if (!provisionalPlan.queryPresent) {
-        return emptyAttempt(input.expected, "FAILED_SAFE", "memory_plan_query_missing", null, {
+        return emptyAttempt(input.expected, "FAILED_SAFE", querySafety.tooLong
+          ? "memory_query_input_too_long"
+          : "memory_plan_query_missing", null, {
+          ...memoryInputLimitEvidence(actionAdmission),
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
           memoryActionAdmissionReason: actionAdmission.reason,
           memoryActionAdmissionState: actionAdmission.state,
@@ -2523,6 +2558,7 @@ export function createMemoryRunRetrievalService(
         ...(cachedActionResult ? { memoryActionResult: cachedActionResult } : {}),
         ...(readOnlyControlReuse ? { readOnlyControlReuse } : {}),
         ...(fallbackControlReuse ? { fallbackControlReuse } : {}),
+        ...memoryInputLimitEvidence(actionAdmission),
         memoryActionAdmissionReason: actionAdmission.reason,
         memoryActionAdmissionState: actionAdmission.state,
         memoryActionAdmissionVersion: actionAdmission.version,
@@ -2827,6 +2863,10 @@ export function createMemoryRunRetrievalService(
         ...(actionResult ? { memoryActionResult: actionResult } : {}),
         ...(readOnlyControlReuse ? { readOnlyControlReuse } : {}),
         ...(fallbackControlReuse ? { fallbackControlReuse } : {}),
+        ...memoryInputLimitEvidence(
+          actionAdmission,
+          actionControlRequested ? control : null
+        ),
         memoryActionAdmissionReason: actionAdmission.reason,
         memoryActionAdmissionState: actionAdmission.state,
         memoryActionAdmissionVersion: actionAdmission.version,
