@@ -1,4 +1,5 @@
 import { estimateApproxTokens } from "../../domain/contextBudget";
+import { imageTokenEstimator, type ImageDimensions, type ImageTokenEstimate } from "../../domain/imageTokenEstimate";
 import { pdfPageCountFromMetadata } from "../../contracts/uploads";
 import type { ProviderAttachment, ProviderModelCapabilities } from "./types";
 
@@ -66,17 +67,14 @@ export function providerAttachmentPreviewText(
     : "[Document attachment text omitted]";
 }
 
-function imageProxyTokens(attachment: ProviderAttachment): number {
+function imageDimensions(attachment: ProviderAttachment): ImageDimensions | null {
   const image = metadataRecord(attachment, "image");
   const width = numberValue(image.width);
   const height = numberValue(image.height);
-
-  if (!width || !height) {
-    return 512;
-  }
-
-  return 85 + Math.ceil(width / 512) * Math.ceil(height / 512) * 170;
+  return width && height ? { height, width } : null;
 }
+
+const undeclaredImageTokens = imageTokenEstimator({ provider: "unknown" });
 
 function nativePdfProxyTokens(attachment: ProviderAttachment, estimateTokens: (value: unknown) => number): number {
   const pageCount = pdfPageCountFromMetadata(attachment.metadata)
@@ -96,13 +94,17 @@ export function providerAttachmentBudgetTokens(input: {
   attachments: ProviderAttachment[];
   /** The request's context estimate; defaults to the character weights. */
   estimateTokens?: (value: unknown) => number;
+  /** The request's image policy (`imageTokenEstimator`); defaults to the
+   * conservative fallback of an undeclared provider family. */
+  estimateImageTokens?: ImageTokenEstimate;
   maxAttachmentTextChars?: number;
   modelCapabilities: ProviderModelCapabilities;
 }): number {
   const estimateTokens = input.estimateTokens ?? estimateApproxTokens;
+  const estimateImageTokens = input.estimateImageTokens ?? undeclaredImageTokens;
   return input.attachments.reduce((total, attachment) => {
     if (attachment.kind === "image") {
-      return total + (input.modelCapabilities.vision ? imageProxyTokens(attachment) : 0);
+      return total + (input.modelCapabilities.vision ? estimateImageTokens(imageDimensions(attachment)) : 0);
     }
 
     if (usesNativePdfInput(attachment, input.modelCapabilities)) {
