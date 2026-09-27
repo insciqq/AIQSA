@@ -34,7 +34,8 @@ import {
   providerAttachmentPreviewMediaType,
   usesNativePdfInput,
   providerAttachmentPreviewText,
-  providerAttachmentText
+  providerAttachmentText,
+  providerImageCaption
 } from "./attachmentPayload";
 import { parseSseStream } from "./sse";
 import {
@@ -293,6 +294,8 @@ function buildUserContent(
     }
 
     if (attachment.kind === "image" && request.modelCapabilities.vision) {
+      const caption = providerImageCaption(attachment);
+      if (caption) content.push(textContentBlock(caption));
       content.push({
         source: imageSource(attachment, options.redactImages, options.preview),
         type: "image"

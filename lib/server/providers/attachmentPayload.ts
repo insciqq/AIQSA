@@ -65,6 +65,16 @@ export function providerAttachmentText(
   )}`;
 }
 
+/** Text part placed immediately before a captioned image. It names only
+ * server identifiers and the role; file names are untrusted user data. */
+export function providerImageCaption(attachment: ProviderAttachment): string | null {
+  const provenance = attachment.imageProvenance;
+  if (attachment.kind !== "image" || !provenance) return null;
+  return provenance.role === "current_message"
+    ? `[Image image_id=${JSON.stringify(attachment.id)}: attached to the current user message]`
+    : `[Image image_id=${JSON.stringify(attachment.id)}: from earlier message message_id=${JSON.stringify(provenance.messageId)}, not a new upload]`;
+}
+
 export const providerAttachmentPreviewFilename = "[attachment filename omitted]";
 export const providerAttachmentPreviewMediaType = "[attachment media type omitted]";
 
@@ -117,7 +127,9 @@ export function providerAttachmentBudgetTokens(input: {
   const estimateImageTokens = input.estimateImageTokens ?? undeclaredImageTokens;
   return input.attachments.reduce((total, attachment) => {
     if (attachment.kind === "image") {
-      return total + (input.modelCapabilities.vision ? estimateImageTokens(imageDimensions(attachment)) : 0);
+      if (!input.modelCapabilities.vision) return total;
+      const caption = providerImageCaption(attachment);
+      return total + estimateImageTokens(imageDimensions(attachment)) + (caption ? estimateTokens(caption) : 0);
     }
 
     if (usesNativePdfInput(attachment, input.modelCapabilities)) {
