@@ -265,9 +265,14 @@ export function providerContextRejection(value: unknown): ProviderContextRejecti
   } catch { return null; }
 }
 
-/** Safe user-facing wording for a reviewed provider HTTP identity, or null.
- * It names only the provider, status and allow-listed code. */
+/** Safe user-facing wording for a reviewed provider HTTP or transport
+ * identity, or null. It names only the provider, status and allow-listed code. */
 export function providerHttpFailureMessage(value: unknown): string | null {
+  if (observedFailureCode(value) === "provider_request_outcome_unknown") {
+    // No provider evidence exists either way: claim neither a charge nor its absence.
+    return "The connection to the model provider was lost after the request may have been sent. " +
+      "Its outcome and any provider charge are unknown, so it was not repeated automatically.";
+  }
   const rejection = providerContextRejection(value);
   if (rejection) {
     return `${rejection.httpStatus !== undefined
@@ -349,6 +354,7 @@ export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<
       : code === "provider_output_too_large" || code.startsWith("provider_stream_") && code !== "provider_stream_failed" ||
         code === "provider_response_too_large" || code === "provider_budget_exhausted" ? "safety_limit"
       : code === "provider_http_dns_failed" || code === "provider_http_request_failed" ||
+        code === "provider_request_outcome_unknown" ||
         code === "agent_provider_dns_failed" || code === "agent_provider_connection_lost" ? "network"
       : status !== undefined ? "http"
       : code === PROVIDER_CONTEXT_LENGTH_EXCEEDED ? "safety_limit"

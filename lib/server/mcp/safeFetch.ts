@@ -62,11 +62,18 @@ export type McpSafeFetchErrorCode =
 
 export class McpSafeFetchError extends Error {
   readonly code: McpSafeFetchErrorCode;
+  /** Present only when the transport proves that no request byte left this
+   * process: the pinned connection (and its TLS session) was never
+   * established. Absence means the request may have reached the server. */
+  declare readonly requestNotSent?: true;
 
-  constructor(code: McpSafeFetchErrorCode) {
+  constructor(code: McpSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean }>) {
     super(code);
     this.code = code;
     this.name = "McpSafeFetchError";
+    if (options?.requestNotSent === true) {
+      Object.defineProperty(this, "requestNotSent", { enumerable: true, value: true });
+    }
   }
 }
 
@@ -361,12 +368,17 @@ async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
 
   return new Promise<Response>((resolve, reject) => {
     let headersReceived = false;
+    // Node buffers the request until the socket connects, and over HTTPS it
+    // writes application data only after the TLS handshake. A failure before
+    // that point therefore proves that the server never received the request.
+    let connectionEstablished = false;
     const rejectRequest = (cause?: unknown) => {
       const code = cause && typeof cause === "object" && "code" in cause ? cause.code : null;
       const tls = typeof code === "string" && ["CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "CERT_REVOKED", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_SSL_WRONG_VERSION_NUMBER"].includes(code);
       const failure = input.signal.aborted
         ? abortReason(input.signal)
-        : new McpSafeFetchError(tls ? "mcp_http_tls_failed" : "mcp_http_request_failed");
+        : new McpSafeFetchError(tls ? "mcp_http_tls_failed" : "mcp_http_request_failed",
+          { requestNotSent: !connectionEstablished && !headersReceived });
       const facts = transportFailureFacts(cause, input.signal);
       if (!headersReceived) observeFailure({ category: facts.category, code: facts.code === "unknown"
         ? tls ? "mcp_http_tls_failed" : "mcp_http_request_failed" : facts.code, timeout_ms: facts.timeout_ms });
@@ -407,6 +419,12 @@ async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
           incoming.destroy();
           rejectRequest();
         }
+      });
+      outgoing.once("socket", (socket) => {
+        const connected = input.url.protocol === "https:" ? "secureConnect" : "connect";
+        if (socket.connecting) socket.once(connected, () => { connectionEstablished = true; });
+        // A socket handed over already connected may carry the request at once.
+        else connectionEstablished = true;
       });
       outgoing.once("error", rejectRequest);
       outgoing.end(input.body ?? undefined);
@@ -545,7 +563,17 @@ async function mcpSafeFetchUnobserved(
     validateUrl(current.url, options);
     const address = await resolvePinnedAddress(current.url, options, current.signal);
     const pinnedRequest = { ...current, address };
-    const response = await (options.dispatch ?? defaultDispatch)(pinnedRequest);
+    let response: Response;
+    try {
+      response = await (options.dispatch ?? defaultDispatch)(pinnedRequest);
+    } catch (error) {
+      // An earlier hop already reached a server, so a later unsent hop does
+      // not prove that the logical request was never delivered.
+      if (redirectCount > 0 && error instanceof McpSafeFetchError && error.requestNotSent) {
+        throw new McpSafeFetchError(error.code);
+      }
+      throw error;
+    }
     if (!isRedirectStatus(response.status) || !response.headers.has("location")) {
       return attachFinalResponseMetadata(response, current.url, redirectCount > 0);
     }
