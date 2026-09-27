@@ -65,7 +65,7 @@ describe("MCP held-back tool contracts", () => {
     expect(adminMcpAttention(server({}))).toBeNull();
     expect(adminMcpAttention(server({ activeRevision: revision() }))).toBeNull();
     expect(adminMcpAttention(server({ inventoryDifferences: changed }))).toEqual({
-      action: "Review tools", href: null, label: "Server tools changed since the last check", task: "validation"
+      action: "Review tools", oauthAction: null, label: "Server tools changed since the last check", task: "validation"
     });
     expect(adminMcpAttention(server({ activeRevision: revision("names") }))).toMatchObject({
       label: "Check again to guard against tool changes", task: "validation"

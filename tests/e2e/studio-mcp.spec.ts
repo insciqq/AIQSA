@@ -84,7 +84,7 @@ for (const theme of ["light", "dark"] as const) {
         await expect(library.getByRole("article", { name, exact: true }).getByRole("switch")).toHaveAttribute("aria-checked", "true");
       }
       await expect(library.getByRole("button", { name: "Complete setup for Research" })).toBeVisible();
-      await expect(library.getByRole("link", { name: "Connect Research to enable" })).toHaveCount(0);
+      await expect(library.getByRole("button", { name: "Connect Research to enable" })).toHaveCount(0);
       for (const control of [library.getByRole("button", { name: "Open GitHub" }),
         library.getByRole("switch", { name: "Enable GitHub" }), library.getByRole("button", { name: "Complete setup for Research" }),
         library.getByRole("button", { name: "Needs setup 5" }), library.getByRole("searchbox")]) await expectTouchSafe(control);
@@ -133,7 +133,7 @@ for (const width of [1440, 390]) {
     const input = sheet.getByLabel("Personal API key", { exact: true });
     await expect(input).toBeFocused();
     await input.fill("synthetic-personal-token");
-    await expect(sheet.getByRole("link", { name: "Connect", exact: true })).not.toHaveAttribute("href");
+    await expect(sheet.getByRole("button", { name: "Connect", exact: true })).toHaveAttribute("aria-disabled", "true");
     expect(await page.evaluate(() => {
       const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented;
     })).toBe(true);

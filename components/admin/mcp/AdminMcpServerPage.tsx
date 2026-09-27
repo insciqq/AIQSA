@@ -33,11 +33,10 @@ import type { AdminFeedbackController } from "@/components/admin/useAdminFeedbac
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { UiV2Button, UiV2IconButton, UiV2Switch } from "@/components/ui-v2";
 import type { AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
-import type { AdminMcpServer, McpInventoryDifferenceReason } from "@/lib/contracts/mcp";
+import { adminMcpOAuthAction, type AdminMcpServer, type McpInventoryDifferenceReason } from "@/lib/contracts/mcp";
+import { useAdminMcpOAuthStart } from "@/components/admin/mcp/useAdminMcpOAuthStart";
 import { CircleAlert, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-
-const linkButton = "v2-button v2-focusable";
 
 export type AdminMcpServerPageProps = Readonly<{
   controller: AdminMcpController;
@@ -153,13 +152,15 @@ function ActivationBanner({
   return null;
 }
 
-function AuthorizationCard({ controller, server }: Readonly<{ controller: AdminMcpController; server: AdminMcpServer }>) {
+function AuthorizationCard({ controller, onError, server }: Readonly<{
+  controller: AdminMcpController;
+  onError(message: string): void;
+  server: AdminMcpServer;
+}>) {
   const state = mcpAuthorizationState(server);
   const connection = server.validationOAuth;
   const archived = Boolean(server.archivedAt);
-  const encoded = encodeURIComponent(server.id);
-  const connectHref = `/api/admin/mcp/${encoded}/oauth/validation/connect`;
-  const reconnectHref = `/api/admin/mcp/${encoded}/oauth/validation/reconnect`;
+  const oauthStart = useAdminMcpOAuthStart(onError);
   const ready = connection?.state === "ready";
   const reconnect = connection?.state === "reauthorization_required";
   const disconnecting = connection?.state === "disconnecting";
@@ -180,16 +181,29 @@ function AuthorizationCard({ controller, server }: Readonly<{ controller: AdminM
           {archived ? null : (
             <div className="flex flex-wrap gap-2">
               {ready || reconnect ? (
-                <a className={linkButton} data-tone={reconnect ? "primary" : "ghost"} href={reconnectHref}>
-                  <span>Reconnect</span>
-                </a>
+                <UiV2Button
+                  busy={oauthStart.pending !== null}
+                  disabled={controller.state.busy}
+                  onClick={() => oauthStart.start(adminMcpOAuthAction(server.id, true))}
+                  tone={reconnect ? "primary" : "ghost"}
+                  type="button"
+                >
+                  Reconnect
+                </UiV2Button>
               ) : (
-                <a aria-disabled={disconnecting ? true : undefined} className={linkButton} data-tone="primary" href={connectHref}>
-                  <span>Connect</span>
-                </a>
+                <UiV2Button
+                  busy={oauthStart.pending !== null}
+                  disabled={controller.state.busy || disconnecting}
+                  onClick={() => oauthStart.start(adminMcpOAuthAction(server.id, false))}
+                  tone="primary"
+                  type="button"
+                >
+                  Connect
+                </UiV2Button>
               )}
               <UiV2Button
-                disabled={controller.state.busy || !connection || connection.state === "disconnected" || disconnecting}
+                disabled={controller.state.busy || oauthStart.pending !== null || !connection ||
+                  connection.state === "disconnected" || disconnecting}
                 onClick={() => void controller.actions.disconnectValidationOAuth(server.id)}
                 tone="ghost"
                 type="button"
@@ -462,7 +476,9 @@ export function AdminMcpServerPage({
         />
       )}
 
-      {server.draft.auth.mode === "oauth" ? <AuthorizationCard controller={controller} server={server} /> : null}
+      {server.draft.auth.mode === "oauth"
+        ? <AuthorizationCard controller={controller} onError={feedback.reportError} server={server} />
+        : null}
 
       <ToolsSection
         checking={saving}

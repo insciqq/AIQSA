@@ -611,8 +611,8 @@ test("MCP list exposes authorization and runtime problems without opening each s
     const row = section.getByTestId("mcp-server-row-oauth-tools");
     await expect(row.getByTestId("mcp-server-status")).toHaveText("Setup needed");
     await expect(row).toContainText("Reconnect to check changes");
-    const reconnect = row.getByRole("link", { name: "Reconnect Workspace tools" });
-    await expect(reconnect).toHaveAttribute("href", "/api/admin/mcp/oauth-tools/oauth/validation/reconnect");
+    const reconnect = row.getByRole("button", { name: "Reconnect Workspace tools" });
+    await expect(reconnect).toBeEnabled();
     await expectTouchSafe(reconnect);
     const failing = section.getByTestId("mcp-server-row-existing-server");
     await expect(failing.getByTestId("mcp-server-status")).toHaveText("Runtime unavailable");
@@ -620,13 +620,21 @@ test("MCP list exposes authorization and runtime problems without opening each s
     await expectNoHorizontalOverflow(page);
   }
 
-  // The OAuth return lands on the server page with one banner and leaves no callback parameters behind.
-  await page.goto("/admin?section=mcp&oauth=connected&server=oauth-tools");
+  // Reconnect starts with a same-origin POST; its answer (here an already
+  // connected outcome) is followed as a document navigation. The OAuth
+  // return lands on the server page with one banner and no callback parameters.
+  const starts: string[] = [];
+  await page.route("**/api/admin/mcp/oauth-tools/oauth/validation/reconnect", (route) => {
+    starts.push(route.request().method());
+    return route.fulfill({ json: { location: "/admin?section=mcp&oauth=connected&server=oauth-tools" } });
+  });
+  await section.getByTestId("mcp-server-row-oauth-tools").getByRole("button", { name: "Reconnect Workspace tools" }).click();
   await expect(page).toHaveURL(/section=mcp&resource=oauth-tools/u);
+  expect(starts).toEqual(["POST"]);
   await expect(page).not.toHaveURL(/oauth=|server=/u);
   await expect(section.getByTestId("admin-mcp-oauth-return")).toContainText("Your account is connected");
   await expect(section.getByTestId("mcp-authorization-state")).toHaveText("Reconnect needed");
-  await expect(section.getByRole("link", { name: "Reconnect" })).toHaveAttribute("href", "/api/admin/mcp/oauth-tools/oauth/validation/reconnect");
+  await expect(section.getByRole("button", { name: "Reconnect", exact: true })).toBeEnabled();
   await expect(section).not.toContainText(bannedWords);
   expect(hydrationErrors).toEqual([]);
 });

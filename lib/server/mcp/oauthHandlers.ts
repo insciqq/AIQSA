@@ -61,6 +61,17 @@ function redirect(location: string, cookie?: string): Response {
   return new Response(null, { headers, status: 303 });
 }
 
+/**
+ * Start answers a same-origin fetch with where the browser goes next. A
+ * server redirect to the provider after a form submission would fall under
+ * the enforced `form-action 'self'` policy, so the client navigates itself.
+ */
+function startLocation(location: string, cookie?: string): Response {
+  const headers = new Headers({ "cache-control": "no-store", "referrer-policy": "no-referrer" });
+  if (cookie) headers.append("set-cookie", cookie);
+  return Response.json({ location }, { headers });
+}
+
 function callbackPath(serverId: string, purpose: McpOAuthPurpose): string {
   const encoded = encodeURIComponent(serverId);
   return purpose === "validation"
@@ -145,6 +156,12 @@ export function createMcpOAuthStartHandler(
   options: Readonly<{ forceReconnect: boolean; purpose: McpOAuthPurpose }>
 ) {
   return async function POST(request: Request, context: McpOAuthRouteContext): Promise<Response> {
+    // Starting can settle an existing connection (enable the server, publish
+    // the checked admin draft) and writes flow state. Only the origin-checked
+    // POST may do that; a cross-site navigation is a GET and changes nothing.
+    if (request.method !== "POST") {
+      return Response.json({ error: "method_not_allowed" }, { headers: { allow: "POST" }, status: 405 });
+    }
     const config = deps.getConfig();
     if (!config.configured) return errorResponse("auth_not_configured", 503);
     const auth = await authorizedSession(request, deps, options.purpose);
@@ -176,7 +193,7 @@ export function createMcpOAuthStartHandler(
           userId: session.userId
         });
         if (!settled) {
-          return redirect(outcomeUrl({
+          return startLocation(outcomeUrl({
             appBaseUrl: config.appBaseUrl,
             outcome: "failed",
             purpose: options.purpose,
@@ -185,7 +202,7 @@ export function createMcpOAuthStartHandler(
           }));
         }
         notifyRuntimeChanged(deps, options.purpose === "user" ? session.userId : undefined);
-        return redirect(outcomeUrl({
+        return startLocation(outcomeUrl({
           appBaseUrl: config.appBaseUrl,
           outcome: "connected",
           purpose: options.purpose,
@@ -199,7 +216,7 @@ export function createMcpOAuthStartHandler(
         returnPath,
         sessionSecret: config.sessionSecret
       });
-      return redirect(result.authorizationUrl, mcpOAuthFlowCookie({
+      return startLocation(result.authorizationUrl, mcpOAuthFlowCookie({
         maxAge: MCP_OAUTH_FLOW_MAX_AGE_SECONDS,
         secure: config.cookieSecure,
         value: signed
