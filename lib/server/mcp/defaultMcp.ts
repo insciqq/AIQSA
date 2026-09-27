@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/server/prisma";
 import { getMcpRequestMaxBytes } from "./responseLimits";
+import { MCP_INVENTORY_SESSION_LIMITS } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import { mcpOAuthService } from "./defaultOAuth";
 import { getDefaultToolHiveClient, getDefaultToolHiveDriver } from "./defaultToolHive";
@@ -11,10 +12,8 @@ import { createMcpSafeFetch } from "./safeFetch";
 import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
 
 const VALIDATION_RUNTIME_LIMITS = {
-  maxListPages: 16,
-  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); },
-  maxToolMetadataBytes: 256 * 1_024,
-  maxTools: 256
+  ...MCP_INVENTORY_SESSION_LIMITS,
+  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); }
 } as const;
 
 export function createDefaultMcpRepository(input: { draftValidator?: McpDraftValidator } = {}) {

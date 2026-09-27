@@ -3,7 +3,7 @@ import { prepareMcpRunPlan } from "./runPlan";
 import { filterMcpToolsForUser } from "./toolAccess";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adminMcpAttention, type AdminMcpServer, type McpDraftConfiguration } from "@/lib/contracts/mcp";
+import { adminMcpAttention, MCP_INVENTORY_EXCLUSION_LIMIT, type AdminMcpServer, type McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { prisma } from "../prisma";
 import { hashCanonicalMcpValue, mcpPublishedToolDefinitions, mcpToolDefinitionEvidence } from "./definitions";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
@@ -767,5 +767,27 @@ describe("MCP published tool inventory", () => {
       { connections: 1, name: "write", reason: "definition_drift" },
       { connections: 1, name: null, reason: "unpublished_addition" }
     ]);
+  });
+
+  it("bounds each server's held-back rows to one runtime inventory's exclusions, keeping changed definitions first", async () => {
+    const f = await fixture();
+    f.validate.mockResolvedValue(checked);
+    const saved = await f.save(f.server);
+    if (saved.kind !== "ok") throw new Error(saved.kind);
+    const revisionId = saved.value.activeRevision!.id;
+    const additions = (prefix: string) => Array.from({ length: MCP_INVENTORY_EXCLUSION_LIMIT - 1 }, (_, index) => ({
+      name: `${prefix}_${String(index).padStart(4, "0")}`, reason: "unpublished_addition"
+    }));
+    // Two shared connections disagree about additions: together they name more than one inventory can.
+    await readyGeneration({ exclusions: [{ name: "write", reason: "definition_drift" }, ...additions("a")], revisionId, serverId: f.serverId });
+    await readyGeneration({ exclusions: [{ name: "write", reason: "definition_drift" }, ...additions("b")], revisionId, serverId: f.serverId });
+
+    const listed = (await f.repository.listAdminServers(f.userId)).find(({ id }) => id === f.serverId)!;
+    expect(listed.inventoryDifferences).toHaveLength(MCP_INVENTORY_EXCLUSION_LIMIT);
+    expect(listed.inventoryDifferences?.[0]).toEqual({ connections: 2, name: "write", reason: "definition_drift" });
+    expect(listed.inventoryDifferences?.[1]).toEqual({ connections: 1, name: "a_0000", reason: "unpublished_addition" });
+    // Every name the first connection holds back fits; the overflow is the other connection's divergent additions.
+    expect(listed.inventoryDifferences?.at(-1)).toEqual({ connections: 1, name: "a_2046", reason: "unpublished_addition" });
+    expect(listed.inventoryDifferences?.some(({ name }) => name?.startsWith("b_"))).toBe(false);
   });
 });

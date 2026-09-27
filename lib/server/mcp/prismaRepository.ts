@@ -6,6 +6,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   isMcpInventoryDifferenceReason,
   isMcpToolName,
+  MCP_INVENTORY_EXCLUSION_LIMIT,
+  MCP_SERVER_TOOL_LIMIT,
   mcpRuntimeErrorCode,
   mcpValidationIssue
 } from "@/lib/contracts/mcp";
@@ -325,7 +327,7 @@ function jsonObjectFrom(value: unknown): McpJsonObject | null {
 }
 
 function toolInventoryFrom(value: unknown): McpToolInventoryEntry[] | null {
-  if (!Array.isArray(value) || value.length > 512) return null;
+  if (!Array.isArray(value) || value.length > MCP_SERVER_TOOL_LIMIT) return null;
   const tools: McpToolInventoryEntry[] = [];
   for (const candidate of value) {
     if (!isRecord(candidate) || typeof candidate.name !== "string" ||
@@ -540,7 +542,9 @@ const INVENTORY_DIFFERENCE_ORDER: Readonly<Record<AdminMcpInventoryDifference["r
  * What current connections of each server's active configuration hold back
  * from its checked tools, counted per connection. Names of additions seen only
  * through personal or OAuth connections belong to those accounts and are
- * reported as a count.
+ * reported as a count. Each server keeps at most one runtime inventory's
+ * exclusion bound of rows, in display order, so every name one connection
+ * holds back fits.
  */
 async function loadInventoryDifferences(
   client: McpDataClient,
@@ -554,42 +558,53 @@ async function loadInventoryDifferences(
     reason: string;
     serverId: string;
   }>>`
-    SELECT difference."serverId", difference."name", difference."reason",
-           COUNT(DISTINCT difference."generationId")::int AS "connections"
+    SELECT ranked."serverId", ranked."name", ranked."reason", ranked."connections"
     FROM (
-      SELECT preference."serverId" AS "serverId",
-             generation."id" AS "generationId",
-             exclusion.value->>'reason' AS "reason",
-             CASE
-               WHEN exclusion.value->>'reason' = 'unpublished_addition' AND (
-                 generation."oauthConnectionId" IS NOT NULL
-                 OR preference."personalConfigEnvelope" IS NOT NULL
-                 OR NOT (generation."credentialSources" <@ ARRAY['shared', 'none']::text[])
-               ) THEN NULL
-               ELSE exclusion.value->>'name'
-             END AS "name"
-      FROM "McpRuntimeGeneration" AS generation
-      JOIN "McpUserServer" AS preference
-        ON preference."id" = generation."userServerId"
-       AND preference."desiredRuntimeGenerationId" = generation."id"
-       AND preference."enabled" = true
-      JOIN "McpServer" AS server
-        ON server."id" = preference."serverId"
-       AND server."activeRevisionId" = generation."revisionId"
-      JOIN "User" AS owner
-        ON owner."id" = preference."userId"
-       AND owner."status" = 'active'
-      CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN jsonb_typeof(generation."inventory"->'exclusions') = 'array'
-          THEN generation."inventory"->'exclusions'
-          ELSE '[]'::jsonb
-        END
-      ) AS exclusion(value)
-      WHERE generation."state" = 'ready'
-        AND preference."serverId" IN (${Prisma.join(serverIds)})
-        AND exclusion.value->>'reason' IN ('definition_drift', 'missing_upstream', 'unpublished_addition')
-    ) AS difference
-    GROUP BY difference."serverId", difference."name", difference."reason"
+      SELECT grouped.*, ROW_NUMBER() OVER (
+               PARTITION BY grouped."serverId"
+               ORDER BY CASE grouped."reason" WHEN 'definition_drift' THEN 0 WHEN 'missing_upstream' THEN 1 ELSE 2 END,
+                        grouped."name" COLLATE "C" NULLS LAST
+             ) AS "position"
+      FROM (
+        SELECT difference."serverId", difference."name", difference."reason",
+               COUNT(DISTINCT difference."generationId")::int AS "connections"
+        FROM (
+          SELECT preference."serverId" AS "serverId",
+                 generation."id" AS "generationId",
+                 exclusion.value->>'reason' AS "reason",
+                 CASE
+                   WHEN exclusion.value->>'reason' = 'unpublished_addition' AND (
+                     generation."oauthConnectionId" IS NOT NULL
+                     OR preference."personalConfigEnvelope" IS NOT NULL
+                     OR NOT (generation."credentialSources" <@ ARRAY['shared', 'none']::text[])
+                   ) THEN NULL
+                   ELSE exclusion.value->>'name'
+                 END AS "name"
+          FROM "McpRuntimeGeneration" AS generation
+          JOIN "McpUserServer" AS preference
+            ON preference."id" = generation."userServerId"
+           AND preference."desiredRuntimeGenerationId" = generation."id"
+           AND preference."enabled" = true
+          JOIN "McpServer" AS server
+            ON server."id" = preference."serverId"
+           AND server."activeRevisionId" = generation."revisionId"
+          JOIN "User" AS owner
+            ON owner."id" = preference."userId"
+           AND owner."status" = 'active'
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(generation."inventory"->'exclusions') = 'array'
+              THEN generation."inventory"->'exclusions'
+              ELSE '[]'::jsonb
+            END
+          ) AS exclusion(value)
+          WHERE generation."state" = 'ready'
+            AND preference."serverId" IN (${Prisma.join(serverIds)})
+            AND exclusion.value->>'reason' IN ('definition_drift', 'missing_upstream', 'unpublished_addition')
+        ) AS difference
+        GROUP BY difference."serverId", difference."name", difference."reason"
+      ) AS grouped
+    ) AS ranked
+    WHERE ranked."position" <= ${MCP_INVENTORY_EXCLUSION_LIMIT}
   `;
   for (const row of rows) {
     if (!isMcpInventoryDifferenceReason(row.reason) || !Number.isSafeInteger(row.connections) ||
@@ -731,7 +746,7 @@ async function adminResult(
 
 function toolInventory(value: Prisma.JsonValue | null): UserMcpServer["tools"] | null {
   if (!value || typeof value !== "object" || Array.isArray(value) || !("tools" in value) ||
-    !Array.isArray(value.tools) || value.tools.length > 512) return null;
+    !Array.isArray(value.tools) || value.tools.length > MCP_SERVER_TOOL_LIMIT) return null;
   const tools = value.tools.flatMap((tool) => {
     if (!tool || typeof tool !== "object" || Array.isArray(tool) || !("name" in tool) ||
       typeof tool.name !== "string") return [];

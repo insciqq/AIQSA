@@ -7,6 +7,8 @@ import { ToolHiveClientError } from "./toolhiveClient";
 import { getContext, runWithContext, type ObservabilityContext } from "../observability";
 import type { McpPublishedToolDefinitions } from "./definitions";
 import {
+  MCP_HEALTH_DEADLINE_MS,
+  MCP_HEALTH_INVENTORY_DEADLINE_MS,
   McpRuntimeCoordinator,
   type McpRuntimeCoordinatorRepository,
   type McpRuntimeGenerationLaunch,
@@ -346,12 +348,39 @@ describe("MCP runtime coordinator", () => {
       description: failure === "secret" ? "PRIVATE_SECRET" : null }]);
     await vi.advanceTimersByTimeAsync(30_000);
     test.coordinator.operationalStatus("generation-1");
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(MCP_HEALTH_INVENTORY_DEADLINE_MS);
     expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
     expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({
       errorCode: failure === "timeout" ? "mcp_timeout" : failure === "secret" ? "mcp_inventory_invalid" : "mcp_inventory_changed"
     }));
     expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("keeps a maximal paginated health inventory live past the ping deadline without publishing additions", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const published = Array.from({ length: 1_024 }, (_, index) => tool(`tool_${index}`));
+    const test = harness({ inventory: published, now: () => new Date() });
+    await test.coordinator.reconcileNow();
+    vi.mocked(test.session.ping).mockRejectedValue(new McpClientSessionError({ code: "mcp_ping_unsupported", operation: "ping" }));
+    // 32 pages answering within their own deadline take longer than one ping deadline.
+    vi.mocked(test.session.listTools).mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve([...published, tool("tool_1024")]), 32 * (MCP_HEALTH_DEADLINE_MS / 4));
+    }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    await vi.advanceTimersByTimeAsync(32 * (MCP_HEALTH_DEADLINE_MS / 4));
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
+    expect(vi.mocked(test.session.listTools).mock.calls.at(-1)).toEqual([
+      expect.any(AbortSignal), { requestTimeoutMs: MCP_HEALTH_DEADLINE_MS }
+    ]);
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
+    expect(test.repository.markReady).toHaveBeenCalledOnce();
+    await expect(test.coordinator.callTool({ generationId: "generation-1", name: "tool_1023", arguments: {}, inputSchema: { type: "object" } }))
+      .resolves.toMatchObject({ isError: false });
+    await expect(test.coordinator.callTool({ generationId: "generation-1", name: "tool_1024", arguments: {}, inputSchema: { type: "object" } }))
+      .rejects.toMatchObject({ code: "mcp_tool_not_available" });
     await test.coordinator.stop();
   });
 
@@ -1340,6 +1369,22 @@ describe("MCP runtime coordinator", () => {
     delayed.setLaunches([launch({ retryAt: new Date(now.getTime() + 1_000) })]);
     await delayed.coordinator.reconcileNow();
     expect(delayed.calls).toEqual([]);
+  });
+
+  it.each([
+    { code: "mcp_inventory_cursor_cycle", persisted: "mcp_inventory_cursor_cycle" },
+    { code: "mcp_inventory_page_limit", persisted: "mcp_inventory_page_limit" },
+    { code: "mcp_inventory_time_limit", persisted: "mcp_inventory_time_limit" },
+    { code: "mcp_inventory_tool_limit", persisted: "mcp_inventory_tool_limit" },
+    { code: "mcp_inventory_tool_invalid", persisted: "mcp_inventory_invalid" }
+  ] as const)("persists the inventory bound $code as $persisted and stays not ready", async ({ code, persisted }) => {
+    const test = harness();
+    vi.mocked(test.session.listTools).mockRejectedValue(new McpClientSessionError({ code, operation: "list_tools" }));
+    await test.coordinator.reconcileNow();
+    expect(test.calls).toEqual(["starting", `failed:${persisted}`]);
+    expect(test.repository.markReady).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+    await test.coordinator.stop();
   });
 
   it.each([

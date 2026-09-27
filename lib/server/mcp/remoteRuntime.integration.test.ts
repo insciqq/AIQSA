@@ -7,7 +7,7 @@ import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
 import { createMcpSafeFetch } from "./safeFetch";
-import { McpClientSession } from "./clientSession";
+import { MCP_INVENTORY_SESSION_LIMITS, McpClientSession } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import { mcpPublishedToolDefinitions, type McpPublishedToolDefinitions } from "./definitions";
 import { getMcpRequestMaxBytes } from "./responseLimits";
@@ -40,18 +40,24 @@ async function startRemoteFixture(
   echoSecret = false,
   toolDescription = "Create a task",
   gitlabRecovery = false,
-  inventory?: Tool[]
+  inventory?: Tool[],
+  options: Readonly<{ instructions?: string; pageSize?: number }> = {}
 ): Promise<Fixture> {
   const cursors: Array<string | undefined> = [];
   const observedStaticHeaders: Array<string | undefined> = [];
   const receivedArgumentBytes: number[] = [];
   const server = new Server(
     { name: "aiqsa-validator-fixture", title: "AIQSA validator fixture", version: "2.1.0" },
-    { capabilities: { tools: { listChanged: true } } }
+    { capabilities: { tools: { listChanged: true } }, ...(options.instructions ? { instructions: options.instructions } : {}) }
   );
   server.setRequestHandler("tools/list", async (request): Promise<ListToolsResult> => {
     const cursor = request.params?.cursor;
     cursors.push(cursor);
+    if (inventory && options.pageSize) {
+      const start = cursor === undefined ? 0 : Number(cursor.slice("page-".length));
+      const end = start + options.pageSize;
+      return { ...(end < inventory.length ? { nextCursor: `page-${end}` } : {}), tools: inventory.slice(start, end) };
+    }
     if (inventory) return { tools: inventory };
     return cursor === undefined
       ? {
@@ -156,7 +162,7 @@ describe("remote MCP runtime integration", () => {
       if (outcome.kind === "ok") expect(outcome.toolInventory).toHaveLength(43);
     } else {
       const session = new McpClientSession({ fetch: safeFetch, url: fixture.url, requestTimeoutMs: 2_000,
-        limits: { maxListPages: 16, maxToolArgumentBytes: getMcpRequestMaxBytes(), maxToolMetadataBytes: 256 * 1024, maxTools: 256 }
+        limits: { ...MCP_INVENTORY_SESSION_LIMITS, maxToolArgumentBytes: getMcpRequestMaxBytes() }
       });
       try {
         await session.initialize();
@@ -176,8 +182,7 @@ describe("remote MCP runtime integration", () => {
     const session = new McpClientSession({
       fetch: createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true }),
       url: fixture.url, requestTimeoutMs: 900000,
-      limits: { maxListPages: 16, maxToolArgumentBytes: getMcpRequestMaxBytes(),
-        maxToolMetadataBytes: 256 * 1024, maxTools: 256 }
+      limits: { ...MCP_INVENTORY_SESSION_LIMITS, maxToolArgumentBytes: getMcpRequestMaxBytes() }
     });
     try {
       await session.initialize();
@@ -189,6 +194,74 @@ describe("remote MCP runtime integration", () => {
       expect(fixture.receivedArgumentBytes).toHaveLength(1);
     } finally { await session.close(); }
   });
+
+  it("checks and runs a disposable server with long instructions and 1024 schemas on 32 pages, failing closed past the bound", async () => {
+    // Over 16 KiB of UTF-8 and over 8,192 characters, with JSON-escaped text.
+    const instructions = `${"\u754c".repeat(6_000)} "keys" \\ ${"route by project ".repeat(600)}`.trim();
+    const inventory: Tool[] = Array.from({ length: 1_024 }, (_, index) => ({
+      description: `Synthetic tool ${index}`,
+      inputSchema: { properties: { value: { description: `Value for ${index}`, type: "string" } }, type: "object" },
+      name: `tool_${index}`
+    }));
+    const fixture = await startRemoteFixture("fixture", false, "Create a task", false, inventory, { instructions, pageSize: 32 });
+    const fetch = createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true });
+    const outcome = await createRemoteMcpDraftValidator({ fetch }).validate({
+      draft: { auth: { mode: "none" }, runtime: { callTimeoutMs: 5_000, startupTimeoutMs: 5_000 }, slots: [],
+        source: { allowPrivateNetwork: true, kind: "remote", url: fixture.url.href }, transport: "streamable_http" },
+      values: {}
+    });
+    if (outcome.kind !== "ok") throw new Error(`fixture_check_failed:${JSON.stringify(outcome.issues)}`);
+    expect(fixture.cursors).toHaveLength(32);
+    expect(outcome.toolInventory).toHaveLength(1_024);
+    expect((outcome.evidence.server as { instructions?: string }).instructions).toBe(instructions);
+    const published = mcpPublishedToolDefinitions({ evidence: outcome.evidence, toolInventory: outcome.toolInventory });
+    expect(published.kind === "definitions" && published.hashes.size).toBe(1_024);
+
+    const ready: McpRuntimeInventory[] = [];
+    const failed: string[] = [];
+    let launches: McpRuntimeGenerationLaunch[] = [];
+    const coordinator = new McpRuntimeCoordinator({
+      repository: {
+        deleteDrainedGeneration: async () => false,
+        finalizeDeletedServers: async () => 0,
+        listDrainedGenerationIds: async () => [],
+        loadAcceptedGeneration: async () => null,
+        markFailed: async ({ errorCode }) => { failed.push(errorCode); return { applied: true, retryAt: null }; },
+        markReady: async ({ inventory: persisted }) => { ready.push(persisted); return true; },
+        markStarting: async () => true,
+        synchronizeDesired: async () => launches,
+        touchLastUsed: async () => undefined
+      },
+      sessions: createMcpClientSessionFactory({ fetch, limits: {
+        ...MCP_INVENTORY_SESSION_LIMITS, maxToolArgumentBytes: getMcpRequestMaxBytes()
+      } })
+    });
+    // Each fixture serves one SDK session; the runtime connects to fresh servers.
+    const launch = (generationId: string, url: URL): McpRuntimeGenerationLaunch => ({
+      allowPrivateNetwork: true, callTimeoutMs: 5_000, fingerprint: `fingerprint-${generationId}`, generationId, headers: {},
+      publishedTools: published, redactionValues: [], retryAt: null, startupTimeoutMs: 5_000, url: url.href
+    });
+    try {
+      const runtime = await startRemoteFixture("fixture", false, "Create a task", false, inventory, { instructions, pageSize: 32 });
+      launches = [launch("generation-1", runtime.url)];
+      await coordinator.reconcileNow();
+      expect(ready.at(-1)?.tools).toHaveLength(1_024);
+      expect(ready.at(-1)?.exclusions).toEqual([]);
+      await expect(coordinator.callTool({ arguments: { value: "late" }, generationId: "generation-1",
+        inputSchema: { type: "object" }, name: "tool_1023" })).resolves.toMatchObject({ isError: false, text: ["Accepted"] });
+
+      // One more upstream tool exceeds the per-server bound: no partial inventory is accepted.
+      const beyond = await startRemoteFixture("fixture", false, "Create a task", false,
+        [...inventory, { inputSchema: { type: "object" }, name: "tool_1024" }], { pageSize: 32 });
+      launches = [launch("generation-2", beyond.url)];
+      await coordinator.reconcileNow();
+      expect(ready).toHaveLength(1);
+      expect(failed).toEqual(["mcp_inventory_tool_limit"]);
+      expect(coordinator.hasLiveGeneration("generation-2")).toBe(false);
+    } finally {
+      await coordinator.stop();
+    }
+  }, 60_000);
 
   it("recovers a GitLab endpoint over real pinned HTTP and completes official-SDK initialize and paginated tools", async () => {
     const secret = "fixture-gitlab-header";
@@ -470,7 +543,7 @@ describe("published MCP inventory over real list_changed delivery", () => {
     const coordinator = new McpRuntimeCoordinator({
       repository,
       sessions: createMcpClientSessionFactory({ fetch, limits: {
-        maxListPages: 16, maxToolArgumentBytes: getMcpRequestMaxBytes(), maxToolMetadataBytes: 256 * 1024, maxTools: 256
+        ...MCP_INVENTORY_SESSION_LIMITS, maxToolArgumentBytes: getMcpRequestMaxBytes()
       } })
     });
     const launch = (generationId: string, publishedTools: McpPublishedToolDefinitions): McpRuntimeGenerationLaunch => ({

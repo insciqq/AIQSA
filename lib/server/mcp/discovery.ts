@@ -39,7 +39,9 @@ const MCP_CONNECTED_SERVICE_NAME_MAX_CHARS = 120;
  * One guidance paragraph for the frozen Auto catalog, or null when it is empty.
  * Only administrator-defined server names are disclosed, as JSON data; server
  * descriptions, server-supplied instructions and tool definitions stay with the
- * router. The wording ties discovery to relevance, never to every turn.
+ * router. The wording ties discovery to relevance, never to every turn. At the
+ * plan's 64 servers with maximal names the paragraph is about 8,200
+ * characters (about 2,000 tokens); typical names are far shorter.
  */
 export function mcpConnectedServicesGuidance(catalog: McpCapabilityCatalog | null | undefined): string | null {
   const names: string[] = [];

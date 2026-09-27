@@ -1,4 +1,4 @@
-import { isMcpToolName, MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
+import { isMcpToolName, MCP_RUNTIME_TIMEOUT_LIMITS, MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { createHash } from "node:crypto";
 import type {
   McpAuthPolicy,
@@ -13,7 +13,7 @@ import type {
 
 const MAX_ARGS = 64;
 const MAX_ARGUMENT_LENGTH = 2_048;
-const MAX_DISABLED_TOOL_NAMES = 512;
+const MAX_DISABLED_TOOL_NAMES = MCP_SERVER_TOOL_LIMIT;
 const MAX_SLOTS = 64;
 const MAX_SLOT_VALUE_LENGTH = 16_384;
 const RUNTIME_CONTROL_NAMES = new Set([
@@ -402,6 +402,11 @@ const DEFINITION_HASH_PATTERN = /^[a-f0-9]{64}$/u;
  * Validation evidence naming every checked tool with its exact definition.
  * `toolInventoryHash` covers `toolDefinitions` in the stored order, so a reader
  * verifies the pairs without sorting them again.
+ *
+ * Size: each pair is at most about 230 bytes and each listed hash 67, so a
+ * maximal 1,024-tool server adds roughly 300 KiB. Stored validation evidence
+ * therefore stays within the cumulative tools/list bound (compact inventory)
+ * plus the initialize bound (instructions) plus that overhead.
  */
 export function mcpToolDefinitionEvidence(
   tools: readonly Readonly<{ definitionHash: string; name: string }>[]
@@ -432,6 +437,9 @@ export function mcpPublishedToolDefinitions(validationEvidence: unknown): McpPub
   const evidence: ObjectValue = isObject(stored.evidence) ? stored.evidence : {};
   const inventoryNames = (Array.isArray(stored.toolInventory) ? stored.toolInventory as unknown[] : [])
     .map((tool) => isObject(tool) ? tool.name : undefined);
+  // Evidence beyond the per-server bound was never produced by a check; it
+  // offers nothing rather than widening what the runtime may expose.
+  if (inventoryNames.length > MCP_SERVER_TOOL_LIMIT) return { kind: "invalid" };
   if (!Object.hasOwn(evidence, "toolDefinitions")) {
     return { kind: "names", names: new Set(inventoryNames.filter(isMcpToolName)) };
   }
