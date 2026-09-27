@@ -527,7 +527,7 @@ function messageIdFromStart(event: AnthropicStreamEvent): string | undefined {
 
 /** Thinking reaches the answer as merged block fragments, never one event per delta. */
 function reasoningArtifacts(records: readonly ReasoningRecord[]): ModelRunSseEvent[] {
-  return records.map((payload) => ({ data: { artifactType: "reasoning", payload }, type: "artifact" }));
+  return records.map((payload): ModelRunSseEvent => ({ data: { artifactType: "reasoning", payload }, type: "artifact" }));
 }
 
 function contentBlockIndex(event: AnthropicStreamEvent): number | null {
