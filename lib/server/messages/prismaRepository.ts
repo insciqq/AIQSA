@@ -916,9 +916,16 @@ export function createPrismaMessageBranchRepository(
           });
         }
 
+        // A new active leaf bumps the chat revision; the browser summary
+        // adopts it so revision-keyed readers do not chase a lagging copy.
+        const { updatedAt: chatUpdatedAt } = await tx.chat.findUniqueOrThrow({
+          select: { updatedAt: true },
+          where: { id: root.chatId }
+        });
         return {
           activeLeafMessageId: nextActiveLeafMessageId,
           chatId: root.chatId,
+          chatUpdatedAt,
           deletedMessageIds
         };
       }).catch((error: unknown) => {

@@ -822,7 +822,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         {!projectColumn ? <>
         <ChatRootDropTarget />
         <UiV2RovingTree className="v2-navigation-tree" label="Personal chats">
-        {!props.ready && props.loading ? (
+        {!props.ready && props.loading && !props.error ? (
           <div className="v2-navigation-skeletons" aria-label="Loading chats">
             {[0, 1, 2, 3, 4].map((index) => (
               <UiV2Skeleton className="block" key={index} />
@@ -831,7 +831,12 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         ) : props.error && !props.ready ? (
           <div className="v2-navigation-status">
             <span>Could not load chats</span>
-            <button className="v2-navigation-retry v2-focusable" type="button" onClick={props.onRetry}>
+            <button
+              aria-busy={props.loading || undefined}
+              className="v2-navigation-retry v2-focusable"
+              type="button"
+              onClick={props.onRetry}
+            >
               Retry
             </button>
           </div>
@@ -1036,12 +1041,66 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   );
 }
 
+/** Automatic first-page retries after a failure: a short bounded backoff, then
+ * only an explicit retry, a regained connection or a window focus loads again. */
+export const NAVIGATION_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 15_000, 30_000];
+
+function useChatNavigationLiveness(input: Readonly<{
+  attempted: boolean;
+  error: string | null;
+  loading: boolean;
+  ready: boolean;
+}>): () => void {
+  const { attempted, error, loading, ready } = input;
+  const failedAttemptsRef = useRef(0);
+
+  // Only a list that was never requested loads by itself; a failed request
+  // keeps its error instead of immediately starting another one.
+  useEffect(() => {
+    if (!attempted && !ready && !loading) void loadChatNavigation();
+  }, [attempted, loading, ready]);
+
+  useEffect(() => {
+    if (ready) failedAttemptsRef.current = 0;
+    if (ready || loading || !error) return;
+    const retryNow = () => {
+      failedAttemptsRef.current = 0;
+      void loadChatNavigation();
+    };
+    const retryOnFocus = () => {
+      if (document.visibilityState === "visible") retryNow();
+    };
+    window.addEventListener("online", retryNow);
+    window.addEventListener("focus", retryOnFocus);
+    const attempt = failedAttemptsRef.current;
+    const delay = NAVIGATION_RETRY_DELAYS_MS[attempt];
+    // Offline, the `online` event is the retry signal; timers would only fail.
+    const timer = delay !== undefined && navigator.onLine !== false
+      ? window.setTimeout(() => {
+        failedAttemptsRef.current = attempt + 1;
+        void loadChatNavigation();
+      }, delay)
+      : undefined;
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("online", retryNow);
+      window.removeEventListener("focus", retryOnFocus);
+    };
+  }, [error, loading, ready]);
+
+  return () => {
+    failedAttemptsRef.current = 0;
+    void loadChatNavigation();
+  };
+}
+
 export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarProps,
   | "activeChatId" | "chats" | "error" | "folders" | "hasMore" | "loading"
   | "onLoadMore" | "onRetry" | "onSearch" | "ready" | "searchError"
   | "searchLoading" | "searchQuery"
 >) {
   const activeChatId = useWorkspaceStore((state) => state.activeChatId);
+  const attempted = useWorkspaceStore((state) => state.navigationAttempted);
   const chats = useWorkspaceStore((state) => state.navigationChats);
   const error = useWorkspaceStore((state) => state.navigationError);
   const folders = useWorkspaceStore((state) => state.navigationFolders);
@@ -1077,9 +1136,7 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
     activeRunIds.has(chat.id) && !chat.activeRun ? { ...chat, activeRun: true } : chat
   );
 
-  useEffect(() => {
-    if (!ready && !loading) void loadChatNavigation();
-  }, [loading, ready]);
+  const retryChatNavigation = useChatNavigationLiveness({ attempted, error, loading, ready });
 
   return (
     <NavigationSidebar
@@ -1096,7 +1153,7 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
       }}
       onRetry={() => {
         if (searchQuery) void loadChatNavigationSearch({ query: searchQuery });
-        else void loadChatNavigation();
+        else retryChatNavigation();
       }}
       onSearch={(value) => {
         if (value) useWorkspaceStore.getState().setNavigationSearchQuery(value);
