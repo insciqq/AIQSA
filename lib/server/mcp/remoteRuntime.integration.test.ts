@@ -230,6 +230,7 @@ describe("remote MCP runtime integration", () => {
         markReady: async ({ inventory: persisted }) => { ready.push(persisted); return true; },
         markStarting: async () => true,
         synchronizeDesired: async () => launches,
+        synchronizeShared: async () => [],
         touchLastUsed: async () => undefined
       },
       sessions: createMcpClientSessionFactory({ fetch, limits: {
@@ -538,6 +539,7 @@ describe("published MCP inventory over real list_changed delivery", () => {
       },
       markStarting: async () => true,
       synchronizeDesired: async () => launches,
+      synchronizeShared: async () => [],
       touchLastUsed: async () => undefined
     };
     const coordinator = new McpRuntimeCoordinator({

@@ -3510,6 +3510,7 @@ model McpServer {
   oauthConnections     McpOAuthConnection[]
   projectBindings      ProjectMcpBinding[]
   revisions            McpRevision[]        @relation("McpServerRevisions")
+  sharedRuntime        McpSharedRuntime?
   userServers          McpUserServer[]
 
   @@index([enabled, archivedAt])
@@ -3625,6 +3626,18 @@ model McpUserServer {
 
   @@unique([userId, serverId])
   @@index([userId, enabled])
+}
+
+/// The installation-owned runtime Project runs use for one server: no user,
+/// preference, OAuth identity or personal value. `requestedAt` records the last
+/// Project demand, so member activity never decides its lifetime.
+model McpSharedRuntime {
+  serverId                   String                 @id
+  desiredRuntimeGenerationId String?                @unique
+  requestedAt                DateTime               @default(now())
+  desiredRuntimeGeneration   McpRuntimeGeneration?  @relation("McpSharedDesiredRuntimeGeneration", fields: [desiredRuntimeGenerationId], references: [id], onDelete: SetNull)
+  runtimeGenerations         McpRuntimeGeneration[] @relation("McpSharedRuntimeGenerations")
+  server                     McpServer              @relation(fields: [serverId], references: [id], onDelete: Cascade)
 }
 
 model McpOAuthClient {
@@ -3818,9 +3831,12 @@ model McpHubDiscoveryAttempt {
   @@index([createdAt])
 }
 
+/// Owned by exactly one of a member's preference (`userServerId`) or the
+/// server's shared Project runtime (`sharedServerId`); a SQL check enforces it.
 model McpRuntimeGeneration {
   id                      String              @id @default(uuid())
-  userServerId            String
+  userServerId            String?
+  sharedServerId          String?
   revisionId              String
   oauthConnectionId       String?
   fingerprint             String              @unique
@@ -3841,10 +3857,13 @@ model McpRuntimeGeneration {
   oauthConnection         McpOAuthConnection? @relation(fields: [oauthConnectionId], references: [id], onDelete: Restrict)
   revision                McpRevision         @relation(fields: [revisionId], references: [id], onDelete: Restrict)
   runBindings             McpRunBinding[]
-  userServer              McpUserServer       @relation("McpUserRuntimeGenerations", fields: [userServerId], references: [id], onDelete: Cascade)
+  sharedDesiredFor        McpSharedRuntime?   @relation("McpSharedDesiredRuntimeGeneration")
+  sharedRuntime           McpSharedRuntime?   @relation("McpSharedRuntimeGenerations", fields: [sharedServerId], references: [serverId], onDelete: Cascade)
+  userServer              McpUserServer?      @relation("McpUserRuntimeGenerations", fields: [userServerId], references: [id], onDelete: Cascade)
 
   @@index([oauthConnectionId])
   @@index([revisionId])
+  @@index([sharedServerId])
   @@index([state, retryAt])
   @@index([userServerId])
 }

@@ -125,3 +125,19 @@ export function mcpRuntimeFingerprint(input: {
     userId: input.userId
   });
 }
+
+/**
+ * The installation-owned Project runtime of one revision and shared plan. It
+ * names no user or OAuth identity, and its distinct shape never collides with
+ * a member's personal runtime of the same revision.
+ */
+export function mcpSharedRuntimeFingerprint(input: {
+  plan: EffectiveMcpSlotPlanItem[];
+  revisionId: string;
+}): string {
+  return hashCanonicalMcpValue({
+    owner: "shared",
+    plan: [...input.plan].sort((left, right) => left.slotKey.localeCompare(right.slotKey)),
+    revisionId: input.revisionId
+  });
+}

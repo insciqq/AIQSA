@@ -129,12 +129,17 @@ async function prepareExactProjectMcpRunPlan(userId: string, serverIds: readonly
     return coordinator;
   };
   // Project execution never calls ensureUserServersReady: that operation can
-  // create or reconcile a member's personal McpUserServer row.  The loader
-  // below selects an already-running installation/shared generation instead.
+  // create or reconcile a member's personal McpUserServer row. It starts the
+  // servers' installation-owned shared runtimes instead, so a cold process,
+  // an idle member or a stale inventory never leaves the Project without MCP.
+  // The loader applies the initiator's tool restrictions to that runtime.
+  const ensureShared = () => currentCoordinator().ensureSharedServersReady(serverIds);
+  await ensureShared();
   return prepareMcpRunPlan({
     allowedServerIds: serverIds,
     isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
-    load: () => loadProjectRunPlan(userId, serverIds)
+    load: () => loadProjectRunPlan(userId, serverIds),
+    reconcile: ensureShared
   });
 }
 
