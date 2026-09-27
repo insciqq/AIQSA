@@ -11,7 +11,11 @@ export const WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES = 64 * 1024 * 1024;
 export const WORKSPACE_SECRET_FILE_MAX_BYTES = 512 * 1024;
 /** Serialized ordinary value: the largest file as base64 plus its JSON envelope. */
 export const WORKSPACE_SECRET_VALUE_MAX_BYTES = 768 * 1024;
-/** Serialized browser value: the largest state as base64 plus its kind and filename. */
+/**
+ * Serialized browser value: the largest state as base64 plus its kind and
+ * filename. The WorkspaceSecretValue_shape database check bounds the raw size
+ * and the encrypted envelope derived from this value.
+ */
 export const WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES = Math.ceil(WORKSPACE_BROWSER_SESSION_MAX_BYTES / 3) * 4 + 4 * 1024;
 export const WORKSPACE_SECRET_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 export const WORKSPACE_SECRET_ENV_MAX_BYTES = 128 * 1024;
