@@ -86,6 +86,8 @@ export type JourneyConfig = Readonly<{
   baseUrl: URL;
   cleanupProviders: boolean;
   contextWindow: number;
+  /** AIQSA_JOURNEY_DEBUG=1: sanitized per-request and reuse-decision lines. */
+  debug: boolean;
   /** True when AIQSA_JOURNEY_ROUTES named the routes explicitly. */
   explicitRoutes: boolean;
   maxTurns: number;
@@ -124,7 +126,11 @@ export function journeyBaseUrl(raw: string): URL {
   return new URL(url.origin);
 }
 
-/** A compatible endpoint root without credentials, query or trailing slash. */
+/**
+ * A compatible endpoint root without credentials, query or trailing slash.
+ * codex-lb's CLI route maps to its documented OpenAI-compatible `/v1` root,
+ * as `codexLbRoute` maps the Codex profile.
+ */
 export function journeyApiRoot(raw: string): string {
   let url: URL;
   try {
@@ -135,6 +141,7 @@ export function journeyApiRoot(raw: string): string {
   if (url.username || url.password || url.search || url.hash || (url.protocol !== "https:" && url.protocol !== "http:")) {
     return fail("config", "codex_lb_base_url_invalid");
   }
+  if (url.pathname.replace(/\/+$/u, "") === "/backend-api/codex") url.pathname = "/v1";
   return url.toString().replace(/\/+$/u, "");
 }
 
@@ -171,6 +178,7 @@ export function journeyConfig(env: Env, codexApiRootFallback: () => string | nul
     cleanupProviders: envValue(env, "AIQSA_JOURNEY_CLEANUP_PROVIDERS") === "1",
     contextWindow: integerSetting(env, "AIQSA_JOURNEY_CONTEXT_WINDOW", JOURNEY_LIMITS.defaultContextWindow,
       JOURNEY_LIMITS.minContextWindow, JOURNEY_LIMITS.maxContextWindow),
+    debug: envValue(env, "AIQSA_JOURNEY_DEBUG") === "1",
     explicitRoutes: Boolean(routeList),
     maxTurns: integerSetting(env, "AIQSA_JOURNEY_MAX_TURNS", JOURNEY_LIMITS.defaultMaxTurns,
       JOURNEY_LIMITS.minTurns, JOURNEY_LIMITS.maxTurns),
@@ -368,9 +376,24 @@ export type JourneyProviderModel = Readonly<{
   updatedAt: string;
 }>;
 
+type JourneyActiveCheck = Readonly<{
+  connectionVersion: number;
+  credentialId: string;
+  credentialVersionId: string;
+  modelVersion: number;
+  providerModelId: string;
+  status: string;
+}>;
+
 export type JourneyConnection = Readonly<{
+  active: boolean;
+  activeChecks: readonly JourneyActiveCheck[];
+  activeVersion: number;
   apiRoot: string | null;
   checkRunning: boolean;
+  /** The default credential's active version when it is enabled and unrevoked. */
+  defaultCredentialVersionId: string | null;
+  defaultCredentialId: string | null;
   enabled: boolean;
   family: string;
   id: string;
@@ -395,6 +418,24 @@ function readModel(value: unknown): JourneyProviderModel | null {
   };
 }
 
+function readActiveCheck(value: unknown): JourneyActiveCheck[] {
+  return record(value) && typeof value.credentialId === "string" && typeof value.credentialVersionId === "string" &&
+    typeof value.providerModelId === "string" && typeof value.status === "string" &&
+    Number.isSafeInteger(value.connectionVersion) && Number.isSafeInteger(value.modelVersion)
+    ? [{ connectionVersion: Number(value.connectionVersion), credentialId: value.credentialId,
+        credentialVersionId: value.credentialVersionId, modelVersion: Number(value.modelVersion),
+        providerModelId: value.providerModelId, status: value.status }]
+    : [];
+}
+
+function defaultCredentialVersion(entry: Record<string, unknown>): string | null {
+  const credentials = Array.isArray(entry.credentials) ? entry.credentials : [];
+  const credential = credentials.find((candidate) => record(candidate) && candidate.id === entry.defaultCredentialId);
+  if (!record(credential) || credential.enabled !== true || !record(credential.activeVersion)) return null;
+  const version = credential.activeVersion;
+  return typeof version.id === "string" && (version.revokedAt === null || version.revokedAt === undefined) ? version.id : null;
+}
+
 /** The fields of `GET /api/admin/providers` the journey needs, or null for an unexpected shape. */
 export function readConnections(value: unknown): JourneyConnection[] | null {
   if (!record(value) || !Array.isArray(value.connections)) return null;
@@ -406,8 +447,13 @@ export function readConnections(value: unknown): JourneyConnection[] | null {
     if (models.some((model) => model === null)) return null;
     const config = record(entry.activeConfig) ? entry.activeConfig : record(entry.draftConfig) ? entry.draftConfig : null;
     connections.push({
+      active: record(entry.activeConfig),
+      activeChecks: Array.isArray(entry.activeChecks) ? entry.activeChecks.flatMap(readActiveCheck) : [],
+      activeVersion: Number.isSafeInteger(entry.activeVersion) ? Number(entry.activeVersion) : 0,
       apiRoot: typeof config?.apiRoot === "string" ? config.apiRoot.replace(/\/+$/u, "") : null,
       checkRunning: record(entry.checkRun) && entry.checkRun.state === "running",
+      defaultCredentialId: typeof entry.defaultCredentialId === "string" ? entry.defaultCredentialId : null,
+      defaultCredentialVersionId: defaultCredentialVersion(entry),
       enabled: entry.enabled,
       family: entry.family,
       id: entry.id,
@@ -417,18 +463,63 @@ export function readConnections(value: unknown): JourneyConnection[] | null {
   return connections;
 }
 
-/** An existing deployment of the route's model, preferring enabled ones. */
-export function findJourneyModel(
-  connections: readonly JourneyConnection[],
-  target: Readonly<{ apiRoot?: string; family: "anthropic" | "openai_compatible"; upstreamModelId: string }>
-): Readonly<{ connection: JourneyConnection; model: JourneyProviderModel }> | null {
-  const matches = connections.flatMap((connection) =>
-    connection.family !== target.family || (target.apiRoot !== undefined && connection.apiRoot !== target.apiRoot)
-      ? []
-      : connection.models
-        .filter((model) => (model.activeConfig ?? model.draftConfig).upstreamModelId === target.upstreamModelId)
-        .map((model) => ({ connection, model })));
-  return matches.find(({ connection, model }) => connection.enabled && model.enabled) ?? matches[0] ?? null;
+export type JourneyTarget = Readonly<{ apiRoot?: string; family: "anthropic" | "openai_compatible"; upstreamModelId: string }>;
+
+/** Why an existing deployment can or cannot serve the journey; booleans only. */
+export type DeploymentUsability = Readonly<{
+  checkAvailable: boolean;
+  connectionActive: boolean;
+  connectionEnabled: boolean;
+  credentialActive: boolean;
+  modelActive: boolean;
+  modelEnabled: boolean;
+  usable: boolean;
+}>;
+
+/**
+ * A deployment is reusable only when runs can use it now: an enabled, published
+ * connection whose default credential has an unrevoked active version, an
+ * enabled published model, and an `available` check for that exact tuple.
+ * Seeded code-owned templates (disabled, keyless, unpublished) never qualify.
+ */
+export function deploymentUsability(connection: JourneyConnection, model: JourneyProviderModel): DeploymentUsability {
+  const credentialActive = connection.defaultCredentialVersionId !== null;
+  const modelActive = model.activeConfig !== null && model.activeVersion > 0;
+  const checkAvailable = connection.activeChecks.some((check) => check.status === "available" &&
+    check.providerModelId === model.id && check.credentialId === connection.defaultCredentialId &&
+    check.credentialVersionId === connection.defaultCredentialVersionId &&
+    check.modelVersion === model.activeVersion && check.connectionVersion === connection.activeVersion);
+  const usability = {
+    checkAvailable, connectionActive: connection.active, connectionEnabled: connection.enabled, credentialActive,
+    modelActive, modelEnabled: model.enabled
+  };
+  return { ...usability, usable: Object.values(usability).every(Boolean) };
+}
+
+/** The model of the route inside one connection, whatever its state. */
+export function modelInConnection(connection: JourneyConnection, upstreamModelId: string): JourneyProviderModel | null {
+  return connection.models.find((model) => (model.activeConfig ?? model.draftConfig).upstreamModelId === upstreamModelId) ?? null;
+}
+
+export type JourneyReuseDecision = Readonly<{
+  candidates: readonly DeploymentUsability[];
+  match: Readonly<{ connection: JourneyConnection; model: JourneyProviderModel }> | null;
+  reason: "no_candidate" | "not_usable" | "usable";
+}>;
+
+/** The first usable existing deployment of the route's model, with the evidence for the choice. */
+export function journeyReuseDecision(connections: readonly JourneyConnection[], target: JourneyTarget): JourneyReuseDecision {
+  const candidates = connections.flatMap((connection) => {
+    if (connection.family !== target.family || (target.apiRoot !== undefined && connection.apiRoot !== target.apiRoot)) return [];
+    const model = modelInConnection(connection, target.upstreamModelId);
+    return model ? [{ connection, model, usability: deploymentUsability(connection, model) }] : [];
+  });
+  const match = candidates.find((candidate) => candidate.usability.usable) ?? null;
+  return {
+    candidates: candidates.map((candidate) => candidate.usability),
+    match: match ? { connection: match.connection, model: match.model } : null,
+    reason: match ? "usable" : candidates.length > 0 ? "not_usable" : "no_candidate"
+  };
 }
 
 /**
@@ -463,10 +554,15 @@ export function quickSetupCandidate(value: unknown, model: string): Readonly<{ c
   return chosen ? { candidateId: chosen.candidateId, policyVersion: Number(value.policyVersion) } : null;
 }
 
-/** The custom-setup request for the codex-lb compatible Responses endpoint. */
+/**
+ * The custom-setup request for the codex-lb compatible Responses endpoint.
+ * With a discovery receipt the model is a selected catalog id; without one it
+ * is the handler's manual fallback, which setup proves with a tiny generation.
+ */
 export function codexLbSetupBody(input: Readonly<{
   apiRoot: string;
   catalogProof?: string;
+  connectionDisplayName: string;
   contextWindow: number;
   model: string;
   secret: string;
@@ -482,12 +578,64 @@ export function codexLbSetupBody(input: Readonly<{
       nativePdfInput: false, nativeImageGeneration: false, nativeSearch: false, pdf: true, vision: false
     },
     confirmPaidRequest: true,
-    connectionDisplayName: "Context journey codex-lb",
+    connectionDisplayName: input.connectionDisplayName,
     modelDisplayName: "Context journey model",
     protocol: "responses",
     responseTimeoutSeconds: 180,
     secret: input.secret,
     ...(input.catalogProof ? { catalogProof: input.catalogProof, modelIds: [input.model] } : { modelId: input.model })
+  };
+}
+
+// Catalog readiness and debug evidence ---------------------------------------------
+
+export type CatalogReadiness =
+  | "catalog_model_identity_missing"
+  | "catalog_model_missing"
+  | "catalog_tool_calling_unavailable"
+  | "catalog_window_not_applied"
+  | "ready";
+
+/** The catalog state of the journey model; a non-ready value is the timeout's failure code. */
+export function catalogReadiness(model: CatalogModel | null | undefined, contextWindow: number): CatalogReadiness {
+  if (!model) return "catalog_model_missing";
+  if (!model.providerFamily || !model.upstreamModelId) return "catalog_model_identity_missing";
+  if (model.contextWindow !== contextWindow) return "catalog_window_not_applied";
+  // Hybrid compaction is frozen only for tool-capable admissions.
+  return model.capabilities.toolCalling ? "ready" : "catalog_tool_calling_unavailable";
+}
+
+const STATIC_PATH_SEGMENTS = new Set([
+  "actions", "admin", "api", "auth", "cancel", "catalog", "chats", "credentials", "custom-setup", "delete-permanently",
+  "discover", "me", "memory-mode", "messages", "model-runs", "models", "providers", "quick-setup", "status", "token"
+]);
+
+/** A request path with every non-route segment (ids) replaced and the query dropped. */
+export function debugPath(path: string): string {
+  const pathname = path.split(/[?#]/u, 1)[0] ?? "";
+  return pathname.split("/").map((segment) => segment === "" || STATIC_PATH_SEGMENTS.has(segment) ? segment : "<id>").join("/");
+}
+
+/** A value suitable for evidence only when it is a short stable code. */
+export function stableCode(value: unknown): string | null {
+  return typeof value === "string" && /^[a-z0-9_]{1,64}$/u.test(value) ? value : null;
+}
+
+/** One sanitized HTTP debug line: method, redacted path, status and stable codes only. */
+export function debugHttpLine(input: Readonly<{ body?: unknown; method: string; path: string; stage: string; status: number | null }>): Record<string, unknown> {
+  const body = record(input.body) ? input.body : {};
+  const error = stableCode(body.error);
+  const code = stableCode(body.code);
+  const outcome = stableCode(body.outcome);
+  return {
+    debug: "http",
+    stage: input.stage,
+    method: input.method,
+    path: debugPath(input.path),
+    status: input.status,
+    ...(error ? { error } : {}),
+    ...(code ? { code } : {}),
+    ...(outcome ? { outcome } : {})
   };
 }
 
