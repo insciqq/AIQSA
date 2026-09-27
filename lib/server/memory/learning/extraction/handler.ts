@@ -31,6 +31,7 @@ import {
 } from "./decoder";
 import {
   createPrismaMemoryFactExtractionRepository,
+  MEMORY_FACT_INCOMPLETE_SOURCE_CODES,
   type MemoryFactExtractionRepository
 } from "./repository";
 import {
@@ -100,6 +101,20 @@ function terminalResult(
       version: 1
     }),
     stage: reason
+  };
+}
+
+/** A page that settled without applying a plan still hands coverage to the
+ * next page (its own gap stays recorded by its stage). A page that applied
+ * enqueued its continuation atomically with that apply. */
+function continuingCoverage(
+  deps: MemoryFactExtractionHandlerDependencies,
+  result: MemoryJobExecutionResult,
+  input: MemoryFactExtractionInput
+): MemoryJobExecutionResult {
+  return {
+    ...result,
+    apply: (tx, claim) => deps.repository.continueCoverage(tx, claim, input)
   };
 }
 
@@ -179,7 +194,11 @@ async function recoverPriorExecution(
     }
     return {
       kind: "TERMINAL",
-      result: terminalResult(job, input, "fact_outcome_unknown")
+      result: continuingCoverage(
+        deps,
+        terminalResult(job, input, "fact_outcome_unknown"),
+        input
+      )
     };
   }
   for (const pending of extractionBindings.filter(
@@ -445,6 +464,11 @@ export function createMemoryFactExtractionHandler(
       const prepared = await deps.repository.prepare(job);
       if ("decision" in prepared) {
         await deps.repository.discardStale(job, "source_stale");
+        // An unprocessable, unscanned or uncovered source is a visible
+        // failure of the page that owns the gap, never a stale revision.
+        if (MEMORY_FACT_INCOMPLETE_SOURCE_CODES.has(prepared.decision.errorCode)) {
+          throw new MemoryCoordinatorError(prepared.decision.errorCode, false);
+        }
         return terminalResult(job, null, prepared.decision.errorCode);
       }
       const input = prepared.input;
@@ -456,11 +480,17 @@ export function createMemoryFactExtractionHandler(
       // in a model request merely to ask whether they are credentials.
       if (input.messages.some((message) =>
         memoryExplicitStatementContainsSecret(message.text)) ||
+        (input.targetPage !== undefined &&
+          memoryExplicitStatementContainsSecret(input.targetPage.precedingText)) ||
         input.contextRefs.some((context) =>
           memoryExplicitStatementContainsSecret(context.text) ||
           context.aliases.some(memoryExplicitStatementContainsSecret))) {
         await deps.repository.discardStale(job, "secret_source_fenced");
-        return terminalResult(job, input, "fact_secret_source_fenced");
+        return continuingCoverage(
+          deps,
+          terminalResult(job, input, "fact_secret_source_fenced"),
+          input
+        );
       }
       const recovered = await recoverPriorExecution(deps, job, input);
       if (recovered?.kind === "TERMINAL") return recovered.result;
@@ -526,13 +556,13 @@ export function createMemoryFactExtractionHandler(
           if (failure.classification === "REPLAY_SAFE_TRANSIENT") {
             throw new MemoryCoordinatorError(failure.errorCode, true);
           }
-          return terminalResult(
+          return continuingCoverage(deps, terminalResult(
             job,
             input,
             failure.classification === "UNKNOWN"
               ? "fact_outcome_unknown"
               : "fact_provider_unavailable"
-          );
+          ), input);
         }
 
         try {
@@ -548,7 +578,13 @@ export function createMemoryFactExtractionHandler(
             state: "FAILED",
             usage: reportedUsage(result.usage)
           });
-          return terminalResult(job, input, "fact_output_rejected");
+          // Invalid output authorizes no mutation of this page; later pages
+          // are separate inputs and still run.
+          return continuingCoverage(
+            deps,
+            terminalResult(job, input, "fact_output_rejected"),
+            input
+          );
         }
 
         await deps.execution.lifecycle.settleSucceededWithDurableResult(

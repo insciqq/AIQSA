@@ -350,6 +350,9 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "An assistant-role context message is never user testimony. A candidate that would be true only because the assistant said it must not be emitted.",
   "When a candidate relies on context_before, copy that item's opaque context_ref into dependency_refs. Never cite context text as evidence.",
   "occurrence_index is the zero-based ordinal among identical exact-text matches inside the referenced string, never a character offset; use 0 when that exact text occurs once.",
+  `Emit observations in the order their evidence first appears in target_message.text and return at most ${MEMORY_FACT_MAX_PACKET_CANDIDATES}. When more remain, stop after ${MEMORY_FACT_MAX_PACKET_CANDIDATES}: the remaining text is requested again in a continuation, so never merge unrelated facts to fit or skip ahead.`,
+  "When target_message.preceding_text is non-empty, target_message.text continues a longer message and preceding_text is earlier text of that same message for reading only: never cite it as evidence and never emit an observation whose evidence lies in it. When target_message.text_continues is true, the message goes on after text in a later portion.",
+  "An excerpt edge may cut a sentence, quotation, condition, or negation. Emit an observation only when the shown text itself establishes it as the user's own assertion; text that may belong to quoted, pasted, conditional, hypothetical, or negated material that began before the shown text, or that continues after it, is not an actual personal fact.",
   "Emit the language-neutral semantic_frame for every observation. A question, hypothetical event, unmet condition, standalone quotation, assistant claim, or arbitrary third-party claim does not establish an actual personal fact.",
   "Do not infer ownership, current status, correction, retraction, temporal perspective, expiration intent, entity identity, or coreference. Represent uncertainty with UNKNOWN.",
   "A clear direct current-user self-identity or stable preference is eligible; 'do not infer' does not reject an attribute explicitly asserted by the current user.",
@@ -433,8 +436,12 @@ export function memoryFactExtractionPromptPayload(
     context.source.messageId,
     context.ref
   ]));
+  const page = input.targetPage;
   if (targetIndex < 0 || targetIndex !== input.messages.length - 1 ||
-    input.messages[targetIndex]!.text.length > MEMORY_FACT_MAX_TARGET_CHARACTERS ||
+    input.messages[targetIndex]!.text.length + (page?.precedingText.length ?? 0) >
+      MEMORY_FACT_MAX_TARGET_CHARACTERS ||
+    (page !== undefined &&
+      page.coreStart + input.messages[targetIndex]!.text.length > page.sourceLength) ||
     input.messages.slice(0, targetIndex).reduce((sum, message) => sum + message.text.length, 0) >
       MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
     input.messages.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
@@ -477,7 +484,16 @@ export function memoryFactExtractionPromptPayload(
       text: context.text
     })),
     source_projection_hash: input.sourceProjectionHash,
-    target_message: projectMessage(input.messages[targetIndex]!, null),
+    // A whole target keeps the established shape; a page adds its reading
+    // context and whether the message continues after the shown text.
+    target_message: page === undefined
+      ? projectMessage(input.messages[targetIndex]!, null)
+      : {
+          ...projectMessage(input.messages[targetIndex]!, null),
+          preceding_text: page.precedingText,
+          text_continues: page.coreStart + input.messages[targetIndex]!.text.length <
+            page.sourceLength
+        },
     time_zone: input.timeZone
   });
 }

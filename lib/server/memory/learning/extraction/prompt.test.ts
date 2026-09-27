@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
   MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+  MEMORY_FACT_MAX_TARGET_CHARACTERS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+  memoryFactTargetView,
   type MemoryFactExtractionInput
 } from "./contract";
 import {
@@ -16,7 +18,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v44");
+      .toBe("memory-fact-extraction-prompt-v45");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -105,7 +107,14 @@ describe("Memory semantic-frame extraction prompt", () => {
       "target_message.created_at in time_zone",
       "preserving the exact original wording",
       "PRONOMINAL, ELLIPSIS, UNKNOWN",
-      "no prose or hidden rationale"
+      "no prose or hidden rationale",
+      "in the order their evidence first appears in target_message.text and return at most 8",
+      "requested again in a continuation",
+      "preceding_text is earlier text of that same message for reading only",
+      "never cite it as evidence",
+      "text_continues is true",
+      "An excerpt edge may cut a sentence, quotation, condition, or negation",
+      "is not an actual personal fact"
     ]) {
       expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(rule);
     }
@@ -219,5 +228,73 @@ describe("Memory semantic-frame extraction prompt", () => {
     expect(unboundPayload.supplied_context_refs).toEqual([
       expect.objectContaining({ entity_bound: false, kind: "FACT_VERSION", ref: "F1" })
     ]);
+    expect(Object.keys(payload.target_message).sort()).toEqual([
+      "context_ref", "created_at", "id", "role", "text", "updated_at"
+    ]);
+  });
+
+  it("shows a page with its read-only preceding text and continuation flag", () => {
+    const fullText = Array.from({ length: 1_200 }, (_, index) =>
+      `Paragraph ${index} describes ordinary background notes.\n`).join("");
+    expect(fullText.length).toBeGreaterThan(MEMORY_FACT_MAX_TARGET_CHARACTERS * 2);
+    const view = memoryFactTargetView(fullText, { cursor: 25_000, ordinal: 1 }, false);
+    if (view.kind !== "PAGE") throw new Error("page_expected");
+    const source = {
+      activeLeafMessageId: "assistant-current",
+      branchGeneration: 1,
+      chatId: "chat-1",
+      memoryGenerationSnapshot: 1,
+      sourceHash: "a".repeat(64),
+      sourceMessageId: "user-current",
+      sourceRevision: 1,
+      userId: "user-1"
+    };
+    const input: MemoryFactExtractionInput = {
+      contextRefs: [],
+      folderId: null,
+      identityProfile: "UNICODE_V2",
+      inputHash: "b".repeat(64),
+      messages: [{
+        contentHash: memorySha256(fullText),
+        createdAt: "2026-08-27T10:00:00.000Z",
+        evidenceEligible: true,
+        id: source.sourceMessageId,
+        languageCode: "en",
+        redactionSpans: [],
+        role: "user",
+        text: view.text,
+        updatedAt: "2026-08-27T10:00:00.000Z"
+      }],
+      source,
+      sourceProjectionHash: "c".repeat(64),
+      sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+      suppressionIdentitySnapshot: "d".repeat(64),
+      targetPage: view.page,
+      timeZone: "UTC"
+    };
+    const payload = JSON.parse(memoryFactExtractionPromptPayload(input)) as {
+      target_message: { preceding_text: string; text: string; text_continues: boolean };
+    };
+    expect(payload.target_message.text).toBe(fullText.slice(25_000, 47_000));
+    expect(payload.target_message.preceding_text).toBe(fullText.slice(23_000, 25_000));
+    expect(payload.target_message.text_continues).toBe(true);
+
+    const last = memoryFactTargetView(
+      fullText,
+      { cursor: fullText.length - 100, ordinal: 3 },
+      false
+    );
+    if (last.kind !== "PAGE") throw new Error("page_expected");
+    const lastPayload = JSON.parse(memoryFactExtractionPromptPayload({
+      ...input,
+      messages: [{ ...input.messages[0]!, text: last.text }],
+      targetPage: last.page
+    })) as typeof payload;
+    expect(lastPayload.target_message.text).toBe(fullText.slice(-100));
+    expect(lastPayload.target_message.text_continues).toBe(false);
+    expect(() => memoryFactExtractionPromptPayload({
+      ...input,
+      targetPage: { ...view.page, precedingText: "x".repeat(2_001) }
+    })).toThrow("memory_fact_target_message_invalid");
   });
 });
