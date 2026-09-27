@@ -122,7 +122,7 @@ async function prepareExactMcpRunPlan(
   });
 }
 
-async function prepareExactProjectMcpRunPlan(userId: string, serverIds: readonly string[]) {
+async function prepareExactProjectMcpRunPlan(userId: string, serverIds: readonly string[], toolNames?: readonly string[]) {
   let coordinator: McpRuntimeCoordinator | null = null;
   const currentCoordinator = () => {
     coordinator ??= getDefaultMcpRuntimeCoordinator();
@@ -137,6 +137,7 @@ async function prepareExactProjectMcpRunPlan(userId: string, serverIds: readonly
   await ensureShared();
   return prepareMcpRunPlan({
     allowedServerIds: serverIds,
+    ...(toolNames ? { allowedToolNames: toolNames } : {}),
     isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
     load: () => loadProjectRunPlan(userId, serverIds),
     reconcile: ensureShared
@@ -191,14 +192,14 @@ export const defaultMcpRunPlan = {
   },
   async prepare(
     userId: string,
-    options?: Readonly<{ allowedServerIds?: readonly string[] }>
+    options?: Readonly<{ allowedServerIds?: readonly string[]; allowedToolNames?: readonly string[] }>
   ) {
     const serverIds = options?.allowedServerIds ??
       (await loadCapabilityCatalog(userId)).servers.map((server) => server.serverId);
-    return prepareExactMcpRunPlan(userId, serverIds);
+    return prepareExactMcpRunPlan(userId, serverIds, options?.allowedToolNames);
   },
-  async prepareProject(userId: string, serverIds: readonly string[]) {
-    return prepareExactProjectMcpRunPlan(userId, serverIds);
+  async prepareProject(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>) {
+    return prepareExactProjectMcpRunPlan(userId, serverIds, options?.allowedToolNames);
   },
   routerForRun(owner: Readonly<{ runId: string; userId: string }>) {
     return createPrismaAcceptedMcpRouter(prisma, owner);

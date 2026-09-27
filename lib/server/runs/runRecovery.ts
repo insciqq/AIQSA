@@ -369,9 +369,9 @@ export type RunRecoveryDeps = Readonly<{
     ): Promise<McpRunPlanResult>;
     prepare(
       userId: string,
-      options?: Readonly<{ allowedServerIds?: readonly string[] }>
+      options?: Readonly<{ allowedServerIds?: readonly string[]; allowedToolNames?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
-    prepareProject?(userId: string, serverIds: readonly string[]): Promise<McpRunPlanResult>;
+    prepareProject?(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>): Promise<McpRunPlanResult>;
     router?: McpSemanticRouter;
     routerForRun?(owner: Readonly<{ runId: string; userId: string }>): McpSemanticRouter;
   }>;
@@ -1177,10 +1177,11 @@ async function currentRecoveryMcpDispatchFailure(
   if (!route) return "mcp_accepted_generation_changed";
   try {
     if (!(await context.deps.mcp.filterTools(context.run.userId, [route.tool])).length) return "mcp_tool_access_denied";
+    const selection = { allowedToolNames: [route.tool.namespacedName] };
     const current = context.run.project
       ? context.deps.mcp.prepareProject
-        ? await context.deps.mcp.prepareProject(context.run.userId, [route.serverId]) : null
-      : await context.deps.mcp.prepare(context.run.userId, { allowedServerIds: [route.serverId] });
+        ? await context.deps.mcp.prepareProject(context.run.userId, [route.serverId], selection) : null
+      : await context.deps.mcp.prepare(context.run.userId, { allowedServerIds: [route.serverId], ...selection });
     return currentMcpDispatchFailure(current, route, generationId);
   } catch {
     return "mcp_runtime_unavailable";

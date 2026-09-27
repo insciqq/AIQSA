@@ -17,7 +17,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { McpSemanticRouterError } from "../mcp/router";
-import type { McpDiscoveryState } from "../mcp/runPlan";
+import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord } from "../mcp/runPlan";
+import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 import type {
   NormalizedRunRequest,
@@ -7520,6 +7521,64 @@ describe("run recovery", () => {
     expect(state.calls()[0]).toMatchObject({ state: "error" });
   });
 
+  it.each([false, true])("recovers a selected tool from a 1024-tool inventory (Project: %s)", async (projectScope) => {
+    const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
+    const record: McpRunPlanRecord = {
+      credentialSources: [], enabled: true, errorCode: null, externalAccountLabel: null,
+      fingerprint: recoveryFingerprint, generationId: "generation-1", inventory: { version: 1,
+        tools: Array.from({ length: MCP_SERVER_TOOL_LIMIT }, (_, index) => ({
+          definitionHash: "b".repeat(64), description: null, inputSchema: { type: "object" }, name: `tool_${index + 1}`
+        })) },
+      inventoryUpdatedAt: new Date(), namespace: "large_inventory", readiness: "ready",
+      revisionId: "revision-1", serverId: "server-1", serverName: "Large inventory"
+    };
+    const namespacedName = namespacedMcpToolName(record.namespace, `tool_${MCP_SERVER_TOOL_LIMIT}`);
+    const currentPlan = (allowedToolNames?: readonly string[]) => prepareMcpRunPlan({
+      allowedServerIds: [record.serverId], allowedToolNames, isGenerationLive: () => true, load: async () => [record]
+    });
+    const accepted = await currentPlan([namespacedName]);
+    if (!accepted.ok) throw new Error("large_inventory_fixture_invalid");
+    const prepare = vi.fn<NonNullable<RunRecoveryDeps["mcp"]>["prepare"]>(async (_user, options) =>
+      currentPlan(options?.allowedToolNames));
+    const prepareProject = vi.fn<NonNullable<NonNullable<RunRecoveryDeps["mcp"]>["prepareProject"]>>(
+      async (_user, _servers, options) => currentPlan(options?.allowedToolNames));
+    const callTool = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["RECOVERED_LATE_TOOL_RESULT"], unsupportedContentTypes: [] };
+    });
+    const harness = createHarness({
+      mcp: { filterTools: allowMcpTools, prepare, prepareProject },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      projectAccessCurrent: true,
+      ...(projectScope ? { providerAdmission: { load: async () => ({
+        fingerprint: project.providerAdmissionFingerprint
+      }) as ProviderAdmissionPlan } } : {}),
+      providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
+        expect(JSON.stringify(request.providerToolMessages)).toContain("RECOVERED_LATE_TOOL_RESULT");
+        return { ...providerResult, finalText: "Recovered late tool" };
+      } } }
+    });
+    const state = installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [{ ...persistedRecoveryCall(), arguments: {}, toolName: namespacedName }],
+        phase: "tools_pending", providerToolMessages: [{ arguments: "{}", call_id: "provider-call-1",
+          name: namespacedName, type: "function_call" }] }),
+      normalizedRequest: { ...normalizedToolRequest(), mcp: accepted.snapshot },
+      ...(projectScope ? { project } : {})
+    });
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ name: `tool_${MCP_SERVER_TOOL_LIMIT}` }));
+    expect(state.calls()[0]).toMatchObject({ state: "complete" });
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered late tool" });
+    if (projectScope) {
+      expect(prepare).not.toHaveBeenCalled();
+      expect(prepareProject).toHaveBeenCalledWith(userId, [record.serverId], { allowedToolNames: [namespacedName] });
+    } else {
+      expect(prepareProject).not.toHaveBeenCalled();
+      expect(prepare).toHaveBeenCalledWith(userId, { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
+    }
+  });
+
   it("revalidates recovered Project MCP through shared authority only", async () => {
     const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
     const snapshot = normalizedToolRequest().mcp!;
@@ -7580,7 +7639,7 @@ describe("run recovery", () => {
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
     expect(prepare).not.toHaveBeenCalled();
-    expect(prepareProject).toHaveBeenCalledWith("user-1", ["server-1"]);
+    expect(prepareProject).toHaveBeenCalledWith("user-1", ["server-1"], { allowedToolNames: [recoveryToolName] });
     expect(runtimeCall).toHaveBeenCalledOnce();
     expect(providerLoad).toHaveBeenCalledWith(expect.objectContaining({
       executionScope: "project",
