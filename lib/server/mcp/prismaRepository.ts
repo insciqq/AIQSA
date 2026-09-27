@@ -98,7 +98,11 @@ const adminServerInclude = {
         orderBy: { updatedAt: "desc" as const },
         select: { errorCode: true, state: true },
         take: 1,
-        where: { desiredFor: { enabled: true }, state: "failed" as const }
+        // A member's current connection or the shared runtime Project runs use.
+        where: {
+          OR: [{ desiredFor: { enabled: true } }, { sharedDesiredFor: { isNot: null } }],
+          state: "failed" as const
+        }
       },
       validationEvidence: true
     }
@@ -540,9 +544,10 @@ const INVENTORY_DIFFERENCE_ORDER: Readonly<Record<AdminMcpInventoryDifference["r
 
 /**
  * What current connections of each server's active configuration hold back
- * from its checked tools, counted per connection. Names of additions seen only
- * through personal or OAuth connections belong to those accounts and are
- * reported as a count. Each server keeps at most one runtime inventory's
+ * from its checked tools, counted per connection. A connection is a member's
+ * current runtime or the shared runtime Project runs use. Names of additions
+ * seen only through personal or OAuth connections belong to those accounts and
+ * are reported as a count. Each server keeps at most one runtime inventory's
  * exclusion bound of rows, in display order, so every name one connection
  * holds back fits.
  */
@@ -569,37 +574,61 @@ async function loadInventoryDifferences(
         SELECT difference."serverId", difference."name", difference."reason",
                COUNT(DISTINCT difference."generationId")::int AS "connections"
         FROM (
-          SELECT preference."serverId" AS "serverId",
-                 generation."id" AS "generationId",
+          SELECT connection."serverId",
+                 connection."generationId",
                  exclusion.value->>'reason' AS "reason",
                  CASE
-                   WHEN exclusion.value->>'reason' = 'unpublished_addition' AND (
+                   WHEN exclusion.value->>'reason' = 'unpublished_addition' AND connection."personal"
+                   THEN NULL
+                   ELSE exclusion.value->>'name'
+                 END AS "name"
+          FROM (
+            SELECT preference."serverId" AS "serverId",
+                   generation."id" AS "generationId",
+                   generation."inventory" AS "inventory",
+                   (
                      generation."oauthConnectionId" IS NOT NULL
                      OR preference."personalConfigEnvelope" IS NOT NULL
                      OR NOT (generation."credentialSources" <@ ARRAY['shared', 'none']::text[])
-                   ) THEN NULL
-                   ELSE exclusion.value->>'name'
-                 END AS "name"
-          FROM "McpRuntimeGeneration" AS generation
-          JOIN "McpUserServer" AS preference
-            ON preference."id" = generation."userServerId"
-           AND preference."desiredRuntimeGenerationId" = generation."id"
-           AND preference."enabled" = true
-          JOIN "McpServer" AS server
-            ON server."id" = preference."serverId"
-           AND server."activeRevisionId" = generation."revisionId"
-          JOIN "User" AS owner
-            ON owner."id" = preference."userId"
-           AND owner."status" = 'active'
+                   ) AS "personal"
+            FROM "McpRuntimeGeneration" AS generation
+            JOIN "McpUserServer" AS preference
+              ON preference."id" = generation."userServerId"
+             AND preference."desiredRuntimeGenerationId" = generation."id"
+             AND preference."enabled" = true
+            JOIN "McpServer" AS server
+              ON server."id" = preference."serverId"
+             AND server."activeRevisionId" = generation."revisionId"
+            JOIN "User" AS owner
+              ON owner."id" = preference."userId"
+             AND owner."status" = 'active'
+            WHERE generation."state" = 'ready'
+              AND preference."serverId" IN (${Prisma.join(serverIds)})
+            UNION ALL
+            SELECT shared."serverId" AS "serverId",
+                   generation."id" AS "generationId",
+                   generation."inventory" AS "inventory",
+                   (
+                     generation."oauthConnectionId" IS NOT NULL
+                     OR NOT (generation."credentialSources" <@ ARRAY['shared', 'none']::text[])
+                   ) AS "personal"
+            FROM "McpRuntimeGeneration" AS generation
+            JOIN "McpSharedRuntime" AS shared
+              ON shared."serverId" = generation."sharedServerId"
+             AND shared."desiredRuntimeGenerationId" = generation."id"
+            JOIN "McpServer" AS server
+              ON server."id" = shared."serverId"
+             AND server."activeRevisionId" = generation."revisionId"
+            WHERE generation."state" = 'ready'
+              AND shared."serverId" IN (${Prisma.join(serverIds)})
+          ) AS connection
           CROSS JOIN LATERAL jsonb_array_elements(
-            CASE WHEN jsonb_typeof(generation."inventory"->'exclusions') = 'array'
-              THEN generation."inventory"->'exclusions'
+            CASE WHEN jsonb_typeof(connection."inventory"->'exclusions') = 'array'
+              THEN connection."inventory"->'exclusions'
               ELSE '[]'::jsonb
             END
           ) AS exclusion(value)
-          WHERE generation."state" = 'ready'
-            AND preference."serverId" IN (${Prisma.join(serverIds)})
-            AND exclusion.value->>'reason' IN ('definition_drift', 'missing_upstream', 'unpublished_addition')
+          WHERE exclusion.value->>'reason' IN ('definition_drift', 'missing_upstream', 'unpublished_addition')
         ) AS difference
         GROUP BY difference."serverId", difference."name", difference."reason"
       ) AS grouped
@@ -1028,6 +1057,21 @@ async function disableUsersWithoutEffectiveGrant(
   }
 }
 
+/**
+ * Project runs stop using a server's shared runtime at the same transitions
+ * that stop its members' runtimes: a new revision, new shared values,
+ * disabling or deletion. The next Project run starts the current one.
+ */
+async function releaseSharedRuntime(
+  client: Pick<Prisma.TransactionClient, "mcpSharedRuntime">,
+  serverId: string
+): Promise<void> {
+  await client.mcpSharedRuntime.updateMany({
+    data: { desiredRuntimeGenerationId: null },
+    where: { serverId }
+  });
+}
+
 function draftValidationValues(input: {
   draft: McpDraftConfiguration;
   oneTimeValues: Record<string, McpSlotValue>;
@@ -1270,6 +1314,7 @@ export function createPrismaMcpRepository(input: {
       data: { desiredRuntimeGenerationId: null },
       where: { enabled: true, serverId }
     });
+    await releaseSharedRuntime(tx, serverId);
     return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
   }
 
@@ -1292,6 +1337,7 @@ export function createPrismaMcpRepository(input: {
           data: { desiredRuntimeGenerationId: null, enabled: false },
           where: { serverId }
         });
+        await releaseSharedRuntime(tx, serverId);
         return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
       });
     },
@@ -1772,6 +1818,7 @@ export function createPrismaMcpRepository(input: {
           data: { desiredRuntimeGenerationId: null },
           where: { enabled: true, serverId: claim.serverId }
         });
+        await releaseSharedRuntime(tx, claim.serverId);
         return { kind: "published" };
       }).catch((error) => {
         if (error instanceof McpEndpointBindingChangedError) {
@@ -1829,6 +1876,7 @@ export function createPrismaMcpRepository(input: {
           data: { desiredRuntimeGenerationId: null },
           where: { enabled: true, serverId }
         });
+        await releaseSharedRuntime(tx, serverId);
         return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
       });
     },
@@ -2190,6 +2238,7 @@ export function createPrismaMcpRepository(input: {
           await tx.mcpUserServer.updateMany({
             data: { desiredRuntimeGenerationId: null }, where: { enabled: true, serverId }
           });
+          await releaseSharedRuntime(tx, serverId);
           return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
         }
         const effectiveDraft = draft ?? storedDraft;
@@ -2251,11 +2300,13 @@ export function createPrismaMcpRepository(input: {
             data: { desiredRuntimeGenerationId: null, enabled: false },
             where: { serverId }
           });
+          await releaseSharedRuntime(tx, serverId);
         } else if (sharedValues && Object.keys(sharedValues).length) {
           await tx.mcpUserServer.updateMany({
             data: { desiredRuntimeGenerationId: null },
             where: { serverId, enabled: true }
           });
+          await releaseSharedRuntime(tx, serverId);
         }
         return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
       });

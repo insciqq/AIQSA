@@ -79,6 +79,7 @@ function harness(input: {
     name
   }));
   let launches = [launch({ publishedTools: input.published ?? publishedDefinitions(inventory) })];
+  let sharedLaunches: McpRuntimeGenerationLaunch[] = [];
   const session: McpRuntimeSession = {
     callTool: vi.fn(async ({ name }) => ({
       isError: false,
@@ -120,6 +121,7 @@ function harness(input: {
       return true;
     }),
     synchronizeDesired: vi.fn(async () => launches),
+    synchronizeShared: vi.fn(async () => sharedLaunches),
     touchLastUsed: vi.fn(async () => undefined)
   };
   const createSession = vi.fn(async (
@@ -149,7 +151,8 @@ function harness(input: {
       fatalResponseErrorCode = value;
     },
     setInventory(value: McpRuntimeInventoryTool[]) { inventory = value; },
-    setLaunches(value: McpRuntimeGenerationLaunch[]) { launches = value; }
+    setLaunches(value: McpRuntimeGenerationLaunch[]) { launches = value; },
+    setSharedLaunches(value: McpRuntimeGenerationLaunch[]) { sharedLaunches = value; }
   };
 }
 
@@ -516,7 +519,44 @@ describe("MCP runtime coordinator", () => {
       serverIds: ["server-2"],
       userId: "user-1"
     });
+    expect(test.repository.synchronizeShared).not.toHaveBeenCalled();
     expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    await test.coordinator.stop();
+  });
+
+  it("starts a Project's shared runtime on a cold coordinator without any member runtime", async () => {
+    const test = harness();
+    const shared = launch({ fingerprint: "shared-fingerprint", generationId: "shared-generation" });
+    test.setSharedLaunches([shared]);
+
+    await test.coordinator.ensureSharedServersReady(["server-2", "server-2"]);
+
+    expect(test.repository.synchronizeShared).toHaveBeenCalledWith({ now, onDemand: true, serverIds: ["server-2"] });
+    expect(test.repository.synchronizeDesired).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("shared-generation")).toBe(true);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+
+    // A stale inventory is refreshed on the next Project demand, whoever is online.
+    test.setSharedLaunches([{ ...shared, inventoryRefreshRequired: true }]);
+    await test.coordinator.ensureSharedServersReady(["server-2"]);
+    expect(test.createSession).toHaveBeenCalledOnce();
+    expect(test.session.listTools).toHaveBeenCalledTimes(2);
+    expect(test.repository.markReady).toHaveBeenCalledTimes(2);
+    await test.coordinator.stop();
+  });
+
+  it("keeps shared Project runtimes current only in the installation-wide pass", async () => {
+    const test = harness();
+    test.setLaunches([]);
+    test.setSharedLaunches([launch({ fingerprint: "shared-fingerprint", generationId: "shared-generation" })]);
+
+    await test.coordinator.reconcileNow("user-1");
+    expect(test.repository.synchronizeShared).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("shared-generation")).toBe(false);
+
+    await test.coordinator.reconcileNow();
+    expect(test.repository.synchronizeShared).toHaveBeenCalledWith({ now });
+    expect(test.coordinator.hasLiveGeneration("shared-generation")).toBe(true);
     await test.coordinator.stop();
   });
 

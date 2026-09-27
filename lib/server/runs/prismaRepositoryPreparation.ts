@@ -1091,13 +1091,15 @@ export async function admitProjectRunWithClient(
         throw new McpRunPlanConflictError();
       }
       if (input.mcpBindings?.length) {
+        // A member's personal generation never serves a Project run, whatever
+        // its credentials: Project runs use the server's shared runtime.
         const forbiddenCredentials = await tx.mcpRuntimeGeneration.count({
           where: {
             id: { in: input.mcpBindings.map((binding) => binding.runtimeGenerationId) },
             OR: [
               { credentialSources: { hasSome: ["oauth", "personal"] } },
               { oauthConnectionId: { not: null } },
-              { userServer: { personalConfigEnvelope: { not: null } } }
+              { userServerId: { not: null } }
             ]
           }
         });
@@ -2609,10 +2611,11 @@ async function assertCurrentMcpAdmission(
       ? Prisma.sql`
       SELECT generation."id"
       FROM "McpRuntimeGeneration" AS generation
-      INNER JOIN "McpUserServer" AS preference
-        ON preference."id" = generation."userServerId"
+      INNER JOIN "McpSharedRuntime" AS shared
+        ON shared."serverId" = generation."sharedServerId"
+       AND shared."desiredRuntimeGenerationId" = generation."id"
       INNER JOIN "McpServer" AS server
-        ON server."id" = preference."serverId"
+        ON server."id" = shared."serverId"
       INNER JOIN "McpRevision" AS revision
         ON revision."id" = generation."revisionId"
       INNER JOIN "ProjectMcpBinding" AS project_binding
@@ -2627,9 +2630,7 @@ async function assertCurrentMcpAdmission(
           server."sharedConfigEnvelope" IS NOT NULL
           OR revision."configuration" #>> '{auth,mode}' = 'none'
         )
-        AND preference."enabled" = true
-        AND preference."desiredRuntimeGenerationId" = generation."id"
-        AND preference."personalConfigEnvelope" IS NULL
+        AND generation."userServerId" IS NULL
         AND generation."oauthConnectionId" IS NULL
         AND generation."id" = ${binding.runtimeGenerationId}
         AND generation."fingerprint" = ${binding.fingerprint}
@@ -2638,7 +2639,7 @@ async function assertCurrentMcpAdmission(
         AND generation."inventoryUpdatedAt" IS NOT NULL
         AND generation."inventoryUpdatedAt" >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
         AND NOT (generation."credentialSources" && ARRAY['oauth', 'personal']::TEXT[])
-      FOR SHARE OF generation, preference, server
+      FOR SHARE OF generation, shared, server
     `
       : Prisma.sql`
       SELECT generation."id"

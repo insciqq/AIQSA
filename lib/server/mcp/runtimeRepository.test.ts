@@ -15,8 +15,10 @@ import {
 import {
   createPrismaMcpRuntimeRepository,
   localRuntimeCandidate,
-  remoteRuntimeCandidate
+  remoteRuntimeCandidate,
+  sharedRuntimeCandidate
 } from "./runtimeRepository";
+import { mcpSharedRuntimeFingerprint } from "./access";
 import { mcpEndpointBinding, mcpToolDefinitionEvidence, type McpEndpointBinding } from "./definitions";
 
 const KEY = Buffer.alloc(32, 0x4d);
@@ -673,6 +675,273 @@ describe("local MCP runtime candidates", () => {
     });
 
     expect(localRuntimeCandidate({ key: KEY, record })).toBeNull();
+  });
+});
+
+type SharedServerRecord = Parameters<typeof sharedRuntimeCandidate>[0]["server"];
+
+/** The server as its shared Project runtime reads it: no member, grant or personal value. */
+function sharedServer(options: RecordOptions & { sharedEnvelope?: boolean } = {}): SharedServerRecord {
+  const server = runtimeRecord(options).server as unknown as SharedServerRecord;
+  return options.sharedEnvelope === false ? { ...server, sharedConfigEnvelope: null } : server;
+}
+
+describe("shared Project runtime candidates", () => {
+  it("derives one runtime for every member from shared values only", () => {
+    const member = runtimeRecord({ configuration: sharedOnlyConfiguration });
+    const candidate = sharedRuntimeCandidate({ key: KEY, server: sharedServer({ configuration: sharedOnlyConfiguration }) });
+
+    expect(candidate).toMatchObject({
+      credentialSources: ["shared"],
+      externalAccountLabel: null,
+      headers: { Authorization: "Bearer shared-secret" },
+      revisionId: REVISION_ID,
+      serverId: SERVER_ID,
+      url: "https://mcp.example.test/rpc"
+    });
+    expect(candidate).not.toHaveProperty("userId");
+    expect(candidate).not.toHaveProperty("userServerId");
+    expect(candidate).not.toHaveProperty("oauthConnectionId");
+    expect(candidate?.effectiveEnvelope).toEqual({
+      plan: [{ authorized: true, slotKey: "authorization", source: "shared", valueVersion: 4 }],
+      values: { authorization: "Bearer shared-secret" },
+      version: 1
+    });
+    expect(candidate?.fingerprint).toBe(mcpSharedRuntimeFingerprint({
+      plan: candidate!.effectiveEnvelope.plan, revisionId: REVISION_ID
+    }));
+    // The member's own runtime of the same revision is a different generation.
+    const personal = remoteRuntimeCandidate({ key: KEY, record: member });
+    expect(personal?.headers).toMatchObject({ Authorization: "Bearer personal-secret" });
+    expect(personal?.fingerprint).not.toBe(candidate?.fingerprint);
+    expect(JSON.stringify(candidate)).not.toContain("personal-secret");
+    // Every member resolves the same Project runtime.
+    expect(sharedRuntimeCandidate({ key: KEY, server: sharedServer({ configuration: sharedOnlyConfiguration, grants: [] }) })
+      ?.fingerprint).toBe(candidate?.fingerprint);
+  });
+
+  it.each([
+    ["a personal-only value", { configuration }],
+    ["an OAuth identity", { configuration: oauthConfiguration }],
+    ["static authentication without shared values", { configuration: sharedOnlyConfiguration, sharedEnvelope: false }],
+    ["a disabled server", { configuration: sharedOnlyConfiguration, serverEnabled: false }],
+    ["an archived server", { archivedAt: NOW, configuration: sharedOnlyConfiguration }]
+  ] as const)("never builds a Project runtime from %s", (_label, options) => {
+    expect(sharedRuntimeCandidate({ key: KEY, server: sharedServer(options) })).toBeNull();
+  });
+
+  it("runs a no-auth server without shared values and a local server with shared environment values", () => {
+    const noAuth = sharedRuntimeCandidate({
+      key: KEY,
+      server: sharedServer({ configuration: { ...oauthConfiguration, auth: { mode: "none" } }, sharedEnvelope: false })
+    });
+    expect(noAuth).toMatchObject({ credentialSources: [], effectiveEnvelope: { plan: [], values: {} }, headers: {} });
+
+    const local = sharedRuntimeCandidate({ key: KEY, server: sharedServer({
+      configuration: localConfiguration,
+      resolvedArtifact: localArtifact,
+      sharedValues: { "api-key": "shared-key" }
+    }) });
+    expect(local).toMatchObject({
+      credentialSources: ["shared"],
+      toolHive: {
+        envVars: { API_KEY: "shared-key", MODE: "safe" },
+        image: localArtifact.imageRef
+      }
+    });
+    expect(local && "toolHive" in local ? local.toolHive.generationToken : null).toBe(local?.fingerprint);
+  });
+});
+
+describe("Prisma MCP shared Project runtimes", () => {
+  function sharedClient(input: {
+    existing?: Record<string, unknown> | null;
+    servers?: unknown[];
+    updated?: number;
+  } = {}) {
+    let created: Record<string, unknown> | null = null;
+    const tx = {
+      mcpRuntimeGeneration: {
+        createMany: vi.fn(async ({ data }: { data: Record<string, unknown>[] }) => {
+          if (input.existing) return { count: 0 };
+          created = { inventoryUpdatedAt: null, retryAt: null, userServerId: null, ...data[0] };
+          return { count: 1 };
+        }),
+        findUnique: vi.fn(async () => input.existing ?? created)
+      },
+      mcpSharedRuntime: {
+        createMany: vi.fn(async () => ({ count: 1 })),
+        updateMany: vi.fn(async () => ({ count: input.updated ?? 1 }))
+      }
+    };
+    const client = {
+      $transaction: vi.fn(async (operation: (value: typeof tx) => Promise<unknown>) => operation(tx)),
+      mcpServer: { findMany: vi.fn(async () => input.servers ?? [sharedServer({ configuration: sharedOnlyConfiguration })]) },
+      mcpSharedRuntime: { updateMany: vi.fn(async () => ({ count: 0 })) }
+    };
+    return { client, created: () => created, tx };
+  }
+
+  it("starts the requested server's shared runtime on demand without reading any member row", async () => {
+    const { client, created, tx } = sharedClient();
+    const repository = createPrismaMcpRuntimeRepository({
+      encryptionKey: () => KEY, generationId: () => "shared-generation-1", prisma: client as unknown as PrismaClient
+    });
+    const expected = sharedRuntimeCandidate({ key: KEY, server: sharedServer({ configuration: sharedOnlyConfiguration }) })!;
+
+    const launches = await repository.synchronizeShared({ now: NOW, onDemand: true, serverIds: [SERVER_ID] });
+
+    expect(launches).toEqual([{
+      allowPrivateNetwork: false,
+      callTimeoutMs: 28_000,
+      fingerprint: expected.fingerprint,
+      generationId: "shared-generation-1",
+      headers: { Authorization: "Bearer shared-secret" },
+      inventoryRefreshRequired: true,
+      publishedTools: CHECKED_DEFINITIONS,
+      redactionValues: ["Bearer shared-secret"],
+      retryAt: null,
+      startupTimeoutMs: 41_000,
+      url: "https://mcp.example.test/rpc"
+    }]);
+    expect(client.mcpServer.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: { in: [SERVER_ID] }, projectBindings: { some: {} } })
+    }));
+    // On demand never evicts; the pass-wide demand window does.
+    expect(client.mcpSharedRuntime.updateMany).not.toHaveBeenCalled();
+    expect(tx.mcpSharedRuntime.createMany).toHaveBeenCalledWith({
+      data: [{ requestedAt: NOW, serverId: SERVER_ID }], skipDuplicates: true
+    });
+    const generation = created()!;
+    expect(generation).toMatchObject({
+      credentialSources: ["shared"],
+      externalAccountLabel: null,
+      fingerprint: expected.fingerprint,
+      oauthConnectionId: null,
+      revisionId: REVISION_ID,
+      sharedServerId: SERVER_ID,
+      state: "starting"
+    });
+    expect(tx.mcpRuntimeGeneration.createMany.mock.calls[0]![0].data[0]).not.toHaveProperty("userServerId");
+    expect(decryptMcpEnvelope(
+      generation.effectiveConfigEnvelope as string,
+      KEY,
+      mcpRuntimeGenerationEnvelopeContext("shared-generation-1", expected.fingerprint)
+    )).toEqual(expected.effectiveEnvelope);
+    expect(tx.mcpSharedRuntime.updateMany).toHaveBeenCalledWith({
+      data: { desiredRuntimeGenerationId: "shared-generation-1", requestedAt: NOW },
+      where: {
+        server: { activeRevisionId: REVISION_ID, archivedAt: null, enabled: true, sharedConfigVersion: 4 },
+        serverId: SERVER_ID
+      }
+    });
+    expect(client).not.toHaveProperty("mcpUserServer");
+  });
+
+  it("keeps shared runtimes by recent Project demand, never by member activity", async () => {
+    const existing = {
+      credentialSources: ["shared"], id: "shared-generation-1", inventoryUpdatedAt: NOW, oauthConnectionId: null,
+      retryAt: null, revisionId: REVISION_ID, sharedServerId: SERVER_ID, userServerId: null
+    };
+    const { client, tx } = sharedClient({ existing });
+    const repository = createPrismaMcpRuntimeRepository({ encryptionKey: () => KEY, prisma: client as unknown as PrismaClient });
+
+    const launches = await repository.synchronizeShared({ now: NOW });
+
+    expect(client.mcpSharedRuntime.updateMany).toHaveBeenCalledWith({
+      data: { desiredRuntimeGenerationId: null },
+      where: {
+        desiredRuntimeGenerationId: { not: null },
+        OR: [
+          { requestedAt: { lt: new Date(NOW.getTime() - 15 * 60_000) } },
+          { server: { OR: [
+            { enabled: false }, { archivedAt: { not: null } }, { activeRevisionId: null }, { projectBindings: { none: {} } }
+          ] } }
+        ]
+      }
+    });
+    expect(JSON.stringify(client.mcpSharedRuntime.updateMany.mock.calls)).not.toMatch(/authSession|userId|lastSeenAt/u);
+    expect(client.mcpServer.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ sharedRuntime: { is: { desiredRuntimeGenerationId: { not: null } } } })
+    }));
+    expect(launches).toMatchObject([{ generationId: "shared-generation-1", inventoryRefreshRequired: false }]);
+    // Keeping a runtime current is not new demand.
+    expect(tx.mcpSharedRuntime.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { desiredRuntimeGenerationId: "shared-generation-1" }
+    }));
+  });
+
+  it("refuses a fingerprint that a member's runtime owns and releases an ineligible server", async () => {
+    const collision = sharedClient({ existing: {
+      credentialSources: ["shared"], id: "member-generation", oauthConnectionId: null,
+      revisionId: REVISION_ID, sharedServerId: null, userServerId: USER_SERVER_ID
+    } });
+    await expect(createPrismaMcpRuntimeRepository({ encryptionKey: () => KEY, prisma: collision.client as unknown as PrismaClient })
+      .synchronizeShared({ now: NOW, onDemand: true, serverIds: [SERVER_ID] }))
+      .rejects.toMatchObject({ code: "mcp_runtime_fingerprint_collision" });
+    expect(collision.tx.mcpSharedRuntime.updateMany).not.toHaveBeenCalled();
+
+    const ineligible = sharedClient({ servers: [sharedServer({ configuration })] });
+    await expect(createPrismaMcpRuntimeRepository({ encryptionKey: () => KEY, prisma: ineligible.client as unknown as PrismaClient })
+      .synchronizeShared({ now: NOW, onDemand: true, serverIds: [SERVER_ID] })).resolves.toEqual([]);
+    expect(ineligible.client.mcpSharedRuntime.updateMany).toHaveBeenCalledWith({
+      data: { desiredRuntimeGenerationId: null }, where: { serverId: SERVER_ID }
+    });
+    expect(ineligible.client.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("restores an accepted shared generation without any user identity", async () => {
+    const expected = sharedRuntimeCandidate({ key: KEY, server: sharedServer({ configuration: sharedOnlyConfiguration }) })!;
+    const accepted = (effectiveEnvelope: unknown, fingerprint = expected.fingerprint) => ({
+      effectiveConfigEnvelope: encryptMcpEnvelope(effectiveEnvelope, KEY,
+        mcpRuntimeGenerationEnvelopeContext("shared-accepted", fingerprint)),
+      fingerprint,
+      id: "shared-accepted",
+      inventoryUpdatedAt: NOW,
+      oauthConnectionId: null,
+      retryAt: null,
+      revision: { configuration: sharedOnlyConfiguration, id: REVISION_ID, serverId: SERVER_ID,
+        validationEvidence: checkedEvidence(CHECKED_TOOLS) },
+      sharedServerId: SERVER_ID,
+      userServer: null
+    });
+    const repository = (generation: unknown) => createPrismaMcpRuntimeRepository({ encryptionKey: () => KEY,
+      prisma: { mcpRuntimeGeneration: { findFirst: vi.fn(async () => generation) } } as unknown as PrismaClient });
+
+    await expect(repository(accepted(expected.effectiveEnvelope)).loadAcceptedGeneration("shared-accepted", NOW))
+      .resolves.toMatchObject({
+        fingerprint: expected.fingerprint,
+        generationId: "shared-accepted",
+        headers: { Authorization: "Bearer shared-secret" },
+        inventoryRefreshRequired: false
+      });
+    // A shared generation never carries a member's value, even with a matching hash.
+    const personalPlan = {
+      plan: [{ authorized: true, slotKey: "authorization", source: "personal" as const, valueVersion: 9 }],
+      values: { authorization: "Bearer personal-secret" },
+      version: 1
+    };
+    await expect(repository(accepted(personalPlan, mcpSharedRuntimeFingerprint({
+      plan: personalPlan.plan, revisionId: REVISION_ID
+    }))).loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
+    // A generation owned by another server's shared runtime is not this revision's.
+    await expect(repository({ ...accepted(expected.effectiveEnvelope), sharedServerId: "server-2" })
+      .loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
+  });
+
+  it("never drains a shared generation that Project runs still desire", async () => {
+    const findMany = vi.fn(async () => []);
+    const deleteMany = vi.fn(async () => ({ count: 0 }));
+    const repository = createPrismaMcpRuntimeRepository({
+      prisma: { mcpRuntimeGeneration: { deleteMany, findMany } } as unknown as PrismaClient
+    });
+
+    await repository.listDrainedGenerationIds();
+    await repository.deleteDrainedGeneration("shared-generation-1");
+
+    for (const call of [findMany.mock.calls[0], deleteMany.mock.calls[0]] as unknown as [{ where: unknown }][]) {
+      expect(call[0].where).toMatchObject({ desiredFor: null, sharedDesiredFor: null });
+    }
   });
 });
 
