@@ -1802,7 +1802,8 @@ export function createPrismaKnowledgeRetrievalStore(
       if ((input.evidence.operation === "read_source") !== Boolean(input.evidence.read) ||
         (input.evidence.operation === "find_exact") !== Boolean(input.evidence.exact) ||
         (input.evidence.operation === "discover_sources") !== Boolean(input.evidence.discovery) ||
-        receiptCount > 1) {
+        receiptCount > 1 || input.evidence.omittedPassages !== undefined &&
+          input.evidence.operation !== "automatic_search") {
         throw new Error("knowledge_operation_receipt_invalid");
       }
       // Legacy planner-era ranking fields stay rejected; only the current
@@ -2136,7 +2137,14 @@ export function createPrismaKnowledgeRetrievalStore(
         await tx.knowledgeRun.create({
           data: {
             baseEvidence: json(evidence.bases),
-            budgetEvidence: json(evidence.budget ?? {}),
+            // Excerpt-budget omissions share the budget receipt column so the
+            // accepted receipt replays exactly without a schema change.
+            budgetEvidence: json({
+              ...(evidence.budget ?? {}),
+              ...(evidence.omittedPassages
+                ? { omittedPassages: evidence.omittedPassages }
+                : {})
+            }),
             candidateCount: evidence.candidateCount,
             candidateLimit: evidence.candidateLimit,
             durationMs: evidence.durationMs,

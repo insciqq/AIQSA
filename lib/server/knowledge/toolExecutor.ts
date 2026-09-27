@@ -40,6 +40,7 @@ import {
   type KnowledgeExactSearchResult,
   type KnowledgeHybridPassage,
   type KnowledgeHybridSearchResult,
+  type KnowledgeOmittedPassageEvidence,
   type KnowledgeRetrievalEvidence,
   type KnowledgeRetrievalOutcome,
   type KnowledgeRetrievedPassageEvidence,
@@ -528,30 +529,59 @@ function readSourceRowId(
     : null;
 }
 
+/** Longest prefix within `maxBytes` that never splits a UTF-8 code point. */
+function utf8Prefix(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= maxBytes) return value;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8");
+}
+
+type PackedKnowledgePassages = Readonly<{
+  omitted: readonly KnowledgeOmittedPassageEvidence[];
+  selected: KnowledgeRetrievedPassageEvidence[];
+}>;
+
 function includedPassages(
   passages: KnowledgeHybridSearchResult["passages"],
   evidenceOffset: number,
   aliases: readonly KnowledgeScopeAlias[],
-  maximumBytes = KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES
-): KnowledgeRetrievedPassageEvidence[] {
-  if (passages.length === 0) return [];
+  maximumBytes = KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES,
+  oversizeTop: "reject" | "truncate" = "reject"
+): PackedKnowledgePassages {
+  if (passages.length === 0) return { omitted: [], selected: [] };
   // Source boundaries deliberately repeat bounded provenance next to every
   // handle. Reserve enough room for those headers and instructions before
-  // packing complete excerpts. Primary chunks are never cut mid-item.
+  // packing complete excerpts. Primary chunks are never cut mid-item; only a
+  // top-ranked excerpt larger than the whole budget may become a marked
+  // prefix. Every other excerpt that does not fit is omitted whole with its
+  // reason, so the model can be told that a repeated search may return it.
   const metadataReserveBytes = 16 * 1024;
   const excerptBudgetBytes = Math.max(1, maximumBytes - metadataReserveBytes);
   const sourceAliasByArtifact = primarySourceAliasesByArtifact(aliases);
   const selected: KnowledgeRetrievedPassageEvidence[] = [];
+  const omitted: KnowledgeOmittedPassageEvidence[] = [];
   const pendingExpandedContext: Array<string | null> = [];
   const pendingExpansion: Array<KnowledgeHybridPassage["expansion"] | null> = [];
   let retainedExcerptBytes = 0;
-  for (const { expandedContext, expansion, text, ...passage } of passages) {
+  for (const [rank, { expandedContext, expansion, text, ...passage }] of passages.entries()) {
     const sourceTextBytes = Buffer.byteLength(text, "utf8");
+    let includedText = text;
     if (sourceTextBytes > excerptBudgetBytes) {
-      if (selected.length === 0) throw new Error("knowledge_evidence_item_too_large");
+      if (rank === 0 && oversizeTop === "reject") {
+        throw new Error("knowledge_evidence_item_too_large");
+      }
+      includedText = rank === 0 ? utf8Prefix(text, excerptBudgetBytes) : "";
+      if (!includedText) {
+        omitted.push({ reason: "item_too_large", sourceTextBytes });
+        continue;
+      }
+    } else if (retainedExcerptBytes + sourceTextBytes > excerptBudgetBytes) {
+      omitted.push({ reason: "over_budget", sourceTextBytes });
       continue;
     }
-    if (retainedExcerptBytes + sourceTextBytes > excerptBudgetBytes) continue;
+    const includedTextBytes = Buffer.byteLength(includedText, "utf8");
     const sourceAlias = passage.sourceArtifactId
       ? sourceAliasByArtifact.get(passage.sourceArtifactId)
       : undefined;
@@ -561,15 +591,15 @@ function includedPassages(
     selected.push({
       ...passage,
       handle: `K${evidenceOffset + selected.length + 1}`,
-      includedText: text,
-      includedTextBytes: sourceTextBytes,
+      includedText,
+      includedTextBytes,
       ...(sourceAlias ? { sourceAlias } : {}),
       sourceTextBytes,
-      textTruncated: false
+      textTruncated: includedTextBytes < sourceTextBytes
     });
     pendingExpandedContext.push(expandedContext || null);
     pendingExpansion.push(expansion ?? null);
-    retainedExcerptBytes += sourceTextBytes;
+    retainedExcerptBytes += includedTextBytes;
   }
   // FR-14 trim order: every atomic hit above is already packed and is never
   // dropped in favor of expansion — expanded context competes only for the
@@ -604,7 +634,7 @@ function includedPassages(
       }
     }
   }
-  return selected.map((passage, index) => {
+  return { omitted, selected: selected.map((passage, index) => {
     const expansion = pendingExpansion[index];
     if (expansion) {
       const kept = fitted?.get(String(index));
@@ -621,7 +651,7 @@ function includedPassages(
     if (expandedContextBytes > remainingContextBytes) return passage;
     remainingContextBytes -= expandedContextBytes;
     return { ...passage, expandedContext };
-  });
+  }) };
 }
 
 function primarySourceAliasesByArtifact(
@@ -1454,7 +1484,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           budgetState.evidenceCount ??
             (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
           aliases
-        );
+        ).selected;
         const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(
@@ -1539,7 +1569,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           budgetState.evidenceCount ??
             (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
           aliases
-        );
+        ).selected;
         const durationMs = elapsedSince(startedAt);
         return persist(finalizedEvidence({
           bases: baseEvidence(scopedBindings, search.candidateCounts, [], true),
@@ -1837,7 +1867,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         1,
         budgetState.policy.maxRetrievedTokens - budgetState.usage.retrievedTokens
       );
-      let results = includedPassages(
+      const packed = includedPassages(
         search.passages,
         budgetState.evidenceCount ??
           (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
@@ -1845,8 +1875,10 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         Math.min(
           KNOWLEDGE_PROVIDER_TEXT_MAX_BYTES,
           4 * 1_024 + remainingRetrievedTokens * 4
-        )
+        ),
+        "truncate"
       );
+      let results = packed.selected;
       if (search.candidateCount > 0 && results.length === 0) {
         throw new Error("knowledge_evidence_package_empty");
       }
@@ -1895,6 +1927,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         fusion: ranking.fusion,
         invocationOrdinal: budgetState.invocationOrdinal,
         lexicalBackend,
+        ...(packed.omitted.length > 0 ? { omittedPassages: packed.omitted } : {}),
         operation: request.operation,
         outcome: retrievalOutcome,
         query: request.query,

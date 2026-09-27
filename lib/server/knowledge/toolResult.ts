@@ -17,6 +17,7 @@ import {
   type KnowledgeEmbeddingExecutionEvidence,
   type KnowledgeExactMatchEvidence,
   type KnowledgeExactRetrievalEvidence,
+  type KnowledgeOmittedPassageEvidence,
   type KnowledgeReadResolvedSource,
   type KnowledgeReadReceipt,
   type KnowledgeRetrievalEvidence,
@@ -535,9 +536,42 @@ export function decodeKnowledgeRetrievedPassageForVersion(
 }
 
 type KnowledgeProviderEvidence = Pick<KnowledgeRetrievalEvidence,
-  "budget" | "discovery" | "embeddingExecutions" | "exact" | "failureCode" | "outcome" |
-  "results" | "scopeAliases"> &
+  "budget" | "discovery" | "embeddingExecutions" | "exact" | "failureCode" |
+  "omittedPassages" | "outcome" | "results" | "scopeAliases"> &
   Partial<Pick<KnowledgeRetrievalEvidence, "version">>;
+
+/** Model-visible disclosure of excerpt-budget packing: a marked truncated
+ * top passage and ranked passages that were not delivered at all. */
+function excerptBudgetLimitations(evidence: KnowledgeProviderEvidence): string[] {
+  const limitations: string[] = [];
+  const truncated = evidence.results.filter((result) => result.textTruncated)
+    .map((result) => `[${result.handle}]`);
+  if (truncated.length > 0) {
+    limitations.push(
+      `Coverage limitation: passage_truncated. ${truncated.join(" ")} exceeded the whole ` +
+        `evidence size budget and ${truncated.length === 1 ? "was" : "were"} delivered only ` +
+        "as a truncated prefix (Truncated: yes); the rest was not read. Do not infer " +
+        "content beyond the delivered text."
+    );
+  }
+  const omitted = evidence.omittedPassages ?? [];
+  if (omitted.length > 0) {
+    const reasons = (["over_budget", "item_too_large"] as const).flatMap((reason) => {
+      const count = omitted.filter((entry) => entry.reason === reason).length;
+      return count > 0 ? [`${reason}: ${count}`] : [];
+    });
+    limitations.push(
+      `Coverage limitation: passages_omitted_for_size. ${omitted.length} ranked ` +
+        `${omitted.length === 1 ? "passage matching this search was" : "passages matching this search were"} ` +
+        `not delivered because of the evidence size budget (${reasons.join("; ")}). ` +
+        "They were not read and have no citation handles. They are not excluded from later " +
+        "searches: another search_knowledge call, for example a narrower query or one scoped " +
+        "with sourceAliases, may return them. Their absence here is not evidence that the " +
+        "requested information is missing."
+    );
+  }
+  return limitations;
+}
 
 function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): string {
   if (evidence.outcome === "complete") {
@@ -785,6 +819,7 @@ export function knowledgeToolResultText(evidence: KnowledgeProviderEvidence): st
   if (evidence.version === KNOWLEDGE_RESULT_VERSION) {
     const text = sourceBoundKnowledgeToolResultText(evidence);
     const limitations = [
+      ...excerptBudgetLimitations(evidence),
       ...(evidence.failureCode === "partial_sources_ready" ? [
         "Coverage limitation: partial_sources_ready. Some selected Knowledge sources were " +
           "still processing or unavailable, so this bounded result covers only the ready subset."
@@ -1161,6 +1196,24 @@ function decodeDiscoveryEvidence(value: unknown): KnowledgeSourceDiscoveryEviden
   });
 }
 
+function decodeOmittedPassages(
+  value: unknown
+): readonly KnowledgeOmittedPassageEvidence[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) return null;
+  const decoded = value.map((entry): KnowledgeOmittedPassageEvidence | null => {
+    if (!isRecord(entry) || !exactKeys(entry, ["reason", "sourceTextBytes"])) return null;
+    const reason = entry.reason;
+    const sourceTextBytes = nonNegativeInteger(entry.sourceTextBytes);
+    return (reason === "item_too_large" || reason === "over_budget") &&
+      sourceTextBytes !== null && sourceTextBytes >= 1
+      ? Object.freeze({ reason, sourceTextBytes })
+      : null;
+  });
+  return decoded.some((entry) => entry === null)
+    ? null
+    : Object.freeze(decoded as KnowledgeOmittedPassageEvidence[]);
+}
+
 export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetrievalEvidence | null {
   if (!isRecord(value) || !isKnowledgeResultVersion(value.version) ||
     !Array.isArray(value.bases) ||
@@ -1203,6 +1256,12 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
   const lexicalBackend = value.lexicalBackend === undefined
     ? undefined
     : decodeKnowledgeLexicalBackendEvidence(value.lexicalBackend) ?? null;
+  // Absent on receipts accepted before excerpt-budget disclosure.
+  const omittedPassages = value.omittedPassages === undefined
+    ? undefined
+    : version === KNOWLEDGE_RESULT_VERSION && operation === "automatic_search"
+      ? decodeOmittedPassages(value.omittedPassages)
+      : null;
   const scopeAliases = value.scopeAliases === undefined
     ? undefined
     : Array.isArray(value.scopeAliases) && value.scopeAliases.length <= 256
@@ -1249,6 +1308,9 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
   if (
     bases.some((base) => base === null) || budget === null || operation === null || read === null ||
     exact === null || discovery === null || lexicalBackend === null || relevance === null || value.structured !== undefined ||
+    omittedPassages === null ||
+    omittedPassages !== undefined && (decodedOutcome === "search_unavailable" ||
+      candidateCount === null || results.length + omittedPassages.length > candidateCount) ||
     relevance !== undefined && (version !== KNOWLEDGE_RESULT_VERSION || operation !== "automatic_search" ||
       candidateCount === null || relevance.chunkIds.length > candidateCount ||
       (relevanceKept ? relevanceKept.size !== results.length || results.some((result, index) => result?.chunkId !== [...relevanceKept][index]) :
@@ -1311,6 +1373,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     fusion,
     invocationOrdinal,
     ...(lexicalBackend ? { lexicalBackend } : {}),
+    ...(omittedPassages ? { omittedPassages } : {}),
     ...(operation ? { operation } : {}),
     outcome: decodedOutcome,
     ...(postRerankOrder !== undefined ? { postRerankOrder } : {}),
