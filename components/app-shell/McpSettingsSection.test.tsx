@@ -583,6 +583,12 @@ describe("McpSettingsSection", () => {
       .getByRole("button", { name: "Confirm discard changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(screen.getByRole("button", { name: "Open Mem0" })).toHaveFocus());
+    // The sheet and its portaled confirmation close in one commit; the page must not stay isolated.
+    for (const child of document.body.children) {
+      expect((child as HTMLElement).inert).not.toBe(true);
+      expect(child).not.toHaveAttribute("aria-hidden");
+    }
+    expect(document.body.style.overflow).toBe("");
     expect(within(await openServer("Mem0")).getByLabelText("API key")).toHaveValue("");
   });
 

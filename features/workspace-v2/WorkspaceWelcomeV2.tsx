@@ -155,6 +155,8 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const [formKey, setFormKey] = useState(0);
   const [formExit, setFormExit] = useState<{ proceed(): void; remount: boolean } | null>(null);
   const [instructionsSubview, setInstructionsSubview] = useState<LibrarySubviewV2 | null>(null);
+  const [skillDirty, setSkillDirty] = useState(false);
+  const [skillExit, setSkillExit] = useState<(() => void) | null>(null);
   useBeforeUnloadGuard(formDirty || formBusy);
   useBeforeUnloadGuard(memoryDraftDirty);
   const assistantDirty = Boolean(
@@ -184,6 +186,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     else if (activeTab === "assistants" && assistantDirty) {
       setAssistantExit(() => () => { assistantView?.editor?.onCancel(); proceed(); });
     } else if (activeTab === "memory" && memoryDraftDirty) setMemoryExit(() => proceed);
+    else if (activeTab === "skills" && skillDirty) setSkillExit(() => proceed);
     else if (formDirty) setFormExit({ proceed, remount: remountForm });
     else proceed();
   });
@@ -471,6 +474,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           skillsMode={composer.assistant.selected?.skillsMode ?? skillsMode}
           availableCount={composer.assistant.selected ? (composer.assistant.selected.includedSkills ?? []).filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length : undefined}
           modelContextWindow={composer.currentModel?.contextWindow ?? undefined}
+          onDirtyChange={setSkillDirty}
           selectedIds={selectedSkills.map((skill) => skill.id)}
           onSelectionChange={(ids) => {
             const catalogById = new Map(
@@ -566,6 +570,26 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           onConfirm={() => {
             const proceed = assistantExit;
             setAssistantExit(null);
+            proceed();
+          }}
+        />
+      ) : null}
+      {skillExit ? (
+        <DiscardChangesConfirmationDialog
+          portal
+          copy={{
+            body: "Your unsaved Skill edits will be lost.",
+            cancelLabel: "Keep editing",
+            confirmLabel: "Discard changes",
+            dialogLabel: "Unsaved Skill changes",
+            title: "Discard unsaved Skill changes?"
+          }}
+          label="Skill"
+          onCancel={() => setSkillExit(null)}
+          onConfirm={() => {
+            // Leaving the Skills section unmounts its editor with the draft.
+            const proceed = skillExit;
+            setSkillExit(null);
             proceed();
           }}
         />
