@@ -87,11 +87,19 @@ export type ProviderAttachment = {
   extractedText: string | null;
   fileName: string;
   id: string;
+  /** Server-only source of vision pixels, set only when images from earlier
+   * messages accompany the request; builders caption each image with it. */
+  imageProvenance?: ProviderImageProvenance;
   kind: string;
   metadata: unknown;
   mimeType: string;
   status: string;
 };
+
+export type ProviderImageProvenance = Readonly<
+  | { role: "current_message" }
+  | { role: "earlier_message"; messageId: string }
+>;
 
 /** Server-owned immutable Workspace snapshot. It is persisted with the run
  * and is never accepted from the browser as configuration. */

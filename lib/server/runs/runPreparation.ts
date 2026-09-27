@@ -1897,7 +1897,12 @@ export async function prepareRun(
   // New Workspace runs use only the independently admitted Vision role. Direct
   // image flags remain decodable for already accepted execution and recovery.
   if (visionAnalysis) prompt = { ...prompt, system: [prompt.system, visionAnalysisGuidance(visionAnalysis, false)].filter(Boolean).join("\n\n") };
-  const referenceMessages = [...contextMessages, { id: input.source.kind === "send" ? "current" : input.source.source.userMessage.id, role: "user" as const, content }];
+  // The conversation path already ends with the current message; appending it
+  // again would list each of its images twice.
+  const currentReferenceMessageId = input.source.kind === "send" ? currentSendMessageId : input.source.source.userMessage.id;
+  const referenceMessages = contextMessages.some((message) => message.id === currentReferenceMessageId)
+    ? contextMessages
+    : [...contextMessages, { id: currentReferenceMessageId, role: "user" as const, content }];
   const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
   const imageRecords = (imagePlan || artifactToolAvailable) && imageReferenceIds.length
     ? await deps.repository.loadAttachments(input.userId, imageReferenceIds, project?.projectId)

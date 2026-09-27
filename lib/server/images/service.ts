@@ -42,12 +42,16 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
   const service = {
     resolve: resolver.resolve,
     async withConversationPixels(request: ProviderRunRequest, userId: string, signal?: AbortSignal): Promise<ProviderRunRequest> {
-      if (!request.modelCapabilities.vision || !request.imageReferences?.length) return request;
+      const references = request.imageReferences;
+      if (!request.modelCapabilities.vision || !references?.length) return request;
       const access = await resolveChatAccess(prisma, { chatId: request.chatId, userId });
       if (!access) throw new Error("image_access_revoked");
       const attached = new Set(request.attachments.map((attachment) => attachment.id));
-      const imageLimit = Math.min(4, Math.max(0, (request.modelCapabilities.imageInputLimits?.imageCount ?? 20) - request.attachments.filter((attachment) => attachment.kind === "image").length));
-      const ids = imageLimit ? [...new Set(request.imageReferences.map((reference) => reference.attachmentId))].filter((id) => !attached.has(id)).slice(-imageLimit) : [];
+      const currentImages = request.attachments.filter((attachment) => attachment.kind === "image").length;
+      // A fresh image keeps only the newest earlier one for comparison.
+      const historyLimit = currentImages > 0 ? 1 : 4;
+      const imageLimit = Math.min(historyLimit, Math.max(0, (request.modelCapabilities.imageInputLimits?.imageCount ?? 20) - currentImages));
+      const ids = imageLimit ? [...new Set(references.map((reference) => reference.attachmentId))].filter((id) => !attached.has(id)).slice(-imageLimit) : [];
       const rows = await prisma.attachment.findMany({ where: { id: { in: ids }, kind: "image", status: "ready", savedAt: null,
         ...(access.kind === "project" ? { projectId: access.project.projectId } : { userId }) } });
       let remaining = Math.min(IMAGE_MAX_BYTES, request.modelCapabilities.imageInputLimits?.payloadBytes ?? Infinity) - request.attachments.reduce((sum, attachment) => sum + (attachment.base64Data || attachment.dataUrl ? attachment.byteSize : 0), 0);
@@ -62,10 +66,20 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
           mimeType: row.mimeType, metadata: {}, extractedText: null, base64Data: encoded, dataUrl: `data:${row.mimeType};base64,${encoded}` });
         remaining -= row.byteSize;
       }
-      const attachments = [...request.attachments, ...extra];
-      const visibleIds = attachments.filter((attachment) => attachment.kind === "image" && (attachment.dataUrl || attachment.base64Data)).map((attachment) => attachment.id);
-      return { ...request, attachments, prompt: { ...request.prompt,
-        system: [request.prompt.system, `Image pixels accompanying the latest user message, in order: ${JSON.stringify(visibleIds)}. Additional images are references from earlier messages, not new uploads. Other image references have no visible pixels in this request.`].filter(Boolean).join("\n\n") } };
+      const visible = (attachments: readonly ProviderAttachment[]) => attachments
+        .filter((attachment) => attachment.kind === "image" && (attachment.dataUrl || attachment.base64Data)).map((attachment) => attachment.id);
+      const withSystem = (attachments: ProviderAttachment[], line: string): ProviderRunRequest => ({ ...request, attachments,
+        prompt: { ...request.prompt, system: [request.prompt.system, line].filter(Boolean).join("\n\n") } });
+      if (!extra.length) {
+        return withSystem([...request.attachments], `Image pixels accompanying the latest user message, in order: ${JSON.stringify(visible(request.attachments))}. Additional images are references from earlier messages, not new uploads. Other image references have no visible pixels in this request.`);
+      }
+      // Earlier images go first and every image is captioned, so the newest
+      // upload is the last image the model sees and is never read as history.
+      const earlier = extra.map((attachment): ProviderAttachment => ({ ...attachment, imageProvenance: { role: "earlier_message",
+        messageId: references.find((reference) => reference.attachmentId === attachment.id)!.messageId } }));
+      const current = request.attachments.map((attachment): ProviderAttachment => attachment.kind === "image"
+        ? { ...attachment, imageProvenance: { role: "current_message" } } : attachment);
+      return withSystem([...earlier, ...current], `Image pixels in this request, in order. From earlier messages (references, not new uploads): ${JSON.stringify(visible(earlier))}. Accompanying the latest user message: ${JSON.stringify(visible(current))}. A caption before each image names its image_id and source message. Other image references have no visible pixels in this request.`);
     },
     async authorize(plan: AcceptedImageGenerationPlan): Promise<boolean> {
       try {
