@@ -111,12 +111,10 @@ import { createMemoryRebuildService } from
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from
   "../../lib/server/memory/retrieval/vector";
 import {
-  MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
-  MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
-  MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
-  MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
+  MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
   MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
-  MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
+  MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION,
+  memoryOptionalWindowMs
 } from "../../lib/server/memory/retrieval/runAdmission";
 import {
   DEFAULT_MEMORY_READ_UTILITY_POLICY,
@@ -227,6 +225,10 @@ import {
 } from "./preparedCaseCache";
 
 const execFile = promisify(execFileCallback);
+// Admission budgets derive from the configured timeout; benchmark installations
+// keep the default, so the recorded optional window is its derived value.
+const BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS =
+  memoryOptionalWindowMs(MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS);
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(benchmarkRoot, "../..");
 const upstreamRoot = resolve(benchmarkRoot, ".upstream");
@@ -796,15 +798,15 @@ function applyQualificationManifest(
     manifest.runtime.evaluation.oracleSha256 !== LONGMEMEVAL_ORACLE_SHA256 ||
     manifestMemoryAdmission === null ||
     manifestMemoryAdmission.controlMaximumMs !==
-      MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS ||
+      BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS ||
     manifestMemoryAdmission.hardDeadlineMs !==
-      MEMORY_INTERACTIVE_HARD_DEADLINE_MS ||
+      MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS ||
     manifestMemoryAdmission.queryResolverMaximumMs !==
-      MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS ||
+      BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS ||
     manifestMemoryAdmission.queryResolverSettlementReserveMs !==
       MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS ||
     manifestMemoryAdmission.softDeadlineMs !==
-      MEMORY_INTERACTIVE_SOFT_DEADLINE_MS ||
+      BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS ||
     String(manifestMemoryAdmission.version) !== MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION ||
     options.memoryReadUtilityPolicy !== manifestReadUtilityPolicy ||
     manifest.runtime.lexical.backend !== "OPENSEARCH" ||
@@ -4338,13 +4340,13 @@ function buildCheckpointIdentity(input: Readonly<{
       onlineEvaluation: input.options.onlineEvaluation,
       evaluationFailFast: input.evaluationFailFast,
       memoryAdmission: Object.freeze({
-        controlMaximumMs: MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
-        hardDeadlineMs: MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
-        queryResolverMaximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
+        controlMaximumMs: BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS,
+        hardDeadlineMs: MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
+        queryResolverMaximumMs: BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS,
         queryResolverSettlementReserveMs:
           MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
         readUtilityPolicy: input.options.memoryReadUtilityPolicy,
-        softDeadlineMs: MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
+        softDeadlineMs: BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS,
         version: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
       }),
       preparedCaseCache: Object.freeze({
@@ -4829,13 +4831,13 @@ async function main(): Promise<void> {
         upstreamModelId: qualificationEmbeddingModelId
       },
       memoryAdmission: {
-        controlMaximumMs: MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
-        hardDeadlineMs: MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
-        queryResolverMaximumMs: MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS,
+        controlMaximumMs: BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS,
+        hardDeadlineMs: MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
+        queryResolverMaximumMs: BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS,
         queryResolverSettlementReserveMs:
           MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS,
         readUtilityPolicy: options.memoryReadUtilityPolicy,
-        softDeadlineMs: MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
+        softDeadlineMs: BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS,
         version: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
       },
       memoryRerankerModel: {
