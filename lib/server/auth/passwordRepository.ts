@@ -33,11 +33,12 @@ export type PasswordAuthRepository = {
     passwordHash: string;
     session: Omit<CreateAuthSessionInput, "userId">;
   }): Promise<{ user: PasswordIdentityRecord["user"] } | null>;
+  /** The normalized email lets the caller clear that account's password-login lock. */
   completePasswordReset(input: {
     now: Date;
     passwordHash: string;
     tokenHash: string;
-  }): Promise<{ userId: string } | null>;
+  }): Promise<{ normalizedEmail: string; userId: string } | null>;
   createPasswordResetToken(input: PasswordResetTokenInput): Promise<boolean>;
   findPasswordIdentityByEmail(normalizedEmail: string): Promise<PasswordIdentityRecord | null>;
 };
@@ -179,6 +180,7 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
         });
 
         return {
+          normalizedEmail: flowToken.identity.normalizedEmail,
           userId: flowToken.identity.userId
         };
       });

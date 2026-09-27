@@ -303,8 +303,10 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
       return json({ error: "invalid_invite_token" }, { status: 400 });
     }
 
+    // Success resets only the invite's own key; the source budget gets back just this
+    // attempt, so an accepted invite never restores what the source spent on guesses.
     await Promise.all([
-      ...(clientRateLimitKey ? [rateLimiter.reset(clientRateLimitKey)] : []),
+      ...(clientRateLimitKey ? [rateLimiter.release(clientRateLimitKey)] : []),
       rateLimiter.reset(tokenRateLimitKey)
     ]);
 

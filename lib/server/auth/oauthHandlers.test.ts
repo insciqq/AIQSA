@@ -114,9 +114,10 @@ function callbackRequest(input: {
         input.sessionCookie
       ].filter(Boolean).join("; "),
       "user-agent": "OAuth handler test",
-      // Unrelated flows use distinct clients; admission tests explicitly share an IP.
+      // Unrelated flows use distinct clients (IPv6 sources are /64 networks); admission
+      // tests explicitly share an address.
       ...(input.forwardedFor === null ? {} : {
-        "x-forwarded-for": input.forwardedFor ?? `2001:db8::${(++callbackClientOrdinal).toString(16)}`
+        "x-forwarded-for": input.forwardedFor ?? `2001:db8:${(++callbackClientOrdinal).toString(16)}::1`
       })
     }
   });
@@ -604,12 +605,7 @@ describe("OAuth route handlers", () => {
     expect(responses.filter((response) => response.headers.has("retry-after"))).toHaveLength(1);
   });
 
-  it("bounds provider exchanges across fresh flows from distinct clients", async () => {
-    const flows = await Promise.all([
-      startFlow({ seed: "provider-one" }),
-      startFlow({ seed: "provider-two" }),
-      startFlow({ seed: "provider-three" })
-    ]);
+  it("limits each source to one exchange per window once the installation guard is saturated", async () => {
     const exchangeCode = vi.fn(async () => {
       throw new Error("provider rejected code");
     });
@@ -630,22 +626,130 @@ describe("OAuth route handlers", () => {
       repository: repository().repository,
       sessions: createMemoryAuthSessionStore()
     });
+    const callback = async (seed: string, forwardedFor: string) => {
+      const flow = await startFlow({ seed });
 
-    const responses = [];
-    for (const flow of flows) {
-      responses.push(await handler(callbackRequest({
+      return handler(callbackRequest({
         code: "authorization-code",
         flowToken: flow.flowToken,
+        forwardedFor,
         provider: "google",
         state: flow.location.searchParams.get("state")!
-      }), { params: { provider: "google" } }));
-    }
+      }), { params: { provider: "google" } });
+    };
 
-    expect(exchangeCode).toHaveBeenCalledTimes(2);
-    expect(responses[2]?.headers.get("retry-after")).toBe("600");
-    expect(new URL(responses[2]!.headers.get("location")!).searchParams.get("oauth")).toBe(
-      "failed"
-    );
+    const responses = [
+      await callback("guard-one", "203.0.113.41"),
+      await callback("guard-two", "203.0.113.41"),
+      await callback("guard-three", "203.0.113.41"),
+      await callback("guard-four", "203.0.113.41"),
+      await callback("guard-fresh", "198.51.100.41")
+    ];
+
+    expect(exchangeCode).toHaveBeenCalledTimes(4);
+    expect(responses.map((response) => response.headers.get("retry-after"))).toEqual([
+      null, null, null, "600", null
+    ]);
+    for (const response of responses) {
+      expect(new URL(response.headers.get("location")!).searchParams.get("oauth")).toBe("failed");
+    }
+  });
+
+  it("does not let isolated attacker flows from several sources deny another client's callback", async () => {
+    const providerRateLimiter = createFixedWindowLoginRateLimiter({
+      clock: () => now.getTime(),
+      maxAttempts: 20,
+      windowMs: 10 * 60 * 1000
+    });
+    const junkExchange = vi.fn<typeof exchangeOAuthCode>(async () => {
+      throw new Error("provider rejected junk code");
+    });
+    const makeHandler = (exchangeCode: typeof exchangeOAuthCode, sessions = createMemoryAuthSessionStore()) =>
+      createOAuthCallbackHandler({
+        exchangeCode,
+        getConfig: () => config,
+        loginRateLimiter: createFixedWindowLoginRateLimiter({ clock: () => now.getTime() }),
+        now: () => now,
+        oauthProviderRateLimiter: providerRateLimiter,
+        repository: repository("active").repository,
+        sessions
+      });
+    const attacker = makeHandler(junkExchange);
+    const context = { params: { provider: "google" } };
+
+    // Six sources, ten fresh flows each: the repro that used to exhaust the whole guard.
+    for (let source = 1; source <= 6; source += 1) {
+      for (let index = 0; index < 10; index += 1) {
+        const flow = await startFlow({ seed: `attacker-${source}-${index}` });
+        await attacker(callbackRequest({
+          code: "junk-code",
+          flowToken: flow.flowToken,
+          forwardedFor: `203.0.113.${source}`,
+          provider: "google",
+          state: flow.location.searchParams.get("state")!
+        }), context);
+      }
+    }
+    // The guard admitted its 20 exchanges, then one more per attacking source.
+    expect(junkExchange).toHaveBeenCalledTimes(20 + 4);
+
+    const sessions = createMemoryAuthSessionStore({ user: createTestUser({ id: "oauth-user" }) });
+    const client = makeHandler(async () => ({
+      displayName: "OAuth User",
+      email: "oauth.user@example.com",
+      providerAccountId: "provider-subject"
+    }), sessions);
+    const flow = await startFlow({ seed: "legitimate-client" });
+    const response = await client(callbackRequest({
+      code: "authorization-code",
+      flowToken: flow.flowToken,
+      forwardedFor: "198.51.100.77",
+      provider: "google",
+      state: flow.location.searchParams.get("state")!
+    }), context);
+
+    expect(response.headers.get("location")).toBe("https://aiqsa.example/admin?tab=users");
+    expect(response.headers.get("retry-after")).toBeNull();
+    expect(sessions.records.size).toBe(1);
+  });
+
+  it("does not restore a source's callback budget when one of its logins succeeds", async () => {
+    const exchangeCode = vi.fn<typeof exchangeOAuthCode>(async ({ code }) => {
+      if (code !== "valid-code") throw new Error("provider rejected code");
+
+      return { displayName: "OAuth User", email: "oauth.user@example.com", providerAccountId: "provider-subject" };
+    });
+    const sessions = createMemoryAuthSessionStore({ user: createTestUser({ id: "oauth-user" }) });
+    const handler = createOAuthCallbackHandler({
+      exchangeCode,
+      getConfig: () => config,
+      loginRateLimiter: createFixedWindowLoginRateLimiter({ clock: () => now.getTime(), maxAttempts: 3 }),
+      now: () => now,
+      repository: repository("active").repository,
+      sessions
+    });
+    const callback = async (code: string, seed: string) => {
+      const flow = await startFlow({ seed });
+      const response = await handler(callbackRequest({
+        code,
+        flowToken: flow.flowToken,
+        forwardedFor: "203.0.113.88",
+        provider: "google",
+        state: flow.location.searchParams.get("state")!
+      }), { params: { provider: "google" } });
+
+      return new URL(response.headers.get("location")!).searchParams.get("oauth") ?? "signed-in";
+    };
+
+    expect([
+      await callback("junk-code", "budget-one"),
+      await callback("junk-code", "budget-two"),
+      await callback("valid-code", "budget-three"),
+      await callback("junk-code", "budget-four"),
+      await callback("junk-code", "budget-five")
+    ]).toEqual(["failed", "failed", "signed-in", "failed", "failed"]);
+    expect(exchangeCode).toHaveBeenCalledTimes(4);
+    expect(sessions.records.size).toBe(1);
   });
 
   it("derives the flow admission key without exposing signed proof material", async () => {
@@ -658,8 +762,8 @@ describe("OAuth route handlers", () => {
       },
       getConfig: () => config,
       now: () => now,
-      oauthFlowRateLimiter: { check: flowChecks, reset: vi.fn() },
-      oauthProviderRateLimiter: { check: providerChecks, reset: vi.fn() },
+      oauthFlowRateLimiter: { check: flowChecks, release: vi.fn(), reset: vi.fn() },
+      oauthProviderRateLimiter: { check: providerChecks, release: vi.fn(), reset: vi.fn() },
       repository: repository().repository,
       sessions: createMemoryAuthSessionStore()
     });
