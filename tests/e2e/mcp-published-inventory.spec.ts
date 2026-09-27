@@ -12,6 +12,7 @@ import {
   type MutableMcpEndpoint,
   type MutableMcpTool
 } from "./support/mutableMcpEndpoint";
+import { disableMemoryRecall, setWorkspaceEnabled } from "./support/workspace";
 
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
@@ -38,11 +39,17 @@ const viewports = [
 ] as const;
 
 type SnapshotTool = { definitionHash: string; originalName: string; serverId: string };
+type MemoryRecall = Record<"learnAutomatically" | "referenceChatHistory" | "useMemoryFacts", boolean>;
 
 /** Sends one Load all message; returns the accepted run's chat and its frozen tools of one server. */
 async function sendWithLoadAll(page: Page, userId: string, serverId: string, question: string) {
   const since = new Date();
-  await page.getByRole("button", { name: "Change MCP mode" }).click();
+  const mcpMode = page.getByRole("button", { name: "Change MCP mode" });
+  await expect(mcpMode).toBeVisible({ timeout: 30_000 });
+  // Answers run on the 8k fake model, whose window cannot hold the Workspace
+  // tool surface beside the MCP tools; Workspace is not under test here.
+  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
+  await mcpMode.click();
   await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Load all/u }).click();
   await expect(page.getByRole("button", { name: "Change MCP mode" })).toHaveAccessibleDescription(/^MCP: Load all/u);
   const message = page.getByRole("textbox", { exact: true, name: "Message" });
@@ -98,9 +105,22 @@ test("MCP tools changed on the server stay unavailable with a reason until Test 
   const endpoint = await startMutableMcpEndpoint([readTask, createTask, listTasks]);
   const serverName = `Changing tools ${randomUUID().slice(0, 8)}`;
   const chatIds = new Set<string>();
+  let memoryRecall: MemoryRecall | null = null;
   let serverId: string | null = null;
   try {
     await signInWithLocalToken(page);
+    // Recalled past chats would also count against the 8k fake model. Memory is
+    // not under test; the account's recall settings are restored afterwards.
+    const memory = await page.request.get("/api/me/memory/settings");
+    if (memory.ok()) {
+      const { settings } = await memory.json() as { settings: MemoryRecall };
+      memoryRecall = {
+        learnAutomatically: settings.learnAutomatically,
+        referenceChatHistory: settings.referenceChatHistory,
+        useMemoryFacts: settings.useMemoryFacts
+      };
+    }
+    await disableMemoryRecall(page);
     const userId = ((await (await page.request.get("/api/me")).json()) as { user: { id: string } }).user.id;
 
     const created = await page.request.post("/api/admin/mcp", { data: {
@@ -230,6 +250,7 @@ test("MCP tools changed on the server stay unavailable with a reason until Test 
     await page.goto("about:blank").catch(() => undefined);
     for (const chatId of chatIds) await page.request.delete(`/api/chats/${chatId}`).catch(() => undefined);
     if (serverId) await page.request.delete(`/api/admin/mcp/${serverId}`).catch(() => undefined);
+    if (memoryRecall) await page.request.patch("/api/me/memory/settings", { data: memoryRecall }).catch(() => undefined);
     await endpoint.close();
   }
 });
