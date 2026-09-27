@@ -35,6 +35,8 @@ export type MemoryHistoryChunkAdmission = Readonly<{
   sourceCreatedAtCutoff?: string | null;
 }>;
 
+// `maxChunks` is a per-call (per index page) bound; history longer than one
+// page is indexed incrementally from the checkpoint cursor.
 export const DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS: MemoryHistoryChunkingOptions =
   Object.freeze({
     maxApproxTokens: 768,
@@ -472,13 +474,32 @@ function planChunks(
   return chunks;
 }
 
-export function chunkMemoryRecallProjection(
+export type MemoryRecallChunkPage = Readonly<{
+  chunks: readonly MemoryRecallChunkProjection[];
+  /** False when the call planned more than `maxChunks` chunks. */
+  complete: boolean;
+  /** Messages with source ranges only in chunks beyond the returned prefix. */
+  omittedMessageIds: readonly string[];
+}>;
+
+function pieceKey(piece: Piece): string {
+  return `${piece.message.id}\u0000${piece.startOffset}\u0000${piece.endOffset}`;
+}
+
+/**
+ * `maxChunks` bounds one call, never a whole chat. The caller pages a long
+ * source and uses `complete` to shrink a page; the returned prefix is only
+ * for an indivisible page whose overflow must be reported explicitly.
+ */
+export function chunkMemoryRecallProjectionPage(
   snapshot: MemorySafeSourceSnapshot,
   options?: Partial<MemoryHistoryChunkingOptions>,
   admission?: MemoryHistoryChunkAdmission
-): readonly MemoryRecallChunkProjection[] {
+): MemoryRecallChunkPage {
   validateSnapshot(snapshot);
-  if (snapshot.mode !== "NORMAL") return [];
+  if (snapshot.mode !== "NORMAL") {
+    return { chunks: [], complete: true, omittedMessageIds: [] };
+  }
   const resolvedOptions = optionsWithDefaults(options);
   const safeGroupSegments = admittedGroupSegments(
     snapshot.recallChunkProjection.turnGroups.filter(groupIsSafe),
@@ -490,9 +511,36 @@ export function chunkMemoryRecallProjection(
     const rendered = renderPieces(chunk.pieces);
     return chunkTextPassesSafety(rendered.text);
   });
-  if (planned.length > resolvedOptions.maxChunks) {
-    fail("memory_history_chunk_limit_exceeded");
-  }
+  const selected = planned.slice(0, resolvedOptions.maxChunks);
+  const selectedPieces = new Set(selected.flatMap((chunk) =>
+    chunk.pieces.map(pieceKey)));
+  const omittedMessageIds = uniqueSorted(planned.slice(selected.length)
+    .flatMap((chunk) => chunk.pieces)
+    .flatMap((piece) => selectedPieces.has(pieceKey(piece))
+      ? []
+      : [piece.message.id]));
+  return {
+    chunks: renderPlannedChunks(snapshot, selected, resolvedOptions),
+    complete: selected.length === planned.length,
+    omittedMessageIds
+  };
+}
+
+export function chunkMemoryRecallProjection(
+  snapshot: MemorySafeSourceSnapshot,
+  options?: Partial<MemoryHistoryChunkingOptions>,
+  admission?: MemoryHistoryChunkAdmission
+): readonly MemoryRecallChunkProjection[] {
+  const page = chunkMemoryRecallProjectionPage(snapshot, options, admission);
+  if (!page.complete) fail("memory_history_chunk_limit_exceeded");
+  return page.chunks;
+}
+
+function renderPlannedChunks(
+  snapshot: MemorySafeSourceSnapshot,
+  planned: readonly PlannedChunk[],
+  resolvedOptions: MemoryHistoryChunkingOptions
+): readonly MemoryRecallChunkProjection[] {
   return planned.map((chunk, ordinal): MemoryRecallChunkProjection => {
     const rendered = renderPieces(chunk.pieces);
     if (!fits(chunk.pieces, resolvedOptions)) {

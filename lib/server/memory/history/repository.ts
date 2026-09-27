@@ -3,6 +3,7 @@ import {
   type MemoryEmbeddingState,
   type MemoryHistoryItemState,
   type MemoryToolEvent,
+  type ModelRunToolCall,
   type PrismaClient
 } from "@prisma/client";
 import { estimateApproxTokens } from "../../../domain/contextBudget";
@@ -36,16 +37,17 @@ import {
   type MemorySourceSnapshot
 } from "../sourceState";
 import {
-  chunkMemoryRecallProjection,
-  DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS,
+  chunkMemoryRecallProjectionPage,
   MEMORY_HISTORY_CHUNKING_VERSION,
-  type MemoryRecallChunkMessageJoin
+  type MemoryRecallChunkMessageJoin,
+  type MemoryRecallChunkPage
 } from "./chunking";
 import {
   MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryChunkId,
   memoryHistoryIndexClaimIsValid,
+  memoryHistoryIndexPlanIndexedThrough,
   memoryHistoryIndexResultHash,
   type MemoryHistoryIndexPlan,
   type MemoryHistoryIndexSourceIdentity,
@@ -54,8 +56,16 @@ import {
   type MemoryHistoryPreparedToolEvent
 } from "./contract";
 import {
+  alignMemoryHistoryIndexPageEnd,
+  boundMemoryHistoryIndexPageEnd,
+  DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS,
   MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
-  planMemoryHistoryTailUpdate
+  MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE,
+  memoryHistoryIndexMinimumPageEnd,
+  memoryHistoryIndexPageLimitsAreValid,
+  planMemoryHistoryTailUpdate,
+  shrinkMemoryHistoryIndexPageEnd,
+  type MemoryHistoryIndexPageLimits
 } from "./incremental";
 import {
   buildMemorySafeSourceSnapshot,
@@ -83,8 +93,8 @@ import {
 } from "./evidenceRoot";
 import { memoryHistorySuppressionIdentitySnapshot } from "./admissionIdentity";
 import {
-  MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS,
   MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+  MEMORY_TOOL_EVENT_SOURCE_READ_BATCH,
   projectMemoryToolEvent
 } from "./toolEvents";
 
@@ -212,6 +222,7 @@ const disabledDecision = Object.freeze({
 });
 const MEMORY_HISTORY_PREPARE_TRANSACTION_MAX_WAIT_MS = 5_000;
 const MEMORY_HISTORY_PREPARE_TRANSACTION_TIMEOUT_MS = 30_000;
+export const MEMORY_HISTORY_MESSAGE_TRUNCATED_CODE = "memory_history_message_truncated";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -256,8 +267,8 @@ async function loadHistoryPathMetadata(
   activeLeafMessageId: string
 ): Promise<readonly HistoryPathMessageMetadata[]> {
   // A bounded walk keeps valid paths linear in their length. A cycle cannot
-  // terminate at a root, so it necessarily produces MAX + 1 rows and fails
-  // the same limit check as an overlong path without carrying an O(n²) array.
+  // terminate at a root, so it necessarily produces MAX + 1 rows. Repeated ids
+  // distinguish that corruption from a genuine path beyond the ceiling.
   const rows = await tx.$queryRaw<HistoryPathMessageMetadata[]>(Prisma.sql`
     WITH RECURSIVE active_path AS (
       SELECT
@@ -286,6 +297,14 @@ async function loadHistoryPathMetadata(
     FROM active_path
     ORDER BY "depth" DESC
   `);
+  if (
+    rows.length > MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES &&
+    new Set(rows.map(({ id }) => id)).size === rows.length
+  ) {
+    // Deterministic explicit ceiling, not corruption: the indexed prefix stays
+    // valid evidence and the non-retryable code keeps the source visible.
+    throw new MemoryCoordinatorError(MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE, false);
+  }
   if (
     rows.length === 0 ||
     rows.length > MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES ||
@@ -709,10 +728,133 @@ function alignHistoryTailStart(
   return start;
 }
 
+const HISTORY_RUN_SELECT = {
+  assistantId: true,
+  assistantMessageId: true,
+  id: true,
+  status: true,
+  userMessageId: true
+} as const;
+
+type ChangedToolCallSource = Readonly<{
+  assistantMessageId: string | null;
+  id: string;
+}>;
+
+/** Keyset-paged identities of settled calls changed since the checkpoint. */
+async function loadChangedToolCallSources(
+  tx: MemoryTransaction,
+  source: Readonly<{ id: string; userId: string }>,
+  since: Date
+): Promise<readonly ChangedToolCallSource[]> {
+  const changed: ChangedToolCallSource[] = [];
+  let cursor: Readonly<{ id: string; updatedAt: Date }> | null = null;
+  for (;;) {
+    const batch: Array<{
+      id: string;
+      modelRun: { assistantMessageId: string | null };
+      updatedAt: Date;
+    }> = await tx.modelRunToolCall.findMany({
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        modelRun: {
+          select: { assistantMessageId: true }
+        },
+        updatedAt: true
+      },
+      take: MEMORY_TOOL_EVENT_SOURCE_READ_BATCH,
+      where: {
+        AND: [
+          { updatedAt: { gte: since } },
+          ...(cursor
+            ? [{
+                OR: [
+                  { updatedAt: { gt: cursor.updatedAt } },
+                  { id: { gt: cursor.id }, updatedAt: cursor.updatedAt }
+                ]
+              }]
+            : [])
+        ],
+        completedAt: { not: null },
+        modelRun: {
+          chatId: source.id,
+          status: "complete",
+          userId: source.userId
+        },
+        state: { in: ["complete", "error"] }
+      }
+    });
+    for (const call of batch) {
+      changed.push({
+        assistantMessageId: call.modelRun.assistantMessageId,
+        id: call.id
+      });
+    }
+    const last = batch.at(-1);
+    if (!last || batch.length < MEMORY_TOOL_EVENT_SOURCE_READ_BATCH) break;
+    cursor = { id: last.id, updatedAt: last.updatedAt };
+  }
+  return changed;
+}
+
+type SettledToolCallSource = Readonly<Pick<
+  ModelRunToolCall,
+  "completedAt" | "id" | "modelRunId" | "result" | "state" | "toolName" | "updatedAt"
+>>;
+
+/**
+ * Visits settled calls in keyset batches. Callers keep only bounded
+ * projections, so raw results of a long page are never held all at once.
+ */
+async function forEachSettledToolCall(
+  tx: MemoryTransaction,
+  modelRunIds: readonly string[],
+  visit: (call: SettledToolCallSource) => void
+): Promise<void> {
+  if (modelRunIds.length === 0) return;
+  let cursor: Readonly<{ completedAt: Date; id: string }> | null = null;
+  for (;;) {
+    const batch: SettledToolCallSource[] = await tx.modelRunToolCall.findMany({
+      orderBy: [{ completedAt: "asc" }, { id: "asc" }],
+      select: {
+        completedAt: true,
+        id: true,
+        modelRunId: true,
+        result: true,
+        state: true,
+        toolName: true,
+        updatedAt: true
+      },
+      take: MEMORY_TOOL_EVENT_SOURCE_READ_BATCH,
+      where: {
+        AND: [
+          { completedAt: { not: null } },
+          ...(cursor
+            ? [{
+                OR: [
+                  { completedAt: { gt: cursor.completedAt } },
+                  { completedAt: cursor.completedAt, id: { gt: cursor.id } }
+                ]
+              }]
+            : [])
+        ],
+        modelRunId: { in: [...modelRunIds] },
+        state: { in: ["complete", "error"] }
+      }
+    });
+    for (const call of batch) visit(call);
+    const last = batch.at(-1);
+    if (!last?.completedAt || batch.length < MEMORY_TOOL_EVENT_SOURCE_READ_BATCH) break;
+    cursor = { completedAt: last.completedAt, id: last.id };
+  }
+}
+
 async function prepareWith(
   tx: MemoryTransaction,
   job: MemoryJobDescriptor,
-  now: Date
+  now: Date,
+  limits: MemoryHistoryIndexPageLimits = DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS
 ): Promise<MemoryHistoryPrepareResult> {
   const decision = await probeWith(tx, job);
   if (decision.status !== "READY") return { decision };
@@ -742,7 +884,7 @@ async function prepareWith(
     })),
     sourceHash: job.sourceHash
   };
-  const checkpointMessages = path.map((message, ordinal) => ({
+  const pathCheckpointMessages = path.map((message, ordinal) => ({
     createdAt: message.createdAt.toISOString(),
     messageId: message.id,
     ordinal,
@@ -755,7 +897,7 @@ async function prepareWith(
   const previousIsCurrent = previous.checkpointPipelineVersion ===
     MEMORY_HISTORY_INDEX_PIPELINE_VERSION;
   let incremental = planMemoryHistoryTailUpdate({
-    currentMessages: checkpointMessages,
+    currentMessages: pathCheckpointMessages,
     previousChunks: previousIsCurrent
       ? previous.chunks.map((chunk) => ({
           id: chunk.id,
@@ -796,92 +938,63 @@ async function prepareWith(
     : reusableRows;
   const retained = retainedRows.map((row, ordinal) =>
     storedChunkProjection(row, source, ordinal));
+  const retainedIds = new Set(retained.map((chunk) => chunk.id));
+  const roles = path.map((message) => message.role);
   const requestedTailStart = incremental.mode === "UNCHANGED"
     ? path.length
     : incremental.rebuildFromMessageOrdinal;
   const tailStart = alignHistoryTailStart(path, requestedTailStart);
-  const tailPath = path.slice(tailStart);
-  const tailIds = tailPath.map((message) => message.id);
-  const rows = tailIds.length === 0 ? [] : await tx.message.findMany({
-    select: {
-      content: true,
-      id: true
-    },
-    where: { chatId: source.id, id: { in: tailIds } }
-  });
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  if (tailIds.some((id) => !byId.has(id))) return { decision: staleDecision };
+  // APPEND retains every chunk of its proven common prefix; its bounded rewind
+  // is contextual overlap only. Every other mode rebuilds from the tail start.
+  const firstUncovered = incremental.mode === "APPEND"
+    ? Math.max(tailStart, Math.min(path.length, incremental.commonPathMessageCount))
+    : tailStart;
+  const minimumPageEnd = memoryHistoryIndexMinimumPageEnd(roles, firstUncovered);
+  const maximumPageEnd = Math.min(
+    path.length,
+    Math.max(minimumPageEnd, firstUncovered + limits.maxMessages)
+  );
 
   // Reproject stale tool observations from settled calls while retaining the
   // independent chunk/round checkpoint. Old event proof is never relabelled.
   const canReuseToolEvents = previousIsCurrent && incremental.mode !== "FULL_REBUILD" &&
     previous.toolEvents.every((event) =>
       event.projectionVersion === MEMORY_TOOL_EVENT_PROJECTION_VERSION);
-  const runMessageIds = canReuseToolEvents
-    ? [...new Set([...tailIds, source.activeLeafMessageId])]
-    : path.map(({ id }) => id);
-  const baseRuns = await tx.modelRun.findMany({
-    select: {
-      assistantId: true,
-      assistantMessageId: true,
-      id: true,
-      normalizedRequest: true,
-      status: true,
-      userMessageId: true
-    },
+  const toolEventStart = canReuseToolEvents ? tailStart : 0;
+  const candidateRunMessageIds = [...new Set([
+    ...path.slice(toolEventStart, maximumPageEnd).map(({ id }) => id),
+    source.activeLeafMessageId
+  ])];
+  const candidateRuns = await tx.modelRun.findMany({
+    select: HISTORY_RUN_SELECT,
     where: {
-      assistantMessageId: { in: runMessageIds },
+      assistantMessageId: { in: candidateRunMessageIds },
       chatId: source.id,
       userId: source.userId
     }
   });
-  const changedToolCallSources = canReuseToolEvents && previous.checkpointLastSucceededAt
-    ? await tx.modelRunToolCall.findMany({
-        orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-        select: {
-          id: true,
-          modelRun: {
-            select: { assistantMessageId: true }
-          }
-        },
-        take: MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS + 1,
-        where: {
-          completedAt: { not: null },
-          modelRun: {
-            chatId: source.id,
-            status: "complete",
-            userId: source.userId
-          },
-          state: { in: ["complete", "error"] },
-          updatedAt: { gte: previous.checkpointLastSucceededAt }
-        }
-      })
+  const changedToolCalls = canReuseToolEvents && previous.checkpointLastSucceededAt
+    ? await loadChangedToolCallSources(tx, source, previous.checkpointLastSucceededAt)
     : [];
-  if (changedToolCallSources.length > MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS) {
-    throw new MemoryCoordinatorError("memory_tool_event_source_limit_exceeded", false);
-  }
-  const changedAssistantMessageIds = [...new Set(changedToolCallSources.flatMap(({ modelRun }) =>
-    modelRun.assistantMessageId && pathById.has(modelRun.assistantMessageId)
-      ? [modelRun.assistantMessageId]
-      : []))];
-  const changedRuns = changedAssistantMessageIds.length === 0
+  const candidateMessageIds = new Set(candidateRunMessageIds);
+  const changedOnlyMessageIds = [...new Set(changedToolCalls.flatMap(
+    ({ assistantMessageId }) =>
+      assistantMessageId && pathById.has(assistantMessageId) &&
+        !candidateMessageIds.has(assistantMessageId)
+        ? [assistantMessageId]
+        : []
+  ))];
+  const changedRuns = changedOnlyMessageIds.length === 0
     ? []
     : await tx.modelRun.findMany({
-        select: {
-          assistantId: true,
-          assistantMessageId: true,
-          id: true,
-          normalizedRequest: true,
-          status: true,
-          userMessageId: true
-        },
+        select: HISTORY_RUN_SELECT,
         where: {
-          assistantMessageId: { in: changedAssistantMessageIds },
+          assistantMessageId: { in: changedOnlyMessageIds },
           chatId: source.id,
           userId: source.userId
         }
       });
-  const runById = new Map(baseRuns.map((run) => [run.id, run]));
+  const runById = new Map(candidateRuns.map((run) => [run.id, run]));
   for (const run of changedRuns) runById.set(run.id, run);
   const runs = [...runById.values()];
   const runAssistantIds = runs.flatMap((run) => run.assistantId ? [run.assistantId] : []);
@@ -904,93 +1017,80 @@ async function prepareWith(
       run
     ]);
   }
-
-  const uniquelySettledRuns = runs.filter((run) =>
+  const uniquelySettled = (run: (typeof runs)[number]): boolean =>
     run.status === "complete" && run.assistantMessageId !== null &&
-    runsByAssistantMessage.get(run.assistantMessageId)?.length === 1);
-  const settledToolCalls = uniquelySettledRuns.length === 0
+    runsByAssistantMessage.get(run.assistantMessageId)?.length === 1;
+
+  // Size the page before loading content or raw tool results. Costs start at
+  // the rewind, so one job's loaded content and rebuilt events stay bounded.
+  const settledCandidateRuns = candidateRuns.filter(uniquelySettled);
+  const toolCallCounts = settledCandidateRuns.length === 0
     ? []
-    : await tx.modelRunToolCall.findMany({
-        orderBy: [{ completedAt: "asc" }, { id: "asc" }],
-        select: {
-          completedAt: true,
-          id: true,
-          modelRunId: true,
-          result: true,
-          state: true,
-          toolName: true,
-          updatedAt: true
-        },
-        take: MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS + 1,
+    : await tx.modelRunToolCall.groupBy({
+        _count: { _all: true },
+        by: ["modelRunId"],
         where: {
           completedAt: { not: null },
-          modelRunId: { in: uniquelySettledRuns.map(({ id }) => id) },
+          modelRunId: { in: settledCandidateRuns.map(({ id }) => id) },
           state: { in: ["complete", "error"] }
         }
       });
-  if (settledToolCalls.length > MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS) {
-    throw new MemoryCoordinatorError("memory_tool_event_source_limit_exceeded", false);
-  }
-  const settledRunById = new Map(uniquelySettledRuns.map((run) => [run.id, run]));
-  const projectedToolEvents = settledToolCalls.flatMap(
-    (call): MemoryHistoryPreparedToolEvent[] => {
-      const run = settledRunById.get(call.modelRunId);
-      if (!run?.assistantMessageId || !call.completedAt ||
-        (call.state !== "complete" && call.state !== "error")) return [];
-      const sourceMessage = pathById.get(run.assistantMessageId);
-      if (!sourceMessage || excluded.has(sourceMessage.id) ||
-        cutoff !== null && sourceMessage.createdAt <= cutoff) return [];
-      const projection = projectMemoryToolEvent({
-        assistantMessageId: run.assistantMessageId,
-        branchGeneration: source.memoryBranchGeneration,
-        chatId: source.id,
-        completedAt: call.completedAt,
-        modelRunId: run.id,
-        modelRunToolCallId: call.id,
-        result: call.result,
-        sourceAssistantId: run.assistantId && ownedAssistantIds.has(run.assistantId)
-          ? run.assistantId
-          : null,
-        sourceCallUpdatedAt: call.updatedAt,
-        sourceFolderId: source.folderId,
-        sourceRevision: source.memorySourceRevision,
-        state: call.state,
-        toolName: call.toolName,
-        userId: source.userId
-      });
-      return projection ? [{ ...projection, publicationState: "ACTIVE" }] : [];
-    });
-  const rebuiltToolCallIds = new Set([
-    ...settledToolCalls.map(({ id }) => id),
-    ...changedToolCallSources.map(({ id }) => id)
-  ]);
-  const rebuiltToolEventMessageIds = new Set(runMessageIds);
-  const retainedToolEvents = canReuseToolEvents
-    ? previous.toolEvents.flatMap((row): MemoryHistoryPreparedToolEvent[] => {
-        const sourceMessage = pathById.get(row.assistantMessageId);
-        if (!sourceMessage || excluded.has(sourceMessage.id) ||
-          cutoff !== null && sourceMessage.createdAt <= cutoff ||
-          rebuiltToolCallIds.has(row.modelRunToolCallId) ||
-          rebuiltToolEventMessageIds.has(row.assistantMessageId)) return [];
-        return [storedToolEventProjection(row, source)];
+  const toolCallsByRunId = new Map(toolCallCounts.map((row) =>
+    [row.modelRunId, row._count._all]));
+  const settledRunByMessageId = new Map(settledCandidateRuns.flatMap((run) =>
+    run.assistantMessageId ? [[run.assistantMessageId, run] as const] : []));
+  const sizedIds = path.slice(tailStart, maximumPageEnd).map(({ id }) => id);
+  const contentSizes = sizedIds.length === 0
+    ? []
+    : await tx.$queryRaw<Array<{ bytes: number | null; id: string }>>(Prisma.sql`
+        SELECT message."id", octet_length(message."content"::text)::integer AS "bytes"
+        FROM "Message" AS message
+        WHERE message."chatId" = ${source.id}
+          AND message."id" IN (${Prisma.join(sizedIds)})
+      `);
+  const contentBytesById = new Map(contentSizes.map((row) =>
+    [row.id, Number(row.bytes ?? 0)]));
+  let pageEnd = maximumPageEnd;
+  if (firstUncovered < path.length) {
+    pageEnd = alignMemoryHistoryIndexPageEnd(roles, minimumPageEnd, Math.min(
+      boundMemoryHistoryIndexPageEnd({
+        cost: (ordinal) => contentBytesById.get(path[ordinal]!.id) ?? 0,
+        costStartOrdinal: tailStart,
+        limit: limits.maxContentBytes,
+        maximumEnd: maximumPageEnd,
+        minimumEnd: minimumPageEnd
+      }),
+      boundMemoryHistoryIndexPageEnd({
+        cost: (ordinal) => {
+          const run = settledRunByMessageId.get(path[ordinal]!.id);
+          return run ? toolCallsByRunId.get(run.id) ?? 0 : 0;
+        },
+        costStartOrdinal: toolEventStart,
+        limit: limits.maxToolCalls,
+        maximumEnd: maximumPageEnd,
+        minimumEnd: minimumPageEnd
       })
-    : [];
-  const toolEventByCallId = new Map(retainedToolEvents.map((event) =>
-    [event.modelRunToolCallId, event]));
-  for (const event of projectedToolEvents) {
-    toolEventByCallId.set(event.modelRunToolCallId, event);
+    ));
   }
-  const toolEvents = [...toolEventByCallId.values()].sort((left, right) =>
-    left.occurredAt.localeCompare(right.occurredAt) || left.id.localeCompare(right.id));
-  if (toolEvents.length > MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS) {
-    throw new MemoryCoordinatorError("memory_tool_event_source_limit_exceeded", false);
-  }
+  const contentIds = path.slice(tailStart, pageEnd).map(({ id }) => id);
+  const rows = contentIds.length === 0 ? [] : await tx.message.findMany({
+    select: {
+      content: true,
+      id: true
+    },
+    where: { chatId: source.id, id: { in: contentIds } }
+  });
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  if (contentIds.some((id) => !byId.has(id))) return { decision: staleDecision };
 
-  const messages: MemoryHistorySourceMessageInput[] = tailPath.map((metadata, ordinal) => {
+  const pageSourceMessage = (
+    metadata: HistoryPathMessageMetadata,
+    first: boolean
+  ): MemoryHistorySourceMessageInput => {
     const contentRow = byId.get(metadata.id);
     if (!contentRow) throw new MemoryCoordinatorError("memory_source_stale", false);
     const base = pathOrigin(metadata.role);
-    const parentMessageId = ordinal === 0 ? null : metadata.parentMessageId;
+    const parentMessageId = first ? null : metadata.parentMessageId;
     if (metadata.role !== "assistant") {
       return {
         chatId: source.id,
@@ -1041,13 +1141,19 @@ async function prepareWith(
       status: metadata.status,
       updatedAt: metadata.updatedAt
     };
-  });
+  };
 
   const activeRunCandidates = runsByAssistantMessage.get(source.activeLeafMessageId) ?? [];
   const activeRun = activeRunCandidates.length === 1
     ? activeRunCandidates[0]!
     : null;
-  const timeZone = runTimeZone(activeRun?.normalizedRequest ?? null);
+  const activeRequest = activeRun
+    ? await tx.modelRun.findUnique({
+        select: { normalizedRequest: true },
+        where: { id: activeRun.id }
+      })
+    : null;
+  const timeZone = runTimeZone(activeRequest?.normalizedRequest ?? null);
   const sourceIdentity: MemoryHistoryIndexSourceIdentity = {
     activeLeafMessageId: source.activeLeafMessageId,
     branchGeneration: source.memoryBranchGeneration,
@@ -1056,8 +1162,17 @@ async function prepareWith(
     sourceRevision: source.memorySourceRevision,
     userId: source.userId
   };
-  const tailSnapshot = buildMemorySafeSourceSnapshot({
-        activeLeafMessageId: tailPath.at(-1)?.id ?? null,
+  const chunkAdmission = {
+    excludedMessageIds: admission.excludedMessageIds,
+    sourceCreatedAtCutoff: admission.sourceCreatedAtCutoff
+  };
+  const buildPage = (start: number, end: number) => {
+    const messages = path.slice(start, end).map((metadata, ordinal) =>
+      pageSourceMessage(metadata, ordinal === 0));
+    return {
+      messages,
+      snapshot: buildMemorySafeSourceSnapshot({
+        activeLeafMessageId: messages.at(-1)?.id ?? null,
         branchGeneration: source.memoryBranchGeneration,
         chatId: source.id,
         folderId: source.folderId,
@@ -1067,24 +1182,124 @@ async function prepareWith(
         sourceRevision: source.memorySourceRevision,
         timeZone,
         userId: source.userId
-      });
-  const projectedChunks = messages.length === 0
-    ? []
-    : chunkMemoryRecallProjection(tailSnapshot, undefined, {
-        excludedMessageIds: admission.excludedMessageIds,
-        sourceCreatedAtCutoff: admission.sourceCreatedAtCutoff
-      }).map((chunk, ordinal): MemoryHistoryPreparedChunk => ({
-        ...chunk,
-        id: memoryHistoryChunkId(sourceIdentity, chunk),
-        ordinal: retained.length + ordinal,
-        publicationState: "ACTIVE"
-      }));
-  const retainedIds = new Set(retained.map((chunk) => chunk.id));
+      })
+    };
+  };
+  const chunkPageOf = (
+    candidate: ReturnType<typeof buildPage>
+  ): MemoryRecallChunkPage => candidate.messages.length === 0
+    ? { chunks: [], complete: true, omittedMessageIds: [] }
+    : chunkMemoryRecallProjectionPage(
+        candidate.snapshot,
+        { maxChunks: limits.maxChunks },
+        chunkAdmission
+      );
+  let pageStart = tailStart;
+  let page = buildPage(pageStart, pageEnd);
+  let chunkPage = chunkPageOf(page);
+  // The chunk bound applies to one call. Shrink the uncovered part until it
+  // fits; APPEND can then drop its contextual rewind. Only one indivisible
+  // recall unit beyond the bound is indexed as an explicitly truncated prefix.
+  while (!chunkPage.complete) {
+    const shrunk = shrinkMemoryHistoryIndexPageEnd(
+      roles,
+      firstUncovered,
+      minimumPageEnd,
+      pageEnd
+    );
+    if (shrunk !== null) {
+      pageEnd = shrunk;
+    } else if (incremental.mode === "APPEND" && pageStart < firstUncovered) {
+      pageStart = firstUncovered;
+    } else {
+      break;
+    }
+    page = buildPage(pageStart, pageEnd);
+    chunkPage = chunkPageOf(page);
+  }
+  const truncatedMessageIds = chunkPage.complete ? [] : chunkPage.omittedMessageIds;
+  const messages = page.messages;
+  const tailSnapshot = page.snapshot;
+  const projectedChunks = chunkPage.chunks.map(
+    (chunk, ordinal): MemoryHistoryPreparedChunk => ({
+      ...chunk,
+      id: memoryHistoryChunkId(sourceIdentity, chunk),
+      ordinal: retained.length + ordinal,
+      publicationState: "ACTIVE"
+    })
+  );
   const rebuilt = projectedChunks.filter((chunk) => !retainedIds.has(chunk.id));
   const chunks = [...retained, ...rebuilt];
-  if (chunks.length > DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS.maxChunks) {
-    throw new MemoryCoordinatorError("memory_history_chunk_limit_exceeded", false);
+
+  // Tool observations follow the same cursor: this page rebuilds only calls of
+  // its own messages, plus changed calls inside the indexed prefix.
+  const pagePathById = new Map(path.slice(0, pageEnd).map((message) =>
+    [message.id, message]));
+  const runMessageIds = new Set([
+    ...path.slice(canReuseToolEvents ? pageStart : 0, pageEnd).map(({ id }) => id),
+    ...(pageEnd === path.length ? [source.activeLeafMessageId] : [])
+  ]);
+  const changedMessageIds = new Set(changedToolCalls.flatMap(({ assistantMessageId }) =>
+    assistantMessageId && pagePathById.has(assistantMessageId)
+      ? [assistantMessageId]
+      : []));
+  const settledRunById = new Map(runs.flatMap((run) =>
+    run.assistantMessageId !== null && uniquelySettled(run) &&
+      (runMessageIds.has(run.assistantMessageId) ||
+        changedMessageIds.has(run.assistantMessageId))
+      ? [[run.id, run] as const]
+      : []));
+  const settledToolCallIds: string[] = [];
+  const projectedToolEvents: MemoryHistoryPreparedToolEvent[] = [];
+  await forEachSettledToolCall(tx, [...settledRunById.keys()], (call) => {
+    settledToolCallIds.push(call.id);
+    const run = settledRunById.get(call.modelRunId);
+    if (!run?.assistantMessageId || !call.completedAt ||
+      (call.state !== "complete" && call.state !== "error")) return;
+    const sourceMessage = pagePathById.get(run.assistantMessageId);
+    if (!sourceMessage || excluded.has(sourceMessage.id) ||
+      cutoff !== null && sourceMessage.createdAt <= cutoff) return;
+    const projection = projectMemoryToolEvent({
+      assistantMessageId: run.assistantMessageId,
+      branchGeneration: source.memoryBranchGeneration,
+      chatId: source.id,
+      completedAt: call.completedAt,
+      modelRunId: run.id,
+      modelRunToolCallId: call.id,
+      result: call.result,
+      sourceAssistantId: run.assistantId && ownedAssistantIds.has(run.assistantId)
+        ? run.assistantId
+        : null,
+      sourceCallUpdatedAt: call.updatedAt,
+      sourceFolderId: source.folderId,
+      sourceRevision: source.memorySourceRevision,
+      state: call.state,
+      toolName: call.toolName,
+      userId: source.userId
+    });
+    if (projection) projectedToolEvents.push({ ...projection, publicationState: "ACTIVE" });
+  });
+  const rebuiltToolCallIds = new Set([
+    ...settledToolCallIds,
+    ...changedToolCalls.map(({ id }) => id)
+  ]);
+  const retainedToolEvents = canReuseToolEvents
+    ? previous.toolEvents.flatMap((row): MemoryHistoryPreparedToolEvent[] => {
+        const sourceMessage = pagePathById.get(row.assistantMessageId);
+        if (!sourceMessage || excluded.has(sourceMessage.id) ||
+          cutoff !== null && sourceMessage.createdAt <= cutoff ||
+          rebuiltToolCallIds.has(row.modelRunToolCallId) ||
+          runMessageIds.has(row.assistantMessageId)) return [];
+        return [storedToolEventProjection(row, source)];
+      })
+    : [];
+  const toolEventByCallId = new Map(retainedToolEvents.map((event) =>
+    [event.modelRunToolCallId, event]));
+  for (const event of projectedToolEvents) {
+    toolEventByCallId.set(event.modelRunToolCallId, event);
   }
+  const toolEvents = [...toolEventByCallId.values()].sort((left, right) =>
+    left.occurredAt.localeCompare(right.occurredAt) || left.id.localeCompare(right.id));
   const reusedChunkIds = retained.map((chunk) => chunk.id);
   const rebuiltChunkIds = rebuilt.map((chunk) => chunk.id);
   const pathOrdinalById = new Map(path.map((message, ordinal) => [message.id, ordinal]));
@@ -1095,7 +1310,7 @@ async function prepareWith(
         round.messageJoins.every((join) => {
           const ordinal = pathOrdinalById.get(join.messageId);
           const message = pathById.get(join.messageId);
-          return ordinal !== undefined && ordinal < tailStart && Boolean(
+          return ordinal !== undefined && ordinal < pageStart && Boolean(
             message &&
             !excluded.has(join.messageId) &&
             (cutoff === null || message.createdAt > cutoff)
@@ -1168,8 +1383,12 @@ async function prepareWith(
   const incrementalSnapshot = {
     commonPathMessageCount: incremental.commonPathMessageCount,
     mode: incremental.mode,
-    rebuildFromMessageOrdinal: tailStart
+    rebuildFromMessageOrdinal: pageStart,
+    ...(truncatedMessageIds.length > 0 ? { truncatedMessageIds } : {})
   } as const;
+  // The checkpoint cursor proves exactly the indexed prefix. A partial page
+  // leaves the remaining tail to the next job's APPEND proof.
+  const checkpointMessages = pathCheckpointMessages.slice(0, pageEnd);
   const work = {
     chunksBuilt: projectedChunks.length,
     chunksReplaced: Math.max(0, previous.chunks.length - retained.length),
@@ -1542,7 +1761,7 @@ async function planAlreadyApplied(
     checkpoint.branchGeneration !== plan.source.branchGeneration ||
     checkpoint.sourceContentHash !== plan.source.sourceHash ||
     checkpoint.sourceRevision !== plan.source.sourceRevision ||
-    checkpoint.lastIndexedMessageId !== plan.source.activeLeafMessageId
+    checkpoint.lastIndexedMessageId !== memoryHistoryIndexPlanIndexedThrough(plan)
   ) return false;
 
   const checkpointMessages = await tx.chatMemoryCheckpointMessage.findMany({
@@ -2537,7 +2756,8 @@ async function applyPlan(
   tx: MemoryTransaction,
   claim: MemoryJobClaim,
   plan: MemoryHistoryIndexPlan,
-  now: Date
+  now: Date,
+  limits: MemoryHistoryIndexPageLimits = DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS
 ): Promise<void> {
   if (
     !memoryHistoryIndexClaimIsValid(claim) ||
@@ -2631,7 +2851,7 @@ async function applyPlan(
     }
     return;
   }
-  const currentPrepared = await prepareWith(tx, claim, now);
+  const currentPrepared = await prepareWith(tx, claim, now, limits);
   if (
     "decision" in currentPrepared ||
     currentPrepared.plan.resultHash !== plan.preparedResultHash
@@ -2920,29 +3140,41 @@ async function applyPlan(
     await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
   }
   await persistDigest(tx, plan, now);
+  // READY states that the cursor proof is consistent; coverage is the cursor.
+  // A partial page leaves lastIndexedMessageId before the active leaf, which
+  // keeps the source out of retrieval authority, source projections and
+  // completion progress (all require cursor = leaf) and visible as backlog.
+  // Its active tool events still satisfy the READY-gated database source
+  // guard. History backfill revives the job for the next page.
+  const indexedThrough = memoryHistoryIndexPlanIndexedThrough(plan);
+  const status = "READY" as const;
+  const lastErrorCode = (plan.incremental.truncatedMessageIds?.length ?? 0) > 0
+    ? MEMORY_HISTORY_MESSAGE_TRUNCATED_CODE
+    : null;
   await tx.chatMemoryCheckpoint.upsert({
     create: {
       activeLeafMessageId: plan.source.activeLeafMessageId,
       branchGeneration: plan.source.branchGeneration,
       chatId: plan.source.chatId,
-      lastIndexedMessageId: plan.source.activeLeafMessageId,
+      lastErrorCode,
+      lastIndexedMessageId: indexedThrough,
       lastSucceededAt: now,
       pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
-      status: "READY",
+      status,
       userId: plan.source.userId
     },
     update: {
       activeLeafMessageId: plan.source.activeLeafMessageId,
       branchGeneration: plan.source.branchGeneration,
-      lastErrorCode: null,
-      lastIndexedMessageId: plan.source.activeLeafMessageId,
+      lastErrorCode,
+      lastIndexedMessageId: indexedThrough,
       lastSucceededAt: now,
       pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
-      status: "READY"
+      status
     },
     where: {
       userId_chatId: {
@@ -2969,17 +3201,26 @@ async function applyPlan(
 }
 
 export function createPrismaMemoryHistoryIndexRepository(
-  client: PrismaClient = prisma
+  client: PrismaClient = prisma,
+  limits: MemoryHistoryIndexPageLimits = DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS
 ) {
+  if (!memoryHistoryIndexPageLimitsAreValid(limits)) {
+    throw new Error("memory_history_index_page_limits_invalid");
+  }
   return Object.freeze({
-    apply: applyPlan,
+    apply: (
+      tx: MemoryTransaction,
+      claim: MemoryJobClaim,
+      plan: MemoryHistoryIndexPlan,
+      now: Date
+    ) => applyPlan(tx, claim, plan, now, limits),
     async preflight(job: MemoryJobDescriptor): Promise<MemoryJobGateDecision> {
       return client.$transaction((tx) => probeWith(tx, job), {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
       });
     },
     async prepare(job: MemoryJobDescriptor): Promise<MemoryHistoryPrepareResult> {
-      return client.$transaction((tx) => prepareWith(tx, job, new Date()), {
+      return client.$transaction((tx) => prepareWith(tx, job, new Date(), limits), {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
         maxWait: MEMORY_HISTORY_PREPARE_TRANSACTION_MAX_WAIT_MS,
         timeout: MEMORY_HISTORY_PREPARE_TRANSACTION_TIMEOUT_MS
