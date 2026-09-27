@@ -36,7 +36,7 @@ async function startCallbackPeer(hits: CallbackHit[]): Promise<Readonly<{ close(
 async function enforceProductionCsp(page: Page, appOrigin: string): Promise<void> {
   await page.route((url) => url.origin === appOrigin && url.pathname === "/oauth/authorize", async (route) => {
     const response = await route.fetch({ maxRedirects: 0 });
-    const headers = { ...response.headers(), "content-security-policy": PRODUCTION_CSP };
+    const headers: Record<string, string> = { ...response.headers(), "content-security-policy": PRODUCTION_CSP };
     delete headers["content-security-policy-report-only"];
     await route.fulfill({ headers, response });
   });
