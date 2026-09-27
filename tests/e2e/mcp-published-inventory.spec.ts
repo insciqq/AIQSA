@@ -49,13 +49,15 @@ async function sendWithLoadAll(page: Page, userId: string, serverId: string, que
   await message.fill(question);
   await message.press("Enter");
   await expect(assistantContentWithText(page, `Fake answer: ${question}`)).toBeVisible({ timeout: 60_000 });
-  const run = await prisma.modelRun.findFirstOrThrow({
+  const runs = await prisma.modelRun.findMany({
     orderBy: { createdAt: "desc" },
     where: { createdAt: { gte: since }, userId }
   });
-  const tools = ((run.normalizedRequest as { mcp?: { tools?: SnapshotTool[] } } | null)?.mcp?.tools ?? [])
+  const run = runs.find((candidate) => JSON.stringify(candidate.normalizedRequest).includes(question));
+  expect(run).toBeTruthy();
+  const tools = ((run!.normalizedRequest as { mcp?: { tools?: SnapshotTool[] } } | null)?.mcp?.tools ?? [])
     .filter((tool) => tool.serverId === serverId);
-  return { chatId: run.chatId, tools };
+  return { chatId: run!.chatId, tools };
 }
 
 /** The held-back names persisted with the user's current ready runtime, or null while none is ready. */
