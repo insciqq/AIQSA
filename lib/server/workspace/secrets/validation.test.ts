@@ -1,7 +1,10 @@
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { decodeWorkspaceSecretList, workspaceSecretAssetPath, type WorkspaceSecretValue } from "@/lib/contracts/workspaceSecrets";
-import { parseWorkspaceSecretMutation, parseWorkspaceSecretValue } from "./validation";
+import {
+  decodeWorkspaceSecretList, workspaceSecretAssetPath, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES,
+  type WorkspaceSecretValue
+} from "@/lib/contracts/workspaceSecrets";
+import { parseWorkspaceSecretMutation, parseWorkspaceSecretValue, WORKSPACE_SECRET_MUTATION_MAX_BYTES } from "./validation";
 import { validateWorkspaceSshKey } from "./sshKey";
 import { encryptSecretEnvelope } from "../../secrets/envelope";
 import { decryptWorkspaceSecret } from "./store";
@@ -61,6 +64,24 @@ describe("Workspace secret inputs", () => {
     expect(() => decryptWorkspaceSecret({ ...record, id: randomUUID() }, record.userId, key)).toThrow("workspace_secret_unavailable");
     const otherPurpose = encryptSecretEnvelope(value, key, { ownerId: record.userId, purpose: "provider-credential", valueId: record.id });
     expect(() => decryptWorkspaceSecret({ ...record, payloadEnvelope: otherPurpose }, record.userId, key)).toThrow("workspace_secret_unavailable");
+  });
+
+  it("encrypts and decrypts a maximum browser state beyond the generic 1 MiB envelope plaintext", () => {
+    const key = Buffer.alloc(32, 42);
+    const state = Buffer.from(JSON.stringify({ cookies: [], origins: [] }));
+    const bytes = Buffer.concat([state, Buffer.alloc(WORKSPACE_BROWSER_SESSION_MAX_BYTES - state.length, 32)]);
+    const value = { kind: "browser_session" as const, originalName: "shop.example.json", base64: bytes.toString("base64") };
+    const record = { id: randomUUID(), userId: randomUUID(), secretId: randomUUID(), kind: "browser_session", name: "shop.example", description: "",
+      byteSize: bytes.length, envNames: [] as string[], originalName: value.originalName, sshProtected: false, autoSaved: true, checksum: null, createdAt: new Date(), payloadEnvelope: "" };
+    const context = { ownerId: record.userId, purpose: "workspace-user-secret", valueId: record.id };
+    expect(() => encryptSecretEnvelope(value, key, context)).toThrow("secret_encryption_invalid_envelope");
+    record.payloadEnvelope = encryptSecretEnvelope(value, key, context, { maxPlaintextBytes: WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES });
+    expect(decryptWorkspaceSecret(record, record.userId, key).value).toEqual(value);
+  });
+
+  it("bounds one settings request by the largest browser value, not the generic JSON body cap", () => {
+    expect(WORKSPACE_SECRET_MUTATION_MAX_BYTES).toBeGreaterThan(WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES);
+    expect(WORKSPACE_SECRET_MUTATION_MAX_BYTES).toBeLessThan(16 * 1024 * 1024);
   });
 
   it("validates private and encrypted keys without a public-key upload or unbounded parsing", async () => {
