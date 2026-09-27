@@ -2,6 +2,7 @@ import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   type ProjectWorkspaceResponseWire
 } from "../../contracts/projects";
+import { CHAT_TITLE_MAX_LENGTH, codePointLength } from "../../contracts/chats";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import type { ProjectRepositoryResult } from "./prismaRepository";
@@ -75,7 +76,11 @@ export function createProjectChatHandler(deps: ProjectContentHandlerDeps) {
       : text(input.folderId, 128);
     const title = input.title === undefined || input.title === null
       ? input.title
-      : text(input.title, 80);
+      : typeof input.title === "string" && input.title.trim() ? input.title.trim() : null;
+    // Project chats share the personal chat title contract (code points).
+    if (title && codePointLength(title) > CHAT_TITLE_MAX_LENGTH) {
+      return error("chat_title_too_long", 400);
+    }
     const workspaceEnabled = input.workspaceEnabled;
     if (
       folderId === null ||

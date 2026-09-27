@@ -142,7 +142,7 @@ export function createPrismaProjectContentRepository(
               memoryMode: "EXCLUDED",
               projectFolderId: input.folderId ?? null,
               projectId: input.projectId,
-              title: input.title?.trim().slice(0, 80) || defaultChatTitle,
+              title: input.title?.trim() || defaultChatTitle,
               userId: null,
               ...(input.workspaceEnabled === undefined
                 ? {}

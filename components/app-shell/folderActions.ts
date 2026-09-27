@@ -1,11 +1,11 @@
-import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
+import { errorMessage, nameSaveFailure, responseErrorMessage } from "@/components/app-shell/shellFormatting";
 import {
   composerSessionKey,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { shellFetch } from "@/components/app-shell/shellApi";
-import type { WorkspaceChatSummary, FolderSummary, Notice } from "@/components/app-shell/types";
+import type { WorkspaceChatSummary, FolderSummary, NameSaveResult, Notice } from "@/components/app-shell/types";
 import type { WorkspaceFolderMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
 import { sortFoldersByOrder, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { EMPTY_KNOWLEDGE_SELECTION } from "@/lib/contracts/knowledge";
@@ -33,10 +33,12 @@ export function createFolderActions({
   folderMutation,
   setNotice
 }: FolderActionsInput) {
-  async function createFolder(parentId?: string | null, nameOverride?: string) {
+  /** Resolves `ok: true` only after the server stored the folder, so the form
+   * clears on success and keeps the typed name on any failure. */
+  async function createFolder(parentId?: string | null, nameOverride?: string): Promise<NameSaveResult> {
     const name = (nameOverride ?? "").trim();
     if (!name || folderMutation.creating) {
-      return;
+      return { fieldError: null, ok: false };
     }
 
     folderMutation.beginCreate();
@@ -53,7 +55,9 @@ export function createFolderActions({
       });
 
       if (!response.ok) {
-        throw new Error(`folder_create_failed_${response.status}`);
+        const failure = await nameSaveFailure(response, `folder_create_failed_${response.status}`);
+        if (failure.fieldError) return { fieldError: failure.fieldError, ok: false };
+        throw new Error(failure.message);
       }
 
       const body = (await response.json()) as { folder: FolderSummary };
@@ -63,20 +67,22 @@ export function createFolderActions({
         kind: "success",
         text: `Folder created: ${body.folder.name}`
       });
+      return { ok: true };
     } catch (error) {
       setNotice({
         kind: "error",
         text: errorMessage(error)
       });
+      return { fieldError: null, ok: false };
     } finally {
       folderMutation.endCreate();
     }
   }
 
-  async function renameFolder(folder: FolderSummary) {
+  async function renameFolder(folder: FolderSummary): Promise<NameSaveResult> {
     const name = folderMutation.editingName.trim();
     if (!name || folderMutation.actionId) {
-      return;
+      return { fieldError: null, ok: false };
     }
 
     folderMutation.beginAction(folder.id);
@@ -90,7 +96,9 @@ export function createFolderActions({
       });
 
       if (!response.ok) {
-        throw new Error(await responseErrorMessage(response, `folder_rename_failed_${response.status}`));
+        const failure = await nameSaveFailure(response, `folder_rename_failed_${response.status}`);
+        if (failure.fieldError) return { fieldError: failure.fieldError, ok: false };
+        throw new Error(failure.message);
       }
 
       const body = (await response.json()) as { folder: FolderSummary };
@@ -105,11 +113,13 @@ export function createFolderActions({
         kind: "success",
         text: `Folder renamed: ${body.folder.name}`
       });
+      return { ok: true };
     } catch (error) {
       setNotice({
         kind: "error",
         text: errorMessage(error)
       });
+      return { fieldError: null, ok: false };
     } finally {
       folderMutation.endAction();
     }
