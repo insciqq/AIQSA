@@ -518,6 +518,52 @@ describe("Search plan tool router", () => {
     expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toEqual(result);
   });
 
+  it("does not spend browsed slots on pages OpenAI cites with its attribution parameter", async () => {
+    const browsed = Array.from({ length: 10 }, (_, index) => ({
+      title: `Browsed ${index}`, url: `https://example.com/browsed/${index}`
+    }));
+    // Two cited pages were also browsed; the third was only cited.
+    const cited = [0, 1].map((index) => ({
+      title: `Cited ${index}`, type: "url_citation", url: `https://example.com/browsed/${index}?utm_source=openai`
+    })).concat([{ title: "Cited only", type: "url_citation", url: "https://example.com/cited-only?utm_source=openai" }]);
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("openai")] },
+      runtimes: {
+        openai: { adapter: runtime().adapter, responseTimeoutMs: 300_000, searchAdapter: createOpenAIResponsesSearchAdapter({
+          client: {
+            cancel: async () => ({}),
+            create: async () => ({
+              id: "resp-attributed",
+              output: [{
+                action: { query: "bounded query", sources: browsed, type: "search" },
+                id: "ws-attributed", status: "completed", type: "web_search_call"
+              }, {
+                content: [{ annotations: cited, text: "OpenAI findings.", type: "output_text" }],
+                role: "assistant", type: "message"
+              }],
+              status: "completed",
+              usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 }
+            }),
+            retrieve: async () => ({})
+          },
+          provider: "openai"
+        }) }
+      }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const [execution] = searchExecutionsFromToolResult(result);
+
+    // Three cited pages first (the browsed ones under their clean URLs), then
+    // maxResults 8 distinct browsed pages.
+    expect(execution?.sources.map(({ citation, url }) => ({ citation, url }))).toEqual([
+      { citation: 1, url: "https://example.com/browsed/0" },
+      { citation: 2, url: "https://example.com/browsed/1" },
+      { citation: 3, url: "https://example.com/cited-only?utm_source=openai" },
+      ...browsed.slice(2).map(({ url }) => ({ citation: undefined, url }))
+    ]);
+  });
+
   it("decodes and replays a saved version 2 Search result exactly as before", () => {
     const first = { rank: 1, title: "First", url: "https://example.com/first" };
     const second = { rank: 2, snippet: "Second snippet", title: "Second", url: "https://example.com/second" };
