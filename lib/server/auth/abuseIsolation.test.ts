@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestPasswordIdentity } from "@/tests/support/auth";
 import { createMemoryAuthMailer } from "@/tests/support/authMailers";
+import { createMemoryDurableLoginRateLimitStore } from "@/tests/support/authRateLimit";
 import { getAuthConfig } from "./config";
 import {
   createPasswordLoginHandler,
@@ -10,7 +11,7 @@ import {
   createPasswordResetRequestHandler
 } from "./handlers";
 import type { PasswordAuthRepository, PasswordIdentityRecord } from "./passwordRepository";
-import { createFixedWindowLoginRateLimiter } from "./rateLimit";
+import { createDurableLoginRateLimiter } from "./prismaRateLimit";
 
 const config = getAuthConfig({
   AIQSA_APP_BASE_URL: "https://aiqsa.example",
@@ -67,8 +68,13 @@ describe("synthetic auth abuse scenario", () => {
       "owner@example.test": "owner-secret",
       ...Object.fromEntries(office.map((email) => [email, `${email}-secret`]))
     });
-    // The routes share one auth limiter, so every key family lives in the same store here too.
-    const limiter = createFixedWindowLoginRateLimiter({ clock: () => 0 });
+    // The routes share one durable auth limiter, so every key family lives in one store here
+    // too, and that store keeps the table's attemptCount >= 1 check.
+    const limiter = createDurableLoginRateLimiter({
+      clock: () => 0,
+      keySecret: () => "abuse-isolation-limiter-secret",
+      store: createMemoryDurableLoginRateLimitStore()
+    });
     const verifyPassword = vi.fn(async (password: string, hash: string | null | undefined) => hash === `plain:${password}`);
     const mailer = createMemoryAuthMailer();
     const handlers = {
