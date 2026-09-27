@@ -3,7 +3,7 @@ import { decodeKnowledgeCoverageLimitationsV1, KnowledgeSearchFailure, knowledge
 import { OpenSearchTransportError } from "../search/opensearch/coreTransport";
 
 describe("safe Knowledge search failure projection", () => {
-  it.each(["knowledge_search_projection_incomplete", "opensearch_timeout", "opensearch_connection_failed",
+  it.each(["knowledge_search_projection_incomplete", "knowledge_search_projection_pending", "knowledge_search_projection_failed", "opensearch_timeout", "opensearch_connection_failed",
     "opensearch_rate_limited", "opensearch_authentication_failed", "opensearch_configuration_invalid", "opensearch_index_incompatible"] as const)(
     "retains %s and only a hash of the accepted scope", (code) => {
       const result = knowledgeSearchFailureToolResult({ id: "call-1", name: "search_knowledge",

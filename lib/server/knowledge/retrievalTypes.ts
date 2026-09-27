@@ -45,7 +45,9 @@ export const KNOWLEDGE_RESULT_VERSIONS = Object.freeze([
 export const KNOWLEDGE_QUERY_MAX_CHARACTERS = 3_000;
 export const KNOWLEDGE_SEARCH_UNAVAILABLE_FAILURE_CODES = Object.freeze([
   "knowledge_search_backend_unavailable",
-  "knowledge_search_projection_unavailable"
+  "knowledge_search_projection_unavailable",
+  "knowledge_search_projection_pending",
+  "knowledge_search_projection_failed"
 ] as const);
 /** Fixed non-user text persisted in a classified search-infrastructure receipt. */
 export const KNOWLEDGE_SEARCH_UNAVAILABLE_QUERY = "knowledge_search_unavailable" as const;

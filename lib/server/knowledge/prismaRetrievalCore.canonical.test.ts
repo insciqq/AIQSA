@@ -29,7 +29,7 @@ function scope(bindingOrdinal: number, baseName: string, knowledgeBaseId: string
     eligibleRows: 1,
     indexGenerationId: `generation-${bindingOrdinal}`,
     knowledgeBaseId,
-    projectionComplete: true,
+    projectionFailed: false, projectionComplete: true,
     targetDimension: 1_024
   };
 }
@@ -221,17 +221,19 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(client.$queryRaw).toHaveBeenCalledTimes(3);
   });
 
-  it("fails closed when the OpenSearch projection is incomplete", async () => {
+  it.each([false, true])("fails the mixed scope closed and distinguishes projection failed=%s", async (projectionFailed) => {
     const admitted = {
-      ...scope(0, "Policies", "base-policies"),
+      ...scope(1, "Policies", "base-policies"),
       acceptedIndexArtifactIds: ["hierarchy-1"],
-      projectionComplete: false
+      projectionComplete: false,
+      projectionFailed
     };
-    const client = mockClient([admitted], []);
+    const healthy = { ...scope(0, "Healthy", "base-healthy"), acceptedIndexArtifactIds: ["hierarchy-healthy"] };
+    const client = mockClient([healthy, admitted], []);
     const lexicalSearch = vi.fn();
 
     await expect(execute(client, { lexicalSearch })).rejects.toThrow(
-      "knowledge_search_projection_incomplete"
+      projectionFailed ? "knowledge_search_projection_failed" : "knowledge_search_projection_pending"
     );
     expect(lexicalSearch).not.toHaveBeenCalled();
     expect(client.$queryRaw).toHaveBeenCalledOnce();

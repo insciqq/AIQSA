@@ -6,7 +6,7 @@ import { decodeKnowledgeSemanticHits, type KnowledgeSemanticHit as SemanticHit }
 const scope = {
   acceptedIndexArtifactIds: ["index-a", "index-b"], baseName: "Neutral",
   bindingOrdinal: 0, eligibleRows: 2, indexGenerationId: "generation-0",
-  knowledgeBaseId: "base-0", projectionComplete: true, targetDimension: 1024
+  knowledgeBaseId: "base-0", projectionFailed: false, projectionComplete: true, targetDimension: 1024
 };
 const hit: SemanticHit = {
   queryOrdinal: 0, bindingOrdinal: 0, indexArtifactId: "index-a", chunkId: "passage-a",

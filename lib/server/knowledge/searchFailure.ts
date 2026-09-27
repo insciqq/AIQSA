@@ -4,9 +4,10 @@ import { knowledgeEvidenceFromToolResult } from "./toolResult";
 import { KNOWLEDGE_SEARCH_MAPPING_VERSION, KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION } from "../search/opensearch/contract";
 
 const messages = {
-  // The fail-closed scope check cannot tell a pending source from one whose
-  // search indexing failed terminally, so the copy covers both honestly.
+  // Retained older receipts did not distinguish pending and failed indexing.
   knowledge_search_projection_incomplete: "Knowledge search is not ready: a selected source is still being indexed for search, or its search indexing failed and needs an administrator to retry it. Try again later; contact an administrator if it remains unavailable.",
+  knowledge_search_projection_pending: "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes.",
+  knowledge_search_projection_failed: "Knowledge search indexing failed for a selected source. Contact an administrator to retry its search indexing.",
   knowledge_retrieval_scope_changed: "Knowledge search readiness changed during this request. Retry after indexing finishes.",
   knowledge_search_candidate_revalidation_failed: "Knowledge search could not verify its index. Contact an administrator.",
   knowledge_retrieval_query_timed_out: "Knowledge search timed out. Try again later.",
@@ -65,6 +66,8 @@ export function knowledgeSearchFailureFromToolResult(result: ToolExecutionResult
   if (result.status !== "error") return null;
   const evidence = knowledgeEvidenceFromToolResult(result);
   if (evidence?.outcome === "search_unavailable") {
+    if (evidence.failureCode === "knowledge_search_projection_failed" ||
+      evidence.failureCode === "knowledge_search_projection_pending") return evidence.failureCode;
     return evidence.failureCode === "knowledge_search_projection_unavailable"
       ? "knowledge_search_projection_incomplete"
       : "opensearch_unavailable";

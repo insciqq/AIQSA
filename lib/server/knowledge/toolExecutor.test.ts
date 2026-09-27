@@ -9,7 +9,7 @@ import { createKnowledgeFocusedRequest } from "./focusedRequest";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
-import { KnowledgeSearchFailure } from "./searchFailure";
+import { KnowledgeSearchFailure, knowledgeSearchFailureFromToolResult } from "./searchFailure";
 import { decodeKnowledgeRetrievalEvidence } from "./toolResult";
 import { createKnowledgeToolExecutor, type KnowledgeRetrievalStore } from "./toolExecutor";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
@@ -755,7 +755,7 @@ describe("Knowledge executor surface", () => {
       }));
       const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
         eligibleRows: 0, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
-        projectionComplete: true, targetDimension: 1_024 };
+        projectionFailed: false, projectionComplete: true, targetDimension: 1_024 };
       const core = await executeKnowledgeRetrievalCore({
         $querySemantic: vi.fn().mockResolvedValue([]),
         $queryRaw: vi.fn().mockResolvedValueOnce([scope])
@@ -861,7 +861,7 @@ describe("Knowledge executor surface", () => {
       }));
       const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
         eligibleRows: 0, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
-        projectionComplete: true, targetDimension: 1_024 };
+        projectionFailed: false, projectionComplete: true, targetDimension: 1_024 };
       // The retrieval core, not this fake, applies the prior-delivery exclusion.
       const core = await executeKnowledgeRetrievalCore({
         $querySemantic: vi.fn().mockResolvedValue([]),
@@ -1194,11 +1194,15 @@ describe("Knowledge executor surface", () => {
     }));
   });
 
-  it("settles an incomplete projection before embedding without leaking the query", async () => {
+  it.each([
+    ["knowledge_search_projection_incomplete", "knowledge_search_projection_unavailable", "Knowledge search is temporarily unavailable."],
+    ["knowledge_search_projection_pending", "knowledge_search_projection_pending", "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes."],
+    ["knowledge_search_projection_failed", "knowledge_search_projection_failed", "Knowledge search indexing failed for a selected source. An administrator must retry its search indexing."]
+  ] as const)("settles %s before embedding without leaking the query", async (code, failureCode, message) => {
     const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>();
     const { persistReceipt, store } = automaticStore(hybridSearch);
     store.assertSearchReady = vi.fn(async () => {
-      throw new Error("knowledge_search_projection_incomplete");
+      throw new KnowledgeSearchFailure(code);
     });
     const resolve = vi.fn();
     const records = captureKnowledgeEvents();
@@ -1219,8 +1223,10 @@ describe("Knowledge executor surface", () => {
     });
 
     expect(result.status).toBe("error");
+    expect(knowledgeSearchFailureFromToolResult(result)).toBe(code);
+    expect(decodeKnowledgeRetrievalEvidence(persistReceipt.mock.calls[0]?.[0].evidence)).not.toBeNull();
     expect(result.content).toEqual([{
-      text: "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.",
+      text: `${message} Do not infer or invent an answer from Knowledge.`,
       type: "text"
     }]);
     expect(store.assertSearchReady).toHaveBeenCalledWith({
@@ -1236,7 +1242,7 @@ describe("Knowledge executor surface", () => {
         bases: [],
         candidateCount: 0,
         embeddingExecutions: [],
-        failureCode: "knowledge_search_projection_unavailable",
+        failureCode,
         outcome: "search_unavailable",
         query: "knowledge_search_unavailable",
         results: []
@@ -1248,7 +1254,7 @@ describe("Knowledge executor surface", () => {
     expect(JSON.stringify(persisted)).not.toContain(acceptedBinding.knowledgeBaseId);
     expect(records()).toContainEqual(expect.objectContaining({
       event: "tool_execution", tool_kind: "knowledge", stage: "result",
-      outcome: "failed", code: "knowledge_search_projection_unavailable"
+      outcome: "failed", code: failureCode
     }));
     expect(JSON.stringify(records())).not.toContain("private incident phrase");
   });

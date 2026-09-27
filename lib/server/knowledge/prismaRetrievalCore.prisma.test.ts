@@ -586,6 +586,22 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
     }
   });
 
+  it.each(["PENDING", "RETRY_WAIT", "BUILDING", "FAILED"] as const)(
+    "reports the current %s projection state without starting search", async (state) => {
+      const fixture = await createFixture();
+      try {
+        await prisma.knowledgeSearchProjection.update({
+          data: { state }, where: { indexArtifactId: fixture.hierarchyId }
+        });
+        await expect(executeKnowledgeRetrievalCore(prisma, {
+          candidateLimit: 64, excludedOccurrenceKeys: [], query: "SAFE-2718", resultLimit: 16,
+          runId: fixture.runId, userId: fixture.userId, vectors: []
+        })).rejects.toThrow(state === "FAILED"
+          ? "knowledge_search_projection_failed" : "knowledge_search_projection_pending");
+      } finally { await cleanupFixture(fixture); }
+    }
+  );
+
   it("fails closed when the canonical scope is missing its projection row", async () => {
     const fixture = await createFixture();
     try {
@@ -601,7 +617,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
         runId: fixture.runId,
         userId: fixture.userId,
         vectors: []
-      })).rejects.toThrow("knowledge_search_projection_incomplete");
+      })).rejects.toThrow("knowledge_search_projection_pending");
     } finally {
       await cleanupFixture(fixture);
     }
@@ -635,7 +651,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
           runId: fixture.runId,
           userId: fixture.userId,
           vectors: []
-        })).rejects.toThrow("knowledge_search_projection_incomplete");
+        })).rejects.toThrow("knowledge_search_projection_pending");
         throw new Error("knowledge_search_stale_projection_fixture_rollback");
       })).rejects.toThrow("knowledge_search_stale_projection_fixture_rollback");
     } finally {
