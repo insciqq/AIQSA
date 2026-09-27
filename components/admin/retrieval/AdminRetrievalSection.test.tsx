@@ -43,6 +43,15 @@ function server(initial: Readonly<{ knowledge?: AdminKnowledgeSettings; memory?:
           ...(body.action === "update_ingestion_parallelism" ? { ingestionParallelism: Number(body.ingestionParallelism) } : {})
         } });
       }
+      if (method === "POST" && body?.action === "retry_failed_search_projections") {
+        const retried = knowledge.operations.search.failedProjections;
+        knowledge = adminKnowledgeSettingsFixture({ ...knowledge, operations: adminKnowledgeOperationsFixture({
+          ...knowledge.operations, alerts: [],
+          search: { ...knowledge.operations.search, failedBases: 0, failedProjections: 0, failedSources: 0,
+            pendingProjections: knowledge.operations.search.pendingProjections + retried }
+        }) });
+        return Response.json({ knowledge, retried });
+      }
       return Response.json({ knowledge });
     }
     if (url === "/api/admin/memory") {
@@ -200,7 +209,7 @@ describe("AdminRetrievalSection", () => {
   it("shows one processing line, alerts and metrics, and links assignments to Defaults & roles", async () => {
     server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({
       alerts: [{ code: "knowledge_search_worker_unavailable", severity: "warning" }],
-      search: { backendState: "available", expectedProjections: 3, failedProjections: 0, pendingProjections: 1, readyProjections: 2, workerLastSeenAt: "2026-08-18T00:00:00.000Z", workerState: "stale" }
+      search: { backendState: "available", expectedProjections: 3, failedBases: 0, failedProjections: 0, failedSources: 0, pendingProjections: 1, readyProjections: 2, workerLastSeenAt: "2026-08-18T00:00:00.000Z", workerState: "stale" }
     }) }) });
     const { onOpenRoles } = renderSection();
     const knowledge = await screen.findByTestId("admin-retrieval-knowledge");
@@ -215,6 +224,46 @@ describe("AdminRetrievalSection", () => {
     fireEvent.click(within(knowledge).getByRole("button", { name: "Processing model and embeddings: Defaults & roles" }));
     expect(onOpenRoles).toHaveBeenCalledTimes(1);
     expect(await screen.findByTestId("admin-retrieval-memory")).toHaveTextContent("Memory");
+  });
+
+  it("retries failed Knowledge search indexing from the card without a rebuild", async () => {
+    const calls = server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({
+      alerts: [{ code: "knowledge_search_projection_failures", severity: "critical" }],
+      search: { backendState: "available", expectedProjections: 5, failedBases: 3, failedProjections: 2, failedSources: 2,
+        pendingProjections: 0, readyProjections: 3, workerLastSeenAt: "2026-08-18T00:00:00.000Z", workerState: "healthy" }
+    }) }) });
+    const { onMutationCommitted, reportNotice } = renderSection();
+    const failures = await screen.findByTestId("knowledge-search-failures");
+    expect(failures).toHaveTextContent("Search indexing failed for 2 sources in 3 bases.");
+    expect(screen.getByRole("list", { name: "Knowledge alerts" }))
+      .toHaveTextContent("Search indexing failed for one or more sources and needs an administrator retry.");
+    fireEvent.click(within(failures).getByRole("button", { name: "Retry failed indexing" }));
+    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith(
+      "2 failed search projections queued for indexing. Ready sources keep serving."
+    ));
+    expect(calls.filter(({ method }) => method === "POST").map(({ body }) => body))
+      .toEqual([{ action: "retry_failed_search_projections" }]);
+    expect(onMutationCommitted).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("knowledge-search-failures")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("admin-retrieval-knowledge")).getByText("3 / 5")).toBeInTheDocument();
+  });
+
+  it("keeps a failed search indexing retry inline", async () => {
+    server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({
+      search: { backendState: "available", expectedProjections: 1, failedBases: 1, failedProjections: 1, failedSources: 1,
+        pendingProjections: 0, readyProjections: 0, workerLastSeenAt: "2026-08-18T00:00:00.000Z", workerState: "healthy" }
+    }) }) });
+    renderSection();
+    const failures = await screen.findByTestId("knowledge-search-failures");
+    expect(failures).toHaveTextContent("Search indexing failed for 1 source in 1 base.");
+    const original = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") return Response.json({ error: "knowledge_admin_action_failed" }, { status: 500 });
+      return original(input, init);
+    }));
+    fireEvent.click(within(failures).getByRole("button", { name: "Retry failed indexing" }));
+    expect(await within(failures).findByRole("alert")).toHaveTextContent("Knowledge settings could not be updated.");
+    expect(within(failures).getByRole("button", { name: "Retry failed indexing" })).toBeEnabled();
   });
 
   it("saves both Knowledge limits with one Save as chained requests", async () => {

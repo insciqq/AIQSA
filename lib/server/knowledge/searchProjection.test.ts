@@ -1,7 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  knowledgeSearchProjectionFingerprint
+  knowledgeSearchProjectionFingerprint,
+  type KnowledgeSearchDocument
 } from "../search/opensearch/contract";
 import {
   OpenSearchTransportError,
@@ -11,6 +12,7 @@ import {
   inspectKnowledgeSearchIntegrity,
   rebuildKnowledgeSearchProjections,
   resetKnowledgeSearchProjections,
+  retryFailedKnowledgeSearchProjections,
   runKnowledgeSearchProjectionPass
 } from "./searchProjection";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
@@ -101,9 +103,10 @@ function searchFixture(overrides: Readonly<{
   bulkFailure?: Error;
 }> = {}) {
   const mocks = {
-    bulkUpsertKnowledgeDocuments: overrides.bulkFailure
-      ? vi.fn(async () => { throw overrides.bulkFailure; })
-      : vi.fn(async () => undefined),
+    bulkUpsertKnowledgeDocuments: vi.fn(async (documents: readonly KnowledgeSearchDocument[]): Promise<void> => {
+      if (overrides.bulkFailure) throw overrides.bulkFailure;
+      expect(documents.length).toBeGreaterThan(0);
+    }),
     countKnowledgeArtifact: vi.fn(async () => 1),
     countKnowledgeArtifacts: vi.fn(async () => ([{
       count: 1,
@@ -196,7 +199,7 @@ describe("Knowledge OpenSearch projection lifecycle", () => {
     })]]);
   });
 
-  it("rejects a changed canonical fingerprint before index mutation", async () => {
+  it("marks source_invalid permanent on first failure, before index mutation", async () => {
     const fixture = clientFixture();
     const hierarchy = await fixture.knowledgeHierarchicalIndexArtifact.findUnique();
     fixture.knowledgeHierarchicalIndexArtifact.findUnique.mockResolvedValue({ ...hierarchy, checksum: "c".repeat(64) });
@@ -205,8 +208,208 @@ describe("Knowledge OpenSearch projection lifecycle", () => {
     expect(mocks.deleteKnowledgeArtifact).not.toHaveBeenCalled();
     expect(mocks.bulkUpsertKnowledgeDocuments).not.toHaveBeenCalled();
     expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ lastErrorCode: "knowledge_search_projection_source_invalid", state: "RETRY_WAIT" })
+      data: expect.objectContaining({ lastErrorCode: "knowledge_search_projection_source_invalid", state: "FAILED" }),
+      where: expect.objectContaining({ id: "projection-1", state: "BUILDING" })
     }));
+  });
+
+  it.each([
+    ["opensearch_rate_limited", new OpenSearchTransportError("opensearch_rate_limited")],
+    ["opensearch_timeout", new OpenSearchTransportError("opensearch_timeout", true)],
+    ["opensearch_unavailable", new OpenSearchTransportError("opensearch_unavailable")],
+    ["opensearch_bulk_item_failed", new OpenSearchTransportError("opensearch_bulk_item_failed")]
+  ])("keeps transient OpenSearch failures retryable (%s)", async (code, failure) => {
+    vi.useFakeTimers({ now: new Date("2026-09-27T00:00:00.000Z"), toFake: ["Date"] });
+    try {
+      const fixture = clientFixture();
+      // The fifth attempt was terminal before; transient failures now keep backing off.
+      fixture.queryRaw.mockResolvedValue([{ attemptCount: 5, expectedPassageCount: 1,
+        id: "projection-1", indexArtifactId: "hierarchy-1", projectionFingerprint }]);
+      const { search } = searchFixture({ bulkFailure: failure });
+      await expect(runKnowledgeSearchProjectionPass({ client: fixture.client, search }))
+        .resolves.toMatchObject({ failed: 1 });
+      expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          lastErrorCode: code,
+          // 30 s doubling per attempt: the fifth retry waits 8 minutes.
+          nextAttemptAt: new Date("2026-09-27T00:08:00.000Z"),
+          state: "RETRY_WAIT"
+        })
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps transient backoff and fails only after the long retry horizon", async () => {
+    vi.useFakeTimers({ now: new Date("2026-09-27T00:00:00.000Z"), toFake: ["Date"] });
+    try {
+      const fixture = clientFixture();
+      fixture.queryRaw.mockResolvedValue([{ attemptCount: 23, expectedPassageCount: 1,
+        id: "projection-1", indexArtifactId: "hierarchy-1", projectionFingerprint }]);
+      const { mocks, search } = searchFixture();
+      mocks.countKnowledgeArtifact.mockResolvedValue(0);
+      await runKnowledgeSearchProjectionPass({ client: fixture.client, search });
+      expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          lastErrorCode: "knowledge_search_projection_count_mismatch",
+          nextAttemptAt: new Date("2026-09-27T00:15:00.000Z"),
+          state: "RETRY_WAIT"
+        })
+      }));
+      fixture.queryRaw.mockResolvedValue([{ attemptCount: 24, expectedPassageCount: 1,
+        id: "projection-1", indexArtifactId: "hierarchy-1", projectionFingerprint }]);
+      await runKnowledgeSearchProjectionPass({ client: fixture.client, search });
+      expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          lastErrorCode: "knowledge_search_projection_count_mismatch",
+          state: "FAILED"
+        })
+      }));
+      const claimSql = fixture.queryRaw.mock.calls[0] as unknown as [{ values: unknown[] }];
+      expect(claimSql[0].values).toContain(24);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("normal pass bisects an oversized bulk request", async () => {
+    const fixture = clientFixture();
+    const passages = Array.from({ length: 3 }, (_, index) => ({
+      contentHash: String(index).repeat(64), contextPrefix: "", documentContext: null,
+      headingPath: ["Wide table"], id: `passage-${index}`, layoutKind: "table_row", text: `Row ${index}`
+    }));
+    const wideFingerprint = knowledgeSearchProjectionFingerprint({
+      hierarchicalChecksum: checksum, indexArtifactId: "hierarchy-1", passageCount: 3
+    });
+    const hierarchy = await fixture.knowledgeHierarchicalIndexArtifact.findUnique();
+    fixture.knowledgeHierarchicalIndexArtifact.findUnique.mockResolvedValue({
+      ...hierarchy, passageCount: 3, passageIndexes: passages
+    });
+    fixture.queryRaw.mockResolvedValue([{ attemptCount: 1, expectedPassageCount: 3,
+      id: "projection-1", indexArtifactId: "hierarchy-1", projectionFingerprint: wideFingerprint }]);
+    const { mocks, search } = searchFixture();
+    mocks.bulkUpsertKnowledgeDocuments.mockImplementation(async (documents: unknown) => {
+      if ((documents as unknown[]).length > 1) {
+        throw new OpenSearchTransportError("opensearch_response_too_large");
+      }
+    });
+    mocks.countKnowledgeArtifact.mockResolvedValue(3);
+
+    await expect(runKnowledgeSearchProjectionPass({ client: fixture.client, search }))
+      .resolves.toMatchObject({ failed: 0, projected: 1 });
+    expect(mocks.bulkUpsertKnowledgeDocuments.mock.calls.map(([documents]) =>
+      (documents as Array<{ passageId: string }>).map(({ passageId }) => passageId)))
+      .toEqual([
+        ["passage-0", "passage-1", "passage-2"],
+        ["passage-0", "passage-1"],
+        ["passage-0"],
+        ["passage-1"],
+        ["passage-2"]
+      ]);
+    expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ indexedPassageCount: 3, state: "READY" })
+    }));
+  });
+
+  it("marks one document that alone exceeds the bulk bound permanent on first failure", async () => {
+    const fixture = clientFixture();
+    const { mocks, search } = searchFixture({
+      bulkFailure: new OpenSearchTransportError("opensearch_response_too_large")
+    });
+    await expect(runKnowledgeSearchProjectionPass({ client: fixture.client, search }))
+      .resolves.toMatchObject({ failed: 1, projected: 0 });
+    expect(mocks.bulkUpsertKnowledgeDocuments).toHaveBeenCalledOnce();
+    expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ lastErrorCode: "opensearch_response_too_large", state: "FAILED" })
+    }));
+  });
+
+  it("retries only FAILED rows without recreating the index or resetting READY rows", async () => {
+    const fixture = clientFixture();
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    fixture.knowledgeSearchProjection.findMany.mockResolvedValue([
+      { indexArtifact: { sourceArtifactId: "source-artifact-1" }, indexArtifactId: "hierarchy-1" },
+      { indexArtifact: { sourceArtifactId: "source-artifact-2" }, indexArtifactId: "hierarchy-superseded" }
+    ] as never);
+    const { mocks } = searchFixture();
+
+    await expect(retryFailedKnowledgeSearchProjections(fixture.client, { now }))
+      .resolves.toEqual({ retried: 1 });
+
+    expect(fixture.knowledgeSearchProjection.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { state: "FAILED" }
+    }));
+    expect(fixture.knowledgeHierarchicalIndexArtifact.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        sourceArtifactId: { in: ["source-artifact-1", "source-artifact-2"] }
+      })
+    }));
+    expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenCalledOnce();
+    expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenCalledWith({
+      data: {
+        attemptCount: 0,
+        claimToken: null,
+        indexedPassageCount: 0,
+        lastErrorCode: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: now,
+        readyAt: null,
+        startedAt: null,
+        state: "PENDING"
+      },
+      where: { indexArtifactId: { in: ["hierarchy-1"] }, state: "FAILED" }
+    });
+    expect(fixture.knowledgeSearchProjection.deleteMany).not.toHaveBeenCalled();
+    expect(mocks.recreateKnowledgeIndex).not.toHaveBeenCalled();
+    expect(mocks.deleteKnowledgeArtifact).not.toHaveBeenCalled();
+  });
+
+  it("bounds a targeted retry to the requested artifacts and rejects invalid lists", async () => {
+    const fixture = clientFixture();
+    await expect(retryFailedKnowledgeSearchProjections(fixture.client, {
+      indexArtifactIds: ["hierarchy-1"]
+    })).resolves.toEqual({ retried: 0 });
+    expect(fixture.knowledgeSearchProjection.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { indexArtifactId: { in: ["hierarchy-1"] }, state: "FAILED" }
+    }));
+    expect(fixture.knowledgeSearchProjection.updateMany).not.toHaveBeenCalled();
+    for (const indexArtifactIds of [[], ["a", "a"], [""], Array.from({ length: 1_001 }, (_, i) => `a-${i}`)]) {
+      await expect(retryFailedKnowledgeSearchProjections(fixture.client, { indexArtifactIds }))
+        .rejects.toThrow("knowledge_search_projection_limit_invalid");
+    }
+  });
+
+  it("settles a source-invalid rebuild claim alone without aborting its batch", async () => {
+    const fixture = clientFixture();
+    const secondFingerprint = knowledgeSearchProjectionFingerprint({
+      hierarchicalChecksum: checksum, indexArtifactId: "hierarchy-2", passageCount: 1
+    });
+    const valid = await fixture.knowledgeHierarchicalIndexArtifact.findUnique();
+    fixture.knowledgeHierarchicalIndexArtifact.findMany.mockImplementation(async (input?: { where?: { id?: unknown } }) =>
+      input?.where?.id ? [valid, { ...valid, id: "hierarchy-2", state: "failed" }] as never : []);
+    fixture.queryRaw
+      .mockResolvedValueOnce([
+        { attemptCount: 1, expectedPassageCount: 1, id: "projection-1", indexArtifactId: "hierarchy-1", projectionFingerprint },
+        { attemptCount: 1, expectedPassageCount: 1, id: "projection-2", indexArtifactId: "hierarchy-2",
+          projectionFingerprint: secondFingerprint }
+      ])
+      .mockResolvedValueOnce([]);
+    const { mocks, search } = searchFixture();
+
+    await expect(rebuildKnowledgeSearchProjections({ client: fixture.client, search }))
+      .resolves.toMatchObject({ claimed: 2, failed: 1, projected: 1 });
+
+    expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ lastErrorCode: "knowledge_search_projection_source_invalid", state: "FAILED" }),
+      where: expect.objectContaining({ id: "projection-2", state: "BUILDING" })
+    }));
+    expect(mocks.bulkUpsertKnowledgeDocuments).toHaveBeenCalledOnce();
+    expect(mocks.bulkUpsertKnowledgeDocuments.mock.calls[0]![0]).toEqual([
+      expect.objectContaining({ indexArtifactId: "hierarchy-1" })
+    ]);
+    expect(mocks.countKnowledgeArtifacts).toHaveBeenCalledWith(["hierarchy-1"]);
+    expect(fixture.client.$executeRaw).toHaveBeenCalledOnce();
   });
 
   it("does not store code-shaped private error messages as projection reasons", async () => {
