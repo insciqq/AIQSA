@@ -5,6 +5,7 @@ import {
   type ContextTruncationSummary
 } from "../../domain/contextBudget";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
+import { imageTokenEstimator } from "../../domain/imageTokenEstimate";
 import { contextTokenEstimator } from "../../domain/tokenEstimate";
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import {
@@ -362,7 +363,7 @@ function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: 
   return contextTokens + estimate(prompt.system ?? "") + estimate(prompt.developer ?? "") +
     providerRequestFixedExtraTokens(request, bridge) +
     providerAttachmentBudgetTokens({ attachments: request.attachments, estimateTokens: estimate,
-      modelCapabilities: request.modelCapabilities });
+      estimateImageTokens: imageTokenEstimator(request), modelCapabilities: request.modelCapabilities });
 }
 
 /** The budget's estimate of an exact provider request, for observability. */
@@ -486,7 +487,7 @@ export function measureSessionContext(input: Readonly<{
       estimate(prompt.system ?? "") + estimate(prompt.developer ?? "") +
       providerRequestFixedExtraTokens(request, input.bridge) +
       providerAttachmentBudgetTokens({ attachments: request.attachments, estimateTokens: estimate,
-        modelCapabilities: request.modelCapabilities }) +
+        estimateImageTokens: imageTokenEstimator(request), modelCapabilities: request.modelCapabilities }) +
       estimate(input.answerText ?? ""),
     contextWindow: Number.isFinite(contextWindow) && Number(contextWindow) > 0 ? Math.floor(contextWindow!) : null,
     droppedMessages: request.context?.summary?.truncation?.droppedMessages ?? 0,
@@ -594,6 +595,7 @@ function fitProviderAttachmentText(input: Readonly<{
       input.fixedExtraTokens +
       providerAttachmentBudgetTokens({
         attachments: fixedAttachments,
+        estimateImageTokens: imageTokenEstimator(input.request),
         estimateTokens: estimate,
         modelCapabilities: input.request.modelCapabilities
       });
@@ -873,6 +875,7 @@ function applyProviderRequestContextBudgetCore(input: Readonly<{
   const providerExtras =
     providerAttachmentBudgetTokens({
       attachments: fittedRequest.attachments,
+      estimateImageTokens: imageTokenEstimator(fittedRequest),
       estimateTokens: contextTokenEstimator(fittedRequest),
       modelCapabilities: fittedRequest.modelCapabilities
     }) + fixedExtraTokens;
