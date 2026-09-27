@@ -1085,7 +1085,7 @@ describe("Memory fact extraction handler", () => {
     expect(fixture.apply).not.toHaveBeenCalled();
     expect(continueCoverage).not.toHaveBeenCalled();
     await rejected.apply?.({} as never, jobClaim);
-    expect(continueCoverage).toHaveBeenCalledWith({}, jobClaim, fixture.input);
+    expect(continueCoverage).toHaveBeenCalledWith({}, jobClaim, fixture.input, undefined);
 
     // An applied page enqueued its continuation inside its own apply.
     const applied = await createMemoryFactExtractionHandler({
@@ -1094,6 +1094,20 @@ describe("Memory fact extraction handler", () => {
     }).execute(claim(), context());
     expect(applied.stage).toBe("fact_observations_committed");
     expect(applied.apply).toBeUndefined();
+  });
+
+  it("keeps covering later pages when this page's apply turned stale", async () => {
+    const continueCoverage = vi.fn(async () => undefined);
+    const fixture = dependencies();
+    fixture.apply.mockResolvedValueOnce("STALE" as never);
+    const jobClaim = claim();
+    const result = await createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: { ...fixture.base.repository, continueCoverage }
+    }).execute(jobClaim, context());
+    expect(result.stage).toBe("fact_apply_stale");
+    await result.apply?.({} as never, jobClaim);
+    expect(continueCoverage).toHaveBeenCalledWith({}, jobClaim, fixture.input, undefined);
   });
 
   it("fences a secret in a page's preceding text before provider egress", async () => {
@@ -1123,6 +1137,7 @@ describe("Memory fact extraction handler", () => {
     expect(fixture.bind).not.toHaveBeenCalled();
     expect(fixture.run).not.toHaveBeenCalled();
     await result.apply?.({} as never, claim());
-    expect(continueCoverage).toHaveBeenCalledWith({}, expect.anything(), pageInput);
+    expect(continueCoverage)
+      .toHaveBeenCalledWith({}, expect.anything(), pageInput, undefined);
   });
 });

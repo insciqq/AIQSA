@@ -2030,10 +2030,11 @@ export function createPrismaMemoryFactExtractionRepository(
     async continueCoverage(
       tx: MemoryTransaction,
       claim: MemoryJobDescriptor,
-      input: MemoryFactExtractionInput
+      input: MemoryFactExtractionInput,
+      coverageEnd?: number
     ): Promise<void> {
       const settings = await lockMemorySettings(tx, claim.userId, false);
-      await continueMemoryFactCoverage(tx, settings, claim, input);
+      await continueMemoryFactCoverage(tx, settings, claim, input, coverageEnd);
     },
     discardStale(job: MemoryJobDescriptor, reasonCode: string): Promise<number> {
       return client.$transaction((tx) => invalidateMemoryFactExtractionStaging(
