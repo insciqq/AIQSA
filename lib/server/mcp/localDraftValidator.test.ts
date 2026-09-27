@@ -1,6 +1,7 @@
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { describe, expect, it, vi } from "vitest";
 import { McpDraftValidationAbortedError } from "./draftValidator";
+import { mcpPublishedToolDefinitions } from "./definitions";
 import { createInFlightValidationWorkloadRegistry } from "./inFlightValidationWorkloads";
 import type { McpRuntimeSession } from "./runtimeCoordinator";
 import { createLocalMcpDraftValidator } from "./localDraftValidator";
@@ -161,6 +162,7 @@ describe("local MCP draft validation", () => {
           instructions: "Choose a project before running an operation."
         },
         toolCount: 1,
+        toolDefinitions: [{ definitionHash: "b".repeat(64), name: "example.run" }],
         transport: "stdio"
       },
       kind: "ok",
@@ -187,6 +189,11 @@ describe("local MCP draft validation", () => {
       }]
     });
     expect(JSON.stringify(outcome)).not.toContain("super-secret");
+    if (outcome.kind !== "ok") throw new Error("expected a checked local draft");
+    expect(mcpPublishedToolDefinitions({ evidence: outcome.evidence, toolInventory: outcome.toolInventory })).toEqual({
+      hashes: new Map([["example.run", "b".repeat(64)]]),
+      kind: "definitions"
+    });
     expect(active.close).toHaveBeenCalledTimes(1);
     expect(deleteOwnedWorkload).toHaveBeenCalledWith(TOKEN);
     expect(retentionRegistry.snapshot()).toEqual([]);

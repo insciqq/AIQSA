@@ -7,6 +7,7 @@ import {
   type AiqsaMcpToolDefinition,
   type McpClientSessionOptions
 } from "./clientSession";
+import { mcpPublishedToolDefinitions } from "./definitions";
 import {
   createRemoteMcpDraftValidator,
   type McpRemoteDraftValidationSession,
@@ -266,6 +267,10 @@ describe("remote MCP draft validator", () => {
         },
         toolCount: 2,
         toolDefinitionHashes: ["a".repeat(64), "b".repeat(64)],
+        toolDefinitions: [
+          { definitionHash: "a".repeat(64), name: "create_task" },
+          { definitionHash: "b".repeat(64), name: "list_tasks" }
+        ],
         toolInventoryHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
         transport: "streamable_http"
       },
@@ -284,6 +289,12 @@ describe("remote MCP draft validator", () => {
         },
         { description: "List tasks", name: "list_tasks" }
       ]
+    });
+    if (outcome.kind !== "ok") throw new Error("expected a checked remote draft");
+    // The stored check lets the runtime admit exactly these name/definition pairs.
+    expect(mcpPublishedToolDefinitions({ evidence: outcome.evidence, toolInventory: outcome.toolInventory })).toEqual({
+      hashes: new Map([["create_task", "a".repeat(64)], ["list_tasks", "b".repeat(64)]]),
+      kind: "definitions"
     });
     expect(harness.events).toEqual(["initialize", "listAllTools", "close"]);
     expect(progress).toEqual(["connecting", "discovering_tools"]);

@@ -3,9 +3,9 @@ import { prepareMcpRunPlan } from "./runPlan";
 import { filterMcpToolsForUser } from "./toolAccess";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdminMcpServer, McpDraftConfiguration } from "@/lib/contracts/mcp";
+import { adminMcpAttention, type AdminMcpServer, type McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { prisma } from "../prisma";
-import { hashCanonicalMcpValue } from "./definitions";
+import { hashCanonicalMcpValue, mcpPublishedToolDefinitions, mcpToolDefinitionEvidence } from "./definitions";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type { McpDraftValidationInput, McpDraftValidationOutcome } from "./draftValidator";
 import { createPrismaMcpRepository } from "./prismaRepository";
@@ -603,5 +603,169 @@ describe("MCP stored values bound to their endpoint origin", () => {
     expect((await f.repository.testDraft({ expectedUpdatedAt: updated.value.updatedAt, oneTimeValues: {}, publish: true,
       serverId: f.serverId, validationUserId: f.userId })).kind).toBe("ok");
     expect(f.validate.mock.calls[0]![0].values).toEqual({ api_key: "fixture-initial-key" });
+  });
+});
+
+describe("MCP published tool inventory", () => {
+  const checkedTools = [
+    { definitionHash: "a".repeat(64), name: "search" },
+    { definitionHash: "b".repeat(64), name: "write" }
+  ];
+  const checked: Extract<McpDraftValidationOutcome, { kind: "ok" }> = {
+    ...valid,
+    evidence: { ...mcpToolDefinitionEvidence(checkedTools), toolCount: checkedTools.length }
+  };
+
+  async function readyGeneration(input: {
+    credentialSources?: string[];
+    enabled?: boolean;
+    exclusions: { name: string; reason: string }[];
+    revisionId: string;
+    serverId: string;
+    state?: "ready" | "starting";
+    tools?: string[];
+    userId?: string;
+  }) {
+    const userId = input.userId ?? await admin();
+    const preference = await prisma.mcpUserServer.create({
+      data: { enabled: input.enabled ?? true, serverId: input.serverId, userId }
+    });
+    const generation = await prisma.mcpRuntimeGeneration.create({ data: {
+      credentialSources: input.credentialSources ?? ["shared"],
+      fingerprint: hashCanonicalMcpValue(randomUUID()),
+      inventory: {
+        exclusions: input.exclusions,
+        tools: (input.tools ?? []).map((name) => ({
+          definitionHash: "a".repeat(64), description: null, inputSchema: { type: "object" }, name
+        })),
+        version: 1
+      },
+      inventoryUpdatedAt: new Date(),
+      revisionId: input.revisionId,
+      state: input.state ?? "ready",
+      userServerId: preference.id
+    } });
+    await prisma.mcpUserServer.update({ data: { desiredRuntimeGenerationId: generation.id }, where: { id: preference.id } });
+    return { generation, preference, userId };
+  }
+
+  it("records exact definitions, keeps them through a tool switch and reports older checks as name-only", async () => {
+    const f = await fixture();
+    expect(f.server.activeRevision?.toolVerification).toBe("names");
+    f.validate.mockResolvedValue(checked);
+    const saved = await f.save(f.server);
+    if (saved.kind !== "ok") throw new Error(saved.kind);
+    expect(saved.value.activeRevision?.toolVerification).toBe("definitions");
+    expect(adminMcpAttention(saved.value)).toBeNull();
+
+    const switched = await f.repository.updateServer({
+      expectedUpdatedAt: saved.value.updatedAt, serverId: f.serverId, tool: { enabled: false, name: "write" }
+    });
+    if (switched.kind !== "ok") throw new Error(switched.kind);
+    expect(switched.value.activeRevision?.id).not.toBe(saved.value.activeRevision?.id);
+    expect(switched.value.activeRevision?.toolVerification).toBe("definitions");
+    const stored = await prisma.mcpRevision.findUniqueOrThrow({ where: { id: switched.value.activeRevision!.id } });
+    expect(mcpPublishedToolDefinitions(stored.validationEvidence)).toEqual({
+      hashes: new Map(checkedTools.map(({ definitionHash, name }) => [name, definitionHash])), kind: "definitions"
+    });
+
+    // Upgrade: a revision published before definitions were recorded.
+    await prisma.mcpRevision.update({ data: {
+      validationEvidence: { evidence: {}, testedAt: new Date().toISOString(), toolInventory: valid.toolInventory }
+    }, where: { id: stored.id } });
+    const legacy = (await f.repository.listAdminServers(f.userId)).find(({ id }) => id === f.serverId)!;
+    expect(legacy.activeRevision?.toolVerification).toBe("names");
+    expect(adminMcpAttention(legacy)).toMatchObject({ label: "Check again to guard against tool changes" });
+  });
+
+  it("launches a revision checked before definitions by name and a checked revision by exact definitions", async () => {
+    const f = await fixture();
+    await f.repository.setGrant({ canUse: true, groupId: null, personalSlotKeys: [], serverId: f.serverId, userId: f.userId });
+    expect(await f.repository.updateUserServer({ enabled: true, serverId: f.serverId, userId: f.userId }))
+      .toMatchObject({ kind: "ok" });
+    const runtime = createPrismaMcpRuntimeRepository({ encryptionKey: () => Buffer.alloc(32, 1), prisma });
+    const launch = async () => {
+      const launches = await runtime.synchronizeDesired({ now: new Date(), onDemand: true, serverIds: [f.serverId], userId: f.userId });
+      expect(launches).toHaveLength(1);
+      return launches[0]!;
+    };
+
+    expect((await launch()).publishedTools).toEqual({ kind: "names", names: new Set(["search", "write"]) });
+
+    f.validate.mockResolvedValue(checked);
+    const current = (await f.repository.listAdminServers(f.userId)).find(({ id }) => id === f.serverId)!;
+    expect((await f.save(current)).kind).toBe("ok");
+    const upgraded = await launch();
+    expect(upgraded.publishedTools).toEqual({
+      hashes: new Map(checkedTools.map(({ definitionHash, name }) => [name, definitionHash])), kind: "definitions"
+    });
+    const generation = await prisma.mcpRuntimeGeneration.findUniqueOrThrow({ where: { id: upgraded.generationId } });
+    expect(generation.revisionId).toBe((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).activeRevisionId);
+  });
+
+  it("lists every held-back and restricted tool in the user's catalog with its reason", async () => {
+    const f = await fixture();
+    await f.repository.setGrant({ canUse: true, groupId: null, personalSlotKeys: [], serverId: f.serverId, userId: f.userId });
+    await readyGeneration({
+      exclusions: [
+        { name: "delete_repo", reason: "unpublished_addition" },
+        { name: "write", reason: "definition_drift" }
+      ],
+      revisionId: f.server.activeRevision!.id,
+      serverId: f.serverId,
+      tools: ["search"],
+      userId: f.userId
+    });
+    await prisma.mcpToolAccessPolicy.create({ data: { restricted: true, serverId: f.serverId, toolName: "search" } });
+
+    const listed = (await f.repository.listUserServers(f.userId)).find(({ id }) => id === f.serverId)!;
+
+    expect(listed.readiness).toBe("ready");
+    expect(listed.tools).toEqual([]);
+    expect(listed.unavailableTools).toEqual([
+      { name: "delete_repo", reason: "unpublished_addition" },
+      { name: "search", reason: "restricted" },
+      { name: "write", reason: "definition_drift" }
+    ]);
+  });
+
+  it("counts held-back tools per current connection and hides additions seen only through personal accounts", async () => {
+    const f = await fixture();
+    f.validate.mockResolvedValue(checked);
+    const saved = await f.save(f.server);
+    if (saved.kind !== "ok") throw new Error(saved.kind);
+    const revisionId = saved.value.activeRevision!.id;
+    const shared = await readyGeneration({ exclusions: [
+      { name: "delete_repo", reason: "unpublished_addition" },
+      { name: "write", reason: "definition_drift" }
+    ], revisionId, serverId: f.serverId, tools: ["search"] });
+    await readyGeneration({ credentialSources: ["personal"], exclusions: [
+      { name: "private_export", reason: "unpublished_addition" },
+      { name: "search", reason: "disabled_by_policy" },
+      { name: "write", reason: "definition_drift" }
+    ], revisionId, serverId: f.serverId });
+    // A connection mid-refresh reports nothing until its inventory is ready again.
+    await readyGeneration({ exclusions: [{ name: "stale_tool", reason: "unpublished_addition" }], revisionId,
+      serverId: f.serverId, state: "starting" });
+    const idle = await readyGeneration({ exclusions: [{ name: "idle_tool", reason: "missing_upstream" }], revisionId,
+      serverId: f.serverId });
+    await prisma.mcpUserServer.update({ data: { desiredRuntimeGenerationId: null }, where: { id: idle.preference.id } });
+
+    const listed = (await f.repository.listAdminServers(f.userId)).find(({ id }) => id === f.serverId)!;
+    expect(listed.inventoryDifferences).toEqual([
+      { connections: 2, name: "write", reason: "definition_drift" },
+      { connections: 1, name: "delete_repo", reason: "unpublished_addition" },
+      { connections: 1, name: null, reason: "unpublished_addition" }
+    ]);
+    expect(JSON.stringify(listed)).not.toMatch(/private_export|stale_tool|idle_tool/u);
+    expect(adminMcpAttention(listed)).toMatchObject({ label: "Server tools changed since the last check", task: "validation" });
+
+    await prisma.mcpUserServer.update({ data: { enabled: false }, where: { id: shared.preference.id } });
+    const single = await f.repository.updateServer({ name: "Renamed tools", serverId: f.serverId });
+    if (single.kind !== "ok") throw new Error(single.kind);
+    expect(single.value.inventoryDifferences).toEqual([
+      { connections: 1, name: "write", reason: "definition_drift" },
+      { connections: 1, name: null, reason: "unpublished_addition" }
+    ]);
   });
 });

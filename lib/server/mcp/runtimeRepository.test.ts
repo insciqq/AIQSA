@@ -17,7 +17,7 @@ import {
   localRuntimeCandidate,
   remoteRuntimeCandidate
 } from "./runtimeRepository";
-import { mcpEndpointBinding, type McpEndpointBinding } from "./definitions";
+import { mcpEndpointBinding, mcpToolDefinitionEvidence, type McpEndpointBinding } from "./definitions";
 
 const KEY = Buffer.alloc(32, 0x4d);
 const NOW = new Date("2026-07-22T19:00:00.000Z");
@@ -36,6 +36,7 @@ type GrantFixture = {
 };
 
 type RecordOptions = {
+  validationEvidence?: unknown;
   activeRevision?: boolean;
   archivedAt?: Date | null;
   configuration?: McpDraftConfiguration | Record<string, unknown>;
@@ -51,6 +52,18 @@ type RecordOptions = {
   sharedValues?: Record<string, McpSlotValue>;
   sharedVersion?: number;
 };
+
+/** A revision checked with recorded name/definition pairs. */
+function checkedEvidence(tools: readonly { definitionHash: string; name: string }[]) {
+  return {
+    evidence: { ...mcpToolDefinitionEvidence(tools), toolCount: tools.length },
+    testedAt: NOW.toISOString(),
+    toolInventory: tools.map(({ name }) => ({ description: null, name }))
+  };
+}
+
+const CHECKED_TOOLS = [{ definitionHash: "a".repeat(64), name: "echo" }];
+const CHECKED_DEFINITIONS = { hashes: new Map([["echo", "a".repeat(64)]]), kind: "definitions" };
 
 const configuration: McpDraftConfiguration = {
   auth: { mode: "static" },
@@ -212,7 +225,7 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
         resolvedArtifact: options.resolvedArtifact ?? null,
         revisionNumber: 1,
         serverId: SERVER_ID,
-        validationEvidence: {}
+        validationEvidence: options.validationEvidence ?? checkedEvidence(CHECKED_TOOLS)
       } : null,
       activeRevisionId: hasRevision ? REVISION_ID : null,
       archivedAt: options.archivedAt ?? null,
@@ -268,6 +281,7 @@ describe("remote MCP runtime candidates", () => {
       userId: USER_ID,
       userServerId: USER_SERVER_ID
     });
+    expect(candidate?.publishedTools).toEqual(CHECKED_DEFINITIONS);
     expect(candidate?.effectiveEnvelope).toEqual({
       plan: [
         {
@@ -303,6 +317,27 @@ describe("remote MCP runtime candidates", () => {
       },
       version: 1
     });
+  });
+
+  it("keeps a revision checked before definitions were recorded usable by published name", () => {
+    const legacy = remoteRuntimeCandidate({ key: KEY, record: runtimeRecord({
+      validationEvidence: {
+        evidence: { toolCount: 1, toolDefinitionHashes: ["a".repeat(64)], toolInventoryHash: "b".repeat(64) },
+        testedAt: NOW.toISOString(),
+        toolInventory: [{ description: null, name: "echo" }]
+      }
+    }) });
+    const tampered = remoteRuntimeCandidate({ key: KEY, record: runtimeRecord({
+      validationEvidence: {
+        ...checkedEvidence(CHECKED_TOOLS),
+        evidence: { ...checkedEvidence(CHECKED_TOOLS).evidence, toolInventoryHash: "c".repeat(64) }
+      }
+    }) });
+
+    expect(legacy?.publishedTools).toEqual({ kind: "names", names: new Set(["echo"]) });
+    expect(tampered?.publishedTools).toEqual({ kind: "invalid" });
+    // Verification never changes runtime identity.
+    expect(legacy?.fingerprint).toBe(tampered?.fingerprint);
   });
 
   it("accepts either a direct use grant or a matching group use grant", () => {
@@ -608,6 +643,7 @@ describe("local MCP runtime candidates", () => {
       userServerId: USER_SERVER_ID
     });
     expect(candidate?.toolHive.generationToken).toBe(candidate?.fingerprint);
+    expect(candidate?.publishedTools).toEqual(CHECKED_DEFINITIONS);
     expect(candidate?.effectiveEnvelope.plan).toEqual([{
       authorized: true,
       slotKey: "api-key",
@@ -717,6 +753,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       generationId: "generation-1",
       headers: expected?.headers,
       inventoryRefreshRequired: true,
+      publishedTools: CHECKED_DEFINITIONS,
       redactionValues: expected?.redactionValues,
       retryAt: null,
       startupTimeoutMs: 41_000,
@@ -767,7 +804,11 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       revision: {
         configuration: { ...configuration, disabledToolNames: ["historical_tool"] },
         id: REVISION_ID,
-        serverId: SERVER_ID
+        serverId: SERVER_ID,
+        validationEvidence: checkedEvidence([
+          { definitionHash: "d".repeat(64), name: "historical_tool" },
+          { definitionHash: "e".repeat(64), name: "search" }
+        ])
       },
       userServer: {
         serverId: SERVER_ID,
@@ -790,12 +831,19 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       generationId: "generation-accepted",
       headers: expected.headers,
       inventoryRefreshRequired: true,
+      publishedTools: {
+        hashes: new Map([["historical_tool", "d".repeat(64)], ["search", "e".repeat(64)]]),
+        kind: "definitions"
+      },
       redactionValues: expected.redactionValues,
       retryAt: null,
       startupTimeoutMs: 41_000,
       url: "https://mcp.example.test/rpc"
     });
     expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      include: expect.objectContaining({
+        revision: { select: expect.objectContaining({ validationEvidence: true }) }
+      }),
       where: {
         id: "generation-accepted",
         runBindings: {
@@ -842,7 +890,8 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
             configuration: localConfiguration,
             id: REVISION_ID,
             resolvedArtifact: localArtifact,
-            serverId: SERVER_ID
+            serverId: SERVER_ID,
+            validationEvidence: { evidence: {}, testedAt: NOW.toISOString(), toolInventory: [{ description: null, name: "example.run" }] }
           },
           userServer: { serverId: SERVER_ID, userId: USER_ID }
         }))
@@ -859,6 +908,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       generationId: "generation-local",
       headers: {},
       inventoryRefreshRequired: true,
+      publishedTools: { kind: "names", names: new Set(["example.run"]) },
       redactionValues: expected.redactionValues,
       retryAt: null,
       startupTimeoutMs: 120_000,

@@ -1,6 +1,7 @@
 import {
   MCP_RUN_PLAN_LIMITS,
   type McpSlotValue,
+  type McpUnavailableToolReason,
   type UserMcpConfigurationField,
   type UserMcpServer
 } from "@/lib/contracts/mcp";
@@ -68,6 +69,14 @@ function readinessTone(kind: McpReadinessPresentation["kind"]): "danger" | "neut
 function toolCountLabel(count: number): string {
   return `${count} tool${count === 1 ? "" : "s"}`;
 }
+
+const UNAVAILABLE_TOOL_REASONS: Readonly<Record<McpUnavailableToolReason, string>> = {
+  definition_drift: "Changed on the server; waiting for an administrator to check it",
+  disabled_by_policy: "Turned off by an administrator",
+  missing_upstream: "The server does not offer it right now",
+  restricted: "Restricted by an administrator",
+  unpublished_addition: "New on the server; waiting for an administrator to check it"
+};
 
 type ServerEdits = Record<string, Record<string, McpSlotValue | null>>;
 
@@ -269,6 +278,7 @@ function ServerRow({
   // The catalog count is informational: tool names appear once the runtime
   // reported them, so the fold below lists the exact tools only then.
   const toolCount = server.tools.length || server.knownToolCount;
+  const unavailableTools = server.unavailableTools ?? [];
 
   async function run(kind: typeof busy, operation: () => Promise<void>) {
     if (busyRef.current) return;
@@ -469,7 +479,20 @@ function ServerRow({
               </li>
             ))}
           </ul>
-        ) : <p className="v2-settings-server-section-note">Tool names appear after the server reports them.</p>}
+        ) : <p className="v2-settings-server-section-note">{unavailableTools.length
+          ? "None of this server's tools are available to you right now."
+          : "Tool names appear after the server reports them."}</p>}
+        {unavailableTools.length ? <>
+          <h4 className="v2-settings-server-section-title">Unavailable · {unavailableTools.length}</h4>
+          <ul className="v2-settings-tool-list" aria-label={`${server.name} unavailable tools`}>
+            {unavailableTools.map((tool) => (
+              <li data-unavailable-reason={tool.reason} key={tool.name}>
+                <span className="v2-settings-tool-name">{tool.name}</span>
+                <span className="v2-settings-tool-note">{UNAVAILABLE_TOOL_REASONS[tool.reason]}</span>
+              </li>
+            ))}
+          </ul>
+        </> : null}
       </section>
       </div>
     </UiV2Sheet>

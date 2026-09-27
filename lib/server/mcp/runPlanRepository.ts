@@ -9,6 +9,7 @@ import { prisma } from "@/lib/server/prisma";
 import { loadMcpToolAccess } from "./toolAccess";
 import {
   buildMcpCapabilityCatalog,
+  mcpInventoryExclusions,
   type McpCapabilityCatalog,
   type McpRunPlanRecord
 } from "./runPlan";
@@ -155,6 +156,21 @@ function revisionCatalogTools(
   });
 }
 
+/**
+ * The published catalog minus what the generation's persisted inventory holds
+ * back. A malformed inventory subtracts nothing: materialization then fails
+ * closed as `mcp_inventory_invalid` instead of the server silently vanishing.
+ */
+function currentCatalogTools(
+  validationEvidence: unknown,
+  configuration: unknown,
+  inventory: unknown
+): McpToolInventoryEntry[] {
+  const catalog = revisionCatalogTools(validationEvidence, configuration);
+  const excluded = new Set((mcpInventoryExclusions(inventory) ?? []).map(({ name }) => name));
+  return excluded.size ? catalog.filter(({ name }) => !excluded.has(name)) : catalog;
+}
+
 function revisionServerInstructions(validationEvidence: unknown): string | undefined {
   if (!isRecord(validationEvidence) || !isRecord(validationEvidence.evidence) ||
     !isRecord(validationEvidence.evidence.server) ||
@@ -212,9 +228,10 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
   const runtime = runtimeReadiness(generation.state, generation.errorCode);
   return {
     ...runtimeTimeouts(preference.server.activeRevision?.configuration),
-    catalogTools: revisionCatalogTools(
+    catalogTools: currentCatalogTools(
       preference.server.activeRevision?.validationEvidence,
-      preference.server.activeRevision?.configuration
+      preference.server.activeRevision?.configuration,
+      generation.inventory
     ),
     credentialSources: generation.credentialSources.filter((source): source is "oauth" | "personal" | "shared" =>
       source === "oauth" || source === "personal" || source === "shared"),
@@ -324,9 +341,10 @@ function serializeProjectRunGeneration(
   const runnable = projectRunGenerationIsRunnable(generation);
   return {
     ...runtimeTimeouts(generation.revision.configuration),
-    catalogTools: revisionCatalogTools(
+    catalogTools: currentCatalogTools(
       generation.revision.validationEvidence,
-      generation.revision.configuration
+      generation.revision.configuration,
+      generation.inventory
     ),
     credentialSources: runnable ? credentialSources : [],
     enabled: runnable,
