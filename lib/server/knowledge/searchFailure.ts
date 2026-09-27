@@ -77,6 +77,24 @@ export function knowledgeSearchFailureFromToolResult(result: ToolExecutionResult
     ? preview.knowledgeFailure.code : "knowledge_retrieval_failed";
 }
 
+/** Stable zero-evidence terminal copy, shared by execution and receipt recovery. */
+export function knowledgeSearchUnavailableMessage(results: readonly ToolExecutionResult[]): string | null {
+  let code: "knowledge_search_projection_pending" | "opensearch_unavailable" | null = null;
+  for (const result of results) {
+    const evidence = knowledgeEvidenceFromToolResult(result);
+    if (evidence?.outcome !== "search_unavailable") continue;
+    if (evidence.failureCode === "knowledge_search_projection_failed") {
+      return messages.knowledge_search_projection_failed;
+    }
+    if (evidence.failureCode === "knowledge_search_projection_pending") {
+      code = "knowledge_search_projection_pending";
+    } else {
+      code ??= "opensearch_unavailable";
+    }
+  }
+  return code ? messages[code] : null;
+}
+
 export type KnowledgeCoverageLimitationsV1 = Readonly<{
   excludedResources: number;
   retrievalFailures: readonly KnowledgeSearchFailureCode[];
