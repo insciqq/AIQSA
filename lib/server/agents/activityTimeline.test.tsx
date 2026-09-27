@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { WorkspaceActivityTimelineV2 } from "@/features/run-lifecycle-v2/WorkspaceActivityTimelineV2";

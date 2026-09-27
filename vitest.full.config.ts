@@ -1,7 +1,9 @@
 import { defineConfig } from "vitest/config";
 import { assertDisposableStatefulTestTarget } from "./scripts/stateful-test-target";
 import {
+  resolveHermeticMaxWorkers,
   vitestBaseExcludes,
+  vitestHermeticProjects,
   vitestResolveConfig,
   vitestSharedTestConfig,
   vitestStatefulTests
@@ -11,13 +13,9 @@ assertDisposableStatefulTestTarget(process.env);
 
 export default defineConfig({
   test: {
+    maxWorkers: resolveHermeticMaxWorkers(),
     projects: [
-      {
-        extends: "./vitest.config.ts",
-        test: {
-          name: "hermetic"
-        }
-      },
+      ...vitestHermeticProjects,
       {
         resolve: vitestResolveConfig,
         test: {

@@ -44,7 +44,7 @@
     "db:seed:smoke": "prisma generate && tsx prisma/seed-smoke.ts",
     "db:stateful-test:catalog": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE tsx scripts/stateful-test-catalog.ts",
     "start": "next start --hostname 0.0.0.0",
-    "lint": "eslint . --max-warnings=0",
+    "lint": "node scripts/lint.mjs",
     "memory:coordinator": "tsx scripts/memory-coordinator.ts",
     "memory:identity:cutover": "tsx scripts/memory-identity-cutover.ts",
     "memory:search:integrity": "tsx scripts/memory-search-worker.ts --integrity",
