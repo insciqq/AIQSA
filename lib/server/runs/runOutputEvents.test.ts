@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
+import { GROUNDING_DISPLAY_MAX_CITATIONS } from "../../domain/groundingDisplay";
+import { REASONING_RECORD_MAX_CHARACTERS } from "../../domain/answerReasoning";
 import {
   isRunOutputArtifactEvent,
   projectRunOutputArtifactEvent,
@@ -59,7 +61,9 @@ describe("durable run output events", () => {
     { citations: [{ startIndex: 0, endIndex: -1, title: "Invalid", url: "https://example.test" }] },
     { citations: [{ startIndex: 0, endIndex: 1, title: "Invalid", url: "javascript:alert(1)" }] },
     { citations: [{ startIndex: 0, endIndex: 1, title: "Invalid", url: "https://user:secret@example.test" }] },
-    { citations: Array.from({ length: 101 }, () => ({ startIndex: 0, endIndex: 1, title: "Source", url: "https://example.test" })) }
+    { citations: Array.from({ length: GROUNDING_DISPLAY_MAX_CITATIONS + 1 }, () => ({
+      startIndex: 0, endIndex: 1, title: "Source", url: "https://example.test"
+    })) }
   ])("rejects unsafe or over-budget grounding display %#", (invalid) => {
     expect(projectRunOutputArtifactEvent({ type: "grounding_display", data: {
       provider: "gemini", citations: [],
@@ -115,7 +119,7 @@ describe("durable run output events", () => {
     expect(reasoning).toEqual({
       data: {
         artifactType: "reasoning",
-        payload: { text: "Compared the sources.\n\nChecked the conclusion." }
+        payload: { entry: "start", text: "Compared the sources.\n\nChecked the conclusion." }
       },
       type: "artifact"
     });
@@ -263,6 +267,89 @@ describe("durable run output events", () => {
   });
 });
 
+
+describe("write projection and durable boundary agree", () => {
+  const artifact = (artifactType: "citation" | "reasoning" | "search", payload: unknown): ModelRunSseEvent =>
+    ({ data: { artifactType, payload }, type: "artifact" });
+  const durable = (event: ModelRunSseEvent) => {
+    const projected = projectRunOutputArtifactEvent(event);
+    expect(projected).not.toBeNull();
+    expect(isRunOutputArtifactEvent(projected!)).toBe(true);
+    expect(projectRunOutputArtifactEvent(projected!)).toEqual(projected);
+    return projected!;
+  };
+
+  it("keeps a bare provider source with a long URL instead of failing the answer", () => {
+    const longUrl = `https://example.com/${"a".repeat(600)}`;
+    const tooLong = `https://example.com/${"b".repeat(2_100)}`;
+    const projected = durable(artifact("search", { action: { sources: [
+      { type: "url", url: longUrl },
+      { title: "Too long to link", url: tooLong },
+      { title: `  ${"t".repeat(499)}😀tail`, url: "https://example.org/emoji" }
+    ] } }));
+    expect(projected.data).toEqual({ artifactType: "search", payload: { action: { sources: [
+      { rank: 1, title: "example.com", url: longUrl },
+      { rank: 2, title: "example.org", url: "https://example.org/emoji" }
+    ] } } });
+  });
+
+  it("cuts citation text at a code point and never leaves a trailing space the boundary rejects", () => {
+    const projected = durable(artifact("citation", {
+      snippet: `${"s".repeat(1_999)} tail`,
+      source: "x".repeat(199) + "😀",
+      title: `${"a".repeat(499)} rest`,
+      url: "https://example.com/cited"
+    }));
+    expect(projected.data).toEqual({ artifactType: "citation", payload: {
+      index: 1,
+      snippet: "s".repeat(1_999),
+      source: "x".repeat(199),
+      title: "a".repeat(499),
+      url: "https://example.com/cited"
+    } });
+    expect(projectRunOutputArtifactEvent(artifact("citation", {
+      title: "Too long", url: `https://example.com/${"c".repeat(2_100)}`
+    }))).toBeNull();
+  });
+
+  it("stores merged thinking fragments exactly and marks what a record could not hold", () => {
+    expect(durable(artifact("reasoning", { entry: "start", text: "Let me " })).data)
+      .toEqual({ artifactType: "reasoning", payload: { entry: "start", text: "Let me " } });
+    expect(durable(artifact("reasoning", { entry: "continue", text: "\n\n" })).data)
+      .toEqual({ artifactType: "reasoning", payload: { entry: "continue", text: "\n\n" } });
+    expect(projectRunOutputArtifactEvent(artifact("reasoning", { entry: "start", text: "  " }))).toBeNull();
+    expect(durable(artifact("reasoning", { entry: "start", text: "a\u0000b\uD83D" })).data)
+      .toEqual({ artifactType: "reasoning", payload: { entry: "start", text: "ab�" } });
+
+    const chunk = `${"x".repeat(REASONING_RECORD_MAX_CHARACTERS - 1)}😀 and more`;
+    const big = durable(artifact("reasoning", { reasoning: chunk }));
+    expect(big.data).toEqual({ artifactType: "reasoning", payload: {
+      entry: "start", text: "x".repeat(REASONING_RECORD_MAX_CHARACTERS - 1), truncated: true
+    } });
+
+    const summary = Array.from({ length: 250 }, (_, index) => ({ text: `Step ${index + 1}.`, type: "summary_text" }));
+    const whole = durable(artifact("reasoning", { id: "private-id", summary, type: "reasoning" }));
+    expect(whole.data).toEqual({ artifactType: "reasoning", payload: {
+      entry: "start", text: summary.map(({ text }) => text).join("\n\n")
+    } });
+    const tooMany = durable(artifact("reasoning", { summary: Array.from({ length: 6_000 }, () => ({ text: "Part." })) }));
+    expect(tooMany.data).toMatchObject({ payload: { entry: "start", truncated: true } });
+    expect(JSON.stringify([whole, tooMany])).not.toContain("private-id");
+  });
+
+  it("rejects pre-merge and non-exact reasoning records at the durable boundary", () => {
+    for (const payload of [
+      { text: "Legacy row" },
+      { entry: "start", text: "Wrapped", id: "private" },
+      { entry: "middle", text: "Unknown entry" },
+      { entry: "start", text: "Flag", truncated: false },
+      { entry: "start", text: "a\u0000b" },
+      { entry: "start", text: "x".repeat(REASONING_RECORD_MAX_CHARACTERS + 1) }
+    ]) {
+      expect(isRunOutputArtifactEvent({ data: { artifactType: "reasoning", payload }, type: "artifact" })).toBe(false);
+    }
+  });
+});
 
 it("persists only an exact safe checkpoint publication and rejects private or mixed references", () => {
   const checkpoint = { id: "checkpoint-1", description: "Saved layout", createdAt: "2026-09-24T09:00:00.000Z" };

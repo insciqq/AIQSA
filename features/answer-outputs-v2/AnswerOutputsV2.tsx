@@ -534,6 +534,11 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
             ))}
           </ol>
         ) : null}
+        {artifact.citationsTruncated || artifact.sourcesTruncated ? (
+          <p className="v2-answer-sources-note" data-testid="answer-sources-truncated">
+            This answer has more sources than can be listed.
+          </p>
+        ) : null}
       </div>
     ) : null
   };

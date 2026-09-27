@@ -107,9 +107,11 @@ describe("thread answer outputs", () => {
       }
     ]);
 
+    // The live summary uses the durable projection: a citation without an
+    // index reads as 1 live and after reload alike.
     expect(summary).toEqual({
       citations: [{
-        index: 2,
+        index: 1,
         title: "Safe",
         url: "https://example.com/source"
       }],
@@ -117,6 +119,34 @@ describe("thread answer outputs", () => {
       reasoningText: ["Checked the direct sources."],
       sources: []
     });
+  });
+
+  it("merges streamed thinking fragments exactly and never shows opaque reasoning", () => {
+    const reasoning = (payload: unknown) => ({ data: { artifactType: "reasoning", payload }, type: "artifact" });
+    const summary = summarizeThreadArtifacts([
+      reasoning({ entry: "start", text: "Let me " }),
+      reasoning({ entry: "continue", text: "compare 😀" }),
+      { data: { delta: "Answer" }, type: "token" },
+      reasoning({ entry: "continue", text: " sources.\n\n" }),
+      reasoning({ encryptedContent: "PRIVATE_REASONING_STATE", id: "reasoning-1" }),
+      reasoning({ entry: "start", text: "Second block." }),
+      reasoning({ summary: [{ text: "**Plan**", type: "summary_text" }, { text: "Steps.", type: "summary_text" }] })
+    ]);
+    expect(summary?.reasoningText).toEqual([
+      "Let me compare 😀 sources.",
+      "Second block.",
+      "**Plan**\n\nSteps."
+    ]);
+    expect(JSON.stringify(summary)).not.toContain("PRIVATE_REASONING_STATE");
+  });
+
+  it("keeps each list with its own completeness mark when live and saved summaries merge", () => {
+    const saved = { citations: [{ index: 1, title: "Saved", url: "https://example.com/saved" }], citationsTruncated: true as const,
+      reasoningText: ["Saved thinking"], reasoningTruncated: true as const, sources: [] };
+    const live = { citations: [{ index: 1, title: "Live", url: "https://example.com/live" }], reasoningText: [], sources: [] };
+    const merged = mergeLiveThreadArtifacts(saved, live);
+    expect(merged).toMatchObject({ citations: live.citations, reasoningText: saved.reasoningText, reasoningTruncated: true });
+    expect(merged).not.toHaveProperty("citationsTruncated");
   });
 
   it("does not turn context or settled tool artifacts into answer output", () => {
