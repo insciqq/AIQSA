@@ -13,6 +13,7 @@ import { limitText, type Truncation } from "microsandbox-mcp/dist/utils/output.j
 import { fail, ok } from "microsandbox-mcp/dist/utils/response.js";
 import { getWorkspaceConfig, workspaceToolTransportMaxBytes } from "./config";
 import { execPollEventMaxBytes, MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
+import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { tarGzipStream } from "../chats/tarArchive";
@@ -988,6 +989,58 @@ describe("Microsandbox Workspace lifecycle", () => {
     await value.runtime.stopSession({ sessionId, runtimeSandboxId: null });
     expect(value.handle.stopWithTimeout).toHaveBeenCalledExactlyOnceWith(10_000);
   });
+
+  function projectArchiveExec(value: ReturnType<typeof fixture>, codes: Partial<Record<string, number>>) {
+    value.sandbox.exec.mockImplementation(async (...call: unknown[]) => {
+      const [command, args] = call as [string, string[]];
+      if (command === "bash") value.files.set(args[3]!, new Uint8Array([1, 2, 3]));
+      const code = command === "python3" ? codes[args.at(-1)!] : undefined;
+      const result = { success: code === undefined, code: code ?? 0 };
+      return result;
+    });
+    return () => value.sandbox.exec.mock.calls.map((call: unknown[]) => call as [string, string[]])
+      .filter(([command]) => command === "python3").map(([, args]) => args);
+  }
+
+  it.each([[67, "workspace_archive_limit_exceeded"], [65, "workspace_archive_invalid"], [68, "workspace_output_export_failed"]] as const)(
+    "rejects a continuation archive the restore would refuse before returning it (exit %i)", async (code, expected) => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      const verifyCalls = projectArchiveExec(value, { verify: code });
+      await expect(value.runtime.createProjectArchive({ ...sessionInput, restorable: true })).rejects.toMatchObject({ code: expected });
+      const limits = projectArchiveLimits(config);
+      expect(verifyCalls()).toEqual([["-c", PROJECT_RESTORE_SCRIPT, expect.stringMatching(/\/workspace-export-[a-f0-9]{64}\.tar\.gz$/u),
+        "/workspace/project", String(limits.maxBytes), String(limits.maxEntries), "verify"]]);
+      expect([...value.files.keys()].filter((path) => path.includes("workspace-export-"))).toEqual([]);
+    });
+
+  it("returns a verified continuation archive and leaves download exports unbounded by restore rules", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const verifyCalls = projectArchiveExec(value, {});
+    const restorable = await value.runtime.createProjectArchive({ ...sessionInput, restorable: true });
+    expect(restorable.checksum).toBe(createHash("sha256").update(new Uint8Array([1, 2, 3])).digest("hex"));
+    expect(verifyCalls()).toHaveLength(1);
+    await restorable.body.cancel();
+    const download = await value.runtime.createProjectArchive(sessionInput);
+    expect(verifyCalls()).toHaveLength(1);
+    await download.body.cancel();
+  });
+
+  it.each([[false, "workspace_archive_invalid"], [true, "workspace_execution_cleanup_failed"]] as const)(
+    "recovers only restore staging after a failed restore (recovery fails=%s)", async (recoveryFails, expected) => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      const scriptCalls = projectArchiveExec(value, { restore: 65, ...(recoveryFails ? { recover: 69 } : {}) });
+      const bytes = new TextEncoder().encode("archive bytes");
+      await expect(value.runtime.restoreProjectArchive({ ...sessionInput, byteSize: bytes.byteLength,
+        checksum: createHash("sha256").update(bytes).digest("hex"),
+        archive: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) })).rejects.toMatchObject({ code: expected });
+      expect(scriptCalls().map((args) => args.at(-1))).toEqual(["restore", "recover"]);
+      // No project-wide wipe: the removed `find … rm -rf` fallback must not return.
+      expect(value.sandbox.exec.mock.calls.some((call: unknown[]) => call[0] === "bash")).toBe(false);
+      expect([...value.files.keys()].filter((path) => path.includes("workspace-restore-"))).toEqual([]);
+    });
 });
 
 

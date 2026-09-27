@@ -267,7 +267,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         await deps.runtime.claimSessionOperation?.({ operation, runtimeSandboxId: observed.runtimeSandboxId, sessionId: observed.sessionId });
         timer = setInterval(renew, Math.floor(WORKSPACE_OPERATION_LEASE_MS / 3));
         timer.unref?.();
-        archiveOutput = await deps.runtime.createProjectArchive({ operation, runtimeSandboxId: observed.runtimeSandboxId, sessionId: observed.sessionId, signal: captureSignal });
+        archiveOutput = await deps.runtime.createProjectArchive({ operation, restorable: true, runtimeSandboxId: observed.runtimeSandboxId, sessionId: observed.sessionId, signal: captureSignal });
         const output = archiveOutput;
         storageKey = `workspace-continuation/${observed.seedId}.tar.gz`;
         const reserved = await client.chatContinuationWorkspaceSeed.updateMany({

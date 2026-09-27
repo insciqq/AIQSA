@@ -246,6 +246,27 @@ describe("remote Workspace runner protocol", () => {
     expect(ensure).not.toHaveBeenCalled();
   });
 
+  it("forwards the continuation restorability request to the runner's project archive", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const bytes = new Uint8Array([1, 2, 3]);
+    const archive = vi.spyOn(local, "createProjectArchive").mockImplementation(async () => ({
+      body: stream(bytes), byteSize: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex"),
+      mimeType: "application/gzip", opaqueFileId: "a".repeat(64), relativePath: "workspace.tar.gz"
+    }));
+    const server = createWorkspaceRunnerServer({ runtime: local, token });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const input = { operation, runtimeSandboxId: "runtime_fixture", sessionId: "0199aabc-12ef-7abc-8abc-0123456789b1" };
+    await remote.claimSessionOperation(input);
+    for (const restorable of [true, false]) {
+      const output = await remote.createProjectArchive({ ...input, ...(restorable ? { restorable } : {}) });
+      expect(await collect(output.body)).toEqual(bytes);
+      expect(archive).toHaveBeenLastCalledWith(expect.objectContaining({ restorable }));
+    }
+  });
+
   it.each([
     { entries: [{ runtimeSandboxId: "x", sandboxName: "y", state: "unknown-state" }], nextCursor: null },
     { entries: [], nextCursor: "x".repeat(2_049) },
