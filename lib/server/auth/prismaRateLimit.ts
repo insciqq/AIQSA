@@ -22,7 +22,11 @@ export type DurableLoginRateLimitStore = {
   }): Promise<{ attemptCount: number; resetAt: Date }>;
   delete(keyHash: string): Promise<void>;
   pruneExpired(now: Date): Promise<void>;
-  /** Gives back one counted attempt if the key's window is still open. */
+  /**
+   * Gives back one counted attempt if the key's window is still open. Stored counts stay at
+   * least 1, so giving back a window's only attempt closes that window instead: the next
+   * check then counts from 1, exactly as if the attempt had never been made.
+   */
   release(input: { keyHash: string; now: Date }): Promise<void>;
 };
 
@@ -159,11 +163,17 @@ export function createPrismaLoginRateLimitStore(
       );
     },
     async release(input) {
+      // "attemptCount" >= 1 is a table check. One statement keeps the release atomic
+      // against concurrent checks of the same key.
       await prisma.$executeRaw(
         Prisma.sql`
           UPDATE "AuthRateLimitBucket"
           SET
-            "attemptCount" = GREATEST("attemptCount" - 1, 0),
+            "attemptCount" = GREATEST("attemptCount" - 1, 1),
+            "resetAt" = CASE
+              WHEN "AuthRateLimitBucket"."attemptCount" <= 1 THEN ${input.now}
+              ELSE "AuthRateLimitBucket"."resetAt"
+            END,
             "updatedAt" = ${input.now}
           WHERE "keyHash" = ${input.keyHash} AND "resetAt" > ${input.now}
         `
