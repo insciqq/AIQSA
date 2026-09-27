@@ -101,6 +101,7 @@ async function projectFixture(url: string) {
   } });
   const memberA = await user("member-a");
   const memberB = await user("member-b");
+  const outsiderC = await user("outsider-c");
   const configuration = {
     auth: { mode: "none" },
     runtime: { callTimeoutMs: 10_000, startupTimeoutMs: 10_000 },
@@ -131,18 +132,28 @@ async function projectFixture(url: string) {
     grants: { create: [{ role: "OWNER", userId: memberA.id }, { role: "CONTRIBUTOR", userId: memberB.id }] },
     name: `Stateful MCP ${suffix}`
   } });
-  await prisma.projectMcpBinding.create({ data: { projectId: project.id, serverId: server.id } });
+  // Another Project linking the same server, sharing no member with the first.
+  const otherProject = await prisma.project.create({ data: {
+    createdByDisplayName: "Project runtime fixture",
+    grants: { create: [{ role: "OWNER", userId: outsiderC.id }] },
+    name: `Other stateful MCP ${suffix}`
+  } });
+  await prisma.projectMcpBinding.createMany({ data: [project.id, otherProject.id].map((projectId) => ({
+    projectId, serverId: server.id
+  })) });
   cleanups.push(async () => {
-    await prisma.project.deleteMany({ where: { id: project.id } });
+    await prisma.project.deleteMany({ where: { id: { in: [project.id, otherProject.id] } } });
     await prisma.mcpUserServer.deleteMany({ where: { serverId: server.id } });
     await prisma.mcpSharedRuntime.deleteMany({ where: { serverId: server.id } });
     await prisma.mcpServer.update({ data: { activeRevisionId: null }, where: { id: server.id } });
     await prisma.mcpGrant.deleteMany({ where: { serverId: server.id } });
     await prisma.mcpRevision.deleteMany({ where: { serverId: server.id } });
     await prisma.mcpServer.deleteMany({ where: { id: server.id } });
-    await prisma.user.deleteMany({ where: { id: { in: [memberA.id, memberB.id] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [memberA.id, memberB.id, outsiderC.id] } } });
   });
-  return { memberA: memberA.id, memberB: memberB.id, preferenceA: preferenceA.id, serverId: server.id };
+  return {
+    memberA: memberA.id, memberB: memberB.id, outsiderC: outsiderC.id, preferenceA: preferenceA.id, serverId: server.id
+  };
 }
 
 function coordinator() {
@@ -214,6 +225,10 @@ describe("Project MCP runtime authority and cold start", () => {
     expect(await call(runtime, shared.id, "remember", "project-b-note")).toBe("remembered");
     expect(await call(runtime, personal.id, "recall")).toBe("member-a-private-note");
     expect(await call(runtime, shared.id, "recall")).toBe("project-b-note");
+    // The Project runtime is the installation's, one per server and revision:
+    // a Project sharing no member with this one binds the same generation and
+    // MCP session, so its runs see "project-b-note" too.
+    expect((await projectPlan(runtime, f.outsiderC, f.serverId)).runtimeGenerationId).toBe(shared.id);
     expect(new Set(peer.sessionIds).size).toBe(2);
     // Process-wide upstream state is the server's own design and is shared by
     // every session; no runtime owner can isolate it.
