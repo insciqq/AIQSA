@@ -236,12 +236,14 @@ describe("remote MCP runtime integration", () => {
         ...MCP_INVENTORY_SESSION_LIMITS, maxToolArgumentBytes: getMcpRequestMaxBytes()
       } })
     });
-    const launch = (generationId: string): McpRuntimeGenerationLaunch => ({
+    // Each fixture serves one SDK session; the runtime connects to fresh servers.
+    const launch = (generationId: string, url: URL): McpRuntimeGenerationLaunch => ({
       allowPrivateNetwork: true, callTimeoutMs: 5_000, fingerprint: `fingerprint-${generationId}`, generationId, headers: {},
-      publishedTools: published, redactionValues: [], retryAt: null, startupTimeoutMs: 5_000, url: fixture.url.href
+      publishedTools: published, redactionValues: [], retryAt: null, startupTimeoutMs: 5_000, url: url.href
     });
     try {
-      launches = [launch("generation-1")];
+      const runtime = await startRemoteFixture("fixture", false, "Create a task", false, inventory, { instructions, pageSize: 32 });
+      launches = [launch("generation-1", runtime.url)];
       await coordinator.reconcileNow();
       expect(ready.at(-1)?.tools).toHaveLength(1_024);
       expect(ready.at(-1)?.exclusions).toEqual([]);
@@ -249,8 +251,9 @@ describe("remote MCP runtime integration", () => {
         inputSchema: { type: "object" }, name: "tool_1023" })).resolves.toMatchObject({ isError: false, text: ["Accepted"] });
 
       // One more upstream tool exceeds the per-server bound: no partial inventory is accepted.
-      inventory.push({ inputSchema: { type: "object" }, name: "tool_1024" });
-      launches = [launch("generation-2")];
+      const beyond = await startRemoteFixture("fixture", false, "Create a task", false,
+        [...inventory, { inputSchema: { type: "object" }, name: "tool_1024" }], { pageSize: 32 });
+      launches = [launch("generation-2", beyond.url)];
       await coordinator.reconcileNow();
       expect(ready).toHaveLength(1);
       expect(failed).toEqual(["mcp_inventory_tool_limit"]);
