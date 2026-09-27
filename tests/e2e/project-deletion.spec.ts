@@ -35,7 +35,10 @@ test("Owner can reload a failed deletion, inspect pending status, and retry with
       expiresAt: new Date(Date.now() + 3_600_000), imageRef: getWorkspaceConfig().imageRef,
       internetEnabled: false, policyRevision: 1, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId),
       state: "READY", operationOwner: `fixture:${randomUUID()}`, operationExpiresAt: new Date(Date.now() + 3_600_000) } });
-    await page.goto(`/p/${projectId}`);
+    await page.getByRole("button", { exact: true, name: "Projects" }).click();
+    const projects = page.locator('section[aria-label="Shared projects"]');
+    await expect(projects).toBeVisible();
+    await projects.locator(".v2-project-row").filter({ hasText: name }).click();
     const overview = page.getByTestId("project-overview-page");
     await expect(overview.getByRole("heading", { name, exact: true })).toBeVisible();
     await overview.getByRole("button", { name: `${name} details`, exact: true }).click();
