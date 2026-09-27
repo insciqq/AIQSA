@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { projectMemoryHistorySafeText } from "./safety";
+import { MEMORY_UNPROCESSED_TEXT_PLACEHOLDER } from "../explicit/safety";
+import {
+  MEMORY_HISTORY_UNPROCESSED_TEXT_REASON,
+  memoryHistoryProjectedTextIsStable,
+  memoryHistorySafeTextsJoinSafely,
+  projectMemoryHistorySafeText,
+  projectMemoryHistorySourceText
+} from "./safety";
 
 describe("Memory history safety projection", () => {
   it("excludes recognizable credential formats without echoing them", () => {
@@ -94,5 +101,132 @@ describe("Memory history safety projection", () => {
       eligible: false,
       redactionReasonCodes: ["UNSAFE_CONTROL"]
     });
+  });
+
+  it("reports structural exclusions as processing states without a sensitivity class", () => {
+    for (const project of [projectMemoryHistorySafeText, projectMemoryHistorySourceText]) {
+      expect(project("  \n ")).toMatchObject({
+        eligible: false,
+        processingState: "EMPTY",
+        redactionReasonCodes: ["EMPTY_TEXT"],
+        safetyClass: null
+      });
+      expect(project("visible\u2067hidden")).toMatchObject({
+        eligible: false,
+        processingState: "UNSAFE_CONTROL",
+        redactionReasonCodes: ["UNSAFE_CONTROL"],
+        safetyClass: null
+      });
+    }
+  });
+});
+
+describe("Memory message source projection", () => {
+  const ordinary = "I moved to Helsinki last spring and work at the harbour. ";
+
+  it("never classifies long ordinary text by its length", () => {
+    const text = ordinary.repeat(4_000).trim();
+    expect(text.length).toBeGreaterThan(200_000);
+
+    expect(projectMemoryHistorySafeText(text)).toMatchObject({
+      eligible: false,
+      processingState: "OVERSIZE",
+      redactionReasonCodes: ["SOURCE_TEXT_LIMIT"],
+      safetyClass: null,
+      safeText: null
+    });
+    expect(projectMemoryHistorySourceText(text)).toMatchObject({
+      eligible: true,
+      processingState: "COMPLETE",
+      redactionReasonCodes: [],
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL",
+      safeText: text
+    });
+  });
+
+  it("is the single pass for texts up to one window", () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const text = `${ordinary.repeat(1_700)}token ${token} end`;
+    expect(text.length).toBeLessThanOrEqual(100_000);
+
+    expect(projectMemoryHistorySourceText(text)).toEqual(projectMemoryHistorySafeText(text));
+  });
+
+  it.each([
+    "sk-abcdefghijklmnopqrstuvwxyz123456",
+    "4111 1111 1111 1111",
+    "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0\n-----END PRIVATE KEY-----"
+  ])("redacts a secret that crosses the 100k window boundary (%#)", (secret) => {
+    const prefix = "a word ".repeat(14_285);
+    const text = `${prefix}${secret} ${ordinary.repeat(1_000)}`.trim();
+    const start = text.indexOf(secret);
+    expect(start).toBeLessThan(100_000);
+    expect(start + secret.length).toBeGreaterThan(100_000);
+
+    const projection = projectMemoryHistorySourceText(text);
+
+    expect(projection).toMatchObject({
+      eligible: true,
+      processingState: "COMPLETE",
+      redactionState: "REDACTED",
+      safetyClass: "NORMAL"
+    });
+    expect(projection.safeText).not.toContain(secret);
+    expect(projection.redactionSourceMap).toContainEqual(expect.objectContaining({
+      kind: "REDACTION",
+      sourceEnd: start + secret.length,
+      sourceStart: start
+    }));
+    expect(JSON.stringify(projection)).not.toContain(secret);
+  });
+
+  it("withholds text it cannot scan within bounds instead of passing it on", () => {
+    const blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo".repeat(4_000);
+    const withBlob = projectMemoryHistorySourceText(
+      `My photo is below.\n${blob}\nI moved to Rome.`
+    );
+    expect(withBlob).toMatchObject({
+      eligible: true,
+      processingState: "PARTIAL",
+      redactionReasonCodes: [MEMORY_HISTORY_UNPROCESSED_TEXT_REASON],
+      redactionState: "REDACTED",
+      safetyClass: "NORMAL",
+      safeText: `My photo is below.\n${MEMORY_UNPROCESSED_TEXT_PLACEHOLDER}I moved to Rome.`
+    });
+
+    const onlyBlob = projectMemoryHistorySourceText(blob);
+    expect(onlyBlob).toMatchObject({
+      eligible: false,
+      processingState: "OVERSIZE",
+      redactionReasonCodes: ["SOURCE_TEXT_LIMIT"],
+      safetyClass: null
+    });
+
+    const longText = ordinary.repeat(20_000).trim();
+    expect(longText.length).toBeGreaterThan(1_048_576);
+    const partial = projectMemoryHistorySourceText(longText);
+    expect(partial).toMatchObject({
+      eligible: true,
+      processingState: "PARTIAL",
+      redactionReasonCodes: [MEMORY_HISTORY_UNPROCESSED_TEXT_REASON]
+    });
+    expect(partial.safeText?.endsWith(MEMORY_UNPROCESSED_TEXT_PLACEHOLDER)).toBe(true);
+    expect(partial.redactionSourceMap.at(-1)).toMatchObject({
+      kind: "REDACTION",
+      sourceEnd: longText.length
+    });
+  });
+
+  it("revalidates a projected text and its joins without a length gate", () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const projected = projectMemoryHistorySourceText(
+      `${ordinary.repeat(3_000)}token ${token}`
+    );
+    expect(projected.eligible).toBe(true);
+    expect(memoryHistoryProjectedTextIsStable(projected.safeText!)).toBe(true);
+    expect(memoryHistoryProjectedTextIsStable(`raw ${token}`)).toBe(false);
+    expect(memoryHistorySafeTextsJoinSafely(projected.safeText!, projected.safeText!))
+      .toBe(true);
   });
 });

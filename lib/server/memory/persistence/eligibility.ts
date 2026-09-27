@@ -4,7 +4,7 @@ import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION
 } from "../learning/extraction/contract";
-import { projectMemoryHistorySafeText } from "../history/safety";
+import { projectMemoryHistorySourceText } from "../history/safety";
 import { memorySha256 } from "./lexical";
 import { memoryAutomaticEvidencePausePredicate } from "./pauseIntervals";
 import { memoryFactDependenciesPredicate } from "../learning/dependencies/repository";
@@ -51,7 +51,9 @@ export function memoryExactMessageEvidenceIsCurrent(input: Readonly<{
     input.sourceStartOffset === null || input.sourceEndOffset === null ||
     input.sourceStartOffset < 0 || input.sourceEndOffset <= input.sourceStartOffset
   ) return false;
-  const projected = projectMemoryHistorySafeText(
+  // The same message projection that produced the offsets and hash. Up to
+  // 100k code units it is the former single pass, so v5 evidence stays exact.
+  const projected = projectMemoryHistorySourceText(
     textFromContentBlocks(input.content as { blocks?: unknown[] })
   );
   return projected.eligible && projected.safeText !== null &&

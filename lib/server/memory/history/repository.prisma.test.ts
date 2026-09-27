@@ -3553,6 +3553,127 @@ describe("Memory lexical history index persistence", () => {
     }
   }, 90_000);
 
+  it("[L08] indexes an oversized turn by windowed safety and withholds only unscannable text", async () => {
+    const userId = await createOwner("memory-history-oversized");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Oversized history", userId }
+      });
+      const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+      const blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo".repeat(3_500);
+      const userText = `${"a word ".repeat(14_285)}${token} oversizedturnmarker. ` +
+        "Long diary line about the harbour. ".repeat(4_500);
+      expect(userText.indexOf(token)).toBeLessThan(100_000);
+      expect(userText.indexOf(token) + token.length).toBeGreaterThan(100_000);
+      expect(userText.length).toBeGreaterThan(250_000);
+      const first = await createTurn({
+        assistantText: "Short reply about the harbour.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T09:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText
+      });
+      const second = await createTurn({
+        assistantText: "I cannot read the pasted data.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T09:10:00.000Z"),
+        parentMessageId: first.assistantMessage.id,
+        userId,
+        userText: `Here is my photo.\n${blob}\nwithheldturnmarker: I moved to Rome.`
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: second.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: second.assistantMessage.id,
+          runId: second.run.id,
+          status: "complete"
+        }
+      });
+
+      const { claim, result } = await processHistoryJob(userId);
+
+      // The withheld blob is an explicit truncation, never a full safety pass:
+      // the persisted job stage records it; a READY checkpoint has no error.
+      expect(result.stage).toBe("lexical_ready:history_message_truncated");
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: claim.id }
+      })).resolves.toMatchObject({
+        stage: "lexical_ready:history_message_truncated",
+        state: "SUCCEEDED"
+      });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        lastErrorCode: null,
+        lastIndexedMessageId: second.assistantMessage.id,
+        status: "READY"
+      });
+      const chunkIds = await authorizedHistoryChunkIds(userId, chat.id);
+      const joins = await prisma.memoryRecallChunkMessage.findMany({
+        select: { chunkId: true, messageId: true },
+        where: { chunkId: { in: chunkIds }, userId }
+      });
+      // Size excludes neither the >100k prompt nor the replies around it.
+      expect(new Set(joins.map(({ messageId }) => messageId))).toEqual(new Set([
+        first.userMessage.id,
+        first.assistantMessage.id,
+        second.userMessage.id,
+        second.assistantMessage.id
+      ]));
+      const persisted = JSON.stringify({
+        chunks: await prisma.memoryRecallChunk.findMany({ where: { chatId: chat.id, userId } }),
+        entries: await prisma.memorySearchEntry.findMany({ where: { userId } }),
+        rounds: await prisma.memoryRecallRound.findMany({ where: { chatId: chat.id, userId } }),
+        segments: await prisma.memoryRecallRoundSegment.findMany({ where: { userId } })
+      });
+      expect(persisted).not.toContain(token);
+      expect(persisted).not.toContain(blob.slice(0, 40));
+      expect(persisted).toContain("[REDACTED:TOKEN]");
+      expect(persisted).toContain("oversizedturnmarker");
+      expect(persisted).toContain("[REDACTED:UNPROCESSED_TEXT]withheldturnmarker");
+      // A turn beyond round capacity keeps chunk recall instead of a round.
+      const rounds = await prisma.memoryRecallRound.findMany({
+        select: { id: true },
+        where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      const roundMessages = await prisma.memoryRecallRoundMessage.findMany({
+        select: { messageId: true },
+        where: { roundId: { in: rounds.map(({ id }) => id) }, userId }
+      });
+      expect(new Set(roundMessages.map(({ messageId }) => messageId)))
+        .toEqual(new Set([second.userMessage.id, second.assistantMessage.id]));
+
+      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const retrievalNow = new Date("2026-08-10T10:00:00.000Z");
+      const plan = planMemoryRetrieval({
+        currentUserText: "oversizedturnmarker",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now: retrievalNow,
+        temporalIntent: "ANY"
+      });
+      const retrieved = await repository.retrieve({
+        assistantId: null,
+        chatId: chat.id,
+        now: retrievalNow,
+        plan,
+        userId
+      });
+      const oversizedChunkIds = new Set(joins.flatMap(({ chunkId, messageId }) =>
+        messageId === first.userMessage.id ? [chunkId] : []));
+      expect(fuseMemoryRetrievalCandidates(plan, retrieved.laneResults, retrievalNow)
+        .some((candidate) => candidate.itemType === "RECALL_CHUNK" &&
+          oversizedChunkIds.has(candidate.itemId))).toBe(true);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  }, 90_000);
+
   it("settles a raced source as STALE without applying partial rows", async () => {
     const userId = await createOwner("memory-history-stale");
     try {

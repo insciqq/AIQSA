@@ -168,6 +168,13 @@ const BASE64URL_CHARACTERS = `${ASCII_DIGITS}${ASCII_LETTERS}_-`;
 const ASCII_HEXADECIMAL = `${ASCII_DIGITS}abcdefABCDEF`;
 const PEM_BEGIN = "-----BEGIN ";
 const PEM_PRIVATE_KEY_SUFFIX = "PRIVATE KEY";
+// Credential-URL terminators. None belongs to a token, JWT, recovery-code or
+// card alphabet (a card may only span one space between digits), and every
+// left/right context check treats them like a text edge. Windowed redaction
+// and the join check rely on this; a detector matching across them must
+// update both and their equivalence tests.
+const URL_TERMINAL_DELIMITERS = "\t\n\r ,;!?()[]{}<>\"'";
+const HARD_BREAK_DELIMITERS = URL_TERMINAL_DELIMITERS.replace(" ", "");
 
 function hasCharacter(value: string, characters: string): boolean {
   for (const character of value) {
@@ -356,7 +363,6 @@ function privateKeySpans(value: string): readonly MemorySecretCandidateSpan[] {
 function credentialUrlSpans(value: string): readonly MemorySecretCandidateSpan[] {
   const spans: MemorySecretCandidateSpan[] = [];
   const schemeCharacters = `${ASCII_DIGITS}${ASCII_LETTERS}+.-`;
-  const terminalDelimiters = "\t\n\r ,;!?()[]{}<>\"'";
   let searchFrom = 0;
   while (searchFrom < value.length) {
     const separator = value.indexOf("://", searchFrom);
@@ -367,7 +373,7 @@ function credentialUrlSpans(value: string): readonly MemorySecretCandidateSpan[]
     }
     let end = separator + 3;
     while (end < value.length &&
-      !terminalDelimiters.includes(value[end] ?? "")) end += 1;
+      !URL_TERMINAL_DELIMITERS.includes(value[end] ?? "")) end += 1;
     while (end > separator + 3 && ".:".includes(value[end - 1] ?? "")) end -= 1;
     const token = value.slice(start, end);
     try {
@@ -492,9 +498,9 @@ function highEntropySpans(value: string): readonly MemorySecretCandidateSpan[] {
     : []);
 }
 
-function secretSpans(value: string): readonly MemorySecretSpan[] {
-  const candidates = [
-    ...privateKeySpans(value),
+/** Detectors whose matches never cross URL_TERMINAL_DELIMITERS. */
+function singleLineCandidateSpans(value: string): readonly MemorySecretCandidateSpan[] {
+  return [
     ...credentialUrlSpans(value),
     ...jwtSpans(value),
     ...knownTokenSpans(value),
@@ -502,9 +508,25 @@ function secretSpans(value: string): readonly MemorySecretSpan[] {
     ...paymentCardSpans(value),
     ...highEntropySpans(value)
   ];
+}
+
+function secretSpans(value: string): readonly MemorySecretSpan[] {
+  return policySpans([
+    ...privateKeySpans(value),
+    ...singleLineCandidateSpans(value)
+  ], 0, value.length);
+}
+
+function policySpans(
+  candidates: readonly MemorySecretCandidateSpan[],
+  lowerBound: number,
+  upperBound: number
+): readonly MemorySecretSpan[] {
   const seen = new Set<string>();
   return Object.freeze(candidates.filter((span) => {
-    if (span.start < 0 || span.end <= span.start || span.end > value.length) return false;
+    if (span.start < lowerBound || span.end <= span.start || span.end > upperBound) {
+      return false;
+    }
     const key = `${span.finding}:${span.start}:${span.end}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -618,11 +640,269 @@ export function redactMemorySecrets(value: string): MemorySecretRedactionResult 
   };
 }
 
+/** Replaces source text that was withheld without a scan. It is a marker,
+ * not a secret finding, and never carries any withheld character. */
+export const MEMORY_UNPROCESSED_TEXT_PLACEHOLDER = "[REDACTED:UNPROCESSED_TEXT]" as const;
+
+export type MemorySecretSourceRange = Readonly<{ end: number; start: number }>;
+
+export type MemorySecretWindowOptions = Readonly<{
+  /** Scanned code units after which the remaining text is withheld. */
+  maxCodeUnits: number;
+  /** Largest source window one detector pass scans. */
+  windowCodeUnits: number;
+}>;
+
+export type MemorySecretWindowedRedactionResult = Readonly<{
+  containsSecret: boolean;
+  redactedText: string;
+  sourceMap: readonly MemorySecretSourceMapEntry[];
+  spans: readonly MemorySecretSpan[];
+  /** Unscanned source ranges, each replaced by the unprocessed placeholder. */
+  withheld: readonly MemorySecretSourceRange[];
+}>;
+
+type WindowedOutput = {
+  outputLength: number;
+  parts: string[];
+  sourceMap: MemorySecretSourceMapEntry[];
+  spans: MemorySecretSpan[];
+  withheld: MemorySecretSourceRange[];
+};
+
+function emitSource(
+  output: WindowedOutput,
+  value: string,
+  start: number,
+  end: number
+): void {
+  if (end <= start) return;
+  const text = value.slice(start, end);
+  const previous = output.sourceMap.at(-1);
+  // Canonical maps merge contiguous copied source, as a single pass does.
+  if (previous?.kind === "SOURCE" && previous.sourceEnd === start) {
+    output.sourceMap[output.sourceMap.length - 1] = {
+      ...previous,
+      outputEnd: previous.outputEnd + text.length,
+      sourceEnd: end
+    };
+  } else {
+    output.sourceMap.push({
+      kind: "SOURCE",
+      outputEnd: output.outputLength + text.length,
+      outputStart: output.outputLength,
+      sourceEnd: end,
+      sourceStart: start
+    });
+  }
+  output.parts.push(text);
+  output.outputLength += text.length;
+}
+
+function emitReplacement(
+  output: WindowedOutput,
+  placeholder: string,
+  start: number,
+  end: number
+): void {
+  output.sourceMap.push({
+    kind: "REDACTION",
+    outputEnd: output.outputLength + placeholder.length,
+    outputStart: output.outputLength,
+    sourceEnd: end,
+    sourceStart: start
+  });
+  output.parts.push(placeholder);
+  output.outputLength += placeholder.length;
+}
+
+function emitWindow(
+  output: WindowedOutput,
+  value: string,
+  start: number,
+  end: number,
+  spans: readonly MemorySecretSpan[]
+): void {
+  let cursor = start;
+  for (const span of spans) {
+    emitSource(output, value, cursor, span.start);
+    emitReplacement(output, span.placeholder, span.start, span.end);
+    output.spans.push(span);
+    cursor = span.end;
+  }
+  emitSource(output, value, cursor, end);
+}
+
+function emitWithheld(output: WindowedOutput, start: number, end: number): void {
+  const previous = output.withheld.at(-1);
+  if (previous?.end === start) {
+    output.withheld[output.withheld.length - 1] = { end, start: previous.start };
+    const entry = output.sourceMap.at(-1)!;
+    output.sourceMap[output.sourceMap.length - 1] = { ...entry, sourceEnd: end };
+    return;
+  }
+  output.withheld.push({ end, start });
+  emitReplacement(output, MEMORY_UNPROCESSED_TEXT_PLACEHOLDER, start, end);
+}
+
+/**
+ * Yields the window cuts in (from, to] in order. A cut after a URL terminator
+ * keeps every single-line detector unchanged, except between card digit
+ * groups; so does a cut after a complete non-ASCII code point unless a
+ * credential URL may still continue ("://" since the last terminator). No cut
+ * falls inside a multi-line span. `from` is itself a cut, so no URL
+ * candidate is open there.
+ */
+function* windowCuts(
+  value: string,
+  multiline: readonly MemorySecretCandidateSpan[],
+  multilineIndex: number,
+  from: number,
+  to: number
+): Generator<number, void, undefined> {
+  let urlOpen = false;
+  let spanIndex = multilineIndex;
+  for (let index = from; index < to; index += 1) {
+    const character = value[index] ?? "";
+    let candidate: boolean;
+    if (URL_TERMINAL_DELIMITERS.includes(character)) {
+      urlOpen = false;
+      candidate = character !== " " ||
+        !(isAsciiDigit(value[index - 1]) && isAsciiDigit(value[index + 1]));
+    } else {
+      if (character === ":" && value.startsWith("://", index)) urlOpen = true;
+      const code = value.charCodeAt(index);
+      candidate = code > 0x7f && !(code >= 0xd800 && code <= 0xdbff) && !urlOpen;
+    }
+    if (!candidate) continue;
+    const cut = index + 1;
+    while (spanIndex < multiline.length && multiline[spanIndex]!.end <= cut) {
+      spanIndex += 1;
+    }
+    const containing = multiline[spanIndex];
+    if (containing && containing.start < cut) continue;
+    yield cut;
+  }
+}
+
+/**
+ * Redacts text of any length in bounded windows. Windows end only at cuts
+ * that no detector can cross, and multi-line spans come from the whole text,
+ * so a secret on a window boundary stays whole and every scanned window
+ * equals one full pass (`redactMemorySecrets`) over the same range, including
+ * overlap normalization. What cannot be scanned that way is withheld behind
+ * the unprocessed placeholder, never passed on unscanned: a stretch longer
+ * than a window without a cut (for example one opaque run, or an oversized
+ * multi-line span), and everything after `maxCodeUnits` of scanned text.
+ */
+export function redactMemorySecretsInWindows(
+  value: string,
+  options: MemorySecretWindowOptions
+): MemorySecretWindowedRedactionResult {
+  const { maxCodeUnits, windowCodeUnits } = options;
+  if (!Number.isSafeInteger(windowCodeUnits) || windowCodeUnits < 1 ||
+    !(maxCodeUnits === Number.POSITIVE_INFINITY || Number.isSafeInteger(maxCodeUnits)) ||
+    maxCodeUnits < windowCodeUnits) {
+    throw new Error("memory_secret_window_options_invalid");
+  }
+  if (typeof value !== "string" || value.length <= windowCodeUnits) {
+    const single = redactMemorySecrets(value);
+    return {
+      containsSecret: single.containsSecret,
+      redactedText: single.redactedText,
+      sourceMap: single.sourceMap,
+      spans: single.spans,
+      withheld: Object.freeze([])
+    };
+  }
+  const multiline = privateKeySpans(value);
+  const output: WindowedOutput = {
+    outputLength: 0,
+    parts: [],
+    sourceMap: [],
+    spans: [],
+    withheld: []
+  };
+  let multilineIndex = 0;
+  let scanned = 0;
+  let start = 0;
+  while (start < value.length) {
+    while (multilineIndex < multiline.length &&
+      multiline[multilineIndex]!.end <= start) multilineIndex += 1;
+    if (scanned >= maxCodeUnits) {
+      emitWithheld(output, start, value.length);
+      break;
+    }
+    const limit = Math.min(value.length, start + windowCodeUnits);
+    let end = limit;
+    if (limit < value.length) {
+      end = start;
+      for (const cut of windowCuts(value, multiline, multilineIndex, start, limit)) {
+        end = cut;
+      }
+    }
+    if (end === start) {
+      let resume = value.length;
+      for (const cut of windowCuts(value, multiline, multilineIndex, start, value.length)) {
+        if (cut <= limit) continue;
+        resume = cut;
+        break;
+      }
+      emitWithheld(output, start, resume);
+      start = resume;
+      continue;
+    }
+    const windowStart = start;
+    const windowCandidates: MemorySecretCandidateSpan[] = singleLineCandidateSpans(
+      value.slice(windowStart, end)
+    ).map((span) => ({
+      end: span.end + windowStart,
+      finding: span.finding,
+      start: span.start + windowStart
+    }));
+    for (let index = multilineIndex; index < multiline.length; index += 1) {
+      const span = multiline[index]!;
+      if (span.start >= end) break;
+      windowCandidates.push(span);
+    }
+    emitWindow(output, value, windowStart, end,
+      normalizedRedactionSpans(policySpans(windowCandidates, windowStart, end)));
+    scanned += end - windowStart;
+    start = end;
+  }
+  return {
+    containsSecret: output.spans.length > 0,
+    redactedText: output.parts.join(""),
+    sourceMap: Object.freeze(output.sourceMap),
+    spans: Object.freeze(output.spans),
+    withheld: Object.freeze(output.withheld)
+  };
+}
+
+/**
+ * Two texts that were each redacted on their own, joined by hard breaks,
+ * cannot form a new single-line match (see URL_TERMINAL_DELIMITERS). Only a
+ * multi-line span of the joined text can reveal a secret split between them;
+ * any such span also marks one that neither redaction removed. This is a
+ * boundary scan, not a length gate.
+ */
+export function memorySecretJoinIsSafe(
+  left: string,
+  separator: string,
+  right: string
+): boolean {
+  if (!everyCharacter(separator, HARD_BREAK_DELIMITERS)) {
+    throw new Error("memory_secret_join_separator_invalid");
+  }
+  return privateKeySpans(`${left}${separator}${right}`).length === 0;
+}
+
 /** Whether exact copied source retains letters or numbers after redaction.
  * This is a structural check, not a judgment of meaning or usefulness. */
 export function memoryRedactionHasSourceText(
   value: string,
-  result: MemorySecretRedactionResult = redactMemorySecrets(value)
+  result: Readonly<{ sourceMap: readonly MemorySecretSourceMapEntry[] }> =
+    redactMemorySecrets(value)
 ): boolean {
   const retained = result.sourceMap
     .filter((entry) => entry.kind === "SOURCE")

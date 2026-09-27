@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { textFromContentBlocks } from "../../../../domain/modelRunEvents";
-import { projectMemoryHistorySafeText } from "../../history/safety";
+import { projectMemoryHistorySourceText } from "../../history/safety";
 import { memorySha256 } from "../../persistence/lexical";
 import type { MemoryTransaction } from "../../persistence/transaction";
 import type { MemoryFactCandidateDependency } from "../extraction/contract";
@@ -44,7 +44,7 @@ async function validateMessageDependency(
     dependency.source.messageUpdatedAt) {
     throw new Error("memory_dependency_source_stale");
   }
-  const projected = projectMemoryHistorySafeText(textFromContentBlocks(
+  const projected = projectMemoryHistorySourceText(textFromContentBlocks(
     message.content as { blocks?: unknown[] }
   ));
   if (!projected.eligible || !projected.providerSafeText ||

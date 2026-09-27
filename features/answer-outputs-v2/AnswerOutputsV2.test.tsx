@@ -557,7 +557,7 @@ describe("answer outputs v2", () => {
     }} />);
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "This message was too long for Memory to process in full. No Memory changes were made from it."
+      "This message was too long for Memory to process in full. Memory commands in it were not applied."
     );
     expect(screen.getByTestId("memory-input-too-long-status")).not.toHaveTextContent(
       /INPUT_TOO_LONG|FAILED_SAFE|error|code/i

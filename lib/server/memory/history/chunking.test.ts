@@ -357,6 +357,31 @@ describe("Memory history recall chunking", () => {
       .toEqual(whole.map((chunk) => chunk.contentHash));
   });
 
+  it("chunks a turn above 200k and reports a message with withheld text", () => {
+    const blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo".repeat(3_500);
+    const snapshot = multiTurnSnapshot(2, (role, ordinal) =>
+      role === "user" && ordinal === 0
+        ? "Long travel diary entry, day by day. ".repeat(6_800)
+        : role === "user"
+          ? `Here is my photo.\n${blob}\nAlso, I moved to Rome.`
+          : `Reply ${ordinal}.`);
+
+    const page = chunkMemoryRecallProjectionPage(snapshot);
+
+    expect(page).toMatchObject({
+      complete: true,
+      omittedMessageIds: [],
+      withheldMessageIds: ["user-1"]
+    });
+    expect(page.chunks.length).toBeGreaterThan(60);
+    expect(new Set(page.chunks.flatMap((chunk) =>
+      chunk.messageJoins.map(({ messageId }) => messageId))))
+      .toEqual(new Set(["user-0", "assistant-0", "user-1", "assistant-1"]));
+    expect(JSON.stringify(page.chunks)).not.toContain(blob.slice(0, 40));
+    expect(page.chunks.some((chunk) =>
+      chunk.safeProjectedText.includes("Also, I moved to Rome."))).toBe(true);
+  });
+
   it("rejects unbounded or overlap-only chunking configurations", () => {
     const snapshot = multiTurnSnapshot(1);
 
