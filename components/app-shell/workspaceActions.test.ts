@@ -11,6 +11,7 @@ import {
 } from "@/tests/support/appShellStores";
 import {
   composerSessionKey,
+  projectComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore,
@@ -2802,6 +2803,191 @@ describe("workspace actions", () => {
     expect(useThreadStore.getState().threadsByChatId["chat-a"]).toBe(liveThread);
     expect(liveThread.messages[0]?.content).toBe("live token");
     expect(useThreadStore.getState().threadsByChatId["chat-b"]).toBeUndefined();
+  });
+});
+
+describe("chat scope across personal and Project workspaces", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+  });
+
+  const attachmentFor = (id: string): ComposerAttachment => ({ fileName: `${id}.pdf`, id, kind: "pdf" });
+
+  /**
+   * A personal workspace after a Project visit: a blank Project reservation
+   * and a saved Project chat share the store with personal chats, newest first.
+   */
+  function useMixedScopeForTest(activeChatId: string | null) {
+    const state = useWorkspaceActionsForTest({ activeChatId, attachments: [], draft: "" });
+    const reservation = chat({
+      id: "project-reservation",
+      pendingProjectDraft: { folderId: null, projectId: "project-1" },
+      projectId: "project-1",
+      title: "Project reservation",
+      updatedAt: "2026-06-12T00:00:00.000Z"
+    });
+    const saved = chat({
+      defaultModelId: "project-model",
+      defaultProvider: "project-provider",
+      id: "project-saved",
+      projectId: "project-1",
+      title: "Saved Project chat",
+      updatedAt: "2026-06-11T00:00:00.000Z"
+    });
+    useWorkspaceStore.setState({ chats: [reservation, saved, state.chatA, state.chatB] });
+    const projectSessions = [
+      [composerSessionKey(saved.id), "Saved Project draft"],
+      [composerSessionKey(reservation.id), "Reserved Project draft"],
+      [projectComposerSessionKey("project-1"), "Project blank draft"],
+      [projectComposerSessionKey("project-1", "project-folder"), "Project folder draft"]
+    ] as const;
+    for (const [key, draft] of projectSessions) {
+      useComposerSessionStore.getState().activateSession(key);
+      useComposerSessionStore.getState().setDraft(draft);
+      useComposerSessionStore.getState().setAttachments([attachmentFor(`${draft.split(" ")[0]}-file`)]);
+    }
+    useComposerSessionStore.getState().activateSession(composerSessionKey(activeChatId));
+    useThreadStore.getState().replaceThread(reservation.id, {
+      activeLeafId: null,
+      messages: [],
+      sourceUpdatedAt: reservation.updatedAt,
+      usageStats: null
+    });
+    const expectProjectDraftsKept = () => {
+      for (const [key, draft] of projectSessions) {
+        expect(state.session(key)).toMatchObject({
+          attachments: [attachmentFor(`${draft.split(" ")[0]}-file`)],
+          draft
+        });
+      }
+      expect(state.chats().map((candidate) => candidate.id)).toEqual(
+        expect.arrayContaining([reservation.id, saved.id])
+      );
+    };
+    return { ...state, expectProjectDraftsKept, reservation, saved };
+  }
+
+  function stubArchiveRequests() {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const chatId = decodeURIComponent(path.split("/")[3] ?? "");
+      const summary = chat({ id: chatId, title: chatId });
+      if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(summary));
+      if (path.endsWith("/source")) return Response.json(apiChatSource(summary));
+      if (path.endsWith("/archive")) return Response.json(apiArchivedChat(summary));
+      return Response.json({ error: "unexpected" }, { status: 500 });
+    }));
+  }
+
+  it("archives the active personal chat into another personal chat, then the personal blank chat, without history entries", async () => {
+    window.history.replaceState(null, "", "/c/chat-a");
+    const historyLength = window.history.length;
+    const state = useMixedScopeForTest("chat-a");
+    stubArchiveRequests();
+
+    await state.actions.deleteChat(state.chatA);
+    expect(useWorkspaceStore.getState().activeChatId).toBe("chat-b");
+    expect(window.location.pathname).toBe("/c/chat-b");
+    expect(state.setSelectedModelId).toHaveBeenLastCalledWith("gpt-5.5", "system");
+
+    await state.actions.deleteChat(state.chatB);
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(composerSessionKey(null));
+    expect(window.location.pathname).toBe("/");
+    expect(window.history.length).toBe(historyLength);
+    expect(state.setSelectedModelId).not.toHaveBeenCalledWith("project-model", expect.anything());
+    state.expectProjectDraftsKept();
+  });
+
+  it("hands a removed Project chat to its scope's fallback, and without one opens the personal blank chat", async () => {
+    window.history.replaceState(null, "", "/p/project-1/c/project-saved");
+    const state = useMixedScopeForTest("project-saved");
+    stubArchiveRequests();
+    const activateFallback = vi.fn();
+
+    await state.actions.deleteChat(state.saved, activateFallback);
+    expect(activateFallback).toHaveBeenCalledExactlyOnceWith("project-1", state.reservation);
+
+    const next = useMixedScopeForTest("project-saved");
+    stubArchiveRequests();
+    await next.actions.deleteChat(next.saved);
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+    expect(window.location.pathname).toBe("/");
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(composerSessionKey(null));
+  });
+
+  it("keeps saved and reserved Project chats with their drafts and controls through a personal refresh", async () => {
+    window.history.replaceState(null, "", "/p/project-1/c/project-saved");
+    const historyLength = window.history.length;
+    const state = useMixedScopeForTest("project-saved");
+    useComposerSessionStore.getState().activateSession(composerSessionKey("chat-b"));
+    useComposerSessionStore.getState().setDraft("Removed personal draft");
+    useComposerSessionStore.getState().activateSession(composerSessionKey("project-saved"));
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] });
+    }));
+
+    // A retry keeps the open saved Project chat and the controls its Project applied.
+    await state.actions.refreshWorkspace("project-saved");
+    expect(requests).toEqual(["/api/chats"]);
+    expect(useWorkspaceStore.getState().activeChatId).toBe("project-saved");
+    expect(window.location.pathname).toBe("/p/project-1/c/project-saved");
+    for (const setter of [state.applyModelControlDefaults, state.setSelectedModelId, state.setSelectedProvider,
+      state.setSelectedSearchPlan, state.setSelectedKnowledgePlan]) expect(setter).not.toHaveBeenCalled();
+    expect(state.actions.reapplyActiveChatDefaults(useWorkspaceStore.getState().catalog!)).toBe(false);
+    expect(state.setSelectedModelId).not.toHaveBeenCalled();
+    state.expectProjectDraftsKept();
+    expect(useThreadStore.getState().threadsByChatId["project-reservation"]).toBeDefined();
+    expect(useComposerSessionStore.getState().sessionsByKey[composerSessionKey("chat-b")]).toBeUndefined();
+
+    // Restoring a personal chat opens it by replacing the address and leaves every Project draft.
+    await state.actions.refreshWorkspace("chat-a", { preserveControls: true });
+    expect(useWorkspaceStore.getState().activeChatId).toBe("chat-a");
+    expect(window.location.pathname).toBe("/c/chat-a");
+    expect(window.history.length).toBe(historyLength);
+    state.expectProjectDraftsKept();
+  });
+
+  it("leaves an open Project's blank chat to its owner when a personal refresh has no target", async () => {
+    window.history.replaceState(null, "", "/p/project-1");
+    const state = useMixedScopeForTest(null);
+    useComposerSessionStore.getState().activateSession(projectComposerSessionKey("project-1"));
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] })));
+
+    await state.actions.refreshWorkspace(null);
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(projectComposerSessionKey("project-1"));
+    expect(window.location.pathname).toBe("/p/project-1");
+    expect(state.setSelectedModelId).not.toHaveBeenCalled();
+    state.expectProjectDraftsKept();
+  });
+
+  it("keeps a session whose send is pending through a refresh that drops its chat, then returns the refused text", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: "chat-a", attachments: [attachmentFor("sent")], draft: "Pending question" });
+    const key = composerSessionKey("chat-a");
+    const send = useComposerSessionStore.getState().beginSend(key)!;
+    useComposerSessionStore.getState().setDraft("Typed while waiting");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats"
+      ? Response.json({ chats: [apiChatSummary(state.chatB)], contentMatches: [], folders: [] })
+      : Response.json({ error: "chat_not_found" }, { status: 404 })));
+
+    await state.actions.refreshWorkspace("chat-b");
+    expect(state.session(key).pendingSend?.generation).toBe(send.generation);
+
+    expect(useComposerSessionStore.getState().finishSend(send, "failed", "Send refused")).toBe(true);
+    expect(state.session(key)).toMatchObject({
+      attachments: [attachmentFor("sent")],
+      draft: "Pending question\n\nTyped while waiting",
+      operationError: "Send refused",
+      operationErrorRetryable: false,
+      pendingSend: null
+    });
+
+    await state.actions.refreshWorkspace("chat-b");
+    expect(useComposerSessionStore.getState().sessionsByKey[key]).toBeUndefined();
   });
 });
 

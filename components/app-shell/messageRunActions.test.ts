@@ -1644,6 +1644,52 @@ describe("message run actions", () => {
     expect(actions.setNotice).not.toHaveBeenCalled();
   });
 
+  it("returns a refused send ahead of text typed while it was pending", async () => {
+    const fetchMock = vi.fn(async () => {
+      // The user keeps typing while admission is pending.
+      useComposerSessionStore.getState().setDraft("Typed while waiting");
+      return Response.json({ error: "provider_unavailable" }, { status: 502 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: chat(),
+      attachments: [],
+      draft: "Question that the server rejects"
+    });
+
+    await actions.submitComposer();
+
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([]);
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      draft: "Question that the server rejects\n\nTyped while waiting",
+      operationError: expect.stringMatching(/provider is unavailable/iu),
+      // Retrying would send the combined text; the user reviews it first.
+      operationErrorRetryable: false,
+      pendingSend: null
+    });
+  });
+
+  it("says where a failed send's text went when newer text was typed during it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      consumeRunStream: async () => {
+        useComposerSessionStore.getState().setDraft("Typed while waiting");
+        throw new Error("stream disconnected");
+      },
+      draft: "Question that failed",
+      refreshActiveChat: async () => null
+    });
+
+    await actions.submitComposer();
+
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      draft: "Question that failed\n\nTyped while waiting",
+      operationError: "Send failed. Your message is back in the composer, ahead of your newer text.",
+      pendingSend: null
+    });
+  });
+
   it("retains typed context rejection with the restored composer draft", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "context_too_large", message: "Request did not fit." }, { status: 400 })));
     const actions = useMessageRunActionsForTest({ activeChat: chat(), attachments: [], draft: "Large request" });

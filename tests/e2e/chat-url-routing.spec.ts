@@ -580,3 +580,174 @@ test.describe("MCP authorization", () => {
     }
   });
 });
+
+async function createFakeProject(page: Page, name: string): Promise<string> {
+  const response = await page.request.post("/api/projects", {
+    data: { name, preferredModelId: providerTemplateIds.fakeModel }
+  });
+  expect(response.status()).toBe(201);
+  return (await response.json()).project.id as string;
+}
+
+function sharedProjects(page: Page) {
+  return page.locator('section[aria-label="Shared projects"]');
+}
+
+/** Opens a Project, and optionally one of its chats, from the Projects navigation without leaving the document. */
+async function openProjectInPage(page: Page, projectName: string, chatTitle?: string): Promise<void> {
+  const trigger = page.getByRole("button", { exact: true, name: "Projects" });
+  await expect(async () => {
+    if (!(await sharedProjects(page).isVisible())) await trigger.click();
+    await expect(sharedProjects(page)).toBeVisible();
+  }).toPass({ timeout: 30_000 });
+  await sharedProjects(page).locator(".v2-project-row").filter({ hasText: projectName }).click();
+  await expect(page.getByRole("complementary", { name: "Shared project context" }))
+    .toContainText(projectName, { timeout: 20_000 });
+  if (!chatTitle) return;
+  await sharedProjects(page).locator(".v2-project-chat-row").filter({ hasText: chatTitle }).click();
+  await expect(page.getByTestId("header-title")).toHaveText(chatTitle, { timeout: 20_000 });
+}
+
+test("archive, restore and an unknown chat address keep Project drafts and the address on the shown scope", async ({ page, context, baseURL }, testInfo) => {
+  test.setTimeout(240_000);
+  await useAppearance(page, context, baseURL!, "light");
+  await signInWithLocalToken(page);
+  const suffix = randomUUID().slice(0, 8);
+  // Personal chats are older than the Project chat, so a scope-blind fallback
+  // would pick the Project chat first.
+  const alphaTitle = `Scope alpha ${suffix}`;
+  const betaTitle = `Scope beta ${suffix}`;
+  const alpha = await createChat(page, alphaTitle);
+  const beta = await createChat(page, betaTitle);
+  const projectOneName = `Scope Project one ${suffix}`;
+  const projectTwoName = `Scope Project two ${suffix}`;
+  const projectOne = await createFakeProject(page, projectOneName);
+  const projectTwo = await createFakeProject(page, projectTwoName);
+  const projectChatTitle = `Scope Project chat ${suffix}`;
+  const chatResponse = await page.request.post(`/api/projects/${projectOne}/chats`, { data: { title: projectChatTitle } });
+  expect(chatResponse.status()).toBe(201);
+  const projectChat = (await chatResponse.json()).chat.id as string;
+  let late: string | null = null;
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  const header = page.getByTestId("header-title");
+  const projectPanel = page.getByRole("complementary", { name: "Shared project context" });
+  const historyLength = () => page.evaluate(() => window.history.length);
+  try {
+    await page.goto(`/c/${alpha}`);
+    await expect(header).toHaveText(alphaTitle, { timeout: 30_000 });
+
+    // A blank draft in one Project and a saved-chat draft in another, all in one document.
+    await openProjectInPage(page, projectTwoName);
+    await expect(page).toHaveURL(exactPath(`/p/${projectTwo}`));
+    await composer.fill("Project two blank draft");
+    await openProjectInPage(page, projectOneName, projectChatTitle);
+    await expect(page).toHaveURL(exactPath(`/p/${projectOne}/c/${projectChat}`));
+    await composer.fill("Project one saved draft");
+
+    // Back to the personal chat through history, then archive it.
+    await page.goBack();
+    await page.goBack();
+    await expect(page).toHaveURL(exactPath(`/p/${projectTwo}`));
+    await expect(composer).toHaveValue("Project two blank draft");
+    await page.goBack();
+    await expect(page).toHaveURL(exactPath(`/c/${alpha}`));
+    await expect(header).toHaveText(alphaTitle);
+    await expect(projectPanel).toHaveCount(0);
+    const beforeArchive = await historyLength();
+    await page.getByTestId("header-more-trigger").click();
+    await page.getByTestId("header-more-menu").getByRole("menuitem", { name: "Archive" }).click();
+    await expect(page.getByTestId("shell-notice")).toContainText("Chat moved to archive");
+    // The fallback stays personal and replaces the address.
+    await expect(page).toHaveURL(exactPath(`/c/${beta}`));
+    await expect(header).toHaveText(betaTitle);
+    await expect(projectPanel).toHaveCount(0);
+    expect(await historyLength()).toBe(beforeArchive);
+    await page.screenshot({ path: testInfo.outputPath("scope-archive-fallback-light-1440.png") });
+
+    // Restoring from Settings while a Project is open leaves the Project for the restored chat.
+    await page.goForward();
+    await expect(page).toHaveURL(exactPath(`/p/${projectTwo}`));
+    await expect(projectPanel).toContainText(projectTwoName, { timeout: 20_000 });
+    await expect(composer).toHaveValue("Project two blank draft");
+    const beforeRestore = await historyLength();
+    await page.getByTestId("workspace-rail").getByRole("button", { name: "Settings" }).click();
+    const settings = page.getByRole("dialog", { name: "Settings" });
+    await settings.getByRole("button", { name: "Data" }).click();
+    await settings.getByRole("button", { name: "Manage" }).click();
+    const archived = settings.getByTestId("settings-archived-panel");
+    await archived.getByRole("button", { name: `Restore ${alphaTitle}` }).click();
+    await expect(page).toHaveURL(exactPath(`/c/${alpha}`), { timeout: 20_000 });
+    await settings.getByRole("button", { name: "Close settings" }).click();
+    await expect(header).toHaveText(alphaTitle);
+    await expect(projectPanel).toHaveCount(0);
+    expect(await historyLength()).toBe(beforeRestore);
+
+    // The personal refresh kept the saved Project chat's draft.
+    await page.goForward();
+    await expect(page).toHaveURL(exactPath(`/p/${projectOne}`));
+    await expect(projectPanel).toContainText(projectOneName, { timeout: 20_000 });
+    await page.goForward();
+    await expect(page).toHaveURL(exactPath(`/p/${projectOne}/c/${projectChat}`));
+    await expect(header).toHaveText(projectChatTitle, { timeout: 20_000 });
+    await expect(composer).toHaveValue("Project one saved draft");
+
+    // Forward to a personal chat the page has never loaded: its address resolves
+    // through a personal refresh that must not drop the Project chat's draft.
+    late = await createChat(page, `Scope late ${suffix}`);
+    await page.evaluate((chatId) => window.history.pushState(null, "", `/c/${chatId}`), late);
+    await page.goBack();
+    await page.goForward();
+    await expect(page).toHaveURL(exactPath(`/c/${late}`), { timeout: 20_000 });
+    await expect(header).toHaveText(`Scope late ${suffix}`, { timeout: 20_000 });
+    await expect(projectPanel).toHaveCount(0);
+    await page.goBack();
+    await expect(page).toHaveURL(exactPath(`/p/${projectOne}/c/${projectChat}`));
+    await expect(header).toHaveText(projectChatTitle, { timeout: 20_000 });
+    await expect(composer).toHaveValue("Project one saved draft");
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath("scope-project-draft-kept-light-1440.png") });
+  } finally {
+    await deleteChats(page, [alpha, beta, late]);
+    for (const projectId of [projectOne, projectTwo]) {
+      await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
+    }
+  }
+});
+
+test("text typed while a send is pending survives the send's refusal", async ({ page, context, baseURL }, testInfo) => {
+  test.setTimeout(120_000);
+  await useAppearance(page, context, baseURL!, "dark", phone);
+  await signInWithLocalToken(page);
+  const title = `Routing pending send ${randomUUID().slice(0, 8)}`;
+  const chatId = await createChat(page, title);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(`**/api/chats/${chatId}/messages`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    await held;
+    await route.fulfill({ status: 503, json: { error: "synthetic_admission_unavailable" } });
+  });
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  try {
+    await page.goto(`/c/${chatId}`);
+    await expect(page.getByTestId("header-title")).toHaveText(title, { timeout: 30_000 });
+    await prepareFakeSend(page);
+    await composer.fill("Refused question");
+    const refused = admission(page);
+    await composer.press("Enter");
+    await expect(composer).toHaveValue("");
+    await composer.fill("Typed while waiting");
+    release();
+    expect((await refused).status()).toBe(503);
+    await expect(page.locator(".v2-live-composer-error")).toBeVisible({ timeout: 30_000 });
+    await expect(composer).toHaveValue("Refused question\n\nTyped while waiting");
+    await expect(page).toHaveURL(exactPath(`/c/${chatId}`));
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath("routing-pending-send-refused-dark-390.png") });
+  } finally {
+    await deleteChats(page, [chatId]);
+  }
+});
