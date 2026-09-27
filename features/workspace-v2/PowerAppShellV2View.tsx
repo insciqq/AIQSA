@@ -1635,7 +1635,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   }}
               onRenameCancel={workspace.pane.actions.cancelChatEdit}
               onRenameChange={workspace.pane.actions.changeEditingChatTitle}
-              onRenameSave={withActiveChat((full) => void workspace.pane.actions.saveChatTitle(full))}
+              onRenameSave={() => {
+                const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+                if (full) return workspace.pane.actions.saveChatTitle(full);
+                void workspace.pane.actions.retry();
+                return undefined;
+              }}
               onRenameStart={withActiveChat((full) => workspace.pane.actions.startChatEdit(full, "header"))}
               renameDisabled={!canRenameActiveProjectChat || Boolean(projectMutationReason)}
               onShare={() => void session.shareActiveBranch()}

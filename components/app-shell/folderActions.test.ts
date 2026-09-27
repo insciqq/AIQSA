@@ -264,6 +264,25 @@ describe("folder actions", () => {
     });
   });
 
+  it("reports a server name rejection as a field error and only a stored folder as success", async () => {
+    const state = createFolderActionsHarness();
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: "folder_name_too_long" }, { status: 400 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ folder: folder({ id: "folder-new", name: "Notes" }) }, { status: 201 })));
+
+    await expect(state.actions.createFolder(null, "Notes")).resolves.toEqual({
+      fieldError: "Use at most 80 characters for the folder name (folder_name_too_long)",
+      ok: false
+    });
+    expect(state.notices()).toEqual([]);
+    await expect(state.actions.createFolder(null, "Notes")).resolves.toEqual({ fieldError: null, ok: false });
+    expect(state.notices().at(-1)).toMatchObject({ kind: "error" });
+    expect(state.folders().map((candidate) => candidate.id)).toEqual(["folder-research"]);
+    await expect(state.actions.createFolder(null, "Notes")).resolves.toEqual({ ok: true });
+    expect(state.folders().map((candidate) => candidate.id)).toContain("folder-new");
+  });
+
   it("names a failed folder default save without calling it Project settings", async () => {
     const state = createFolderActionsHarness();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 503 })));

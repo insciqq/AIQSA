@@ -40,6 +40,15 @@ export type FolderSummary = {
   sortOrder: number;
 };
 
+/**
+ * Outcome of saving a chat title or personal folder name. A failed save keeps
+ * the typed value; `fieldError` is the server's name-contract rejection,
+ * shown at that field instead of a notice.
+ */
+export type NameSaveResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ fieldError: string | null; ok: false }>;
+
 export type ChatGroup = {
   chats: WorkspaceChatSummary[];
   depth: number;

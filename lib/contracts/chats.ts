@@ -49,6 +49,25 @@ export const CHAT_NAVIGATION_CURSOR_MAX_LENGTH = 2_048;
 export const CHAT_NAVIGATION_DEFAULT_PAGE_SIZE = 30;
 export const CHAT_NAVIGATION_MAX_PAGE_SIZE = 50;
 export const CHAT_NAVIGATION_QUERY_MAX_LENGTH = 120;
+/**
+ * User-entered chat titles (personal and Project chats) and personal folder
+ * names, counted in Unicode code points. Stored columns are unbounded: the
+ * server rejects longer input (`chat_title_too_long`/`folder_name_too_long`)
+ * instead of truncating, so a saved name is exactly what was submitted.
+ * Project folders keep their own contract. Browser `maxLength` counts UTF-16
+ * code units, so any input the field accepts also fits here.
+ */
+export const CHAT_TITLE_MAX_LENGTH = 120;
+export const PERSONAL_FOLDER_NAME_MAX_LENGTH = 80;
+export function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+/** Server-composed titles (e.g. continuations) cut on a code-point boundary. */
+export function boundedChatTitle(value: string): string {
+  return codePointLength(value) <= CHAT_TITLE_MAX_LENGTH
+    ? value
+    : Array.from(value).slice(0, CHAT_TITLE_MAX_LENGTH).join("").trimEnd();
+}
 export function boundedChatBranchPreview(value: string): string {
   if (value.length <= CHAT_BRANCH_PREVIEW_MAX_LENGTH) return value;
   let end = CHAT_BRANCH_PREVIEW_MAX_LENGTH;
@@ -453,6 +472,7 @@ export type ChatRouteServerErrorCode =
   | "chat_not_created"
   | "chat_not_found"
   | "chat_revision_stale"
+  | "chat_title_too_long"
   | "knowledge_plan_invalid"
   | "search_plan_invalid"
   | "workspace_state_invalid"

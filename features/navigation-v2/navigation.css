@@ -434,6 +434,24 @@
   margin: 0 0.5rem;
 }
 
+/* Name-contract rejection under an inline rename/create field (sidebar and
+   header title forms share it); the typed value stays in the input. */
+.v2-name-field-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--v2-color-danger);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.v2-chat-rename input[aria-invalid="true"],
+.v2-folder-rename input[aria-invalid="true"],
+.v2-new-folder-inline input[aria-invalid="true"],
+.v2-live-title-rename input[aria-invalid="true"] {
+  border-color: var(--v2-color-danger);
+}
+
 .v2-folder-toggle {
   display: flex;
   min-width: 0;

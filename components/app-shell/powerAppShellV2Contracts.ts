@@ -23,6 +23,7 @@ import type {
   WorkspaceChatSummary,
   FolderSummary,
   ModelParameterControls,
+  NameSaveResult,
   Notice,
   RunEventView,
   ThreadArtifactSummary,
@@ -76,7 +77,7 @@ export type ShellWorkspacePaneActions = {
     folderId?: string | null,
     memoryMode?: "EXCLUDED" | "NORMAL" | "TEMPORARY"
   ): Promise<WorkspaceChatSummary | null> | void;
-  createFolder(parentId?: string | null, nameOverride?: string): Promise<void> | void;
+  createFolder(parentId?: string | null, nameOverride?: string): Promise<NameSaveResult>;
   deleteChat(chat: WorkspaceChatSummary): Promise<void> | void;
   /**
    * Opens the existing permanent-deletion confirm surface for this chat.
@@ -91,8 +92,8 @@ export type ShellWorkspacePaneActions = {
   openChatMessage(chatId: string, messageId: string): Promise<boolean>;
   openProjectSettings(folder: FolderSummary): void;
   retry(): Promise<unknown> | void;
-  saveChatTitle(chat: WorkspaceChatSummary): Promise<void> | void;
-  saveFolder(folder: FolderSummary): Promise<void> | void;
+  saveChatTitle(chat: WorkspaceChatSummary): Promise<NameSaveResult>;
+  saveFolder(folder: FolderSummary): Promise<NameSaveResult>;
   shareChat(chat: WorkspaceChatSummary): Promise<void> | void;
   startChatEdit(chat: WorkspaceChatSummary, origin?: "header" | "row"): void;
   startFolderEdit(folder: FolderSummary): void;

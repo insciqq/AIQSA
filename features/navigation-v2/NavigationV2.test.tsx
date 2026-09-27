@@ -384,6 +384,49 @@ describe("Navigation v2", () => {
     expect(onSaveFolderRename).not.toHaveBeenCalled();
   });
 
+  it("keeps a rejected rename and a failed folder creation in their fields", async () => {
+    const fieldError = "Use at most 120 characters for the chat title (chat_title_too_long)";
+    const onChangeChatRename = vi.fn();
+    const onSaveChatRename = vi.fn(async () => ({ fieldError, ok: false as const }));
+    const onCreateFolder = vi.fn()
+      .mockResolvedValueOnce({ fieldError: null, ok: false })
+      .mockResolvedValueOnce({ ok: true });
+    sidebar({
+      editingChatId: "yesterday",
+      editingChatTitle: "Rejected title",
+      onChangeChatRename,
+      onCreateFolder,
+      onSaveChatRename
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+    });
+    const titleField = screen.getByRole("textbox", { name: "New title: Selected brief" });
+    expect(screen.getByRole("alert")).toHaveTextContent(fieldError);
+    expect(titleField).toHaveValue("Rejected title");
+    expect(titleField).toHaveAttribute("aria-invalid", "true");
+    expect(titleField).toHaveAccessibleDescription(fieldError);
+    fireEvent.change(titleField, { target: { value: "Shorter" } });
+    expect(onChangeChatRename).toHaveBeenCalledWith("Shorter");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "New folder" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New folder name" }), {
+      target: { value: "Research notes" }
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
+    });
+    expect(screen.getByRole("textbox", { name: "New folder name" })).toHaveValue("Research notes");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
+    });
+    expect(onCreateFolder).toHaveBeenCalledTimes(2);
+    expect(onCreateFolder).toHaveBeenLastCalledWith(null, "Research notes");
+    expect(screen.queryByRole("textbox", { name: "New folder name" })).toBeNull();
+  });
+
   it("does not create root or nested folders when their forms are cancelled", () => {
     const onCreateFolder = vi.fn();
     sidebar({
