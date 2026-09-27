@@ -1,20 +1,10 @@
-import { visionAnalysisForStorage } from "../vision/defaultVision";
-import { imageGenerationForStorage } from "../images/defaultImages";
-import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
-import { defaultSkillTools } from "../skills/defaultSkillTools";
-import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
-import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
-import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
-import { knowledgeProviderDispatchLifecycle } from "../knowledge/defaultEvidenceDispatch";
-import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { prisma } from "../prisma";
-import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
-import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
 import { createPrismaChatTitleGenerator } from "../chats/titleGeneration";
 import { getDefaultChatPdf } from "../uploads/defaultChatPdf";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { createPrismaRunRepository } from "./prismaRepository";
+import { defaultRunServices } from "./defaultRunServices";
 import { serializeRunOutcome } from "./runOutcome";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
@@ -29,13 +19,8 @@ function createDefaultWorkspaceFollowup() {
   const coordinator = createWorkspaceFollowupCoordinator({
     registry: activeRunControllerRegistry, repository: followups,
     continueRun: createWorkspaceFollowupContinuation({
-      images: imageGenerationForStorage(storage), vision: visionAnalysisForStorage(storage), chatTitleGenerator: createPrismaChatTitleGenerator(),
-      artifacts: artifactServiceForStorage(storage),
-      skillTools: defaultSkillTools,
-      knowledgeAdmission: knowledgeRunAdmissionService, knowledgeExecutor: knowledgeToolExecutor,
-      knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle, memoryEgress: defaultMemoryToolEgressReceiptService,
-      mcp: defaultMcpRunPlan, providerAdmission: providerAdmissionService, providerRuntime: providerRuntimeResolver,
-      repository, storage, workspace, followups, kickPdf: () => getDefaultChatPdf().kick()
+      ...defaultRunServices(storage), chatTitleGenerator: createPrismaChatTitleGenerator(),
+      repository, workspace, followups, kickPdf: () => getDefaultChatPdf().kick()
     }),
     fail: createWorkspaceFollowupFailure({ repository, workspace })
   });

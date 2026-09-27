@@ -1,18 +1,8 @@
-import { visionAnalysisForStorage } from "@/lib/server/vision/defaultVision";
-import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
-import { artifactServiceForStorage } from "@/lib/server/artifacts/defaultArtifacts";
-import { defaultSkillTools } from "@/lib/server/skills/defaultSkillTools";
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
-import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
-import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
-import { knowledgeProviderDispatchLifecycle } from "@/lib/server/knowledge/defaultEvidenceDispatch";
-import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
-import { defaultMemoryToolEgressReceiptService } from "@/lib/server/memory/egress/receipts";
-import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
-import { providerAdmissionService } from "@/lib/server/providerRuntime/defaultAdmission";
 import { createGetModelRunHandler } from "@/lib/server/runs/handlers";
+import { defaultRunServices } from "@/lib/server/runs/defaultRunServices";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 
@@ -22,20 +12,9 @@ const repository = createPrismaRunRepository();
 const storage = createS3StorageAdapter();
 
 export const GET: AsyncRouteHandler<ReturnType<typeof createGetModelRunHandler>> = createGetModelRunHandler({
+  ...defaultRunServices(storage),
   getConfig: () => getAuthConfig(),
-  knowledgeAdmission: knowledgeRunAdmissionService,
-  knowledgeExecutor: knowledgeToolExecutor,
-  knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
-  images: imageGenerationForStorage(storage),
-  vision: visionAnalysisForStorage(storage),
-  artifacts: artifactServiceForStorage(storage),
-  skillTools: defaultSkillTools,
-  memoryEgress: defaultMemoryToolEgressReceiptService,
-  mcp: defaultMcpRunPlan,
-  providerAdmission: providerAdmissionService,
-  providerRuntime: providerRuntimeResolver,
   providers: {},
   repository,
-  resolveAuth: resolveRequestAuth,
-  storage
+  resolveAuth: resolveRequestAuth
 });
