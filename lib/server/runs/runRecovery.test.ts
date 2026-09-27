@@ -1229,7 +1229,7 @@ function focusedKnowledgeZeroCandidateResult(): ToolExecutionResult {
   };
 }
 
-function focusedKnowledgeSearchUnavailableResult(): ToolExecutionResult {
+function focusedKnowledgeSearchUnavailableResult(failureCode = "knowledge_search_backend_unavailable"): ToolExecutionResult {
   const complete = focusedKnowledgeRetrievalResult();
   const preview = complete.rawPreview as Readonly<{
     knowledgeRetrieval: KnowledgeRetrievalEvidence;
@@ -1238,7 +1238,7 @@ function focusedKnowledgeSearchUnavailableResult(): ToolExecutionResult {
     ...preview.knowledgeRetrieval,
     bases: [],
     candidateCount: 0,
-    failureCode: "knowledge_search_backend_unavailable",
+    failureCode,
     operation: "automatic_search",
     outcome: "search_unavailable",
     providerText: "pending",
@@ -3956,7 +3956,11 @@ describe("run recovery", () => {
       .toBe(true);
   });
 
-  it("replays a settled Knowledge search outage without repeating retrieval or usage", async () => {
+  it.each([
+    ["knowledge_search_backend_unavailable", KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE],
+    ["knowledge_search_projection_pending", "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes."],
+    ["knowledge_search_projection_failed", "Knowledge search indexing failed for a selected source. Contact an administrator to retry its search indexing."]
+  ] as const)("replays a settled Knowledge search outage without repeating retrieval or usage: %s", async (failureCode, terminalText) => {
     const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
     const execute = vi.fn(async () => focusedKnowledgeRetrievalResult());
     const preflight = vi.fn(async () => ({ kind: "admitted" as const }));
@@ -3991,7 +3995,7 @@ describe("run recovery", () => {
         }
       }
     });
-    const outage = focusedKnowledgeSearchUnavailableResult();
+    const outage = focusedKnowledgeSearchUnavailableResult(failureCode);
     const storedOutage = snapshotToolExecutionResult({
       ...outage,
       callId: "knowledge-provider-call-unavailable",
@@ -4046,11 +4050,11 @@ describe("run recovery", () => {
     expect(requests).toHaveLength(1);
     const providerMessages = JSON.stringify(requests[0]?.providerToolMessages);
     expect(providerMessages).toContain(
-      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge."
+      (outage.content[0] as { text: string }).text
     );
-    expect(providerMessages).not.toContain("knowledge_search_backend_unavailable");
+    expect(providerMessages).not.toContain(failureCode);
     expect(harness.state.completed).toMatchObject({
-      finalText: KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
+      finalText: terminalText,
       usage: { inputTokens: 4, outputTokens: 3, reasoningTokens: 0, totalTokens: 7 }
     });
     expect(harness.state.completed?.usageAttributions).toEqual(expect.arrayContaining([

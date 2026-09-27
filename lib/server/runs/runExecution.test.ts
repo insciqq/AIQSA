@@ -359,14 +359,14 @@ function emptyKnowledgeEvidence(): KnowledgeRetrievalEvidence {
   return { ...draft, providerText: knowledgeToolResultText(draft) };
 }
 
-function searchUnavailableKnowledgeEvidence(): KnowledgeRetrievalEvidence {
+function searchUnavailableKnowledgeEvidence(failureCode = "knowledge_search_backend_unavailable"): KnowledgeRetrievalEvidence {
   const complete = knowledgeEvidence();
   const draft: KnowledgeRetrievalEvidence = {
     ...complete,
     bases: [],
     candidateCount: 0,
     candidateLimit: 64,
-    failureCode: "knowledge_search_backend_unavailable",
+    failureCode,
     fusion: "weighted_rrf_v2",
     operation: "automatic_search",
     outcome: "search_unavailable",
@@ -4676,10 +4676,14 @@ describe("run execution", () => {
     expect(JSON.stringify(repository.failedRuns)).not.toContain("bounded private lookup");
   });
 
-  it("durably settles a classified Knowledge outage and exposes only its safe result", async () => {
+  it.each([
+    ["knowledge_search_backend_unavailable", KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE],
+    ["knowledge_search_projection_pending", "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes."],
+    ["knowledge_search_projection_failed", "Knowledge search indexing failed for a selected source. Contact an administrator to retry its search indexing."]
+  ] as const)("durably settles a classified Knowledge outage and exposes only its safe result: %s", async (failureCode, terminalText) => {
     const repository = createRepository();
     const { execute, executor } = toolLoopKnowledgeExecutor(
-      searchUnavailableKnowledgeEvidence()
+      searchUnavailableKnowledgeEvidence(failureCode)
     );
     const providerRequests: ProviderRunRequest[] = [];
     const adapter = createAdapter(async function* (request) {
@@ -4711,14 +4715,14 @@ describe("run execution", () => {
     expect(providerRequests).toHaveLength(2);
     const continuation = JSON.stringify(providerRequests[1]?.providerToolMessages);
     expect(continuation).toContain(
-      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge."
+      searchUnavailableKnowledgeEvidence(failureCode).providerText
     );
-    expect(continuation).not.toContain("knowledge_search_backend_unavailable");
+    expect(continuation).not.toContain(failureCode);
     expect([...repository.toolCalls.values()]).toEqual([
       expect.objectContaining({ result: expect.anything(), state: "error" })
     ]);
     expect(repository.completeRuns).toEqual([
-      expect.objectContaining({ finalText: KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE })
+      expect.objectContaining({ finalText: terminalText })
     ]);
     expect(repository.failedRuns).toEqual([]);
   });

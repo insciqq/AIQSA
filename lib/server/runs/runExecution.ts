@@ -121,7 +121,7 @@ import {
 } from "../knowledge/automaticEvidence";
 import type { KnowledgeEvidenceDispatchManifestDraft } from "../knowledge/evidenceDispatchManifest";
 import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSearchFailureToolResult,
-  knowledgeSearchFailureFromToolResult, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode } from "../knowledge/searchFailure";
+  knowledgeSearchFailureFromToolResult, knowledgeSearchUnavailableMessage, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import type { KnowledgeEvidenceDispatchBinding } from "../knowledge/evidenceDispatchRepository";
 import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
 import type {
@@ -147,7 +147,6 @@ import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_INSUFFICIENT_MESSAGE,
-  KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
 } from "../knowledge/answerGroundingV5";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
@@ -1958,7 +1957,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       ): Promise<ProviderRunResult & {
         knowledgeDispatchDraft?: KnowledgeEvidenceDispatchManifestDraft;
         knowledgeEvidenceEmpty?: true;
-        knowledgeSearchUnavailable?: true;
+        knowledgeSearchUnavailableText?: string;
         usageAttributions: RunUsageAttribution[];
       }> {
         const provider = normalizedRequest.provider;
@@ -3039,7 +3038,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
         let knowledgeDispatchDraft: KnowledgeEvidenceDispatchManifestDraft | undefined;
         let knowledgeEvidenceEmpty = false;
-        let knowledgeSearchUnavailable = false;
+        let knowledgeSearchUnavailableText: string | null = null;
         if (knowledgeToolResults.size > 0) {
           const results = [...knowledgeToolResults.entries()]
             .sort(([leftId], [rightId]) => {
@@ -3049,8 +3048,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               return left.roundIndex - right.roundIndex || left.ordinal - right.ordinal;
             })
             .map(([, result]) => result);
-          knowledgeSearchUnavailable = results.some((result) =>
-            knowledgeEvidenceFromToolResult(result)?.outcome === "search_unavailable");
+          knowledgeSearchUnavailableText = knowledgeSearchUnavailableMessage(results);
           try {
             knowledgeDispatchDraft = toolLoopKnowledgeEvidenceDispatchDraft({
               exclusions: input.prepared.knowledgeAdmissionPlan?.exclusions,
@@ -3072,7 +3070,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...outcome.final,
           ...(knowledgeDispatchDraft ? { knowledgeDispatchDraft } : {}),
           ...(knowledgeEvidenceEmpty ? { knowledgeEvidenceEmpty: true as const } : {}),
-          ...(knowledgeSearchUnavailable ? { knowledgeSearchUnavailable: true as const } : {}),
+          ...(knowledgeSearchUnavailableText ? { knowledgeSearchUnavailableText } : {}),
           usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
           usageAttributions: groupedUsageAttributions(reportedUsageAttributions)
         };
@@ -3217,19 +3215,17 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               const {
                 knowledgeDispatchDraft: _knowledgeDispatchDraft,
                 knowledgeEvidenceEmpty: _knowledgeEvidenceEmpty,
-                knowledgeSearchUnavailable: _knowledgeSearchUnavailable,
+                knowledgeSearchUnavailableText: _knowledgeSearchUnavailableText,
                 ...emptyResult
               } = toolLoopResult;
               void _knowledgeDispatchDraft;
               void _knowledgeEvidenceEmpty;
-              void _knowledgeSearchUnavailable;
+              void _knowledgeSearchUnavailableText;
               knowledgeZeroEvidence = true;
               providerResult = {
                 ...emptyResult,
                 finalText: knowledgeScopeLimitedMessage(
-                  toolLoopResult.knowledgeSearchUnavailable
-                    ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
-                    : KNOWLEDGE_INSUFFICIENT_MESSAGE,
+                  toolLoopResult.knowledgeSearchUnavailableText ?? KNOWLEDGE_INSUFFICIENT_MESSAGE,
                   input.prepared.knowledgeAdmissionPlan?.exclusions
                 )
               };

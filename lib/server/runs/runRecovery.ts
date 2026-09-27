@@ -33,7 +33,7 @@ import {
 } from "../../domain/modelRunEvents";
 import { textMessageContent } from "../../domain/content";
 import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSearchFailureToolResult,
-  knowledgeSearchFailureFromToolResult, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode, type KnowledgeSearchFailureCode } from "../knowledge/searchFailure";
+  knowledgeSearchFailureFromToolResult, knowledgeSearchUnavailableMessage, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode, type KnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import {
   decodeTokenUsage, mergeTokenUsage, normalizeTokenUsage,
   subtractTokenUsage,
@@ -113,7 +113,6 @@ import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_INSUFFICIENT_MESSAGE,
-  KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
   type KnowledgeAnswerContractPair
 } from "../knowledge/answerGroundingV5";
@@ -2801,14 +2800,13 @@ async function recoverCheckpointedToolLoop(
       }
     }
 
-    function recoveredKnowledgeSearchUnavailable(): boolean {
-      return [...persistedCalls.values()]
+    function recoveredKnowledgeSearchUnavailable(): string | null {
+      return knowledgeSearchUnavailableMessage([...persistedCalls.values()]
         .filter((call) => call.toolName === KNOWLEDGE_SEARCH_TOOL_NAME)
-        .some((call) => {
+        .flatMap((call) => {
           const result = context.knowledgeResults.get(call.providerCallId);
-          return result !== undefined &&
-            knowledgeEvidenceFromToolResult(result)?.outcome === "search_unavailable";
-        });
+          return result ? [result] : [];
+        }));
     }
 
     async function finalizeRecoveredKnowledgeToolLoop(): Promise<void> {
@@ -2827,9 +2825,7 @@ async function recoverCheckpointedToolLoop(
           repository: deps.repository,
           result: {
             finalText: knowledgeScopeLimitedMessage(
-              recoveredKnowledgeSearchUnavailable()
-                ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
-                : KNOWLEDGE_INSUFFICIENT_MESSAGE,
+              recoveredKnowledgeSearchUnavailable() ?? KNOWLEDGE_INSUFFICIENT_MESSAGE,
               run.knowledgeScope?.exclusions
             ),
             ...(currentProviderResponseId
