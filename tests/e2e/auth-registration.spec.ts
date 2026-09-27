@@ -269,6 +269,8 @@ test("keeps request and invite actions immediately reachable in short landscape"
 });
 
 test("registers, verifies, logs in, and sees an isolated workspace", async ({ page }) => {
+  // Registration, verification and sign-in precede two 30-second shell waits on a cold server.
+  test.setTimeout(180_000);
   const id = randomUUID();
   const email = `e2e-registration-${id}@example.com`;
   const password = `registration-password-${id}`;
@@ -330,7 +332,7 @@ test("registers, verifies, logs in, and sees an isolated workspace", async ({ pa
     await page.getByLabel("Password", { exact: true }).fill(password);
     await page.getByRole("button", { name: "Sign in" }).click();
 
-    await expect(page.getByTestId("app-shell")).toBeVisible();
+    await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
     const workspace = (await (await page.request.get("/api/chats")).json()) as { chats: unknown[] };
     expect(workspace.chats).toHaveLength(0);
     // The server-rendered shell shows before the client has loaded the catalog and chat list that decide the empty chat.

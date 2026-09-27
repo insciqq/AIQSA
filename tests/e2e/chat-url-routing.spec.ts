@@ -345,16 +345,17 @@ test("sign-in and an expired session return to the chat address with its draft",
 });
 
 test("Control Center returns to the chat it was opened from", async ({ page, context, baseURL }, testInfo) => {
-  test.setTimeout(90_000);
+  // Several full-document navigations, each followed by the standard 30-second shell wait, on a cold server.
+  test.setTimeout(300_000);
   await useAppearance(page, context, baseURL!, "dark");
   await signInWithLocalToken(page);
   const title = `Routing Control Center ${randomUUID().slice(0, 8)}`;
   const chatId = await createChat(page, title);
   try {
     await page.goto(`/c/${chatId}`);
-    await expect(page.getByTestId("header-title")).toHaveText(title);
+    await expect(page.getByTestId("header-title")).toHaveText(title, { timeout: 30_000 });
     const controlCenter = page.getByTestId("workspace-rail").getByRole("link", { name: "Control Center" });
-    await expect(controlCenter).toHaveAttribute("href", `/admin?return=%2Fc%2F${chatId}`);
+    await expect(controlCenter).toHaveAttribute("href", `/admin?return=%2Fc%2F${chatId}`, { timeout: 30_000 });
     await controlCenter.click();
     await expect(page.getByTestId("admin-shell")).toBeVisible({ timeout: 30_000 });
     // The server markup already links back to the chat; sections keep that return with or without hydration.
@@ -366,12 +367,12 @@ test("Control Center returns to the chat it was opened from", async ({ page, con
     await page.screenshot({ path: testInfo.outputPath("routing-control-center-dark-1440.png") });
     await chats.click();
     await expect(page).toHaveURL(exactPath(`/c/${chatId}`), { timeout: 30_000 });
-    await expect(page.getByTestId("header-title")).toHaveText(title);
+    await expect(page.getByTestId("header-title")).toHaveText(title, { timeout: 30_000 });
 
     await page.goto("/admin");
     await page.getByTestId("admin-rail").getByRole("link", { name: "Chats" }).click();
     await expect(page).toHaveURL(exactPath("/"), { timeout: 30_000 });
-    await expect(page.getByTestId("conversation-empty")).toBeVisible();
+    await expect(page.getByTestId("conversation-empty")).toBeVisible({ timeout: 30_000 });
   } finally {
     await deleteChats(page, [chatId]);
   }
