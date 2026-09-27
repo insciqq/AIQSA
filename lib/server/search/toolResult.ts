@@ -9,7 +9,21 @@ import {
   type SearchSource
 } from "./evidence";
 
-export const SEARCH_TOOL_RESULT_VERSION = 2;
+/** Version 3 numbers each engine's sources beside its findings with the
+ * engine's own citation numbers. Version 2 results, which list one merged
+ * source list after all findings, still decode and render exactly as saved. */
+export const SEARCH_TOOL_RESULT_VERSION = 3;
+export const LEGACY_SEARCH_TOOL_RESULT_VERSION = 2;
+export type SearchToolResultVersion =
+  | typeof LEGACY_SEARCH_TOOL_RESULT_VERSION
+  | typeof SEARCH_TOOL_RESULT_VERSION;
+
+function searchResultVersion(result: ToolExecutionResult): SearchToolResultVersion | null {
+  const version = result.rawPreview?.searchResultVersion;
+  return version === SEARCH_TOOL_RESULT_VERSION || version === LEGACY_SEARCH_TOOL_RESULT_VERSION
+    ? version
+    : null;
+}
 
 function persistedContentMarker(version: number) {
   return {
@@ -43,6 +57,10 @@ type SearchFailureEvidence = NonNullable<SearchExecutionEvidence["failure"]>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function withoutCitation({ citation: _citation, ...source }: SearchSource): SearchSource {
+  return source;
 }
 
 function nonNegativeNumber(value: unknown): value is number {
@@ -92,11 +110,8 @@ function decodedFailure(value: unknown): SearchFailureEvidence | undefined {
 }
 
 function previewExecutions(result: ToolExecutionResult): unknown[] | null {
-  const rawPreview = result.rawPreview;
-  return rawPreview?.searchResultVersion === SEARCH_TOOL_RESULT_VERSION &&
-    Array.isArray(rawPreview.searchExecutions)
-    ? rawPreview.searchExecutions
-    : null;
+  const executions = result.rawPreview?.searchExecutions;
+  return searchResultVersion(result) !== null && Array.isArray(executions) ? executions : null;
 }
 
 export function searchExecutionPreviewCount(result: ToolExecutionResult): number | null {
@@ -108,8 +123,8 @@ export function searchExecutionsFromToolResult(
 ): SearchExecutionEvidence[] {
   const values = previewExecutions(result);
   if (!values || values.length > 3) return [];
-  const version = result.rawPreview?.searchResultVersion;
-  if (version !== SEARCH_TOOL_RESULT_VERSION) return [];
+  const version = searchResultVersion(result);
+  if (version === null) return [];
   return values.flatMap((value): SearchExecutionEvidence[] => {
     if (!isRecord(value)) return [];
     const usage = decodedUsage(value.usage);
@@ -153,7 +168,9 @@ export function searchExecutionsFromToolResult(
       : boundedFailureField(value.warning, 512);
     if (value.warning !== undefined && !warning) return [];
     const sourceValues = value.sources as unknown[];
-    const sources = normalizeSearchSources(sourceValues, 20);
+    // Version 2 never carried citation numbers; it decodes exactly as before.
+    const sources = normalizeSearchSources(sourceValues, 20).map((source) =>
+      version === LEGACY_SEARCH_TOOL_RESULT_VERSION ? withoutCitation(source) : source);
     if (sources.length !== sourceValues.length) return [];
     const sourceAttribution = value.sourceAttribution === undefined ||
       value.sourceAttribution === "available"
@@ -195,7 +212,7 @@ export function searchExecutionsFromToolResult(
   });
 }
 
-/** The merged numbered source list of the canonical text, or "" without sources. */
+/** Version 2's merged numbered source list, or "" without sources. */
 function searchSourcesText(executions: readonly SearchExecutionEvidence[]): string {
   const sources = mergeSearchEvidence(
     executions.map((execution) => execution.optionId),
@@ -211,24 +228,59 @@ function searchSourcesText(executions: readonly SearchExecutionEvidence[]): stri
     : "";
 }
 
-export function searchToolResultText(executions: readonly SearchExecutionEvidence[]): string {
-  const successful = executions.filter((execution) => execution.status === "complete");
+type RenderedEngine = Pick<SearchExecutionEvidence, "displayName" | "findings" | "sources" | "status">;
+
+function findingsHeader(engine: RenderedEngine): string {
+  return `Search source ${JSON.stringify(engine.displayName)}:\n`;
+}
+
+/** One engine's numbered sources, "" without sources. A cited source keeps
+ * the number its findings use; the others follow the highest such number, so
+ * an engine without citation numbers is numbered by position. */
+function engineSourcesText(engine: RenderedEngine): string {
+  let next = Math.max(0, ...engine.sources.map((source) => source.citation ?? 0));
+  return engine.sources.length
+    ? `Sources for ${JSON.stringify(engine.displayName)}:\n${engine.sources.map((source) =>
+        `[${source.citation ?? ++next}] ${source.title} — ${source.url}`).join("\n")}`
+    : "";
+}
+
+/** Version 3: each successful engine's findings, each followed by its own
+ * numbered sources. Provider text is never rewritten. */
+function engineBlocksText(engines: readonly RenderedEngine[]): string {
+  return engines.flatMap((engine) => engine.status === "complete" && engine.findings
+    ? [[`${findingsHeader(engine)}${engine.findings}`, engineSourcesText(engine)].filter(Boolean).join("\n\n")]
+    : []).join("\n\n");
+}
+
+function searchWarningsText(executions: readonly SearchExecutionEvidence[]): string {
   const warnings = executions.flatMap((execution) => {
     const warning = execution.failure?.code ?? execution.warning;
     return warning
       ? [{ displayName: execution.displayName, warning }]
       : [];
   });
-  return [
-    ...successful.flatMap((execution) => execution.findings
-      ? [`Search source ${JSON.stringify(execution.displayName)}:\n${execution.findings}`]
-      : []),
-    searchSourcesText(executions),
-    warnings.length
-      ? `Search warnings: ${warnings.map((warning) =>
-          `${JSON.stringify(warning.displayName)}: ${warning.warning}`).join("; ")}`
-      : ""
-  ].filter(Boolean).join("\n\n") || "Every selected search engine failed.";
+  return warnings.length
+    ? `Search warnings: ${warnings.map((warning) =>
+        `${JSON.stringify(warning.displayName)}: ${warning.warning}`).join("; ")}`
+    : "";
+}
+
+export function searchToolResultText(
+  executions: readonly SearchExecutionEvidence[],
+  version: SearchToolResultVersion = SEARCH_TOOL_RESULT_VERSION
+): string {
+  const successful = executions.filter((execution) => execution.status === "complete");
+  return (version === LEGACY_SEARCH_TOOL_RESULT_VERSION
+    ? [
+        ...successful.flatMap((execution) => execution.findings
+          ? [`${findingsHeader(execution)}${execution.findings}`]
+          : []),
+        searchSourcesText(executions),
+        searchWarningsText(executions)
+      ]
+    : [engineBlocksText(executions), searchWarningsText(executions)]
+  ).filter(Boolean).join("\n\n") || "Every selected search engine failed.";
 }
 
 function utf8Prefix(value: string, maxBytes: number): string {
@@ -239,14 +291,9 @@ function utf8Prefix(value: string, maxBytes: number): string {
   return bytes.subarray(0, end).toString("utf8");
 }
 
-/** The same canonical text with a bounded findings budget. Only findings are
- * shortened, at UTF-8 boundaries and with an explicit marker; the merged
- * numbered source list and warnings stay complete. The caller owns where the
- * complete accepted result can be read. */
-export function boundedSearchToolResultText(
-  executions: readonly SearchExecutionEvidence[],
-  maxFindingsBytes: number
-): string {
+/** Findings within one byte budget: smaller findings stay whole, larger ones
+ * are cut at UTF-8 boundaries with an explicit marker. */
+function withBoundedFindings<T extends RenderedEngine>(executions: readonly T[], maxFindingsBytes: number): T[] {
   const sizes = executions.map((execution) => execution.status === "complete" && execution.findings
     ? Buffer.byteLength(execution.findings, "utf8") : 0);
   const order = sizes.flatMap((size, index) => size > 0 ? [index] : [])
@@ -259,13 +306,23 @@ export function boundedSearchToolResultText(
     limits.set(index, limit);
     remaining -= limit;
   }
-  return searchToolResultText(executions.map((execution, index) => {
+  return executions.map((execution, index) => {
     const limit = limits.get(index);
     return limit === undefined || limit >= sizes[index]! ? execution : {
       ...execution,
       findings: `${utf8Prefix(execution.findings!, limit)}\n[Findings shortened here; the complete saved result remains readable.]`
     };
-  }));
+  });
+}
+
+/** The same canonical text with a bounded findings budget. Only findings are
+ * shortened; every engine's numbered sources and the warnings stay complete.
+ * The caller owns where the complete accepted result can be read. */
+export function boundedSearchToolResultText(
+  executions: readonly SearchExecutionEvidence[],
+  maxFindingsBytes: number
+): string {
+  return searchToolResultText(withBoundedFindings(executions, maxFindingsBytes));
 }
 
 /** A bounded prefix of already rendered canonical text, for a caller that
@@ -278,11 +335,23 @@ export function shortenedSearchToolResultText(text: string, maxBytes: number): s
 
 /** Bound rendered canonical text whose per-engine findings are no longer
  * separately available (a restore retains the text and the receipt's thread
- * sources). The findings are shortened as one prefix; the numbered source list
- * rendered from those sources, and the warnings after it, stay whole. Null
- * when the text does not end with exactly that list (for example a receipt
- * whose trailing sources were dropped to stay bounded). */
+ * sources). Version 2 text shortens its findings as one prefix; the merged
+ * numbered source list rendered from those sources, and the warnings after
+ * it, stay whole. Version 3 text is split into each engine's findings, which
+ * are shortened as live delivery does, and every engine's numbered sources
+ * and the warnings stay whole. Null when the text is not exactly rendered
+ * from those sources (for example a receipt whose trailing sources were
+ * dropped to stay bounded). */
 export function boundedRenderedSearchToolResultText(
+  text: string,
+  executions: readonly SearchExecutionEvidence[],
+  maxFindingsBytes: number
+): string | null {
+  return boundedRenderedLegacySearchText(text, executions, maxFindingsBytes) ??
+    boundedRenderedEngineText(text, executions, maxFindingsBytes);
+}
+
+function boundedRenderedLegacySearchText(
   text: string,
   executions: readonly SearchExecutionEvidence[],
   maxFindingsBytes: number
@@ -299,6 +368,40 @@ export function boundedRenderedSearchToolResultText(
     : `${shortenedSearchToolResultText(text.slice(0, start - 2), maxFindingsBytes)}\n\n${text.slice(start)}`;
 }
 
+/** Recover each successful engine's findings from version 3 text by the
+ * blocks its receipt renders, verified by rendering them again. */
+function boundedRenderedEngineText(
+  text: string,
+  executions: readonly SearchExecutionEvidence[],
+  maxFindingsBytes: number
+): string | null {
+  const engines = executions.filter((execution) => execution.status === "complete");
+  // Without any numbered source the text reads the same in both versions and
+  // keeps version 2's bound (one findings prefix before the warnings).
+  if (!engines.some((engine) => engine.sources.length > 0)) return null;
+  const warnings = text.lastIndexOf("\n\nSearch warnings: ");
+  const end = warnings >= 0 && !text.includes("\n", warnings + 2) ? warnings : text.length;
+  const body = text.slice(0, end);
+  const recovered: RenderedEngine[] = [];
+  let cursor = 0;
+  for (const [index, engine] of engines.entries()) {
+    const header = `${index > 0 ? "\n\n" : ""}${findingsHeader(engine)}`;
+    if (!body.startsWith(header, cursor)) return null;
+    const start = cursor + header.length;
+    const sources = engineSourcesText(engine);
+    const sourcesBlock = sources ? `\n\n${sources}` : "";
+    const following = engines[index + 1];
+    const stop = following
+      ? body.indexOf(`${sourcesBlock}\n\n${findingsHeader(following)}`, start + 1)
+      : body.endsWith(sourcesBlock) ? body.length - sourcesBlock.length : -1;
+    if (stop <= start) return null;
+    recovered.push({ ...engine, findings: body.slice(start, stop) });
+    cursor = stop + sourcesBlock.length;
+  }
+  if (engineBlocksText(recovered) !== body) return null;
+  return `${engineBlocksText(withBoundedFindings(recovered, maxFindingsBytes))}${text.slice(end)}`;
+}
+
 /** The merged list never numbers more sources; titles may span lines. */
 const RETAINED_SOURCE_ENTRIES = 24;
 /** Far above a canonical list and warnings line, far below a tool result. */
@@ -308,7 +411,8 @@ const RETAINED_TAIL_BYTES = 128 * 1024;
  * longer lists the rendered sources (it dropped snippets or trailing sources
  * to stay bounded). The trailing numbered source list, validated by its
  * consecutive numbering from 1, and the warnings line after it stay whole;
- * only the findings before them are shortened. Null when the text ends with
+ * only the findings before them are shortened. Version 3 text has no merged
+ * list; only its warnings line stays whole here. Null when the text ends with
  * neither. */
 export function boundedRetainedSearchToolResultText(text: string, maxFindingsBytes: number): string | null {
   const warnings = text.lastIndexOf("\n\nSearch warnings: ");
@@ -327,9 +431,10 @@ export function boundedRetainedSearchToolResultText(text: string, maxFindingsByt
 }
 
 export function searchToolResultContent(
-  executions: readonly SearchExecutionEvidence[]
+  executions: readonly SearchExecutionEvidence[],
+  version: SearchToolResultVersion = SEARCH_TOOL_RESULT_VERSION
 ): ToolExecutionResult["content"] {
-  return [{ text: searchToolResultText(executions), type: "text" }];
+  return [{ text: searchToolResultText(executions, version), type: "text" }];
 }
 
 function markerContent(result: ToolExecutionResult, version: number): boolean {
@@ -356,15 +461,12 @@ function canonicalExecutions(result: ToolExecutionResult): SearchExecutionEviden
 export function compactSearchToolExecutionResult(
   result: ToolExecutionResult
 ): ToolExecutionResult | null {
-  const version = result.rawPreview?.searchResultVersion;
-  if (version === undefined) return result;
-  if (
-    version !== SEARCH_TOOL_RESULT_VERSION ||
-    markerContent(result, version)
-  ) return null;
+  if (result.rawPreview?.searchResultVersion === undefined) return result;
+  const version = searchResultVersion(result);
+  if (version === null || markerContent(result, version)) return null;
   const executions = canonicalExecutions(result);
   if (!executions || result.content.length !== 1 || result.content[0]?.type !== "text" ||
-    result.content[0].text !== searchToolResultText(executions)) {
+    result.content[0].text !== searchToolResultText(executions, version)) {
     return null;
   }
   return { ...result, content: [persistedContentMarker(version)] };
@@ -373,12 +475,9 @@ export function compactSearchToolExecutionResult(
 export function rehydratePersistedSearchToolExecutionResult(
   result: ToolExecutionResult
 ): ToolExecutionResult | null {
-  const version = result.rawPreview?.searchResultVersion;
-  if (version === undefined) return result;
-  if (
-    version !== SEARCH_TOOL_RESULT_VERSION ||
-    !markerContent(result, version)
-  ) return null;
+  if (result.rawPreview?.searchResultVersion === undefined) return result;
+  const version = searchResultVersion(result);
+  if (version === null || !markerContent(result, version)) return null;
   const executions = canonicalExecutions(result);
-  return executions ? { ...result, content: searchToolResultContent(executions) } : null;
+  return executions ? { ...result, content: searchToolResultContent(executions, version) } : null;
 }

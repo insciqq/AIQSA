@@ -3,6 +3,11 @@ import { searchSourceFallbackTitle } from "../../domain/searchSources";
 import { storableUtf16Text, takeUtf16SafePrefix } from "../../domain/utf16";
 
 export type SearchSource = Readonly<{
+  /** The engine's own number for a source its findings cite: the provider's
+   * citation number when the provider numbers citations in its text
+   * (Perplexity `[n]`), otherwise the source's position among the engine's
+   * cited sources. Absent on a source the engine only browsed. */
+  citation?: number;
   date?: string;
   rank: number;
   snippet?: string;
@@ -18,6 +23,9 @@ export type SearchSource = Readonly<{
 // what fits the persisted tool result (`fitDurableSearchToolResult`).
 export const MAX_SEARCH_FINDINGS_CHARACTERS = 1_024 * 1_024;
 export const MAX_SEARCH_FINDINGS_BYTES = 1_024 * 1_024;
+/** Sources one engine result keeps: the adapter ceiling and the durable bound. */
+export const MAX_SEARCH_ENGINE_SOURCES = 20;
+const MAX_SEARCH_CITATION_NUMBER = 10_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,6 +36,11 @@ function text(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = storableUtf16Text(value).trim();
   return trimmed ? takeUtf16SafePrefix(trimmed, max).trimEnd() : undefined;
+}
+
+function citationNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 &&
+    value <= MAX_SEARCH_CITATION_NUMBER ? value : undefined;
 }
 
 function safeHttpHref(value: unknown): string | undefined {
@@ -64,7 +77,10 @@ export function normalizeSearchFindings(value: unknown): string {
 
 /** Normalize only an explicit flat list of adapter-selected source candidates.
  * This deliberately does not crawl arbitrary provider payloads or previews. */
-export function normalizeSearchSources(value: unknown, maximum = 20): SearchSource[] {
+export function normalizeSearchSources(
+  value: unknown,
+  maximum = MAX_SEARCH_ENGINE_SOURCES
+): SearchSource[] {
   const sources: SearchSource[] = [];
   const seenUrls = new Set<string>();
   if (!Array.isArray(value)) return sources;
@@ -75,7 +91,9 @@ export function normalizeSearchSources(value: unknown, maximum = 20): SearchSour
     const safe = safeHttpHref(row.url) ?? safeHttpHref(row.href);
     if (safe && !seenUrls.has(safe)) {
       seenUrls.add(safe);
+      const citation = citationNumber(row.citation);
       sources.push({
+        ...(citation === undefined ? {} : { citation }),
         ...(text(row.date, 80) ?? text(row.publishedAt, 80)
           ? { date: text(row.date, 80) ?? text(row.publishedAt, 80) }
           : {}),
@@ -91,15 +109,37 @@ export function normalizeSearchSources(value: unknown, maximum = 20): SearchSour
   return sources;
 }
 
-/** Citation artifacts are already provider-adapter allowlist projections. */
+/** The sources one engine result keeps: every cited source first, within the
+ * adapter ceiling, then at most `maxBrowsed` sources the engine only browsed.
+ * A reference in the findings must resolve to a kept source, so `maxResults`
+ * never bounds cited sources. Ranks stay positional. */
+export function boundedEngineSearchSources(value: unknown, maxBrowsed: number): SearchSource[] {
+  const sources = normalizeSearchSources(value, Number.MAX_SAFE_INTEGER);
+  return normalizeSearchSources([
+    ...sources.filter((source) => source.citation !== undefined),
+    ...sources.filter((source) => source.citation === undefined).slice(0, Math.max(0, maxBrowsed))
+  ]);
+}
+
+/** Adapter-selected cited sources numbered by their position, for a provider
+ * that cites sources without numbering them in its text. */
+export function citedSearchSources(value: unknown, maximum = MAX_SEARCH_ENGINE_SOURCES): SearchSource[] {
+  return normalizeSearchSources(value, maximum).map((source) => ({ ...source, citation: source.rank }));
+}
+
+/** Citation artifacts are already provider-adapter allowlist projections.
+ * Each source keeps the provider's citation number (`index`) when its
+ * artifact carries one, otherwise its position among the cited sources. */
 export function searchSourcesFromCitationArtifacts(
   artifacts: readonly import("../../domain/modelRunEvents").ModelRunSseEvent[],
-  maximum = 20
+  maximum = MAX_SEARCH_ENGINE_SOURCES
 ): SearchSource[] {
   return normalizeSearchSources(artifacts.flatMap((event) =>
     event.type === "artifact" && event.data.artifactType === "citation" &&
       isRecord(event.data.payload)
-      ? [event.data.payload]
+      ? [{ ...event.data.payload, citation: event.data.payload.index }]
       : []
-  ), maximum);
+  ), maximum).map((source) => source.citation === undefined
+    ? { ...source, citation: source.rank }
+    : source);
 }

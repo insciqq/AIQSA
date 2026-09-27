@@ -221,6 +221,7 @@ describe("OpenAI Responses query-only Search adapter", () => {
       }
     });
     expect(result.sources).toEqual([{
+      citation: 1,
       rank: 1,
       title: "Source",
       url: "https://example.com/news"
@@ -265,6 +266,49 @@ describe("OpenAI Responses query-only Search adapter", () => {
         url: "https://example.com/action-source"
       }]
     });
+  });
+
+  it("puts cited sources first with their citation order, before sources the engine only browsed", async () => {
+    const browsed = Array.from({ length: 8 }, (_, index) => ({
+      title: `Browsed ${index}`, url: `https://example.com/browsed/${index}`
+    }));
+    const cited = Array.from({ length: 3 }, (_, index) => ({
+      title: `Cited ${index}`, type: "url_citation", url: `https://example.com/cited/${index}`
+    }));
+    const adapter = createOpenAIResponsesSearchAdapter({
+      client: client(async () => ({
+        id: "resp-cited-sources",
+        output: [{
+          action: { query: "Moscow news", sources: browsed, type: "search" },
+          id: "ws-cited-sources",
+          status: "completed",
+          type: "web_search_call"
+        }, {
+          content: [{
+            // The same page cited twice keeps one number; a browsed page it
+            // also cites keeps its browsed fields.
+            annotations: [...cited, cited[0], { ...browsed[5], title: "Cited browsed", type: "url_citation" }],
+            text: "Current findings.",
+            type: "output_text"
+          }],
+          role: "assistant",
+          type: "message"
+        }],
+        status: "completed",
+        usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 }
+      })),
+      provider: "openai"
+    });
+
+    const result = await adapter.search(searchRequest());
+
+    expect(result.sources.map(({ citation, rank, title }) => ({ citation, rank, title }))).toEqual([
+      { citation: 1, rank: 1, title: "Cited 0" },
+      { citation: 2, rank: 2, title: "Cited 1" },
+      { citation: 3, rank: 3, title: "Cited 2" },
+      { citation: 4, rank: 4, title: "Browsed 5" },
+      ...[0, 1, 2, 3, 4, 6, 7].map((index, position) => ({ citation: undefined, rank: position + 5, title: `Browsed ${index}` }))
+    ]);
   });
 
   it("fails closed when a completed response has findings and citations but no terminal Search operation", async () => {
