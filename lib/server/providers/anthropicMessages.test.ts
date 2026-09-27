@@ -1101,6 +1101,47 @@ describe("Anthropic Messages adapter", () => {
     });
   });
 
+  it("publishes each thinking block as merged exact fragments instead of one event per delta", async () => {
+    const deltas = Array.from({ length: 1_000 }, (_, index) =>
+      index % 60 === 59 ? `thought ${index}.\n\n` : `thought ${index} 思考😀 `);
+    const client: AnthropicMessagesClient = {
+      stream: () => events([
+        { message: { id: "msg-thinking" }, type: "message_start" },
+        { content_block: { signature: "", thinking: "Initial ", type: "thinking" }, index: 0, type: "content_block_start" },
+        ...deltas.map((thinking) => ({ delta: { thinking, type: "thinking_delta" }, index: 0, type: "content_block_delta" })),
+        { delta: { signature: "PRIVATE_THINKING_SIGNATURE", type: "signature_delta" }, index: 0, type: "content_block_delta" },
+        { index: 0, type: "content_block_stop" },
+        { content_block: { signature: "", thinking: "", type: "thinking" }, index: 1, type: "content_block_start" },
+        { delta: { thinking: "Second block.", type: "thinking_delta" }, index: 1, type: "content_block_delta" },
+        { index: 1, type: "content_block_stop" },
+        { content_block: { text: "", type: "text" }, index: 2, type: "content_block_start" },
+        { delta: { text: "Done", type: "text_delta" }, index: 2, type: "content_block_delta" },
+        { index: 2, type: "content_block_stop" },
+        { delta: { stop_reason: "end_turn" }, type: "message_delta", usage: { output_tokens: 3 } },
+        { type: "message_stop" }
+      ])
+    };
+    const { events: seen } = await collectAdapterStream(client, DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars);
+    const reasoning = seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "reasoning"
+      ? [event.data.payload as { entry: string; text: string }]
+      : []);
+    const first = reasoning.slice(0, -1);
+    const full = `Initial ${deltas.join("")}`;
+
+    expect(reasoning.length).toBeGreaterThan(2);
+    expect(reasoning.length).toBeLessThan(20);
+    expect(reasoning.map(({ entry }) => entry)).toEqual([
+      "start", ...first.slice(1).map(() => "continue"), "start"
+    ]);
+    expect(first.map(({ text }) => text).join("").trimEnd()).toBe(full.trimEnd());
+    for (const { text } of first) {
+      expect(text.length).toBeLessThanOrEqual(4_000);
+      expect(text).not.toMatch(/[\uD800-\uDFFF]/u);
+    }
+    expect(reasoning.at(-1)).toEqual({ entry: "start", text: "Second block." });
+    expect(JSON.stringify(seen)).not.toContain("PRIVATE_THINKING_SIGNATURE");
+  });
+
   it.each(["refusal", "model_context_window_exceeded"])(
     "rejects a non-hosted %s terminal without exposing provider details",
     async (stopReason) => {

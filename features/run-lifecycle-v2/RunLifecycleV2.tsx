@@ -275,6 +275,7 @@ export function RunAnswerV2({
       pinnedSkillIds={pinnedSkillIds}
       memorySources={settled ? artifact?.memorySources ?? [] : []}
       reasoningTexts={settled && showReasoning ? artifact?.reasoningText ?? [] : []}
+      reasoningTruncated={settled && showReasoning && artifact?.reasoningTruncated === true}
       toolActivity={toolActivity}
       workDurationMs={workDurationMs ?? artifact?.workDurationMs ?? stepDurationSumV2(toolActivity)}
       workspaceActivity={workspaceActivity}

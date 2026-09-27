@@ -1,6 +1,6 @@
 import { decodeThreadWorkspaceCheckpointOutput, type ThreadGeneratedFile } from "@/lib/contracts/workspace";
 import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
-import { decodeThreadGeneratedArtifact } from "@/lib/contracts/chats";
+import { THREAD_SEARCH_SOURCE_MAX_ITEMS, decodeThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type {
@@ -8,8 +8,13 @@ import type {
   ThreadArtifactSummary,
   ThreadCitation
 } from "@/components/app-shell/types";
-import { safeExternalHref } from "@/lib/domain/links";
-import { projectThreadSearchSources } from "@/lib/domain/searchSources";
+import { collectThreadSearchSources } from "@/lib/domain/searchSources";
+import {
+  answerCitationsFromGrounding,
+  foldAnswerCitations,
+  projectAnswerCitation
+} from "@/lib/domain/answerCitations";
+import { foldReasoningEntries, streamedReasoningFoldItem } from "@/lib/domain/answerReasoning";
 import { latestGeneratedArtifactsForAnswer } from "@/lib/domain/generatedArtifacts";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 
@@ -25,64 +30,6 @@ function artifactPayload(event: RunEventView): unknown {
   return isRecord(event.data) && "payload" in event.data ? event.data.payload : null;
 }
 
-function safeSnippet(value: unknown): string {
-  if (typeof value === "string") return value.trim().slice(0, 1200);
-  try {
-    return JSON.stringify(value, null, 2).slice(0, 1200);
-  } catch {
-    return "";
-  }
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function reasoningTextFromValue(value: unknown): string | null {
-  if (typeof value === "string") return value.trim() || null;
-  if (Array.isArray(value)) {
-    const parts = value
-      .map(reasoningTextFromValue)
-      .filter((text): text is string => Boolean(text));
-    return parts.length > 0 ? parts.join("\n\n") : null;
-  }
-  if (!isRecord(value)) {
-    const text = safeSnippet(value);
-    return text || null;
-  }
-  for (const key of ["delta", "summary", "reasoning", "text"]) {
-    if (key in value) return reasoningTextFromValue(value[key]);
-  }
-  if (Object.keys(value).length === 0) return null;
-  const text = safeSnippet(value);
-  return text || null;
-}
-
-function citationFromValue(value: unknown, fallbackIndex: number): ThreadCitation | null {
-  if (typeof value === "string" && value.trim()) {
-    const url = safeExternalHref(value);
-    return url
-      ? { index: fallbackIndex, title: `Source ${fallbackIndex}`, url }
-      : null;
-  }
-  if (!isRecord(value)) return null;
-  const url = safeExternalHref(optionalString(value.url) ?? optionalString(value.href));
-  if (!url) return null;
-  const index = typeof value.index === "number" && Number.isSafeInteger(value.index) &&
-    value.index >= 0
-    ? value.index
-    : fallbackIndex;
-  const snippet = optionalString(value.snippet);
-  const source = optionalString(value.source);
-  return {
-    index,
-    ...(snippet ? { snippet } : {}),
-    ...(source ? { source } : {}),
-    title: optionalString(value.title) ?? `Source ${index}`,
-    url
-  };
-}
-
 function groundingDisplayFromEvent(event: RunEventView): {
   citations: ThreadCitation[];
   display: NonNullable<ThreadArtifactSummary["groundingDisplay"]>;
@@ -90,10 +37,7 @@ function groundingDisplayFromEvent(event: RunEventView): {
   if (event.type !== "grounding_display" || !isRecord(event.data)) return null;
   const data = decodeGroundingDisplay(event.data);
   if (!data) return null;
-  const citations = (Array.isArray(data.citations) ? data.citations : [])
-    .slice(0, 100)
-    .map((citation, index) => citationFromValue(citation, index + 1))
-    .filter((citation): citation is ThreadCitation => Boolean(citation));
+  const citations = answerCitationsFromGrounding(data.citations);
   return {
     citations,
     display: {
@@ -155,23 +99,27 @@ export function summarizeThreadArtifacts(
     const decoded = decodeThreadGeneratedArtifact(artifactPayload(event));
     return decoded ? [decoded] : [];
   }));
-  const reasoningText = events
-    .filter((event) => artifactTypeFromEvent(event) === "reasoning")
-    .map((event) => reasoningTextFromValue(artifactPayload(event)))
-    .filter((text): text is string => Boolean(text));
-  const citationEvents = events.filter(
-    (event) => artifactTypeFromEvent(event) === "citation"
-  );
-  const citations = grounding?.citations ?? citationEvents
-    .map((event, index) => citationFromValue(artifactPayload(event), index + 1))
-    .filter((citation): citation is ThreadCitation => Boolean(citation));
+  // The same projections and folds as a reload, so a finished live answer
+  // shows the thinking, citations and sources its saved summary will show.
+  const reasoning = foldReasoningEntries(events.map((event) =>
+    artifactTypeFromEvent(event) === "reasoning"
+      ? streamedReasoningFoldItem(artifactPayload(event))
+      : { kind: "other" as const }));
+  const citationList = foldAnswerCitations(grounding?.citations ?? events.flatMap((event) => {
+    const citation = artifactTypeFromEvent(event) === "citation"
+      ? projectAnswerCitation(artifactPayload(event))
+      : null;
+    return citation ? [citation] : [];
+  }));
+  const citations = citationList.citations;
   const searchEvents = events.filter(
     (event) => artifactTypeFromEvent(event) === "search"
   );
-  const sources = projectThreadSearchSources([
+  const sourceList = collectThreadSearchSources([
     ...searchEvents.flatMap(sourceValuesFromSearchEvent),
-    ...(grounding ? [grounding.citations] : [])
-  ]);
+    ...(grounding ? [citations] : [])
+  ], THREAD_SEARCH_SOURCE_MAX_ITEMS);
+  const sources = sourceList.sources;
 
   if (
     generatedFiles.length === 0 &&
@@ -180,7 +128,7 @@ export function summarizeThreadArtifacts(
     generatedArtifacts.length === 0 &&
     citations.length === 0 &&
     sources.length === 0 &&
-    reasoningText.length === 0 &&
+    reasoning.entries.length === 0 &&
     !grounding &&
     !contextCompaction
   ) {
@@ -189,14 +137,17 @@ export function summarizeThreadArtifacts(
 
   return {
     citations,
+    ...(citationList.truncated ? { citationsTruncated: true as const } : {}),
     ...(contextCompaction ? { contextCompaction } : {}),
     ...(skillCatalogOmittedCount ? { skillCatalogOmittedCount } : {}),
     groundingDisplay: grounding?.display ?? null,
     ...(generatedFiles.length ? { generatedFiles } : {}),
     ...(generatedImages.length ? { generatedImages } : {}),
     ...(generatedArtifacts.length ? { generatedArtifacts } : {}),
-    reasoningText,
-    sources
+    reasoningText: reasoning.entries,
+    ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
+    sources,
+    ...(sourceList.truncated ? { sourcesTruncated: true as const } : {})
   };
 }
 
@@ -219,15 +170,27 @@ export function mergeLiveThreadArtifacts(
   const liveCompaction = live.contextCompaction;
   const contextCompaction = mergeContextCompactionStatus(savedCompaction, liveCompaction);
   const groundingDisplay = live.groundingDisplay ?? saved.groundingDisplay;
+  // A list and its completeness mark always come from the same summary.
+  const citationOwner = live.citations.length > 0 ? live : saved;
+  const reasoningOwner = live.reasoningText.length > 0 ? live : saved;
+  const sourceOwner = live.sources.length > 0 ? live : saved;
+  const {
+    citationsTruncated: _citationsTruncated,
+    reasoningTruncated: _reasoningTruncated,
+    sourcesTruncated: _sourcesTruncated,
+    ...merged
+  } = { ...saved, ...live };
   return {
-    ...saved,
-    ...live,
-    citations: live.citations.length > 0 ? live.citations : saved.citations,
+    ...merged,
+    citations: citationOwner.citations,
+    ...(citationOwner.citationsTruncated ? { citationsTruncated: true as const } : {}),
     ...(contextCompaction ? { contextCompaction } : {}),
     ...(files.size ? { generatedFiles: [...files.values()] } : {}),
     groundingDisplay: groundingDisplay ?? null,
-    reasoningText: live.reasoningText.length > 0 ? live.reasoningText : saved.reasoningText,
-    sources: live.sources.length > 0 ? live.sources : saved.sources
+    reasoningText: reasoningOwner.reasoningText,
+    ...(reasoningOwner.reasoningTruncated ? { reasoningTruncated: true as const } : {}),
+    sources: sourceOwner.sources,
+    ...(sourceOwner.sourcesTruncated ? { sourcesTruncated: true as const } : {})
   };
 }
 

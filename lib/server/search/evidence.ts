@@ -1,4 +1,6 @@
 import { safeExternalHref } from "../../domain/links";
+import { searchSourceFallbackTitle } from "../../domain/searchSources";
+import { storableUtf16Text, takeUtf16SafePrefix } from "../../domain/utf16";
 
 export type SearchSource = Readonly<{
   date?: string;
@@ -17,10 +19,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Cut at a code point and re-trimmed, so a stored value never ends in half a pair or a space. */
 function text(value: unknown, max: number): string | undefined {
-  return typeof value === "string" && value.trim()
-    ? value.trim().slice(0, max)
-    : undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = storableUtf16Text(value).trim();
+  return trimmed ? takeUtf16SafePrefix(trimmed, max).trimEnd() : undefined;
 }
 
 function safeHttpHref(value: unknown): string | undefined {
@@ -28,7 +31,7 @@ function safeHttpHref(value: unknown): string | undefined {
   const href = value.trim();
   if (!href || href.length > 2_048) return undefined;
   const safe = safeExternalHref(href);
-  if (!safe) return undefined;
+  if (!safe || storableUtf16Text(safe) !== safe) return undefined;
   try {
     const url = new URL(safe);
     return (url.protocol === "https:" || url.protocol === "http:") &&
@@ -76,7 +79,7 @@ export function normalizeSearchSources(value: unknown, maximum = 20): SearchSour
         ...(text(row.snippet, 2_000) ?? text(row.description, 2_000)
           ? { snippet: text(row.snippet, 2_000) ?? text(row.description, 2_000) }
           : {}),
-        title: text(row.title, 500) ?? safe,
+        title: text(row.title, 500) ?? searchSourceFallbackTitle(safe),
         url: safe
       });
     }
