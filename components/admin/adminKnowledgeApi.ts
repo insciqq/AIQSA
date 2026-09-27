@@ -1,5 +1,6 @@
 import {
   decodeAdminKnowledgeResponse,
+  decodeAdminKnowledgeSearchRetryResponse,
   type AdminKnowledgePdfProcessingMode,
   type AdminKnowledgeSettings
 } from "@/lib/contracts/adminKnowledge";
@@ -10,6 +11,13 @@ export type AdminKnowledgeResult =
   | { data: AdminKnowledgeSettings; ok: true }
   | { error: string; ok: false };
 
+function errorCode(value: unknown): string {
+  return typeof value === "object" && value !== null &&
+    typeof (value as Record<string, unknown>).error === "string"
+    ? String((value as Record<string, unknown>).error)
+    : "knowledge_admin_action_failed";
+}
+
 async function request(init: RequestInit, fetcher: Fetcher): Promise<AdminKnowledgeResult> {
   try {
     const response = await fetcher("/api/admin/knowledge", {
@@ -17,15 +25,7 @@ async function request(init: RequestInit, fetcher: Fetcher): Promise<AdminKnowle
       ...init
     });
     const value = await response.json().catch(() => null);
-    if (!response.ok) {
-      return {
-        error: typeof value === "object" && value !== null &&
-          typeof (value as Record<string, unknown>).error === "string"
-          ? String((value as Record<string, unknown>).error)
-          : "knowledge_admin_action_failed",
-        ok: false
-      };
-    }
+    if (!response.ok) return { error: errorCode(value), ok: false };
     const decoded = decodeAdminKnowledgeResponse(value);
     return decoded
       ? { data: decoded.knowledge, ok: true }
@@ -86,6 +86,32 @@ export function updateAdminKnowledgeIngestionParallelism(input: Readonly<{
   }, fetcher);
 }
 
+export type AdminKnowledgeSearchRetryResult =
+  | { data: AdminKnowledgeSettings; ok: true; retried: number }
+  | { error: string; ok: false };
+
+/** Re-queues failed Knowledge search indexing without rebuilding the index. */
+export async function retryAdminKnowledgeFailedSearchIndexing(
+  fetcher: Fetcher = fetch
+): Promise<AdminKnowledgeSearchRetryResult> {
+  try {
+    const response = await fetcher("/api/admin/knowledge", {
+      body: JSON.stringify({ action: "retry_failed_search_projections" }),
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+    const value = await response.json().catch(() => null);
+    if (!response.ok) return { error: errorCode(value), ok: false };
+    const decoded = decodeAdminKnowledgeSearchRetryResponse(value);
+    return decoded
+      ? { data: decoded.knowledge, ok: true, retried: decoded.retried }
+      : { error: "knowledge_response_invalid", ok: false };
+  } catch {
+    return { error: "network_error", ok: false };
+  }
+}
+
 export function adminKnowledgeErrorMessage(code: string): string {
   const messages: Record<string, string> = {
     knowledge_admin_action_failed: "Knowledge settings could not be updated.",
@@ -96,6 +122,7 @@ export function adminKnowledgeErrorMessage(code: string): string {
     knowledge_ingestion_parallelism_stale: "Document processing settings changed elsewhere. Refresh and try again.",
     knowledge_pdf_processing_mode_unavailable: "That PDF processing route is not verified on the selected document model.",
     knowledge_response_invalid: "The Knowledge settings response was invalid.",
+    knowledge_search_retry_input_invalid: "The search indexing retry request was invalid. Refresh and try again.",
     knowledge_profile_destination_unavailable: "That processing destination is no longer ready. Check its provider connection and refresh.",
     knowledge_profile_input_invalid: "The processing profile request was invalid. Refresh and try again.",
     knowledge_profile_revision_unavailable: "That earlier processing profile can no longer be activated.",

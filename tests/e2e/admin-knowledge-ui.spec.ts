@@ -80,7 +80,9 @@ function knowledgeSettings(): AdminKnowledgeSettings {
       search: {
         backendState: "available",
         expectedProjections: 4,
+        failedBases: 0,
         failedProjections: 0,
+        failedSources: 0,
         pendingProjections: 1,
         readyProjections: 3,
         workerLastSeenAt: "2026-08-18T00:00:00.000Z",

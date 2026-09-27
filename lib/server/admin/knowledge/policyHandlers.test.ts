@@ -226,4 +226,60 @@ describe("administrator Knowledge settings handlers", () => {
     }
     expect(service.activateProfile).toHaveBeenCalledOnce();
   });
+
+  it("retries only failed search indexing for an administrator and returns refreshed settings", async () => {
+    const service = { list: vi.fn().mockResolvedValue({ operations: {} }), retryFailedSearchProjections: vi.fn().mockResolvedValue(2) };
+    const handlers = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never
+    });
+    const response = await handlers.POST(new Request("http://local.test/api/admin/knowledge", {
+      body: JSON.stringify({ action: "retry_failed_search_projections" }),
+      headers: { "content-type": "application/json" }, method: "POST"
+    }));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ knowledge: { operations: {} }, retried: 2 });
+    expect(service.retryFailedSearchProjections).toHaveBeenCalledOnce();
+    expect(service.list.mock.invocationCallOrder[0]!)
+      .toBeGreaterThan(service.retryFailedSearchProjections.mock.invocationCallOrder[0]!);
+  });
+
+  it("denies the search indexing retry to ordinary users and rejects malformed requests", async () => {
+    const service = { list: vi.fn(), retryFailedSearchProjections: vi.fn() };
+    const request = (body: unknown, contentType = "application/json") =>
+      new Request("http://local.test/api/admin/knowledge", {
+        body: JSON.stringify(body), headers: { "content-type": contentType }, method: "POST"
+      });
+    const user = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session("user")) as never, service: service as never
+    });
+    expect((await user.POST(request({ action: "retry_failed_search_projections" }))).status).toBe(403);
+    const anonymous = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(null) as never, service: service as never
+    });
+    expect((await anonymous.POST(request({ action: "retry_failed_search_projections" }))).status).toBe(401);
+    const admin = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never
+    });
+    expect((await admin.POST(request({ action: "retry_failed_search_projections" }, "text/plain"))).status).toBe(415);
+    for (const body of [{}, { action: "rebuild" }, { action: "retry_failed_search_projections", indexArtifactIds: ["x"] }]) {
+      const invalid = await admin.POST(request(body));
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({ error: "knowledge_search_retry_input_invalid" });
+    }
+    expect(service.retryFailedSearchProjections).not.toHaveBeenCalled();
+    expect(service.list).not.toHaveBeenCalled();
+  });
+
+  it("reports a stable error when the search indexing retry fails", async () => {
+    const service = { list: vi.fn(), retryFailedSearchProjections: vi.fn().mockRejectedValue(new Error("PRIVATE_DB")) };
+    const handlers = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never
+    });
+    const response = await handlers.POST(new Request("http://local.test/api/admin/knowledge", {
+      body: JSON.stringify({ action: "retry_failed_search_projections" }),
+      headers: { "content-type": "application/json" }, method: "POST"
+    }));
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({ error: "knowledge_admin_action_failed" });
+  });
 });
