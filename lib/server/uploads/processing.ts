@@ -159,16 +159,23 @@ async function parseDocument(
       throw new AttachmentProcessingError("pdf_page_limit_exceeded");
     }
     const capped = capText(parsed.text, maxChars);
-    const status = capped.truncated ? "partial" :
+    const pdfStatus = capped.truncated ? "partial" :
       capped.text ? "complete" : "no_text";
+    // Inline and spreadsheet extraction stop at the same cap before this one
+    // and report it as `truncated_oversized_section`; a parser-side partial
+    // result is incomplete even when its text fits.
+    const truncated = capped.truncated ||
+      parsed.warnings.includes("truncated_oversized_section");
     const details = {
       characterCount: capped.text.length,
       engine: parsed.engine,
       extractedTextMaxChars: maxChars,
       pageCount: parsed.pageCount,
       parserStatus: parsed.status,
-      status,
-      truncated: capped.truncated
+      status: truncated ? "partial" : !capped.text ? "no_text" :
+        parsed.status === "partial" ? "partial" : "complete",
+      truncated,
+      warnings: [...parsed.warnings]
     };
     return {
       extractedText: capped.text || null,
@@ -180,7 +187,7 @@ async function parseDocument(
               pageCount: parsed.pageCount,
               pagesProcessed: parsed.pageCount,
               parserEngine: parsed.engine,
-              status,
+              status: pdfStatus,
               ...(capped.truncated ? { truncationReason: "text_limit" } : {})
             }
           }
@@ -207,6 +214,8 @@ export function createAttachmentProcessor(input: Readonly<{
   parser?: Pick<DocumentParserBoundary, "parse">;
   storage: Pick<StorageAdapter, "getObject">;
 }>) {
+  // Invalid operator limits fail processor startup visibly, not each job.
+  getAttachmentTextConfig();
   const parser = input.parser ?? createDocumentParserBoundary();
   const extractHtmlText = input.htmlTextExtractor ?? extractHtmlTextInIsolation;
 

@@ -1,4 +1,27 @@
 import { normalizeDoclingResponse, normalizeTikaResponse } from "./normalization";
+import {
+  PARSED_TABLE_MAX_CELLS,
+  PARSED_TABLE_MAX_ROWS,
+  parsedTableShapeValid
+} from "./tableLimits";
+import type { ParsedDocument } from "./types";
+
+function tikaTableDocument(rows: readonly string[]): ParsedDocument {
+  return normalizeTikaResponse([{
+    "X-TIKA:content": `<html><body><table>${rows.join("")}</table></body></html>`
+  }], "application/msword");
+}
+
+function tableRows(count: number, columns: number): string[] {
+  return Array.from({ length: count }, (_, row) =>
+    `<tr>${Array.from({ length: columns }, (_, column) => `<td>r${row + 1}c${column + 1}</td>`).join("")}</tr>`);
+}
+
+function expectKnowledgeValidTables(parsed: ParsedDocument): void {
+  for (const block of parsed.blocks) {
+    if (block.table) expect(parsedTableShapeValid(block.table)).toBe(true);
+  }
+}
 
 describe("Docling normalization", () => {
   it("preserves Cyrillic OCR text and its page attribution", () => {
@@ -486,5 +509,88 @@ describe("Tika normalization", () => {
     }], "application/rtf");
     expect(parsed.pageCount).toBe(1);
     expect(parsed.blocks[0]).toMatchObject({ page: 1, text: "Only page" });
+  });
+
+  it("keeps every row of a table taller than the row bound in consecutive portions", () => {
+    const parsed = tikaTableDocument(tableRows(2_500, 2));
+
+    expect(parsed.status).toBe("complete");
+    expect(parsed.warnings).toContain("table_extraction_degraded");
+    expect(parsed.blocks.map((block) => block.table?.rowCount)).toEqual([PARSED_TABLE_MAX_ROWS, 500]);
+    expect(parsed.text).toContain("r2000c2\n");
+    expect(parsed.text).toContain("r2001c1\tr2001c2");
+    expect(parsed.text).toContain("r2500c2");
+    expectKnowledgeValidTables(parsed);
+  });
+
+  it("splits a table beyond the cell bound instead of rejecting the document", () => {
+    const parsed = tikaTableDocument(tableRows(1_700, 6));
+
+    expect(parsed.warnings).toContain("table_extraction_degraded");
+    expect(parsed.blocks.length).toBeGreaterThan(1);
+    expect(parsed.blocks.reduce((total, block) => total + (block.table?.cells.length ?? 0), 0))
+      .toBe(1_700 * 6);
+    expect(parsed.blocks.every((block) =>
+      (block.table?.cells.length ?? 0) <= PARSED_TABLE_MAX_CELLS)).toBe(true);
+    expect(parsed.text).toContain("r1700c6");
+    expectKnowledgeValidTables(parsed);
+  });
+
+  it("keeps a table wider than the column bound as text instead of an invalid structure", () => {
+    const wide = Array.from({ length: 3 }, (_, row) =>
+      `<tr>${Array.from({ length: 3 }, (_, column) =>
+        `<td colspan="100">r${row + 1}c${column + 1}</td>`).join("")}</tr>`);
+    const parsed = tikaTableDocument(wide);
+
+    expect(parsed.warnings).toContain("table_extraction_degraded");
+    expect(parsed.blocks).toHaveLength(1);
+    expect(parsed.blocks[0]).toMatchObject({ isTable: true, table: null, type: "table" });
+    expect(parsed.blocks[0]!.text).toBe("r1c1\tr1c2\tr1c3\nr2c1\tr2c2\tr2c3\nr3c1\tr3c2\tr3c3");
+  });
+
+  it("keeps spans inside the declared grid with the Knowledge semantics", () => {
+    const parsed = tikaTableDocument([
+      "<tr><td rowspan=\"9\">a</td><td colspan=\"2\">b</td></tr>",
+      "<tr><td>c</td><td>d</td></tr>"
+    ]);
+
+    expect(parsed.warnings).not.toContain("table_extraction_degraded");
+    expect(parsed.blocks[0]?.table).toMatchObject({ columnCount: 3, rowCount: 2 });
+    expect(parsed.blocks[0]?.table?.cells[0]).toMatchObject({ row: 0, rowSpan: 2 });
+    expectKnowledgeValidTables(parsed);
+  });
+
+  it("clamps HTML spans and still bounds the retained columns", () => {
+    const parsed = tikaTableDocument(["<tr><td colspan=\"999999\">x</td></tr>"]);
+    expect(parsed.blocks[0]).toMatchObject({ table: null, text: "x" });
+    expect(parsed.warnings).toContain("table_extraction_degraded");
+  });
+});
+
+describe("Docling table bounds", () => {
+  it("portions a Docling table taller than the row bound without rejecting the document", () => {
+    const tableCells = Array.from({ length: 2_001 }, (_, row) => ({
+      end_col_offset_idx: 1,
+      end_row_offset_idx: row + 1,
+      start_col_offset_idx: 0,
+      start_row_offset_idx: row,
+      text: `row ${row + 1}`
+    }));
+    const parsed = normalizeDoclingResponse({
+      document: {
+        json_content: {
+          body: { children: [{ $ref: "#/tables/0" }] },
+          pages: { "1": { page_no: 1 } },
+          schema_name: "DoclingDocument",
+          tables: [{ content_layer: "body", data: { table_cells: tableCells }, prov: [{ page_no: 1 }] }]
+        }
+      },
+      status: "success"
+    }, "application/pdf");
+
+    expect(parsed.warnings).toContain("table_extraction_degraded");
+    expect(parsed.blocks.map((block) => block.table?.rowCount)).toEqual([PARSED_TABLE_MAX_ROWS, 1]);
+    expect(parsed.blocks[1]?.text).toBe("row 2001");
+    expectKnowledgeValidTables(parsed);
   });
 });

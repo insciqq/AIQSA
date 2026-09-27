@@ -1,6 +1,6 @@
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { imageTokenEstimator, type ImageDimensions, type ImageTokenEstimate } from "../../domain/imageTokenEstimate";
-import { pdfPageCountFromMetadata } from "../../contracts/uploads";
+import { documentProcessingFromMetadata, pdfPageCountFromMetadata } from "../../contracts/uploads";
 import type { ProviderAttachment, ProviderModelCapabilities } from "./types";
 
 export function usesNativePdfInput(attachment: Pick<ProviderAttachment, "kind" | "pdfDelivery">,
@@ -30,12 +30,25 @@ export function truncateProviderAttachmentText(text: string, maxChars?: number):
   return `${text.slice(0, maxChars)}\n[truncated ${text.length - maxChars} chars]`;
 }
 
+/** Processing-time incompleteness of a document's retained text. It belongs
+ * to the label, so the provider line, the context fit and the request guard
+ * all measure and send the same string. */
+function documentCompletenessNote(attachment: ProviderAttachment): string | null {
+  if (attachment.kind !== "document") return null;
+  const processing = documentProcessingFromMetadata(attachment.metadata);
+  if (processing?.status !== "partial") return null;
+  return processing.truncated
+    ? `incomplete text: extraction kept only the first ${processing.characterCount} characters; the rest of the original file is not included`
+    : "incomplete text: part of the original file could not be read";
+}
+
 export function providerAttachmentTextLabel(attachment: ProviderAttachment): string {
   if (attachment.kind === "pdf") {
     return `Attached PDF: ${attachment.fileName}`;
   }
 
-  return `Attached document: ${attachment.fileName} (${attachment.mimeType || "unknown type"})`;
+  const note = documentCompletenessNote(attachment);
+  return `Attached document: ${attachment.fileName} (${attachment.mimeType || "unknown type"})${note ? `; ${note}` : ""}`;
 }
 
 export function providerAttachmentText(

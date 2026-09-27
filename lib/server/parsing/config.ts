@@ -54,19 +54,24 @@ const environmentNames = Object.freeze({
   })
 } satisfies Record<SidecarParserEngine, Record<keyof ParserEngineConfig, string>>);
 
+/** An administrative limit is applied exactly or rejected: a malformed or
+ * out-of-range value never silently becomes a different limit. Compose
+ * forwards an unset optional value as an empty string. */
 function boundedPositiveInteger(
+  name: string,
   value: string | undefined,
   fallback: number,
   ceiling: number
 ): number {
-  if (typeof value !== "string" || !/^\d+$/u.test(value)) {
-    return fallback;
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = /^\d+$/u.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > ceiling) {
+    throw Object.assign(
+      new Error(`document_parser_config_invalid: ${name} must be an integer from 1 to ${ceiling}`),
+      { code: "document_parser_config_invalid", setting: name }
+    );
   }
-
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= ceiling
-    ? parsed
-    : fallback;
+  return parsed;
 }
 
 function parserBaseUrl(value: string | undefined): URL | undefined {
@@ -108,16 +113,19 @@ function engineConfig(
   return Object.freeze({
     baseUrl,
     requestMaxBytes: boundedPositiveInteger(
+      names.requestMaxBytes,
       environment[names.requestMaxBytes],
       requestMaxBytesDefault,
       MAX_UPLOAD_MAX_BYTES
     ),
     responseMaxBytes: boundedPositiveInteger(
+      names.responseMaxBytes,
       environment[names.responseMaxBytes],
       defaults[engine].responseMaxBytes,
       PARSER_RESPONSE_MAX_BYTES_CEILING
     ),
     timeoutMs: boundedPositiveInteger(
+      names.timeoutMs,
       environment[names.timeoutMs],
       defaults[engine].timeoutMs,
       PARSER_TIMEOUT_MS_CEILING
