@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  MEMORY_UNPROCESSED_TEXT_PLACEHOLDER,
   memoryExplicitStatementContainsSecret,
   memoryProjectionContainsRedaction,
   memoryProjectionHasSourceText,
   memoryRedactionHasSourceText,
+  memorySecretJoinIsSafe,
   parseMemorySecret,
-  redactMemorySecrets
+  redactMemorySecrets,
+  redactMemorySecretsInWindows,
+  type MemorySecretWindowedRedactionResult
 } from "./safety";
 
 describe("explicit Memory secret screening", () => {
@@ -209,5 +213,209 @@ describe("explicit Memory secret screening", () => {
     })]);
     expect(redacted.redactedText).toBe(opaque);
     expect(redacted.spans).toEqual([]);
+  });
+});
+
+const WINDOW_SECRETS = [
+  "sk-abcdefghijklmnopqrstuvwxyz123456",
+  "AKIAIOSFODNN7EXAMPLE",
+  "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvd25lciJ9.signature123456",
+  "4111 1111 1111 1111",
+  "4111-1111-1111-1111",
+  "ABCD-EFGH-IJKL-MNOP",
+  "postgresql://owner:private-password@db.example.test/app",
+  "https://user:pässword@例え.jp/パス",
+  "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\n-----END PRIVATE KEY-----"
+] as const;
+
+const WINDOW_FRAGMENTS = [
+  ...WINDOW_SECRETS,
+  "-----BEGIN RSA PRIVATE KEY-----\nunterminated body",
+  "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----",
+  "opaqueBuildA1B2C3D4E5F6G7H8I9J0K1L2M3N4",
+  "word", "Helsinki", "кофе", "東京都", "😀", "1234", "5", "x://", "-----BEGIN ",
+  " ", " ", " ", "\n", "\n\n", ",", ";", "(", ")", "\"", "'", "-"
+] as const;
+
+function windowFixture(seed: number): string {
+  let state = seed;
+  const next = () => {
+    state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+    return state / 2_147_483_648;
+  };
+  let value = "";
+  const count = 1 + Math.floor(next() * 90);
+  for (let index = 0; index < count; index += 1) {
+    value += WINDOW_FRAGMENTS[Math.floor(next() * WINDOW_FRAGMENTS.length)];
+  }
+  return value;
+}
+
+/** One full pass, with each withheld range replaced by one marker. */
+function expectedWindowedText(
+  value: string,
+  windowed: MemorySecretWindowedRedactionResult
+): string {
+  const full = redactMemorySecrets(value);
+  let expected = "";
+  const render = (from: number, to: number) => {
+    let cursor = from;
+    for (const span of full.spans) {
+      if (span.end <= from || span.start >= to) continue;
+      // A withheld range never starts or ends inside a full-pass secret.
+      expect(span.start >= from && span.end <= to).toBe(true);
+      expected += value.slice(cursor, span.start) + span.placeholder;
+      cursor = span.end;
+    }
+    expected += value.slice(cursor, to);
+  };
+  let cursor = 0;
+  for (const range of windowed.withheld) {
+    render(cursor, range.start);
+    expected += MEMORY_UNPROCESSED_TEXT_PLACEHOLDER;
+    cursor = range.end;
+  }
+  render(cursor, value.length);
+  return expected;
+}
+
+function expectExactSourceMap(
+  value: string,
+  windowed: MemorySecretWindowedRedactionResult
+): void {
+  let sourceCursor = 0;
+  let outputCursor = 0;
+  for (const entry of windowed.sourceMap) {
+    expect(entry.sourceStart).toBe(sourceCursor);
+    expect(entry.outputStart).toBe(outputCursor);
+    if (entry.kind === "SOURCE") {
+      expect(windowed.redactedText.slice(entry.outputStart, entry.outputEnd))
+        .toBe(value.slice(entry.sourceStart, entry.sourceEnd));
+    }
+    sourceCursor = entry.sourceEnd;
+    outputCursor = entry.outputEnd;
+  }
+  expect(sourceCursor).toBe(value.length);
+  expect(outputCursor).toBe(windowed.redactedText.length);
+}
+
+describe("windowed Memory secret redaction", () => {
+  it("equals one full pass for every scanned window and withholds the rest", () => {
+    let comparedWithoutWithholding = 0;
+    for (let seed = 1; seed <= 250; seed += 1) {
+      const value = windowFixture(seed);
+      const full = redactMemorySecrets(value);
+      for (const windowCodeUnits of [32, 96, 160]) {
+        const windowed = redactMemorySecretsInWindows(value, {
+          maxCodeUnits: Number.POSITIVE_INFINITY,
+          windowCodeUnits
+        });
+        expectExactSourceMap(value, windowed);
+        expect(windowed.redactedText).toBe(expectedWindowedText(value, windowed));
+        if (windowed.withheld.length === 0) {
+          comparedWithoutWithholding += 1;
+          expect(windowed.sourceMap).toEqual(full.sourceMap);
+          expect(windowed.spans).toEqual(full.spans);
+        }
+      }
+    }
+    expect(comparedWithoutWithholding).toBeGreaterThan(100);
+  });
+
+  it.each(WINDOW_SECRETS)("keeps a secret whole across a window boundary (%#)", (secret) => {
+    const value = `${"word ".repeat(25)}${secret} ${"tail words ".repeat(40)}`;
+    const full = redactMemorySecrets(value);
+    const windowed = redactMemorySecretsInWindows(value, {
+      maxCodeUnits: Number.POSITIVE_INFINITY,
+      windowCodeUnits: 128
+    });
+
+    expect(value.indexOf(secret)).toBeLessThan(128);
+    expect(value.indexOf(secret) + secret.length).toBeGreaterThan(128);
+    expect(full.redactedText).not.toContain(secret);
+    expect(windowed.withheld).toEqual([]);
+    expect(windowed.redactedText).toBe(full.redactedText);
+    expect(windowed.sourceMap).toEqual(full.sourceMap);
+    expect(windowed.containsSecret).toBe(true);
+  });
+
+  it("withholds what one bounded window cannot scan and continues after it", () => {
+    const run = "Qx".repeat(100);
+    const opaque = redactMemorySecretsInWindows(
+      `before words\n${run} ${run}\nafter words`,
+      { maxCodeUnits: Number.POSITIVE_INFINITY, windowCodeUnits: 64 }
+    );
+    expect(opaque.redactedText)
+      .toBe(`before words\n${MEMORY_UNPROCESSED_TEXT_PLACEHOLDER}after words`);
+    expect(opaque.withheld).toHaveLength(1);
+    expect(opaque.containsSecret).toBe(false);
+
+    const key = `-----BEGIN PRIVATE KEY-----\n${"MIIEvQIBADANBgkq\n".repeat(8)}` +
+      "-----END PRIVATE KEY-----";
+    const oversizedKey = redactMemorySecretsInWindows(`note:\n${key}\nafter`, {
+      maxCodeUnits: Number.POSITIVE_INFINITY,
+      windowCodeUnits: 64
+    });
+    expect(oversizedKey.redactedText).not.toContain("MIIEvQIBADANBgkq");
+    expect(oversizedKey.redactedText).toContain(MEMORY_UNPROCESSED_TEXT_PLACEHOLDER);
+    expect(oversizedKey.redactedText.endsWith("after")).toBe(true);
+
+    const budgeted = redactMemorySecretsInWindows("word ".repeat(100), {
+      maxCodeUnits: 128,
+      windowCodeUnits: 64
+    });
+    expect(budgeted.redactedText.startsWith("word word")).toBe(true);
+    expect(budgeted.redactedText.endsWith(MEMORY_UNPROCESSED_TEXT_PLACEHOLDER))
+      .toBe(true);
+    expect(budgeted.withheld).toEqual([
+      { end: 500, start: expect.any(Number) }
+    ]);
+    expect(budgeted.withheld[0]!.start).toBeGreaterThanOrEqual(128);
+  });
+
+  it("scans Unicode text without ASCII delimiters and never splits a code point", () => {
+    for (const value of [
+      "東京都に住んでいます。毎朝コーヒーを飲みます。".repeat(20),
+      `${"😀".repeat(150)} done`,
+      `${"кофе".repeat(80)}😀${"a".repeat(20)}`
+    ]) {
+      const windowed = redactMemorySecretsInWindows(value, {
+        maxCodeUnits: Number.POSITIVE_INFINITY,
+        windowCodeUnits: 64
+      });
+      expect(windowed.withheld).toEqual([]);
+      expect(windowed.redactedText).toBe(value);
+      expectExactSourceMap(value, windowed);
+    }
+  });
+
+  it("rejects window options that cannot bound the scan", () => {
+    expect(() => redactMemorySecretsInWindows("text", {
+      maxCodeUnits: 10,
+      windowCodeUnits: 0
+    })).toThrow("memory_secret_window_options_invalid");
+    expect(() => redactMemorySecretsInWindows("text", {
+      maxCodeUnits: 5,
+      windowCodeUnits: 10
+    })).toThrow("memory_secret_window_options_invalid");
+  });
+
+  it("scans the join of two redacted texts instead of their combined length", () => {
+    expect(memorySecretJoinIsSafe(
+      "ordinary ".repeat(20_000),
+      "\n\n",
+      "reply ".repeat(20_000)
+    )).toBe(true);
+    // The BEGIN label only completes across the join, so neither side alone
+    // redacts the key body.
+    const left = "see -----BEGIN ";
+    const right = "RSA PRIVATE KEY-----\nkey-body\n-----END RSA PRIVATE KEY-----";
+    expect(redactMemorySecrets(right).redactedText).toContain("key-body");
+    expect(memorySecretJoinIsSafe(left, "\n\n", right)).toBe(false);
+    expect(() => memorySecretJoinIsSafe("a", " ", "b"))
+      .toThrow("memory_secret_join_separator_invalid");
+    expect(() => memorySecretJoinIsSafe("a", "", "b"))
+      .toThrow("memory_secret_join_separator_invalid");
   });
 });
