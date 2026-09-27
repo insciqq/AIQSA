@@ -257,18 +257,20 @@ export function projectMemoryRecallRounds(
   }>
 ): readonly MemoryRecallRoundProjection[] {
   if (snapshot.mode !== "NORMAL") return [];
-  const groups = snapshot.recallChunkProjection.turnGroups.filter((group) =>
-    admittedGroup(group, admission));
-  return groups.map((group, ordinal): MemoryRecallRoundProjection => {
-    const rendered = renderMessages(group.messages);
-    // Every message was already normalized, redacted, and group-checked by
-    // the source projection. Re-running the single-message 100k guard after
-    // adding trusted speaker labels would reject an otherwise valid bounded
-    // turn at the boundary.
-    if (!rendered.text ||
-      rendered.text.length > MEMORY_RECALL_ROUND_MAX_RAW_CHARACTERS) {
-      return fail("memory_recall_round_source_invalid");
-    }
+  // Every message was already normalized, redacted, and join-checked by the
+  // source projection, so no single-message guard is repeated here. A round
+  // carries its whole turn; a longer turn stays searchable through its
+  // bounded recall chunks instead of failing the whole index job.
+  const renderedGroups = snapshot.recallChunkProjection.turnGroups
+    .filter((group) => admittedGroup(group, admission))
+    .flatMap((group) => {
+      const rendered = renderMessages(group.messages);
+      if (!rendered.text) return fail("memory_recall_round_source_invalid");
+      return rendered.text.length > MEMORY_RECALL_ROUND_MAX_RAW_CHARACTERS
+        ? []
+        : [{ group, rendered }];
+    });
+  return renderedGroups.map(({ group, rendered }, ordinal): MemoryRecallRoundProjection => {
     const parent = parentChunkFor(group, chunks);
     if (!parent) return fail("memory_recall_round_parent_missing");
     const evidenceRootHash = memoryHistoryEvidenceRootHash({

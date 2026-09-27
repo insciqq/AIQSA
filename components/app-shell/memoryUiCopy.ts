@@ -121,7 +121,7 @@ const EN = {
   "action.manage": "Manage Memories",
   "answer.limited": "Memory was used with limitations for this response.",
   "answer.unavailable": "Memory was unavailable for this response.",
-  "answer.inputTooLong": "This message was too long for Memory to process in full. No Memory changes were made from it.",
+  "answer.inputTooLong": "This message was too long for Memory to process in full. Memory commands in it were not applied.",
   "source.learnedMemory": "Learned memory",
   "source.pastChat": "Past chat",
   "source.savedMemory": "Saved memory",

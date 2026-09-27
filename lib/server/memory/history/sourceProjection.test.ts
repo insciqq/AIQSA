@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
+import { MEMORY_UNPROCESSED_TEXT_PLACEHOLDER } from "../explicit/safety";
+import { MEMORY_HISTORY_UNPROCESSED_TEXT_REASON } from "./safety";
 import {
   buildMemorySafeSourceSnapshot,
   MemoryHistorySourceProjectionError,
@@ -481,6 +483,244 @@ describe("Memory safe source snapshot", () => {
       expect(snapshot.recallChunkProjection.turnGroups).toEqual([]);
       expect(JSON.stringify(snapshot)).not.toContain("raw source");
     }
+  });
+
+  it("keeps a reply and its >100k prompt in recall; size taints nothing", () => {
+    const user = userMessage({
+      id: "user-large",
+      parentMessageId: null,
+      text: `cedarprefix ${"user context line. ".repeat(5_400)} maplesuffix`
+    });
+    const assistant = assistantMessage({
+      id: "assistant-short",
+      parentMessageId: user.id,
+      text: "Short visible reply."
+    });
+    expect(user.content).toBeDefined();
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
+
+    expect(snapshot.recallChunkProjection.turnGroups).toHaveLength(1);
+    expect(snapshot.recallChunkProjection.turnGroups[0]).toMatchObject({
+      assistantMessageId: assistant.id,
+      kind: "TURN",
+      safetyClass: "NORMAL",
+      userMessageId: user.id
+    });
+    expect(snapshot.recallChunkProjection.turnGroups[0]!.messages[0]!.safeText.length)
+      .toBeGreaterThan(100_000);
+    expect(snapshot.factEvidenceProjection.messages.map((message) => message.id))
+      .toEqual([user.id]);
+    expect(snapshot.provenanceGraph).toEqual([
+      expect.objectContaining({
+        eligibleForFactEvidence: true,
+        eligibleForRecall: true,
+        reasonCodes: [],
+        transitiveTaint: false
+      }),
+      expect.objectContaining({
+        eligibleForFactEvidence: false,
+        eligibleForRecall: true,
+        reasonCodes: [],
+        transitiveTaint: false
+      })
+    ]);
+  });
+
+  it("keeps the reply to an unscannable prompt without transitive taint", () => {
+    const user = userMessage({
+      id: "user-opaque",
+      parentMessageId: null,
+      text: "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo".repeat(3_500)
+    });
+    const assistant = assistantMessage({
+      id: "assistant-after-opaque",
+      parentMessageId: user.id,
+      text: "I cannot read that pasted data, but here is general help."
+    });
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
+
+    expect(snapshot.recallChunkProjection.turnGroups).toEqual([
+      expect.objectContaining({
+        assistantMessageId: assistant.id,
+        kind: "STANDALONE",
+        userMessageId: null
+      })
+    ]);
+    expect(snapshot.factEvidenceProjection.messages).toEqual([]);
+    expect(snapshot.provenanceGraph[0]).toMatchObject({
+      eligibleForFactEvidence: false,
+      eligibleForRecall: false,
+      reasonCodes: ["SOURCE_TEXT_LIMIT"],
+      transitiveTaint: false
+    });
+    expect(snapshot.provenanceGraph[1]).toMatchObject({
+      eligibleForRecall: true,
+      transitiveTaint: false
+    });
+    expect(snapshot.provenanceGraph[1]?.reasonCodes)
+      .not.toContain("TRANSITIVE_PROVENANCE_TAINT");
+  });
+
+  it("keeps neighbouring user facts when one of them is large", () => {
+    const first = userMessage({
+      id: "user-85k",
+      parentMessageId: null,
+      text: `I keep a garden journal. ${"Tomatoes, basil and peppers. ".repeat(2_900)}`
+    });
+    const firstReply = assistantMessage({
+      id: "assistant-85k",
+      parentMessageId: first.id,
+      text: "Noted your garden journal."
+    });
+    const second = userMessage({
+      id: "user-20k",
+      parentMessageId: firstReply.id,
+      text: `My sister lives in Porto. ${"She teaches music there. ".repeat(800)}`
+    });
+    const secondReply = assistantMessage({
+      id: "assistant-20k",
+      parentMessageId: second.id,
+      text: "Porto sounds lovely."
+    });
+    const firstLength = (first.content as { blocks: [{ text: string }] }).blocks[0].text.length;
+    const secondLength = (second.content as { blocks: [{ text: string }] }).blocks[0].text.length;
+    expect(firstLength).toBeGreaterThan(80_000);
+    expect(firstLength).toBeLessThan(100_000);
+    expect(secondLength).toBeGreaterThan(19_000);
+    expect(secondLength).toBeLessThan(24_000);
+    expect(firstLength + secondLength).toBeGreaterThan(100_000);
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([
+      first,
+      firstReply,
+      second,
+      secondReply
+    ]));
+
+    expect(snapshot.factEvidenceProjection.messages.map((message) => message.id))
+      .toEqual([first.id, second.id]);
+    for (const node of snapshot.provenanceGraph) {
+      expect(node.reasonCodes).not.toContain("FACT_WINDOW_SAFETY_EXCLUDED");
+    }
+  });
+
+  it("keeps a turn above 200k whole and its reply recall-eligible", () => {
+    const user = userMessage({
+      id: "user-250k",
+      parentMessageId: null,
+      text: "Long travel diary entry, day by day. ".repeat(6_800)
+    });
+    const assistant = assistantMessage({
+      id: "assistant-after-250k",
+      parentMessageId: user.id,
+      text: "Thanks for the diary."
+    });
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
+    const group = snapshot.recallChunkProjection.turnGroups[0];
+
+    expect(group?.messages[0]?.safeText.length).toBeGreaterThan(250_000);
+    expect(group).toMatchObject({ kind: "TURN", userMessageId: user.id });
+    expect(snapshot.provenanceGraph.map((node) => node.eligibleForRecall))
+      .toEqual([true, true]);
+    for (const node of snapshot.provenanceGraph) {
+      expect(node.reasonCodes).not.toContain("TURN_GROUP_SAFETY_EXCLUDED");
+    }
+  });
+
+  it("redacts a secret on a window boundary in recall and fact projections", () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const text = `${"a word ".repeat(14_285)}${token} and my new city is Kallio. ` +
+      "More notes follow. ".repeat(3_000);
+    expect(text.indexOf(token)).toBeLessThan(100_000);
+    expect(text.indexOf(token) + token.length).toBeGreaterThan(100_000);
+    const user = userMessage({ id: "user-boundary", parentMessageId: null, text });
+    const assistant = assistantMessage({
+      id: "assistant-boundary",
+      parentMessageId: user.id,
+      text: "I will not repeat the token."
+    });
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
+    const projectedUser = snapshot.factEvidenceProjection.messages[0];
+
+    expect(projectedUser).toMatchObject({
+      id: user.id,
+      redactionReasonCodes: ["SECRET_REDACTED_KNOWN_TOKEN"],
+      redactionState: "REDACTED"
+    });
+    expect(projectedUser?.safeText).toContain("[REDACTED:TOKEN] and my new city is Kallio.");
+    expect(snapshot.recallChunkProjection.turnGroups[0]?.kind).toBe("TURN");
+    expect(JSON.stringify(snapshot)).not.toContain(token);
+  });
+
+  it("projects long Unicode text without ASCII spaces completely", () => {
+    const text = `${"東京都に住んでいます。毎朝コーヒーを飲みます。".repeat(5_000)}😀 Готово.`;
+    expect(text.length).toBeGreaterThan(100_000);
+    const user = userMessage({ id: "user-unicode", parentMessageId: null, text });
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user]));
+
+    expect(snapshot.factEvidenceProjection.messages[0]).toMatchObject({
+      redactionReasonCodes: [],
+      redactionState: "NOT_NEEDED",
+      safeText: text
+    });
+  });
+
+  it("marks withheld unscanned text explicitly and keeps the scanned remainder", () => {
+    const blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo".repeat(3_500);
+    const user = userMessage({
+      id: "user-withheld",
+      parentMessageId: null,
+      text: `Here is my photo.\n${blob}\nAlso, I moved to Rome.`
+    });
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user]));
+    const projected = snapshot.factEvidenceProjection.messages[0];
+
+    expect(projected).toMatchObject({
+      redactionReasonCodes: [MEMORY_HISTORY_UNPROCESSED_TEXT_REASON],
+      redactionState: "REDACTED",
+      safeText: `Here is my photo.\n${MEMORY_UNPROCESSED_TEXT_PLACEHOLDER}Also, I moved to Rome.`
+    });
+    expect(snapshot.recallChunkProjection.turnGroups[0]).toMatchObject({
+      redactionReasonCodes: [MEMORY_HISTORY_UNPROCESSED_TEXT_REASON],
+      redactionState: "REDACTED"
+    });
+    expect(snapshot.provenanceGraph[0]).toMatchObject({
+      eligibleForFactEvidence: true,
+      eligibleForRecall: true,
+      reasonCodes: [MEMORY_HISTORY_UNPROCESSED_TEXT_REASON],
+      transitiveTaint: false
+    });
+    expect(JSON.stringify(snapshot)).not.toContain(blob.slice(0, 40));
+  });
+
+  it("still excludes a turn whose join reveals a private key", () => {
+    // Neither message alone holds a complete private-key header; the joined
+    // label "RSA\n\nOPENSSH PRIVATE KEY" does.
+    const user = userMessage({
+      id: "user-key-start",
+      parentMessageId: null,
+      text: "Here it comes -----BEGIN RSA"
+    });
+    const assistant = assistantMessage({
+      id: "assistant-key-end",
+      parentMessageId: user.id,
+      text: "OPENSSH PRIVATE KEY-----\nkey-body-material\n-----END OPENSSH PRIVATE KEY-----"
+    });
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
+
+    expect(snapshot.provenanceGraph[0]).toMatchObject({
+      eligibleForRecall: false,
+      reasonCodes: ["TURN_GROUP_SAFETY_EXCLUDED"]
+    });
+    expect(snapshot.recallChunkProjection.turnGroups.some((group) =>
+      group.userMessageId === user.id)).toBe(false);
   });
 
   it("fails closed on an incomplete or cyclic active path", () => {
