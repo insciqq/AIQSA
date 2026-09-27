@@ -285,7 +285,7 @@ describe("Knowledge OpenSearch projection lifecycle", () => {
     const hierarchy = await fixture.knowledgeHierarchicalIndexArtifact.findUnique();
     fixture.knowledgeHierarchicalIndexArtifact.findUnique.mockResolvedValue({
       ...hierarchy, passageCount: 3, passageIndexes: passages
-    });
+    } as unknown as typeof hierarchy);
     fixture.queryRaw.mockResolvedValue([{ attemptCount: 1, expectedPassageCount: 3,
       id: "projection-1", indexArtifactId: "hierarchy-1", projectionFingerprint: wideFingerprint }]);
     const { mocks, search } = searchFixture();
@@ -299,7 +299,7 @@ describe("Knowledge OpenSearch projection lifecycle", () => {
     await expect(runKnowledgeSearchProjectionPass({ client: fixture.client, search }))
       .resolves.toMatchObject({ failed: 0, projected: 1 });
     expect(mocks.bulkUpsertKnowledgeDocuments.mock.calls.map(([documents]) =>
-      (documents as Array<{ passageId: string }>).map(({ passageId }) => passageId)))
+      (documents as unknown as Array<{ passageId: string }>).map(({ passageId }) => passageId)))
       .toEqual([
         ["passage-0", "passage-1", "passage-2"],
         ["passage-0", "passage-1"],
