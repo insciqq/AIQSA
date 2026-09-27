@@ -7,6 +7,7 @@ import {
   type OpenAICompatibleChatResponseContext
 } from "./openaiCompatibleChatResponse";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
+import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 
 const responseContext: OpenAICompatibleChatResponseContext = {
   modelId: "vendor/model-1",
@@ -294,6 +295,37 @@ describe("OpenAI-compatible Chat Completions response", () => {
       code: "provider_output_too_large",
       retainedTextKind: "tool_arguments"
     });
+  });
+
+  it("carries as many calls per response as one tool batch holds, streamed or not", async () => {
+    const toolCall = (index: number) => ({ function: { arguments: "{}", name: "lookup" }, id: `call-${index}`, index, type: "function" });
+    const streamed = (length: number) => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: Array.from({ length }, (_, index) => toolCall(index)) } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    const json = (length: number) => ({
+      choices: [{ finish_reason: "tool_calls", message: { content: null, role: "assistant",
+        tool_calls: Array.from({ length }, (_, index) => toolCall(index)) } }],
+      id: "completion-many-tools",
+      usage: { completion_tokens: 5, prompt_tokens: 7, total_tokens: 12 }
+    });
+    for (const length of [17, PROVIDER_RESPONSE_MAX_TOOL_CALLS]) {
+      expect((await collect(streamOpenAICompatibleChatSseResponse(streamed(length), responseContext))).result.toolCalls)
+        .toHaveLength(length);
+      expect((await collect(streamOpenAICompatibleChatJsonResponse(json(length), responseContext))).result.toolCalls)
+        .toHaveLength(length);
+    }
+    await expect(collect(streamOpenAICompatibleChatSseResponse(streamed(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1), responseContext)))
+      .rejects.toThrow("openai_compatible_chat_stream_tool_call_limit_exceeded");
+    // The refused JSON response was generated and billed: its usage is kept.
+    const events: ModelRunSseEvent[] = [];
+    await expect((async () => {
+      for await (const event of streamOpenAICompatibleChatJsonResponse(json(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1), responseContext)) {
+        events.push(event);
+      }
+    })()).rejects.toThrow("openai_compatible_chat_tool_call_limit_exceeded");
+    expect(events).toEqual([{ type: "usage", data: expect.objectContaining({ inputTokens: 7, outputTokens: 5, totalTokens: 12 }) }]);
   });
 
   it("bounds streamed tool ids and names at the protocol limit", async () => {

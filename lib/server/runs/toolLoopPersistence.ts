@@ -1,4 +1,5 @@
 import { getMcpRequestMaxBytes } from "../mcp/responseLimits";
+import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 import type { ModelRunStatus } from "@prisma/client";
 import type { SearchPlan } from "../../domain/search";
 import { mergeTokenUsage, normalizeTokenUsage, type NormalizedTokenUsage, type TokenUsageField } from "../../domain/usage";
@@ -191,7 +192,8 @@ export type AdvanceToolLoopCallBatchResult =
 
 export const toolLoopPersistenceLimits = Object.freeze({
   get argumentsBytes() { return getMcpRequestMaxBytes(); },
-  batchCalls: 64,
+  /** Exactly the calls one provider response may carry. */
+  batchCalls: PROVIDER_RESPONSE_MAX_TOOL_CALLS,
   get checkpointBytes() { return Math.max(4 * 1024 * 1024, 2 * getMcpRequestMaxBytes() + 64 * 1024); },
   providerCallIdLength: 256,
   providerCursorLength: 4_096,

@@ -1,5 +1,6 @@
 import { safeExternalHref } from "./links";
 import { GEMINI_SEARCH_SUGGESTIONS_LIMITS } from "./geminiSearchSuggestions";
+import { PROVIDER_RESPONSE_MAX_CITATIONS } from "./answerCitations";
 
 export type GroundingDisplay = {
   provider: "gemini";
@@ -12,9 +13,9 @@ export type GroundingDisplay = {
   }[];
 };
 
-/** One grounded response: the agreed 500 citations per provider response. The
- * adapter enforces its own cap first; this bound only has to admit it. */
-export const GROUNDING_DISPLAY_MAX_CITATIONS = 500;
+/** One grounded response: the Gemini adapter enforces the same shared cap
+ * first, so this bound always admits what it accepted. */
+export const GROUNDING_DISPLAY_MAX_CITATIONS = PROVIDER_RESPONSE_MAX_CITATIONS;
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

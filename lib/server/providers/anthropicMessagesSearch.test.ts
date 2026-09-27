@@ -1,6 +1,8 @@
 import type { ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import { describe, expect, it, vi } from "vitest";
 import { validateSearchToolArguments } from "../search/query";
+import { MAX_SEARCH_FINDINGS_BYTES } from "../search/evidence";
+import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
 import { createFetchAnthropicMessagesClient } from "./anthropicMessages";
 import {
   buildAnthropicMessagesSearchRequest,
@@ -305,6 +307,41 @@ describe("Anthropic Messages query-only Search adapter", () => {
     expect(JSON.stringify(result)).not.toMatch(
       /PRIVATE_THINKING_CONTENT|PRIVATE_THINKING_SIGNATURE/u
     );
+  });
+
+  it("accepts 500 citations per message across text blocks and refuses more while keeping usage", async () => {
+    const citation = (index: number) => ({ cited_text: `Fact ${index}.`, encrypted_index: "PRIVATE_ENCRYPTED_INDEX",
+      title: "Current report", type: "web_search_result_location", url: "https://example.com/report" });
+    const cited = (count: number) => {
+      const first = Math.floor(count / 2);
+      return [searchCall(), searchResult(),
+        { citations: Array.from({ length: first }, (_, index) => citation(index)), text: "First.", type: "text" },
+        { citations: Array.from({ length: count - first }, (_, index) => citation(first + index)), text: " Second.", type: "text" }];
+    };
+    for (const count of [101, PROVIDER_RESPONSE_MAX_CITATIONS]) {
+      const result = await createAnthropicMessagesSearchAdapter({
+        client: client(async () => message({ content: cited(count) }))
+      }).search(searchRequest());
+      expect(result.findings).toBe("First. Second.");
+    }
+    const error = await createAnthropicMessagesSearchAdapter({
+      client: client(async () => message({ content: cited(PROVIDER_RESPONSE_MAX_CITATIONS + 1) }))
+    }).search(searchRequest()).then(() => null, (value: unknown) => value);
+    expect(error).toMatchObject({ code: "anthropic_search_response_invalid", usage: { inputTokens: 7, outputTokens: 5 } });
+  });
+
+  it("bounds findings only by the shared normalized bound, beyond the former 128 KiB", async () => {
+    const findings = `${"x".repeat(MAX_SEARCH_FINDINGS_BYTES - 1)}.`;
+    const text = (value: string) => ({ citations: citedText().citations, text: value, type: "text" });
+    // Surrounding whitespace is trimmed before the bound applies.
+    const result = await createAnthropicMessagesSearchAdapter({
+      client: client(async () => message({ content: [searchCall(), searchResult(), text(`  ${findings}  `)] }))
+    }).search(searchRequest());
+    expect(result.findings).toBe(findings);
+    const error = await createAnthropicMessagesSearchAdapter({
+      client: client(async () => message({ content: [searchCall(), searchResult(), text(`${findings}x`)] }))
+    }).search(searchRequest()).then(() => null, (value: unknown) => value);
+    expect(error).toMatchObject({ code: "anthropic_search_findings_invalid", usage: { inputTokens: 7, outputTokens: 5 } });
   });
 
   it("rejects unknown response content blocks instead of retaining provider fields", async () => {

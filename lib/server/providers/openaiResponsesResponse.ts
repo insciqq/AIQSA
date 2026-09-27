@@ -4,6 +4,7 @@ import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { openAIResponsesToolBridge } from "../tools/bridges";
+import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 import {
   assertBoundedStructuredTextLength,
   BoundedTextAccumulator
@@ -29,7 +30,6 @@ const responseStatuses = new Set([
   "queued"
 ]);
 const terminalStatuses = new Set(["cancelled", "completed", "failed", "incomplete"]);
-const MAX_OPENAI_TOOL_CALLS = 16;
 const MAX_OPENAI_TOOL_ID_LENGTH = 512;
 const MAX_OPENAI_TOOL_NAME_LENGTH = 512;
 
@@ -212,7 +212,7 @@ function assertValidOpenAIFunctionCalls(response: OpenAIResponseRecord): void {
     const id = typeof item.call_id === "string" ? item.call_id : stringValue(item.id);
     const name = nonBlankStringValue(item.name);
     if (
-      toolCallCount > MAX_OPENAI_TOOL_CALLS ||
+      toolCallCount > PROVIDER_RESPONSE_MAX_TOOL_CALLS ||
       !id?.trim() ||
       id.length > MAX_OPENAI_TOOL_ID_LENGTH ||
       !name ||
@@ -658,7 +658,7 @@ export async function* parseOpenAIResponsesSse(
       if (typeof item.id !== "string" || !item.id || item.id.length > MAX_OPENAI_TOOL_ID_LENGTH ||
         typeof item.call_id !== "string" || !item.call_id || item.call_id.length > MAX_OPENAI_TOOL_ID_LENGTH ||
         typeof item.name !== "string" || !item.name || item.name.length > MAX_OPENAI_TOOL_NAME_LENGTH ||
-        !Number.isSafeInteger(parsed.output_index) || Number(parsed.output_index) < 0 || toolItems.has(item.id) || toolItems.size >= MAX_OPENAI_TOOL_CALLS) throw new Error("openai_tool_call_invalid");
+        !Number.isSafeInteger(parsed.output_index) || Number(parsed.output_index) < 0 || toolItems.has(item.id) || toolItems.size >= PROVIDER_RESPONSE_MAX_TOOL_CALLS) throw new Error("openai_tool_call_invalid");
       const tool = { callIndex: Number(parsed.output_index), callId: item.call_id, name: item.name,
         arguments: new BoundedTextAccumulator({ maxChars: streamLimits.maxOutputChars, retainedTextKind: "tool_arguments" }) };
       toolItems.set(item.id, tool);
@@ -711,14 +711,25 @@ export async function* parseOpenAIResponsesSse(
     throw new Error("openai_stream_truncated");
   }
 
-  const normalized = normalizeOpenAIResponseResult(
-    finalResponse,
-    providerResponseId,
-    streamedRawText?.value(),
-    input.provider,
-    streamLimits.maxOutputChars,
-    latestSnapshot
-  );
+  // A terminal of another response proves nothing about this one: no usage.
+  resolveOpenAIResponseIdentity(finalResponse, providerResponseId);
+  let normalized: ReturnType<typeof normalizeOpenAIResponseResult>;
+  try {
+    normalized = normalizeOpenAIResponseResult(
+      finalResponse,
+      providerResponseId,
+      streamedRawText?.value(),
+      input.provider,
+      streamLimits.maxOutputChars,
+      latestSnapshot
+    );
+  } catch (error) {
+    // This response's terminal the adapter refuses (for example more calls
+    // than one response may carry) was still generated and billed: keep the
+    // usage it reports.
+    if (isRecord(finalResponse.usage)) yield { data: extractOpenAIUsage(finalResponse), type: "usage" };
+    throw error;
+  }
 
   if (
     !summaryEmitted ||

@@ -30,6 +30,7 @@ import {
   normalizeSearchSources,
   type SearchSource
 } from "../search/evidence";
+import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
 
 const MAX_INTERACTION_ID_LENGTH = 512;
 const MAX_MODEL_LENGTH = 512;
@@ -42,7 +43,9 @@ const MAX_SEARCH_QUERY_COUNT = 100;
 const MAX_SEARCH_QUERY_LENGTH = 2_048;
 const MAX_SEARCH_SUGGESTION_COUNT = 20;
 const MAX_SEARCH_SUGGESTIONS_BYTES = 256 * 1_024;
-const MAX_CITATION_COUNT = 100;
+// Annotations of one interaction (per text block, per step and in total),
+// the shared per-response citation cap the grounding display admits.
+const MAX_CITATION_COUNT = PROVIDER_RESPONSE_MAX_CITATIONS;
 const MAX_CITATION_URL_LENGTH = 2_048;
 const MAX_CITATION_TITLE_LENGTH = 512;
 const MAX_CITATION_INDEX = 10_000_000;
@@ -759,7 +762,15 @@ export async function* streamGeminiInteractionsJsonResponse(
   response: GeminiInteractionRecord,
   context: GeminiInteractionsResponseContext
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
-  const normalized = normalizeInteraction(response, context);
+  let normalized: ReturnType<typeof normalizeInteraction>;
+  try {
+    normalized = normalizeInteraction(response, context);
+  } catch (error) {
+    // A generated interaction the adapter refuses (for example more citations
+    // than one response may carry) was still billed: keep its reported usage.
+    if (isRecord(response.usage)) yield { data: extractGeminiInteractionsUsage(response.usage), type: "usage" };
+    throw error;
+  }
   yield geminiInteractionSummaryEvent({
     model: normalized.model,
     ...(normalized.id ? { providerResponseId: normalized.id } : {}),

@@ -10,10 +10,14 @@ export type SearchSource = Readonly<{
   url: string;
 }>;
 
-// Allow larger Search replies while keeping an independent safety bound on
-// UTF-8 evidence. The combined tool result also has its own persistence limit.
-export const MAX_SEARCH_FINDINGS_CHARACTERS = 128 * 1_024;
-export const MAX_SEARCH_FINDINGS_BYTES = 128 * 1_024;
+// One engine's findings: the agreed 1 MiB of UTF-8 (a UTF-16 length never
+// exceeds it). Larger findings are refused as invalid, never cut, and the
+// engine keeps its reported usage. Delivery is bounded separately: a retained
+// v1 observation keeps all three engines (SEARCH_OBSERVATION_MAX_BYTES) behind
+// a bounded projection and a reader; Off and an unretained call keep only
+// what fits the persisted tool result (`fitDurableSearchToolResult`).
+export const MAX_SEARCH_FINDINGS_CHARACTERS = 1_024 * 1_024;
+export const MAX_SEARCH_FINDINGS_BYTES = 1_024 * 1_024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

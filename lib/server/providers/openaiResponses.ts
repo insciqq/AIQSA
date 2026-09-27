@@ -208,9 +208,12 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
         throw new Error("openai_response_not_completed");
       }
 
-      const completed = normalizeCompletedOpenAIResponse(response, providerResponseId);
+      // Usage first: a completed response of this identity that the adapter
+      // refuses was still billed.
+      resolveOpenAIResponseIdentity(response, providerResponseId);
       if (terminalSummary) yield terminalSummary;
       if (usageEvent) yield usageEvent;
+      const completed = normalizeCompletedOpenAIResponse(response, providerResponseId);
       for (const event of completed.events) {
         if (runOptions.signal?.aborted) {
           const error = new Error("provider_run_aborted");
