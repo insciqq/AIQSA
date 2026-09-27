@@ -430,49 +430,70 @@ describe("Memory fact extraction handler", () => {
     );
   });
 
-  it("retains staged extraction when adjudication fails with a replay-safe error", async () => {
-    const fixture = dependencies();
-    fixture.bind
-      .mockResolvedValueOnce({ id: "extraction-binding" })
-      .mockResolvedValueOnce({ id: "adjudication-binding" });
-    const adjudicator = {
-      run: vi.fn(async () => { throw providerFailure("REPLAY_SAFE_TRANSIENT"); })
-    };
-    const handler = createMemoryFactExtractionHandler({
-      ...fixture.base,
-      adjudicator,
-      repository: {
-        ...fixture.base.repository,
-        auxiliary: vi.fn(async () => null),
-        reserveAdjudication: vi.fn(async () => "ACQUIRED" as const)
-      }
-    });
+  it.each(["transient", "invalid output"] as const)(
+    "retains staged extraction when adjudication fails with %s",
+    async (failure) => {
+      const fixture = dependencies();
+      fixture.bind
+        .mockResolvedValueOnce({ id: "extraction-binding" })
+        .mockResolvedValueOnce({ id: "adjudication-binding" });
+      const errorCode = failure === "transient"
+        ? "memory_fact_provider_transient"
+        : "memory_semantic_adjudication_output_invalid";
+      const adjudicator = {
+        run: vi.fn(async () => {
+          if (failure === "transient") throw providerFailure("REPLAY_SAFE_TRANSIENT");
+          return { ...adjudicationOutput(["C1"]), toolCalls: [] };
+        })
+      };
+      const completeAdjudication = vi.fn(async () => undefined);
+      const continueCoverage = vi.fn(async () => undefined);
+      const handler = createMemoryFactExtractionHandler({
+        ...fixture.base,
+        adjudicator,
+        repository: {
+          ...fixture.base.repository,
+          auxiliary: vi.fn(async () => null),
+          completeAdjudication,
+          continueCoverage,
+          reserveAdjudication: vi.fn(async () => "ACQUIRED" as const)
+        }
+      });
 
-    await expect(handler.execute(claim(), context())).rejects.toMatchObject({
-      code: "memory_fact_provider_transient",
-      retryable: true
-    });
-    expect(fixture.run).toHaveBeenCalledOnce();
-    expect(fixture.stage).toHaveBeenCalledOnce();
-    expect(adjudicator.run).toHaveBeenCalledOnce();
-    expect(fixture.settle).toHaveBeenCalledWith(
-      source.userId,
-      "adjudication-binding",
-      expect.objectContaining({
-        errorCode: "memory_fact_provider_transient",
-        state: "FAILED",
-        usage: expect.objectContaining({ completeness: "UNAVAILABLE" })
-      })
-    );
-    expect(fixture.apply).not.toHaveBeenCalled();
-    expect(fixture.base.repository.discardStale).not.toHaveBeenCalled();
-  });
+      await expect(handler.execute(claim(), context())).rejects.toMatchObject({
+        code: errorCode,
+        retryable: true
+      });
+      expect(fixture.run).toHaveBeenCalledOnce();
+      expect(fixture.stage).toHaveBeenCalledOnce();
+      expect(adjudicator.run).toHaveBeenCalledOnce();
+      expect(fixture.settle).toHaveBeenCalledWith(
+        source.userId,
+        "adjudication-binding",
+        expect.objectContaining({
+          errorCode,
+          providerResponseId: failure === "transient" ? null : "adjudication-response",
+          state: "FAILED",
+          usage: expect.objectContaining(failure === "transient"
+            ? { completeness: "UNAVAILABLE" }
+            : { completeness: "COMPLETE", inputTokens: 20, outputTokens: 8, totalTokens: 28 })
+        })
+      );
+      expect(fixture.settle).toHaveBeenCalledOnce();
+      expect(fixture.settleSucceededWithDurableResult).toHaveBeenCalledOnce();
+      expect(completeAdjudication).not.toHaveBeenCalled();
+      expect(continueCoverage).not.toHaveBeenCalled();
+      expect(fixture.apply).not.toHaveBeenCalled();
+      expect(fixture.base.repository.discardStale).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([
     ["FAILED", "memory_fact_provider_transient", true, true],
     ["FAILED", "memory_fact_provider_transient", false, false],
     ["FAILED", "memory_fact_provider_unavailable", true, false],
-    ["FAILED", "memory_semantic_adjudication_output_invalid", true, false],
+    ["FAILED", "memory_semantic_adjudication_output_invalid", true, true],
+    ["FAILED", "memory_semantic_adjudication_output_invalid", false, false],
     ["OUTCOME_UNKNOWN", "memory_fact_provider_outcome_unknown", true, false],
     ["RUNNING", null, true, false],
     ["SUCCEEDED", null, true, false],
@@ -523,6 +544,10 @@ describe("Memory fact extraction handler", () => {
       await handler.execute({ ...claim(), attemptCount: 2 }, context());
       expect(fixture.run).not.toHaveBeenCalled();
       expect(fixture.stage).not.toHaveBeenCalled();
+      // Recovery never accounts the successful extraction or prior failed
+      // adjudication again; only a fresh successful adjudication is settled.
+      expect(fixture.settleSucceededWithDurableResult).toHaveBeenCalledTimes(retries ? 1 : 0);
+      if (state !== "RUNNING") expect(fixture.settle).not.toHaveBeenCalled();
       expect(adjudicator.run).toHaveBeenCalledTimes(retries ? 1 : 0);
       expect(completeAdjudication).toHaveBeenCalledTimes(retries ? 1 : 0);
       expect(fixture.apply).toHaveBeenCalledOnce();
