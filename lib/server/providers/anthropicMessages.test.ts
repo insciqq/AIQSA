@@ -387,6 +387,7 @@ describe("Anthropic Messages adapter", () => {
       },
       stream: true,
       thinking: {
+        display: "summarized",
         type: "adaptive"
       }
     });

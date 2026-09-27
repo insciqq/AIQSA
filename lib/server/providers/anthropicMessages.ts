@@ -395,6 +395,10 @@ function buildThinking(params: AnthropicMessagesParams): Record<string, unknown>
 
   if (params.thinking.type === "adaptive") {
     return {
+      // Claude 5 models default adaptive thinking display to omitted. AIQSA's
+      // process UI consumes the summarized thinking blocks, so make that
+      // response contract explicit instead of relying on a model default.
+      display: "summarized",
       type: "adaptive"
     };
   }
