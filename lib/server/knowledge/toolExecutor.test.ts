@@ -911,7 +911,8 @@ describe("Knowledge executor surface", () => {
     // Only delivered occurrences are excluded, so each omitted passage is
     // returned by the next search, and every passage is delivered exactly once.
     expect(hybridSearch.mock.calls[1]?.[0].excludedOccurrenceKeys)
-      .toEqual(accepted[0]!.results.map(knowledgeEvidenceOccurrenceKeyV1));
+      .toEqual(accepted[0]!.results.map((result) =>
+        knowledgeEvidenceOccurrenceKeyV1({ ...result, sourceArtifactId: result.sourceArtifactId ?? null })));
     expect(delivered[1]).toHaveLength(6);
     expect(accepted[1]).not.toHaveProperty("omittedPassages");
     expect(texts[1]).not.toContain("passages_omitted_for_size");
