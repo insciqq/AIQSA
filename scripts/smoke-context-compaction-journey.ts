@@ -52,12 +52,13 @@
  * A route without its key is reported as {route, status: "skipped"}.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { decodeAdminProviderModelSaveReceipt } from "../lib/contracts/adminProviderModelSave";
 import { decodeCatalogResponse, type CatalogModel } from "../lib/contracts/catalog";
 import { decodeChatDetailResponse, decodeChatSummaryResponse, type ChatDetailWire } from "../lib/contracts/chats";
+import { decodeRunOutcomeResponse } from "../lib/contracts/runs";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   decodeMemoryConsumerChatModeResponse,
@@ -76,7 +77,9 @@ import {
   catalogReadiness,
   codexLbSetupBody,
   contextWindowUpdate,
+  createDebugEmitter,
   debugHttpLine,
+  exceptionDiagnostics,
   journeyBrief,
   journeyConfig,
   journeyExitCode,
@@ -85,7 +88,8 @@ import {
   journeyRound,
   journeyRunParams,
   journeyVerdict,
-  ledgerInputTokens,
+  ledgerDelta,
+  ledgerUsage,
   messageText,
   modelInConnection,
   nextFillerTokens,
@@ -146,15 +150,25 @@ async function poll<T>(
   return fail(stage, timeoutCode());
 }
 
-let lastDebugLine = "";
+/** Set once from AIQSA_JOURNEY_DEBUG; writes synchronously to stdout before the result line. */
+let emitDebug = createDebugEmitter(false, () => undefined);
 
-/** Debug evidence only; consecutive identical lines (polling) print once. */
 function debugLog(api: Pick<Api, "debug">, value: Record<string, unknown>): void {
-  if (!api.debug) return;
-  const line = JSON.stringify({ smoke: "context-compaction-journey", ...value });
-  if (line === lastDebugLine) return;
-  lastDebugLine = line;
-  process.stdout.write(`${line}\n`);
+  if (api.debug) emitDebug(value);
+}
+
+/**
+ * Runs one journey step; an exception that is not already a stable failure
+ * becomes `code`, and debug mode records its class and first script frame.
+ */
+async function step<T>(api: Api, stage: JourneyStage, code: string, operation: () => Promise<T> | T): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof JourneyFailure) throw error;
+    debugLog(api, { debug: "exception", stage, code, ...exceptionDiagnostics(error) });
+    throw new JourneyFailure(stage, code);
+  }
 }
 
 /** Reads a JSON body copy for the debug line; streams and other bodies stay unread. */
@@ -224,7 +238,7 @@ async function json(
   init: Readonly<{ body?: unknown; method?: string; timeoutMs?: number }> = {}
 ): Promise<unknown> {
   const response = await request(api, stage, path, init);
-  if (!response.ok) fail(stage, await failureCode(response));
+  if (!response.ok) throw new JourneyFailure(stage, await failureCode(response), response.status);
   try {
     return await response.json() as unknown;
   } catch {
@@ -418,6 +432,8 @@ async function journeyCatalogModel(api: Api, target: ProviderTarget, contextWind
 
 type RouteState = {
   chatId: string | null;
+  /** The turn being sent or read, for the failure report. */
+  currentTurn: Readonly<{ kind: JourneyTurnKind; turn: number }> | null;
   contextWindow: number | null;
   createdConnectionId: string | null;
   probeAnswerCarriesCorrections: boolean;
@@ -460,7 +476,8 @@ async function sendMessage(
     method: "POST",
     timeoutMs: TURN_TIMEOUT_MS
   });
-  if (!response.ok) fail("turn", await failureCode(response));
+  // A 500 `internal_error` is the stand's send guard (`run_http_failed` in its log).
+  if (!response.ok) throw new JourneyFailure("turn", await failureCode(response), response.status);
   await drain(response, "turn");
 }
 
@@ -477,7 +494,10 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
   }).budgetTokens;
   const params = journeyRunParams(model, JOURNEY_LIMITS.answerMaxOutputTokens);
   const ledgerKeys = { modelIds: [model.modelId, model.upstreamModelId!], providers: [model.provider, family] };
-  const ledger = async () => ledgerInputTokens(await json(api, "evidence", "/api/admin"), api.userId, ledgerKeys);
+  const ledger = async () => {
+    const dashboard = await json(api, "evidence", "/api/admin");
+    return step(api, "evidence", "usage_ledger_failed", () => ledgerUsage(dashboard, api.userId, ledgerKeys));
+  };
   let ledgerBefore = await ledger();
   let leafId: string | null = null;
   let requestBytes = 0;
@@ -490,29 +510,45 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
     if (bytes > JOURNEY_LIMITS.maxMessageBytes || requestBytes > JOURNEY_LIMITS.maxRouteRequestBytes) {
       fail("turn", "request_bytes_bound");
     }
+    state.currentTurn = { kind, turn: number };
     await sendMessage(api, chatId, leafId, text, model, params);
     const previousLeafId = leafId;
-    const detail = await poll("turn", TURN_TIMEOUT_MS, async () => {
+    const detail = await poll("turn", TURN_TIMEOUT_MS, () => step(api, "turn", "chat_detail_failed", async () => {
       const current = await chatDetail(api, chatId);
       return settledTurn(current, previousLeafId) ? current : null;
-    });
+    }));
     const { assistant } = settledTurn(detail, previousLeafId)!;
     leafId = assistant.id;
-    const answer = messageText(assistant);
-    const session = detail.contextStats.sessionMessageId === assistant.id ? detail.contextStats.session ?? null : null;
-    // The stand measures with the admitted route's own estimate family.
-    if (session) estimate = contextTokenEstimator({ modelId: session.modelId, provider: session.provider });
-    const ledgerAfter = await ledger();
-    state.rounds.push(journeyRound({
-      answerTokens: estimate(answer),
-      compaction: assistant.artifactSummary?.contextCompaction ?? null,
-      kind,
-      reportedInputTokens: ledgerBefore !== null && ledgerAfter !== null ? ledgerAfter - ledgerBefore : null,
-      session,
-      toolCalls: assistant.toolActivity?.calls.length ?? 0,
-      turn: number
-    }));
-    ledgerBefore = ledgerAfter;
+    // The next send waits for the run itself to settle, not only its message.
+    if (assistant.modelRunId) {
+      const runPath = `/api/model-runs/${encodeURIComponent(assistant.modelRunId)}`;
+      await poll("turn", TURN_TIMEOUT_MS, () => step(api, "turn", "run_outcome_failed", async () => {
+        const outcome = decodeRunOutcomeResponse(await json(api, "turn", runPath)) ?? fail("turn", "run_outcome_invalid");
+        return ["cancelled", "complete", "error"].includes(outcome.status) ? outcome : null;
+      }), () => "run_not_settled");
+    }
+    const round = await step(api, "evidence", "turn_evidence_failed", async () => {
+      const answer = messageText(assistant);
+      const session = await step(api, "evidence", "session_status_invalid", () =>
+        detail.contextStats.sessionMessageId === assistant.id ? detail.contextStats.session ?? null : null);
+      // The stand measures with the admitted route's own estimate family.
+      if (session) estimate = contextTokenEstimator({ modelId: session.modelId, provider: session.provider });
+      const answerTokens = await step(api, "evidence", "answer_estimate_failed", () => estimate(answer));
+      const ledgerAfter = await ledger();
+      const reported = ledgerDelta(ledgerBefore, ledgerAfter);
+      ledgerBefore = ledgerAfter;
+      return { answer, session, value: journeyRound({
+        answerTokens,
+        compaction: assistant.artifactSummary?.contextCompaction ?? null,
+        kind,
+        reported,
+        session,
+        toolCalls: assistant.toolActivity?.calls.length ?? 0,
+        turn: number
+      }) };
+    });
+    state.rounds.push(round.value);
+    const { answer, session } = round;
     if (assistant.status !== "complete") fail("turn", "turn_not_complete");
     if (!session) fail("evidence", "session_status_missing");
     return { answer, session };
@@ -585,7 +621,7 @@ type RouteResult = Record<string, unknown> & { status: "failed" | "passed" | "sk
 
 async function runRoute(api: Api, config: JourneyConfig, route: JourneyRouteConfig): Promise<RouteResult> {
   const state: RouteState = {
-    chatId: null, contextWindow: null, createdConnectionId: null, probeAnswerCarriesCorrections: false,
+    chatId: null, contextWindow: null, createdConnectionId: null, currentTurn: null, probeAnswerCarriesCorrections: false,
     reused: null, rounds: [], stage: "provider_setup"
   };
   let failure: JourneyFailure | null = null;
@@ -605,6 +641,9 @@ async function runRoute(api: Api, config: JourneyConfig, route: JourneyRouteConf
     state.stage = "turn";
     await runJourney(api, config, model, chat.id, state);
   } catch (error) {
+    if (!(error instanceof JourneyFailure)) {
+      debugLog(api, { debug: "exception", stage: state.stage, code: "unexpected_failure", ...exceptionDiagnostics(error) });
+    }
     failure = asFailure(error, state.stage);
   }
   const chatCleanup = state.chatId ? (await deleteChat(api, state.chatId) ? "deleted" : "failed") : "none";
@@ -624,7 +663,10 @@ async function runRoute(api: Api, config: JourneyConfig, route: JourneyRouteConf
     providerReused: state.reused,
     cleanup: { chat: chatCleanup, provider: providerCleanup },
     status: code === null ? "passed" : "failed",
-    ...(code === null ? {} : { code, stage: failure?.stage ?? "evidence" })
+    ...(code === null ? {} : { code, stage: failure?.stage ?? "evidence" }),
+    ...(failure?.httpStatus ? { httpStatus: failure.httpStatus } : {}),
+    ...(failure && state.currentTurn && (failure.stage === "turn" || failure.stage === "evidence")
+      ? { failedTurn: state.currentTurn } : {})
   };
 }
 
@@ -639,12 +681,19 @@ function codexProfileApiRoot(): string | null {
   }
 }
 
+/** Synchronous, so debug lines and the result reach a file or pipe in order even on a crash. */
+function writeStdout(line: string): void {
+  writeSync(1, line);
+}
+
 function emit(value: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify({ smoke: "context-compaction-journey", ...value })}\n`);
+  writeStdout(`${JSON.stringify({ smoke: "context-compaction-journey", ...value })}\n`);
 }
 
 async function main(): Promise<number> {
   const config = journeyConfig(process.env, codexProfileApiRoot);
+  emitDebug = createDebugEmitter(config.debug, writeStdout);
+  emitDebug({ debug: "enabled", routes: config.routes.map((route) => route.route) });
   const api = await authenticate(config.baseUrl, config.debug);
   const routes: RouteResult[] = [];
   for (const route of config.routes) {
@@ -653,7 +702,8 @@ async function main(): Promise<number> {
       : await runRoute(api, config, route));
   }
   const exitCode = journeyExitCode(routes, config.explicitRoutes);
-  emit({ status: exitCode === 0 ? "passed" : "failed", contextWindow: config.contextWindow, maxTurns: config.maxTurns, routes });
+  emit({ status: exitCode === 0 ? "passed" : "failed", contextWindow: config.contextWindow, debug: config.debug,
+    maxTurns: config.maxTurns, routes });
   return exitCode;
 }
 
