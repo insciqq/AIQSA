@@ -12,6 +12,7 @@ import {
   type ParseOpenAIResponsesSseInput
 } from "./openaiResponsesResponse";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
+import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 
 function responseBody(frames: readonly string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -267,23 +268,42 @@ describe("OpenAI Responses response normalization", () => {
       type: "function_call"
     });
 
-    const normalized = normalizeCompletedOpenAIResponse({
-      output: [...Array.from({ length: 16 }, (_, index) => functionCall(index)), {
-        id: "unknown-item-id",
-        type: "future_tool_call"
-      }],
-      output_text: "ok",
-      status: "completed"
-    });
-    expect(normalized.result.toolCalls).toHaveLength(16);
-    expect(normalized.result.providerToolCallMessage).not.toContainEqual(
-      expect.objectContaining({ type: "future_tool_call" })
-    );
+    // The agreed calls per response (one persisted tool batch).
+    expect(PROVIDER_RESPONSE_MAX_TOOL_CALLS).toBe(64);
+    for (const length of [16, 17, PROVIDER_RESPONSE_MAX_TOOL_CALLS]) {
+      const normalized = normalizeCompletedOpenAIResponse({
+        output: [...Array.from({ length }, (_, index) => functionCall(index)), {
+          id: "unknown-item-id",
+          type: "future_tool_call"
+        }],
+        output_text: "ok",
+        status: "completed"
+      });
+      expect(normalized.result.toolCalls).toHaveLength(length);
+      expect(normalized.result.providerToolCallMessage).not.toContainEqual(
+        expect.objectContaining({ type: "future_tool_call" })
+      );
+    }
     expect(() => normalizeCompletedOpenAIResponse({
-      output: Array.from({ length: 17 }, (_, index) => functionCall(index)),
+      output: Array.from({ length: PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1 }, (_, index) => functionCall(index)),
       output_text: "ok",
       status: "completed"
     })).toThrow("openai_response_tool_call_invalid");
+  });
+
+  it("keeps a streamed terminal's reported usage when it refuses more calls than one response may carry", async () => {
+    const functionCall = (index: number) => ({ arguments: "{}", call_id: `call-${index}`, name: "lookup", type: "function_call" });
+    const terminal = (length: number) => [`data: ${JSON.stringify({ type: "response.completed", response: {
+      id: "resp-calls", output: Array.from({ length }, (_, index) => functionCall(index)), status: "completed",
+      usage: { input_tokens: 7, output_tokens: 5, total_tokens: 12 } } })}\n\n`];
+    const accepted = await collectSse(sseInput(terminal(PROVIDER_RESPONSE_MAX_TOOL_CALLS)));
+    expect(accepted.result.toolCalls).toHaveLength(PROVIDER_RESPONSE_MAX_TOOL_CALLS);
+
+    const events: ModelRunSseEvent[] = [];
+    const refused = parseOpenAIResponsesSse(sseInput(terminal(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1)));
+    await expect((async () => { for await (const event of refused) events.push(event); })())
+      .rejects.toThrow("openai_response_tool_call_invalid");
+    expect(events).toContainEqual({ type: "usage", data: expect.objectContaining({ inputTokens: 7, outputTokens: 5, totalTokens: 12 }) });
   });
 
   it("preserves official and compatible function-call identities at exact bounds", () => {
@@ -514,6 +534,8 @@ describe("OpenAI Responses response normalization", () => {
       ]));
 
       await expect(stream.next()).resolves.toMatchObject({ value: { type: "token" } });
+      // The refused terminal was still billed: its usage precedes the failure.
+      await expect(stream.next()).resolves.toMatchObject({ value: { type: "usage", data: { totalTokens: 2 } } });
       await expect(stream.next()).rejects.toThrow("openai_response_terminal_text_mismatch");
     }
   });
@@ -553,7 +575,7 @@ describe("OpenAI Responses response normalization", () => {
     await expect(conflicting.next()).rejects.toThrow("openai_response_terminal_text_mismatch");
   });
 
-  it("rejects malformed terminal tools before terminal usage or artifacts", async () => {
+  it("rejects malformed terminal tools before artifacts, keeping only the terminal's reported usage", async () => {
     const stream = parseOpenAIResponsesSse(sseInput([
       `event: response.completed\ndata: ${JSON.stringify({
         response: {
@@ -580,6 +602,7 @@ describe("OpenAI Responses response normalization", () => {
       })}\n\n`
     ]));
 
+    await expect(stream.next()).resolves.toMatchObject({ value: { type: "usage", data: { totalTokens: 2 } } });
     await expect(stream.next()).rejects.toThrow("openai_response_tool_call_invalid");
   });
 
@@ -668,6 +691,7 @@ describe("OpenAI Responses response normalization", () => {
     ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 } }));
 
     await expect(stream.next()).resolves.toMatchObject({ value: { type: "token" } });
+    await expect(stream.next()).resolves.toMatchObject({ value: { type: "usage", data: { totalTokens: 2 } } });
     await expect(stream.next()).rejects.toMatchObject({
       code: "provider_output_too_large",
       maxChars: 5,
@@ -840,5 +864,22 @@ describe("private Responses tool argument observations", () => {
     expect(normalized.result.toolCalls?.[0]?.arguments).toMatchObject({ files: [{ text: "private-code-canary" }] });
     expect(JSON.stringify(normalized.events)).not.toContain("private-code-canary");
     await expect(collectSse(sseInput(frames.slice(0, -1), { onToolArguments: async () => {} }))).rejects.toThrow("openai_stream_truncated");
+  });
+
+  it("observes as many streamed calls as one response may carry and refuses the next", async () => {
+    const framesFor = (length: number) => {
+      const items = Array.from({ length }, (_, index) => ({ type: "function_call", id: `item-${index}`, call_id: `call-${index}`, name: "lookup", arguments: "{}" }));
+      return [
+        { type: "response.created", response: { id: "response-many", status: "in_progress" } },
+        ...items.map((item, index) => ({ type: "response.output_item.added", output_index: index, item })),
+        { type: "response.completed", response: { id: "response-many", status: "completed", output: items } }
+      ].map(payload => `data: ${JSON.stringify(payload)}\n\n`);
+    };
+    const observed: import("./types").ProviderToolArgumentEvent[] = [];
+    const accepted = await collectSse(sseInput(framesFor(PROVIDER_RESPONSE_MAX_TOOL_CALLS), { onToolArguments: async event => { observed.push(event); } }));
+    expect(accepted.result.toolCalls).toHaveLength(PROVIDER_RESPONSE_MAX_TOOL_CALLS);
+    expect(new Set(observed.map(event => event.callId)).size).toBe(PROVIDER_RESPONSE_MAX_TOOL_CALLS);
+    await expect(collectSse(sseInput(framesFor(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1), { onToolArguments: async () => {} })))
+      .rejects.toThrow("openai_tool_call_invalid");
   });
 });

@@ -262,7 +262,7 @@ describe("compatible Responses adapter", () => {
     expect(create).toHaveBeenCalledWith(expect.any(Object), { signal, timeoutMs: 300_000 });
   });
 
-  it("rejects malformed completed function calls before non-stream usage", async () => {
+  it("rejects malformed completed function calls before non-stream output, keeping their reported usage", async () => {
     const client: OpenAIResponsesClient = {
       cancel: async () => ({}),
       create: async () => ({
@@ -276,6 +276,7 @@ describe("compatible Responses adapter", () => {
     const adapter = createCompatibleResponsesAdapter({ client });
     const stream = adapter.stream(request());
 
+    await expect(stream.next()).resolves.toMatchObject({ value: { type: "usage", data: { totalTokens: 2 } } });
     await expect(stream.next()).rejects.toThrow("openai_response_tool_call_invalid");
   });
 

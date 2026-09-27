@@ -154,12 +154,13 @@ export function createCompatibleResponsesAdapter(
         throw new Error("compatible_response_not_completed");
       }
 
+      // Usage first: a completed response the adapter refuses was still billed.
+      if (usageEvent) yield usageEvent;
       const completed = normalizeCompletedOpenAIResponse(
         response,
         typeof response.id === "string" ? response.id : undefined,
         "openai-compatible"
       );
-      if (usageEvent) yield usageEvent;
       for (const event of completed.events) {
         yield event;
       }

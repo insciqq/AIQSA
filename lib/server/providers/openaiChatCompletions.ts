@@ -3,6 +3,7 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import {
   invalidProviderToolArguments,
+  PROVIDER_RESPONSE_MAX_TOOL_CALLS,
   type ModelToolCall
 } from "../tools/types";
 import {
@@ -308,6 +309,11 @@ export async function* streamOpenAIChatJsonResponse<
   if (!finalText && toolCalls.length === 0) {
     throw new Error(profile.invalidTerminalError);
   }
+  if (toolCalls.length > PROVIDER_RESPONSE_MAX_TOOL_CALLS) {
+    // Refused as one batch, but generated and billed: keep its reported usage.
+    if (isOpenAIChatRecord(response.usage)) yield { data: profile.extractUsage(response), type: "usage" };
+    throw new Error(profile.invalidTerminalError.replace("terminal_response_invalid", "tool_call_limit_exceeded"));
+  }
   const providerResponseId = openAIChatResponseId(response);
 
   yield openAIChatSummaryEvent({
@@ -341,7 +347,6 @@ export async function* streamOpenAIChatJsonResponse<
   };
 }
 
-const MAX_STREAMED_TOOL_CALLS = 16;
 const MAX_TOOL_CALL_ID_LENGTH = 512;
 const MAX_TOOL_NAME_LENGTH = 512;
 const MAX_TOOL_TYPE_LENGTH = 64;
@@ -380,7 +385,7 @@ function accumulateToolCalls(
         : ordinal;
     let current = target.get(index);
     if (!current) {
-      if (target.size >= MAX_STREAMED_TOOL_CALLS) {
+      if (target.size >= PROVIDER_RESPONSE_MAX_TOOL_CALLS) {
         throw new Error(errors.limit);
       }
       current = {

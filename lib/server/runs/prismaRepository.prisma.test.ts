@@ -44,6 +44,7 @@ import {
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
+import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
 const fakeControlKey = `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`;
@@ -1306,6 +1307,23 @@ describe("Prisma-backed run repository", () => {
       } finally {
         await deleteMcpFixture(fixture.server.id);
       }
+    });
+  });
+
+  it("checkpoints every call one provider response may carry and refuses a larger batch", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Full provider response batch");
+      await repository.beginToolLoopProviderRound({ providerContinuation: null, roundIndex: 0, runId: created.runId, userId });
+      const calls = (count: number) => Array.from({ length: count }, (_, ordinal) =>
+        ({ arguments: { ordinal }, ordinal, providerCallId: `call-${ordinal}`, toolName: "lookup" }));
+      await expect(repository.persistToolLoopCallBatch({ calls: calls(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1),
+        providerContinuation: null, roundIndex: 0, runId: created.runId, userId })).resolves.toEqual({ kind: "conflict" });
+      const persisted = await repository.persistToolLoopCallBatch({ calls: calls(PROVIDER_RESPONSE_MAX_TOOL_CALLS),
+        providerContinuation: null, roundIndex: 0, runId: created.runId, userId });
+      expect(persisted).toMatchObject({ kind: "persisted" });
+      await expect(prisma.modelRunToolCall.count({ where: { modelRunId: created.runId } }))
+        .resolves.toBe(PROVIDER_RESPONSE_MAX_TOOL_CALLS);
     });
   });
 
