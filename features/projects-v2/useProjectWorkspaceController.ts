@@ -239,6 +239,11 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
   const selectedRef = useRef<string | null>(null);
   const settingsOpenRef = useRef(false);
   const refreshPromiseRef = useRef<{ projectId: string; promise: Promise<boolean> } | null>(null);
+  const refreshSelectionGenerationRef = useRef(0);
+  function invalidateProjectRefresh() {
+    refreshSelectionGenerationRef.current += 1;
+    refreshPromiseRef.current = null;
+  }
   const settingsRefreshPromiseRef = useRef<{ projectId: string; promise: Promise<void> } | null>(null);
   const settingsRefreshQueuedRef = useRef(false);
   const realtimeChatRevisionsRef = useRef(new Map<string, bigint>());
@@ -318,6 +323,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
     realtimeChatRevisionsRef.current.clear();
     setProjects((current) => current.filter((project) => project.id !== projectId));
     if (selectedRef.current === projectId) {
+      invalidateProjectRefresh();
       selectedRef.current = null;
       setSelectedProjectId(null);
       setDetail(null);
@@ -415,6 +421,8 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
     if (refreshPromiseRef.current?.projectId === projectId) {
       return refreshPromiseRef.current.promise;
     }
+    const generation = refreshSelectionGenerationRef.current;
+    const isCurrent = () => selectedRef.current === projectId && refreshSelectionGenerationRef.current === generation;
     const request = (async () => {
       if (!quiet) setSyncState("syncing");
       try {
@@ -422,7 +430,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
           loadProject(projectId),
           loadProjectWorkspace(projectId)
         ]);
-        if (selectedRef.current !== projectId) return false;
+        if (!isCurrent()) return false;
         // A refresh started before DELETE cannot reopen already fenced content.
         if (acceptedDeletionsRef.current.has(projectId) && nextDetail.status !== "DELETING") return false;
         setDetail(nextDetail);
@@ -454,16 +462,17 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
             preserveControls: true,
             resumeRuns: false
           });
-          if (selectedRef.current === projectId && useWorkspaceStore.getState().activeChatId === active.id) {
+          if (isCurrent() && useWorkspaceStore.getState().activeChatId === active.id) {
             await input.activateChat(summary, { preserveControls: true, resumeRuns: true });
           }
         }
-        return true;
+        return isCurrent();
       } catch (error) {
+        if (!isCurrent()) return false;
         if (error instanceof ProjectApiError && error.code === "project_not_found") {
-          if (await confirmProjectAccessLost(projectId)) await handleLostAccess(projectId);
-          else if (selectedRef.current === projectId) setSyncState("error");
-        } else if (selectedRef.current === projectId) {
+          if (await confirmProjectAccessLost(projectId) && isCurrent()) await handleLostAccess(projectId);
+          else if (isCurrent()) setSyncState("error");
+        } else if (isCurrent()) {
           setSyncState("error");
           if (!quiet) setActionError(projectError(error));
         }
@@ -660,6 +669,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         useWorkspaceStore.getState().chats.flatMap((chat) => chat.projectId ? [chat.projectId] : [])
       );
       for (const projectId of cachedProjectIds) removeProjectCache(projectId);
+      invalidateProjectRefresh();
       selectedRef.current = null;
       realtimeChatRevisionsRef.current.clear();
       setSelectedProjectId(null);
@@ -845,6 +855,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
             ...(input.preferredModelId ? { preferredModelId: input.preferredModelId } : {})
           });
           setProjects((current) => [summaryFromDetail(created), ...current]);
+          invalidateProjectRefresh();
           selectedRef.current = created.id;
           setSelectedProjectId(created.id);
           setDetail(created);
@@ -919,6 +930,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         // new chat, so no Project composer session or address outlives it.
         if (projectId && (!activeChat || activeChat.projectId === projectId)) input.activateBlankWorkspace();
         input.onProjectContextLeft();
+        invalidateProjectRefresh();
         selectedRef.current = null;
         realtimeChatRevisionsRef.current.clear();
         setSelectedProjectId(null);
@@ -1116,6 +1128,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       },
       selectProject: async (projectId) => {
         input.onProjectContextEntered();
+        invalidateProjectRefresh();
         selectedRef.current = projectId;
         realtimeChatRevisionsRef.current.clear();
         setSelectedProjectId(projectId);

@@ -709,6 +709,11 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     await expect(projectChip).toContainText(projectOneName, { timeout: 20_000 });
     await expect(composer).toHaveValue("Project one saved draft");
 
+    // The header and draft appear before the chat detail finishes loading.
+    // Settle that owner before manually inserting a synthetic history entry;
+    // otherwise its final route write can replace the entry before traversal.
+    await expect(page.getByTestId("conversation-v2")).not.toHaveAttribute("aria-busy", "true");
+
     // Forward to a personal chat the page has never loaded: its address resolves
     // through a personal refresh that must not drop the Project chat's draft.
     late = await createChat(page, `Scope late ${suffix}`);

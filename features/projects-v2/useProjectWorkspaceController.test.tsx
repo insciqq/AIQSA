@@ -397,6 +397,44 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(result.current.syncWarning).toBeNull();
   });
 
+  it("reloads a Project when returning while its prior visit still refreshes a chat", async () => {
+    const chat = projectChat({ id: "chat-1", title: "Shared draft" });
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [chat], folders: [] });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () => {
+      await result.current.actions.selectProject("project-1");
+    });
+    await act(async () => {
+      await result.current.actions.selectChat("chat-1");
+    });
+    const oldChatRefresh = deferred<null>();
+    input.refreshActiveChat.mockReturnValueOnce(oldChatRefresh.promise);
+    let oldRefresh!: Promise<boolean>;
+    await act(async () => {
+      oldRefresh = result.current.actions.refresh();
+      await Promise.resolve();
+    });
+    expect(result.current.detail?.id).toBe("project-1");
+    act(() => result.current.actions.leave());
+    expect(result.current.detail).toBeNull();
+    const loadsBeforeReturn = apiMocks.loadProject.mock.calls.length;
+    await act(async () => {
+      await expect(result.current.actions.selectProject("project-1")).resolves.toBe(true);
+    });
+    expect(apiMocks.loadProject).toHaveBeenCalledTimes(loadsBeforeReturn + 1);
+    expect(result.current.detail?.id).toBe("project-1");
+    expect(result.current.workspace?.chats).toHaveLength(1);
+    input.activateChat.mockClear();
+    await act(async () => {
+      oldChatRefresh.resolve(null);
+      await expect(oldRefresh).resolves.toBe(false);
+    });
+    expect(input.activateChat).not.toHaveBeenCalled();
+    expect(result.current.detail?.id).toBe("project-1");
+  });
+
   it("leaves Project navigation by clearing its active chat without removing the member grant", async () => {
     apiMocks.loadProjectWorkspace.mockResolvedValue({
       chats: [projectChat({ id: "chat-1", title: "Plan" })],
