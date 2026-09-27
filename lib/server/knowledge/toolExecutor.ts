@@ -327,6 +327,10 @@ const SEARCH_INFRASTRUCTURE_FAILURE_CODES: ReadonlySet<string> = new Set([
 function classifiedSearchUnavailable(error: unknown): Readonly<{
   failureCode: KnowledgeSearchUnavailableFailureCode;
 }> | null {
+  if (error instanceof Error && (error.message === "knowledge_search_projection_failed" ||
+    error.message === "knowledge_search_projection_pending")) {
+    return { failureCode: error.message };
+  }
   if (error instanceof Error && error.message === "knowledge_search_projection_incomplete") {
     return {
       failureCode: "knowledge_search_projection_unavailable"

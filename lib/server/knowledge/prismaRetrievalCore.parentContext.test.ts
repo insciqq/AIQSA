@@ -27,7 +27,7 @@ function scope(bindingOrdinal: number, baseName: string, knowledgeBaseId: string
     eligibleRows: 1,
     indexGenerationId: `generation-${bindingOrdinal}`,
     knowledgeBaseId,
-    projectionComplete: true,
+    projectionFailed: false, projectionComplete: true,
     targetDimension: 1_024
   };
 }

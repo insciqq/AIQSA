@@ -14,7 +14,7 @@ describe("Prisma Knowledge canonical direct Source scope", () => {
         eligibleRows: 1,
         indexGenerationId: "generation-1",
         knowledgeBaseId: "base-1",
-        projectionComplete: true,
+        projectionFailed: false, projectionComplete: true,
         targetDimension: 1_024
       }];
     });
@@ -59,7 +59,7 @@ describe("Prisma Knowledge canonical direct Source scope", () => {
           eligibleRows: 1,
           indexGenerationId: "generation-1",
           knowledgeBaseId: "base-1",
-          projectionComplete: false,
+          projectionFailed: false, projectionComplete: false,
           targetDimension: 1_024
         }])
       }));
@@ -80,7 +80,7 @@ describe("Prisma Knowledge canonical direct Source scope", () => {
       } as never],
       runId: "run-1",
       userId: "owner-1"
-    })).rejects.toThrow("knowledge_search_projection_incomplete");
+    })).rejects.toThrow("knowledge_search_projection_pending");
     expect(checkKnowledgeIndex).not.toHaveBeenCalled();
   });
 

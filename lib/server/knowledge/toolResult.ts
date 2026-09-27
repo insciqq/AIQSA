@@ -642,8 +642,11 @@ function legacyKnowledgeToolResultText(evidence: KnowledgeProviderEvidence): str
       "Knowledge retrieval could not embed the query: embedding_model_unavailable.",
     no_relevant_evidence:
       "No relevant Knowledge evidence was found. Do not infer or invent an answer from Knowledge.",
-    search_unavailable:
-      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.",
+    search_unavailable: `${evidence.failureCode === "knowledge_search_projection_failed"
+      ? "Knowledge search indexing failed for a selected source. An administrator must retry its search indexing."
+      : evidence.failureCode === "knowledge_search_projection_pending"
+        ? "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes."
+        : "Knowledge search is temporarily unavailable."} Do not infer or invent an answer from Knowledge.`,
     source_location_unavailable:
       "The requested location was not found inside that admitted Source. Use another exact heading, page, or evidence handle; do not guess.",
     zero_above_threshold:

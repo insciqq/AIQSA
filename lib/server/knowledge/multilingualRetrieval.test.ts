@@ -49,7 +49,7 @@ async function capturedHybridSql(query: string): Promise<string> {
     eligibleRows: 0,
     indexGenerationId: "generation-0",
     knowledgeBaseId: "base-0",
-    projectionComplete: true,
+    projectionFailed: false, projectionComplete: true,
     targetDimension: 1_024
   }];
   const client = {

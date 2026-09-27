@@ -251,6 +251,7 @@
   "knowledge_search_failed",
   "knowledge_search_integrity_failed",
   "knowledge_search_projection_failed",
+  "knowledge_search_projection_pending",
   "knowledge_search_projection_unavailable",
   "knowledge_search_rebuild_integrity_failed",
   "knowledge_search_worker_failed",

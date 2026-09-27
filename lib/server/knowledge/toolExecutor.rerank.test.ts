@@ -316,7 +316,7 @@ describe("Knowledge executor hosted rerank wiring", () => {
     const passage = rerankedSearchResult().passages[0]!;
     const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
       eligibleRows: 1, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
-      projectionComplete: true, targetDimension: 1_024 };
+      projectionFailed: false, projectionComplete: true, targetDimension: 1_024 };
     const row = { ...passage, rerankScore: undefined, contributingBindingOrdinals: [0],
       documentContext: null, exactKind: null, lane: "passage_bm25", laneRank: lexicalRank,
       rawScore: 1, vectorDistance: null, vectorMode: null };
@@ -354,7 +354,7 @@ describe("Knowledge executor hosted rerank wiring", () => {
     const passage = rerankedSearchResult().passages[0]!;
     const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
       eligibleRows: 128, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
-      projectionComplete: true, targetDimension: 1_024 };
+      projectionFailed: false, projectionComplete: true, targetDimension: 1_024 };
     const row = { ...passage, rerankScore: undefined, contributingBindingOrdinals: [0],
       documentContext: null, exactKind: null, lane: "passage_semantic", laneRank: semanticRank,
       rawScore: 0.9, vectorDistance: 0.1, vectorMode: "ann" };

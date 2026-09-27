@@ -173,18 +173,18 @@ describe("Knowledge OpenSearch projection lifecycle", () => {
     const lexicalSearch = vi.fn(async () => ({ evidence: knowledgeLexicalBackendEvidenceFixture(), hits: [] }));
     const retrieve = () => {
       const scopes = [{ acceptedIndexArtifactIds: ["hierarchy-1"], baseName: "Synthetic Base", bindingOrdinal: 0,
-        eligibleRows: 1, indexGenerationId: "generation-1", knowledgeBaseId: "base-1", projectionComplete: state === "READY", targetDimension: 1_024 }];
+        eligibleRows: 1, indexGenerationId: "generation-1", knowledgeBaseId: "base-1", projectionFailed: state === "FAILED", projectionComplete: state === "READY", targetDimension: 1_024 }];
       const client = { $queryRaw: vi.fn().mockResolvedValueOnce(scopes).mockResolvedValueOnce([
         { candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }
       ]) };
       return executeKnowledgeRetrievalCore(client, { candidateLimit: 64, excludedOccurrenceKeys: [], lexicalSearch,
         query: "synthetic fact", resultLimit: 8, runId: "run-1", userId: "owner-1", vectors: [] });
     };
-    await expect(retrieve()).rejects.toThrow("knowledge_search_projection_incomplete");
+    await expect(retrieve()).rejects.toThrow("knowledge_search_projection_failed");
     expect(lexicalSearch).not.toHaveBeenCalled();
     await resetKnowledgeSearchProjections(fixture.client);
     expect(state).toBe("PENDING");
-    await expect(retrieve()).rejects.toThrow("knowledge_search_projection_incomplete");
+    await expect(retrieve()).rejects.toThrow("knowledge_search_projection_pending");
     await expect(runKnowledgeSearchProjectionPass({ client: fixture.client, search })).resolves.toEqual({
       claimed: 1, failed: 0, projected: 1, seeded: 0
     });
