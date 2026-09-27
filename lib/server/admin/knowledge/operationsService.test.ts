@@ -54,7 +54,9 @@ describe("administrator Knowledge operations service", () => {
       .mockResolvedValueOnce([reconciliation({ mappedDocuments: 1n })])
       .mockResolvedValueOnce([{
         expectedProjections: 4,
+        failedBases: 2,
         failedProjections: 1,
+        failedSources: 1,
         pendingProjections: 1,
         readyProjections: 2,
         workerLastSeenAt: new Date("2026-08-18T23:50:00.000Z")
@@ -107,7 +109,9 @@ describe("administrator Knowledge operations service", () => {
       search: {
         backendState: "unavailable",
         expectedProjections: 4,
+        failedBases: 2,
         failedProjections: 1,
+        failedSources: 1,
         pendingProjections: 1,
         readyProjections: 2,
         workerState: "stale"
@@ -158,7 +162,9 @@ describe("administrator Knowledge operations service", () => {
       })])
       .mockResolvedValueOnce([{
         expectedProjections: 0,
+        failedBases: 0,
         failedProjections: 0,
+        failedSources: 0,
         pendingProjections: 0,
         readyProjections: 0,
         workerLastSeenAt: NOW
@@ -175,7 +181,9 @@ describe("administrator Knowledge operations service", () => {
       search: {
         backendState: "available",
         expectedProjections: 0,
+        failedBases: 0,
         failedProjections: 0,
+        failedSources: 0,
         pendingProjections: 0,
         readyProjections: 0,
         workerLastSeenAt: NOW.toISOString(),

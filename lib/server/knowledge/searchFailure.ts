@@ -4,7 +4,9 @@ import { knowledgeEvidenceFromToolResult } from "./toolResult";
 import { KNOWLEDGE_SEARCH_MAPPING_VERSION, KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION } from "../search/opensearch/contract";
 
 const messages = {
-  knowledge_search_projection_incomplete: "Knowledge search is not ready. Wait for indexing to finish, then retry; contact an administrator if it remains unavailable.",
+  // The fail-closed scope check cannot tell a pending source from one whose
+  // search indexing failed terminally, so the copy covers both honestly.
+  knowledge_search_projection_incomplete: "Knowledge search is not ready: a selected source is still being indexed for search, or its search indexing failed and needs an administrator to retry it. Try again later; contact an administrator if it remains unavailable.",
   knowledge_retrieval_scope_changed: "Knowledge search readiness changed during this request. Retry after indexing finishes.",
   knowledge_search_candidate_revalidation_failed: "Knowledge search could not verify its index. Contact an administrator.",
   knowledge_retrieval_query_timed_out: "Knowledge search timed out. Try again later.",

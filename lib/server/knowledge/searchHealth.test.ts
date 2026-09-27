@@ -12,7 +12,9 @@ afterEach(() => {
 
 type HealthRow = Readonly<{
   expectedProjections: number;
+  failedBases: number;
   failedProjections: number;
+  failedSources: number;
   pendingProjections: number;
   readyProjections: number;
   workerLastSeenAt: Date | null;
@@ -21,7 +23,9 @@ type HealthRow = Readonly<{
 function healthRow(overrides: Partial<HealthRow> = {}): HealthRow {
   return {
     expectedProjections: 3,
+    failedBases: 0,
     failedProjections: 0,
+    failedSources: 0,
     pendingProjections: 0,
     readyProjections: 3,
     workerLastSeenAt: NOW,
@@ -47,7 +51,9 @@ describe("Knowledge search health", () => {
     await expect(readKnowledgeSearchHealth(client, { now: NOW, search })).resolves.toEqual({
       backendState: "available",
       expectedProjections: 3,
+      failedBases: 0,
       failedProjections: 0,
+      failedSources: 0,
       pendingProjections: 0,
       readyProjections: 3,
       workerLastSeenAt: NOW.toISOString(),
@@ -64,7 +70,9 @@ describe("Knowledge search health", () => {
     );
     const client = clientWith(healthRow({
       expectedProjections: 4,
+      failedBases: 2,
       failedProjections: 1,
+      failedSources: 1,
       pendingProjections: 1,
       readyProjections: 2,
       workerLastSeenAt: lastSeenAt
@@ -78,7 +86,9 @@ describe("Knowledge search health", () => {
     await expect(readKnowledgeSearchHealth(client, { now: NOW, search })).resolves.toEqual({
       backendState: "unavailable",
       expectedProjections: 4,
+      failedBases: 2,
       failedProjections: 1,
+      failedSources: 1,
       pendingProjections: 1,
       readyProjections: 2,
       workerLastSeenAt: lastSeenAt.toISOString(),
@@ -116,6 +126,36 @@ describe("Knowledge search health", () => {
       workerLastSeenAt: boundary.toISOString(),
       workerState: "healthy"
     });
+  });
+
+  it("attributes terminal failures to distinct live Sources and Bases without naming them", async () => {
+    const client = clientWith(healthRow({
+      expectedProjections: 5,
+      failedBases: 3,
+      failedProjections: 3,
+      failedSources: 2,
+      readyProjections: 2
+    }));
+
+    await expect(readKnowledgeSearchHealth(client, { now: NOW, search: availableSearch() }))
+      .resolves.toMatchObject({ failedBases: 3, failedProjections: 3, failedSources: 2 });
+    const sql = vi.mocked(client.$queryRaw).mock.calls[0]?.[0] as unknown as { strings: string[] };
+    const text = sql.strings.join(" ");
+    expect(text).toMatch(/count\(DISTINCT "sourceId"\) FILTER \(WHERE state = 'FAILED'\)/u);
+    expect(text).toMatch(/"KnowledgeBaseSource" AS membership[\s\S]*"removedAt" IS NULL/u);
+    expect(text).toMatch(/base\."trashedAt" IS NULL/u);
+  });
+
+  it("rejects per-Source failure counts that contradict the projection counts", async () => {
+    for (const row of [
+      healthRow({ failedSources: 1 }),
+      healthRow({ expectedProjections: 4, failedProjections: 1, failedSources: 0 }),
+      healthRow({ expectedProjections: 4, failedProjections: 1, failedSources: 2 }),
+      healthRow({ failedBases: 1 })
+    ]) {
+      await expect(readKnowledgeSearchHealth(clientWith(row), { now: NOW, search: availableSearch() }))
+        .rejects.toThrow("knowledge_search_health_invalid");
+    }
   });
 
   it("rejects malformed aggregate evidence and an invalid health clock", async () => {

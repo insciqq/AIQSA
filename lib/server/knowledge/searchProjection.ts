@@ -19,7 +19,22 @@ import {
 } from "../search/opensearch/transport";
 
 const PROJECTION_LEASE_MS = 5 * 60 * 1_000;
-const PROJECTION_MAX_ATTEMPTS = 5;
+/** Retryable failures back off exponentially (30 s doubling, capped at 15 min),
+ * so the attempt cap spans roughly five hours of a partial search outage
+ * instead of five minutes. Projection makes no paid calls; it only copies
+ * canonical PostgreSQL rows into the derived index. */
+const PROJECTION_MAX_ATTEMPTS = 24;
+const PROJECTION_RETRY_BASE_DELAY_MS = 30_000;
+const PROJECTION_RETRY_MAX_DELAY_MS = 15 * 60 * 1_000;
+/** Deterministic failures that repeat identically on every attempt. They are
+ * terminal on first observation; an administrator retry re-queues them after
+ * the cause is fixed. Oversized bulk requests are bisected first, so the code
+ * remains only when one canonical document alone exceeds the request bound. */
+const PERMANENT_PROJECTION_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "knowledge_search_projection_source_invalid",
+  "opensearch_response_too_large"
+]);
+const PROJECTION_RETRY_MAX_ARTIFACT_IDS = 1_000;
 const PROJECTION_BATCH_SIZE = KNOWLEDGE_SEARCH_BULK_MAX_DOCUMENTS;
 const PROJECTION_REBUILD_CLAIM_BATCH_SIZE = 256;
 const PROJECTION_SEED_BATCH_SIZE = 1_000;
@@ -46,6 +61,10 @@ export type KnowledgeSearchProjectionPass = Readonly<{
 export type KnowledgeSearchProjectionReset = Readonly<{
   removed: number;
   reset: number;
+}>;
+
+export type KnowledgeSearchProjectionRetry = Readonly<{
+  retried: number;
 }>;
 
 export type KnowledgeSearchProjectionRebuild = KnowledgeSearchProjectionReset & Readonly<{
@@ -110,7 +129,10 @@ function passageTableContext(value: unknown): string {
   return [...sourceText].join("\n").slice(0, 8_192);
 }
 
-async function expectedKnowledgeSearchHierarchies(client: PrismaClient) {
+async function expectedKnowledgeSearchHierarchies(
+  client: PrismaClient,
+  sourceArtifactIds?: readonly string[]
+) {
   const hierarchies = await client.knowledgeHierarchicalIndexArtifact.findMany({
     orderBy: [
       { sourceArtifactId: "asc" },
@@ -137,6 +159,7 @@ async function expectedKnowledgeSearchHierarchies(client: PrismaClient) {
           }
         }
       },
+      ...(sourceArtifactIds ? { sourceArtifactId: { in: [...sourceArtifactIds] } } : {}),
       state: "ready"
     }
   });
@@ -335,40 +358,54 @@ async function projectionDocuments(
   return documentsFromHierarchy(hierarchy, claim);
 }
 
+/** Loads each claim's canonical documents independently: an invalid source
+ * yields `null` for that claim only, so one bad claim cannot abort a batch. */
 async function projectionDocumentsForClaims(
   client: PrismaClient,
   claims: readonly ProjectionClaim[]
-): Promise<ReadonlyMap<string, readonly KnowledgeSearchDocument[]>> {
+): Promise<ReadonlyMap<string, readonly KnowledgeSearchDocument[] | null>> {
   const hierarchies = await client.knowledgeHierarchicalIndexArtifact.findMany({
     select: { id: true, ...projectionHierarchySelect },
     where: { id: { in: claims.map(({ indexArtifactId }) => indexArtifactId) } }
   });
   const byId = new Map(hierarchies.map((hierarchy) => [hierarchy.id, hierarchy]));
-  if (byId.size !== claims.length) {
-    throw new Error("knowledge_search_projection_source_invalid");
-  }
-  return new Map(claims.map((claim) => [
-    claim.indexArtifactId,
-    documentsFromHierarchy(byId.get(claim.indexArtifactId) ?? null, claim)
-  ]));
+  return new Map(claims.map((claim): [string, readonly KnowledgeSearchDocument[] | null] => {
+    try {
+      return [claim.indexArtifactId,
+        documentsFromHierarchy(byId.get(claim.indexArtifactId) ?? null, claim)];
+    } catch (error) {
+      if (projectionErrorCode(error) !== "knowledge_search_projection_source_invalid") throw error;
+      return [claim.indexArtifactId, null];
+    }
+  }));
 }
 
+function projectionRetryDelayMs(attemptCount: number): number {
+  const exponent = Math.min(Math.max(attemptCount - 1, 0), 16);
+  return Math.min(PROJECTION_RETRY_BASE_DELAY_MS * 2 ** exponent, PROJECTION_RETRY_MAX_DELAY_MS);
+}
+
+/** Settles one claim. `attributable` is false for a batch-level failure that
+ * cannot be tied to this claim; such a failure is never permanent here. */
 async function settleProjectionFailure(
   client: PrismaClient,
   claim: ProjectionClaim,
   error: unknown,
-  now: Date
+  now: Date,
+  attributable = true
 ): Promise<void> {
-  const terminal = claim.attemptCount >= PROJECTION_MAX_ATTEMPTS;
+  const code = projectionErrorCode(error);
+  const terminal = attributable && PERMANENT_PROJECTION_FAILURE_CODES.has(code) ||
+    claim.attemptCount >= PROJECTION_MAX_ATTEMPTS;
   const failure = observedFailure(error);
   logEvent("job_attempt", { subsystem: "knowledge_search", stage: "projection", job_id: claim.id,
     attempt: claim.attemptCount, outcome: "failed", code: failure.code, httpStatus: failure.httpStatus,
     action: terminal ? "fail" : "retry" });
-  const nextAttemptAt = new Date(now.getTime() + claim.attemptCount * 30_000);
+  const nextAttemptAt = new Date(now.getTime() + projectionRetryDelayMs(claim.attemptCount));
   const settled = await client.knowledgeSearchProjection.updateMany({
     data: {
       claimToken: null,
-      lastErrorCode: projectionErrorCode(error),
+      lastErrorCode: code,
       leaseExpiresAt: null,
       nextAttemptAt,
       state: terminal ? "FAILED" : "RETRY_WAIT"
@@ -380,7 +417,7 @@ async function settleProjectionFailure(
     throw error;
   });
   logEvent("job_persistence", { subsystem: "knowledge_search", stage: terminal ? "fail" : "retry", job_id: claim.id,
-    outcome: settled.count === 1 ? "confirmed" : "not_applied", code: projectionErrorCode(error),
+    outcome: settled.count === 1 ? "confirmed" : "not_applied", code,
     action: settled.count !== 1 ? "skip" : terminal ? "fail" : "retry",
     ...(settled.count === 1 && !terminal ? { retry_at: nextAttemptAt.toISOString() } : {}) });
 }
@@ -466,7 +503,8 @@ async function projectClaim(input: Readonly<{
   const documents = await projectionDocuments(input.client, input.claim);
   await input.search.deleteKnowledgeArtifact(input.claim.indexArtifactId);
   for (let offset = 0; offset < documents.length; offset += PROJECTION_BATCH_SIZE) {
-    await input.search.bulkUpsertKnowledgeDocuments(
+    await bulkProjectionDocuments(
+      input.search,
       documents.slice(offset, offset + PROJECTION_BATCH_SIZE)
     );
   }
@@ -513,20 +551,30 @@ export async function runKnowledgeSearchProjectionPass(input: Readonly<{
   return Object.freeze({ claimed, failed, projected, seeded });
 }
 
+/** Bisects a bulk request the transport rejects as oversized. A single
+ * document that still exceeds the bound rethrows, unless the caller collects
+ * such artifacts to settle them individually without aborting its batch. */
 async function bulkProjectionDocuments(
   search: AiqsaOpenSearchTransport,
-  documents: readonly KnowledgeSearchDocument[]
+  documents: readonly KnowledgeSearchDocument[],
+  oversizedArtifactIds?: Set<string>
 ): Promise<void> {
   if (documents.length === 0) return;
   try {
     await search.bulkUpsertKnowledgeDocuments(documents);
   } catch (error) {
     if (error instanceof OpenSearchTransportError &&
-      error.code === "opensearch_response_too_large" && documents.length > 1) {
-      const middle = Math.ceil(documents.length / 2);
-      await bulkProjectionDocuments(search, documents.slice(0, middle));
-      await bulkProjectionDocuments(search, documents.slice(middle));
-      return;
+      error.code === "opensearch_response_too_large") {
+      if (documents.length > 1) {
+        const middle = Math.ceil(documents.length / 2);
+        await bulkProjectionDocuments(search, documents.slice(0, middle), oversizedArtifactIds);
+        await bulkProjectionDocuments(search, documents.slice(middle), oversizedArtifactIds);
+        return;
+      }
+      if (oversizedArtifactIds) {
+        oversizedArtifactIds.add(documents[0]!.indexArtifactId);
+        return;
+      }
     }
     throw error;
   }
@@ -538,21 +586,34 @@ async function projectRebuildClaims(input: Readonly<{
   search: AiqsaOpenSearchTransport;
 }>): Promise<Readonly<{ failed: number; projected: number }>> {
   let buffered: KnowledgeSearchDocument[] = [];
+  const oversized = new Set<string>();
   const flush = async (): Promise<void> => {
     if (buffered.length === 0) return;
     const documents = buffered;
     buffered = [];
-    await bulkProjectionDocuments(input.search, documents);
+    await bulkProjectionDocuments(input.search, documents, oversized);
+  };
+  const settled = new Set<string>();
+  let failed = 0;
+  // Claim-attributable failures settle individually and never abort the batch.
+  const failClaim = async (claim: ProjectionClaim, error: Error): Promise<void> => {
+    settled.add(claim.id);
+    failed += 1;
+    await settleProjectionFailure(input.client, claim, error, new Date());
   };
   try {
     const documentsByArtifact = await projectionDocumentsForClaims(
       input.client,
       input.claims
     );
+    const valid: ProjectionClaim[] = [];
     for (const claim of input.claims) {
-      const documents = documentsByArtifact.get(claim.indexArtifactId);
-      if (!documents) throw new Error("knowledge_search_projection_source_invalid");
-      for (const document of documents) {
+      if (documentsByArtifact.get(claim.indexArtifactId)) valid.push(claim);
+      else await failClaim(claim, new Error("knowledge_search_projection_source_invalid"));
+    }
+    if (valid.length === 0) return Object.freeze({ failed, projected: 0 });
+    for (const claim of valid) {
+      for (const document of documentsByArtifact.get(claim.indexArtifactId)!) {
         buffered.push(document);
         if (buffered.length === PROJECTION_BATCH_SIZE) await flush();
       }
@@ -560,24 +621,19 @@ async function projectRebuildClaims(input: Readonly<{
     await flush();
     await input.search.refreshKnowledgeIndex();
     const indexed = new Map((await input.search.countKnowledgeArtifacts(
-      input.claims.map(({ indexArtifactId }) => indexArtifactId)
+      valid.map(({ indexArtifactId }) => indexArtifactId)
     )).map((entry) => [entry.indexArtifactId, entry.count]));
-    let failed = 0;
     let projected = 0;
     const successes: Array<Readonly<{
       claim: ProjectionClaim;
       indexedPassageCount: number;
     }>> = [];
-    for (const claim of input.claims) {
+    for (const claim of valid) {
       const indexedPassageCount = indexed.get(claim.indexArtifactId) ?? 0;
-      if (indexedPassageCount !== claim.expectedPassageCount) {
-        failed += 1;
-        await settleProjectionFailure(
-          input.client,
-          claim,
-          new Error("knowledge_search_projection_count_mismatch"),
-          new Date()
-        );
+      if (oversized.has(claim.indexArtifactId)) {
+        await failClaim(claim, new OpenSearchTransportError("opensearch_response_too_large"));
+      } else if (indexedPassageCount !== claim.expectedPassageCount) {
+        await failClaim(claim, new Error("knowledge_search_projection_count_mismatch"));
       } else {
         projected += 1;
         successes.push({ claim, indexedPassageCount });
@@ -586,8 +642,12 @@ async function projectRebuildClaims(input: Readonly<{
     await settleProjectionSuccesses(input.client, successes);
     return Object.freeze({ failed, projected });
   } catch (error) {
+    // A batch-level failure cannot be attributed to one claim, so it only
+    // schedules a retry; the ordinary worker then classifies each claim alone.
     for (const claim of input.claims) {
-      await settleProjectionFailure(input.client, claim, error, new Date());
+      if (!settled.has(claim.id)) {
+        await settleProjectionFailure(input.client, claim, error, new Date(), false);
+      }
     }
     throw error;
   }
@@ -667,6 +727,70 @@ export async function resetKnowledgeSearchProjections(
     reset += result.count;
   }
   return Object.freeze({ removed, reset });
+}
+
+/** Targeted operator recovery: re-queues only terminal FAILED projections of
+ * still-expected artifacts. The physical index and READY projections stay
+ * untouched, so other Knowledge keeps serving while the worker re-projects. */
+export async function retryFailedKnowledgeSearchProjections(
+  client: PrismaClient,
+  input: Readonly<{ indexArtifactIds?: readonly string[]; now?: Date }> = {}
+): Promise<KnowledgeSearchProjectionRetry> {
+  const requested = input.indexArtifactIds;
+  if (requested !== undefined && (!Array.isArray(requested) || requested.length < 1 ||
+    requested.length > PROJECTION_RETRY_MAX_ARTIFACT_IDS ||
+    new Set(requested).size !== requested.length ||
+    requested.some((id) => typeof id !== "string" || id.length < 1 || id.length > 512))) {
+    throw new Error("knowledge_search_projection_limit_invalid");
+  }
+  const now = input.now ?? new Date();
+  const failed = await client.knowledgeSearchProjection.findMany({
+    select: {
+      indexArtifact: { select: { sourceArtifactId: true } },
+      indexArtifactId: true
+    },
+    where: {
+      state: "FAILED",
+      ...(requested ? { indexArtifactId: { in: [...requested] } } : {})
+    }
+  });
+  if (failed.length === 0) return Object.freeze({ retried: 0 });
+  // A superseded or deleted artifact is not re-projected: that would only
+  // recreate orphan documents or fail again as source_invalid.
+  const expectedIds = new Set<string>();
+  const sourceArtifactIds = [...new Set(failed.map(({ indexArtifact }) =>
+    indexArtifact.sourceArtifactId))];
+  for (let offset = 0; offset < sourceArtifactIds.length; offset += PROJECTION_RESET_BATCH_SIZE) {
+    for (const hierarchy of await expectedKnowledgeSearchHierarchies(
+      client,
+      sourceArtifactIds.slice(offset, offset + PROJECTION_RESET_BATCH_SIZE)
+    )) expectedIds.add(hierarchy.id);
+  }
+  const retryIds = failed
+    .map(({ indexArtifactId }) => indexArtifactId)
+    .filter((indexArtifactId) => expectedIds.has(indexArtifactId));
+  let retried = 0;
+  for (let offset = 0; offset < retryIds.length; offset += PROJECTION_RESET_BATCH_SIZE) {
+    const result = await client.knowledgeSearchProjection.updateMany({
+      data: {
+        attemptCount: 0,
+        claimToken: null,
+        indexedPassageCount: 0,
+        lastErrorCode: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: now,
+        readyAt: null,
+        startedAt: null,
+        state: "PENDING"
+      },
+      where: {
+        indexArtifactId: { in: retryIds.slice(offset, offset + PROJECTION_RESET_BATCH_SIZE) },
+        state: "FAILED"
+      }
+    });
+    retried += result.count;
+  }
+  return Object.freeze({ retried });
 }
 
 export async function inspectKnowledgeSearchIntegrity(input: Readonly<{
