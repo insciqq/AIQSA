@@ -37,11 +37,13 @@ export function createGetChatTitleHandler(input: Readonly<{
     if (!auth) return Response.json({ error: "unauthorized" }, { headers, status: 401 });
     const { chatId } = await context.params;
     const chat = chatId.length <= 200 ? await input.client.chat.findFirst({
-      select: chatTitleMetadataSelect,
+      select: { ...chatTitleMetadataSelect, updatedAt: true },
       where: { archived: false, id: chatId, permanentDeletionAt: null, projectId: null, userId: auth.userId }
     }) : null;
     return chat
-      ? Response.json({ pending: chatTitlePending(chat), title: chat.title }, { headers })
+      // The title write bumps the chat revision; returning it lets the browser
+      // summary follow the server instead of lagging behind it.
+      ? Response.json({ pending: chatTitlePending(chat), title: chat.title, updatedAt: chat.updatedAt.toISOString() }, { headers })
       : Response.json({ error: "chat_not_found" }, { headers, status: 404 });
   };
 }

@@ -20,7 +20,9 @@ export async function loadChatNavigation(options: {
   if (state.navigationLoading || (append && !state.navigationNextCursor)) return false;
   const generation = ++listGeneration;
   state.setNavigationLoading(true);
-  state.setNavigationError(null);
+  // A retry of the first page keeps its failure visible until the outcome is
+  // known, so the error state never flashes back to the loading skeleton.
+  if (append || state.navigationReady) state.setNavigationError(null);
   try {
     const page = await listChatNavigation({
       cursor: append ? state.navigationNextCursor : null,

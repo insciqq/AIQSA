@@ -17,7 +17,7 @@ import {
   selectThreadSnapshot,
   useThreadStore
 } from "@/components/app-shell/threadStore";
-import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import { laterRevision, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { decodeChatSummaryResponse } from "@/lib/contracts/chats";
 import { followupHistoryTurns } from "@/lib/domain/runFollowupContext";
@@ -385,9 +385,13 @@ export function createThreadActions({
         message: {
           activeLeafMessageId: string | null;
           chatId: string;
+          chatUpdatedAt?: unknown;
           deletedMessageIds: string[];
         };
       };
+      const chatUpdatedAt = typeof body.message.chatUpdatedAt === "string"
+        ? body.message.chatUpdatedAt
+        : null;
       const deletedIds = new Set(body.message.deletedMessageIds);
       useThreadStore.getState().deleteMessages(body.message.chatId, {
         activeLeafId: body.message.activeLeafMessageId,
@@ -399,7 +403,8 @@ export function createThreadActions({
             ? {
               ...chat,
               activeLeafMessageId: body.message.activeLeafMessageId,
-              messageCount: Math.max(0, chat.messageCount - deletedIds.size)
+              messageCount: Math.max(0, chat.messageCount - deletedIds.size),
+              ...(chatUpdatedAt ? { updatedAt: laterRevision(chat.updatedAt, chatUpdatedAt) } : {})
               }
             : chat
         )

@@ -137,6 +137,7 @@ function createMemoryRepository() {
       return {
         activeLeafMessageId: state.activeLeafMessageId,
         chatId: root.chatId,
+        chatUpdatedAt: new Date("2026-09-27T10:00:00.000Z"),
         deletedMessageIds
       };
     }
@@ -444,6 +445,7 @@ describe("message branch route handlers", () => {
       message: {
         activeLeafMessageId: null,
         chatId: "chat-1",
+        chatUpdatedAt: "2026-09-27T10:00:00.000Z",
         deleted: true,
         deletedMessageIds: ["user-1", "assistant-1"],
         id: "user-1"
