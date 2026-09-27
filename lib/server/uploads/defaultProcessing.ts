@@ -4,9 +4,14 @@ import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { createS3StorageAdapter } from "./storage";
 import { createAttachmentProcessor, type AttachmentProcessingRecord } from "./processing";
 import {
+  ATTACHMENT_PROCESSING_ATTEMPTS_EXHAUSTED,
   AttachmentProcessingCoordinator,
+  validAttachmentProcessingMaxAttempts,
+  type AttachmentProcessingExhaustedJob,
   type AttachmentProcessingRepository
 } from "./processingCoordinator";
+
+const ATTACHMENT_EXHAUSTED_SETTLEMENT_BATCH = 16;
 
 type ClaimedRow = {
   attemptCount: number;
@@ -23,6 +28,11 @@ type ClaimedRow = {
 
 type FairnessCursorRow = Readonly<{
   lastGrantedOwnerUserId: string | null;
+}>;
+
+type ExhaustedRow = Readonly<{
+  attemptCount: number;
+  jobId: string;
 }>;
 
 async function lockAttachmentFairnessCursor(
@@ -44,10 +54,65 @@ async function lockAttachmentFairnessCursor(
   return rows[0].lastGrantedOwnerUserId;
 }
 
+/**
+ * A job that used every attempt without settling (for example because the
+ * process died while parsing) fails visibly once its lease is stale instead of
+ * being reclaimed forever. A live lease or a scheduled retry is left alone.
+ */
+async function settleExhaustedAttachmentJobs(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{ maxAttempts: number; now: Date; staleBefore: Date }>
+): Promise<readonly AttachmentProcessingExhaustedJob[]> {
+  const rows = await tx.$queryRaw<ExhaustedRow[]>(Prisma.sql`
+    WITH exhausted AS MATERIALIZED (
+      SELECT job."id", job."attachmentId"
+      FROM "AttachmentProcessingJob" AS job
+      INNER JOIN "Attachment" AS attachment
+        ON attachment."id" = job."attachmentId"
+        AND (attachment."userId" = job."ownerUserId"
+          OR attachment."projectId" IS NOT NULL)
+      WHERE attachment."status" = 'processing'::"AttachmentStatus"
+        AND job."attemptCount" >= ${input.maxAttempts}
+        AND job."nextAttemptAt" <= ${input.now}
+        AND (job."claimedAt" IS NULL OR job."claimedAt" < ${input.staleBefore})
+      ORDER BY job."nextAttemptAt", job."createdAt", job."id"
+      LIMIT ${ATTACHMENT_EXHAUSTED_SETTLEMENT_BATCH}
+      FOR UPDATE OF job, attachment SKIP LOCKED
+    ), failed AS (
+      UPDATE "Attachment" AS attachment
+      SET "extractedText" = NULL,
+          "processingErrorCode" = ${ATTACHMENT_PROCESSING_ATTEMPTS_EXHAUSTED},
+          "status" = 'failed'::"AttachmentStatus",
+          "updatedAt" = ${input.now}
+      FROM exhausted
+      WHERE attachment."id" = exhausted."attachmentId"
+        AND attachment."status" = 'processing'::"AttachmentStatus"
+      RETURNING attachment."id"
+    ), removed AS (
+      DELETE FROM "AttachmentProcessingJob" AS job
+      USING exhausted
+      INNER JOIN failed ON failed."id" = exhausted."attachmentId"
+      WHERE job."id" = exhausted."id"
+      RETURNING job."id", job."attemptCount"
+    )
+    SELECT removed."id" AS "jobId", removed."attemptCount"
+    FROM removed
+    ORDER BY removed."id"
+  `);
+  return Object.freeze(rows.map((row) => Object.freeze({
+    attemptCount: row.attemptCount,
+    jobId: row.jobId
+  })));
+}
+
 export const attachmentProcessingRepository: AttachmentProcessingRepository = {
   async claim(input) {
-    const row = await prisma.$transaction(async (tx) => {
+    if (!validAttachmentProcessingMaxAttempts(input.maxAttempts)) {
+      throw new RangeError("attachment_processing_max_attempts_invalid");
+    }
+    const { exhausted, row } = await prisma.$transaction(async (tx) => {
       const lastGrantedOwnerUserId = await lockAttachmentFairnessCursor(tx);
+      const exhausted = await settleExhaustedAttachmentJobs(tx, input);
       const candidateCtes = lastGrantedOwnerUserId === null
         ? Prisma.sql`
             candidate AS MATERIALIZED (
@@ -58,6 +123,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
                 AND (attachment."userId" = job."ownerUserId"
                   OR attachment."projectId" IS NOT NULL)
               WHERE attachment."status" = 'processing'::"AttachmentStatus"
+                AND job."attemptCount" < ${input.maxAttempts}
                 AND job."nextAttemptAt" <= ${input.now}
                 AND (job."claimedAt" IS NULL OR job."claimedAt" < ${input.staleBefore})
               ORDER BY
@@ -79,6 +145,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
                   OR attachment."projectId" IS NOT NULL)
               WHERE attachment."status" = 'processing'::"AttachmentStatus"
                 AND job."ownerUserId" > ${lastGrantedOwnerUserId}
+                AND job."attemptCount" < ${input.maxAttempts}
                 AND job."nextAttemptAt" <= ${input.now}
                 AND (job."claimedAt" IS NULL OR job."claimedAt" < ${input.staleBefore})
               ORDER BY
@@ -99,6 +166,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
               WHERE NOT EXISTS (SELECT 1 FROM after_cursor)
                 AND attachment."status" = 'processing'::"AttachmentStatus"
                 AND job."ownerUserId" <= ${lastGrantedOwnerUserId}
+                AND job."attemptCount" < ${input.maxAttempts}
                 AND job."nextAttemptAt" <= ${input.now}
                 AND (job."claimedAt" IS NULL OR job."claimedAt" < ${input.staleBefore})
               ORDER BY
@@ -145,7 +213,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
             OR attachment."projectId" IS NOT NULL)
       `);
       const claimed = rows[0];
-      if (!claimed) return null;
+      if (!claimed) return { exhausted, row: null };
       const advanced = await tx.$executeRaw(Prisma.sql`
         UPDATE "DocumentProcessingFairnessCursor"
         SET "lastGrantedOwnerUserId" = ${claimed.ownerUserId},
@@ -153,20 +221,23 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
         WHERE "pipeline" = 'attachment'
       `);
       if (advanced !== 1) throw new Error("attachment_fairness_cursor_lost");
-      return claimed;
+      return { exhausted, row: claimed };
     }).catch(retainDatabaseFailure);
-    return row ? ({
-      attemptCount: row.attemptCount,
-      byteSize: row.byteSize,
-      checksum: row.checksum,
-      claimToken: input.claimToken,
-      fileName: row.fileName,
-      id: row.id,
-      jobId: row.jobId,
-      kind: row.kind,
-      mimeType: row.mimeType,
-      storageKey: row.storageKey
-    } satisfies AttachmentProcessingRecord) : null;
+    return Object.freeze({
+      exhausted,
+      record: row ? ({
+        attemptCount: row.attemptCount,
+        byteSize: row.byteSize,
+        checksum: row.checksum,
+        claimToken: input.claimToken,
+        fileName: row.fileName,
+        id: row.id,
+        jobId: row.jobId,
+        kind: row.kind,
+        mimeType: row.mimeType,
+        storageKey: row.storageKey
+      } satisfies AttachmentProcessingRecord) : null
+    });
   },
 
   async heartbeat(input) {

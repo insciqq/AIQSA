@@ -47,8 +47,9 @@ RUN AIQSA_APP_BASE_URL="$AIQSA_BUILD_APP_BASE_URL" \
 # Retain the direct runtime-worker and installation-tool roots and let npm
 # preserve their complete locked transitive closure. Deriving versions from the
 # npm-ci result keeps package-lock.json authoritative without naming transitive
-# packages. Keep security overrides when pruning so npm cannot downgrade the
-# retained worker dependencies below their reviewed versions.
+# packages. SheetJS is published only as a tarball, so the isolated parser keeps
+# its exact package.json spec. Keep security overrides when pruning so npm
+# cannot downgrade the retained worker dependencies below their reviewed versions.
 FROM runtime-deps AS tools-deps
 
 RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').version")" \
@@ -73,6 +74,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
   && SSH2_VERSION="$(node -p "require('./node_modules/ssh2/package.json').version")" \
   && PG_VERSION="$(node -p "require('./node_modules/pg/package.json').version")" \
   && YAML_VERSION="$(node -p "require('./node_modules/yaml/package.json').version")" \
+  && XLSX_SPEC="$(node -p "require('./package.json').dependencies.xlsx")" \
   && npm pkg delete dependencies devDependencies \
   && npm pkg set \
     "dependencies.@napi-rs/canvas=$CANVAS_VERSION" \
@@ -97,6 +99,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.tsx=$TSX_VERSION" \
     "dependencies.sharp=$SHARP_VERSION" \
     "dependencies.unpdf=$UNPDF_VERSION" \
+    "dependencies.xlsx=$XLSX_SPEC" \
   && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
 # One published image owns the standalone application, private Memory and PDF
@@ -124,6 +127,7 @@ COPY --chown=node:node --from=runtime-build /app/public ./runtime/public
 USER node
 
 RUN node scripts/verify-release-vision.cjs
+RUN node scripts/verify-release-isolated-parser.cjs
 
 EXPOSE 3000
 
