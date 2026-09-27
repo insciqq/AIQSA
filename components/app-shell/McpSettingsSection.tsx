@@ -15,7 +15,9 @@ import { useChatRoutePath } from "./chatRoute";
 import { McpHubConnection } from "./McpHubConnection";
 import {
   disconnectUserMcpServer,
+  followMcpOAuthStart,
   McpSettingsApiError,
+  startMcpOAuth,
   updateUserMcpServer,
   userMcpOAuthAction,
   withMcpOAuthReturn
@@ -182,49 +184,56 @@ function FieldEditor({
   );
 }
 
-function OAuthLink({
+function oauthStartErrorText(error: unknown, server: UserMcpServer): string {
+  if (error instanceof McpSettingsApiError && error.status === 404) {
+    return "This MCP server is no longer available to your account.";
+  }
+  return `Authorization for ${server.name} could not be started. Try again.`;
+}
+
+function OAuthButton({
+  action,
   authorizing,
   disabled = false,
-  href,
   label,
+  onFailed,
+  onNavigate,
   onStart,
-  onCancel,
   tone = "ghost",
   ...props
 }: Readonly<{
+  action: string;
   "aria-label"?: string;
   authorizing: boolean;
   disabled?: boolean;
-  href: string;
   label: string;
+  onFailed(error: unknown): void;
+  onNavigate(): void;
   onStart(): void;
-  onCancel(): void;
   tone?: "ghost" | "primary";
 }>) {
   // The authorization outcome returns to the chat route it started from.
   const returnPath = useChatRoutePath();
   return (
-    <a
-      role="link"
+    <button
+      type="button"
       aria-busy={authorizing || undefined}
       aria-disabled={authorizing || disabled || undefined}
       aria-label={props["aria-label"]}
       className="v2-button v2-focusable"
       data-tone={tone}
-      href={disabled ? undefined : withMcpOAuthReturn(href, returnPath)}
-      tabIndex={authorizing || disabled ? -1 : undefined}
-      onClick={(event) => {
-        if (authorizing || disabled) {
-          event.preventDefault();
-          return;
-        }
+      onClick={() => {
+        if (authorizing || disabled) return;
         onStart();
-        queueMicrotask(() => { if (event.defaultPrevented) onCancel(); });
+        void startMcpOAuth(withMcpOAuthReturn(action, returnPath)).then((location) => {
+          onNavigate();
+          followMcpOAuthStart(location);
+        }, onFailed);
       }}
     >
       {authorizing ? <Spinner /> : <UiV2Icon name="lock" />}
       <span>{authorizing ? "Authorizing" : label}</span>
-    </a>
+    </button>
   );
 }
 
@@ -255,19 +264,21 @@ function ServerRow({
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const openRef = useRef<HTMLButtonElement>(null);
   const [authorizing, setAuthorizing] = useState(() => isMcpOAuthAuthorizing(server.id));
+  // The start request is in flight; the control stays busy until it answers.
+  const [starting, setStarting] = useState(false);
   const hasEdits = Object.keys(edits).length > 0;
   const cancelAuthorization = useCallback(() => {
     clearMcpOAuthAuthorizing(server.id);
     setAuthorizing(false);
   }, [server.id]);
   useEffect(() => {
-    if (!authorizing) return;
+    if (!authorizing || starting) return;
     // A cancelled/failed document navigation leaves this owner alive. Restore
     // its controls promptly; the storage TTL only covers abandoned documents.
     const timer = window.setTimeout(cancelAuthorization, 2_000);
     window.addEventListener("pageshow", cancelAuthorization);
     return () => { window.clearTimeout(timer); window.removeEventListener("pageshow", cancelAuthorization); };
-  }, [authorizing, cancelAuthorization]);
+  }, [authorizing, cancelAuthorization, starting]);
   const connected = server.oauthState === "ready" || server.oauthState === "reauthorization_required";
   const needsOAuth = server.oauthAvailable && server.oauthState !== "ready";
   const missingPersonalField = server.fields.find((field) => field.source === "missing");
@@ -300,7 +311,13 @@ function ServerRow({
   const startAuthorization = () => {
     markMcpOAuthAuthorizing(server.id);
     setAuthorizing(true);
+    setStarting(true);
     setError(null);
+  };
+  const failAuthorization = (cause: unknown) => {
+    setStarting(false);
+    cancelAuthorization();
+    setError(oauthStartErrorText(cause, server));
   };
 
   const toggle = (enabled: boolean) => {
@@ -376,14 +393,15 @@ function ServerRow({
               Complete setup
             </UiV2Button>
           ) : !server.enabled && needsOAuth ? (
-            <OAuthLink
+            <OAuthButton
               aria-label={`${server.oauthState === "reauthorization_required" ? "Reconnect" : "Connect"} ${server.name} to enable`}
               authorizing={authorizing}
               disabled={busy !== null || Boolean(oauthBlockedReason)}
-              onCancel={cancelAuthorization}
-              href={userMcpOAuthAction(server.id, server.oauthState === "reauthorization_required")}
+              action={userMcpOAuthAction(server.id, server.oauthState === "reauthorization_required")}
               label={server.oauthState === "reauthorization_required" ? "Reconnect to enable" : "Connect to enable"}
               tone="primary"
+              onFailed={failAuthorization}
+              onNavigate={() => setStarting(false)}
               onStart={startAuthorization}
             />
           ) : (
@@ -457,9 +475,9 @@ function ServerRow({
             {authorizationBlocked ? <span className="v2-settings-field-note" role="status">{authorizationBlocked}</span> : null}
           </div>
           <div className="v2-settings-server-section-actions">
-            <OAuthLink authorizing={authorizing} disabled={busy !== null || Boolean(authorizationBlocked)}
-              onCancel={cancelAuthorization} href={userMcpOAuthAction(server.id, connected)}
-              label={connected ? "Reconnect" : "Connect"} onStart={startAuthorization} />
+            <OAuthButton authorizing={authorizing} disabled={busy !== null || Boolean(authorizationBlocked)}
+              action={userMcpOAuthAction(server.id, connected)} label={connected ? "Reconnect" : "Connect"}
+              onFailed={failAuthorization} onNavigate={() => setStarting(false)} onStart={startAuthorization} />
             {connected ? <UiV2Button busy={busy === "disconnect"} disabled={busy !== null || authorizing}
               onClick={() => void run("disconnect", async () => {
                 await disconnectUserMcpServer(server.id);

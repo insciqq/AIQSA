@@ -1,8 +1,32 @@
 import { NextRequest } from "next/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { proxyWithEnv } from "../../../proxy";
+import { SESSION_COOKIE_NAME } from "../auth/constants";
 
 describe("Personal Memory MCP proxy boundary", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each(["GET", "POST"])("serves a signed-in %s /oauth/authorize under the enforced production CSP", (method) => {
+    // The consent page and its approval answer must work under this policy;
+    // form-action 'self' is why approval navigates instead of redirecting.
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("AIQSA_APP_BASE_URL", "https://aiqsa.example");
+    vi.stubEnv("AIQSA_COOKIE_SECURE", "");
+    const response = proxyWithEnv(
+      new NextRequest("https://aiqsa.example/oauth/authorize?response_type=code", {
+        headers: { cookie: `${SESSION_COOKIE_NAME}=opaque-session` },
+        method
+      }),
+      { AIQSA_APP_BASE_URL: "https://aiqsa.example", NODE_ENV: "production" }
+    );
+
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(response.headers.get("content-security-policy")).toContain("form-action 'self'");
+    expect(response.headers.get("content-security-policy-report-only")).toBeNull();
+  });
+
   it("passes /mcp to bearer authentication without a browser session", () => {
     const response = proxyWithEnv(
       new NextRequest("https://aiqsa.example/mcp", { method: "POST" }),

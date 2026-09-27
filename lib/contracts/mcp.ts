@@ -526,10 +526,15 @@ export function isMcpRuntimeTimeouts(value: unknown): value is McpRuntimeTimeout
 
 export type AdminMcpAttention = {
   action: string;
-  href: string | null;
+  /** The validation OAuth start endpoint; it accepts only a same-origin POST. */
+  oauthAction: string | null;
   label: string;
   task: "runtime" | "validation";
 };
+
+export function adminMcpOAuthAction(serverId: string, reconnect: boolean): string {
+  return `/api/admin/mcp/${encodeURIComponent(serverId)}/oauth/validation/${reconnect ? "reconnect" : "connect"}`;
+}
 
 /**
  * What an administrator must still do for a server before it works for
@@ -540,23 +545,23 @@ export type AdminMcpAttention = {
 export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | null {
   if (server.archivedAt) return null;
   if (server.draft.auth.mode === "oauth" && server.validationOAuth?.state === "disconnecting") {
-    return { action: "View connection", href: null, label: "Disconnecting authorization", task: "validation" };
+    return { action: "View connection", oauthAction: null, label: "Disconnecting authorization", task: "validation" };
   }
   if (server.draft.auth.mode === "oauth" && server.validationOAuth?.state !== "ready") {
     const reconnect = server.validationOAuth?.state === "reauthorization_required";
     return {
       action: reconnect ? "Reconnect" : "Connect",
-      href: `/api/admin/mcp/${encodeURIComponent(server.id)}/oauth/validation/${reconnect ? "reconnect" : "connect"}`,
+      oauthAction: adminMcpOAuthAction(server.id, reconnect),
       label: reconnect ? "Reconnect to check changes" : "Authorization required to check changes",
       task: "validation"
     };
   }
   if (server.activation?.stage === "failed") {
-    return { action: "Review and retry", href: null, label: "Settings check failed", task: "validation" };
+    return { action: "Review and retry", oauthAction: null, label: "Settings check failed", task: "validation" };
   }
   if (server.activeRevision?.artifactStatus === "missing" || server.runtimeProblem) {
     return {
-      action: "Review connection", href: null,
+      action: "Review connection", oauthAction: null,
       label: server.runtimeProblem === "reauthorization_required"
         ? "A user connection needs reconnecting" : mcpRuntimeErrorMessage(server.runtimeErrorCode),
       task: "runtime"
@@ -565,13 +570,13 @@ export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | n
   if (server.enabled && server.activeRevision) {
     // Unreadable recorded definitions fail closed: every runtime tool is held back.
     if (server.activeRevision.toolVerification === "invalid") {
-      return { action: "Test & Save", href: null, label: "Check again to restore this server's tools", task: "validation" };
+      return { action: "Test & Save", oauthAction: null, label: "Check again to restore this server's tools", task: "validation" };
     }
     if (server.inventoryDifferences?.length) {
-      return { action: "Review tools", href: null, label: "Server tools changed since the last check", task: "validation" };
+      return { action: "Review tools", oauthAction: null, label: "Server tools changed since the last check", task: "validation" };
     }
     if (server.activeRevision.toolVerification === "names") {
-      return { action: "Test & Save", href: null, label: "Check again to guard against tool changes", task: "validation" };
+      return { action: "Test & Save", oauthAction: null, label: "Check again to guard against tool changes", task: "validation" };
     }
   }
   return null;

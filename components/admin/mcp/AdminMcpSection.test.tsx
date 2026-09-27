@@ -13,7 +13,14 @@ import type {
   McpRevisionSummary,
   McpToolInventoryEntry
 } from "@/lib/contracts/mcp";
+import { followMcpOAuthStart } from "@/components/app-shell/mcpSettingsApi";
 import { AdminMcpSection } from "./AdminMcpSection";
+
+// jsdom cannot navigate; the start answer is observed where the browser would follow it.
+vi.mock("@/components/app-shell/mcpSettingsApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/app-shell/mcpSettingsApi")>(),
+  followMcpOAuthStart: vi.fn()
+}));
 
 const NOW = "2026-09-07T10:00:00.000Z";
 const bannedWords = /\bdraft\b|revision|pending|probe|evidence|adapter|fingerprint|\bversion\b|\bCAS\b|tuple/iu;
@@ -337,8 +344,7 @@ describe("AdminMcpSection", () => {
     expect(rows[0]).toHaveTextContent("2 tools on");
     expect(rows[0]).toHaveTextContent("No access yet");
     expect(rows[1]).toHaveTextContent("Authorization required to check changes");
-    expect(within(rows[1]!).getByRole("link", { name: "Connect Workspace tools" }))
-      .toHaveAttribute("href", "/api/admin/mcp/server-oauth/oauth/validation/connect");
+    expect(within(rows[1]!).getByRole("button", { name: "Connect Workspace tools" })).not.toHaveAttribute("href");
     await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("MCP servers"));
     expect(view.container.textContent).not.toMatch(bannedWords);
 
@@ -593,9 +599,44 @@ describe("AdminMcpSection", () => {
     const banner = await screen.findByTestId("admin-mcp-oauth-return");
     expect(banner).toHaveTextContent("Your account is connected");
     expect(screen.getByTestId("mcp-authorization-state")).toHaveTextContent("Not connected");
-    expect(screen.getByRole("link", { name: "Connect" })).toHaveAttribute("href", "/api/admin/mcp/server-oauth/oauth/validation/connect");
+    expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
     fireEvent.click(within(banner).getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByTestId("admin-mcp-oauth-return")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["the server page", "server-oauth", "Connect"],
+    ["the list", null, "Connect Workspace tools"]
+  ])("starts validation OAuth from %s with a same-origin POST and follows its answer", async (_label, resource, name) => {
+    const startFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ location: "https://auth.example.test/authorize?state=s" }));
+    vi.stubGlobal("fetch", startFetch);
+    try {
+      renderSection(state, resource);
+      const start = await screen.findByRole("button", { name });
+      fireEvent.click(start);
+      fireEvent.click(start);
+      await waitFor(() => expect(followMcpOAuthStart).toHaveBeenCalledWith("https://auth.example.test/authorize?state=s"));
+      expect(startFetch).toHaveBeenCalledOnce();
+      expect(String(startFetch.mock.calls[0]?.[0])).toBe("/api/admin/mcp/server-oauth/oauth/validation/connect");
+      expect(startFetch.mock.calls[0]?.[1]).toMatchObject({ credentials: "same-origin", method: "POST" });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.mocked(followMcpOAuthStart).mockClear();
+    }
+  });
+
+  it("reports a validation OAuth start that could not begin and releases the control", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "mcp_not_found" }, { status: 404 })));
+    try {
+      const { feedback } = renderSection(state, "server-oauth");
+      fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+      await waitFor(() => expect(feedback.reportError).toHaveBeenCalledWith("This MCP server no longer exists. Refresh the catalog."));
+      expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+      expect(followMcpOAuthStart).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("Settings opens a focus-trapped sheet with the form, applies through Test & Save and asks before discarding edits", async () => {
