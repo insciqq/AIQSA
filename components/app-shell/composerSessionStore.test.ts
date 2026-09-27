@@ -7,6 +7,7 @@ import {
   composerSessionModeFromKey,
   emptyComposerSessionSnapshot,
   folderIdFromComposerSessionKey,
+  pendingSendHasNewerInput,
   projectComposerSessionKey,
   projectIdFromComposerSessionKey,
   selectActiveComposerSession,
@@ -347,13 +348,16 @@ describe("composer session store", () => {
     });
     expect(store.transferSession(source, target)).toBe(false);
 
+    // Input typed while a send is pending stays; a refused send returns its
+    // own text and files ahead of it instead of dropping them.
     const retry = store.beginSend(target)!;
     store.setDraft("Newer question");
     store.setAttachments([attachment("newer")]);
+    expect(pendingSendHasNewerInput(useComposerSessionStore.getState(), retry)).toBe(true);
     expect(store.finishSend(retry, "failed", "retry failed")).toBe(true);
     expect(session(target)).toMatchObject({
-      attachments: [attachment("newer")],
-      draft: "Newer question",
+      attachments: [attachment("source"), attachment("newer")],
+      draft: "First question\n\nNewer question",
       operationError: "retry failed",
       operationErrorLive: true,
       operationErrorRetryable: false,
@@ -361,8 +365,9 @@ describe("composer session store", () => {
     });
 
     const finalSend = store.beginSend(target)!;
-    expect(store.finishSend(finalSend, "succeeded")).toBe(true);
-    expect(session(target)).toMatchObject({ attachments: [], draft: "", operationError: null });
+    store.setDraft("Typed during a successful send");
+    expect(store.finishSend(finalSend, "succeeded", null, true, "run-final")).toBe(true);
+    expect(session(target)).toMatchObject({ attachments: [], draft: "Typed during a successful send", operationError: null });
   });
 
   it("ignores late upload and edit writes after a source is removed and recreated", () => {
@@ -421,7 +426,29 @@ describe("composer session store", () => {
     const second = store.beginSend(key)!;
     store.setDraft("new draft while waiting");
     store.finishSend(second, "failed", "Context did not fit", true, null, true);
-    expect(session(key)).toMatchObject({ draft: "new draft while waiting", contextRejectionGeneration: null });
+    expect(session(key)).toMatchObject({
+      draft: "shorter\n\nnew draft while waiting",
+      contextRejectionGeneration: null,
+      operationErrorRetryable: false
+    });
+  });
+
+  it("restores a refused send exactly when only non-content controls changed while it was pending", () => {
+    const key = composerSessionKey("workspace-toggle");
+    const store = useComposerSessionStore.getState();
+    store.activateSession(key);
+    store.setDraft("Question");
+    const send = store.beginSend(key)!;
+    store.updateSession(key, { workspaceEnabled: true });
+    expect(pendingSendHasNewerInput(useComposerSessionStore.getState(), send)).toBe(false);
+    store.finishSend(send, "failed", "Send refused");
+    expect(session(key)).toMatchObject({
+      draft: "Question",
+      operationError: "Send refused",
+      operationErrorRetryable: true,
+      pendingSend: null,
+      workspaceEnabled: true
+    });
   });
 
   it("snapshots and transfers blank Workspace intent with the accepted send", () => {
