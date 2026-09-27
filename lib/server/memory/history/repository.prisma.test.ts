@@ -3595,14 +3595,21 @@ describe("Memory lexical history index persistence", () => {
         }
       });
 
-      const { result } = await processHistoryJob(userId);
+      const { claim, result } = await processHistoryJob(userId);
 
-      // The withheld blob is an explicit truncation, never a full safety pass.
+      // The withheld blob is an explicit truncation, never a full safety pass:
+      // the persisted job stage records it; a READY checkpoint has no error.
       expect(result.stage).toBe("lexical_ready:history_message_truncated");
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: claim.id }
+      })).resolves.toMatchObject({
+        stage: "lexical_ready:history_message_truncated",
+        state: "SUCCEEDED"
+      });
       await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
         where: { userId_chatId: { chatId: chat.id, userId } }
       })).resolves.toMatchObject({
-        lastErrorCode: "memory_history_message_truncated",
+        lastErrorCode: null,
         lastIndexedMessageId: second.assistantMessage.id,
         status: "READY"
       });
