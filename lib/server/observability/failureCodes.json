@@ -299,6 +299,7 @@
   "mcp_inventory_response_too_large",
   "mcp_inventory_schema_limit",
   "mcp_inventory_secret_exposed",
+  "mcp_inventory_time_limit",
   "mcp_inventory_tool_invalid",
   "mcp_inventory_tool_limit",
   "mcp_list_tools_failed",

@@ -6,6 +6,9 @@ import {
   isMcpToolExclusionReason,
   isMcpToolName,
   isMcpUnavailableToolReason,
+  MCP_SERVER_TOOL_LIMIT,
+  mcpRuntimeErrorCode,
+  mcpRuntimeErrorMessage,
   mcpValidationIssue,
   type AdminMcpServer,
   type McpRevisionSummary
@@ -18,6 +21,21 @@ describe("MCP administrator failure projection", () => {
     })).toEqual({ code: "mcp_initialize_failed", path: "source", operation: "initialize", httpStatus: 404, endpoint: "https://mcp.example.test/wrong" });
     expect(mcpValidationIssue({ code: "raw upstream response", path: "private/url", operation: "private", httpStatus: 12345, endpoint: "javascript:private" }))
       .toEqual({ code: "mcp_remote_validation_failed", path: "validator" });
+  });
+});
+
+describe("MCP runtime failure categories", () => {
+  it("keeps inventory bounds exact and folds only other inventory faults into invalid", () => {
+    for (const code of ["mcp_inventory_cursor_cycle", "mcp_inventory_metadata_limit", "mcp_inventory_page_limit",
+      "mcp_inventory_response_too_large", "mcp_inventory_schema_limit", "mcp_inventory_time_limit", "mcp_inventory_tool_limit"]) {
+      expect(mcpRuntimeErrorCode(code)).toBe(code);
+      expect(mcpRuntimeErrorMessage(code)).not.toBe(mcpRuntimeErrorMessage("mcp_inventory_invalid"));
+    }
+    expect(mcpRuntimeErrorMessage("mcp_inventory_tool_limit")).toContain(String(MCP_SERVER_TOOL_LIMIT));
+    expect(mcpRuntimeErrorCode("mcp_inventory_tool_invalid")).toBe("mcp_inventory_invalid");
+    expect(mcpRuntimeErrorCode("mcp_inventory_secret_exposed")).toBe("mcp_inventory_invalid");
+    expect(mcpRuntimeErrorCode("mcp_initialize_response_too_large")).toBe("mcp_response_too_large");
+    expect(mcpRuntimeErrorCode("mcp_call_result_too_large")).toBe("mcp_response_too_large");
   });
 });
 

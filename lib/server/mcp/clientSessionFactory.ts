@@ -94,10 +94,10 @@ export function createMcpClientSessionFactory(input: Readonly<{
         },
         isClosed: () => session.isClosed(),
         ping: (options) => session.ping(options),
-        async listTools(signal) {
+        async listTools(signal, options) {
           return [...await session.listAllTools({
             ...(signal ? { signal } : {}),
-            timeoutMs: launch.callTimeoutMs
+            timeoutMs: options?.requestTimeoutMs ?? launch.callTimeoutMs
           })];
         },
         serverEvidence: () => session.serverEvidence

@@ -21,7 +21,7 @@ import type { SystemModelRoleResolution } from "../providerRuntime/systemModelRo
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { mcpFindToolsArguments } from "./discovery";
-import type { McpCapabilityCatalog } from "./runPlan";
+import { budgetMcpServerInstructions, type McpCapabilityCatalog } from "./runPlan";
 
 const MAX_ROUTING_REQUIREMENTS = 16;
 const MAX_REQUIREMENT_CHARACTERS = 160;
@@ -140,7 +140,7 @@ function compactCatalog(
   catalog: McpCapabilityCatalog,
   toolIds: ReadonlyMap<string, string>
 ) {
-  return catalog.servers.flatMap((server) => {
+  const servers = catalog.servers.flatMap((server) => {
     const tools = server.tools.flatMap((tool) => {
       const id = toolIds.get(tool.namespacedName);
       if (!id) return [];
@@ -158,14 +158,18 @@ function compactCatalog(
       }];
     });
     if (tools.length === 0) return [];
-    return [{
-      ...(server.description ? { description: server.description } : {}),
-      ...(server.instructions ? { instructions: server.instructions } : {}),
-      name: server.serverName,
-      namespace: server.namespace,
-      tools
-    }];
+    return [{ server, tools }];
   });
+  // Catalogs frozen before the shared budget existed may exceed it; the prompt
+  // never does, and a shortened text says so.
+  const instructions = budgetMcpServerInstructions(servers.map(({ server }) => server.instructions ?? ""));
+  return servers.map(({ server, tools }, index) => ({
+    ...(server.description ? { description: server.description } : {}),
+    ...(instructions[index] ? { instructions: instructions[index] } : {}),
+    name: server.serverName,
+    namespace: server.namespace,
+    tools
+  }));
 }
 
 export function buildMcpRouterPrompt(input: Readonly<{

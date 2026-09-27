@@ -1,4 +1,4 @@
-import type { McpConfigurationSlot, McpDraftConfiguration } from "@/lib/contracts/mcp";
+import { MCP_SERVER_TOOL_LIMIT, type McpConfigurationSlot, type McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { describe, expect, it } from "vitest";
 import {
   canonicalMcpJson,
@@ -89,7 +89,11 @@ describe("MCP definition validation", () => {
     });
     expect(validateMcpDraft({
       ...remoteDraft("https://mcp.example.test/api"),
-      disabledToolNames: Array.from({ length: 513 }, (_, index) => `tool_${index}`)
+      disabledToolNames: Array.from({ length: MCP_SERVER_TOOL_LIMIT }, (_, index) => `tool_${index}`)
+    })).toMatchObject({ ok: true });
+    expect(validateMcpDraft({
+      ...remoteDraft("https://mcp.example.test/api"),
+      disabledToolNames: Array.from({ length: MCP_SERVER_TOOL_LIMIT + 1 }, (_, index) => `tool_${index}`)
     })).toEqual({
       issues: [{ code: "disabled_tool_names_invalid", path: "disabledToolNames" }],
       ok: false
@@ -533,6 +537,23 @@ describe("MCP published tool definitions", () => {
     ["pairs that are not a list", (evidence: ReturnType<typeof recorded>) => ({ ...evidence, toolDefinitions: null })]
   ])("fails closed on %s", (_label, mutate) => {
     expect(mcpPublishedToolDefinitions(stored(mutate(recorded())))).toEqual({ kind: "invalid" });
+  });
+
+  it("verifies a maximal server's pairs and fails closed one pair beyond the per-server bound", () => {
+    const maximal = (count: number) => Array.from({ length: count }, (_, index) => ({
+      definitionHash: hashCanonicalMcpValue({ index }), name: `tool_${index}`
+    }));
+    const evidenceFor = (entries: ReturnType<typeof maximal>) =>
+      stored({ ...mcpToolDefinitionEvidence(entries), toolCount: entries.length }, entries.map(({ name }) => name));
+
+    const published = mcpPublishedToolDefinitions(evidenceFor(maximal(MCP_SERVER_TOOL_LIMIT)));
+    expect(published.kind).toBe("definitions");
+    if (published.kind === "definitions") expect(published.hashes.size).toBe(MCP_SERVER_TOOL_LIMIT);
+    // Consistent, correctly hashed evidence past the bound was never produced
+    // by a check: it offers nothing instead of widening the runtime.
+    expect(mcpPublishedToolDefinitions(evidenceFor(maximal(MCP_SERVER_TOOL_LIMIT + 1)))).toEqual({ kind: "invalid" });
+    expect(mcpPublishedToolDefinitions(stored({}, maximal(MCP_SERVER_TOOL_LIMIT + 1).map(({ name }) => name))))
+      .toEqual({ kind: "invalid" });
   });
 
   it("fails closed when verified pairs are malformed or disagree with the tool inventory", () => {

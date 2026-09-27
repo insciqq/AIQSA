@@ -175,8 +175,8 @@ function revisionServerInstructions(validationEvidence: unknown): string | undef
   if (!isRecord(validationEvidence) || !isRecord(validationEvidence.evidence) ||
     !isRecord(validationEvidence.evidence.server) ||
     typeof validationEvidence.evidence.server.instructions !== "string") return undefined;
-  const instructions = validationEvidence.evidence.server.instructions.trim();
-  return instructions && instructions.length <= 8_192 ? instructions : undefined;
+  // Kept whole: the Auto catalog applies one visible shared budget instead.
+  return validationEvidence.evidence.server.instructions.trim() || undefined;
 }
 
 function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRunPlanRecord {

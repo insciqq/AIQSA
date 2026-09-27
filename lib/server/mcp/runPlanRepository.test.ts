@@ -364,6 +364,21 @@ describe("Prisma MCP run-plan loader", () => {
     expect(JSON.stringify(catalog)).not.toContain("server-revoked");
   });
 
+  it("carries validated server instructions whole past the former 8,192-character filter", async () => {
+    // Over 16 KiB of UTF-8 and over 8,192 characters, with JSON-escaped quotes.
+    const instructions = `${"界".repeat(6_000)} "keys" ${"use scoped reads ".repeat(200)}`.trim();
+    const record = preference({ desiredRuntimeGeneration: null, desiredRuntimeGenerationId: null });
+    record.server.activeRevision!.validationEvidence = {
+      ...record.server.activeRevision!.validationEvidence,
+      evidence: { server: { instructions: `  ${instructions}\n` } }
+    };
+
+    const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([record]).client);
+    expect(loaded?.serverInstructions).toBe(instructions);
+    const catalog = await loadMcpCapabilityCatalog("user-1", clientWith([record]).client);
+    expect(catalog.servers[0]?.instructions).toBe(instructions);
+  });
+
   it("accepts a matching active-group grant", async () => {
     const record = preference();
     record.server.grants = [{ canUse: true, groupId: "group-1", userId: null }];

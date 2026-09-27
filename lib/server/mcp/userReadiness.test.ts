@@ -65,6 +65,24 @@ describe("MCP user readiness", () => {
     });
   });
 
+  it.each([513, 1_024])("projects the same %i-tool inventory to admin counts and the user's catalog as the runtime", (count) => {
+    const tools = Array.from({ length: count }, (_, index) => ({ description: null, name: `tool_${index}` }));
+    const inventory = {
+      exclusions: tools.map(({ name }) => ({ name: `${name}_new`, reason: "unpublished_addition" })),
+      tools: tools.map((tool) => ({ ...tool, definitionHash: "a".repeat(64), inputSchema: { type: "object" } })),
+      version: 1
+    };
+    const user = deriveMcpUserReadiness({
+      enabled: true, hasInvalidValues: false, hasMissingValues: false, now, oauthMode: false, oauthState: null,
+      preferenceUpdatedAt: now, runtime: { errorCode: null, inventory, state: "ready" }
+    });
+    expect(user.tools).toHaveLength(count);
+    expect(user.unavailableTools).toHaveLength(count);
+    const revisionValidationEvidence = { evidence: {}, testedAt: now.toISOString(), toolInventory: tools };
+    expect(deriveKnownMcpToolCount({ revisionCreatedAt: now, revisionValidationEvidence, runtimeInventory: null })).toBe(count);
+    expect(deriveKnownMcpToolCount({ revisionCreatedAt: now, revisionValidationEvidence, runtimeInventory: inventory })).toBe(count);
+  });
+
   it("uses active-revision inventory before startup and current runtime inventory afterward", () => {
     const revisionValidationEvidence = {
       evidence: {},

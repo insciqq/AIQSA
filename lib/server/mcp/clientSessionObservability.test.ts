@@ -14,7 +14,7 @@ async function session() {
   vi.spyOn(Client.prototype, "getServerCapabilities").mockReturnValue({ tools: {} });
   const value = new McpClientSession({
     url: new URL("https://PRIVATE_URL_CANARY.example/mcp"), fetch: vi.fn(), headers: { authorization: "Bearer PRIVATE_TOKEN_CANARY" }, requestTimeoutMs: 60_000,
-    limits: { maxListPages: 4, maxToolArgumentBytes: 1_024, maxToolMetadataBytes: 2_048, maxToolResultBytes: 2_048, maxToolSchemaBytes: 2_048, maxTools: 16 }
+    limits: { maxListDurationMs: 10_000, maxToolArgumentBytes: 1_024, maxToolMetadataBytes: 2_048, maxToolResultBytes: 2_048, maxToolSchemaBytes: 2_048, maxTools: 16 }
   });
   await value.initialize();
   return value;

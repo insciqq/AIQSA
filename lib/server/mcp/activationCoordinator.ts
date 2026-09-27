@@ -5,7 +5,7 @@ import type {
   McpToolInventoryEntry,
   McpValidationIssue
 } from "@/lib/contracts/mcp";
-import { mcpValidationIssue } from "@/lib/contracts/mcp";
+import { MCP_SERVER_TOOL_LIMIT, mcpValidationIssue } from "@/lib/contracts/mcp";
 import {
   McpDraftValidationAbortedError,
   McpDraftValidationUnavailableError,
@@ -81,7 +81,7 @@ function validPublication(outcome: Extract<McpDraftValidationOutcome, { kind: "o
   return Boolean(outcome.evidence) && !Array.isArray(outcome.evidence) &&
     (outcome.resolvedArtifact === null || (
       Boolean(outcome.resolvedArtifact) && !Array.isArray(outcome.resolvedArtifact)
-    )) && outcome.toolInventory.length <= 512;
+    )) && outcome.toolInventory.length <= MCP_SERVER_TOOL_LIMIT;
 }
 
 export class McpActivationCoordinator {
