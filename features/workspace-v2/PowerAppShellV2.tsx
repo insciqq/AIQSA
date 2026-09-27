@@ -952,24 +952,6 @@ export function PowerAppShellV2({
     pruneThreadCacheEvent();
   }, [activeRunChatIdsKey, pendingComposerChatIdsKey, pruneThreadCacheEvent]);
 
-  const reconcilePermanentChatDeletion = useEventCallback(async (chatId: string) => {
-    const { wasActive, nextChat } = removePermanentlyDeletedChat(chatId);
-    chatDetailRequestsRef.current.delete(chatId);
-    removePermanentlyDeletedArchivedChat(chatId);
-    if (shareDialogTarget?.chat.id === chatId) setShareDialogTarget(null);
-    if (!wasActive) return;
-    if (nextChat) await activateChat(nextChat, { preserveControls: true });
-    else activateBlankWorkspace();
-  });
-
-  useEffect(() => {
-    void activatePermanentChatDeletionAccount(
-      accountId,
-      reconcilePermanentChatDeletion
-    );
-    return () => deactivatePermanentChatDeletionAccount(accountId);
-  }, [accountId, reconcilePermanentChatDeletion]);
-
   const loadEarlierMessages = useEventCallback(async () => {
     const sourceChatId = activeChatId;
     if (!sourceChatId) return;
@@ -1172,6 +1154,47 @@ export function PowerAppShellV2({
   });
   const selectProject = projectWorkspace.actions.selectProject;
   const selectProjectChat = projectWorkspace.actions.selectChat;
+
+  /**
+   * A removed active chat hands over within its own scope, through the
+   * owners' direct actions so the address is replaced rather than pushed.
+   * A Project chat outside its open Project falls back to the personal blank chat.
+   */
+  const activateRemovedChatFallback = useEventCallback(async (
+    scopeProjectId: string | null,
+    next: WorkspaceChatSummary | null,
+    preserveControls = false
+  ) => {
+    if (scopeProjectId === null) {
+      if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
+      if (next) await activateChat(next, { preserveControls });
+      else activateBlankWorkspace();
+      return;
+    }
+    if (projectWorkspace.selectedProjectId !== scopeProjectId) {
+      if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
+      activateBlankWorkspace();
+      return;
+    }
+    if (next && await selectProjectChat(next.id)) return;
+    activateProjectBlankWorkspace(scopeProjectId);
+  });
+
+  const reconcilePermanentChatDeletion = useEventCallback(async (chatId: string) => {
+    const { nextChat, scopeProjectId, wasActive } = removePermanentlyDeletedChat(chatId);
+    chatDetailRequestsRef.current.delete(chatId);
+    removePermanentlyDeletedArchivedChat(chatId);
+    if (shareDialogTarget?.chat.id === chatId) setShareDialogTarget(null);
+    if (wasActive) await activateRemovedChatFallback(scopeProjectId, nextChat, true);
+  });
+
+  useEffect(() => {
+    void activatePermanentChatDeletionAccount(
+      accountId,
+      reconcilePermanentChatDeletion
+    );
+    return () => deactivatePermanentChatDeletionAccount(accountId);
+  }, [accountId, reconcilePermanentChatDeletion]);
   // A Project address opens through the Project owner. Selecting a Project
   // updates selectedProjectId before its detail and workspace requests
   // settle; that render moves the request back to "waiting" so the later
@@ -1702,7 +1725,7 @@ export function PowerAppShellV2({
       activateChat,
       createChat: activateBlankWorkspace,
       createFolder,
-      deleteChat,
+      deleteChat: (chat: WorkspaceChatSummary) => deleteChat(chat, activateRemovedChatFallback),
       deleteChatPermanently,
       deleteFolder,
       exportChat,
@@ -1739,6 +1762,9 @@ export function PowerAppShellV2({
   const workspaceView = {
     archived: {
       onRestored: async (chatId: string) => {
+        // A restored chat is personal: leave an open Project before it opens,
+        // as an address of a personal chat does.
+        if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
         await refreshWorkspace(chatId, { preserveControls: true });
       }
     },

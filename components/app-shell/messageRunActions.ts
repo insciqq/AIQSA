@@ -13,6 +13,7 @@ import {
   chatIdFromComposerSessionKey,
   composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
+  pendingSendHasNewerInput,
   projectIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore,
@@ -981,11 +982,14 @@ export function useMessageRunActions({
         setNotice({ kind: "error", text: message });
       }
     } finally {
+      const refusedCopy = pendingSendHasNewerInput(useComposerSessionStore.getState(), sendToken)
+        ? "Send failed. Your message is back in the composer, ahead of your newer text."
+        : "Send failed. Your draft was preserved.";
       useComposerSessionStore.getState().finishSend(
         sendToken,
         sendOutcome,
         sendOutcome === "failed" && !sendFailureHandled
-          ? sendRejectionMessage ?? sendFailureMessage ?? "Send failed. Your draft was preserved."
+          ? sendRejectionMessage ?? sendFailureMessage ?? refusedCopy
           : null,
         sendFailureLive,
         sendRunId,

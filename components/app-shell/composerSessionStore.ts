@@ -631,8 +631,21 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       return false;
     }
 
-    const failedBeforeRun = outcome === "failed" && runId === null;
-    const restore = failedBeforeRun && session.revision === pending.clearedRevision;
+    // A send refused before its run returns its text and files to the
+    // composer. Input the user added while it was pending stays as the newer
+    // part: the refused text goes back ahead of it, so neither is lost.
+    const restore = outcome === "failed" && runId === null;
+    const newerInput = inputAddedDuringSend(session);
+    const restoredDraft = [pending.draft, newerInput ? session.draft : ""]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
+    const pendingAttachmentIds = new Set(pending.attachments.map((attachment) => attachment.id));
+    const restoredAttachments = [
+      ...pending.attachments,
+      ...(newerInput
+        ? session.attachments.filter((attachment) => !pendingAttachmentIds.has(attachment.id))
+        : [])
+    ];
     set({
       sessionsByKey: {
         ...state.sessionsByKey,
@@ -642,16 +655,16 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           ...(runId !== null && session.artifactCreate === token.artifactCreate ? { artifactCreate: null } : {}),
           ...(restore
             ? {
-                attachments: [...pending.attachments],
-                draft: pending.draft,
+                attachments: restoredAttachments,
+                draft: restoredDraft,
                 editRevision: session.editRevision + (pending.draft ? 1 : 0),
                 revision: session.revision + 1
               }
             : {}),
-          contextRejectionGeneration: restore && contextTooLarge ? token.generation : null,
-          operationError: failedBeforeRun ? error : null,
-          operationErrorLive: failedBeforeRun ? operationErrorLive : true,
-          operationErrorRetryable: restore && Boolean(error),
+          contextRejectionGeneration: restore && !newerInput && contextTooLarge ? token.generation : null,
+          operationError: restore ? error : null,
+          operationErrorLive: restore ? operationErrorLive : true,
+          operationErrorRetryable: restore && !newerInput && Boolean(error),
           pendingSend: null
         }
       }
@@ -842,6 +855,27 @@ export function selectComposerSession(
   key: ComposerSessionKey
 ): ComposerSessionSnapshot {
   return state.sessionsByKey[key] ?? emptyComposerSessionSnapshot;
+}
+
+/**
+ * Whether the user entered text or files while this send was pending; a
+ * refused send then returns its text ahead of that newer input.
+ */
+export function pendingSendHasNewerInput(
+  state: Pick<ComposerSessionStore, "sessionsByKey">,
+  token: Pick<ComposerSendToken, "generation">
+): boolean {
+  const session = Object.values(state.sessionsByKey).find(
+    (candidate) => candidate?.pendingSend?.generation === token.generation
+  );
+  return Boolean(session && inputAddedDuringSend(session));
+}
+
+/** Text or files entered after the pending send cleared the composer. */
+function inputAddedDuringSend(session: ComposerSessionSnapshot): boolean {
+  return Boolean(session.pendingSend) &&
+    session.revision !== session.pendingSend?.clearedRevision &&
+    (session.draft.length > 0 || session.attachments.length > 0);
 }
 
 export function selectActiveComposerSession(
