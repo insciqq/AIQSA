@@ -1148,6 +1148,40 @@ describe("run preparation", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("lists each current-message image once among conversation image references", async () => {
+    const bytes = Buffer.from("current-image");
+    const records = [
+      runAttachment({ id: "earlier-image", kind: "image", mimeType: "image/png", storageKey: "private/earlier-image" }),
+      runAttachment({ byteSize: bytes.length, id: "current-image", kind: "image", mimeType: "image/png", storageKey: "private/current-image" })
+    ];
+    const imageBlock = (attachmentId: string) => ({ blocks: [{ type: "text", text: "Look" }, { attachmentId, type: "image" }] });
+    const earlier: ProviderConversationMessage = { content: imageBlock("earlier-image") as ProviderConversationMessage["content"], id: "prior-user-message", role: "user" };
+    const current: ProviderConversationMessage = { content: imageBlock("current-image") as ProviderConversationMessage["content"], id: "stored-user-message", role: "user" };
+    const harness = createHarness({
+      attachments: records,
+      capabilities: { ...baseCapabilities, toolCalling: true },
+      regenerateContext: [earlier, current],
+      sendContext: [earlier],
+      storageObjects: { "private/current-image": { body: bytes, contentType: "image/png" } }
+    });
+    const deps = { ...harness.deps, images: { resolve: async () => syntheticImagePlan() } };
+    const body = successBody({ content: imageBlock("current-image"), provider: "openai", modelId: "gpt-fixture" });
+
+    const sent = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
+    expect(sent.imageReferences).toEqual([
+      { attachmentId: "earlier-image", messageId: "prior-user-message", fileName: "earlier-image.png", origin: "upload" },
+      { attachmentId: "current-image", messageId: "current-user-message", fileName: "current-image.png", origin: "upload" }
+    ]);
+
+    const regenerated = preparedFrom(await prepareRun(deps, regenerateInput(body, {
+      assistantMessage: { modelId: "gpt-fixture", provider: "openai" },
+      userMessage: { content: imageBlock("current-image") as ProviderConversationMessage["content"], id: "stored-user-message" }
+    }))).normalizedRequest;
+    expect(regenerated.imageReferences?.map(({ attachmentId, messageId }) => [attachmentId, messageId])).toEqual([
+      ["earlier-image", "prior-user-message"], ["current-image", "stored-user-message"]
+    ]);
+  });
+
   it.each([true, false])("freezes browser guidance only when Workspace is enabled: %s", async (enabled) => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
