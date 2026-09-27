@@ -149,7 +149,7 @@ describe("Agent MCP discovery surface", () => {
     const gateway = (observed: boolean) => createAgentMcpGateway({
       request: { agent: { mcpMode: "all" }, searchPlan: { mode: "all_selected", options: [] }, mcp: snapshot,
         ...(observed ? { toolObservationVersion: 1 } : {}) } as unknown as NormalizedRunRequest,
-      ...(observed ? { observations: observations.service() } : {}), store, runId: "run", userId: "user",
+      ...(observed ? { observations: observations.service() } : {}), store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
     const rpc = () => new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
