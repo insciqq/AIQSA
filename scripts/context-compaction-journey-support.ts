@@ -59,15 +59,48 @@ const CODE_PATTERN = /^[a-z0-9_]{1,80}$/u;
 /** A stable, content-free failure; any other code collapses to one generic value. */
 export class JourneyFailure extends Error {
   readonly code: string;
+  /** The stand's HTTP status when the failure is a stand response. */
+  readonly httpStatus: number | null;
   readonly stage: JourneyStage;
 
-  constructor(stage: JourneyStage, code: string) {
+  constructor(stage: JourneyStage, code: string, httpStatus: number | null = null) {
     const safe = CODE_PATTERN.test(code) ? code : "journey_failed";
     super(safe);
     this.name = "JourneyFailure";
     this.code = safe;
+    this.httpStatus = httpStatus;
     this.stage = stage;
   }
+}
+
+/**
+ * Content-free facts about an exception that is not a JourneyFailure: its
+ * constructor name and the first stack frame inside this repository's
+ * `scripts/` (file:line:column). The message is never read.
+ */
+export function exceptionDiagnostics(error: unknown): Readonly<{ errorClass: string; frame: string | null }> {
+  // A thrown primitive reports its type; null reports "null".
+  const name = error === null ? "null" : typeof error === "object" ? error.constructor?.name : typeof error;
+  const stack = error instanceof Error && typeof error.stack === "string" ? error.stack : "";
+  const frame = stack.split("\n").slice(1)
+    .map((line) => /(scripts\/[A-Za-z0-9._-]+\.[cm]?[jt]s:\d+:\d+)/u.exec(line)?.[1] ?? null)
+    .find((value) => value !== null) ?? null;
+  return { errorClass: typeof name === "string" && /^[A-Za-z0-9_$]{1,64}$/u.test(name) ? name : "unknown", frame };
+}
+
+/**
+ * The opt-in debug writer: one JSON line per value, consecutive duplicates
+ * (polling) written once, nothing at all when disabled.
+ */
+export function createDebugEmitter(enabled: boolean, write: (line: string) => void): (value: Record<string, unknown>) => void {
+  let last = "";
+  return (value) => {
+    if (!enabled) return;
+    const line = JSON.stringify({ smoke: "context-compaction-journey", ...value });
+    if (line === last) return;
+    last = line;
+    write(`${line}\n`);
+  };
 }
 
 function fail(stage: JourneyStage, code: string): never {
@@ -178,7 +211,7 @@ export function journeyConfig(env: Env, codexApiRootFallback: () => string | nul
     cleanupProviders: envValue(env, "AIQSA_JOURNEY_CLEANUP_PROVIDERS") === "1",
     contextWindow: integerSetting(env, "AIQSA_JOURNEY_CONTEXT_WINDOW", JOURNEY_LIMITS.defaultContextWindow,
       JOURNEY_LIMITS.minContextWindow, JOURNEY_LIMITS.maxContextWindow),
-    debug: envValue(env, "AIQSA_JOURNEY_DEBUG") === "1",
+    debug: ["1", "true"].includes(envValue(env, "AIQSA_JOURNEY_DEBUG").toLowerCase()),
     explicitRoutes: Boolean(routeList),
     maxTurns: integerSetting(env, "AIQSA_JOURNEY_MAX_TURNS", JOURNEY_LIMITS.defaultMaxTurns,
       JOURNEY_LIMITS.minTurns, JOURNEY_LIMITS.maxTurns),
@@ -642,27 +675,63 @@ export function debugHttpLine(input: Readonly<{ body?: unknown; method: string; 
 // Usage ledger ---------------------------------------------------------------------
 
 /**
- * Provider-reported input tokens the Admin usage ledger (`GET /api/admin`)
- * holds for this user and model, or null when the shape is unexpected. Rows
- * are keyed by the run's provider and model identity; either spelling counts.
+ * Provider-reported prompt accounting as AIQSA normalizes it: `inputTokens`
+ * is the whole prompt (Anthropic's uncached input plus cache reads plus cache
+ * writes; OpenAI-style `input_tokens`, whose cached part is a subset), and the
+ * two cache fields are components of it.
  */
-export function ledgerInputTokens(
+export type LedgerUsage = Readonly<{ cacheWriteInputTokens: number; cachedInputTokens: number; inputTokens: number }>;
+
+const LEDGER_FIELDS = ["cacheWriteInputTokens", "cachedInputTokens", "inputTokens"] as const;
+
+/**
+ * The Admin usage ledger (`GET /api/admin`) totals for this user and model,
+ * or null when the shape is unexpected. Rows are keyed by the run's provider
+ * and model identity; either spelling counts. Unreported counts add zero.
+ */
+export function ledgerUsage(
   dashboard: unknown,
   userId: string,
   keys: Readonly<{ modelIds: readonly string[]; providers: readonly string[] }>
-): number | null {
+): LedgerUsage | null {
   if (!record(dashboard) || !record(dashboard.usage) || !Array.isArray(dashboard.usage.byUser)) return null;
+  const totals = { cacheWriteInputTokens: 0, cachedInputTokens: 0, inputTokens: 0 };
   const user = dashboard.usage.byUser.find((entry) => record(entry) && entry.userId === userId);
-  if (!user) return 0;
+  if (!user) return totals;
   if (!record(user) || !Array.isArray(user.providerModels)) return null;
-  let total = 0;
   for (const row of user.providerModels) {
     if (!record(row) || typeof row.provider !== "string" || typeof row.modelId !== "string") return null;
     if (!keys.providers.includes(row.provider) || !keys.modelIds.includes(row.modelId)) continue;
-    if (row.inputTokens !== null && !(Number.isSafeInteger(row.inputTokens) && Number(row.inputTokens) >= 0)) return null;
-    total += Number(row.inputTokens ?? 0);
+    for (const field of LEDGER_FIELDS) {
+      const value = row[field];
+      if (value !== null && value !== undefined && !(Number.isSafeInteger(value) && Number(value) >= 0)) return null;
+      totals[field] += Number(value ?? 0);
+    }
   }
-  return total;
+  return totals;
+}
+
+/** One turn's ledger growth, or null when either side is unknown or it shrank. */
+export function ledgerDelta(before: LedgerUsage | null, after: LedgerUsage | null): LedgerUsage | null {
+  if (!before || !after) return null;
+  const delta = {
+    cacheWriteInputTokens: after.cacheWriteInputTokens - before.cacheWriteInputTokens,
+    cachedInputTokens: after.cachedInputTokens - before.cachedInputTokens,
+    inputTokens: after.inputTokens - before.inputTokens
+  };
+  return Object.values(delta).every((value) => value >= 0) ? delta : null;
+}
+
+/**
+ * The full provider prompt of a turn. Normally `inputTokens` already contains
+ * both cache components; only when the components exceed it (a route that
+ * reported uncached input alone) is the prompt their sum.
+ */
+export function fullPromptTokens(usage: LedgerUsage): Readonly<{ accounting: "exclusive_detected" | "inclusive"; tokens: number }> {
+  const components = usage.cachedInputTokens + usage.cacheWriteInputTokens;
+  return components > usage.inputTokens
+    ? { accounting: "exclusive_detected", tokens: usage.inputTokens + components }
+    : { accounting: "inclusive", tokens: usage.inputTokens };
 }
 
 // Chat projection --------------------------------------------------------------------
@@ -691,6 +760,12 @@ export type JourneyTurnKind = "brief" | "correction" | "filler" | "probe" | "rul
 
 export type JourneyRound = Readonly<{
   budgetShare: number | null;
+  /** How the full prompt was derived from the ledger components. */
+  reportedAccounting: "exclusive_detected" | "inclusive" | null;
+  reportedCacheWriteInputTokens: number | null;
+  reportedCachedInputTokens: number | null;
+  /** The ledger's normalized `inputTokens` for the turn, before any correction. */
+  reportedLedgerInputTokens: number | null;
   compactionOutcome: ContextCompactionStatus["outcome"] | null;
   estimatedInputTokens: number | null;
   kind: JourneyTurnKind;
@@ -705,15 +780,16 @@ const rounded = (value: number) => Math.round(value * 1_000) / 1_000;
 /**
  * One turn's content-free evidence. The estimate is the stand's own session
  * measurement of the final request (its after-answer phase minus the answer's
- * estimate). The ratio compares it with the provider-reported input only for a
- * single-round turn: summary calls and tool rounds add input the final request
- * estimate does not describe.
+ * estimate). `reportedInputTokens` is the turn's full provider prompt from the
+ * usage ledger (`fullPromptTokens`), with its cache components alongside. The
+ * ratio (full prompt / estimate) is given only for a single-round turn: summary
+ * calls and tool rounds add input the final request estimate does not describe.
  */
 export function journeyRound(input: Readonly<{
   answerTokens: number;
   compaction: ContextCompactionStatus | null;
   kind: JourneyTurnKind;
-  reportedInputTokens: number | null;
+  reported: LedgerUsage | null;
   session: SessionContextStatus | null;
   toolCalls: number;
   turn: number;
@@ -724,9 +800,14 @@ export function journeyRound(input: Readonly<{
     : null;
   const budget = session ? sessionContextCapacity(session).budgetTokens : null;
   const share = (tokens: number | null) => tokens !== null && budget ? rounded(tokens / budget) : null;
-  const reported = input.reportedInputTokens;
+  const full = input.reported ? fullPromptTokens(input.reported) : null;
+  const reported = full?.tokens ?? null;
   return {
     budgetShare: share(estimated),
+    reportedAccounting: full?.accounting ?? null,
+    reportedCacheWriteInputTokens: input.reported?.cacheWriteInputTokens ?? null,
+    reportedCachedInputTokens: input.reported?.cachedInputTokens ?? null,
+    reportedLedgerInputTokens: input.reported?.inputTokens ?? null,
     compactionOutcome: input.compaction?.outcome ?? null,
     estimatedInputTokens: estimated,
     kind: input.kind,

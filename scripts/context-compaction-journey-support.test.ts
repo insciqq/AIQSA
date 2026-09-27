@@ -22,7 +22,11 @@ import {
   journeyRound,
   journeyRunParams,
   journeyVerdict,
-  ledgerInputTokens,
+  createDebugEmitter,
+  exceptionDiagnostics,
+  fullPromptTokens,
+  ledgerDelta,
+  ledgerUsage,
   listItemCount,
   messageText,
   modelInConnection,
@@ -335,17 +339,38 @@ describe("catalog readiness and debug evidence", () => {
 
 describe("usage ledger", () => {
   const dashboard = { usage: { byUser: [{ providerModels: [
-    { inputTokens: 1_200, modelId: "model-row", provider: "connection-row" },
-    { inputTokens: 300, modelId: "gpt-5.5", provider: "openai_compatible" },
-    { inputTokens: 999, modelId: "other", provider: "connection-row" },
-    { inputTokens: null, modelId: "model-row", provider: "anthropic" }
+    { cacheWriteInputTokens: 100, cachedInputTokens: 700, inputTokens: 1_200, modelId: "model-row", provider: "connection-row" },
+    { cacheWriteInputTokens: null, cachedInputTokens: 0, inputTokens: 300, modelId: "gpt-5.5", provider: "openai_compatible" },
+    { cacheWriteInputTokens: 5, cachedInputTokens: 5, inputTokens: 999, modelId: "other", provider: "connection-row" },
+    { cacheWriteInputTokens: null, cachedInputTokens: null, inputTokens: null, modelId: "model-row", provider: "anthropic" }
   ], userId: "u1" }] } };
   const keys = { modelIds: ["model-row", "gpt-5.5"], providers: ["connection-row", "openai_compatible", "anthropic"] };
 
-  it("sums provider-reported input tokens of the route's model only", () => {
-    expect(ledgerInputTokens(dashboard, "u1", keys)).toBe(1_500);
-    expect(ledgerInputTokens(dashboard, "u2", keys)).toBe(0);
-    expect(ledgerInputTokens({ usage: {} }, "u1", keys)).toBeNull();
+  it("sums the route model's prompt accounting and its cache components", () => {
+    expect(ledgerUsage(dashboard, "u1", keys)).toEqual({ cacheWriteInputTokens: 100, cachedInputTokens: 700, inputTokens: 1_500 });
+    expect(ledgerUsage(dashboard, "u2", keys)).toEqual({ cacheWriteInputTokens: 0, cachedInputTokens: 0, inputTokens: 0 });
+    expect(ledgerUsage({ usage: {} }, "u1", keys)).toBeNull();
+    expect(ledgerUsage({ usage: { byUser: [{ providerModels: [{ cachedInputTokens: -1, inputTokens: 1, modelId: "gpt-5.5",
+      provider: "openai_compatible" }], userId: "u1" }] } }, "u1", keys)).toBeNull();
+  });
+
+  it("measures one turn as ledger growth, including a row the previous turn created", () => {
+    const before = { cacheWriteInputTokens: 0, cachedInputTokens: 0, inputTokens: 0 };
+    const after = { cacheWriteInputTokens: 2_100, cachedInputTokens: 0, inputTokens: 9_449 };
+    expect(ledgerDelta(before, after)).toEqual(after);
+    expect(ledgerDelta(after, { cacheWriteInputTokens: 2_100, cachedInputTokens: 2_100, inputTokens: 19_162 }))
+      .toEqual({ cacheWriteInputTokens: 0, cachedInputTokens: 2_100, inputTokens: 9_713 });
+    expect(ledgerDelta(null, after)).toBeNull();
+    expect(ledgerDelta(after, before)).toBeNull();
+  });
+
+  it("keeps normalized inclusive input and sums components only when they exceed it", () => {
+    // AIQSA's inputTokens already holds cache reads and writes (Anthropic) or a cached subset (OpenAI).
+    expect(fullPromptTokens({ cacheWriteInputTokens: 2_100, cachedInputTokens: 6_000, inputTokens: 9_449 }))
+      .toEqual({ accounting: "inclusive", tokens: 9_449 });
+    // A route that reported uncached input alone: the cached part exceeds the reported input.
+    expect(fullPromptTokens({ cacheWriteInputTokens: 0, cachedInputTokens: 8_300, inputTokens: 8_018 }))
+      .toEqual({ accounting: "exclusive_detected", tokens: 16_318 });
   });
 });
 
@@ -381,21 +406,30 @@ const summary = (beforeTokens: number): ContextCompactionStatus => ({
 describe("round evidence and verdict", () => {
   it("measures the final request and compares single-round turns only", () => {
     // Budget: 32768 - 2048 - 3276 = 27444.
-    expect(journeyRound({ answerTokens: 400, compaction: null, kind: "filler", reportedInputTokens: 11_000,
+    const reported = (inputTokens: number, cachedInputTokens = 0, cacheWriteInputTokens = 0) =>
+      ({ cacheWriteInputTokens, cachedInputTokens, inputTokens });
+    expect(journeyRound({ answerTokens: 400, compaction: null, kind: "filler", reported: reported(11_000, 9_000, 500),
       session: session(10_400), toolCalls: 0, turn: 5 })).toEqual({
       budgetShare: 0.364, compactionOutcome: null, estimatedInputTokens: 10_000, kind: "filler", ratio: 1.1,
-      reportedInputTokens: 11_000, summaryAtBudgetShare: null, turn: 5 });
+      reportedAccounting: "inclusive", reportedCacheWriteInputTokens: 500, reportedCachedInputTokens: 9_000,
+      reportedInputTokens: 11_000, reportedLedgerInputTokens: 11_000, summaryAtBudgetShare: null, turn: 5 });
+    expect(journeyRound({ answerTokens: 400, compaction: null, kind: "correction", reported: reported(4_000, 6_000),
+      session: session(10_400), toolCalls: 0, turn: 2 })).toMatchObject({ ratio: 1, reportedAccounting: "exclusive_detected",
+      reportedInputTokens: 10_000, reportedLedgerInputTokens: 4_000 });
     const summarized = journeyRound({ answerTokens: 400, compaction: summary(23_328), kind: "filler",
-      reportedInputTokens: 40_000, session: session(9_400), toolCalls: 0, turn: 8 });
+      reported: reported(40_000), session: session(9_400), toolCalls: 0, turn: 8 });
     expect(summarized).toMatchObject({ compactionOutcome: "summary_applied", ratio: null, summaryAtBudgetShare: 0.85 });
-    expect(journeyRound({ answerTokens: 0, compaction: null, kind: "rule", reportedInputTokens: null, session: null,
-      toolCalls: 0, turn: 4 })).toMatchObject({ budgetShare: null, estimatedInputTokens: null, ratio: null });
-    expect(journeyRound({ answerTokens: 500, compaction: null, kind: "probe", reportedInputTokens: 900,
+    expect(journeyRound({ answerTokens: 0, compaction: null, kind: "rule", reported: null, session: null,
+      toolCalls: 0, turn: 4 })).toMatchObject({ budgetShare: null, estimatedInputTokens: null, ratio: null,
+      reportedAccounting: null, reportedInputTokens: null });
+    expect(journeyRound({ answerTokens: 500, compaction: null, kind: "probe", reported: reported(900),
       session: session(1_000, "request"), toolCalls: 1, turn: 9 })).toMatchObject({ estimatedInputTokens: 1_000, ratio: null });
   });
 
   const round = (overrides: Partial<JourneyRound>): JourneyRound => ({ budgetShare: 0.5, compactionOutcome: null,
-    estimatedInputTokens: 1, kind: "filler", ratio: null, reportedInputTokens: 1, summaryAtBudgetShare: null, turn: 1, ...overrides });
+    estimatedInputTokens: 1, kind: "filler", ratio: null, reportedAccounting: "inclusive", reportedCacheWriteInputTokens: 0,
+    reportedCachedInputTokens: 0, reportedInputTokens: 1, reportedLedgerInputTokens: 1, summaryAtBudgetShare: null, turn: 1,
+    ...overrides });
 
   it("passes only a summary bought inside the window with a correct probe", () => {
     const bought = [round({}), round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.84, turn: 2 })];
@@ -412,5 +446,40 @@ describe("round evidence and verdict", () => {
     expect(journeyExitCode([{ status: "passed" }, { status: "skipped" }], true)).toBe(1);
     expect(journeyExitCode([{ status: "passed" }, { status: "failed" }], false)).toBe(1);
     expect(journeyExitCode([{ status: "skipped" }], false)).toBe(1);
+  });
+});
+
+describe("debug emitter and exception diagnostics", () => {
+  it("writes one line per distinct value and nothing when disabled", () => {
+    const lines: string[] = [];
+    const emit = createDebugEmitter(true, (line) => lines.push(line));
+    emit({ debug: "catalog", state: "catalog_model_missing" });
+    emit({ debug: "catalog", state: "catalog_model_missing" });
+    emit({ debug: "catalog", state: "ready" });
+    expect(lines.map((line) => JSON.parse(line) as unknown)).toEqual([
+      { debug: "catalog", smoke: "context-compaction-journey", state: "catalog_model_missing" },
+      { debug: "catalog", smoke: "context-compaction-journey", state: "ready" }
+    ]);
+    expect(lines.every((line) => line.endsWith("\n"))).toBe(true);
+    const silent: string[] = [];
+    createDebugEmitter(false, (line) => silent.push(line))({ debug: "enabled" });
+    expect(silent).toEqual([]);
+    expect(journeyConfig({ AIQSA_JOURNEY_DEBUG: "true" }).debug).toBe(true);
+    expect(journeyConfig({ AIQSA_JOURNEY_DEBUG: "0" }).debug).toBe(false);
+  });
+
+  it("reports the class and first script frame of an exception, never its message", () => {
+    const error = new TypeError("provider said: sk-secret and a prompt");
+    error.stack = [
+      "TypeError: provider said: sk-secret and a prompt",
+      "    at estimate (/srv/app/lib/domain/tokenEstimate.ts:12:3)",
+      "    at turn (/srv/app/scripts/smoke-context-compaction-journey.ts:512:27)",
+      "    at later (/srv/app/scripts/context-compaction-journey-support.ts:1:1)"
+    ].join("\n");
+    expect(exceptionDiagnostics(error)).toEqual({ errorClass: "TypeError", frame: "scripts/smoke-context-compaction-journey.ts:512:27" });
+    expect(JSON.stringify(exceptionDiagnostics(error))).not.toContain("secret");
+    expect(exceptionDiagnostics("text")).toEqual({ errorClass: "string", frame: null });
+    expect(exceptionDiagnostics(null)).toEqual({ errorClass: "null", frame: null });
+    expect(exceptionDiagnostics(Object.create(null))).toEqual({ errorClass: "unknown", frame: null });
   });
 });
