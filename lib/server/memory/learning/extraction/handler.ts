@@ -321,7 +321,8 @@ async function adjudicatePlan(
     binding.inputHash !== adjudicationInput.inputHash ||
     (binding.state !== "PENDING" && !(
       binding.state === "FAILED" &&
-      binding.errorCode === "memory_fact_provider_transient" &&
+      (binding.errorCode === "memory_fact_provider_transient" ||
+        binding.errorCode === "memory_semantic_adjudication_output_invalid") &&
       binding.acceptedOutputHash === null
     )))) {
     const running = attempts.find(({ state }) => state === "RUNNING");
@@ -411,7 +412,11 @@ async function adjudicatePlan(
       state: "FAILED",
       usage: reportedUsage(result.usage)
     });
-    return extractionAuthority(extractionBindingId, plan);
+    // The provider returned and its usage is settled, so only this invalid
+    // adjudication may be retried. Keep the accepted extraction staged instead
+    // of turning missing decisions into permanent semantic rejections. The
+    // coordinator's existing attempt ceiling exposes repeated failure.
+    throw new MemoryCoordinatorError("memory_semantic_adjudication_output_invalid", true);
   }
 
   await deps.execution.lifecycle.settleSucceededWithDurableResult(
