@@ -18,7 +18,8 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
   const token = auth?.match(/^Bearer ([a-zA-Z0-9_-]{43})$/u)?.[1];
   if (!token || request.headers.has("origin")) return Response.json({ error: "agent_authorization_required" }, { status: 401 });
   try {
-    const binding = await prisma.agentRunBinding.findUnique({ where: { tokenHash: agentTokenHash(token) },
+    const tokenHash = agentTokenHash(token);
+    const binding = await prisma.agentRunBinding.findUnique({ where: { tokenHash },
       include: { workspaceRun: { include: { modelRun: { select: { userId: true, normalizedRequest: true } } } } } });
     if (!binding) throw new Error("denied");
     const normalized = binding.workspaceRun.modelRun.normalizedRequest as unknown as NormalizedRunRequest;
@@ -26,7 +27,7 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
     if (!normalized?.agent || !validNormalizedAgent(configuration) ||
       hashCanonicalMcpValue(normalized.agent) !== hashCanonicalMcpValue(configuration)) throw new Error("denied");
     const userId = binding.workspaceRun.modelRun.userId;
-    const store = createAgentRunStore(prisma, { runId: binding.modelRunId, userId, configuration, tokenHash: agentTokenHash(token) });
+    const store = createAgentRunStore(prisma, { runId: binding.modelRunId, userId, configuration, tokenHash });
     await store.assertActive();
     const onFailure = async (code: string) => {
       await store.fail(agentFailureCode(code) ?? "agent_execution_interrupted");
@@ -51,7 +52,7 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
     if (request.method === "POST" && path === "mcp") {
       return await withAgentLease(request, store.assertLeaseActive, async (signal) => {
         const handler = await createAgentMcpGateway({ request: normalized, runId: binding.modelRunId, store, userId,
-          signal, onFailure, onUsage });
+          incarnation: tokenHash, signal, onFailure, onUsage });
         return handler(request);
       });
     }
