@@ -164,7 +164,7 @@ describe("default Project MCP plans", () => {
       expect(repository.markReady.mock.invocationCallOrder[0])
         .toBeLessThan(projectLoader.mock.invocationCallOrder[0]!);
     } finally {
-      await scope.__aiqsaMcpRuntimeCoordinator?.stop();
+      await (scope.__aiqsaMcpRuntimeCoordinator as McpRuntimeCoordinator | undefined)?.stop();
       delete scope.__aiqsaMcpRuntimeCoordinator;
       if (previous) scope.__aiqsaMcpRuntimeCoordinator = previous;
     }
