@@ -3,6 +3,7 @@ import { createTestAuth } from "@/tests/support/auth";
 import {
   createAddProjectResourceHandler,
   createDeleteProjectResourceHandler,
+  createDeleteProjectHandler,
   createLeaveProjectHandler,
   createProjectCandidatesHandler,
   createProjectResourcePreviewHandler,
@@ -26,6 +27,15 @@ function jsonRequest(path: string, body: unknown, method = "POST"): Request {
 const projectContext = { params: { projectId: "project-1" } };
 
 describe("Project v2 HTTP handlers", () => {
+  it.each(["pending", "failed", "completed"])("reports %s deletion without claiming premature success", async status => {
+    const DELETE = createDeleteProjectHandler(deps({ delete: vi.fn().mockResolvedValue({ kind: "ok", value: { id: "project-1", status } }) }));
+    const response = await DELETE(new Request("http://app.local/api/projects/project-1", {
+      headers: { cookie: auth.cookie }, method: "DELETE"
+    }), projectContext);
+    expect(response.status).toBe(status === "completed" ? 200 : 202);
+    expect(await response.json()).toEqual({ projectId: "project-1", status });
+  });
+
   it("rejects the retired Project Memory toggle without repository access", async () => {
     const update = vi.fn();
     const PATCH = createUpdateProjectHandler(deps({ update }));

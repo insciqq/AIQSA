@@ -3,6 +3,7 @@ import { logEvent } from "../lib/server/observability";
 import { setTimeout as wait } from "node:timers/promises";
 import { prisma } from "@/lib/server/prisma";
 import { runWorkspaceMaintenance } from "@/lib/server/workspace/cleanup";
+import { runProjectDeletionMaintenance } from "@/lib/server/projects/deletion";
 import { getWorkspaceConfig } from "@/lib/server/workspace/config";
 import { createWorkspaceRuntime } from "@/lib/server/workspace/defaultRuntime";
 
@@ -20,8 +21,9 @@ async function main(): Promise<void> {
         claimed_count: summary.cleanupClaimed, completed_count: summary.cleanupCompleted,
         failed_count: summary.cleanupFailed + summary.idleFailed });
     }
+    const projectDeletions = await runProjectDeletionMaintenance({ prisma, runtime });
     if (once) {
-      console.log(JSON.stringify(summary));
+      console.log(JSON.stringify({ ...summary, projectDeletions }));
       return;
     }
     await wait(intervalMs);

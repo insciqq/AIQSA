@@ -150,25 +150,25 @@ export function ProjectsLandingPageV2({
                         </span>
                         <span>
                           <strong>{project.name}</strong>
-                          <small>{roleLabel(project.effectiveRole)} · {project.audienceCount} {project.audienceCount === 1 ? "member" : "members"}</small>
+                          <small>{project.status === "DELETING" ? "Owner" : <>{roleLabel(project.effectiveRole)} · {project.audienceCount} {project.audienceCount === 1 ? "member" : "members"}</>}</small>
                         </span>
                         {project.status !== "ACTIVE" ? (
-                          <em>{project.status === "DELETING" ? "Deleting" : "Archived"}</em>
+                          <em>{project.status === "DELETING" ? project.deletionStatus === "failed" ? "Deletion needs retry" : "Deleting" : "Archived"}</em>
                         ) : null}
                       </span>
                       <span className="v2-project-card-description">
-                        {project.description || "No description yet."}
+                        {project.status === "DELETING" ? "Permanent deletion requested." : project.description || "No description yet."}
                       </span>
                       <span className="v2-project-card-meta">
-                        <span><UiV2Icon name="chat" />{project.chatCount} {project.chatCount === 1 ? "chat" : "chats"}</span>
+                        {project.status !== "DELETING" ? <span><UiV2Icon name="chat" />{project.chatCount} {project.chatCount === 1 ? "chat" : "chats"}</span> : null}
                         <span>Updated {formatProjectDate(project.updatedAt)}</span>
                       </span>
                     </button>
-                    <UiV2IconButton
+                    {project.status !== "DELETING" ? <UiV2IconButton
                       icon="more"
                       label={`Open details for ${project.name}`}
                       onClick={() => void openProjectDetails(project.id)}
-                    />
+                    /> : null}
                   </div>
                 ))}
               </div>
@@ -314,8 +314,8 @@ export function ProjectOverviewPageV2({
   const loadActivity = controller.actions.loadActivity;
 
   useEffect(() => {
-    if (projectId && loadActivity) void loadActivity();
-  }, [loadActivity, projectId]);
+    if (projectId && loadActivity && project?.status !== "DELETING") void loadActivity();
+  }, [loadActivity, projectId, project?.status]);
 
   if (!project) {
     return (
@@ -340,11 +340,31 @@ export function ProjectOverviewPageV2({
     );
   }
 
+  if (project.status === "DELETING") return (
+    <section className="v2-project-page" data-testid="project-overview-page">
+      <ProjectsLocation current={project.name} onBackToChat={onBackToChat} />
+      <div className="v2-project-page-scroll">
+        <header className="v2-project-page-head"><div><h1>{project.name}</h1></div></header>
+        <div className="v2-project-setup-warning" role="status">
+          <UiV2Icon name="alert" />
+          <span>
+            <strong>{project.deletionStatus === "failed" ? "Deletion needs another attempt" : "Deletion in progress"}</strong>
+            <small>{project.deletionStatus === "failed"
+              ? "Permanent deletion could not finish. Your request is saved and will retry automatically."
+              : "Permanent deletion is in progress. This Project's chats and shared content are unavailable."}</small>
+          </span>
+          {project.deletionStatus === "failed" && project.directRole === "OWNER" ? (
+            <UiV2Button disabled={controller.busy} onClick={() => void controller.actions.deleteProject()}>Retry deletion</UiV2Button>
+          ) : <UiV2Button disabled={controller.busy} onClick={() => void controller.actions.refresh()}>Check status</UiV2Button>}
+        </div>
+        {controller.actionError ? <p role="alert">{controller.actionError}</p> : null}
+      </div>
+    </section>
+  );
+
   const canStart = project.status === "ACTIVE" &&
     project.capabilities.mutateChats && project.readiness !== "SETUP_REQUIRED";
-  const startBlockedReason = project.status === "DELETING"
-    ? "Permanent deletion is in progress. This Project is read-only and cannot start new chats."
-    : project.status === "ARCHIVED"
+  const startBlockedReason = project.status === "ARCHIVED"
       ? "Archived Projects are read-only. An owner or manager must restore this Project before new shared chats can start."
       : !project.capabilities.mutateChats
         ? "Contributor access is required to start a shared chat."
@@ -396,12 +416,8 @@ export function ProjectOverviewPageV2({
           <div className="v2-project-setup-warning" role="status">
             <UiV2Icon name="alert" />
             <span>
-              <strong>{project.status === "DELETING" ? "Deletion in progress" : "Archived Project"}</strong>
-              <small>
-                {project.status === "DELETING"
-                  ? "Permanent deletion is in progress. This Project cannot be changed or used for new chats."
-                  : "This Project is read-only. An owner or manager must restore it before new shared chats can start."}
-              </small>
+              <strong>Archived Project</strong>
+              <small>This Project is read-only. An owner or manager must restore it before new shared chats can start.</small>
             </span>
           </div>
         ) : project.readiness === "SETUP_REQUIRED" ? (

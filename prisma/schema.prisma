@@ -4954,6 +4954,10 @@ model Project {
   updatedAt               DateTime                        @updatedAt
   archivedAt              DateTime?
   deletionRequestedAt     DateTime?
+  deletionLastAttemptAt   DateTime?
+  deletionLastErrorCode   String?
+  deletionClaimToken      String?
+  deletionClaimExpiresAt  DateTime?
   assistantBindings       ProjectAssistantBinding[]
   attachments             Attachment[]
   auditEvents             ProjectAuditEvent[]

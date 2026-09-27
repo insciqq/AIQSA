@@ -68,9 +68,10 @@ export function createPrismaProjectContentRepository(
     defaultWorkspaceAvailabilityService;
   return {
     async listWorkspace(userId: string, projectId: string): Promise<ProjectWorkspaceResponseWire | null> {
-      const workspaceSnapshot = await workspaceAvailability.snapshot();
-      const access = await resolveProjectAccess(prisma, { projectId, userId });
+      const access = await resolveProjectAccess(prisma, { allowDeleting: true, projectId, userId });
       if (!access) return null;
+      if (access.status === "DELETING") return access.directRole === "OWNER" ? { chats: [], folders: [] } : null;
+      const workspaceSnapshot = await workspaceAvailability.snapshot();
       const [chats, folders, authority] = await prisma.$transaction(async (tx) => Promise.all([
         tx.chat.findMany({
           orderBy: [{ archived: "asc" }, { updatedAt: "desc" }, { id: "asc" }],

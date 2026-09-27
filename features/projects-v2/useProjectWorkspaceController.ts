@@ -49,7 +49,7 @@ import type {
   ProjectWorkspaceResponseWire,
   UpdateProjectRequestWire
 } from "@/lib/contracts/projects";
-import { decodeProjectChat } from "@/lib/contracts/projects";
+import { decodeProjectChat, EMPTY_PROJECT_DEFAULTS } from "@/lib/contracts/projects";
 import type { ProjectRole } from "@/lib/domain/projects";
 import { useEffect, useRef, useState } from "react";
 
@@ -149,6 +149,7 @@ function projectError(error: unknown): string {
     grant_role_not_permitted: "Your role cannot make that membership change.",
     last_owner_required: "A project must keep at least one direct owner.",
     project_archived: "Archived projects are read-only.",
+    project_active_run: "Wait for active answers to finish or stop them before deleting this Project.",
     project_memory_disabled: "Project Memory is disabled.",
     project_group_not_found: "That group is no longer available.",
     project_user_not_found: "That person is no longer available.",
@@ -203,6 +204,17 @@ function summaryFromDetail(project: ProjectDetailWire): ProjectSummaryWire {
   return summary;
 }
 
+function deletingProjectView(project: ProjectDetailWire, deletionStatus: "pending" | "failed"): ProjectDetailWire {
+  return {
+    ...project, deletionStatus, status: "DELETING", description: "", audienceCount: 0, chatCount: 0, fileCount: 0,
+    capabilities: { archiveChats: false, manageMembers: false, manageMemory: false,
+      manageOwners: false, manageProject: false, mutateChats: false },
+    composer: undefined, defaults: EMPTY_PROJECT_DEFAULTS, grants: [], grantedThrough: [], instructions: "",
+    memoryEnabled: false, policy: { externalToolsEnabled: false }, publicSharingEnabled: false,
+    resources: [], setupReasons: [], unavailableDefaults: []
+  };
+}
+
 export function useProjectWorkspaceController(input: ControllerInput): ProjectWorkspaceController {
   const [projects, setProjects] = useState<readonly ProjectSummaryWire[]>([]);
   const [listLoading, setListLoading] = useState(true);
@@ -230,6 +242,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
   const settingsRefreshPromiseRef = useRef<{ projectId: string; promise: Promise<void> } | null>(null);
   const settingsRefreshQueuedRef = useRef(false);
   const realtimeChatRevisionsRef = useRef(new Map<string, bigint>());
+  const acceptedDeletionsRef = useRef(new Set<string>());
 
   const removeProjectCache = useEventCallback((projectId: string) => {
     const store = useWorkspaceStore.getState();
@@ -263,7 +276,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
     chat: ProjectChatSummaryWire,
     revision: string
   ): boolean => {
-    if (selectedRef.current !== projectId || chat.projectId !== projectId || !/^\d+$/u.test(revision)) {
+    if (acceptedDeletionsRef.current.has(projectId) || selectedRef.current !== projectId || chat.projectId !== projectId || !/^\d+$/u.test(revision)) {
       return false;
     }
     const cursor = BigInt(revision);
@@ -300,6 +313,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
   });
 
   const handleLostAccess = useEventCallback(async (projectId: string, notify = true) => {
+    acceptedDeletionsRef.current.delete(projectId);
     removeProjectCache(projectId);
     realtimeChatRevisionsRef.current.clear();
     setProjects((current) => current.filter((project) => project.id !== projectId));
@@ -318,7 +332,9 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       // Assistant is selected. Restore the exact pre-Project controls last.
       input.onProjectContextLeft();
       if (notify) {
-        input.setNotice({ kind: "error", text: "Project access changed. The shared workspace was closed." });
+        input.setNotice(detail?.status === "DELETING"
+          ? { kind: "success", text: "Project deleted." }
+          : { kind: "error", text: "Project access changed. The shared workspace was closed." });
       }
     }
     setSyncWarning(null);
@@ -367,7 +383,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
   const refreshWorkspaceOnly = useEventCallback(async (projectId: string): Promise<boolean> => {
     try {
       const nextWorkspace = await loadProjectWorkspace(projectId);
-      if (selectedRef.current !== projectId) return false;
+      if (acceptedDeletionsRef.current.has(projectId) || selectedRef.current !== projectId) return false;
       const mergedWorkspace = reconcileWorkspace(projectId, nextWorkspace);
       setWorkspace(mergedWorkspace);
       setLastSyncedAt(Date.now());
@@ -407,9 +423,21 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
           loadProjectWorkspace(projectId)
         ]);
         if (selectedRef.current !== projectId) return false;
+        // A refresh started before DELETE cannot reopen already fenced content.
+        if (acceptedDeletionsRef.current.has(projectId) && nextDetail.status !== "DELETING") return false;
         setDetail(nextDetail);
-        const mergedWorkspace = reconcileWorkspace(projectId, nextWorkspace);
-        setWorkspace(mergedWorkspace);
+        if (nextDetail.status === "DELETING") {
+          acceptedDeletionsRef.current.add(projectId);
+          removeProjectCache(projectId);
+          setWorkspace({ chats: [], folders: [] });
+          setMemory(null);
+          setActivity(null);
+          setActivityError(null);
+          settingsOpenRef.current = false;
+          setSettingsOpen(false);
+        } else {
+          setWorkspace(reconcileWorkspace(projectId, nextWorkspace));
+        }
         setProjects((current) => current.map((project) =>
           project.id === projectId ? summaryFromDetail(nextDetail) : project
         ));
@@ -657,7 +685,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
   }, [refreshList]);
 
   useEffect(() => {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || detail?.status === "DELETING") return;
     if (typeof EventSource === "undefined") {
       return;
     }
@@ -710,7 +738,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         }
       });
     };
-    const accessLost = () => { void handleLostAccess(selectedProjectId); };
+    const accessLost = () => { void refresh(true); };
     stream.addEventListener("project_changed", changed);
     stream.addEventListener("resync_required", resync);
     stream.addEventListener("access_lost", accessLost);
@@ -723,7 +751,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       stream.removeEventListener("access_lost", accessLost);
       stream.close();
     };
-  }, [handleLostAccess, mergeRealtimeChat, refresh, refreshRealtimeChat, refreshSettingsData, refreshWorkspaceOnly, selectedProjectId]);
+  }, [detail?.status, handleLostAccess, mergeRealtimeChat, refresh, refreshRealtimeChat, refreshSettingsData, refreshWorkspaceOnly, selectedProjectId]);
 
   useEffect(() => {
     if (!selectedProjectId || realtimeConnected) return;
@@ -849,9 +877,29 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         ? runMutation((projectId) => deleteProjectFolder(projectId, folderId))
         : Promise.resolve(false),
       deleteProject: () => runMutation(async (projectId) => {
-        await deleteProject(projectId);
-        await handleLostAccess(projectId, false);
-        input.setNotice({ kind: "success", text: "Project deleted." });
+        const result = await deleteProject(projectId);
+        if (result.status === "completed") {
+          await handleLostAccess(projectId, false);
+          input.setNotice({ kind: "success", text: "Project deleted." });
+        } else {
+          acceptedDeletionsRef.current.add(projectId);
+          removeProjectCache(projectId);
+          setWorkspace({ chats: [], folders: [] });
+          setMemory(null);
+          setActivity(null);
+          setActivityError(null);
+          settingsOpenRef.current = false;
+          setSettingsOpen(false);
+          if (detail?.id === projectId) {
+            const safe = deletingProjectView(detail, result.status);
+            setDetail(safe);
+            setProjects(current => current.map(project => project.id === projectId ? summaryFromDetail(safe) : project));
+          }
+          await refresh(true);
+          if (selectedRef.current === projectId) input.setNotice(result.status === "failed"
+            ? { kind: "error", text: "Project deletion could not finish. It will retry automatically; you can also retry from the Project page." }
+            : { kind: "success", text: "Project deletion is in progress." });
+        }
       }, { closeAfter: true, skipRefresh: true }),
       editMemoryFact: (factId, text, validUntil) => runMutation(
         (projectId) => editProjectMemoryFact(projectId, factId, text, validUntil),
@@ -915,6 +963,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         setCreateOpen(true);
       },
       openSettings: (tab = "general") => {
+        if (detail?.status === "DELETING") return;
         setActionError(null);
         setSettingsInitialTab(tab);
         settingsOpenRef.current = true;

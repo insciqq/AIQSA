@@ -486,7 +486,9 @@ function ProjectListMode({ controller }: { controller: ProjectWorkspaceControlle
                     <span className="v2-project-row-copy">
                       <span className="v2-chat-title">{project.name}</span>
                       <span>
-                        {project.chatCount} {project.chatCount === 1 ? "chat" : "chats"}
+                        {project.status === "DELETING"
+                          ? project.deletionStatus === "failed" ? "Deletion needs retry" : "Deleting"
+                          : `${project.chatCount} ${project.chatCount === 1 ? "chat" : "chats"}`}
                       </span>
                     </span>
                   </button>
