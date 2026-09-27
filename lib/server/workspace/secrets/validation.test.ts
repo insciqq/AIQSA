@@ -77,6 +77,10 @@ describe("Workspace secret inputs", () => {
     expect(() => encryptSecretEnvelope(value, key, context)).toThrow("secret_encryption_invalid_envelope");
     record.payloadEnvelope = encryptSecretEnvelope(value, key, context, { maxPlaintextBytes: WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES });
     expect(decryptWorkspaceSecret(record, record.userId, key).value).toEqual(value);
+    // The largest admitted envelope stays within the database shape check.
+    const envelopeMax = "v2.".length + 16 + 1 + Math.ceil(WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES * 4 / 3) + 1 + 22;
+    expect(record.payloadEnvelope.length).toBeLessThanOrEqual(envelopeMax);
+    expect(envelopeMax).toBeLessThanOrEqual(14_918_672);
   });
 
   it("bounds one settings request by the largest browser value, not the generic JSON body cap", () => {
