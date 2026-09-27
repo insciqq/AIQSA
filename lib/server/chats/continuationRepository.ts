@@ -63,10 +63,152 @@ export async function continuationSourceHref(client: PrismaClient, chatId: strin
   });
 }
 
+type ContinuationReservation = Readonly<{ id: string; version: number; runtimeSandboxId: string | null }>;
+type ClaimOutcome = Awaited<ReturnType<ContinuationRepository["claim"]>> | Readonly<{
+  kind: "lapsed"; continuationId: string; attemptId: string; errorCode: string; reservation: ContinuationReservation | null;
+}>;
+
+function terminalAttemptError(code: string | null): ChatContinuationError {
+  return new ChatContinuationError(code === "chat_summary_no_progress" || code === "chat_summary_outcome_unknown" ||
+    code === "chat_summary_cancelled" || code === "chat_summary_unavailable" ? code : "chat_summary_failed", 502);
+}
+
+/** Releases the unfinished Workspace seed of a settled attempt; transferred seeds are untouched. */
+async function abandonContinuationSeed(tx: Prisma.TransactionClient, continuationId: string, code: string) {
+  const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { continuationId } });
+  if (seed && !seed.newChatId) {
+    await tx.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: { status: "ABANDONED", failureCode: seed.failureCode ?? code,
+      leaseToken: null, leaseExpiresAt: null } });
+    if (seed.storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey }, create: { storageKey: seed.storageKey }, update: {} });
+  }
+}
+
+function continuationReservation(tx: Prisma.TransactionClient, continuationId: string): Promise<ContinuationReservation | null> {
+  return tx.workspaceSession.findFirst({ where: { operationOwner: `continuation:${continuationId}` },
+    select: { id: true, version: true, runtimeSandboxId: true } });
+}
+
+async function claimLocked(tx: Prisma.TransactionClient, source: ContinuationSource, requestId: string,
+  modelSelection: Parameters<ContinuationRepository["claim"]>[2]): Promise<ClaimOutcome> {
+  await lockedSource(tx, currentInput(source));
+  const key = { sourceChatId: source.chatId, sourceMessageId: source.leafMessageId, snapshotUpdatedAt: source.updatedAt };
+  const duplicateId = await tx.chatContinuation.findUnique({ where: { attemptId: requestId } });
+  if (duplicateId && (duplicateId.sourceChatId !== source.chatId || duplicateId.sourceMessageId !== source.leafMessageId)) {
+    throw new ChatContinuationError("chat_changed");
+  }
+  let existing = duplicateId ?? await tx.chatContinuation.findUnique({
+    where: { sourceChatId_sourceMessageId_snapshotUpdatedAt: key }
+  });
+  if (existing?.status === "complete") {
+    const access = existing.newChatId ? await resolveChatAccess(tx, { chatId: existing.newChatId, userId: source.userId }) : null;
+    if (!access || !existing.newChatId) throw new ChatContinuationError("chat_not_found", 404);
+    return { kind: "result", result: { status: "complete", chatId: existing.newChatId, projectId: access.project?.projectId ?? null } };
+  }
+  if (existing?.status === "running") {
+    if (existing.leaseExpiresAt ? existing.leaseExpiresAt.getTime() > Date.now() : Date.now() - existing.updatedAt.getTime() <= 180_000) {
+      // A live worker observes its cancellation and settles it itself.
+      if (existing.cancelRequestedAt) throw new ChatContinuationError("chat_summary_cancelled");
+      return { kind: "result", result: { status: "running", ...(existing.leaseExpiresAt ? { progress: {
+        completedParts: existing.completedParts,
+        stage: existing.progressStage === "combining" ? "combining" as const : existing.progressStage === "summarizing" ? "summarizing" as const : "preparing" as const
+      } } : {}) } };
+    }
+    // A stopped process has an unknown provider outcome: settle it, never
+    // replay it. Only a fresh explicit attempt can retry. A requested
+    // cancellation stays the terminal code whoever settles first, so the
+    // abandoned attempt's poll does not depend on claim/maintenance order.
+    const errorCode = existing.cancelRequestedAt ? "chat_summary_cancelled" : "chat_summary_failed";
+    const settled = await tx.chatContinuation.updateMany({ where: { id: existing.id, attemptId: existing.attemptId, status: "running" },
+      data: { status: "failed", errorCode } });
+    if (settled.count === 1) {
+      await abandonContinuationSeed(tx, existing.id, errorCode);
+      return { kind: "lapsed", continuationId: existing.id, attemptId: existing.attemptId, errorCode,
+        reservation: await continuationReservation(tx, existing.id) };
+    }
+    // Its worker's own failure settled it first; continue from that state.
+    existing = await tx.chatContinuation.findUniqueOrThrow({ where: { id: existing.id } });
+  }
+  if (existing?.attemptId === requestId) throw terminalAttemptError(existing.errorCode);
+  // Freeze only a server-exposed selection. Polls and duplicate claims
+  // return above, so later composer changes cannot retarget this claim.
+  let requestedProviderModelId: string | null = null;
+  if (modelSelection) {
+    if (source.projectId) {
+      const authority = await loadProjectChatDefaultAuthority(tx, source.projectId);
+      if (authority.modelProviders.get(modelSelection.modelId) === modelSelection.provider) {
+        requestedProviderModelId = modelSelection.modelId;
+      }
+    } else {
+      requestedProviderModelId = await loadExposedChatModelId(tx, source.userId, modelSelection);
+    }
+  }
+  const operation = existing
+    ? await tx.chatContinuation.update({ where: { id: existing.id }, data: {
+        actorUserId: source.userId, attemptId: requestId, errorCode: null, status: "running", requestedProviderModelId, leaseExpiresAt: new Date(Date.now() + CHAT_SUMMARY_LEASE_MS),
+        cancelRequestedAt: null, completedParts: 0, progressStage: "preparing"
+      } })
+    : await tx.chatContinuation.create({ data: {
+        ...key, actorUserId: source.userId, attemptId: requestId, status: "running", requestedProviderModelId, leaseExpiresAt: new Date(Date.now() + CHAT_SUMMARY_LEASE_MS),
+        cancelRequestedAt: null, completedParts: 0, progressStage: "preparing"
+      } });
+  const priorSeed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { continuationId: operation.id } });
+  if (priorSeed) {
+    if (priorSeed.storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey: priorSeed.storageKey },
+      create: { storageKey: priorSeed.storageKey }, update: {} });
+    await tx.chatContinuationWorkspaceSeed.update({ where: { id: priorSeed.id }, data: {
+      continuationId: null, status: "ABANDONED", leaseToken: null, leaseExpiresAt: null
+    } });
+  }
+  const workspace = source.workspaceEnabled ? await tx.workspaceSession.findUnique({ where: { chatId: source.chatId } }) : null;
+  // A stopped microVM still owns the durable project disk. It is safe to
+  // archive that disk while stopped; only a missing sandbox id means
+  // there is no source state to transfer.
+  if (workspace?.state === "DELETING") throw new ChatContinuationError("chat_busy");
+  const hasLiveDisk = Boolean(workspace?.runtimeSandboxId);
+  if (source.workspaceEnabled) await tx.chatContinuationWorkspaceSeed.create({ data: {
+    continuationId: operation.id,
+    sourceChatId: source.chatId,
+    status: hasLiveDisk ? "CAPTURING" : "NO_SOURCE_DISK",
+    ...(hasLiveDisk ? {
+      leaseToken: operation.id,
+      leaseExpiresAt: new Date(Date.now() + WORKSPACE_OPERATION_LEASE_MS)
+    } : {})
+  } });
+  if (hasLiveDisk && workspace) {
+    const updated = await tx.workspaceSession.updateMany({
+      where: { id: workspace.id, version: workspace.version,
+        OR: [{ operationOwner: null }, { operationExpiresAt: { lt: new Date() } }] },
+      // Advance the durable generation before entering the runtime fence.
+      // A stopped source may still have a retired run operation at the
+      // previous generation; reusing it would be rejected as stale.
+      data: { version: { increment: 1 }, operationOwner: `continuation:${operation.id}`, operationExpiresAt: new Date(Date.now() + WORKSPACE_OPERATION_LEASE_MS) }
+    });
+    if (updated.count !== 1) throw new ChatContinuationError("chat_busy");
+  }
+  return { kind: "claimed", claim: { id: operation.id, attemptId: operation.attemptId } };
+}
+
 export function createChatContinuationRepository(client: PrismaClient, deps: Readonly<{
   runtime?: WorkspaceRuntime;
   storage?: StorageAdapter;
 }> = {}): ContinuationRepository {
+  // Cancellation or a lapsed lease can settle an attempt after claim and
+  // before capture enters its cleanup block. Retire that reservation before
+  // admitting another run or attempt.
+  async function retireReservation(continuationId: string, workspace: ContinuationReservation | null) {
+    if (!workspace || !deps.runtime?.claimSessionOperation || !deps.runtime.retireSessionOperation) return;
+    const operation = { generation: workspace.version, owner: `continuation:${continuationId}` };
+    const runtimeInput = { operation, runtimeSandboxId: workspace.runtimeSandboxId, sessionId: workspace.id };
+    try {
+      await deps.runtime.claimSessionOperation(runtimeInput);
+      await deps.runtime.retireSessionOperation(runtimeInput);
+      await client.workspaceSession.updateMany({ where: { id: workspace.id, version: workspace.version, operationOwner: operation.owner },
+        data: { operationOwner: null, operationExpiresAt: null } });
+    } catch {
+      // Expired-operation maintenance retries fencing if the runner is down.
+    }
+  }
+
   return {
     loadSource: (input) => client.$transaction(async (tx) => {
       const { chat } = await lockedSource(tx, { chatId: input.chatId, userId: input.userId, leafMessageId: input.expectedLeafMessageId });
@@ -102,96 +244,18 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         workspaceEnabled: chat.workspaceEnabled };
     }),
 
-    claim: (source, requestId, modelSelection) => client.$transaction(async (tx) => {
-      await lockedSource(tx, currentInput(source));
-      const key = { sourceChatId: source.chatId, sourceMessageId: source.leafMessageId, snapshotUpdatedAt: source.updatedAt };
-      const duplicateId = await tx.chatContinuation.findUnique({ where: { attemptId: requestId } });
-      if (duplicateId && (duplicateId.sourceChatId !== source.chatId || duplicateId.sourceMessageId !== source.leafMessageId)) {
-        throw new ChatContinuationError("chat_changed");
+    claim: async (source, requestId, modelSelection) => {
+      // A lapsed attempt settles in its own transaction: its terminal code must
+      // commit even when this caller receives it as an error, and its Workspace
+      // reservation is retired before a new attempt reserves the same session.
+      for (let pass = 0; ; pass += 1) {
+        const outcome = await client.$transaction((tx) => claimLocked(tx, source, requestId, modelSelection));
+        if (outcome.kind !== "lapsed") return outcome;
+        await retireReservation(outcome.continuationId, outcome.reservation);
+        if (outcome.attemptId === requestId) throw terminalAttemptError(outcome.errorCode);
+        if (pass > 0) throw new ChatContinuationError("chat_busy");
       }
-      const existing = duplicateId ?? await tx.chatContinuation.findUnique({
-        where: { sourceChatId_sourceMessageId_snapshotUpdatedAt: key }
-      });
-      if (existing?.status === "complete") {
-        const access = existing.newChatId ? await resolveChatAccess(tx, { chatId: existing.newChatId, userId: source.userId }) : null;
-        if (!access || !existing.newChatId) throw new ChatContinuationError("chat_not_found", 404);
-        return { kind: "result", result: { status: "complete", chatId: existing.newChatId, projectId: access.project?.projectId ?? null } };
-      }
-      if (existing?.status === "running") {
-        if (existing.cancelRequestedAt) throw new ChatContinuationError("chat_summary_cancelled");
-        if (existing.leaseExpiresAt ? existing.leaseExpiresAt.getTime() > Date.now() : Date.now() - existing.updatedAt.getTime() <= 180_000) {
-          return { kind: "result", result: { status: "running", ...(existing.leaseExpiresAt ? { progress: {
-            completedParts: existing.completedParts,
-            stage: existing.progressStage === "combining" ? "combining" as const : existing.progressStage === "summarizing" ? "summarizing" as const : "preparing" as const
-          } } : {}) } };
-        }
-        // A stopped process has an unknown provider outcome. Only a fresh explicit attempt can retry.
-        await tx.chatContinuation.update({ where: { id: existing.id }, data: { status: "failed", errorCode: "chat_summary_failed" } });
-        return { kind: "failed" };
-      }
-      if (existing?.attemptId === requestId) {
-        const code = existing.errorCode;
-        throw new ChatContinuationError(code === "chat_summary_no_progress" || code === "chat_summary_outcome_unknown" ||
-          code === "chat_summary_cancelled" || code === "chat_summary_unavailable" ? code : "chat_summary_failed", 502);
-      }
-      // Freeze only a server-exposed selection. Polls and duplicate claims
-      // return above, so later composer changes cannot retarget this claim.
-      let requestedProviderModelId: string | null = null;
-      if (modelSelection) {
-        if (source.projectId) {
-          const authority = await loadProjectChatDefaultAuthority(tx, source.projectId);
-          if (authority.modelProviders.get(modelSelection.modelId) === modelSelection.provider) {
-            requestedProviderModelId = modelSelection.modelId;
-          }
-        } else {
-          requestedProviderModelId = await loadExposedChatModelId(tx, source.userId, modelSelection);
-        }
-      }
-      const operation = existing
-        ? await tx.chatContinuation.update({ where: { id: existing.id }, data: {
-            actorUserId: source.userId, attemptId: requestId, errorCode: null, status: "running", requestedProviderModelId, leaseExpiresAt: new Date(Date.now() + CHAT_SUMMARY_LEASE_MS),
-            cancelRequestedAt: null, completedParts: 0, progressStage: "preparing"
-          } })
-        : await tx.chatContinuation.create({ data: {
-            ...key, actorUserId: source.userId, attemptId: requestId, status: "running", requestedProviderModelId, leaseExpiresAt: new Date(Date.now() + CHAT_SUMMARY_LEASE_MS),
-            cancelRequestedAt: null, completedParts: 0, progressStage: "preparing"
-          } });
-      const priorSeed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { continuationId: operation.id } });
-      if (priorSeed) {
-        if (priorSeed.storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey: priorSeed.storageKey },
-          create: { storageKey: priorSeed.storageKey }, update: {} });
-        await tx.chatContinuationWorkspaceSeed.update({ where: { id: priorSeed.id }, data: {
-          continuationId: null, status: "ABANDONED", leaseToken: null, leaseExpiresAt: null
-        } });
-      }
-      const workspace = source.workspaceEnabled ? await tx.workspaceSession.findUnique({ where: { chatId: source.chatId } }) : null;
-      // A stopped microVM still owns the durable project disk. It is safe to
-      // archive that disk while stopped; only a missing sandbox id means
-      // there is no source state to transfer.
-      if (workspace?.state === "DELETING") throw new ChatContinuationError("chat_busy");
-      const hasLiveDisk = Boolean(workspace?.runtimeSandboxId);
-      if (source.workspaceEnabled) await tx.chatContinuationWorkspaceSeed.create({ data: {
-        continuationId: operation.id,
-        sourceChatId: source.chatId,
-        status: hasLiveDisk ? "CAPTURING" : "NO_SOURCE_DISK",
-        ...(hasLiveDisk ? {
-          leaseToken: operation.id,
-          leaseExpiresAt: new Date(Date.now() + WORKSPACE_OPERATION_LEASE_MS)
-        } : {})
-      } });
-      if (hasLiveDisk && workspace) {
-        const updated = await tx.workspaceSession.updateMany({
-          where: { id: workspace.id, version: workspace.version,
-            OR: [{ operationOwner: null }, { operationExpiresAt: { lt: new Date() } }] },
-          // Advance the durable generation before entering the runtime fence.
-          // A stopped source may still have a retired run operation at the
-          // previous generation; reusing it would be rejected as stale.
-          data: { version: { increment: 1 }, operationOwner: `continuation:${operation.id}`, operationExpiresAt: new Date(Date.now() + WORKSPACE_OPERATION_LEASE_MS) }
-        });
-        if (updated.count !== 1) throw new ChatContinuationError("chat_busy");
-      }
-      return { kind: "claimed", claim: { id: operation.id, attemptId: operation.attemptId } };
-    }),
+    },
 
     async heartbeat(claim, progress) {
       const renewed = await client.chatContinuation.updateMany({ where: { id: claim.id, attemptId: claim.attemptId,
@@ -409,29 +473,10 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         const failed = await tx.chatContinuation.updateMany({ where: { id: claim.id, attemptId: claim.attemptId, status: "running" }, data: { status: "failed", errorCode: code } });
         // A late failure from an older attempt cannot abandon its successor.
         if (failed.count !== 1) return null;
-        const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { continuationId: claim.id } });
-        if (seed && !seed.newChatId) {
-          await tx.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: { status: "ABANDONED", failureCode: seed.failureCode ?? code,
-            leaseToken: null, leaseExpiresAt: null } });
-          if (seed.storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey }, create: { storageKey: seed.storageKey }, update: {} });
-        }
-        return tx.workspaceSession.findFirst({ where: { operationOwner: `continuation:${claim.id}` },
-          select: { id: true, version: true, runtimeSandboxId: true } });
+        await abandonContinuationSeed(tx, claim.id, code);
+        return continuationReservation(tx, claim.id);
       });
-      // Cancellation can happen after claim and before capture enters its
-      // cleanup block. Retire that reservation before admitting another run.
-      if (workspace && deps.runtime?.claimSessionOperation && deps.runtime.retireSessionOperation) {
-        const operation = { generation: workspace.version, owner: `continuation:${claim.id}` };
-        const runtimeInput = { operation, runtimeSandboxId: workspace.runtimeSandboxId, sessionId: workspace.id };
-        try {
-          await deps.runtime.claimSessionOperation(runtimeInput);
-          await deps.runtime.retireSessionOperation(runtimeInput);
-          await client.workspaceSession.updateMany({ where: { id: workspace.id, version: workspace.version, operationOwner: operation.owner },
-            data: { operationOwner: null, operationExpiresAt: null } });
-        } catch {
-          // Expired-operation maintenance retries fencing if the runner is down.
-        }
-      }
+      await retireReservation(claim.id, workspace);
     },
 
     async recordUsage({ claim, ordinal, source, provider, modelId, providerModelId, usage }) {
