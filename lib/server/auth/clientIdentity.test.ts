@@ -154,13 +154,32 @@ describe("client identity", () => {
     ["203.0.113.20", "203.0.113.20"],
     ["::ffff:203.0.113.20", "203.0.113.20"],
     ["::ffff:cb00:7114", "203.0.113.20"],
-    ["2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1"]
+    ["2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::/64"]
   ])("canonicalizes the trusted client address %s", (address, canonical) => {
     const request = new Request("http://app.local", {
       headers: { "x-forwarded-for": `unknown, ${address}, 2001:db8::2` }
     });
     expect(resolveLoginRateLimitIdentity(request, proxyConfig(2))).toEqual({
       key: `ip:${canonical}`, status: "available"
+    });
+  });
+
+  it.each([
+    ["2001:db8:1:2:3:4:5:6", "2001:db8:1:2::/64"],
+    ["2001:db8:1:2:ffff::1", "2001:db8:1:2::/64"],
+    ["2001:db8:1:2::", "2001:db8:1:2::/64"],
+    ["2001:db8:1:3::1", "2001:db8:1:3::/64"],
+    ["2001:db8::1:2:3:4", "2001:db8::/64"],
+    ["fd00:0:0:ff00::9", "fd00:0:0:ff00::/64"],
+    ["::1", "::/64"]
+  ])("keys the IPv6 client %s by its /64 source network", (address, source) => {
+    const forwarded = new Request("http://app.local", { headers: { "x-forwarded-for": address } });
+
+    expect(resolveLoginRateLimitIdentity(forwarded, proxyConfig())).toEqual({
+      key: `ip:${source}`, status: "available"
+    });
+    expect(resolveLoginRateLimitIdentity(stampedRequest(address), directConfig())).toEqual({
+      key: `ip:${source}`, status: "available"
     });
   });
 
