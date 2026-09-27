@@ -256,10 +256,10 @@ describe("durable tool observation ownership", () => {
       status: "complete", content: searchToolResultContent([execution]),
       rawPreview: { searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: [execution] } }));
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { state: "complete" } });
-    const saved = await service.read(run.actor, { handle: result.observation!.handle, query: "Sources:" });
+    const saved = await service.read(run.actor, { handle: result.observation!.handle, query: "Sources for" });
     expect(saved.observation.source).toBe("search");
     // Model recall serves only the canonical text; identifiers stay in the receipt.
-    expect(saved.fragment).toContain("1. Synthetic source — https://example.com/synthetic");
+    expect(saved.fragment).toContain("[1] Synthetic source — https://example.com/synthetic");
     for (const internal of [revision.id, option.optionId, producer.toolCallId, "inputTokens"]) expect(saved.fragment).not.toContain(internal);
     await prisma.accessGrant.delete({ where: { id: grant.id } });
     await expect(service.read(run.actor, { handle: result.observation!.handle })).rejects.toThrow("tool_observation_unavailable");
