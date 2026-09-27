@@ -10,7 +10,9 @@ import {
 import type { PasswordAuthRepository, PasswordIdentityRecord } from "./passwordRepository";
 import {
   createFixedWindowLoginRateLimiter,
+  LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
   resolveLoginRateLimiter,
+  type LoginRateLimitDecision,
   type LoginRateLimiter
 } from "./rateLimit";
 import {
@@ -22,10 +24,7 @@ import {
 } from "./requestAuth";
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
-import {
-  resolveLoginRateLimitIdentity,
-  type LoginRateLimitIdentity
-} from "./clientIdentity";
+import { resolveLoginRateLimitIdentity } from "./clientIdentity";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import {
   waitForAuthResponseFloor
@@ -89,6 +88,8 @@ export type PasswordResetRequestHandlerDeps = {
 
 export type PasswordResetCompleteHandlerDeps = {
   getConfig(): AuthConfig;
+  /** The password-login limiter whose account lock a completed reset clears. */
+  loginRateLimiter?: LoginRateLimiter;
   passwordHasher?: (password: string) => Promise<string>;
   now?: () => Date;
   repository: PasswordAuthRepository;
@@ -99,6 +100,12 @@ const defaultLoginRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultResetRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultResetCompleteRateLimiter = createFixedWindowLoginRateLimiter();
 export const PASSWORD_RESET_MAX_AGE_SECONDS = 60 * 60;
+/**
+ * Account-wide password-login attempts tolerated from identified sources before the
+ * account counts as under distributed attack. Twice the per-source budget, so one or two
+ * sources exhausting their own budgets never change what any other source may do.
+ */
+export const PASSWORD_LOGIN_DISTRIBUTED_CEILING = 2 * LOGIN_RATE_LIMIT_MAX_ATTEMPTS;
 const DUMMY_PASSWORD_HASH =
   "aiqsa-scrypt-v1$N=16384,r=8,p=1$AAAAAAAAAAAAAAAAAAAAAA$rmM9JCGyQbwbUPgnezPVMCI7l8Gg0Gv7nvxL4hxR8ngyb8E3JmLHq607G0T-uTPPDSb_c-X3RWDvsVF8ZusM3Q";
 
@@ -164,16 +171,50 @@ function credentialRateLimitKey(input: {
   return `${input.prefix}:account:${hashToken(input.email).slice(0, 32)}`;
 }
 
+/** One source's share of an account key, so its attempts on that account stay its own. */
+function accountSourceRateLimitKey(accountKey: string, source: string): string {
+  return `${accountKey}:client:${source}`;
+}
+
 function credentialClientRateLimitKey(input: {
   config: AuthConfig;
   prefix: string;
   request: Request;
-}): LoginRateLimitIdentity {
+}):
+  | { key: string; source: string; status: "available" }
+  | { status: "not_required" }
+  | { status: "unavailable" } {
   const identity = resolveLoginRateLimitIdentity(input.request, input.config);
 
   return identity.status === "available"
-    ? { key: `${input.prefix}:client:${identity.key}`, status: "available" }
+    ? { key: `${input.prefix}:client:${identity.key}`, source: identity.key, status: "available" }
     : identity;
+}
+
+/**
+ * Account admission for a password login. Each source checks its own share of the account
+ * key, so one source exhausting its attempts cannot lock the owner out from another source.
+ * The account-wide count still bounds distributed guessing: past the ceiling every source
+ * keeps exactly one attempt per window instead of a blanket 429, so guesses stay bounded by
+ * the number of sources while an owner on a clean source still signs in. Without a source
+ * identity all callers are one source and the account key remains the shared limit.
+ */
+async function admitPasswordLoginAccount(
+  limiter: LoginRateLimiter,
+  input: { accountKey: string; source: string | null }
+): Promise<LoginRateLimitDecision> {
+  if (!input.source) {
+    return limiter.check(input.accountKey);
+  }
+
+  const account = await limiter.check(input.accountKey, {
+    maxAttempts: PASSWORD_LOGIN_DISTRIBUTED_CEILING
+  });
+
+  return limiter.check(
+    accountSourceRateLimitKey(input.accountKey, input.source),
+    account.allowed ? undefined : { maxAttempts: 1 }
+  );
 }
 
 function credentialTokenRateLimitKey(input: { prefix: string; token: string }): string {
@@ -367,6 +408,7 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     const clientRateLimitKey = clientIdentity.status === "available"
       ? clientIdentity.key
       : null;
+    const source = clientIdentity.status === "available" ? clientIdentity.source : null;
     const loginRateLimiter = resolveLoginRateLimiter(
       deps.loginRateLimiter,
       defaultLoginRateLimiter
@@ -399,7 +441,10 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       email: normalizedEmail,
       prefix: "password-login"
     });
-    const rateLimit = await loginRateLimiter.check(rateLimitKey);
+    const rateLimit = await admitPasswordLoginAccount(loginRateLimiter, {
+      accountKey: rateLimitKey,
+      source
+    });
 
     if (!rateLimit.allowed) {
       return rateLimitedResponse(rateLimit);
@@ -429,9 +474,13 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       return unauthorized();
     }
 
+    // Success clears only the account's keys. The source budget merely gets back the
+    // attempt this login used, so logging into an own account never restores the
+    // budget a source spent on other accounts.
     await Promise.all([
-      ...(clientRateLimitKey ? [loginRateLimiter.reset(clientRateLimitKey)] : []),
-      loginRateLimiter.reset(rateLimitKey)
+      loginRateLimiter.reset(rateLimitKey),
+      ...(source ? [loginRateLimiter.reset(accountSourceRateLimitKey(rateLimitKey, source))] : []),
+      ...(clientRateLimitKey ? [loginRateLimiter.release(clientRateLimitKey)] : [])
     ]);
 
     return json(
@@ -512,16 +561,16 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
       email: normalizedEmail,
       prefix: "password-reset"
     });
-    const rateLimit = await resetRateLimiter.check(rateLimitKey);
-
-    if (!rateLimit.allowed) {
-      return rateLimitedResponse(rateLimit);
-    }
-
     const clock = deps.clock ?? Date.now;
     const startedAtMs = clock();
-
-    const identity = await deps.repository.findPasswordIdentityByEmail(normalizedEmail);
+    // The account budget bounds reset mail, not requests: once it is spent the request
+    // still gets the generic answer, only without another token or email. A spent budget
+    // means any owner was just mailed links that outlive the window, so a third party can
+    // no longer turn the owner's own reset request into a 429.
+    const mailBudget = await resetRateLimiter.check(rateLimitKey);
+    const identity = mailBudget.allowed
+      ? await deps.repository.findPasswordIdentityByEmail(normalizedEmail)
+      : null;
 
     if (isActiveVerifiedPasswordIdentity(identity)) {
       const now = deps.now?.() ?? new Date();
@@ -571,6 +620,10 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
     const rateLimiter = resolveLoginRateLimiter(
       deps.resetCompleteRateLimiter,
       defaultResetCompleteRateLimiter
+    );
+    const loginRateLimiter = resolveLoginRateLimiter(
+      deps.loginRateLimiter,
+      defaultLoginRateLimiter
     );
     const clientIdentity = config.configured
       ? credentialClientRateLimitKey({
@@ -637,6 +690,20 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
     if (!result) {
       return json({ error: "invalid_or_expired_reset_token" }, { status: 400 });
     }
+
+    // A completed reset proves control of the account's mailbox, so it lifts the account's
+    // password-login lock and this source's share of it, never a source budget. The reset
+    // is already committed; failing to clear the lock only delays login to window end.
+    const loginAccountKey = credentialRateLimitKey({
+      email: result.normalizedEmail,
+      prefix: "password-login"
+    });
+    await Promise.all([
+      loginRateLimiter.reset(loginAccountKey),
+      ...(clientIdentity.status === "available"
+        ? [loginRateLimiter.reset(accountSourceRateLimitKey(loginAccountKey, clientIdentity.source))]
+        : [])
+    ]).catch(() => undefined);
 
     return json({ ok: true });
   };
