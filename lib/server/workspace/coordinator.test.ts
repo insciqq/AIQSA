@@ -396,8 +396,11 @@ describe("Workspace coordinator", () => {
     const running = vi.spyOn(value.repository, "markSessionRunning");
     await value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
       modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace });
-    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledTimes(failed ? 2 : 1);
-    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith(expect.objectContaining({ status: failed ? "FAILED" : "RESTORED" }));
+    // A failed restore leaves the project untouched; no second, emptying restore runs.
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledOnce();
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith(failed
+      ? expect.objectContaining({ status: "FAILED", failureCode: "workspace_archive_invalid" })
+      : expect.objectContaining({ status: "RESTORED" }));
     expect(vi.mocked(value.repository.settleContinuationSeed!).mock.invocationCallOrder[0]).toBeLessThan(running.mock.invocationCallOrder[0]!);
     expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
   });
@@ -406,11 +409,15 @@ describe("Workspace coordinator", () => {
     const value = fixture();
     Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token", storageKey: "user_1/input", byteSize: 11, checksum: "a".repeat(64) })),
       settleContinuationSeed: vi.fn(async () => failure !== "settlement") });
-    value.runtime.restoreProjectArchive = vi.fn(async () => { throw new WorkspaceRuntimeError("workspace_archive_invalid"); });
-    if (failure === "settlement") vi.mocked(value.runtime.restoreProjectArchive).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_archive_invalid")).mockResolvedValueOnce(undefined);
+    value.runtime.restoreProjectArchive = vi.fn(async () => {
+      throw new WorkspaceRuntimeError(failure === "cleanup" ? "workspace_execution_cleanup_failed" : "workspace_archive_invalid");
+    });
     const running = vi.spyOn(value.repository, "markSessionRunning");
     await expect(value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
       modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace })).rejects.toMatchObject({ code: "workspace_execution_cleanup_failed" });
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledOnce();
+    // Unproven cleanup keeps the claim for lease-expiry recovery instead of settling FAILED.
+    if (failure === "cleanup") expect(value.repository.settleContinuationSeed).not.toHaveBeenCalled();
     expect(running).not.toHaveBeenCalled();
     expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
   });

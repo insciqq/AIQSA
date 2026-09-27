@@ -1,12 +1,52 @@
+import type { WorkspaceConfig } from "./config";
+
 // Project trees have a separate entry bound from generated answer outputs.
 export const PROJECT_ARCHIVE_MAX_ENTRIES = 100_000;
 
-/** Runs inside the guest. All validation is structural; no file data leaves it. */
+/**
+ * One bound for every runtime: capture proves these limits before a
+ * continuation seed can become READY, and restore enforces the same ones, so
+ * an accepted checkpoint is always restorable. Bytes count expanded regular
+ * file content; entries count every archive member.
+ */
+export function projectArchiveLimits(config: Pick<WorkspaceConfig, "diskMiB" | "outputTotalMaxBytes">): Readonly<{
+  maxBytes: number;
+  maxEntries: number;
+}> {
+  return {
+    maxBytes: Math.min(config.outputTotalMaxBytes, config.diskMiB * 1_024 * 1_024),
+    maxEntries: PROJECT_ARCHIVE_MAX_ENTRIES
+  };
+}
+
+/** Raw tar stream ceiling for the limits above: headers and padding included. */
+export function projectArchiveTarMaxBytes(limits: Readonly<{ maxBytes: number; maxEntries: number }>): number {
+  return limits.maxBytes + limits.maxEntries * 2_048 + 1_048_576;
+}
+
+/**
+ * Runs inside the guest. All validation is structural; no file data leaves it.
+ *
+ * Arguments: archive, project, max_bytes, max_entries, mode.
+ * - verify: validate structure and bounds only; nothing is written.
+ * - restore: validate first (a preflight failure never touches the project),
+ *   extract into the sibling staging directory, confine links there, then
+ *   commit with renames. Only the rename pair can be interrupted; the old tree
+ *   then sits at the fixed `previous` path and recovery moves it back.
+ * - recover: roll back an interrupted swap and remove staging leftovers.
+ *
+ * Exit codes: 65 invalid, 67 limit, 68 other, 69 cleanup not proven.
+ */
 export const PROJECT_RESTORE_SCRIPT = String.raw`
 import gzip, os, posixpath, shutil, sys, tarfile
 
 archive, project = sys.argv[1:3]
 max_bytes, max_entries = map(int, sys.argv[3:5])
+mode = sys.argv[5]
+if mode not in ('verify', 'restore', 'recover'): sys.exit(68)
+parent, name = os.path.split(os.path.normpath(project))
+staging = os.path.join(parent, '.' + name + '.restore')
+previous = os.path.join(parent, '.' + name + '.previous')
 
 class Invalid(Exception): pass
 class Limit(Exception): pass
@@ -42,14 +82,20 @@ def path_of(member):
             raise Invalid()
     return path
 
-def clear_project():
-    if os.path.islink(project) or (os.path.exists(project) and not os.path.isdir(project)):
-        os.unlink(project)
-    elif os.path.isdir(project):
-        shutil.rmtree(project)
-    os.makedirs(project, mode=0o755)
+def status(error):
+    return 67 if isinstance(error, Limit) else 65 if isinstance(error, (Invalid, tarfile.TarError, EOFError)) else 68
 
-try:
+def remove(path):
+    if os.path.isdir(path) and not os.path.islink(path): shutil.rmtree(path)
+    elif os.path.lexists(path): os.unlink(path)
+
+def recover():
+    if not os.path.lexists(project) and os.path.lexists(previous):
+        os.rename(previous, project)
+    remove(staging)
+    remove(previous)
+
+def validate():
     entries, total, count = {}, 0, 0
     for tar, member in members():
         count += 1
@@ -63,11 +109,13 @@ try:
         while parent:
             if entries.get(parent, 'dir') != 'dir': raise Invalid()
             parent = posixpath.dirname(parent)
-    clear_project()
+
+def extract():
+    os.mkdir(staging, 0o755)
     links, modes = [], []
     for tar, member in members():
         path = path_of(member)
-        destination = os.path.join(project, path)
+        destination = os.path.join(staging, path)
         if member.issym():
             links.append((member.linkname, destination))
             continue
@@ -82,15 +130,38 @@ try:
     for target, destination in links:
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         os.symlink(target, destination)
-    root = os.path.realpath(project)
+    root = os.path.realpath(staging)
     for target, destination in links:
         if os.path.commonpath([root, os.path.realpath(destination)]) != root: raise Invalid()
     for destination, mode in sorted(modes, key=lambda entry: len(entry[0]), reverse=True):
         os.chmod(destination, mode)
+
+if mode == 'recover':
+    try: recover()
+    except Exception: sys.exit(69)
+    sys.exit(0)
+try:
+    validate()
+except Exception as error:
+    sys.exit(status(error))
+if mode == 'verify': sys.exit(0)
+try:
+    recover()
+except Exception:
+    sys.exit(69)
+try:
+    extract()
+    if os.path.lexists(project): os.rename(project, previous)
+    os.rename(staging, project)
 except Exception as error:
     try:
-        clear_project()
+        recover()
     except Exception:
         sys.exit(69)
-    sys.exit(67 if isinstance(error, Limit) else 65 if isinstance(error, (Invalid, tarfile.TarError, EOFError)) else 68)
+    sys.exit(status(error))
+# The swap is committed. A leftover old tree is swept by the next recovery.
+try:
+    remove(previous)
+except Exception:
+    pass
 `;

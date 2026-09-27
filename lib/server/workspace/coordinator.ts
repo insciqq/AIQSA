@@ -3,7 +3,6 @@ import { logEvent } from "../observability";
 import { WorkspaceActivityText, workspaceActivitySecretValues } from "./activityText";
 import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
-import { gzipSync } from "node:zlib";
 import { setTimeout as sleep } from "node:timers/promises";
 import { agentExecutionId } from "../agents/runtime";
 import { CodexJsonlDecoder, type CodexEvent } from "../agents/codexProtocol";
@@ -1170,13 +1169,6 @@ const EXEC_SESSION_TOOLS = new Set<string>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
  */
 const BROWSER_SESSION_SAVE_TIMEOUT_MS = 30_000;
 
-const EMPTY_WORKSPACE_ARCHIVE = new Uint8Array(gzipSync(new Uint8Array(1_024)));
-const EMPTY_WORKSPACE_ARCHIVE_CHECKSUM = createHash("sha256").update(EMPTY_WORKSPACE_ARCHIVE).digest("hex");
-
-function workspaceArchiveBody(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream({ start(controller) { controller.enqueue(bytes.slice()); controller.close(); } });
-}
-
 function isExecSessionTool(name: string): boolean {
   return EXEC_SESSION_TOOLS.has(name);
 }
@@ -1512,16 +1504,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
               operation: ownedOperation(binding), sessionId: binding.sessionId, signal });
             restored = true;
           } catch (error) {
-            // Restore is transactional at the runtime boundary. A second,
-            // empty archive clears any partial extraction before this run is
-            // admitted; it never retries the original bytes automatically.
-            try {
-              await input.runtime.restoreProjectArchive({ archive: workspaceArchiveBody(EMPTY_WORKSPACE_ARCHIVE),
-                byteSize: EMPTY_WORKSPACE_ARCHIVE.byteLength, checksum: EMPTY_WORKSPACE_ARCHIVE_CHECKSUM,
-                runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId });
-            } catch {
-              throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
-            }
+            // Restore is transactional at the runtime boundary: it validates
+            // before touching the project and removes its own staging. Only an
+            // unproven cleanup keeps the claim, so lease expiry retries it;
+            // otherwise the original bytes are never retried automatically.
+            if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
             if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
               status: "FAILED", failureCode: error instanceof WorkspaceRuntimeError ? error.code : "workspace_archive_restore_failed" })) {
               throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
