@@ -4,6 +4,7 @@ import { buildAnthropicMessagesRequest } from "./anthropicMessages";
 import { buildGeminiInteractionsRequest } from "./geminiInteractionsRequest";
 import { describe, expect, it } from "vitest";
 import { estimateApproxTokens } from "../../domain/contextBudget";
+import { conservativeImageTokens, imageTokenEstimator } from "../../domain/imageTokenEstimate";
 import {
   providerAttachmentBudgetTokens,
   providerAttachmentPreviewText,
@@ -152,6 +153,11 @@ describe("provider attachment payload helpers", () => {
         attachments: [image],
         modelCapabilities: textCapabilities
       })
-    ).toBe(765);
+    ).toBe(conservativeImageTokens({ height: 768, width: 1024 }));
+    const estimateImageTokens = imageTokenEstimator({ provider: "anthropic" });
+    expect(providerAttachmentBudgetTokens({ attachments: [image], estimateImageTokens, modelCapabilities: textCapabilities }))
+      .toBe(estimateImageTokens({ height: 768, width: 1024 }));
+    expect(providerAttachmentBudgetTokens({ attachments: [image], estimateImageTokens,
+      modelCapabilities: { ...textCapabilities, vision: false } })).toBe(0);
   });
 });

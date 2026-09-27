@@ -21,11 +21,13 @@ export class VisionAnalysisError extends Error {
   constructor(readonly code: string) { super(code); this.name = "VisionAnalysisError"; }
 }
 export type VisionAttemptContext = { runId: string; userId: string; chatId: string; toolCallId: string; call: ModelToolCall; requestHash: string };
-export function visionFailure(call: ModelToolCall, code: string, unknown = code === "vision_analysis_outcome_unknown"): ToolExecutionResult {
+export function visionFailure(call: ModelToolCall, code: string, unknown = code === "vision_analysis_outcome_unknown",
+  detail?: Readonly<Record<string, number | string>>): ToolExecutionResult {
   return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
     error: code, provenance: "System Vision Model", ...(unknown ? { provider_outcome: "unknown" } : {}), hint: unknown
       ? "The provider outcome is unknown. Do not repeat this paid analysis."
-      : "No successful visual analysis is available. Resolve this capability, input or access error before continuing."
+      : "No successful visual analysis is available. Resolve this capability, input or access error before continuing.",
+    ...detail
   } }] };
 }
 export async function authorizeVisionPlan(db: Pick<Prisma.TransactionClient, "providerModel" | "providerCredentialVersion">, plan: AvailableVisionAnalysisPlan) {
