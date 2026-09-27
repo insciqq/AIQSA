@@ -16,6 +16,7 @@ import {
 import { isRunOutputArtifactEvent, projectRunOutputArtifactEvent } from "@/lib/server/runs/runOutputEvents";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { WorkspaceActivityText } from "./activityText";
+import { workspaceMcpFailure } from "./operationFailure";
 
 function official(data: unknown, status: "complete" | "error" = "complete"): ToolExecutionResult {
   return {
@@ -266,6 +267,21 @@ describe("workspace activity projection", () => {
       expect(new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(text))).toBe(text);
     }
     expect(commandPreview({ command: "x".repeat(5_000) })?.preview.length).toBe(2_048);
+  });
+
+  it("keeps the UI preview of a full-budget failed command within 8 KiB and marks it truncated", () => {
+    const half = "passing test line\n".repeat(1200);
+    const stdout = `${half}ROOT_CAUSE: expected 3 but received 4\n${half}`;
+    const failure = workspaceMcpFailure({ isError: false, content: [{ type: "text",
+      text: JSON.stringify({ ok: true, data: { exitCode: 1, stdout, stderr: "1 test failed" } }) }] }, 128 * 1_024, "sandbox_shell")!;
+    expect(failure.content[0]!.text).toContain("ROOT_CAUSE");
+    const entry = projectWorkspaceActivity({ arguments: { command: "npm test" }, callId: "call", originalName: "sandbox_shell", runId: "run",
+      result: { callId: "call", content: [{ text: failure.content[0]!.text!, type: "text" }], name: "mcp_workspace_tool", status: "error",
+        rawPreview: { exitCode: 1, originalByteCount: failure.originalByteCount, truncated: failure.truncated === true } } }, "settled")!;
+    const bytes = (value = "") => new TextEncoder().encode(value).byteLength;
+    expect(entry).toMatchObject({ phase: "failed", errorCode: "workspace_command_failed",
+      command: { exitCode: 1, stderrPreview: "1 test failed", truncated: true } });
+    expect(bytes(entry.command?.stdoutPreview) + bytes(entry.command?.stderrPreview)).toBeLessThanOrEqual(8 * 1_024);
   });
 
   it("keeps unproven terminal steps unknown and crosses the durable event boundary exactly", () => {
