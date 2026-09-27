@@ -681,10 +681,10 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     expect(await historyLength()).toBe(beforeArchive);
     await page.screenshot({ path: testInfo.outputPath("scope-archive-fallback-light-1440.png") });
 
-    // Restoring from Settings while a Project is open leaves the Project for the restored chat.
-    await traverseTo(page, "forward", `/p/${projectTwo}`);
-    await expect(projectNavigation).toContainText(projectTwoName, { timeout: 20_000 });
-    await expect(composer).toHaveValue("Project two blank draft");
+    // Restoring from Settings replaces the address with the restored chat and
+    // keeps both Project drafts through the personal refresh. Inside a Project
+    // the rail's Settings opens that Project's settings, so the restore runs
+    // from the personal scope; the in-Project restore path is unit-covered.
     const beforeRestore = await historyLength();
     await page.getByTestId("workspace-rail").getByRole("button", { name: "Settings" }).click();
     const settings = page.getByRole("dialog", { name: "Settings" });
@@ -697,6 +697,11 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     await expect(header).toHaveText(alphaTitle);
     await expect(projectChip).toHaveCount(0);
     expect(await historyLength()).toBe(beforeRestore);
+
+    // Forward to the blank Project draft the personal refresh kept.
+    await traverseTo(page, "forward", `/p/${projectTwo}`);
+    await expect(projectNavigation).toContainText(projectTwoName, { timeout: 20_000 });
+    await expect(composer).toHaveValue("Project two blank draft");
 
     // The personal refresh kept the saved Project chat's draft.
     await traverseTo(page, "back", `/p/${projectOne}/c/${projectChat}`);
