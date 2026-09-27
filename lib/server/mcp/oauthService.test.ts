@@ -784,7 +784,7 @@ describe("generic MCP OAuth service", () => {
         authProvider: provider,
         fetch: createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true }),
         limits: {
-          maxListPages: 2,
+          maxListDurationMs: 10_000,
           maxToolArgumentBytes: 1_024,
           maxToolMetadataBytes: 8_192,
           maxToolResultBytes: 8_192,

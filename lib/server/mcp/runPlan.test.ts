@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import { MCP_INVENTORY_EXCLUSION_LIMIT, MCP_RUN_PLAN_LIMITS, MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import type { McpRunPlanRecord } from "./runPlan";
 import {
+  budgetMcpServerInstructions,
+  buildMcpCapabilityCatalog,
   isMcpRunPlanRecordStartable,
+  MCP_CATALOG_INSTRUCTIONS_BUDGET_CHARS,
   mcpInventoryExclusions,
   namespacedMcpToolName,
   prepareMcpRunPlan,
@@ -167,6 +170,37 @@ describe("MCP run plans", () => {
       snapshot: { tools: [{ namespacedName: selectedName }] }
     });
     if (result.ok) expect(result.snapshot.tools).toHaveLength(1);
+  });
+
+  it("admits a 64-server plan and a maximal server's selected tool, and rejects the 65th server", async () => {
+    const records = (count: number) => Array.from({ length: count }, (_, index) => record({
+      fingerprint: `fingerprint-${index}`,
+      generationId: `generation-${index}`,
+      namespace: `mcp_server_${index}`,
+      serverId: `server-${index}`,
+      serverName: `Server ${index}`
+    }));
+    const admitted = await prepareMcpRunPlan({ isGenerationLive: () => true, load: async () => records(64), now: () => now });
+    expect(admitted.ok && admitted.snapshot.servers).toHaveLength(MCP_RUN_PLAN_LIMITS.maxEnabledServers);
+    await expect(prepareMcpRunPlan({ isGenerationLive: () => true, load: async () => records(65), now: () => now }))
+      .resolves.toMatchObject({ code: "mcp_plan_too_large", ok: false });
+
+    const inventory = Array.from({ length: MCP_SERVER_TOOL_LIMIT }, (_, index) => ({
+      definitionHash: hash, description: null, inputSchema: { type: "object" }, name: `tool_${index}`
+    }));
+    const selected = namespacedMcpToolName("mcp_example", `tool_${MCP_SERVER_TOOL_LIMIT - 1}`);
+    await expect(prepareMcpRunPlan({
+      allowedToolNames: [selected],
+      isGenerationLive: () => true,
+      load: async () => [record({ inventory: { tools: inventory, version: 1 } })],
+      now: () => now
+    })).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ namespacedName: selected }] } });
+    await expect(prepareMcpRunPlan({
+      allowedToolNames: [selected],
+      isGenerationLive: () => true,
+      load: async () => [record({ inventory: { tools: [...inventory, { ...inventory[0]!, name: "extra" }], version: 1 } })],
+      now: () => now
+    })).resolves.toMatchObject({ code: "mcp_not_ready", issues: [{ errorCode: "mcp_inventory_invalid" }], ok: false });
   });
 
   it("never silently omits an enabled unavailable server and reconciles once", async () => {
@@ -360,6 +394,16 @@ describe("MCP run plans over the runtime's admitted inventory", () => {
     await coordinator.stop();
   });
 
+  it("bounds held-back names by one runtime inventory's exclusion limit", () => {
+    const exclusions = (count: number) => Array.from({ length: count }, (_, index) => ({
+      name: `tool_${index}`, reason: index % 2 ? "unpublished_addition" : "missing_upstream"
+    }));
+    expect(mcpInventoryExclusions({ exclusions: exclusions(MCP_INVENTORY_EXCLUSION_LIMIT), tools: [], version: 1 }))
+      .toHaveLength(MCP_INVENTORY_EXCLUSION_LIMIT);
+    expect(mcpInventoryExclusions({ exclusions: exclusions(MCP_INVENTORY_EXCLUSION_LIMIT + 1), tools: [], version: 1 }))
+      .toBeNull();
+  });
+
   it("treats malformed held-back names as an invalid inventory and accepts inventories recorded before them", async () => {
     const tools = [{ definitionHash: hash, description: null, inputSchema: { type: "object" }, name: "echo" }];
     for (const exclusions of [
@@ -384,5 +428,47 @@ describe("MCP run plans over the runtime's admitted inventory", () => {
       load: async () => [record({ inventory: { tools, version: 1 } })],
       now: () => now
     })).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "echo" }] } });
+  });
+});
+
+describe("MCP Auto catalog server instructions", () => {
+  const catalogRecord = (index: number, serverInstructions: string) => record({
+    catalogTools: [{ description: null, name: "echo" }],
+    namespace: `mcp_server_${index}`,
+    serverId: `server-${index}`,
+    serverInstructions,
+    serverName: `Server ${String(index).padStart(2, "0")}`
+  });
+
+  it("carries one server's instructions whole beyond the former 8,192-character filter", () => {
+    const instructions = `${"Use scoped reads. ".repeat(1_000)}\u754c`;
+    expect(instructions.length).toBeGreaterThan(8_192);
+    expect(buildMcpCapabilityCatalog([catalogRecord(0, instructions)]).servers[0]?.instructions).toBe(instructions);
+  });
+
+  it("shares one visible budget across servers instead of dropping any", () => {
+    const short = "Prefer project-scoped operations.";
+    const long = (index: number) => `${index}:${"x".repeat(MCP_CATALOG_INSTRUCTIONS_BUDGET_CHARS)}`;
+    const catalog = buildMcpCapabilityCatalog([
+      catalogRecord(0, short),
+      ...Array.from({ length: 63 }, (_, index) => catalogRecord(index + 1, long(index + 1)))
+    ]);
+    const texts = catalog.servers.map((server) => server.instructions ?? "");
+    expect(texts).toHaveLength(64);
+    expect(texts[0]).toBe(short);
+    expect(texts.join("").length).toBeLessThanOrEqual(MCP_CATALOG_INSTRUCTIONS_BUDGET_CHARS);
+    for (const [index, text] of texts.slice(1).entries()) {
+      expect(text.startsWith(`${index + 1}:x`)).toBe(true);
+      expect(text).toMatch(/\n\[Server instructions truncated: \d+ of \d+ characters shown\.\]$/u);
+    }
+  });
+
+  it("never splits a surrogate pair at the truncation boundary", () => {
+    const [text] = budgetMcpServerInstructions(["\u{1F600}".repeat(200)], 120);
+    const shown = text!.slice(0, text!.indexOf("\n[Server instructions truncated"));
+    expect(shown.length % 2).toBe(0);
+    expect([...shown].every((character) => character === "\u{1F600}")).toBe(true);
+    expect(text!.length).toBeLessThanOrEqual(120);
+    expect(budgetMcpServerInstructions(["", "within"], 120)).toEqual(["", "within"]);
   });
 });

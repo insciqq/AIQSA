@@ -1,3 +1,4 @@
+import { MCP_INVENTORY_SESSION_LIMITS } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import { getMcpRequestMaxBytes } from "./responseLimits";
 import {
@@ -25,10 +26,8 @@ import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability
 import { observedFailureCode } from "../providers/providerObservability";
 
 const DEFAULT_RUNTIME_LIMITS = {
-  maxListPages: 16,
-  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); },
-  maxToolMetadataBytes: 256 * 1_024,
-  maxTools: 256
+  ...MCP_INVENTORY_SESSION_LIMITS,
+  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); }
 } as const;
 
 type McpRuntimeGlobal = typeof globalThis & {

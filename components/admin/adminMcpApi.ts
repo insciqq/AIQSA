@@ -2,6 +2,7 @@ import {
   decodeMcpToolAccessPolicy,
   isMcpInventoryDifferenceReason,
   isMcpToolName,
+  MCP_SERVER_TOOL_LIMIT,
   mcpValidationIssue
 } from "@/lib/contracts/mcp";
 import type {
@@ -56,7 +57,7 @@ function hasValidInventoryDifferences(value: unknown): boolean {
 
 function hasValidDisabledToolNames(value: Record<string, unknown>): boolean {
   if (!("disabledToolNames" in value)) return true;
-  return Array.isArray(value.disabledToolNames) && value.disabledToolNames.length <= 512 &&
+  return Array.isArray(value.disabledToolNames) && value.disabledToolNames.length <= MCP_SERVER_TOOL_LIMIT &&
     value.disabledToolNames.every((name) =>
       typeof name === "string" && /^[A-Za-z0-9_.-]{1,128}$/u.test(name));
 }
