@@ -892,11 +892,13 @@ export class McpClientSession {
   async listAllTools(options?: McpClientRequestOptions): Promise<readonly AiqsaMcpToolDefinition[]> {
     this.requireReady("list_tools");
     const sdkOptions = requestOptions("list_tools", this.defaultRequestTimeoutMs, options);
+    // requestOptions always resolves the per-request timeout; the SDK type keeps it optional.
+    const requestTimeoutMs = sdkOptions.timeout ?? this.defaultRequestTimeoutMs;
     const refreshVersion = this.inventoryChangeVersion;
     const tools: AiqsaMcpToolDefinition[] = [];
     const names = new Set<string>();
     const cursors = new Set<string>();
-    const deadline = Date.now() + Math.max(this.limits.maxListDurationMs, sdkOptions.timeout);
+    const deadline = Date.now() + Math.max(this.limits.maxListDurationMs, requestTimeoutMs);
     let cursor: string | undefined;
     let page = 0;
     let inventoryBytes = 0;
@@ -911,7 +913,7 @@ export class McpClientSession {
         page += 1;
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) throw sessionError("mcp_inventory_time_limit", "list_tools");
-        const timeout = Math.min(sdkOptions.timeout, remainingMs);
+        const timeout = Math.min(requestTimeoutMs, remainingMs);
         const params = cursor === undefined ? {} : { cursor };
         const result = await this.guardedRequest(
           "list_tools",
@@ -919,7 +921,7 @@ export class McpClientSession {
           () => this.client.request({ method: "tools/list", params }, { ...sdkOptions, timeout })
         ).catch((error: unknown) => {
           // Only the traversal budget shortened this request's own timeout.
-          throw timeout < sdkOptions.timeout && SdkError.isInstance(error) &&
+          throw timeout < requestTimeoutMs && SdkError.isInstance(error) &&
             error.code === SdkErrorCode.RequestTimeout
             ? sessionError("mcp_inventory_time_limit", "list_tools")
             : error;
