@@ -31,6 +31,8 @@ import type {
 } from "../providers/types";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { ProviderSearchExecutionError } from "../providers/types";
+import { ImageGenerationError } from "../providers/imageGeneration";
+import { imageFailureDiagnostic } from "../providers/imageFailure";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
 import { getContext, runInBackground, runWithContext } from "../observability";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
@@ -9528,6 +9530,32 @@ describe("Recovered image and artifact tool services", () => {
       expect.objectContaining({ destinationKind: "image", modelRunToolCallId: call.id })]);
     expect(state.calls()[0]).toMatchObject({ state: "complete" });
     expect(harness.state.completed).not.toBeNull();
+  });
+
+  it("ends a recovered image dispatch with the same cause and text as execution and never repeats it", async () => {
+    const stream = vi.fn<ProviderAdapter["stream"]>();
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+    const call = { ...imageCall("pending"), arguments: { prompt: "PRIVATE_PROMPT_TEXT", image_ids: [] } };
+    const state = imageRun(harness, call);
+    const rejected = JSON.stringify({ error: { code: "rate_limit_exceeded", message: "PRIVATE_PROVIDER_TEXT" } });
+    const execute = vi.fn(async (): Promise<never> => {
+      throw new ImageGenerationError("image_provider_http_error", 429, imageFailureDiagnostic(rejected, 429));
+    });
+    const images = imageService({ execute });
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+
+    const imageFailure = { category: "rate_limit", code: "image_provider_http_error", httpStatus: 429 };
+    // Identical to the execution path's text for this failure (runExecution.test.ts).
+    const message = "Image generation failed because the image provider is limiting the request rate. The request was not repeated. Wait a minute before asking again. Any saved image remains in the chat.";
+    expect(execute).toHaveBeenCalledOnce();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      error: { code: "image_generation_failed", imageFailure, message } })]);
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+    const stored = state.calls()[0]!.result as { content: [{ text: string }] };
+    expect(JSON.parse(stored.content[0].text)).toMatchObject({ ok: false, error: { imageFailure, message } });
+    expect(JSON.stringify([harness.state.recoveredErrors, stored.content])).not.toMatch(/PRIVATE_PROVIDER_TEXT|PRIVATE_PROMPT_TEXT/);
   });
 
   it("settles an undispatched image call without the image service as image_tool_unavailable, not a revoked destination", async () => {
