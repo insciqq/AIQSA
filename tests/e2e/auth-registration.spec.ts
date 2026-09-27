@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "../../prisma/local-seed-auth";
+import { submitPasswordSignIn } from "./support/workspace";
 
 test.describe.configure({ mode: "serial" });
 
@@ -72,12 +73,11 @@ test.afterAll(async () => {
 
 test("signs in through the visible form with the stable seeded local operator credential", async ({ page }) => {
   await page.goto("/login");
-  await page.getByLabel("Email").fill(LOCAL_OPERATOR_EMAIL);
-  await page.getByLabel("Password", { exact: true }).fill(LOCAL_OPERATOR_PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await submitPasswordSignIn(page, { email: LOCAL_OPERATOR_EMAIL, password: LOCAL_OPERATOR_PASSWORD });
 
-  await expect(page).toHaveURL("/");
-  await expect(page.getByTestId("app-shell")).toBeVisible();
+  // The login request and the first shell render share the standard shell wait on a cold server.
+  await expect(page).toHaveURL("/", { timeout: 30_000 });
+  await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
 });
 
 test("hydrates the login screen and honors the first mode-switch click", async ({ page }) => {

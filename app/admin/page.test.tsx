@@ -198,8 +198,28 @@ describe("AdminPage", () => {
     expect(adminPageMocks.adminPanel).toHaveBeenCalledTimes(1);
     expect(adminPageMocks.adminPanel.mock.calls[0]?.[0]).toEqual({
       adminEmail: "admin@example.com",
-      adminUserId: "admin-1"
+      adminUserId: "admin-1",
+      returnPath: "/"
     });
     expect(adminPageMocks.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ return: "/p/project-1/c/chat-1", section: "users" }, "/p/project-1/c/chat-1"],
+    [{ return: "https://evil.example/c/foreign" }, "/"],
+    [{ return: "/admin?section=users" }, "/"],
+    [{ return: ["/c/chat-1", "/c/chat-2"] }, "/"]
+  ])("hands the validated chat return %o to the admin client", async (searchParams, returnPath) => {
+    adminPageMocks.resolveAuthToken.mockResolvedValue({ userId: "admin-1" });
+    adminPageMocks.findUnique.mockResolvedValue({
+      displayName: "Admin User",
+      email: "admin@example.com",
+      role: "admin",
+      status: "active"
+    });
+
+    render(await AdminPage({ searchParams: Promise.resolve(searchParams) }));
+
+    expect(adminPageMocks.adminPanel.mock.calls[0]?.[0]).toMatchObject({ returnPath });
   });
 });
