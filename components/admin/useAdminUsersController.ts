@@ -1,7 +1,11 @@
 "use client";
 
 import { activeDraftGroupIds } from "@/components/admin/adminDraftGroups";
-import { adminActionErrorMessage } from "@/components/admin/adminApi";
+import {
+  adminActionErrorMessage,
+  adminSoleOwnedProjects,
+  type AdminActionResult
+} from "@/components/admin/adminApi";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminActionRequest, AdminDashboard, AdminGroupGrantChange, AdminUserRecord } from "@/lib/contracts/admin";
@@ -37,6 +41,17 @@ export type AdminUsersController = Readonly<{
 
 function userLabel(user: AdminUserActionTarget): string {
   return user.email ?? user.displayName;
+}
+
+function soleOwnedProjectsLabel(result: AdminActionResult): string {
+  const conflict = adminSoleOwnedProjects(result);
+  if (!conflict || conflict.projects.length === 0) return "one or more Projects";
+  const names = conflict.projects
+    .map(({ name, status }) => `“${name}”${status === "ARCHIVED" ? " (archived)" : ""}`)
+    .join(", ");
+  const unnamed = conflict.projectCount - conflict.projects.length;
+  const noun = conflict.projectCount === 1 ? "Project" : "Projects";
+  return `${conflict.projectCount} ${noun}: ${names}${unnamed > 0 ? ` and ${unnamed} more` : ""}`;
 }
 
 /**
@@ -140,6 +155,23 @@ export function useAdminUsersController({
       confirmLabel: "Disable user",
       dialogLabel: `Disable ${userLabel(user)}`,
       message: "User disabled.",
+      // Disable waits for an in-Project ownership transfer; the security step must not.
+      onFailure(result) {
+        if (result.error !== "project_owner_required") return;
+        requestConfirmedAction({
+          body: { action: "revoke_user_sessions", userId: user.id },
+          confirmLabel: "Revoke sessions",
+          dialogLabel: `Revoke sessions for ${userLabel(user)}`,
+          icon: "x",
+          message: "User sessions and connected apps revoked. The account stays active until Project ownership is transferred.",
+          prompt: `${userLabel(user)} was not disabled: they are the only active Owner of ${soleOwnedProjectsLabel(result)}. ` +
+            "Ask them to make another member an Owner in each Project (restoring an archived Project first), then disable the user again. " +
+            "Revoke their sessions and connected apps now? They will need to sign in again.",
+          testId: "admin-confirm-revoke-sessions-after-owner-conflict",
+          title: "Revoke sessions instead?",
+          tone: "warning"
+        });
+      },
       prompt: `Disable ${userLabel(user)}? Existing sessions are revoked and future sign-in is blocked.`,
       testId: "admin-confirm-disable-user",
       title: "Disable active user?"

@@ -272,6 +272,14 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
         return json({ ok: true });
       }
 
+      if (typeof result === "object") {
+        return json({
+          error: result.kind,
+          projectCount: result.projectCount,
+          projects: result.projects.map(({ name, status }) => ({ name, status }))
+        }, { status: 409 });
+      }
+
       if (result === "self_disable_forbidden") {
         return json({ error: result }, { status: 403 });
       }
