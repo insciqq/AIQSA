@@ -1,6 +1,30 @@
 export const WORKSPACE_RUNTIME_VERSION = "0.6.16";
 export const WORKSPACE_MCP_VERSION = "0.6.16";
 
+/**
+ * One Workspace tool result crosses two JSON transports: the pinned MCP stdio
+ * line (a JSON-RPC string carrying the MCP JSON text) and the runner's HTTP
+ * response. A control byte becomes 7 bytes after both escaping layers, and a
+ * result carries stdout and stderr, each bounded by toolOutputMaxBytes. The
+ * envelope covers JSON-RPC and result framing, up to 1000 polled exec events
+ * with their truncation notes, and one partially buffered pipe chunk.
+ */
+const WORKSPACE_TOOL_OUTPUT_STREAMS = 2;
+const WORKSPACE_TOOL_OUTPUT_ESCAPE_FACTOR = 7;
+const WORKSPACE_TOOL_ENVELOPE_BYTES = 1_024 * 1_024;
+/** Resident ceiling of one tool transport message; the toolOutputMaxBytes maximum derives from it. */
+export const WORKSPACE_TOOL_TRANSPORT_CEILING_BYTES = 15 * 1_024 * 1_024;
+
+/** Raw stdout plus stderr bytes one tool result may carry before escaping. */
+export function workspaceToolOutputDataMaxBytes(toolOutputMaxBytes: number): number {
+  return WORKSPACE_TOOL_OUTPUT_STREAMS * toolOutputMaxBytes;
+}
+
+export function workspaceToolTransportMaxBytes(toolOutputMaxBytes: number): number {
+  return WORKSPACE_TOOL_OUTPUT_ESCAPE_FACTOR * workspaceToolOutputDataMaxBytes(toolOutputMaxBytes) +
+    WORKSPACE_TOOL_ENVELOPE_BYTES;
+}
+
 export type WorkspaceConfig = Readonly<{
   agentGatewayEnabled?: boolean;
   cpus: number;
@@ -109,7 +133,9 @@ const integerSettings = Object.freeze({
   },
   toolOutputMaxBytes: {
     defaultValue: 128 * 1_024,
-    maximum: 1_048_576,
+    // The largest value whose worst-case escaped result fits one transport message (1 MiB).
+    maximum: Math.floor((WORKSPACE_TOOL_TRANSPORT_CEILING_BYTES - WORKSPACE_TOOL_ENVELOPE_BYTES) /
+      (WORKSPACE_TOOL_OUTPUT_STREAMS * WORKSPACE_TOOL_OUTPUT_ESCAPE_FACTOR)),
     minimum: 1_024,
     name: "AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES"
   },

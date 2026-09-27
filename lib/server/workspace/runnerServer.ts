@@ -20,12 +20,20 @@ import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCapture
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
-import { renderCodexManagedProfile, type CodexManagedProfile } from "../agents/codexProfile";
+import { CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES, renderCodexManagedProfile, type CodexManagedProfile } from "../agents/codexProfile";
+import { CODEX_OUTPUT_LIMITS } from "../agents/codexProtocol";
 import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
 import { parseSkillBundleRef, parseSkillInitial, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity } from "./skillBundles";
 
 const JSON_BODY_MAX_BYTES = 2 * 1_024 * 1_024;
+/**
+ * The admitted prompt and server instructions arrive as JSON strings, where
+ * one UTF-8 byte escapes to at most six bytes (`\u0001`). Both are bounded by
+ * the application before dispatch, so a valid start always fits.
+ */
+export const AGENT_START_BODY_MAX_BYTES =
+  6 * (AGENT_PROMPT_MAX_BYTES + CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES) + 64 * 1_024;
 const HEADER_VALUE_MAX_BYTES = 2_048;
 /**
  * Output handles live in batches. A batch stays valid while the application
@@ -94,7 +102,8 @@ async function readJson(request: IncomingMessage, maxBytes = JSON_BODY_MAX_BYTES
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     byteLength += buffer.byteLength;
-    if (byteLength > maxBytes) throw new Error("body_too_large");
+    // Nothing has been dispatched yet; the caller learns the exact cause.
+    if (byteLength > maxBytes) throw new WorkspaceRuntimeError("workspace_request_too_large");
     chunks.push(buffer);
   }
   const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
@@ -432,7 +441,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
 
       if (request.method === "POST" && ["/agent/start", "/agent/poll", "/agent/interrupt"].includes(suffix)) {
         stage = "dispatch";
-        const body = await readJson(request);
+        const body = await readJson(request, suffix === "/agent/start" ? AGENT_START_BODY_MAX_BYTES : JSON_BODY_MAX_BYTES);
         const identity = {
           modelRunId: requiredString(body.modelRunId, 128),
           runtimeExecSessionId: requiredString(body.runtimeExecSessionId, 128),
@@ -459,7 +468,8 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         } else {
           if (!input.runtime.pollAgent) throw new Error("field_invalid");
           sendJson(response, 200, await execute(body.operation, (signal) => input.runtime.pollAgent!({
-            ...identity, signal, cursor: integer(body.cursor, 0, 64 * 1024 * 1024)
+            // The execution buffer accepts output up to this same total ceiling.
+            ...identity, signal, cursor: integer(body.cursor, 0, CODEX_OUTPUT_LIMITS.totalBytes)
           })));
         }
         return;
