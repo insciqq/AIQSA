@@ -23,6 +23,7 @@ import type {
 const apiMocks = vi.hoisted(() => ({
   createProjectFolder: vi.fn(),
   deleteProjectFolder: vi.fn(),
+  deleteProject: vi.fn(),
   leaveProject: vi.fn(),
   loadProject: vi.fn(),
   loadProjectActivity: vi.fn(),
@@ -204,6 +205,33 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     resetComposerSessionStoreForTest();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it.each(["failed", "stale"])("keeps deletion visible without cached content when its refresh is %s", async refreshOutcome => {
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [projectChat({ id: "chat-private", title: "Private draft" })], folders: [] });
+    const input = controllerInput();
+    const hook = renderHook(() => useProjectWorkspaceController(input));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await hook.result.current.actions.selectProject("project-1");
+    });
+    if (refreshOutcome === "failed") apiMocks.loadProject.mockRejectedValueOnce(new Error("synthetic_network_failure"));
+    else apiMocks.loadProject.mockResolvedValue(projectDetail);
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    apiMocks.deleteProject.mockResolvedValue({ projectId: "project-1", status: "failed" });
+    await act(async () => { await hook.result.current.actions.deleteProject(); });
+    expect(hook.result.current.selectedProjectId).toBe("project-1");
+    expect(hook.result.current.detail?.deletionStatus).toBe("failed");
+    expect(hook.result.current.detail?.instructions).toBe("");
+    expect(hook.result.current.detail?.defaults.providerModelId).toBeNull();
+    expect(hook.result.current.workspace).toEqual({ chats: [], folders: [] });
+    expect(useWorkspaceStore.getState().chats.some(chat => chat.projectId === "project-1")).toBe(false);
+    expect(input.setNotice).not.toHaveBeenCalledWith({ kind: "success", text: "Project deleted." });
+    apiMocks.deleteProject.mockResolvedValue({ projectId: "project-1", status: "completed" });
+    await act(async () => { await hook.result.current.actions.deleteProject(); });
+    expect(hook.result.current.selectedProjectId).toBeNull();
+    expect(input.setNotice).toHaveBeenLastCalledWith({ kind: "success", text: "Project deleted." });
+    hook.unmount();
   });
 
   it("restores saved chat Search after switching Project chats without a workspace refresh", async () => {

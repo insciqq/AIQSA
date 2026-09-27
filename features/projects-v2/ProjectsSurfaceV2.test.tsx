@@ -383,11 +383,6 @@ describe("Projects reading surfaces", () => {
       heading: "Archived Project",
       reason: /Archived Projects are read-only/iu,
       status: "ARCHIVED" as const
-    },
-    {
-      heading: "Deletion in progress",
-      reason: /Permanent deletion is in progress/iu,
-      status: "DELETING" as const
     }
   ])("makes $status explicitly read-only with an assistive reason", ({ heading, reason, status }) => {
     render(
@@ -408,6 +403,25 @@ describe("Projects reading surfaces", () => {
     expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Manage" })).toBeNull();
     expect(screen.queryByText("Project composer")).toBeNull();
+  });
+
+  it.each(["pending", "failed"] as const)("shows %s deletion without Project content", async deletionStatus => {
+    const value = controller({ detail: detail({ status: "DELETING", deletionStatus, directRole: "OWNER" }) });
+    render(<ProjectOverviewPageV2 composerSlot={<div>Project composer</div>} controller={value}
+      onBackToChat={vi.fn()} onStartChat={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent(deletionStatus === "failed" ? "Deletion needs another attempt" : "Deletion in progress");
+    expect(screen.queryByText("Shared setup")).toBeNull();
+    expect(screen.queryByText("Recent activity")).toBeNull();
+    expect(screen.queryByText("Project composer")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start shared chat" })).toBeNull();
+    expect(value.actions.loadActivity).not.toHaveBeenCalled();
+    if (deletionStatus === "failed") {
+      screen.getByRole("button", { name: "Retry deletion" }).click();
+      expect(value.actions.deleteProject).toHaveBeenCalledOnce();
+    } else {
+      screen.getByRole("button", { name: "Check status" }).click();
+      expect(value.actions.refresh).toHaveBeenCalledOnce();
+    }
   });
 
   it("keeps a Viewer useful without exposing write or management actions", () => {
