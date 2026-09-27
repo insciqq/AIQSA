@@ -12,7 +12,7 @@ import { transportFailureFacts } from "../providers/providerObservability";
 import { parseWorkspaceOperation } from "./operationFence";
 import { outputIdentities, parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
-import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import {
   WorkspaceRuntimeError,
@@ -631,7 +631,8 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       !value.skipped.every((code) => WORKSPACE_BROWSER_SKIP_CODES.includes(code))) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     const metadata = value.outputs.map((entry) => outputMetadata(entry));
     if (metadata.some((entry) => !entry || !isWorkspaceBrowserSessionFilename(entry.relativePath) ||
-      entry.byteSize > WORKSPACE_BROWSER_SESSION_MAX_BYTES)) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      entry.byteSize > WORKSPACE_BROWSER_SESSION_MAX_BYTES) ||
+      metadata.reduce((total, entry) => total + entry!.byteSize, 0) > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     return { files: (metadata as Omit<WorkspaceOutputStream, "body">[]).map((entry) => this.output(input.sessionId, entry, input.signal)),
       skipped: value.skipped as WorkspaceBrowserSkipCode[] };
   }

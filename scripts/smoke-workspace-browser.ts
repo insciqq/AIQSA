@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { assertDisposableStatefulTestTarget } from "./stateful-test-target";
 import { textMessageContent } from "@/lib/domain/content";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_POLICY_ID, workspaceMessageManifestPath, workspaceRunOutputDirectory, workspaceSandboxName, type WorkspaceMcpToolName } from "@/lib/domain/workspace";
 import { admitPreparingRunWithClient } from "@/lib/server/runs/prismaRepositoryPreparation";
 import { getWorkspaceConfig } from "@/lib/server/workspace/config";
@@ -138,7 +139,7 @@ with sync_playwright() as p:
     browser.close()
 if mode == 'login':
     state.with_name('invalid.json').write_text('invalid synthetic state')
-    state.with_name('oversized.json').write_bytes(b'x' * (512 * 1024 + 1))
+    state.with_name('oversized.json').write_bytes(b'x' * ${WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1})
     state.with_name('linked.json').symlink_to(state)
 print('synthetic_browser_ok')
 `;
