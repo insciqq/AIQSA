@@ -275,8 +275,19 @@ export function ConversationTurnV2({
       setMoreOpen(false);
       setMorePosition(null);
     };
+    const dismissWithEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      setMoreOpen(false);
+      setMorePosition(null);
+      queueMicrotask(() => moreButtonRef.current?.focus());
+    };
     document.addEventListener("pointerdown", dismiss);
-    return () => document.removeEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", dismissWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", dismissWithEscape);
+    };
   }, [moreOpen]);
 
   useLayoutEffect(() => {
