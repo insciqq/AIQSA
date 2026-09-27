@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  boundedEngineSearchSources,
   MAX_SEARCH_FINDINGS_BYTES,
   MAX_SEARCH_FINDINGS_CHARACTERS,
   normalizeSearchFindings,
-  normalizeSearchSources
+  normalizeSearchSources,
+  searchSourcesFromCitationArtifacts
 } from "./evidence";
 
 describe("Search source evidence normalization", () => {
@@ -104,5 +106,34 @@ describe("Search source evidence normalization", () => {
     expect(normalizeSearchFindings(below)).toBe(below);
     expect(normalizeSearchFindings(at)).toBe(at);
     expect(() => normalizeSearchFindings(above)).toThrow("search_findings_invalid");
+  });
+
+  it("keeps a provider citation number and ranks positionally", () => {
+    expect(normalizeSearchSources([
+      { citation: 15, title: "Cited", url: "https://example.com/15" },
+      ...[0, 1.5, "3", 10_001, -1].map((citation, index) => ({ citation, title: `Invalid ${index}`, url: `https://example.com/invalid/${index}` }))
+    ])).toEqual([
+      { citation: 15, rank: 1, title: "Cited", url: "https://example.com/15" },
+      ...[0, 1, 2, 3, 4].map((index) => ({ rank: index + 2, title: `Invalid ${index}`, url: `https://example.com/invalid/${index}` }))
+    ]);
+    expect(searchSourcesFromCitationArtifacts([
+      { data: { artifactType: "citation", payload: { index: 7, title: "Numbered", url: "https://example.com/7" } }, type: "artifact" },
+      { data: { artifactType: "citation", payload: { title: "Unnumbered", url: "https://example.com/second" } }, type: "artifact" }
+    ]).map(({ citation, rank }) => ({ citation, rank }))).toEqual([{ citation: 7, rank: 1 }, { citation: 2, rank: 2 }]);
+  });
+
+  it("bounds only browsed sources by maxResults and keeps every cited source first", () => {
+    const browsed = Array.from({ length: 10 }, (_, index) => ({ title: `Browsed ${index}`, url: `https://example.com/b/${index}` }));
+    const cited = Array.from({ length: 12 }, (_, index) => ({ citation: index + 1, title: `Cited ${index}`, url: `https://example.com/c/${index}` }));
+    const kept = boundedEngineSearchSources([...browsed.slice(0, 2), ...cited, ...browsed.slice(2)], 8);
+    expect(kept.map((source) => source.title)).toEqual([
+      ...cited.map((source) => source.title),
+      ...browsed.slice(0, 8).map((source) => source.title)
+    ]);
+    expect(kept.map((source) => source.rank)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+    // The adapter ceiling of twenty sources still bounds the whole list.
+    expect(boundedEngineSearchSources([...browsed, ...cited, ...cited.map((source, index) => ({
+      ...source, citation: index + 13, url: `${source.url}/more`
+    }))], 8).map((source) => source.citation)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
   });
 });

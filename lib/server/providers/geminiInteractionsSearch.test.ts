@@ -150,6 +150,7 @@ describe("Gemini Interactions query-only Search adapter", () => {
       findings: "Valencia is warm and sunny.",
       providerResponseId: "interaction-search-1",
       sources: [{
+        citation: 1,
         rank: 1,
         title: "Weather source",
         url: "https://example.test/valencia-weather"

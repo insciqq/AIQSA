@@ -6,6 +6,7 @@ import { adminSearchExecutionLimits } from "../../contracts/adminSearch";
 import { ANTHROPIC_WEB_SEARCH_TOOL_DECLARATION } from "../tools/bridges";
 import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
 import {
+  citedSearchSources,
   normalizeSearchFindings,
   normalizeSearchSources,
   type SearchSource
@@ -543,7 +544,7 @@ export function inspectAnthropicWebSearchContent(
   if (operationsTruncated) artifacts.push(truncationArtifact());
 
   const sources = normalizeSearchSources([
-    ...citationCandidates,
+    ...citedSearchSources(citationCandidates),
     ...resultCandidates
   ], 20);
   artifacts.push(...sources.map((source): ModelRunSseEvent => ({
@@ -644,6 +645,7 @@ function normalizedAggregateSources(
   sources: readonly SearchSource[]
 ): SearchSource[] {
   return normalizeSearchSources(sources.map((source) => ({
+    ...(source.citation ? { citation: source.citation } : {}),
     ...(source.date ? { date: source.date } : {}),
     ...(source.snippet ? { snippet: source.snippet } : {}),
     title: source.title,
