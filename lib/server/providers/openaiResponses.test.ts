@@ -308,7 +308,7 @@ describe("OpenAI Responses adapter", () => {
     await expect(stream.next()).rejects.toThrow("openai_response_identity_mismatch");
   });
 
-  it("rejects malformed completed function calls before non-stream terminal events", async () => {
+  it("rejects malformed completed function calls before non-stream output, keeping their reported usage", async () => {
     const client: OpenAIResponsesClient = {
       cancel: async () => ({}),
       create: async () => ({
@@ -320,9 +320,15 @@ describe("OpenAI Responses adapter", () => {
       retrieve: async () => ({})
     };
     const adapter = createOpenAIResponsesAdapter({ client, pollIntervalMs: 0 });
-    const stream = adapter.stream(request({ forceNonStreaming: true }));
-
-    await expect(stream.next()).rejects.toThrow("openai_response_tool_call_invalid");
+    const events: ModelRunSseEvent[] = [];
+    await expect((async () => {
+      for await (const event of adapter.stream(request({ forceNonStreaming: true }))) events.push(event);
+    })()).rejects.toThrow("openai_response_tool_call_invalid");
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", data: expect.objectContaining({ totalTokens: 2 }) }
+    ]);
+    expect(events.every((event) => event.type === "usage" ||
+      event.type === "artifact" && event.data.artifactType === "summary")).toBe(true);
   });
 
   it("parses OpenAI function calls for the shared tool loop", async () => {

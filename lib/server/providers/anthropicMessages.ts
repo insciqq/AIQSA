@@ -10,6 +10,8 @@ import {
   type AnthropicMessagesParams
 } from "../../domain/providerParams";
 import { anthropicMessagesToolBridge } from "../tools/bridges";
+import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
+import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 import {
   assertBoundedStructuredTextLength,
   BoundedTextAccumulator
@@ -102,8 +104,6 @@ type AnthropicContentBlockAccumulator = {
 };
 
 const MAX_ANTHROPIC_CONTENT_BLOCKS = 256;
-const MAX_ANTHROPIC_TOOL_CALLS = 16;
-const MAX_ANTHROPIC_SEARCH_CITATIONS = 100;
 const MAX_ANTHROPIC_PAUSE_CONTINUATIONS = 3;
 const MAX_ANTHROPIC_TOOL_ID_LENGTH = 512;
 const MAX_ANTHROPIC_TOOL_NAME_LENGTH = 512;
@@ -796,6 +796,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         // Deltas of one thinking block merge before publication (see ReasoningRecord).
         const thinkingFragments = new Map<number, ReturnType<typeof createReasoningFragmentBuffer>>();
         let toolUseBlockCount = 0;
+        // Citations of every text block of this provider message together.
+        let attemptCitationCount = 0;
         let attemptStreamBytes = 0;
 
         for await (const event of options.client.stream(body, {
@@ -892,7 +894,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
                 throw new Error("anthropic_stream_tool_call_invalid");
               }
               toolUseBlockCount += 1;
-              if (toolUseBlockCount > MAX_ANTHROPIC_TOOL_CALLS) {
+              if (toolUseBlockCount > PROVIDER_RESPONSE_MAX_TOOL_CALLS) {
                 throw new Error("anthropic_stream_tool_call_limit_exceeded");
               }
               assertBoundedStructuredTextLength({
@@ -926,11 +928,12 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
               if (
                 block.type !== "text" ||
                 !Array.isArray(block.citations) ||
-                block.citations.length > MAX_ANTHROPIC_SEARCH_CITATIONS ||
+                attemptCitationCount + block.citations.length > PROVIDER_RESPONSE_MAX_CITATIONS ||
                 block.citations.some((citation) => !objectValue(citation))
               ) {
                 throw new Error("anthropic_stream_citation_invalid");
               }
+              attemptCitationCount += block.citations.length;
               citations = block.citations as Record<string, unknown>[];
               citationCharacters = assertBoundedStructuredTextLength({
                 maxChars: ANTHROPIC_WEB_SEARCH_REPLAY_MAX_CHARACTERS,
@@ -1082,10 +1085,11 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
                 !accumulator ||
                 accumulator.block.type !== "text" ||
                 !citation ||
-                (accumulator.citations?.length ?? 0) >= MAX_ANTHROPIC_SEARCH_CITATIONS
+                attemptCitationCount >= PROVIDER_RESPONSE_MAX_CITATIONS
               ) {
                 throw new Error("anthropic_stream_citation_invalid");
               }
+              attemptCitationCount += 1;
               accumulator.citationCharacters = assertBoundedStructuredTextLength({
                 currentChars: accumulator.citationCharacters,
                 maxChars: ANTHROPIC_WEB_SEARCH_REPLAY_MAX_CHARACTERS,

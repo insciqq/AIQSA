@@ -6,6 +6,8 @@ import {
   streamGeminiInteractionsJsonResponse
 } from "./geminiInteractionsResponse";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
+import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
+import { decodeGroundingDisplay } from "../../domain/groundingDisplay";
 
 const suggestionsHtml = [
   "<style>#provider-css-canary { pos\\69 tion: fixed; inset: 0; z-index: 2147483647; }</style>",
@@ -130,6 +132,41 @@ describe("Gemini Interactions response normalization", () => {
     expect(durableShape).not.toContain("search-result-signature");
     expect(JSON.stringify(normalized.events)).not.toContain("provider-css-canary");
     expect(JSON.stringify(normalized.events)).not.toContain("<style");
+  });
+
+  it("displays up to 500 grounded citations per interaction and keeps usage when refusing more", async () => {
+    const interaction = (count: number) => {
+      const annotation = (index: number) => ({ end_index: 5, start_index: 0, title: `Source ${index}`,
+        type: "url_citation", url: `https://example.test/source/${index}` });
+      const first = Math.floor(count / 2);
+      const output = (from: number, length: number) => ({
+        content: [{ annotations: Array.from({ length }, (_, index) => annotation(from + index)), text: "Grounded answer", type: "text" }],
+        type: "model_output"
+      });
+      return {
+        id: `interaction-${count}`, model: "gemini-3.6-flash", status: "completed",
+        steps: [
+          { arguments: { queries: ["AIQSA"] }, id: "search-1", type: "google_search_call" },
+          { call_id: "search-1", result: [{ search_suggestions: suggestionsHtml }], type: "google_search_result" },
+          output(0, first),
+          output(first, count - first)
+        ],
+        usage: { total_input_tokens: 10, total_output_tokens: 5, total_thought_tokens: 0, total_tokens: 15 }
+      };
+    };
+    for (const count of [101, PROVIDER_RESPONSE_MAX_CITATIONS]) {
+      const normalized = await collect(streamGeminiInteractionsJsonResponse(interaction(count), { modelId: "gemini-3.6-flash" }));
+      const grounding = normalized.events.find((event) => event.type === "grounding_display");
+      expect(grounding?.type === "grounding_display" ? grounding.data.citations : []).toHaveLength(count);
+      // The display bound admits everything the adapter accepted, live and reloaded.
+      expect(decodeGroundingDisplay(grounding?.data)?.citations).toHaveLength(count);
+    }
+    const events: ModelRunSseEvent[] = [];
+    await expect((async () => {
+      for await (const event of streamGeminiInteractionsJsonResponse(interaction(PROVIDER_RESPONSE_MAX_CITATIONS + 1),
+        { modelId: "gemini-3.6-flash" })) events.push(event);
+    })()).rejects.toThrow("gemini_interactions_grounding_invalid");
+    expect(events).toEqual([{ type: "usage", data: expect.objectContaining({ inputTokens: 10, totalTokens: 15 }) }]);
   });
 
   it("preserves ordered provider signatures only in private function continuation state", async () => {
@@ -896,7 +933,8 @@ describe("Gemini Interactions response normalization", () => {
         index,
         step: {
           content: [{
-            annotations: Array.from({ length: 60 }, () => annotation),
+            // Two steps together exceed the shared per-response citation cap.
+            annotations: Array.from({ length: PROVIDER_RESPONSE_MAX_CITATIONS / 2 + 1 }, () => annotation),
             text: "ok",
             type: "text"
           }],

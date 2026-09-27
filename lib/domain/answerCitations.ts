@@ -2,6 +2,13 @@ import { THREAD_CITATION_MAX_ITEMS, type ThreadCitation } from "../contracts/cha
 import { safeExternalHref } from "./links";
 import { storableUtf16Text, takeUtf16SafePrefix } from "./utf16";
 
+/**
+ * The agreed citations of one provider response (one provider message, or one
+ * Gemini interaction), shared by every adapter that bounds them. Readers fold
+ * all responses and tool rounds of an answer under THREAD_CITATION_MAX_ITEMS.
+ */
+export const PROVIDER_RESPONSE_MAX_CITATIONS = 500;
+
 const citationTitleLimit = 500;
 const citationSnippetLimit = 2_000;
 const citationSourceLimit = 200;
