@@ -8,6 +8,7 @@ import {
   normalizeGeminiInteractionsSearchResponse
 } from "./geminiInteractionsResponse";
 import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
+import { citedSearchSources } from "../search/evidence";
 import {
   ProviderSearchExecutionError,
   type ProviderModelCapabilities,
@@ -147,13 +148,16 @@ export function createGeminiInteractionsSearchAdapter(
         }), usage: (value) => extractGeminiInteractionsUsage(value.usage)
       });
       try {
+        const normalized = normalizeGeminiInteractionsSearchResponse(response, {
+          groundingExpected: true,
+          modelId: body.model
+        });
         return {
-          ...normalizeGeminiInteractionsSearchResponse(response, {
-            groundingExpected: true,
-            modelId: body.model
-          }),
+          ...normalized,
           requestPreview: adapter.buildRequestPreview(request),
-          sourceAttribution: "available" as const
+          sourceAttribution: "available" as const,
+          // Every grounding source is cited by the findings.
+          sources: citedSearchSources(normalized.sources)
         };
       } catch (error) {
         const providerStatus = safeProviderStatus(response);

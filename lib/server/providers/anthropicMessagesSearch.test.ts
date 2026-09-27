@@ -224,6 +224,7 @@ describe("Anthropic Messages query-only Search adapter", () => {
       }
     });
     expect(result.sources).toEqual([{
+      citation: 1,
       rank: 1,
       snippet: "A concise supported fact.",
       title: "https://example.com/report",

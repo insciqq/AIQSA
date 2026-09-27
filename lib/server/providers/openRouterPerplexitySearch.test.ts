@@ -144,6 +144,7 @@ describe("OpenRouter Perplexity search adapter", () => {
       }
     });
     expect(result.sources).toEqual([{
+      citation: 1,
       rank: 1,
       snippet: "A useful source",
       title: "Primary source",
@@ -177,6 +178,29 @@ describe("OpenRouter Perplexity search adapter", () => {
         type: "artifact"
       }
     ]);
+  });
+
+  it("keeps the provider's citation number on each source its findings cite", async () => {
+    const citations = Array.from({ length: 15 }, (_, index) => `https://example.com/cited/${index + 1}`);
+    // An unusable citation keeps the numbers of the ones after it.
+    citations[2] = "javascript:alert(1)";
+    const adapter = createOpenRouterPerplexitySearchAdapter({
+      client: {
+        createChatCompletion: async () => successfulResponse({
+          choices: [{ finish_reason: "stop", message: { content: "Fact [1] and later fact [15].", role: "assistant" } }],
+          citations
+        })
+      }
+    });
+
+    const result = await adapter.search(searchRequest());
+
+    expect(result.findings).toBe("Fact [1] and later fact [15].");
+    expect(result.sources).toHaveLength(14);
+    expect(result.sources.map((source) => source.citation)).toEqual([1, 2, ...Array.from({ length: 12 }, (_, index) => index + 4)]);
+    expect(result.sources.at(-1)).toEqual({
+      citation: 15, rank: 14, title: "Source 15", url: "https://example.com/cited/15"
+    });
   });
 
   it("forwards the exact abort signal and Search timeout to the transport client", async () => {

@@ -19,7 +19,7 @@ import { extractOpenAIUsage } from "../providers/openaiResponsesResponse";
 import { AgentExecutionError, agentFailureCode, agentFailureMessage } from "../agents/failures";
 import { knowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
-import { imageDispatchMustStop } from "../images/errors";
+import { imageDispatchMustStop, imageGenerationFailure, type ImageFailureEvidence } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { artifactTool, readArtifactTool, READ_ARTIFACT_TOOL_NAME, ARTIFACT_TOOL_NAME } from "../tools/artifact";
 import { acceptsSkillTool, isSkillToolName, skillToolsForRequest } from "../tools/skill";
@@ -496,11 +496,13 @@ function isAbortError(error: unknown): boolean {
 class RunPipelineError extends Error {
   code: string;
   readonly report?: ProviderStreamSafetyReport;
+  readonly imageFailure?: ImageFailureEvidence;
 
-  constructor(code: string, message: string, report?: ProviderStreamSafetyReport) {
+  constructor(code: string, message: string, report?: ProviderStreamSafetyReport, imageFailure?: ImageFailureEvidence) {
     super(message);
     this.code = code;
     if (report) this.report = report;
+    if (imageFailure) this.imageFailure = imageFailure;
   }
 }
 
@@ -540,13 +542,16 @@ function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]):
 function toolExecutionErrorResult(
   call: ModelToolCall,
   error: unknown,
-  label: "Knowledge" | "Search" | "Tool" | "Workspace" = "Tool"
+  label: "Knowledge" | "Search" | "Tool" | "Workspace" = "Tool",
+  imageFailure?: Readonly<{ evidence: ImageFailureEvidence; message: string }>
 ): ToolExecutionResult {
   if (label === "Knowledge") return knowledgeSearchFailureToolResult(call, error);
   const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
-  const failure = executionFailure(error);
+  const failure = imageFailure
+    ? { ...executionFailure(error), message: imageFailure.message, imageFailure: imageFailure.evidence }
+    : executionFailure(error);
   const message = failure.message;
 
   return {
@@ -2392,6 +2397,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               let fatalToolError: Readonly<{
                 code: string;
                 fatal: true;
+                imageFailure?: ImageFailureEvidence;
                 message: string;
               }> | null = null;
               let resultSettled = false;
@@ -2756,8 +2762,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 // side-effecting non-Knowledge tool, remains crash-ambiguous.
                 if (signal.aborted ||
                   isAbortError(error) && !isKnowledgeCall(call.name)) throw error;
-                if (isImageCall(call.name) && imageDispatchMustStop(error)) {
-                  fatalToolError = { code: "image_generation_failed", fatal: true, message: "Image generation could not finish. The request was not repeated. Any saved image remains in the chat." };
+                const imageFailure = isImageCall(call.name) && imageDispatchMustStop(error) ? imageGenerationFailure(error) : undefined;
+                if (imageFailure) {
+                  fatalToolError = { code: "image_generation_failed", fatal: true, imageFailure: imageFailure.evidence, message: imageFailure.message };
                 }
                 if (error instanceof McpAutoDiscoveryUnavailableError) {
                   fatalToolError = {
@@ -2774,7 +2781,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                       ? "Knowledge"
                       : isSearchCall(call.name)
                         ? "Search"
-                        : isWorkspaceCall(call.name) ? "Workspace" : "Tool"
+                        : isWorkspaceCall(call.name) ? "Workspace" : "Tool",
+                    imageFailure
                   );
                 }
               }
@@ -3033,7 +3041,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               : outcome.failure.code,
             streamSafetyReport?.message ??
               (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
-            streamSafetyReport
+            streamSafetyReport,
+            outcome.failure.imageFailure
           );
         }
         let knowledgeDispatchDraft: KnowledgeEvidenceDispatchManifestDraft | undefined;
@@ -3494,12 +3503,15 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             providerModelId: snapshot.providerModelId
           });
         }
+        // The image cause is kept with the run error; the browser event keeps its code and message only.
+        const imageFailure = pipelineError?.imageFailure && payload.code === pipelineError.code &&
+          payload.message === pipelineError.message ? pipelineError.imageFailure : undefined;
         let failed: boolean;
         try {
           failed = await input.repository.failRun(
             runId,
             input.created.assistantMessageId,
-            payload,
+            imageFailure ? { ...payload, imageFailure } : payload,
             safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode || isRunPersistenceFailureCode(failureCode) ||
               isToolSynthesisFailure(failureCode) ||
               isMcpAutoDiscoveryFailureCode(failureCode) ||

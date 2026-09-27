@@ -14,7 +14,8 @@ import {
   providerAttachmentPreviewFilename,
   usesNativePdfInput,
   providerAttachmentPreviewText,
-  providerAttachmentText
+  providerAttachmentText,
+  providerImageCaption
 } from "./attachmentPayload";
 import { conversationPreview, providerPromptCacheKey, textConversationForRequest } from "./context";
 import type {
@@ -188,6 +189,8 @@ function buildUserContent(
       }
 
       if (attachment.kind === "image" && request.modelCapabilities.vision) {
+        const caption = providerImageCaption(attachment);
+        if (caption) contentParts.push(textContentPart(caption));
         contentParts.push(imageContent(attachment, options.redactImages));
       }
     }

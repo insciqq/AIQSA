@@ -2,7 +2,7 @@ import { withResponseReminder } from "./responseReminder";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { RunTool } from "../tools/types";
-import { providerAttachmentPreviewText, providerAttachmentText } from "./attachmentPayload";
+import { providerAttachmentPreviewText, providerAttachmentText, providerImageCaption } from "./attachmentPayload";
 import { conversationPreview, textConversationForRequest } from "./context";
 import type { ProviderRunRequest } from "./types";
 import {
@@ -93,17 +93,21 @@ function currentUserContent(
       text: textParts.join("\n\n"),
       type: "text"
     },
-    ...images.map((attachment) => {
+    ...images.flatMap((attachment) => {
       if (!options.redactImages && !attachment.dataUrl) {
         throw new Error(`image_attachment_data_unavailable:${attachment.id}`);
       }
 
-      return {
-        image_url: {
-          url: options.redactImages ? "[image data url omitted]" : attachment.dataUrl
-        },
-        type: "image_url"
-      };
+      const caption = providerImageCaption(attachment);
+      return [
+        ...(caption ? [{ text: caption, type: "text" }] : []),
+        {
+          image_url: {
+            url: options.redactImages ? "[image data url omitted]" : attachment.dataUrl
+          },
+          type: "image_url"
+        }
+      ];
     })
   ];
 }

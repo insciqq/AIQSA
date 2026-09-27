@@ -7,7 +7,8 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { deepSeekResponsesToolBridge } from "../tools/bridges";
 import {
   providerAttachmentPreviewText,
-  providerAttachmentText
+  providerAttachmentText,
+  providerImageCaption
 } from "./attachmentPayload";
 import { conversationPreview, textConversationForRequest } from "./context";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
@@ -111,6 +112,8 @@ function inputContent(
       const block = attachmentTextBlock(attachment, options);
       if (block) content.push(block);
     } else if (attachment.kind === "image" && request.modelCapabilities.vision) {
+      const caption = providerImageCaption(attachment);
+      if (caption) content.push({ text: caption, type: "input_text" });
       content.push(imageBlock(attachment, options.redactImages));
     }
   }

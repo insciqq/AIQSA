@@ -269,6 +269,21 @@ function safeActionSources(response: Readonly<Record<string, unknown>>) {
   ), 20);
 }
 
+/** The page a URL names for matching a cited source to a browsed one:
+ * OpenAI adds attribution (`utm_source=openai`) to cited URLs only, so every
+ * `utm_*` parameter is ignored. Any other difference is another page. */
+function citedPageIdentity(value: string): string {
+  try {
+    const url = new URL(value);
+    // Both sides are serialized alike, whether or not a parameter was removed.
+    url.search = new URLSearchParams([...url.searchParams]
+      .filter(([name]) => !name.toLowerCase().startsWith("utm_"))).toString();
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
 function completedSearchOperationCount(response: Readonly<Record<string, unknown>>): number {
   const output = Array.isArray(response.output) ? response.output : [];
   return output.filter((item) =>
@@ -371,9 +386,17 @@ export function createOpenAIResponsesSearchAdapter(
           usage: completed.result.usage
         });
       }
+      // Cited sources come first so no bound can drop what the findings cite;
+      // a cited page the engine also browsed keeps its browsed fields, so the
+      // browsed duplicate is dropped by URL.
+      const browsed = safeActionSources(response);
       const sources = normalizeSearchSources([
-        ...safeActionSources(response),
-        ...searchSourcesFromCitationArtifacts(artifacts)
+        ...searchSourcesFromCitationArtifacts(artifacts).map((source) => {
+          const page = citedPageIdentity(source.url);
+          const same = browsed.find((candidate) => citedPageIdentity(candidate.url) === page);
+          return same ? { ...same, citation: source.citation } : source;
+        }),
+        ...browsed
       ], 20);
       if (sources.length === 0) {
         throw new ProviderSearchExecutionError({
