@@ -263,7 +263,10 @@ export function ConversationTurnV2({
   useEffect(() => {
     if (!moreOpen) return;
     queueMicrotask(() => {
-      moreMenuRef.current?.querySelector<HTMLElement>("[role='menuitem']:not(:disabled)")?.focus();
+      const menu = moreMenuRef.current;
+      // A running answer can disable every item. Keep Escape in the menu
+      // even then, instead of leaving keyboard focus on its trigger.
+      (menu?.querySelector<HTMLElement>("[role='menuitem']:not(:disabled)") ?? menu)?.focus();
     });
     const dismiss = (event: PointerEvent) => {
       const target = event.target;
@@ -468,6 +471,7 @@ export function ConversationTurnV2({
                   data-placement={morePosition?.placement}
                   id={moreMenuId}
                   label={`${label} menu`}
+                  tabIndex={-1}
                   onKeyDown={handleMoreMenuKeyDown}
                   style={{
                     left: morePosition?.left ?? 0,
