@@ -35,6 +35,8 @@ const draft: McpDraftConfiguration = {
 afterEach(async () => {
   await prisma.user.deleteMany({ where: { id: { in: userIds.splice(0) } } });
   await prisma.group.deleteMany({ where: { id: { in: groupIds.splice(0) } } });
+  // Shared Project generations have no member; they go with their shared runtime.
+  await prisma.mcpSharedRuntime.deleteMany({ where: { serverId: { in: serverIds } } });
   await prisma.mcpRevision.deleteMany({ where: { serverId: { in: serverIds } } });
   await prisma.mcpServer.deleteMany({ where: { id: { in: serverIds.splice(0) } } });
   await prisma.mcpOAuthClient.deleteMany({ where: { id: { in: clientIds.splice(0) } } });
@@ -403,16 +405,25 @@ describe("MCP tool access persistence", () => {
   it("filters personal/Assistant/Project catalogs by the actor while preserving shared generations and base authority", async () => {
     const f = await fixture();
     const actorId = await admin();
+    const inventory = { version: 1, tools: ["search", "write"].map((name) => ({ name, description: null, inputSchema: { type: "object" }, definitionHash: "a".repeat(64) })) };
+    const personalGenerationIds: string[] = [];
     for (const userId of [f.userId, actorId]) {
       await f.repository.setGrant({ serverId: f.serverId, userId, groupId: null, canUse: true, personalSlotKeys: [] });
       const preference = await prisma.mcpUserServer.create({ data: { serverId: f.serverId, userId, enabled: true } });
       const generation = await prisma.mcpRuntimeGeneration.create({ data: {
         userServerId: preference.id, revisionId: f.server.activeRevision!.id, fingerprint: hashCanonicalMcpValue(randomUUID()),
-        state: "ready", credentialSources: ["shared"], inventoryUpdatedAt: new Date(),
-        inventory: { version: 1, tools: ["search", "write"].map((name) => ({ name, description: null, inputSchema: { type: "object" }, definitionHash: "a".repeat(64) })) }
+        state: "ready", credentialSources: ["shared"], inventoryUpdatedAt: new Date(), inventory
       } });
+      personalGenerationIds.push(generation.id);
       await prisma.mcpUserServer.update({ where: { id: preference.id }, data: { desiredRuntimeGenerationId: generation.id } });
     }
+    // The server's own Project runtime: no member owns it.
+    await prisma.mcpSharedRuntime.create({ data: { serverId: f.serverId } });
+    const shared = await prisma.mcpRuntimeGeneration.create({ data: {
+      sharedServerId: f.serverId, revisionId: f.server.activeRevision!.id, fingerprint: hashCanonicalMcpValue(randomUUID()),
+      state: "ready", credentialSources: ["shared"], inventoryUpdatedAt: new Date(), inventory
+    } });
+    await prisma.mcpSharedRuntime.update({ where: { serverId: f.serverId }, data: { desiredRuntimeGenerationId: shared.id } });
     const toolsBefore = (await loadMcpCapabilityCatalog(actorId)).servers.find(({ serverId }) => serverId === f.serverId)!.tools;
     const write = toolsBefore.find(({ originalName }) => originalName === "write")!;
     await prisma.mcpToolAccessPolicy.create({ data: { serverId: f.serverId, toolName: "write", restricted: true, users: { create: { userId: f.userId } } } });
@@ -422,9 +433,16 @@ describe("MCP tool access persistence", () => {
     expect(records[0]!.inventory).toMatchObject({ tools: [{ name: "search" }] });
     const exact = await prepareMcpRunPlan({ allowedServerIds: [f.serverId], allowedToolNames: [write.namespacedName], isGenerationLive: () => true, load: async () => records });
     expect(exact).toMatchObject({ ok: false, code: "mcp_not_ready", issues: [{ errorCode: "mcp_tool_not_available" }] });
-    expect((await loadMcpRunPlanRecordsForProjectServers(actorId, [f.serverId]))[0]!.inventory).toMatchObject({ tools: [{ name: "search" }] });
-    expect((await loadMcpRunPlanRecordsForProjectServers(f.userId, [f.serverId]))[0]!.catalogTools).toHaveLength(2);
+    const actorProject = (await loadMcpRunPlanRecordsForProjectServers(actorId, [f.serverId]))[0]!;
+    expect(actorProject.inventory).toMatchObject({ tools: [{ name: "search" }] });
+    // Every member uses the one shared runtime, never a member's personal generation.
+    expect(actorProject.generationId).toBe(shared.id);
+    expect(personalGenerationIds).not.toContain(actorProject.generationId);
+    const ownerProject = (await loadMcpRunPlanRecordsForProjectServers(f.userId, [f.serverId]))[0]!;
+    expect(ownerProject.catalogTools).toHaveLength(2);
+    expect(ownerProject.generationId).toBe(shared.id);
     const generations = await prisma.mcpRuntimeGeneration.findMany({ where: { revisionId: f.server.activeRevision!.id } });
+    expect(generations).toHaveLength(3);
     for (const generation of generations) expect(generation.inventory).toMatchObject({ tools: [{ name: "search" }, { name: "write" }] });
     const ordinary = (await f.repository.listUserServers(actorId)).find(({ id }) => id === f.serverId)!;
     expect(ordinary.tools.map(({ name }) => name)).toEqual(["search"]);
@@ -767,6 +785,89 @@ describe("MCP published tool inventory", () => {
       { connections: 1, name: "write", reason: "definition_drift" },
       { connections: 1, name: null, reason: "unpublished_addition" }
     ]);
+  });
+
+  it("shows what the shared Project runtime holds back and its failure to administrators", async () => {
+    const f = await fixture();
+    f.validate.mockResolvedValue(checked);
+    const saved = await f.save(f.server);
+    if (saved.kind !== "ok") throw new Error(saved.kind);
+    const revisionId = saved.value.activeRevision!.id;
+    await readyGeneration({ credentialSources: ["personal"], exclusions: [
+      { name: "private_export", reason: "unpublished_addition" },
+      { name: "write", reason: "definition_drift" }
+    ], revisionId, serverId: f.serverId });
+    await prisma.mcpSharedRuntime.create({ data: { serverId: f.serverId } });
+    const shared = await prisma.mcpRuntimeGeneration.create({ data: {
+      credentialSources: ["shared"],
+      fingerprint: hashCanonicalMcpValue(randomUUID()),
+      inventory: { exclusions: [
+        { name: "delete_repo", reason: "unpublished_addition" },
+        { name: "search", reason: "missing_upstream" },
+        { name: "write", reason: "definition_drift" }
+      ], tools: [], version: 1 },
+      inventoryUpdatedAt: new Date(),
+      revisionId,
+      sharedServerId: f.serverId,
+      state: "ready"
+    } });
+    const current = async () => (await f.repository.listAdminServers(f.userId)).find(({ id }) => id === f.serverId)!;
+    // Not desired by the shared runtime yet: not a current connection.
+    expect((await current()).inventoryDifferences).toEqual([
+      { connections: 1, name: "write", reason: "definition_drift" },
+      { connections: 1, name: null, reason: "unpublished_addition" }
+    ]);
+
+    await prisma.mcpSharedRuntime.update({ data: { desiredRuntimeGenerationId: shared.id }, where: { serverId: f.serverId } });
+    const listed = await current();
+    // The shared runtime is one more connection and, holding no personal credential, names its additions.
+    expect(listed.inventoryDifferences).toEqual([
+      { connections: 2, name: "write", reason: "definition_drift" },
+      { connections: 1, name: "search", reason: "missing_upstream" },
+      { connections: 1, name: "delete_repo", reason: "unpublished_addition" },
+      { connections: 1, name: null, reason: "unpublished_addition" }
+    ]);
+    expect(JSON.stringify(listed)).not.toContain("private_export");
+    expect(adminMcpAttention(listed)).toMatchObject({ label: "Server tools changed since the last check", task: "validation" });
+
+    await prisma.mcpRuntimeGeneration.update({ data: { errorCode: "mcp_connect_failed", state: "failed" }, where: { id: shared.id } });
+    const failed = await current();
+    expect(failed).toMatchObject({ runtimeErrorCode: "mcp_connect_failed", runtimeProblem: "unavailable" });
+    expect(adminMcpAttention(failed)).toMatchObject({ task: "runtime" });
+  });
+
+  it("releases the shared Project runtime at the admin transitions that release members' runtimes", async () => {
+    const f = await fixture();
+    const revisionId = f.server.activeRevision!.id;
+    const desire = async () => {
+      await prisma.mcpSharedRuntime.upsert({ create: { serverId: f.serverId }, update: {}, where: { serverId: f.serverId } });
+      const generation = await prisma.mcpRuntimeGeneration.create({ data: {
+        credentialSources: ["shared"], fingerprint: hashCanonicalMcpValue(randomUUID()), revisionId,
+        sharedServerId: f.serverId, state: "ready"
+      } });
+      await prisma.mcpSharedRuntime.update({ data: { desiredRuntimeGenerationId: generation.id }, where: { serverId: f.serverId } });
+    };
+    const desired = async () => (await prisma.mcpSharedRuntime.findUniqueOrThrow({ where: { serverId: f.serverId } }))
+      .desiredRuntimeGenerationId;
+    const updatedAt = async () => (await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).updatedAt.toISOString();
+
+    await desire();
+    expect(await f.repository.updateServer({ serverId: f.serverId, expectedUpdatedAt: await updatedAt(), name: "Renamed" }))
+      .toMatchObject({ kind: "ok" });
+    expect(await desired()).not.toBeNull();
+    expect(await f.repository.updateServer({ serverId: f.serverId, expectedUpdatedAt: await updatedAt(),
+      sharedValues: { api_key: "fixture-rotated-key" } })).toMatchObject({ kind: "ok" });
+    expect(await desired()).toBeNull();
+
+    await desire();
+    expect(await f.repository.updateServer({ serverId: f.serverId, expectedUpdatedAt: await updatedAt(),
+      tool: { enabled: false, name: "write" } })).toMatchObject({ kind: "ok" });
+    expect(await desired()).toBeNull();
+
+    await desire();
+    expect(await f.repository.updateServer({ enabled: false, serverId: f.serverId, expectedUpdatedAt: await updatedAt() }))
+      .toMatchObject({ kind: "ok" });
+    expect(await desired()).toBeNull();
   });
 
   it("bounds each server's held-back rows to one runtime inventory's exclusions, keeping changed definitions first", async () => {
