@@ -35,6 +35,7 @@ function repository(
   overrides: Partial<McpActivationCoordinatorRepository> = {}
 ): McpActivationCoordinatorRepository {
   return {
+    enqueueLegacyToolRechecks: vi.fn(async () => undefined),
     advanceActivation: vi.fn(async () => true),
     claimActivation: vi.fn(async () => claims.shift() ?? null),
     failActivation: vi.fn(async () => true),
@@ -46,6 +47,23 @@ function repository(
 
 describe("MCP activation coordinator", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("queues upgrade checks before claiming and keeps ordinary activation available if queueing fails", async () => {
+    const claims: McpActivationClaim[] = [];
+    const storage = repository(claims, { enqueueLegacyToolRechecks: vi.fn()
+      .mockImplementationOnce(async () => { claims.push(claim()); })
+      .mockRejectedValueOnce(new Error("upgrade_queue_unavailable")) });
+    const validate = vi.fn<McpDraftValidator["validate"]>(async () => ({
+      kind: "ok", evidence: {}, resolvedArtifact: null, toolInventory: []
+    }));
+    const coordinator = new McpActivationCoordinator({ repository: storage, draftValidator: { validate } });
+    await coordinator.reconcileNow();
+    expect(validate).toHaveBeenCalledOnce();
+    claims.push(claim("manual"));
+    await coordinator.reconcileNow();
+    expect(validate).toHaveBeenCalledTimes(2);
+    expect(storage.publishActivation).toHaveBeenCalledTimes(2);
+  });
 
   it("reports a changed OAuth endpoint binding as stale at publication and settlement", async () => {
     const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
