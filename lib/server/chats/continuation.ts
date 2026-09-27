@@ -36,7 +36,6 @@ export type ContinuationRepository = Readonly<{
   claim(source: ContinuationSource, requestId: string, modelSelection?: ChatContinuationRequest["modelSelection"]): Promise<
     | Readonly<{ kind: "claimed"; claim: ContinuationClaim }>
     | Readonly<{ kind: "result"; result: ChatContinuationResult }>
-    | Readonly<{ kind: "failed" }>
   >;
   assertCurrent(source: ContinuationSource): Promise<void>;
   captureWorkspace?(source: ContinuationSource, claim: ContinuationClaim, signal?: AbortSignal): Promise<void>;
@@ -114,7 +113,6 @@ export function createChatContinuationService(deps: Readonly<{
     const source = await deps.repository.loadSource(input);
     const claimed = await deps.repository.claim(source, input.requestId, input.modelSelection);
     if (claimed.kind === "result") return claimed.result;
-    if (claimed.kind === "failed") throw new ChatContinuationError("chat_summary_failed", 502);
     const { claim } = claimed;
     const work = async (): Promise<ChatContinuationResult> => {
       const controller = new AbortController();

@@ -272,8 +272,10 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
           seed.continuation.status === "running" && (seed.continuation.leaseExpiresAt ? seed.continuation.leaseExpiresAt > now : seed.continuation.updatedAt > abandonedBefore)))) return;
       // CAPTURING still needs receiver fencing; never race its disk operation.
       if (seed.continuationId && await tx.workspaceSession.count({ where: { operationOwner: `continuation:${seed.continuationId}` } })) return;
+      // Keep a requested cancellation as the terminal code, exactly as a
+      // later claim would settle it, so the old attempt's poll is stable.
       if (seed.continuation?.status === "running") await tx.chatContinuation.update({ where: { id: seed.continuation.id },
-        data: { status: "failed", errorCode: "chat_summary_failed" } });
+        data: { status: "failed", errorCode: seed.continuation.cancelRequestedAt ? "chat_summary_cancelled" : "chat_summary_failed" } });
       await tx.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: {
         status: "ABANDONED", failureCode: seed.failureCode ?? "workspace_operation_interrupted", leaseToken: null, leaseExpiresAt: null
       } });
