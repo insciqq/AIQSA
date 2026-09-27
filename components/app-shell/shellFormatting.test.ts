@@ -24,6 +24,11 @@ describe("shell error formatting", () => {
       pinnedTokens: "private data", catalogTokens: 0, budgetTokens: 8192
     }), "send_failed_400")).not.toContain("private data");
   });
+  it("explains a message deletion conflict with a recovery action", async () => {
+    expect(await responseErrorMessage(Response.json({ error: "message_delete_conflict" }, { status: 409 }), "message_delete_failed_409"))
+      .toBe("This message is still in use by another operation. Wait for it to finish, then try deleting again (message_delete_conflict)");
+  });
+
   it("explains MCP tool denial at send and regeneration admission", async () => {
     for (const fallback of ["send_failed_409", "regenerate_failed_409"]) {
       expect(await responseErrorMessage(Response.json({ error: "mcp_tool_access_denied" }, { status: 409 }), fallback))

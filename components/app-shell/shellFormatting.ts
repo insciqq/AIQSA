@@ -88,6 +88,7 @@ export function humanizeErrorCode(code: string): string {
     folder_name_too_long: `Use at most ${PERSONAL_FOLDER_NAME_MAX_LENGTH} characters for the folder name`,
     chat_detail_malformed: "Chat detail response was malformed",
     edit_malformed: "Message edit response was malformed",
+    message_delete_conflict: "This message is still in use by another operation. Wait for it to finish, then try deleting again",
     mcp_background_not_supported: "Turn off background mode to use MCP with this model",
     mcp_background_streaming_not_supported:
       "Turn off streaming or background mode to use MCP with this model",
