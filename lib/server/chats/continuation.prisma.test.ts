@@ -7,7 +7,7 @@ import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import type { ProviderRunRequest } from "../providers/types";
 import { ChatContinuationError, createChatContinuationService } from "./continuation";
-import { continuationSourceHref, createChatContinuationRepository } from "./continuationRepository";
+import { cancelChatContinuation, continuationSourceHref, createChatContinuationRepository } from "./continuationRepository";
 import { createChatContinuationHandler } from "./continuationHandlers";
 import { createPrismaChatRepository } from "./prismaRepository";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
@@ -464,7 +464,7 @@ it("never replays a stopped attempt automatically and preserves deleted-child to
   const claimed = await f.repository.claim(source, input.requestId);
   if (claimed.kind !== "claimed") throw new Error("claim missing");
   await prisma.chatContinuation.update({ where: { id: claimed.claim.id }, data: { updatedAt: new Date(Date.now() - 240000), leaseExpiresAt: new Date(Date.now() - 60000) } });
-  expect(await f.repository.claim(source, input.requestId)).toEqual({ kind: "failed" });
+  await expect(f.repository.claim(source, input.requestId)).rejects.toMatchObject({ code: "chat_summary_failed" });
   expect((await prisma.chatContinuation.findUnique({ where: { id: claimed.claim.id } }))?.status).toBe("failed");
   await expect(f.continueChat(input)).rejects.toMatchObject({ code: "chat_summary_failed" });
   expect(f.execute).not.toHaveBeenCalled();
@@ -473,6 +473,126 @@ it("never replays a stopped attempt automatically and preserves deleted-child to
   await prisma.chat.delete({ where: { id: result.chatId } });
   await expect(f.continueChat({ ...input, requestId: randomUUID() })).rejects.toMatchObject({ code: "chat_not_found" });
   expect(f.execute).toHaveBeenCalledOnce();
+}));
+
+async function lapseLease(continuationId: string) {
+  // A dead worker renews nothing; age its liveness lease past expiry.
+  const stale = new Date(Date.now() - 240_000);
+  await prisma.chatContinuation.update({ where: { id: continuationId }, data: { updatedAt: stale, leaseExpiresAt: new Date(Date.now() - 60_000) } });
+}
+
+it.each([
+  ["NORMAL", "none", true], ["PROJECT", "none", false],
+  ["NORMAL", "no_source_disk", false], ["PROJECT", "no_source_disk", true]
+] as const)("settles a cancelled %s attempt (Workspace seed: %s) after its worker dies; old poll first: %s", (mode, seedMode, pollFirst) => fixture(async ({ userId, chatId, leafId }) => {
+  if (seedMode === "no_source_disk") await prisma.chat.update({ where: { id: chatId }, data: { workspaceEnabled: true } });
+  const f = service();
+  const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() };
+  const source = await f.repository.loadSource(input);
+  const first = await f.repository.claim(source, input.requestId);
+  if (first.kind !== "claimed") throw new Error("claim missing");
+  const firstSeed = seedMode === "no_source_disk"
+    ? await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { continuationId: first.claim.id } }) : null;
+  expect(firstSeed?.status ?? null).toBe(seedMode === "no_source_disk" ? "NO_SOURCE_DISK" : null);
+  await cancelChatContinuation(prisma, input);
+  // While the worker's lease is live it settles its own cancellation.
+  await expect(f.repository.claim(source, randomUUID())).rejects.toMatchObject({ code: "chat_summary_cancelled" });
+  expect(await prisma.chatContinuation.findUniqueOrThrow({ where: { id: first.claim.id } })).toMatchObject({ status: "running" });
+  await lapseLease(first.claim.id);
+  if (pollFirst) {
+    // Repeated polls and Cancel never buy the summary again.
+    await expect(f.continueChat(input)).rejects.toMatchObject({ code: "chat_summary_cancelled" });
+    await cancelChatContinuation(prisma, input);
+    await expect(f.continueChat(input)).rejects.toMatchObject({ code: "chat_summary_cancelled" });
+    expect(await prisma.chatContinuation.findUniqueOrThrow({ where: { id: first.claim.id } }))
+      .toMatchObject({ status: "failed", errorCode: "chat_summary_cancelled", attemptId: first.claim.attemptId });
+  }
+  const next = await f.repository.claim(source, randomUUID());
+  if (next.kind !== "claimed") throw new Error("fresh claim missing");
+  expect(next.claim.attemptId).not.toBe(first.claim.attemptId);
+  expect(await prisma.chatContinuation.findUniqueOrThrow({ where: { id: next.claim.id } }))
+    .toMatchObject({ status: "running", attemptId: next.claim.attemptId, cancelRequestedAt: null, errorCode: null });
+  if (firstSeed) {
+    expect(await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { id: firstSeed.id } }))
+      .toMatchObject({ continuationId: null, status: "ABANDONED", failureCode: "chat_summary_cancelled" });
+    expect(await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { continuationId: next.claim.id } }))
+      .toMatchObject({ status: "NO_SOURCE_DISK" });
+  }
+  // The dead attempt's late worker can neither publish nor settle its successor.
+  expect(await f.repository.heartbeat!(first.claim, { completedParts: 1, stage: "summarizing" })).toBe(false);
+  await expect(f.repository.complete(source, first.claim, "Late output")).rejects.toMatchObject({ code: "chat_changed" });
+  await f.repository.fail(first.claim, "chat_summary_failed");
+  expect(await prisma.chatContinuation.findUniqueOrThrow({ where: { id: next.claim.id } }))
+    .toMatchObject({ status: "running", attemptId: next.claim.attemptId, newChatId: null });
+  expect(await prisma.chat.count({ where: mode === "PROJECT" ? { createdByUserId: userId } : { userId } })).toBe(1);
+  expect(f.execute).not.toHaveBeenCalled();
+  await f.repository.fail(next.claim, "chat_summary_cancelled");
+}, mode));
+
+it("abandons a dead cancelled attempt's capture seed and retires its Workspace reservation before a fresh attempt", () => fixture(async ({ chatId, userId, leafId }) => {
+  const w = await workspaceSource(chatId);
+  const f = service(w);
+  const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() };
+  const source = await f.repository.loadSource(input);
+  const first = await f.repository.claim(source, input.requestId);
+  if (first.kind !== "claimed") throw new Error("claim missing");
+  const firstSeed = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { continuationId: first.claim.id } });
+  expect(firstSeed.status).toBe("CAPTURING");
+  expect(await prisma.workspaceSession.findUnique({ where: { id: w.session.id } }))
+    .toMatchObject({ operationOwner: `continuation:${first.claim.id}` });
+  await cancelChatContinuation(prisma, input);
+  await lapseLease(first.claim.id);
+  await expect(f.repository.claim(source, input.requestId)).rejects.toMatchObject({ code: "chat_summary_cancelled" });
+  expect(await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { id: firstSeed.id } }))
+    .toMatchObject({ status: "ABANDONED", failureCode: "chat_summary_cancelled", leaseToken: null, leaseExpiresAt: null });
+  const released = await prisma.workspaceSession.findUniqueOrThrow({ where: { id: w.session.id } });
+  expect(released).toMatchObject({ operationOwner: null, operationExpiresAt: null });
+  const next = await f.repository.claim(source, randomUUID());
+  if (next.kind !== "claimed") throw new Error("fresh claim missing");
+  const nextSeed = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { continuationId: next.claim.id } });
+  expect(nextSeed).toMatchObject({ status: "CAPTURING" });
+  expect(nextSeed.id).not.toBe(firstSeed.id);
+  expect(await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { id: firstSeed.id } }))
+    .toMatchObject({ continuationId: null, status: "ABANDONED" });
+  expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: w.session.id } }))
+    .toMatchObject({ operationOwner: `continuation:${next.claim.id}`, version: released.version + 1 });
+  await expect(f.repository.captureWorkspace!(source, first.claim)).rejects.toMatchObject({ code: "chat_changed" });
+  await f.repository.fail(next.claim, "chat_summary_cancelled");
+  expect(await prisma.workspaceSession.findUnique({ where: { id: w.session.id } })).toMatchObject({ operationOwner: null });
+}));
+
+it.each(["CAPTURING", "READY"] as const)("keeps cancellation when Workspace maintenance settles a dead %s attempt first", (seedStatus) => fixture(async ({ chatId, userId, leafId }) => {
+  const w = await workspaceSource(chatId);
+  const f = service(w);
+  const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() };
+  const source = await f.repository.loadSource(input);
+  const first = await f.repository.claim(source, input.requestId);
+  if (first.kind !== "claimed") throw new Error("claim missing");
+  if (seedStatus === "READY") await f.repository.captureWorkspace!(source, first.claim);
+  // A CAPTURING seed whose reservation maintenance has already retired; the
+  // worker never entered the runtime operation.
+  else await prisma.workspaceSession.update({ where: { id: w.session.id }, data: { operationOwner: null, operationExpiresAt: null } });
+  const seed = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { continuationId: first.claim.id } });
+  expect(seed.status).toBe(seedStatus);
+  await cancelChatContinuation(prisma, input);
+  const stale = new Date(Date.now() - 240_000);
+  await lapseLease(first.claim.id);
+  await prisma.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: { updatedAt: stale,
+    ...(seedStatus === "CAPTURING" ? { leaseExpiresAt: stale } : {}) } });
+  await runWorkspaceMaintenance({ config: w.config, prisma, runtime: w.runtime });
+  expect(await prisma.chatContinuation.findUniqueOrThrow({ where: { id: first.claim.id } }))
+    .toMatchObject({ status: "failed", errorCode: "chat_summary_cancelled" });
+  expect(await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { id: seed.id } })).toMatchObject({ status: "ABANDONED" });
+  await expect(f.continueChat(input)).rejects.toMatchObject({ code: "chat_summary_cancelled" });
+  const next = await f.repository.claim(source, randomUUID());
+  if (next.kind !== "claimed") throw new Error("fresh claim missing");
+  expect(f.execute).not.toHaveBeenCalled();
+  await f.repository.fail(next.claim, "chat_summary_cancelled");
+  if (seed.storageKey) {
+    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: seed.storageKey } })).toBe(1);
+    await prisma.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: { storageKey: null, checksum: null, byteSize: null } });
+    await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: seed.storageKey } });
+  }
 }));
 
 it("keeps Project ownership and rejects membership loss before commit", () => fixture(async ({ userId, chatId, leafId, projectId }) => {
