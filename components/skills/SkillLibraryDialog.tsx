@@ -21,7 +21,10 @@ import {
   withdrawSkillApproval,
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
+import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
+import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
+import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import {
   SKILL_DESCRIPTION_MAX_LENGTH,
@@ -35,7 +38,7 @@ import {
   type SkillImportResponse,
   decodeSkillDraft
 } from "@/lib/contracts/skills";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { SkillSelectionSummary, type SelectedSkillName } from "./SkillSelectionSummary";
 import { skillShareStateLabels, skillSharingErrorMessage } from "./skillSharingPresentation";
 
@@ -43,6 +46,21 @@ type EditorState = {
   draft: SkillDraft;
   source: SkillDetail | null;
 };
+
+/** Runs `proceed` now, or after the user confirms discarding an unsaved Skill draft. */
+type SkillExitGuard = (proceed: () => void) => void;
+
+const openDialogGuards: SkillExitGuard[] = [];
+
+/**
+ * Chat route traversal asks the open Skill dialog first: a dirty editor keeps
+ * the shown chat until its discard confirmation releases the navigation.
+ */
+export function requestSkillDialogNavigation(proceed: () => void): void {
+  const guard = openDialogGuards.at(-1);
+  if (guard) guard(proceed);
+  else proceed();
+}
 
 type SkillLibraryContentProps = Readonly<{
   mode: "picker" | "section";
@@ -54,6 +72,10 @@ type SkillLibraryContentProps = Readonly<{
   includedSkills?: readonly SelectedSkillName[];
   selectedSkills?: readonly SelectedSkillName[];
   onSelectionChange(skillIds: readonly string[]): void;
+  /** Section mode reports an unsaved editor to the enclosing Studio navigation guard. */
+  onDirtyChange?(dirty: boolean): void;
+  /** Dialog mode routes its close requests through the editor's discard confirmation. */
+  exitGuardRef?: { current: SkillExitGuard | null };
   selectedIds: readonly string[];
 }>;
 
@@ -84,6 +106,14 @@ function editorFor(skill: SkillDetail | null): EditorState {
   };
 }
 
+function editorDirty(editor: EditorState | null): boolean {
+  if (!editor) return false;
+  const initial = editorFor(editor.source).draft;
+  return editor.draft.name !== initial.name ||
+    editor.draft.description !== initial.description ||
+    editor.draft.instructions !== initial.instructions;
+}
+
 function actionErrorMessage(failure: unknown): string {
   const code = failure instanceof Error ? failure.message : "skill_request_failed";
   if (code === "skill_publication_in_use") {
@@ -99,7 +129,7 @@ function actionErrorMessage(failure: unknown): string {
   return code.replaceAll("_", " ");
 }
 
-function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSkills = [], selectedSkills = [], modelContextWindow, skillsMode = "auto", availableCount, assistantSelection = false, selectionLimit = SKILL_MAX_PINNED }: SkillLibraryContentProps) {
+function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuardRef, selectedIds, includedSkills = [], selectedSkills = [], modelContextWindow, skillsMode = "auto", availableCount, assistantSelection = false, selectionLimit = SKILL_MAX_PINNED }: SkillLibraryContentProps) {
   const data = useSkillLibraryStore((state) => state.data);
   const loadingMore = useSkillLibraryStore((state) => state.loadingMore);
   const loadState = useSkillLibraryStore((state) => state.loadState);
@@ -115,6 +145,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
   const [importResult, setImportResult] = useState<SkillImportResponse | null>(null);
   const [filePreview, setFilePreview] = useState<{ path: string; text: string } | null>(null);
   const [fieldError, setFieldError] = useState<{ field: string; message: string } | null>(null);
+  const [discardExit, setDiscardExit] = useState<(() => void) | null>(null);
   const fieldId = useId();
   const importInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -123,6 +154,19 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
   const busyRef = useRef(false);
   const selectionRef = useRef({ selectedIds, onSelectionChange });
   useLayoutEffect(() => { selectionRef.current = { selectedIds, onSelectionChange }; }, [selectedIds, onSelectionChange]);
+  const dirty = editorDirty(editor);
+  useBeforeUnloadGuard(dirty);
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
+  // Every action that drops the editor goes through here; a clean editor proceeds at once.
+  const requestDiscard = useEventCallback<[() => void], void>((proceed) => {
+    if (editorDirty(editor)) setDiscardExit(() => proceed);
+    else proceed();
+  });
+  useLayoutEffect(() => {
+    if (!exitGuardRef) return;
+    exitGuardRef.current = requestDiscard;
+    return () => { exitGuardRef.current = null; };
+  }, [exitGuardRef, requestDiscard]);
 
   useEffect(() => {
     void refreshSkillLibrary(true, "").catch(() => undefined);
@@ -397,7 +441,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
-          <UiV2Button disabled={busy} icon="plus" tone="primary" onClick={startNew}>
+          <UiV2Button disabled={busy} icon="plus" tone="primary" onClick={() => requestDiscard(startNew)}>
             New Skill
           </UiV2Button>
         </div>
@@ -477,7 +521,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
                         className="v2-skill-row-open v2-focusable"
                         type="button"
                         disabled={busy}
-                        onClick={() => void openDetail(skill)}
+                        onClick={() => requestDiscard(() => void openDetail(skill))}
                       >
                         <span className="v2-skill-row-title">
                           <strong>{skill.name}</strong>
@@ -522,7 +566,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
 
         <section className="v2-skill-detail-pane" aria-label="Skill detail">
           {detailOpen ? (
-            <UiV2Button className="v2-skill-detail-back" disabled={busy} icon="arrow-left" onClick={closeDetail}>
+            <UiV2Button className="v2-skill-detail-back" disabled={busy} icon="arrow-left" onClick={() => requestDiscard(closeDetail)}>
               Back to Skills
             </UiV2Button>
           ) : null}
@@ -535,7 +579,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
                   <h3>{editor.source ? "Edit Skill" : "New Skill"}</h3>
                   <p>Changes apply to future uses; existing conversations stay unchanged.</p>
                 </div>
-                <UiV2Button disabled={busy} onClick={() => { setEditor(null); setFieldError(null); }}>Cancel</UiV2Button>
+                <UiV2Button disabled={busy} onClick={() => requestDiscard(() => { setEditor(null); setFieldError(null); })}>Cancel</UiV2Button>
               </div>
               <label className="v2-skill-field">
                 <span>Name</span>
@@ -754,17 +798,29 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
           )}
         </section>
       </div>
+      {discardExit ? <DiscardChangesConfirmationDialog portal label="Skill"
+        copy={{ title: "Discard unsaved Skill changes?", body: "Your unsaved Skill edits will be lost.",
+          dialogLabel: "Unsaved Skill changes", cancelLabel: "Keep editing", confirmLabel: "Discard changes" }}
+        onCancel={() => setDiscardExit(null)}
+        onConfirm={() => {
+          const proceed = discardExit;
+          setDiscardExit(null);
+          setEditor(null);
+          setFieldError(null);
+          proceed();
+        }} /> : null}
     </div>
   );
 }
 
 export function SkillLibrarySection({
+  onDirtyChange,
   onSelectionChange,
   selectedIds,
   includedSkills,
   selectedSkills,
   modelContextWindow, skillsMode, availableCount, assistantSelection, selectionLimit
-}: Omit<SkillLibraryContentProps, "mode">) {
+}: Omit<SkillLibraryContentProps, "exitGuardRef" | "mode">) {
   return (
     <SkillLibraryContent
       mode="section"
@@ -772,6 +828,7 @@ export function SkillLibrarySection({
       skillsMode={skillsMode} availableCount={availableCount} assistantSelection={assistantSelection} selectionLimit={selectionLimit}
       includedSkills={includedSkills}
       selectedSkills={selectedSkills}
+      onDirtyChange={onDirtyChange}
       onSelectionChange={onSelectionChange}
       selectedIds={selectedIds}
     />
@@ -799,14 +856,28 @@ export function SkillLibraryDialog({
   onSelectionChange(skillIds: readonly string[]): void;
   selectedIds: readonly string[];
 }>) {
-  const dialogRef = useDialogFocus<HTMLDivElement>({ active: true, onClose, restoreFocus });
+  const exitGuardRef = useRef<SkillExitGuard | null>(null);
+  const requestExit = useCallback<SkillExitGuard>((proceed) => {
+    const guard = exitGuardRef.current;
+    if (guard) guard(proceed);
+    else proceed();
+  }, []);
+  const requestClose = useEventCallback(() => requestExit(onClose));
+  useEffect(() => {
+    openDialogGuards.push(requestExit);
+    return () => {
+      const index = openDialogGuards.lastIndexOf(requestExit);
+      if (index >= 0) openDialogGuards.splice(index, 1);
+    };
+  }, [requestExit]);
+  const dialogRef = useDialogFocus<HTMLDivElement>({ active: true, onClose: requestClose, restoreFocus });
 
   return (
     <div
       className="v2-skill-dialog-scrim"
       role="presentation"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) requestClose();
       }}
     >
       <div ref={dialogRef} aria-label="Skills" aria-modal="true" className="v2-skill-dialog" role="dialog">
@@ -815,7 +886,7 @@ export function SkillLibraryDialog({
             <strong>{assistantSelection ? "Choose Assistant Skills" : "Skills"}</strong>
             <span>{assistantSelection ? "Set delivery for each Skill in the Assistant." : "Choose automatic loading or instructions to always include."}</span>
           </div>
-          <UiV2IconButton icon="close" label="Close Skills" onClick={onClose} />
+          <UiV2IconButton icon="close" label="Close Skills" onClick={requestClose} />
         </header>
         <SkillLibraryContent
           mode="picker"
@@ -823,6 +894,7 @@ export function SkillLibraryDialog({
           skillsMode={skillsMode} availableCount={availableCount} assistantSelection={assistantSelection} selectionLimit={selectionLimit}
           includedSkills={includedSkills}
           selectedSkills={selectedSkills}
+          exitGuardRef={exitGuardRef}
           onSelectionChange={onSelectionChange}
           selectedIds={selectedIds}
         />
