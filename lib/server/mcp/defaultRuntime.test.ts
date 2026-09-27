@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { getContext, runWithContext, type ObservabilityContext } from "../observability";
-import { getDefaultMcpRuntimeCoordinator, kickDefaultMcpRuntime } from "./defaultRuntime";
-import { McpRuntimeCoordinator } from "./runtimeCoordinator";
+import { defaultMcpRunPlan, getDefaultMcpRuntimeCoordinator, kickDefaultMcpRuntime } from "./defaultRuntime";
+import type { McpRunPlanRecord } from "./runPlan";
+import {
+  McpRuntimeCoordinator,
+  type McpRuntimeGenerationLaunch,
+  type McpRuntimeInventory,
+  type McpRuntimeSession
+} from "./runtimeCoordinator";
 
 const repository = vi.hoisted(() => ({
   deleteDrainedGeneration: vi.fn(async () => true),
@@ -9,16 +15,25 @@ const repository = vi.hoisted(() => ({
   listDrainedGenerationIds: vi.fn(async () => []),
   loadAcceptedGeneration: vi.fn(async () => null),
   markFailed: vi.fn(async () => ({ applied: true, retryAt: null })),
-  markReady: vi.fn(async () => true),
+  markReady: vi.fn(async (_input: { inventory: unknown }) => true),
   markStarting: vi.fn(async () => true),
-  synchronizeDesired: vi.fn(async () => []),
+  synchronizeDesired: vi.fn(async (_input: { onDemand?: boolean; userId?: string }) => []),
+  synchronizeShared: vi.fn(async (_input: { onDemand?: boolean; serverIds?: readonly string[] }): Promise<unknown[]> => []),
   touchLastUsed: vi.fn(async () => undefined)
 }));
+const sessions = vi.hoisted(() => ({ create: vi.fn() }));
+const projectLoader = vi.hoisted(() => vi.fn(async (_userId: string, _serverIds: readonly string[]): Promise<unknown[]> => []));
 
 vi.mock("./runtimeRepository", () => ({ createPrismaMcpRuntimeRepository: () => repository }));
 vi.mock("./defaultToolHive", () => ({
   createToolHiveRuntimeLifecycle: () => ({ cleanupOrphans: vi.fn(async () => undefined) }),
   getDefaultToolHiveDriver: () => ({})
+}));
+vi.mock("./toolhiveSessionFactory", () => ({ createToolHiveMcpSessionFactory: () => sessions }));
+vi.mock("./runPlanRepository", () => ({
+  createPrismaMcpCapabilityCatalogLoader: () => vi.fn(),
+  createPrismaMcpProjectRunPlanLoader: () => projectLoader,
+  createPrismaMcpRunPlanLoader: () => vi.fn()
 }));
 
 describe("default MCP runtime startup", () => {
@@ -75,6 +90,81 @@ describe("default MCP runtime startup", () => {
       }
     } finally {
       await coordinator?.stop();
+      delete scope.__aiqsaMcpRuntimeCoordinator;
+      if (previous) scope.__aiqsaMcpRuntimeCoordinator = previous;
+    }
+  });
+});
+
+describe("default Project MCP plans", () => {
+  const tool = { definitionHash: "a".repeat(64), description: "Echo", inputSchema: { type: "object" }, name: "echo" };
+  const sharedLaunch: McpRuntimeGenerationLaunch = {
+    callTimeoutMs: 1_000,
+    fingerprint: "shared-fingerprint",
+    generationId: "shared-generation",
+    headers: {},
+    publishedTools: { kind: "names", names: new Set(["echo"]) },
+    redactionValues: [],
+    retryAt: null,
+    startupTimeoutMs: 1_000,
+    url: "https://mcp.example.test/mcp"
+  };
+
+  it("starts the shared runtime on a cold coordinator before planning, without any member runtime", async () => {
+    const scope = globalThis as typeof globalThis & { __aiqsaMcpRuntimeCoordinator?: McpRuntimeCoordinator };
+    const previous = scope.__aiqsaMcpRuntimeCoordinator;
+    delete scope.__aiqsaMcpRuntimeCoordinator;
+    let persisted: McpRuntimeInventory | null = null;
+    const session: McpRuntimeSession = {
+      callTool: vi.fn(),
+      close: vi.fn(async () => undefined),
+      listTools: vi.fn(async () => [tool]),
+      ping: vi.fn(async () => undefined)
+    };
+    repository.synchronizeDesired.mockImplementation(async () => []);
+    repository.synchronizeShared.mockImplementation(async (input) => input.onDemand ? [sharedLaunch] : []);
+    repository.markReady.mockImplementation(async ({ inventory }) => {
+      persisted = inventory as McpRuntimeInventory;
+      return true;
+    });
+    sessions.create.mockImplementation(async () => session);
+    projectLoader.mockImplementation(async (): Promise<McpRunPlanRecord[]> => persisted ? [{
+      credentialSources: [],
+      enabled: true,
+      errorCode: null,
+      externalAccountLabel: null,
+      fingerprint: sharedLaunch.fingerprint,
+      generationId: sharedLaunch.generationId,
+      inventory: persisted,
+      inventoryUpdatedAt: new Date(),
+      namespace: "shared_tools",
+      readiness: "ready",
+      revisionId: "revision-1",
+      serverId: "server-1",
+      serverName: "Shared tools"
+    }] : []);
+    try {
+      const plan = await defaultMcpRunPlan.prepareProject("member-b", ["server-1"]);
+
+      expect(plan).toMatchObject({
+        bindings: [{ fingerprint: "shared-fingerprint", runtimeGenerationId: "shared-generation", serverId: "server-1" }],
+        ok: true,
+        snapshot: { tools: [{ originalName: "echo" }] }
+      });
+      expect(repository.synchronizeShared).toHaveBeenCalledWith({
+        now: expect.any(Date), onDemand: true, serverIds: ["server-1"]
+      });
+      // No member's McpUserServer is created, enabled or reconciled for the Project.
+      for (const [input] of repository.synchronizeDesired.mock.calls) {
+        expect(input).not.toHaveProperty("userId");
+        expect(input).not.toHaveProperty("onDemand");
+      }
+      // The initiator's tool restrictions apply to the shared runtime's projection.
+      expect(projectLoader).toHaveBeenCalledWith("member-b", ["server-1"]);
+      expect(repository.markReady.mock.invocationCallOrder[0])
+        .toBeLessThan(projectLoader.mock.invocationCallOrder[0]!);
+    } finally {
+      await scope.__aiqsaMcpRuntimeCoordinator?.stop();
       delete scope.__aiqsaMcpRuntimeCoordinator;
       if (previous) scope.__aiqsaMcpRuntimeCoordinator = previous;
     }

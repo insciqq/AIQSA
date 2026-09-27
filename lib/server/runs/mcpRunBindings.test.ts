@@ -41,8 +41,11 @@ describe("atomic MCP run bindings", () => {
     };
     const sql = query.strings?.join(" ") ?? query.join?.(" ") ?? "";
     expect(sql).toContain('INNER JOIN "ProjectMcpBinding"');
-    expect(sql).toContain('preference."desiredRuntimeGenerationId" = generation."id"');
-    expect(sql).toContain('preference."personalConfigEnvelope" IS NULL');
+    // Only the server's installation-owned shared runtime, never a member's generation.
+    expect(sql).toContain('shared."desiredRuntimeGenerationId" = generation."id"');
+    expect(sql).toContain('shared."serverId" = generation."sharedServerId"');
+    expect(sql).toContain('generation."userServerId" IS NULL');
+    expect(sql).not.toContain('"McpUserServer"');
     expect(sql).toContain('generation."oauthConnectionId" IS NULL');
     expect(sql).toContain("ARRAY['oauth', 'personal']");
     expect(sql).not.toContain('FROM "McpGrant"');

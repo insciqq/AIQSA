@@ -287,10 +287,11 @@ export async function insertAcceptedMcpRunBindings(
         generation."id",
         generation."fingerprint"
       FROM "McpRuntimeGeneration" AS generation
-      INNER JOIN "McpUserServer" AS preference
-        ON preference."id" = generation."userServerId"
+      INNER JOIN "McpSharedRuntime" AS shared
+        ON shared."serverId" = generation."sharedServerId"
+       AND shared."desiredRuntimeGenerationId" = generation."id"
       INNER JOIN "McpServer" AS server
-        ON server."id" = preference."serverId"
+        ON server."id" = shared."serverId"
       INNER JOIN "McpRevision" AS revision
         ON revision."id" = generation."revisionId"
       INNER JOIN "ProjectMcpBinding" AS project_binding
@@ -304,9 +305,7 @@ export async function insertAcceptedMcpRunBindings(
           server."sharedConfigEnvelope" IS NOT NULL
           OR revision."configuration" #>> '{auth,mode}' = 'none'
         )
-        AND preference."enabled" = true
-        AND preference."desiredRuntimeGenerationId" = generation."id"
-        AND preference."personalConfigEnvelope" IS NULL
+        AND generation."userServerId" IS NULL
         AND generation."oauthConnectionId" IS NULL
         AND generation."id" = ${binding.runtimeGenerationId}
         AND generation."fingerprint" = ${binding.fingerprint}
