@@ -1,7 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { ModelRunStatus } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
+import { workspaceRunOutputDirectory } from "../../domain/workspace";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { createPrismaMemoryCoordinatorRepository } from "../memory/coordinator/prismaRepository";
@@ -1842,6 +1844,311 @@ describe("Prisma-backed message branch repository", () => {
       } finally {
         await prisma.chat.deleteMany({ where: { projectId: project.value.id } });
         await prisma.project.delete({ where: { id: project.value.id } });
+      }
+    });
+  });
+
+  it("releases Workspace exports and checkpoint files of deleted runs without touching kept branches", async () => {
+    await withMessageBranchUser(async ({ userId }) => {
+      const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+      // Older than every other retention fixture so staging below sees only these rows.
+      const createdAt = new Date("1990-01-01T00:00:00.000Z");
+      const storageKeys: string[] = [];
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: providerTemplateIds.fakeModel,
+          title: "Workspace outputs",
+          userId,
+          workspaceEnabled: true
+        }
+      });
+      const session = await prisma.workspaceSession.create({
+        data: {
+          chatId: chat.id,
+          expiresAt: new Date(Date.now() + 600_000),
+          imageRef: "synthetic-image",
+          internetEnabled: false,
+          policyRevision: 1,
+          sandboxName: `aiqsa-ws-${randomUUID()}`
+        }
+      });
+      const turn = async (parentMessageId: string | null, text: string, status: ModelRunStatus = "complete") => {
+        const user = await prisma.message.create({
+          data: { chatId: chat.id, content: textMessageContent(text), parentMessageId, role: "user", status: "complete" }
+        });
+        const answer = await prisma.message.create({
+          data: {
+            chatId: chat.id,
+            content: textMessageContent("Synthetic Workspace answer"),
+            modelId: "fake-qsa",
+            parentMessageId: user.id,
+            provider: "fake",
+            role: "assistant",
+            status: "complete"
+          }
+        });
+        const run = await prisma.modelRun.create({
+          data: {
+            assistantMessageId: answer.id,
+            chatId: chat.id,
+            modelId: "fake-qsa",
+            normalizedRequest: {},
+            provider: "fake",
+            status,
+            userId,
+            userMessageId: user.id
+          }
+        });
+        await prisma.workspaceRunBinding.create({
+          data: {
+            exportState: "COMPLETE",
+            imageRef: "synthetic-image",
+            internetEnabled: false,
+            mcpVersion: "synthetic",
+            modelRunId: run.id,
+            outputDirectory: workspaceRunOutputDirectory(run.id),
+            policyRevision: 1,
+            runtimeVersion: "synthetic",
+            toolCatalogHash: sha("synthetic-catalog"),
+            toolDefinitions: [{ name: "sandbox_fs_write" }],
+            workspaceSessionId: session.id
+          }
+        });
+        return { answer, run, user };
+      };
+      type Turn = Awaited<ReturnType<typeof turn>>;
+      const outputAttachment = (owner: Turn, name: string, storageKey: string) => {
+        storageKeys.push(storageKey);
+        return {
+          byteSize: 5,
+          chatId: chat.id,
+          checksum: sha(name),
+          createdAt,
+          fileName: name.split("/").at(-1)!,
+          kind: "file",
+          messageId: owner.answer.id,
+          metadata: {},
+          mimeType: "text/plain",
+          origin: "WORKSPACE_OUTPUT" as const,
+          producerModelRunId: owner.run.id,
+          status: "ready" as const,
+          storageKey,
+          userId
+        };
+      };
+      const exportOutput = async (owner: Turn, name: string) => {
+        const attachment = await prisma.attachment.create({
+          data: outputAttachment(owner, name, `${userId}/workspace-output-${randomUUID()}`)
+        });
+        await prisma.workspaceRunOutput.create({
+          data: {
+            attachmentId: attachment.id,
+            byteSize: attachment.byteSize,
+            checksum: attachment.checksum!,
+            relativePath: name,
+            workspaceRunBindingId: owner.run.id
+          }
+        });
+        return attachment;
+      };
+      const selection = (path: string) => {
+        const [root, ...rest] = path.split("/");
+        return { relativePath: rest.join("/"), root };
+      };
+      const capture = async (producer: Turn, path: string) => {
+        const id = randomUUID().replaceAll("-", "");
+        const owner = `run:${producer.run.id}`;
+        await prisma.workspaceSelectedCapture.create({
+          data: {
+            id,
+            modelRunId: producer.run.id,
+            producerGeneration: 1,
+            producerOwner: owner,
+            requestHash: sha(id),
+            requestKey: `capture-${id}`,
+            runtimeSandboxId: "synthetic-sandbox",
+            selection: { files: [selection(path)], producerOperation: { generation: 1, owner } },
+            workspaceSessionId: session.id
+          }
+        });
+        const storageKey = `workspace-captures/${id}/${path}`;
+        storageKeys.push(storageKey);
+        await prisma.workspaceCapturedFile.create({
+          data: {
+            byteSize: 5,
+            captureId: id,
+            checksum: sha(path),
+            mimeType: "text/plain",
+            relativePath: path,
+            storageKey,
+            storageState: "READY"
+          }
+        });
+        await prisma.workspaceSelectedCapture.update({
+          data: { sealedAt: new Date(), state: "CAPTURED" },
+          where: { id }
+        });
+        return { id, path, storageKey };
+      };
+      // A live consumer reference pins the capture, as checkpoint acquisition does.
+      const settledCheckpoint = async (consumer: Turn, captured: Awaited<ReturnType<typeof capture>>, ordinal: number) => {
+        await prisma.workspaceCaptureReference.create({
+          data: { captureId: captured.id, consumerKey: `checkpoint-${ordinal}`, consumerRunId: consumer.run.id }
+        });
+        const tool = await prisma.modelRunToolCall.create({
+          data: {
+            arguments: { files: [captured.path] },
+            modelRunId: consumer.run.id,
+            ordinal,
+            providerCallId: `checkpoint-${ordinal}`,
+            roundIndex: 1,
+            state: "complete",
+            toolName: "checkpoint_outputs",
+            workspaceRunBindingId: consumer.run.id
+          }
+        });
+        const checkpoint = await prisma.workspaceOutputCheckpoint.create({
+          data: {
+            arguments: { files: [captured.path] },
+            captureId: captured.id,
+            description: "Synthetic draft",
+            modelRunId: consumer.run.id,
+            requestHash: sha(tool.id),
+            selection: [selection(captured.path)],
+            toolCallId: tool.id
+          }
+        });
+        const attachment = await prisma.attachment.create({
+          data: outputAttachment(consumer, captured.path, captured.storageKey)
+        });
+        await prisma.workspaceCheckpointFile.create({
+          data: {
+            attachmentId: attachment.id,
+            captureId: captured.id,
+            checkpointId: checkpoint.id,
+            relativePath: captured.path
+          }
+        });
+        await prisma.workspaceOutputCheckpoint.update({
+          data: { result: { synthetic: true }, settledAt: new Date(), state: "SETTLED" },
+          where: { id: checkpoint.id }
+        });
+        return attachment;
+      };
+
+      try {
+        const kept = await turn(null, "Kept root");
+        const keptExport = await exportOutput(kept, "report.txt");
+        const keptCapture = await capture(kept, "project/design.txt");
+        const keptCheckpoint = await settledCheckpoint(kept, keptCapture, 0);
+        const removed = await turn(kept.answer.id, "Removed branch");
+        const removedExport = await exportOutput(removed, "summary.txt");
+        // The deleted run also pins and republishes the kept ancestor capture.
+        const sharedCheckpoint = await settledCheckpoint(removed, keptCapture, 0);
+        const removedCapture = await capture(removed, "output/draft.txt");
+        const removedCheckpoint = await settledCheckpoint(removed, removedCapture, 1);
+        const sibling = await turn(kept.answer.id, "Sibling branch", "streaming");
+        const siblingExport = await exportOutput(sibling, "sibling.txt");
+        await prisma.chat.update({ data: { activeLeafMessageId: removed.answer.id }, where: { id: chat.id } });
+        const repository = createPrismaMessageBranchRepository(prisma);
+
+        await expect(repository.deleteMessageSubtree({ messageId: removed.user.id, userId }))
+          .rejects.toBeInstanceOf(ActiveMessageMutationConflictError);
+        await expect(prisma.attachment.findUniqueOrThrow({ where: { id: removedExport.id } }))
+          .resolves.toMatchObject({ messageId: removed.answer.id, producerModelRunId: removed.run.id });
+        await prisma.modelRun.update({ data: { status: "complete" }, where: { id: sibling.run.id } });
+
+        // A late publisher holds its output row while deletion waits on the chat.
+        let releasePublisher!: () => void;
+        const publisherHold = new Promise<void>((resolve) => { releasePublisher = resolve; });
+        let markPublished!: () => void;
+        const publishedRow = new Promise<void>((resolve) => { markPublished = resolve; });
+        const publisher = prisma.$transaction(async (tx) => {
+          const late = await tx.attachment.create({
+            data: outputAttachment(removed, "late.txt", `${userId}/workspace-output-${randomUUID()}`)
+          });
+          markPublished();
+          await publisherHold;
+          return late;
+        }, { timeout: 20_000 });
+        void publisher.catch(() => undefined);
+        await publishedRow;
+        const deletion = repository.deleteMessageSubtree({ messageId: removed.user.id, userId });
+        void deletion.catch(() => undefined);
+        await expect.poll(async () => {
+          const [row] = await prisma.$queryRaw<Array<{ count: number }>>`
+            SELECT count(*)::int AS count FROM pg_locks
+            WHERE NOT granted AND locktype IN ('transactionid', 'tuple')
+          `;
+          return row?.count ?? 0;
+        }, { interval: 25, timeout: 10_000 }).toBeGreaterThan(0);
+        releasePublisher();
+        const late = await publisher;
+
+        await expect(deletion).resolves.toMatchObject({
+          activeLeafMessageId: kept.answer.id,
+          chatId: chat.id,
+          deletedMessageIds: expect.arrayContaining([removed.user.id, removed.answer.id])
+        });
+        await expect(prisma.modelRun.count({ where: { id: removed.run.id } })).resolves.toBe(0);
+        await expect(prisma.workspaceRunBinding.count({ where: { modelRunId: removed.run.id } })).resolves.toBe(0);
+        await expect(prisma.workspaceSelectedCapture.count({ where: { id: removedCapture.id } })).resolves.toBe(0);
+        const released = await prisma.attachment.findMany({
+          include: { workspaceCheckpointFile: true, workspaceRunOutput: true },
+          where: { id: { in: [removedExport.id, sharedCheckpoint.id, removedCheckpoint.id, late.id] } }
+        });
+        expect(released).toHaveLength(4);
+        for (const attachment of released) {
+          expect(attachment).toMatchObject({
+            chatId: chat.id,
+            messageId: null,
+            origin: "WORKSPACE_OUTPUT",
+            producerModelRunId: null,
+            workspaceCheckpointFile: null,
+            workspaceRunOutput: null
+          });
+        }
+        const keptRows = await prisma.attachment.findMany({
+          include: { workspaceCheckpointFile: true, workspaceRunOutput: true },
+          where: { id: { in: [keptExport.id, keptCheckpoint.id, siblingExport.id] } }
+        });
+        expect(keptRows).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: keptExport.id, messageId: kept.answer.id, producerModelRunId: kept.run.id,
+            workspaceRunOutput: expect.objectContaining({ workspaceRunBindingId: kept.run.id }) }),
+          expect.objectContaining({ id: keptCheckpoint.id, messageId: kept.answer.id, producerModelRunId: kept.run.id,
+            workspaceCheckpointFile: expect.objectContaining({ captureId: keptCapture.id }) }),
+          expect.objectContaining({ id: siblingExport.id, messageId: sibling.answer.id, producerModelRunId: sibling.run.id,
+            workspaceRunOutput: expect.objectContaining({ workspaceRunBindingId: sibling.run.id }) })
+        ]));
+        await expect(prisma.workspaceCaptureReference.findMany({
+          select: { consumerRunId: true },
+          where: { captureId: keptCapture.id }
+        })).resolves.toEqual([{ consumerRunId: kept.run.id }]);
+
+        // Repeated deletion is a not-found no-op, and a publisher that loses
+        // the race cannot attach a new row to the deleted producer.
+        await expect(repository.deleteMessageSubtree({ messageId: removed.user.id, userId })).resolves.toBeNull();
+        await expect(prisma.attachment.create({
+          data: outputAttachment(removed, "too-late.txt", `${userId}/workspace-output-${randomUUID()}`)
+        })).rejects.toMatchObject({ code: "P2003" });
+
+        // Orphan retention removes the released rows; the object shared with
+        // the kept checkpoint stays referenced, the others become deletion jobs.
+        await expect(createPrismaRetentionRepository(prisma).stageOrphanedAttachments({
+          cutoff: new Date("1990-01-02T00:00:00.000Z"),
+          limit: 10
+        })).resolves.toEqual({ jobsStaged: 2, matched: 4, rowsDeleted: 4, sharedRowsDeleted: 1 });
+        await expect(prisma.attachmentDeletionJob.findMany({
+          orderBy: { storageKey: "asc" },
+          select: { storageKey: true },
+          where: { storageKey: { in: storageKeys } }
+        })).resolves.toEqual([removedExport.storageKey, removedCapture.storageKey, late.storageKey]
+          .sort().map((storageKey) => ({ storageKey })));
+      } finally {
+        await prisma.attachment.deleteMany({ where: { chatId: chat.id } });
+        await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
+        await prisma.workspaceSession.deleteMany({ where: { id: session.id } });
+        await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { in: storageKeys } } });
       }
     });
   });

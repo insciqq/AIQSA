@@ -15,6 +15,7 @@ import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { resolveProjectAccess } from "../projects/access";
 import {
   ActiveMessageMutationConflictError,
+  MessageDeleteConflictError,
   type BranchChatRecord,
   type MessageBranchRepository
 } from "./handlers";
@@ -834,12 +835,23 @@ export function createPrismaMessageBranchRepository(
         const nextActiveLeafMessageId =
           activeLeafMessageId && deletedDepths.has(activeLeafMessageId) ? root.parentMessageId : activeLeafMessageId;
 
+        const deletedRunScope: Prisma.ModelRunWhereInput = { chatId: root.chatId,
+          OR: [{ assistantMessageId: { in: deletedMessageIds } }, { userMessageId: { in: deletedMessageIds } }] };
         // Release deleted image outputs into ordinary orphan retention before
         // their producer calls/runs disappear. Saved copies retain their objects.
         await tx.attachment.updateMany({
-          where: { origin: "IMAGE_OUTPUT", producerModelRun: { chatId: root.chatId,
-            OR: [{ assistantMessageId: { in: deletedMessageIds } }, { userMessageId: { in: deletedMessageIds } }] } },
+          where: { origin: "IMAGE_OUTPUT", producerModelRun: deletedRunScope },
           data: { imageToolCallId: null, producerModelRunId: null, messageId: null, origin: "USER_UPLOAD" }
+        });
+        // Workspace exports and checkpoint files hold the same restricting
+        // producer reference. Released rows follow orphan retention, whose
+        // reference-checked object deletion protects storage keys shared with
+        // captures or copies. Their publishers insert with a chat foreign key,
+        // which waits for the chat row lock taken above: no new row appears
+        // before the runs are deleted, and later inserts lose their producer.
+        await tx.attachment.updateMany({
+          where: { producerModelRun: deletedRunScope },
+          data: { producerModelRunId: null, messageId: null }
         });
         await tx.modelRun.deleteMany({
           where: {
@@ -909,6 +921,13 @@ export function createPrismaMessageBranchRepository(
           chatId: root.chatId,
           deletedMessageIds
         };
+      }).catch((error: unknown) => {
+        // A restricting reference to a deleted run or message rolls the whole
+        // deletion back; report a retryable conflict instead of a server error.
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
+          throw new MessageDeleteConflictError();
+        }
+        throw error;
       })
   };
 }
