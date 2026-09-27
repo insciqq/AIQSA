@@ -593,19 +593,36 @@ function sharedProjects(page: Page) {
   return page.locator('section[aria-label="Shared projects"]');
 }
 
-/** Opens a Project, and optionally one of its chats, from the Projects navigation without leaving the document. */
+/**
+ * Opens a Project, and optionally one of its chats, from the Projects
+ * navigation without leaving the document. A Project row opens its overview;
+ * inside a Project, "All projects" returns to the Project list first.
+ */
 async function openProjectInPage(page: Page, projectName: string, chatTitle?: string): Promise<void> {
   const trigger = page.getByRole("button", { exact: true, name: "Projects" });
+  const row = sharedProjects(page).locator(".v2-project-row").filter({ hasText: projectName });
   await expect(async () => {
     if (!(await sharedProjects(page).isVisible())) await trigger.click();
-    await expect(sharedProjects(page)).toBeVisible();
+    const allProjects = sharedProjects(page).getByRole("button", { name: "All projects", exact: true });
+    if (await allProjects.isVisible()) await allProjects.click();
+    await expect(row).toBeVisible();
   }).toPass({ timeout: 30_000 });
-  await sharedProjects(page).locator(".v2-project-row").filter({ hasText: projectName }).click();
-  await expect(page.getByRole("complementary", { name: "Shared project context" }))
-    .toContainText(projectName, { timeout: 20_000 });
+  await row.click();
+  await expect(page.getByTestId("project-overview-page").getByRole("heading", { level: 1, name: projectName }))
+    .toBeVisible({ timeout: 20_000 });
   if (!chatTitle) return;
   await sharedProjects(page).locator(".v2-project-chat-row").filter({ hasText: chatTitle }).click();
   await expect(page.getByTestId("header-title")).toHaveText(chatTitle, { timeout: 20_000 });
+}
+
+/** Traverses history in-document until the address names `path`. */
+async function traverseTo(page: Page, direction: "back" | "forward", path: string): Promise<void> {
+  for (let step = 0; step < 6; step += 1) {
+    if (await page.evaluate(() => window.location.pathname) === path) return;
+    if (direction === "back") await page.goBack();
+    else await page.goForward();
+  }
+  await expect(page).toHaveURL(exactPath(path));
 }
 
 test("archive, restore and an unknown chat address keep Project drafts and the address on the shown scope", async ({ page, context, baseURL }, testInfo) => {
@@ -630,29 +647,27 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
   let late: string | null = null;
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
   const header = page.getByTestId("header-title");
-  const projectPanel = page.getByRole("complementary", { name: "Shared project context" });
+  // The header chip names the Project of the shown Project chat.
+  const projectChip = page.getByRole("complementary", { name: "Shared project context" });
+  const projectNavigation = page.getByRole("complementary", { name: "Project navigation" });
   const historyLength = () => page.evaluate(() => window.history.length);
   try {
     await page.goto(`/c/${alpha}`);
     await expect(header).toHaveText(alphaTitle, { timeout: 30_000 });
 
-    // A blank draft in one Project and a saved-chat draft in another, all in one document.
+    // A saved-chat draft in one Project and a blank draft in another, all in one document.
+    await openProjectInPage(page, projectOneName, projectChatTitle);
+    await expect(page).toHaveURL(exactPath(`/p/${projectOne}/c/${projectChat}`));
+    await expect(projectChip).toContainText(projectOneName);
+    await composer.fill("Project one saved draft");
     await openProjectInPage(page, projectTwoName);
     await expect(page).toHaveURL(exactPath(`/p/${projectTwo}`));
     await composer.fill("Project two blank draft");
-    await openProjectInPage(page, projectOneName, projectChatTitle);
-    await expect(page).toHaveURL(exactPath(`/p/${projectOne}/c/${projectChat}`));
-    await composer.fill("Project one saved draft");
 
     // Back to the personal chat through history, then archive it.
-    await page.goBack();
-    await page.goBack();
-    await expect(page).toHaveURL(exactPath(`/p/${projectTwo}`));
-    await expect(composer).toHaveValue("Project two blank draft");
-    await page.goBack();
-    await expect(page).toHaveURL(exactPath(`/c/${alpha}`));
-    await expect(header).toHaveText(alphaTitle);
-    await expect(projectPanel).toHaveCount(0);
+    await traverseTo(page, "back", `/c/${alpha}`);
+    await expect(header).toHaveText(alphaTitle, { timeout: 20_000 });
+    await expect(projectChip).toHaveCount(0);
     const beforeArchive = await historyLength();
     await page.getByTestId("header-more-trigger").click();
     await page.getByTestId("header-more-menu").getByRole("menuitem", { name: "Archive" }).click();
@@ -660,14 +675,13 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     // The fallback stays personal and replaces the address.
     await expect(page).toHaveURL(exactPath(`/c/${beta}`));
     await expect(header).toHaveText(betaTitle);
-    await expect(projectPanel).toHaveCount(0);
+    await expect(projectChip).toHaveCount(0);
     expect(await historyLength()).toBe(beforeArchive);
     await page.screenshot({ path: testInfo.outputPath("scope-archive-fallback-light-1440.png") });
 
     // Restoring from Settings while a Project is open leaves the Project for the restored chat.
-    await page.goForward();
-    await expect(page).toHaveURL(exactPath(`/p/${projectTwo}`));
-    await expect(projectPanel).toContainText(projectTwoName, { timeout: 20_000 });
+    await traverseTo(page, "forward", `/p/${projectTwo}`);
+    await expect(projectNavigation).toContainText(projectTwoName, { timeout: 20_000 });
     await expect(composer).toHaveValue("Project two blank draft");
     const beforeRestore = await historyLength();
     await page.getByTestId("workspace-rail").getByRole("button", { name: "Settings" }).click();
@@ -679,16 +693,13 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     await expect(page).toHaveURL(exactPath(`/c/${alpha}`), { timeout: 20_000 });
     await settings.getByRole("button", { name: "Close settings" }).click();
     await expect(header).toHaveText(alphaTitle);
-    await expect(projectPanel).toHaveCount(0);
+    await expect(projectChip).toHaveCount(0);
     expect(await historyLength()).toBe(beforeRestore);
 
     // The personal refresh kept the saved Project chat's draft.
-    await page.goForward();
-    await expect(page).toHaveURL(exactPath(`/p/${projectOne}`));
-    await expect(projectPanel).toContainText(projectOneName, { timeout: 20_000 });
-    await page.goForward();
-    await expect(page).toHaveURL(exactPath(`/p/${projectOne}/c/${projectChat}`));
+    await traverseTo(page, "back", `/p/${projectOne}/c/${projectChat}`);
     await expect(header).toHaveText(projectChatTitle, { timeout: 20_000 });
+    await expect(projectChip).toContainText(projectOneName, { timeout: 20_000 });
     await expect(composer).toHaveValue("Project one saved draft");
 
     // Forward to a personal chat the page has never loaded: its address resolves
@@ -699,7 +710,7 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     await page.goForward();
     await expect(page).toHaveURL(exactPath(`/c/${late}`), { timeout: 20_000 });
     await expect(header).toHaveText(`Scope late ${suffix}`, { timeout: 20_000 });
-    await expect(projectPanel).toHaveCount(0);
+    await expect(projectChip).toHaveCount(0);
     await page.goBack();
     await expect(page).toHaveURL(exactPath(`/p/${projectOne}/c/${projectChat}`));
     await expect(header).toHaveText(projectChatTitle, { timeout: 20_000 });
