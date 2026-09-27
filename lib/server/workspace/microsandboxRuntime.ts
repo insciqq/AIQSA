@@ -572,7 +572,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     if (session.agents?.size) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
   }
 
-  private async withSkillGuestOperation<T>(session: LocalSession, signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
+  private async withGuestOperation<T>(session: LocalSession, signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
     signal?.throwIfAborted();
     // Native fs/exec calls have no AbortSignal API. Stop this exact guest on
     // cancellation so an interrupted upload cannot outlive its receiver claim.
@@ -605,7 +605,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     this.session(input.sessionId, input.runtimeSandboxId);
     return this.skillState().prepare(input, async () => {
       const session = await this.runningSession(input); this.noAgent(session);
-      await this.withSkillGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "reset" }, input.signal));
+      await this.withGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "reset" }, input.signal));
     }, async () => this.noAgent(this.session(input.sessionId, input.runtimeSandboxId)));
   }
 
@@ -613,7 +613,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     return this.skillState().install(input, input.bundle, async () => {
       const session = await this.runningSession(input); this.noAgent(session);
-      return this.withSkillGuestOperation(session, input.signal, async () => {
+      return this.withGuestOperation(session, input.signal, async () => {
         const archive = await readSkillArchive(input);
         parseSkillArchive(archive);
         const archivePath = `/tmp/aiqsa-skill-${randomUUID()}.tar.gz`;
@@ -634,7 +634,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     await this.skillState().complete(input, async refs => {
       const session = await this.runningSession(input); this.noAgent(session);
-      await this.withSkillGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "links", aliases: refs.map(ref => ref.alias) }, input.signal));
+      await this.withGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "links", aliases: refs.map(ref => ref.alias) }, input.signal));
     });
   }
 
@@ -1061,14 +1061,46 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       const environment = workspaceSecretEnvironment(secrets);
       const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
       if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
+      const deadline = AbortSignal.timeout(90_000);
+      const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
+      await this.withGuestOperation(session, signal, async () => {
+        let handle: ExecHandle | undefined;
+        let sink: Awaited<ReturnType<ExecHandle["takeStdin"]>> = null;
+        let exited = false;
+        try {
+          handle = await session.sandbox.execStreamWith("/usr/bin/python3", builder => builder
+            .args(["-I", "-c", INSTALL_WORKSPACE_SECRETS]).timeout(90_000).stdinPipe());
+          signal.throwIfAborted();
+          sink = await handle.takeStdin();
+          if (!sink) throw new Error("prepare_stdin_unavailable");
+          // Native stdinBytes truncates large initial payloads. Await each
+          // bounded pipe write; secret bytes never enter args or output capture.
+          for (let offset = 0; offset < bundle.byteLength; offset += 1024 * 1024) {
+            signal.throwIfAborted();
+            await sink.write(bundle.subarray(offset, offset + 1024 * 1024));
+          }
+          signal.throwIfAborted();
+          await sink.close();
+          const status = await handle.wait();
+          exited = true;
+          signal.throwIfAborted();
+          if (status.code !== 0) throw new Error("prepare_failed");
+        } finally {
+          let cleanupFailed = false;
+          if (handle && !exited) await handle.kill().catch(async () => {
+            // Fence a failed upload before releasing its pipe: EOF could let
+            // a surviving installer mutate the managed secret files.
+            await session.sandbox.stopWithTimeout(10_000).catch(() => { cleanupFailed = true; });
+          });
+          await sink?.[Symbol.asyncDispose]().catch(() => undefined);
+          await handle?.[Symbol.asyncDispose]().catch(() => undefined);
+          if (cleanupFailed) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+        }
+      });
       input.signal?.throwIfAborted();
-      const prepared = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
-        .args(["-I", "-c", INSTALL_WORKSPACE_SECRETS]).timeout(90_000)
-        .stdinBytes(bundle));
-      input.signal?.throwIfAborted();
-      if (!prepared.success) throw new Error("prepare_failed");
       session.secretEnvironment = { modelRunId: input.modelRunId, values: environment };
-    } catch {
+    } catch (error) {
+      if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
       if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
     }

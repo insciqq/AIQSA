@@ -17,6 +17,7 @@ import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { tarGzipStream } from "../chats/tarArchive";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -104,6 +105,17 @@ const callInput: Parameters<WorkspaceRuntime["callBoundTool"]>[0] = {
 function fixture() {
   let state = "running";
   const files = new Map<string, Uint8Array>();
+  const secretPipe = {
+    write: vi.fn(async (_bytes: Uint8Array) => {}),
+    close: vi.fn(async () => {}),
+    [Symbol.asyncDispose]: vi.fn(async () => {})
+  };
+  const secretHelper = {
+    takeStdin: vi.fn(async () => secretPipe),
+    wait: vi.fn(async () => ({ code: 0 })),
+    kill: vi.fn(async () => {}),
+    [Symbol.asyncDispose]: vi.fn(async () => {})
+  };
   const fs = {
     exists: vi.fn(async (path: string) => [...files.keys()].some((file) => file.startsWith(path))),
     read: vi.fn(async (path: string) => files.get(path)!),
@@ -132,6 +144,7 @@ function fixture() {
   const sandbox = {
     exec: vi.fn(async () => ({ success: true })),
     execWith: vi.fn(async (_command: string, _configure: unknown) => ({ success: true, stdout: (): string => "{}", stdoutBytes: () => Buffer.from("{}") })),
+    execStreamWith: vi.fn(async (_command: string, _configure: unknown) => secretHelper),
     fs: () => fs,
     id: runtimeSandboxId,
     name: sandboxName,
@@ -173,9 +186,19 @@ function fixture() {
     return { content: [{ type: "text", text: "ok" }] };
   });
   return {
+    secretPipe, secretHelper,
     builder, files, fs, handle, sandbox,
     runtime: new MicrosandboxWorkspaceRuntime(config),
     setState(value: string) { state = value; }
+  };
+}
+
+function acceptedBrowserState(byteSize = WORKSPACE_BROWSER_SESSION_MAX_BYTES) {
+  const bytes = Buffer.alloc(byteSize, 32);
+  bytes.write('{"cookies":[],"origins":[]}');
+  return {
+    id: randomUUID(), versionId: randomUUID(), name: "Synthetic browser state", description: "",
+    value: { kind: "browser_session" as const, originalName: "synthetic.example.json", base64: bytes.toString("base64") }
   };
 }
 
@@ -400,10 +423,10 @@ describe("Microsandbox Workspace lifecycle", () => {
   it("delivers accepted env to separate exec, shell and long-lived commands, then removes it for the next run", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
-    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinBytes: vi.fn().mockReturnThis() };
-    value.sandbox.execWith.mockImplementationOnce(async (_command, configure) => {
+    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinPipe: vi.fn().mockReturnThis() };
+    value.sandbox.execStreamWith.mockImplementationOnce(async (_command, configure) => {
       (configure as (input: typeof builder) => unknown)(builder);
-      return { success: true, stdout: () => "", stdoutBytes: () => Buffer.from("") };
+      return value.secretHelper;
     });
     const token = "synthetic '\"$HOME`command`\nvalue";
     await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, secrets: [{
@@ -411,7 +434,8 @@ describe("Microsandbox Workspace lifecycle", () => {
       value: { kind: "env", entries: [{ name: "SERVICE_TOKEN", value: token }] }
     }] });
     expect(JSON.stringify(builder.args.mock.calls)).not.toContain("SERVICE_TOKEN");
-    expect(JSON.parse(builder.stdinBytes.mock.calls[0]![0].toString())).toMatchObject({ environment: { SERVICE_TOKEN: token } });
+    expect(JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString())).toMatchObject({ environment: { SERVICE_TOKEN: token } });
+    expect(builder.stdinPipe).toHaveBeenCalledOnce();
     expect(process.env.SERVICE_TOKEN).not.toBe(token);
     sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
     for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
@@ -432,9 +456,103 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { RECOVERED_TOKEN: "synthetic-recovered" } }) }), undefined, expect.anything());
     sdk.callTool.mockClear();
     value.sandbox.execWith.mockResolvedValue({ success: false, stdout: () => "", stdoutBytes: () => Buffer.from("") });
+    value.secretHelper.wait.mockResolvedValue({ code: 1 });
     await expect(restarted.syncPersonalSecrets({ ...sessionInput, modelRunId: "next", secrets: [] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
     await expect(restarted.callBoundTool({ ...callInput, modelRunId: "next" })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
     expect(sdk.callTool).not.toHaveBeenCalled();
+  });
+
+  it("pipes an exact 8 MiB browser state in sequential bounded chunks before installing it", async () => {
+    const value = fixture();
+    const secret = acceptedBrowserState();
+    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinPipe: vi.fn().mockReturnThis() };
+    value.sandbox.execStreamWith.mockImplementationOnce(async (_command, configure) => {
+      (configure as (input: typeof builder) => unknown)(builder);
+      return value.secretHelper;
+    });
+    let writing = false;
+    value.secretPipe.write.mockImplementation(async bytes => {
+      expect(writing).toBe(false);
+      expect(bytes.byteLength).toBeGreaterThan(0);
+      expect(bytes.byteLength).toBeLessThanOrEqual(1024 * 1024);
+      writing = true;
+      await Promise.resolve();
+      writing = false;
+    });
+    value.secretHelper.wait.mockImplementation(async () => {
+      expect(value.secretPipe.close).toHaveBeenCalledOnce();
+      return { code: 0 };
+    });
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "browser-run", secrets: [secret] });
+    const bytes = Buffer.concat(value.secretPipe.write.mock.calls.map(([chunk]) => chunk));
+    expect(value.secretPipe.write.mock.calls.length).toBeGreaterThan(8);
+    expect(JSON.parse(bytes.toString())).toMatchObject({ runId: "browser-run", secrets: [secret] });
+    expect(JSON.stringify(builder.args.mock.calls)).not.toContain(secret.value.base64.slice(0, 128));
+    expect(value.fs.writeStream).not.toHaveBeenCalled();
+    expect(value.secretHelper.kill).not.toHaveBeenCalled();
+    expect(value.secretPipe[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(value.secretHelper[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an over-limit browser state before starting private byte delivery", async () => {
+    const value = fixture();
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "oversized", secrets: [
+      acceptedBrowserState(WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1)
+    ] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+    expect(value.sandbox.execStreamWith).not.toHaveBeenCalled();
+    expect(value.secretPipe.write).not.toHaveBeenCalled();
+  });
+
+  it("kills the installer and disposes its private pipe after a partial transfer fails", async () => {
+    const value = fixture();
+    value.secretPipe.write.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("private_transfer_failure"));
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "failed", secrets: [
+      acceptedBrowserState()
+    ] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+    expect(value.secretPipe.write).toHaveBeenCalledTimes(2);
+    expect(value.secretPipe.close).not.toHaveBeenCalled();
+    expect(value.secretHelper.wait).not.toHaveBeenCalled();
+    expect(value.secretHelper.kill).toHaveBeenCalledOnce();
+    expect(value.secretPipe[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(value.secretHelper[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(sdk.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("falls back to guest fencing when the failed installer cannot be killed (stopped=%s)", async stopped => {
+    const value = fixture();
+    value.secretPipe.write.mockRejectedValueOnce(new Error("private_transfer_failure"));
+    value.secretHelper.kill.mockRejectedValueOnce(new Error("kill_failed"));
+    if (!stopped) value.sandbox.stopWithTimeout.mockRejectedValueOnce(new Error("stop_failed"));
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "failed", secrets: [] })).rejects.toMatchObject({
+      code: stopped ? "workspace_secrets_prepare_failed" : "workspace_execution_cleanup_failed"
+    });
+    expect(value.sandbox.stopWithTimeout).toHaveBeenCalledOnce();
+    expect(value.secretPipe[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(value.secretHelper[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+  });
+
+  it("stops the exact guest on cancellation before another secret chunk or EOF is sent", async () => {
+    const value = fixture();
+    const controller = new AbortController();
+    value.secretPipe.write.mockImplementationOnce(async () => { controller.abort(); });
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "cancelled", signal: controller.signal,
+      secrets: [acceptedBrowserState()] })).rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+    expect(value.sandbox.stopWithTimeout).toHaveBeenCalledOnce();
+    expect(value.secretPipe.write).toHaveBeenCalledOnce();
+    expect(value.secretPipe.close).not.toHaveBeenCalled();
+    expect(value.secretHelper.kill).toHaveBeenCalledOnce();
+    expect(value.secretPipe[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(value.secretHelper[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+  });
+
+  it("retains failed guest fencing as a cleanup failure when a secret transfer is cancelled", async () => {
+    const value = fixture();
+    const controller = new AbortController();
+    value.secretPipe.write.mockImplementationOnce(async () => { controller.abort(); });
+    value.sandbox.stopWithTimeout.mockRejectedValueOnce(new Error("cannot_prove_stopped"));
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "cancelled", signal: controller.signal,
+      secrets: [] })).rejects.toMatchObject({ code: "workspace_execution_cleanup_failed" });
+    expect(value.secretPipe.close).not.toHaveBeenCalled();
   });
 
   it("reads labelled inventory pages without connecting, touching or starting stopped environments", async () => {
