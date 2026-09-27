@@ -52,8 +52,8 @@ test("Owner can reload a failed deletion, inspect pending status, and retry with
     await confirmation.getByRole("textbox").fill(name);
     await confirmation.getByRole("button", { name: "Delete permanently" }).click();
     await expect(overview.getByRole("status")).toHaveText(/Deletion needs another attempt/);
+    await expect(page).toHaveURL(`/p/${projectId}`);
     await page.reload();
-    await openProjectOverview(page, name);
     await expect(overview.getByRole("button", { name: "Retry deletion" })).toBeVisible();
     await expect(overview.getByText("Private deletion chat")).toHaveCount(0);
     await expect(overview.getByText("Private deletion fixture")).toHaveCount(0);
@@ -69,15 +69,13 @@ test("Owner can reload a failed deletion, inspect pending status, and retry with
     }
     await prisma.project.update({ where: { id: projectId }, data: { deletionLastErrorCode: null,
       deletionClaimToken: randomUUID(), deletionClaimExpiresAt: new Date(Date.now() + 3_600_000) } });
-    await page.reload();
-    await openProjectOverview(page, name);
+    await page.goto(`/p/${projectId}`);
     await expect(overview.getByRole("status")).toHaveText(/Deletion in progress/);
     await expect(overview.getByRole("button", { name: "Retry deletion" })).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("deletion-pending.png") });
     await prisma.project.update({ where: { id: projectId }, data: { deletionLastErrorCode: "project_deletion_failed",
       deletionClaimToken: null, deletionClaimExpiresAt: null } });
     await page.reload();
-    await openProjectOverview(page, name);
     const retry = overview.getByRole("button", { name: "Retry deletion" });
     await expect(retry).toBeVisible();
     await prisma.workspaceSession.update({ where: { id: sessionId }, data: { operationOwner: null, operationExpiresAt: null } });
