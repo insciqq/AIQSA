@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
