@@ -52,7 +52,7 @@ type Fixture = Readonly<{
 const openFixtures = new Set<Fixture>();
 
 const defaultLimits: McpClientSessionLimits = {
-  maxListPages: 4,
+  maxListDurationMs: 10_000,
   maxToolArgumentBytes: 1_024,
   maxToolMetadataBytes: 2_048,
   maxToolResultBytes: 2_048,
@@ -576,8 +576,8 @@ describe("McpClientSession", () => {
   it.each([
     {
       code: "mcp_inventory_page_limit",
-      limits: { maxListPages: 1 },
-      listTools: () => ({ nextCursor: "another-page", tools: [] }),
+      limits: { maxTools: 1 },
+      listTools: (cursor: string | undefined) => ({ nextCursor: `${cursor ?? ""}x`, tools: [] }),
       name: "page"
     },
     {
@@ -609,6 +609,99 @@ describe("McpClientSession", () => {
 
     await expect(session.listAllTools()).rejects.toMatchObject({ code, operation: "list_tools" });
     await session.close();
+  });
+
+  it("reads a 1024-tool inventory on 32 pages when each page, not the traversal, meets a two-second deadline", async () => {
+    const cursors: Array<string | undefined> = [];
+    const fixture = await startFixture({
+      async listTools(cursor) {
+        cursors.push(cursor);
+        await new Promise((resolve) => setTimeout(resolve, 70));
+        const page = cursor === undefined ? 0 : Number(cursor.slice("page-".length));
+        return {
+          ...(page < 31 ? { nextCursor: `page-${page + 1}` } : {}),
+          tools: Array.from({ length: 32 }, (_, index) => tool(`tool_${page * 32 + index}`, {
+            properties: { value: { description: `Value ${page}.${index}`, type: "string" } },
+            type: "object"
+          }))
+        };
+      }
+    });
+    const session = createSession(fixture, { limits: { maxTools: 1_024 } });
+    await session.initialize();
+    const started = Date.now();
+    const tools = await session.listAllTools({ timeoutMs: 2_000 });
+    expect(Date.now() - started).toBeGreaterThan(2_000);
+    expect(tools).toHaveLength(1_024);
+    expect(new Set(tools.map(({ name }) => name)).size).toBe(1_024);
+    expect(cursors).toHaveLength(32);
+    expect(session.inventoryStale).toBe(false);
+    await session.close();
+  }, 20_000);
+
+  it.each([
+    {
+      code: "mcp_inventory_tool_limit",
+      listTools: (cursor: string | undefined) => cursor === undefined
+        ? { nextCursor: "page-2", tools: Array.from({ length: 1_000 }, (_, index) => tool(`tool_${index}`)) }
+        : { tools: Array.from({ length: 25 }, (_, index) => tool(`late_${index}`)) },
+      name: "one tool past the per-server bound"
+    },
+    {
+      code: "mcp_inventory_response_too_large",
+      listTools: (cursor: string | undefined) => ({ nextCursor: `${cursor ?? ""}${"c".repeat(600)}`, tools: [] }),
+      name: "retained cursors past the cumulative byte bound",
+      responseLimits: { listToolsResponseMaxBytes: 1_024 }
+    }
+  ])("returns no partial inventory for $name", async ({ code, listTools, responseLimits }) => {
+    const fixture = await startFixture({ listTools });
+    const session = createSession(fixture, { limits: { maxTools: 1_024 }, ...(responseLimits ? { responseLimits } : {}) });
+    await session.initialize();
+    await expect(session.listAllTools()).rejects.toMatchObject({ code, operation: "list_tools", retryable: false });
+    expect(session.inventoryStale).toBe(true);
+    await session.close();
+  });
+
+  it("ends a slow endless page sequence at the traversal time budget with its own code", async () => {
+    let pages = 0;
+    const fixture = await startFixture({
+      async listTools() {
+        pages += 1;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { nextCursor: `page-${pages}`, tools: [] };
+      }
+    });
+    const session = createSession(fixture, { limits: { maxListDurationMs: 150 } });
+    await session.initialize();
+    await expect(session.listAllTools({ timeoutMs: 100 })).rejects.toMatchObject({
+      code: "mcp_inventory_time_limit",
+      operation: "list_tools"
+    });
+    expect(pages).toBeGreaterThan(1);
+    expect(session.inventoryStale).toBe(true);
+    await session.close();
+  });
+
+  it("keeps server instructions beyond the evidence cap and the former character filter", async () => {
+    // 6,000 three-byte characters exceed 16 KiB but not 8,192 characters;
+    // quotes, backslashes and controls grow further under JSON escaping.
+    const instructions = `${"\u754c".repeat(6_000)} "quoted" \\ \u0001 ${"route ".repeat(1_600)}end`;
+    expect(Buffer.byteLength(instructions, "utf8")).toBeGreaterThan(16 * 1_024);
+    expect(instructions.length).toBeGreaterThan(8_192);
+    const fixture = await startFixture({ instructions });
+    const session = createSession(fixture);
+    await session.initialize();
+    expect(session.serverEvidence?.instructions).toBe(instructions);
+    await session.close();
+
+    // Only the configured initialize limit bounds them.
+    const bounded = createSession(await startFixture({ instructions }), {
+      responseLimits: { initializeResponseMaxBytes: 16 * 1_024 }
+    });
+    await expect(bounded.initialize()).rejects.toMatchObject({
+      code: "mcp_initialize_response_too_large",
+      operation: "initialize"
+    });
   });
 
   it("rejects a discovered tool whose JSON Schema cannot be compiled", async () => {

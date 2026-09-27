@@ -462,7 +462,8 @@ function userServerProjection(server: McpUserServerState, deps: McpHandlerDeps):
     operationalStatus,
     readiness: server.readiness,
     runtimeErrorCode: server.readiness === "unavailable" ? mcpRuntimeErrorCode(server.errorCode) : null,
-    tools: server.tools
+    tools: server.tools,
+    ...(server.unavailableTools ? { unavailableTools: server.unavailableTools } : {})
   };
 }
 

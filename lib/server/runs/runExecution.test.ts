@@ -26,7 +26,8 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { McpSemanticRouterError } from "../mcp/router";
 import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
-import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
+import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanSnapshot } from "../mcp/runPlan";
+import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
@@ -39,6 +40,7 @@ import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { runWithContext } from "../observability";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import { createPrismaRunRepository } from "./prismaRepository";
+import { isRunOutputArtifactEvent } from "./runOutputEvents";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -357,14 +359,14 @@ function emptyKnowledgeEvidence(): KnowledgeRetrievalEvidence {
   return { ...draft, providerText: knowledgeToolResultText(draft) };
 }
 
-function searchUnavailableKnowledgeEvidence(): KnowledgeRetrievalEvidence {
+function searchUnavailableKnowledgeEvidence(failureCode = "knowledge_search_backend_unavailable"): KnowledgeRetrievalEvidence {
   const complete = knowledgeEvidence();
   const draft: KnowledgeRetrievalEvidence = {
     ...complete,
     bases: [],
     candidateCount: 0,
     candidateLimit: 64,
-    failureCode: "knowledge_search_backend_unavailable",
+    failureCode,
     fusion: "weighted_rrf_v2",
     operation: "automatic_search",
     outcome: "search_unavailable",
@@ -2582,6 +2584,46 @@ describe("run execution", () => {
     });
   });
 
+  it.each(["during preparation", "between preparation and execution"] as const)(
+    "keeps Stop %s durable with no later provider dispatch", async (stop) => {
+      // Stop writes the durable cancellation first, then aborts whichever
+      // controller the process holds. The preparation controller is released
+      // before execution registers its own; either way execution must see the
+      // terminal row and never open a provider stream.
+      const repository = createRepository({ failureWins: false, runStatus: "cancelled" });
+      const failRun = vi.spyOn(repository.repository, "failRun");
+      let providerCalls = 0;
+      const adapter = createAdapter(async function* () {
+        providerCalls += 1;
+        return providerResult();
+      });
+      const preparation = activeRunControllerRegistry.register("run-1");
+      expect(preparation).not.toBeNull();
+      if (stop === "during preparation") {
+        expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
+        expect(preparation!.signal.aborted).toBe(true);
+      }
+      preparation!.release();
+      if (stop === "between preparation and execution") {
+        expect(activeRunControllerRegistry.abort("run-1")).toBe(false);
+      }
+
+      const events = parseSse(await createRunExecutionResponse(executionInput({
+        adapter,
+        repository: repository.repository
+      })).text());
+
+      expect(providerCalls).toBe(0);
+      expect(repository.persistedEvents.some(({ event }) => event.type === "run_start")).toBe(false);
+      // The guarded terminal write cannot replace the cancellation that won.
+      expect(failRun).toHaveBeenCalledExactlyOnceWith("run-1", "assistant-1",
+        expect.objectContaining({ code: "model_run_not_active" }), undefined);
+      expect(repository.failedRuns).toEqual([]);
+      expect(events.some((event) => event.type === "error")).toBe(false);
+      expect(activeRunControllerRegistry.has("run-1")).toBe(false);
+    }
+  );
+
   it("fails stale Project access before provider I/O or streaming starts", async () => {
     const repository = createRepository({ projectAccessCurrent: false });
     let providerCalls = 0;
@@ -3060,6 +3102,55 @@ describe("run execution", () => {
       })
     ]);
     expect(egress.completed).toEqual(["egress-1"]);
+  });
+
+  it("keeps a hosted Search source with a long bare URL instead of failing the answer at the durable boundary", async () => {
+    const repository = createRepository();
+    const append = repository.repository.appendRunOutputEvent.bind(repository.repository);
+    // The Prisma repository refuses anything but an exact projection.
+    vi.spyOn(repository.repository, "appendRunOutputEvent").mockImplementation(async (runId, event) => {
+      if (!isRunOutputArtifactEvent(event)) throw new Error("run_output_event_invalid");
+      return append(runId, event);
+    });
+    const longBare = `https://news.example.com/${"a".repeat(600)}`;
+    const adapter = createAdapter(async function* () {
+      yield {
+        data: {
+          artifactType: "search",
+          payload: {
+            action: {
+              sources: [
+                { type: "url", url: longBare },
+                { type: "url", url: `https://news.example.com/${"b".repeat(2_100)}` }
+              ],
+              type: "search"
+            },
+            id: "ws_long_source",
+            status: "completed",
+            type: "web_search_call"
+          }
+        },
+        type: "artifact"
+      };
+      yield { data: { delta: "Sourced answer" }, type: "token" };
+      return providerResult({ finalText: "Sourced answer" });
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      repository: repository.repository
+    })).text());
+
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: "done", data: { status: "complete" } });
+    expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event)).map(({ event }) => event)).toEqual([{
+      data: {
+        artifactType: "search",
+        payload: { action: { sources: [{ rank: 1, title: "news.example.com", url: longBare }] } }
+      },
+      type: "artifact"
+    }]);
   });
 
   it("persists grounded text and safe display while live completion matches the refetched answer", async () => {
@@ -4585,10 +4676,14 @@ describe("run execution", () => {
     expect(JSON.stringify(repository.failedRuns)).not.toContain("bounded private lookup");
   });
 
-  it("durably settles a classified Knowledge outage and exposes only its safe result", async () => {
+  it.each([
+    ["knowledge_search_backend_unavailable", KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE],
+    ["knowledge_search_projection_pending", "Knowledge search is not ready: a selected source is still being indexed for search. Try again after indexing finishes."],
+    ["knowledge_search_projection_failed", "Knowledge search indexing failed for a selected source. Contact an administrator to retry its search indexing."]
+  ] as const)("durably settles a classified Knowledge outage and exposes only its safe result: %s", async (failureCode, terminalText) => {
     const repository = createRepository();
     const { execute, executor } = toolLoopKnowledgeExecutor(
-      searchUnavailableKnowledgeEvidence()
+      searchUnavailableKnowledgeEvidence(failureCode)
     );
     const providerRequests: ProviderRunRequest[] = [];
     const adapter = createAdapter(async function* (request) {
@@ -4620,14 +4715,14 @@ describe("run execution", () => {
     expect(providerRequests).toHaveLength(2);
     const continuation = JSON.stringify(providerRequests[1]?.providerToolMessages);
     expect(continuation).toContain(
-      "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge."
+      searchUnavailableKnowledgeEvidence(failureCode).providerText
     );
-    expect(continuation).not.toContain("knowledge_search_backend_unavailable");
+    expect(continuation).not.toContain(failureCode);
     expect([...repository.toolCalls.values()]).toEqual([
       expect.objectContaining({ result: expect.anything(), state: "error" })
     ]);
     expect(repository.completeRuns).toEqual([
-      expect.objectContaining({ finalText: KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE })
+      expect.objectContaining({ finalText: terminalText })
     ]);
     expect(repository.failedRuns).toEqual([]);
   });
@@ -5880,7 +5975,7 @@ describe("run execution", () => {
     }, previewRequests);
     const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(
       async (_userId, options) => {
-        expect(options).toEqual({ allowedServerIds: ["server-egress"] });
+        expect(options).toEqual({ allowedServerIds: ["server-egress"], allowedToolNames: [namespacedName] });
         return {
           bindings: [{
             fingerprint,
@@ -6094,7 +6189,7 @@ describe("run execution", () => {
       ? ["egress-1", "egress-3"]
       : ["egress-1", "egress-2", "egress-3"]);
     expect(egress.failed).toEqual([]);
-    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: ["server-blocked"] });
+    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: ["server-blocked"], allowedToolNames: [namespacedName] });
     expect(providerRequests).toHaveLength(2);
     expect(providerRequests[1]).toMatchObject({ toolChoice: "auto" });
     expect(repository.completeRuns[0]?.finalText).toBe("Dispatch stayed blocked");
@@ -6102,6 +6197,57 @@ describe("run execution", () => {
       state: revoked ? "error" : "complete"
     });
     expect(events.some((event) => event.type === "done")).toBe(true);
+  });
+
+  it.each([false, true])("dispatches the selected tool from a 1024-tool inventory (Project: %s)", async (projectScope) => {
+    const fingerprint = "large-inventory-fingerprint";
+    const record: McpRunPlanRecord = {
+      credentialSources: [], enabled: true, errorCode: null, externalAccountLabel: null,
+      fingerprint, generationId: `generation-${fingerprint}`, inventory: { version: 1,
+        tools: Array.from({ length: MCP_SERVER_TOOL_LIMIT }, (_, index) => ({
+          definitionHash: "a".repeat(64), description: null, inputSchema: { type: "object" }, name: `tool_${index + 1}`
+        })) },
+      inventoryUpdatedAt: new Date(), namespace: "large_inventory", readiness: "ready",
+      revisionId: "revision", serverId: "server", serverName: "Large inventory"
+    };
+    const namespacedName = namespacedMcpToolName(record.namespace, `tool_${MCP_SERVER_TOOL_LIMIT}`);
+    const currentPlan = (allowedToolNames?: readonly string[]) => prepareMcpRunPlan({
+      allowedServerIds: [record.serverId], allowedToolNames, isGenerationLive: () => true, load: async () => [record]
+    });
+    const accepted = await currentPlan([namespacedName]);
+    if (!accepted.ok) throw new Error("large_inventory_fixture_invalid");
+    const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(async (_user, options) =>
+      currentPlan(options?.allowedToolNames));
+    const prepareProject = vi.fn<NonNullable<NonNullable<RunExecutionInput["mcp"]>["prepareProject"]>>(
+      async (_user, _servers, options) => currentPlan(options?.allowedToolNames));
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["LATE_TOOL_RESULT"], unsupportedContentTypes: [] };
+    });
+    let rounds = 0;
+    const adapter = createAdapter(async function* (request) {
+      if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{
+        arguments: {}, id: "late-tool-call", name: namespacedName
+      }] });
+      expect(JSON.stringify(request.providerToolMessages)).toContain("LATE_TOOL_RESULT");
+      return providerResult({ finalText: "Late tool succeeded" });
+    });
+    const repository = createRepository();
+    const prepared = preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai",
+      ...(projectScope ? { project: { ...projectAdmission(), mcpServerIds: [record.serverId], modelIds: ["gpt-tool-model"] } } : {}) });
+    await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+      mcp: { filterTools: allowMcpTools, prepare, prepareProject },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } })).text();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ name: `tool_${MCP_SERVER_TOOL_LIMIT}` }));
+    expect(repository.completeRuns[0]?.finalText).toBe("Late tool succeeded");
+    if (projectScope) {
+      expect(prepare).not.toHaveBeenCalled();
+      expect(prepareProject).toHaveBeenCalledWith("user-1", [record.serverId], { allowedToolNames: [namespacedName] });
+    } else {
+      expect(prepareProject).not.toHaveBeenCalled();
+      expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
+    }
   });
 
   it.each([false, true])("recalls a large MCP original through the public reader, with duplicate representation=%s", async duplicate => {

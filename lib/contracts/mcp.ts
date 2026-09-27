@@ -1,3 +1,17 @@
+/**
+ * The one per-server tool bound. Validation evidence, activation, runtime
+ * inventory, disabled names and every admin/user projection of one server
+ * share it, so an inventory accepted at one boundary is never silently
+ * dropped at another.
+ */
+export const MCP_SERVER_TOOL_LIMIT = 1_024;
+
+/**
+ * A ready runtime holds back each upstream name once (addition, drift, policy)
+ * and each published name the server stopped offering, so at most both sets.
+ */
+export const MCP_INVENTORY_EXCLUSION_LIMIT = 2 * MCP_SERVER_TOOL_LIMIT;
+
 const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_accepted_generation_changed: "The MCP configuration or tool changed. Start a new request to use the current configuration.",
   mcp_authorization_required: "MCP authorization is no longer valid. Reconnect in MCP settings.",
@@ -5,6 +19,13 @@ const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_health_check_failed: "The MCP health check failed. Check the server and try again.",
   mcp_inventory_invalid: "The MCP server returned an invalid tool inventory. Ask an administrator to check the server.",
   mcp_inventory_changed: "The MCP tool inventory changed. Refresh the connection before trying again.",
+  mcp_inventory_cursor_cycle: "The MCP server repeated a tool-list page, so its inventory could not be read completely. Ask an administrator to check the server.",
+  mcp_inventory_metadata_limit: "An MCP tool description exceeds the size limit. Ask an administrator to check the server.",
+  mcp_inventory_page_limit: "The MCP server split its tool list into more pages than the tool limit allows. Ask an administrator to check the server.",
+  mcp_inventory_response_too_large: "The MCP server's tool list exceeds its total size limit. Ask an administrator to check the server.",
+  mcp_inventory_schema_limit: "An MCP tool schema exceeds the size limit. Ask an administrator to check the server.",
+  mcp_inventory_time_limit: "The MCP server's tool list could not be read within its time limit. Check the server and try again.",
+  mcp_inventory_tool_limit: `The MCP server offers more than ${MCP_SERVER_TOOL_LIMIT} tools. Ask an administrator to reduce the server's tools.`,
   mcp_response_too_large: "The MCP server response exceeded its size limit. Ask an administrator to check the server.",
   mcp_runtime_unavailable: "The MCP runtime is unavailable. Check MCP settings and try again.",
   mcp_session_closed: "The MCP session closed. Try again to reconnect the runtime.",
@@ -23,8 +44,9 @@ export function mcpRuntimeErrorCode(value: unknown): McpRuntimeErrorCode {
   if (value === "mcp_network_failed" || value === "mcp_tls_failed" || value === "mcp_connection_forbidden") return "mcp_connect_failed";
   if (value === "mcp_ping_failed" || value === "mcp_ping_unsupported") return "mcp_health_check_failed";
   if (value === "mcp_oauth_reauthorization_required" || value === "oauth_reauthorization_required") return "mcp_authorization_required";
-  if (typeof value === "string" && /^mcp_(?:initialize|inventory|call_result)_response_too_large$/.test(value)) return "mcp_response_too_large";
-  if (value === "mcp_call_result_too_large" || value === "mcp_initialize_response_too_large") return "mcp_response_too_large";
+  if (typeof value === "string" && /^mcp_(?:initialize|call_result)_response_too_large$/.test(value)) return "mcp_response_too_large";
+  if (value === "mcp_call_result_too_large") return "mcp_response_too_large";
+  // Limit, cycle and budget codes above stay exact; other inventory faults are invalid.
   if (typeof value === "string" && value.startsWith("mcp_inventory_")) return "mcp_inventory_invalid";
   return "mcp_runtime_unavailable";
 }
@@ -193,6 +215,69 @@ export type AdminMcpActivationSummary = {
   updatedAt: string;
 };
 
+const MCP_TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/u;
+
+/** The upstream tool-name grammar every validated or runtime inventory enforces. */
+export function isMcpToolName(value: unknown): value is string {
+  return typeof value === "string" && MCP_TOOL_NAME_PATTERN.test(value);
+}
+
+/**
+ * Why a ready runtime does not offer a tool, persisted with its inventory:
+ * the administrator turned it off, the server stopped offering a published
+ * tool, the server offers a tool that was never checked, or a published name
+ * now carries another definition.
+ */
+export type McpToolExclusionReason =
+  | "definition_drift"
+  | "disabled_by_policy"
+  | "missing_upstream"
+  | "unpublished_addition";
+
+/** A user's catalog adds their own tool restriction to the runtime reasons. */
+export type McpUnavailableToolReason = McpToolExclusionReason | "restricted";
+
+export type McpUnavailableTool = { name: string; reason: McpUnavailableToolReason };
+
+const MCP_TOOL_EXCLUSION_REASONS: ReadonlySet<string> = new Set<McpToolExclusionReason>([
+  "definition_drift",
+  "disabled_by_policy",
+  "missing_upstream",
+  "unpublished_addition"
+]);
+
+export function isMcpToolExclusionReason(value: unknown): value is McpToolExclusionReason {
+  return typeof value === "string" && MCP_TOOL_EXCLUSION_REASONS.has(value);
+}
+
+export function isMcpUnavailableToolReason(value: unknown): value is McpUnavailableToolReason {
+  return value === "restricted" || isMcpToolExclusionReason(value);
+}
+
+export type McpInventoryDifferenceReason = Exclude<McpToolExclusionReason, "disabled_by_policy">;
+
+/**
+ * Upstream tools of the active configuration that current connections do not
+ * offer. `name` is null for additions seen only through personal or OAuth
+ * connections: their inventory belongs to those accounts.
+ */
+export type AdminMcpInventoryDifference = {
+  connections: number;
+  name: string | null;
+  reason: McpInventoryDifferenceReason;
+};
+
+export function isMcpInventoryDifferenceReason(value: unknown): value is McpInventoryDifferenceReason {
+  return value !== "disabled_by_policy" && isMcpToolExclusionReason(value);
+}
+
+/**
+ * How runtime inventory is matched to this configuration's checked tools:
+ * exact definitions, names only for configurations checked before definitions
+ * were recorded, or nothing at all when the recorded definitions are unreadable.
+ */
+export type McpToolVerification = "definitions" | "invalid" | "names";
+
 export type McpRevisionSummary = {
   artifactStatus: "available" | "missing" | "not_applicable" | "unknown";
   createdAt: string;
@@ -202,6 +287,7 @@ export type McpRevisionSummary = {
   identityHash: string;
   resolvedArtifact: McpJsonObject | null;
   revisionNumber: number;
+  toolVerification?: McpToolVerification;
   validationEvidence: McpValidationEvidence;
 };
 
@@ -242,6 +328,7 @@ export function decodeMcpToolAccessPolicy(value: unknown): McpToolAccessPolicy |
 
 export type AdminMcpServer = {
   toolAccess?: McpToolAccessPolicy[];
+  inventoryDifferences?: AdminMcpInventoryDifference[];
   runtimeErrorCode?: McpRuntimeErrorCode | null;
   runtimeProblem?: "reauthorization_required" | "unavailable" | null;
   activation: AdminMcpActivationSummary | null;
@@ -329,6 +416,8 @@ export type UserMcpServer = {
   operationalStatus: McpOperationalStatus;
   readiness: McpReadiness;
   tools: { description: string | null; name: string }[];
+  /** Tools the ready runtime reports but this user cannot use, each with its reason. */
+  unavailableTools?: McpUnavailableTool[];
 };
 
 export type UserMcpCatalogResponse = {
@@ -414,8 +503,15 @@ export type UserMcpUpdateRequest = {
   enabled?: boolean;
   values?: Record<string, McpSlotValue | null>;
 };
+/**
+ * `maxEnabledServers` bounds one user's plan and Auto catalog. `maxTools` is
+ * the model-facing bound on tools exposed to one answer request (OpenAI-style
+ * function lists accept at most 128), not a registry bound: a server may
+ * publish up to MCP_SERVER_TOOL_LIMIT tools, and Auto discovery or an exact
+ * allowlist selects the subset that reaches the model.
+ */
 export const MCP_RUN_PLAN_LIMITS = Object.freeze({
-  maxEnabledServers: 16,
+  maxEnabledServers: 64,
   maxTools: 128
 });
 
@@ -459,40 +555,58 @@ export function isMcpRuntimeTimeouts(value: unknown): value is McpRuntimeTimeout
 
 export type AdminMcpAttention = {
   action: string;
-  href: string | null;
+  /** The validation OAuth start endpoint; it accepts only a same-origin POST. */
+  oauthAction: string | null;
   label: string;
   task: "runtime" | "validation";
 };
 
+export function adminMcpOAuthAction(serverId: string, reconnect: boolean): string {
+  return `/api/admin/mcp/${encodeURIComponent(serverId)}/oauth/validation/${reconnect ? "reconnect" : "connect"}`;
+}
+
 /**
  * What an administrator must still do for a server before it works for
- * everyone: connect or reconnect validation OAuth, review a failed check, or
- * repair a missing runtime artifact. `null` means nothing is owed.
+ * everyone: connect or reconnect validation OAuth, review a failed check,
+ * repair a missing runtime artifact, or check tools that changed on the
+ * server again. `null` means nothing is owed.
  */
 export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | null {
   if (server.archivedAt) return null;
   if (server.draft.auth.mode === "oauth" && server.validationOAuth?.state === "disconnecting") {
-    return { action: "View connection", href: null, label: "Disconnecting authorization", task: "validation" };
+    return { action: "View connection", oauthAction: null, label: "Disconnecting authorization", task: "validation" };
   }
   if (server.draft.auth.mode === "oauth" && server.validationOAuth?.state !== "ready") {
     const reconnect = server.validationOAuth?.state === "reauthorization_required";
     return {
       action: reconnect ? "Reconnect" : "Connect",
-      href: `/api/admin/mcp/${encodeURIComponent(server.id)}/oauth/validation/${reconnect ? "reconnect" : "connect"}`,
+      oauthAction: adminMcpOAuthAction(server.id, reconnect),
       label: reconnect ? "Reconnect to check changes" : "Authorization required to check changes",
       task: "validation"
     };
   }
   if (server.activation?.stage === "failed") {
-    return { action: "Review and retry", href: null, label: "Settings check failed", task: "validation" };
+    return { action: "Review and retry", oauthAction: null, label: "Settings check failed", task: "validation" };
   }
   if (server.activeRevision?.artifactStatus === "missing" || server.runtimeProblem) {
     return {
-      action: "Review connection", href: null,
+      action: "Review connection", oauthAction: null,
       label: server.runtimeProblem === "reauthorization_required"
         ? "A user connection needs reconnecting" : mcpRuntimeErrorMessage(server.runtimeErrorCode),
       task: "runtime"
     };
+  }
+  if (server.enabled && server.activeRevision) {
+    // Unreadable recorded definitions fail closed: every runtime tool is held back.
+    if (server.activeRevision.toolVerification === "invalid") {
+      return { action: "Test & Save", oauthAction: null, label: "Check again to restore this server's tools", task: "validation" };
+    }
+    if (server.inventoryDifferences?.length) {
+      return { action: "Review tools", oauthAction: null, label: "Server tools changed since the last check", task: "validation" };
+    }
+    if (server.activeRevision.toolVerification === "names") {
+      return { action: "Test & Save", oauthAction: null, label: "Check again to guard against tool changes", task: "validation" };
+    }
   }
   return null;
 }

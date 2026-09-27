@@ -203,7 +203,7 @@ export function createDeleteProjectHandler(deps: ProjectHandlerDeps) {
         projectId,
         userId: session.userId
       }),
-      ({ id }) => Response.json({ deleted: true, projectId: id }, { status: 202 })
+      ({ id, status }) => Response.json({ projectId: id, status }, { status: status === "completed" ? 200 : 202 })
     );
   };
 }

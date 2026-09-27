@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeProjectDeletionResponse,
   decodeProjectDefaults,
   decodeProjectDefaultsInput,
   decodeProjectPolicy,
@@ -46,6 +47,19 @@ function projectResponse(unavailableDefaults?: unknown) {
 }
 
 describe("Project wire contracts", () => {
+  it("distinguishes accepted, retryable and completed deletion", () => {
+    for (const status of ["pending", "failed", "completed"] as const) {
+      expect(decodeProjectDeletionResponse({ projectId: "project-1", status })).toEqual({ projectId: "project-1", status });
+    }
+    expect(decodeProjectDeletionResponse({ projectId: "project-1", deleted: true })).toBeNull();
+    expect(decodeProjectDeletionResponse({ projectId: "project-1", status: "unknown" })).toBeNull();
+    for (const deletionStatus of ["pending", "failed"] as const) {
+      const raw = { project: { ...projectResponse().project, status: "DELETING", deletionStatus } };
+      expect(decodeProjectResponse(raw)?.project.deletionStatus).toBe(deletionStatus);
+      expect(decodeProjectResponse({ project: { ...raw.project, status: "ACTIVE" } })).toBeNull();
+    }
+  });
+
   it("preserves approved Skill instruction estimates and rejects malformed budgets", () => {
     const input = projectResponse();
     const resource = { id: "binding", resourceId: "skill", type: "skill", label: "Approved Skill",

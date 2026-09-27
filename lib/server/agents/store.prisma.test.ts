@@ -7,7 +7,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { textMessageContent } from "@/lib/domain/content";
 import { agentLimits } from "./config";
-import { agentTokenHash, createAgentRunStore, interruptExpiredAgentRun } from "./store";
+import { agentMcpDeliveryId, agentTokenHash, createAgentRunStore, interruptExpiredAgentRun } from "./store";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { createOptionalDecisionRepository } from "../providerRuntime/optionalDecisionRepository";
@@ -322,7 +322,7 @@ describe("durable Agent authority and accounting", () => {
     } finally { await f.dispose(); }
   });
 
-  it("rolls back image publication and usage with a failed receipt without repeating the paid request", async () => {
+  it("rolls back image publication with a failed receipt, keeps the settled usage and never repeats the paid request", async () => {
     const f = await imageFixture();
     try {
       const store = { ...f.accepted.store, async settleBuiltinToolInTransaction(...args: Parameters<typeof f.accepted.store.settleBuiltinToolInTransaction>) {
@@ -331,7 +331,8 @@ describe("durable Agent authority and accounting", () => {
       } };
       await expect(f.dispatch(f.request, f.accepted, f.images, store)(f.call, new AbortController().signal)).rejects.toThrow("synthetic_image_receipt_failure");
       expect(await prisma.attachment.count({ where: { producerModelRunId: f.accepted.id } })).toBe(0);
-      expect(await prisma.usageEvent.count({ where: { modelRunId: f.accepted.id, imageGeneration: true } })).toBe(0);
+      // Provider-reported usage settles before publication (M04); a failed receipt keeps it.
+      expect(await prisma.usageEvent.count({ where: { modelRunId: f.accepted.id, imageGeneration: true } })).toBe(1);
       expect(await prisma.modelRunEvent.count({ where: { modelRunId: f.accepted.id, eventType: "artifact" } })).toBe(0);
       expect((await f.dispatch()(f.call, new AbortController().signal)).status).toBe("error");
       expect(f.fetchFn).toHaveBeenCalledOnce();
@@ -703,6 +704,84 @@ describe("durable Agent authority and accounting", () => {
       expect((await (await f.run()).store.arm(randomUUID())).threadId).toBeUndefined();
       await prisma.workspaceSession.update({ where: { id: f.session.id }, data: { runtimeSandboxId: null } });
       expect((await (await f.run()).store.arm(first.assistantMessageId)).threadId).toBeUndefined();
+    } finally { await f.dispose(); }
+  });
+
+  it.each(["sibling", "failed", "thread"] as const)("does not resume a predecessor thread already advanced by a %s successor", async successor => {
+    const f = await fixture();
+    try {
+      const first = await f.run(); await first.store.arm(null);
+      const threadId = randomUUID(); await first.store.setThread(threadId);
+      await first.store.revoke(true);
+      await prisma.modelRun.update({ where: { id: first.id }, data: { status: "complete" } });
+      // One native rollout serves every branch: a resumed sibling, a failed
+      // attempt absent from branch context, or any later use appends turns.
+      const second = await f.run();
+      const resumed = await second.store.arm(successor === "thread" ? null : first.assistantMessageId);
+      expect(resumed.threadId).toBe(successor === "thread" ? undefined : threadId);
+      await second.store.setThread(threadId);
+      await second.store.revoke(successor === "sibling");
+      await prisma.modelRun.update({ where: { id: second.id }, data: { status: successor === "sibling" ? "complete" : "error" } });
+      const retry = await f.run();
+      expect((await retry.store.arm(first.assistantMessageId)).threadId).toBeUndefined();
+      expect(await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: retry.id } }))
+        .toMatchObject({ resumedFromRunId: null, startedAt: expect.any(Date) });
+      expect(await retry.store.resumedMcpTools()).toEqual([]);
+      if (successor === "sibling") {
+        // The advanced thread remains the continuation of its own branch.
+        expect((await (await f.run()).store.arm(second.assistantMessageId)).threadId).toBe(threadId);
+      }
+    } finally { await f.dispose(); }
+  });
+
+  it("gives each native process its own rows for a restarted JSON-RPC id, a fresh checkpoint and an idempotent retry", async () => {
+    const f = await fixture();
+    try {
+      const run = await f.run(), grant = await run.store.arm(null);
+      await run.store.setThread(randomUUID());
+      const firstHash = agentTokenHash(grant.token);
+      const first = createAgentRunStore(prisma, { runId: run.id, userId: f.userId, configuration, tokenHash: firstHash });
+      const request = { chatId: run.chatId, workspace: { enabled: true }, workspaceCheckpoints: true, agent: configuration } as unknown as NormalizedRunRequest;
+      const execute = vi.fn(async (call: ModelToolCall, context: { persistedToolCallId?: string }) => {
+        const result = { callId: call.id, name: call.name, status: "complete" as const,
+          content: [{ type: "json" as const, value: { saved: context.persistedToolCallId } }] };
+        await run.store.settleBuiltinTool(context.persistedToolCallId!, result);
+        return result;
+      });
+      const restore = vi.fn(async () => { throw new Error("stale_checkpoint_restored"); });
+      const dispatch = (store: ReturnType<typeof createAgentRunStore>) => createAgentBuiltinDispatcher({
+        request, runId: run.id, userId: f.userId, store, checkpoints: { execute, restore } });
+      const save = (id: string): ModelToolCall => ({ id, name: "checkpoint_outputs",
+        arguments: { files: ["project/report.txt"], description: "Draft" } });
+      const firstSave = save(agentMcpDeliveryId(firstHash, 2));
+      const saved = await dispatch(first)(firstSave, new AbortController().signal);
+      expect(await dispatch(first)(firstSave, new AbortController().signal)).toMatchObject({ callId: firstSave.id, status: "complete", content: saved.content });
+      expect(execute).toHaveBeenCalledOnce();
+      const firstMcp = await first.toolCall("find_tools", {}, false, agentMcpDeliveryId(firstHash, 3));
+      await expect(first.toolCall("find_tools", {}, false, agentMcpDeliveryId(firstHash, 3))).rejects.toThrow();
+      await first.settleTool(firstMcp, "complete", {});
+
+      const exec = await run.store.toolCall("workspace__sandbox_exec_start", { managedAgent: true }, true);
+      await prisma.workspaceExecution.create({ data: { modelRunId: run.id, modelRunToolCallId: exec,
+        workspaceSessionId: f.session.id, runtimeExecSessionId: `agent-${exec}` } });
+      await run.store.settleTool(exec, "complete", { status: "exited" });
+      const next = await run.store.continueAfterExit(grant.token, exec);
+      const secondHash = agentTokenHash(next.token);
+      const second = createAgentRunStore(prisma, { runId: run.id, userId: f.userId, configuration, tokenHash: secondHash });
+      await expect(dispatch(first)(firstSave, new AbortController().signal)).rejects.toThrow("agent_authority_expired");
+      const fresh = await dispatch(second)(save(agentMcpDeliveryId(secondHash, 2)), new AbortController().signal);
+      expect(fresh.content).not.toEqual(saved.content);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(restore).not.toHaveBeenCalled();
+      const secondMcp = await second.toolCall("find_tools", {}, false, agentMcpDeliveryId(secondHash, 3));
+      await second.settleTool(secondMcp, "complete", {});
+
+      const rows = await prisma.modelRunToolCall.findMany({ where: { modelRunId: run.id, workspaceRunBindingId: null },
+        orderBy: { ordinal: "asc" }, select: { providerCallId: true, toolName: true, state: true, result: true } });
+      expect(rows.map(row => [row.toolName, row.state])).toEqual([["checkpoint_outputs", "complete"], ["find_tools", "complete"],
+        ["checkpoint_outputs", "complete"], ["find_tools", "complete"]]);
+      expect(new Set(rows.map(row => row.providerCallId)).size).toBe(4);
+      expect(await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: run.id } })).toMatchObject({ toolCalls: 4 });
     } finally { await f.dispose(); }
   });
 

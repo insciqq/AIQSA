@@ -1542,7 +1542,7 @@ describe("Prisma-backed Project repository", () => {
         userId: ownerId
       });
 
-      expect(deleted).toEqual({ kind: "ok", value: { id: projectId } });
+      expect(deleted).toEqual({ kind: "ok", value: { id: projectId, status: "completed" } });
       await expect(prisma.project.findUnique({ where: { id: projectId } })).resolves.toBeNull();
       await expect(prisma.projectRunBinding.findUnique({
         where: { modelRunId: run.id }

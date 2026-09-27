@@ -32,6 +32,21 @@ describe("chat title metadata reconciliation", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it("adopts the newer chat revision produced by the title write and never rewinds a newer copy", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ pending: true, title: chat.title, updatedAt: "2025-12-31T00:00:00.000Z" }))
+      .mockResolvedValueOnce(Response.json({ pending: false, title: "Titled", updatedAt: "2026-01-01T00:00:05.000Z" }));
+    renderHook(() => useChatTitleReconciliation({ accountId: "user", chats: [chat] }));
+    await advance(1_000);
+    expect(useWorkspaceStore.getState().chats[0]).toMatchObject({ titlePending: true, updatedAt: chat.updatedAt });
+    await advance(2_000);
+    expect(useWorkspaceStore.getState().chats[0]).toMatchObject({
+      title: "Titled",
+      titlePending: false,
+      updatedAt: "2026-01-01T00:00:05.000Z"
+    });
+  });
+
   it("preserves a newer manual rename and second-turn controls while an old metadata request is pending", async () => {
     let finish!: (response: Response) => void;
     vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));

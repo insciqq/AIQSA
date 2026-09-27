@@ -16,17 +16,22 @@ import {
   type MemoryHistoryTaintSource,
   type MemorySafeSourceSnapshot
 } from "../../history/sourceProjection";
-import { projectMemoryHistorySafeText } from "../../history/safety";
+import {
+  MEMORY_HISTORY_UNPROCESSED_TEXT_REASON,
+  projectMemoryHistorySafeText
+} from "../../history/safety";
 import { memoryValueContainsRecognizedSecret } from "../../explicit/safety";
+import { enqueueMemoryJob } from "../../persistence/jobs";
 import { memorySha256 } from "../../persistence/lexical";
 import {
   memoryDestructiveSourceCutoff,
   memorySourceIsInsidePause
 } from "../../persistence/pauseIntervals";
 import { findMatchingMemorySuppressions } from "../../persistence/suppressions";
-import type {
-  LockedMemorySettings,
-  MemoryTransaction
+import {
+  lockMemorySettings,
+  type LockedMemorySettings,
+  type MemoryTransaction
 } from "../../persistence/transaction";
 import {
   loadMemorySuppressionKeyring,
@@ -38,20 +43,26 @@ import {
   MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
-  MEMORY_FACT_MAX_PACKET_CANDIDATES,
   MEMORY_FACT_MAX_PRIOR_TURN_GROUPS,
+  MEMORY_FACT_MAX_RAW_OBSERVATIONS,
+  MEMORY_FACT_MAX_SOURCE_PAGES,
   MEMORY_FACT_MAX_TARGET_CHARACTERS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionClaimIsValid,
-  memoryFactExtractionIdentityProfile,
+  memoryFactExtractionJobFingerprint,
+  memoryFactExtractionJobIdentity,
   memoryFactEvidenceFingerprint,
   memoryFactExtractionInputHash,
   memoryFactExtractionOutputHash,
+  memoryFactNextPage,
+  memoryFactTargetView,
   type MemoryExtractedCandidate,
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan,
   type MemoryFactCandidateRejection,
-  type MemoryFactSourceIdentity
+  type MemoryFactJobPage,
+  type MemoryFactSourceIdentity,
+  type MemoryFactTargetPage
 } from "./contract";
 import { commitMemoryVNextExtractionPlan } from "../../vnext/repository";
 import { memoryRecordedLegacyIdentityKeys } from "../identity/compatibility";
@@ -98,6 +109,25 @@ const staleDecision = Object.freeze({
   errorCode: "memory_fact_source_stale",
   status: "STALE" as const
 });
+// Incomplete coverage is a terminal failure of the job that owns the gap, not
+// a stale revision: its reason stays visible in Memory processing health.
+const oversizedDecision = Object.freeze({
+  errorCode: "memory_fact_source_oversized",
+  status: "CANCELLED" as const
+});
+const partiallyProcessedDecision = Object.freeze({
+  errorCode: "memory_fact_source_partially_processed",
+  status: "CANCELLED" as const
+});
+const coverageExhaustedDecision = Object.freeze({
+  errorCode: "memory_fact_source_coverage_exhausted",
+  status: "CANCELLED" as const
+});
+export const MEMORY_FACT_INCOMPLETE_SOURCE_CODES: ReadonlySet<string> = new Set([
+  oversizedDecision.errorCode,
+  partiallyProcessedDecision.errorCode,
+  coverageExhaustedDecision.errorCode
+]);
 const disabledDecision = Object.freeze({
   errorCode: "memory_automatic_learning_disabled",
   status: "CANCELLED" as const
@@ -371,7 +401,8 @@ function boundedContextMessages<T extends Readonly<{
 
 /** Selects a contiguous suffix of at most two complete safe turn groups plus
  * the final direct-user target. Older context is never allowed to jump over
- * an excluded or tainted path message. */
+ * an excluded or tainted path message. A target longer than one input is
+ * read in pages of at most that size, so it never excludes itself. */
 export function boundedMemoryFactContextMessageIds(
   snapshot: MemorySafeSourceSnapshot,
   targetMessageId: string
@@ -379,8 +410,11 @@ export function boundedMemoryFactContextMessageIds(
   const target = snapshot.factEvidenceProjection.messages.find((message) =>
     message.id === targetMessageId && message.role === "user");
   const targetPathIndex = snapshot.activePathMessageIds.indexOf(targetMessageId);
-  if (!target || targetPathIndex < 0 ||
-    target.safeText.length > MEMORY_FACT_MAX_TARGET_CHARACTERS) return [];
+  if (!target || targetPathIndex < 0) return [];
+  const targetCharacters = Math.min(
+    target.safeText.length,
+    MEMORY_FACT_MAX_TARGET_CHARACTERS
+  );
   const targetGroupIndex = snapshot.recallChunkProjection.turnGroups.findIndex(
     (group) => group.messages.some(({ id }) => id === targetMessageId)
   );
@@ -390,7 +424,7 @@ export function boundedMemoryFactContextMessageIds(
     [id, index] as const));
   const selectedGroups: string[][] = [];
   let cursor = targetPathIndex;
-  let characters = target.safeText.length;
+  let characters = targetCharacters;
   let messageCount = 1;
   for (
     let groupIndex = targetGroupIndex - 1;
@@ -409,7 +443,7 @@ export function boundedMemoryFactContextMessageIds(
       0
     );
     if (messageCount + ids.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
-      characters - target.safeText.length + groupCharacters > MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
+      characters - targetCharacters + groupCharacters > MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
       characters + groupCharacters > MEMORY_FACT_MAX_INPUT_CHARACTERS) break;
     selectedGroups.unshift(ids);
     cursor = indexes[0]!;
@@ -579,11 +613,18 @@ async function loadBoundContext(
 ): Promise<Readonly<{
   activeLeafMessageId: string;
   messages: readonly MemoryHistorySourceMessageInput[];
+  /** The target could not be scanned within the projection budget at all. */
+  targetOversized: boolean;
   timeZone: string;
 }>> {
   const targetIndex = source.activePathMessageIds.indexOf(source.message.id);
   if (targetIndex < 0) {
-    return { activeLeafMessageId: source.message.id, messages: [], timeZone: "UTC" };
+    return {
+      activeLeafMessageId: source.message.id,
+      messages: [],
+      targetOversized: false,
+      timeZone: "UTC"
+    };
   }
   const candidateIds = source.activePathMessageIds.slice(
     Math.max(0, targetIndex - MEMORY_FACT_CONTEXT_LOOKBACK_MESSAGES),
@@ -653,7 +694,12 @@ async function loadBoundContext(
     new Set(ownedAssistants.map(({ id }) => id))
   );
   if (candidates.length !== candidateIds.length) {
-    return { activeLeafMessageId: source.message.id, messages: [], timeZone: "UTC" };
+    return {
+      activeLeafMessageId: source.message.id,
+      messages: [],
+      targetOversized: false,
+      timeZone: "UTC"
+    };
   }
   const candidateSnapshot = buildMemorySafeSourceSnapshot({
     activeLeafMessageId: source.message.id,
@@ -683,9 +729,16 @@ async function loadBoundContext(
       ...message,
       parentMessageId: ordinal === 0 ? null : message.parentMessageId
     }));
+  const targetNode = candidateSnapshot.provenanceGraph.find(({ messageId }) =>
+    messageId === source.message.id);
   return {
     activeLeafMessageId: source.message.id,
     messages,
+    // Size never reads as sensitivity or staleness: a target whose scanned
+    // text retained nothing is reported as oversized, not as a stale source.
+    targetOversized: targetNode?.eligibleForFactEvidence === false &&
+      !targetNode.transitiveTaint &&
+      targetNode.reasonCodes.includes("SOURCE_TEXT_LIMIT"),
     timeZone: runTimeZone(activeRun?.normalizedRequest ?? null)
   };
 }
@@ -712,6 +765,53 @@ export function currentDirectUserMessageId(
     : null;
 }
 
+type MemoryFactAdmittedMessage = MemoryFactExtractionInput["messages"][number];
+
+/** Replaces a long target by this job's page. The page keeps the full-text
+ * content hash; its text and redaction spans are page-local. A page past the
+ * end of the text, or past the page budget, is the recorded coverage gap. */
+function pageMemoryFactTarget(
+  messages: readonly MemoryFactAdmittedMessage[],
+  targetId: string,
+  sourceUnprocessed: boolean,
+  page: MemoryFactJobPage
+):
+  | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
+  | Readonly<{
+      messages: readonly MemoryFactAdmittedMessage[];
+      targetPage?: MemoryFactTargetPage;
+    }> {
+  const index = messages.findIndex((message) =>
+    message.id === targetId && message.evidenceEligible);
+  if (index < 0) return { messages };
+  const target = messages[index]!;
+  const view = memoryFactTargetView(target.text, page, sourceUnprocessed);
+  if (view.kind === "WHOLE") return { messages };
+  if (view.kind === "INVALID") return { decision: staleDecision };
+  if (view.kind === "COVERED") return { decision: partiallyProcessedDecision };
+  if (page.ordinal >= MEMORY_FACT_MAX_SOURCE_PAGES) {
+    return { decision: coverageExhaustedDecision };
+  }
+  const start = view.page.coreStart;
+  const end = start + view.text.length;
+  const pageTarget: MemoryFactAdmittedMessage = {
+    ...target,
+    redactionSpans: target.redactionSpans.flatMap((span) =>
+      span.endOffset <= start || span.startOffset >= end
+        ? []
+        : [{
+            endOffset: Math.min(span.endOffset, end) - start,
+            startOffset: Math.max(span.startOffset, start) - start
+          }]),
+    text: view.text
+  };
+  return {
+    messages: messages.map((message, position) =>
+      position === index ? pageTarget : message),
+    targetPage: view.page
+  };
+}
+
 async function prepareWith(
   tx: MemoryTransaction,
   job: MemoryJobDescriptor,
@@ -724,16 +824,19 @@ async function prepareWith(
       decision: { errorCode: "memory_fact_job_invalid", status: "CANCELLED" }
     };
   }
-  const identityProfile = memoryFactExtractionIdentityProfile(job);
-  if (identityProfile === null) {
+  const jobIdentity = memoryFactExtractionJobIdentity(job);
+  if (jobIdentity === null) {
     return {
       decision: { errorCode: "memory_fact_job_invalid", status: "CANCELLED" }
     };
   }
+  const { identityProfile, page } = jobIdentity;
   const source = await loadBoundSource(tx, job);
   if (!source) return { decision: staleDecision };
   const context = await loadBoundContext(tx, job, source);
-  if (context.messages.length === 0) return { decision: staleDecision };
+  if (context.messages.length === 0) {
+    return { decision: context.targetOversized ? oversizedDecision : staleDecision };
+  }
   const safeSnapshot = buildMemorySafeSourceSnapshot({
     activeLeafMessageId: context.activeLeafMessageId,
     branchGeneration: job.branchGeneration,
@@ -782,7 +885,15 @@ async function prepareWith(
       updatedAt: message.updatedAt
     }];
   });
-  const selected = boundedContextMessages(admitted);
+  const paged = pageMemoryFactTarget(
+    admitted,
+    source.message.id,
+    projectedById.get(source.message.id)?.redactionReasonCodes
+      .includes(MEMORY_HISTORY_UNPROCESSED_TEXT_REASON) === true,
+    page
+  );
+  if ("decision" in paged) return { decision: paged.decision };
+  const selected = boundedContextMessages(paged.messages);
   if (!selected.some((message) => message.evidenceEligible)) {
     return { decision: staleDecision };
   }
@@ -800,7 +911,8 @@ async function prepareWith(
     contextRefs,
     messages: selected,
     projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
-    suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot
+    suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot,
+    ...(paged.targetPage ? { targetPage: paged.targetPage } : {})
   });
   const sourceIdentity: MemoryFactSourceIdentity = {
     activeLeafMessageId: job.activeLeafMessageId,
@@ -821,6 +933,7 @@ async function prepareWith(
     sourceProjectionHash,
     sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
     suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot,
+    ...(paged.targetPage ? { targetPage: paged.targetPage } : {}),
     timeZone: context.timeZone
   };
   return {
@@ -876,6 +989,7 @@ async function candidateIsSuppressed(
 type StagedExtractionOutput = Readonly<{
   candidateOrdinals: readonly number[];
   candidates: readonly MemoryExtractedCandidate[];
+  coverageEnd?: number;
   rejections: readonly MemoryFactCandidateRejection[];
 }>;
 
@@ -891,6 +1005,8 @@ const stagedRejectionCodes = new Set<MemoryFactCandidateRejection["reasonCode"]>
   "REJECT_AMBIGUOUS",
   "REJECT_DUPLICATE",
   "REJECT_LOW_CONFIDENCE",
+  "REJECT_OUTSIDE_PAGE",
+  "REJECT_PACKET_OVERFLOW",
   "REJECT_SECRET",
   "REJECT_STALE_SOURCE",
   "REJECT_TEMPORARY",
@@ -901,6 +1017,7 @@ function planOutput(plan: MemoryFactExtractionPlan): StagedExtractionOutput {
   return {
     candidateOrdinals: plan.candidateOrdinals,
     candidates: plan.candidates,
+    ...(plan.coverageEnd === undefined ? {} : { coverageEnd: plan.coverageEnd }),
     rejections: plan.rejections
   };
 }
@@ -920,12 +1037,19 @@ function planIsValid(plan: MemoryFactExtractionPlan): boolean {
     ...plan.rejections.map(({ candidateOrdinal }) => candidateOrdinal)
   ];
   const orderedOrdinals = [...ordinals].sort((left, right) => left - right);
+  const pageStart = plan.input.targetPage?.coreStart ?? 0;
+  const sourceLength = plan.input.targetPage?.sourceLength ??
+    plan.input.messages.find((message) => message.evidenceEligible)?.text.length ?? 0;
   return plan.candidateOrdinals.length === plan.candidates.length &&
     plan.candidates.length <= MEMORY_FACT_MAX_ACCEPTED_CANDIDATES &&
-    ordinals.length <= MEMORY_FACT_MAX_PACKET_CANDIDATES &&
+    ordinals.length <= MEMORY_FACT_MAX_RAW_OBSERVATIONS &&
     new Set(ordinals).size === ordinals.length &&
     ordinals.every((ordinal) => Number.isSafeInteger(ordinal) &&
-      ordinal >= 0 && ordinal < MEMORY_FACT_MAX_PACKET_CANDIDATES) &&
+      ordinal >= 0 && ordinal < MEMORY_FACT_MAX_RAW_OBSERVATIONS) &&
+    (plan.coverageEnd === undefined || (
+      Number.isSafeInteger(plan.coverageEnd) &&
+      plan.coverageEnd > pageStart && plan.coverageEnd <= sourceLength
+    )) &&
     orderedOrdinals.every((ordinal, index) => ordinal === index) &&
     plan.candidates.every((candidate) =>
       /^[a-f0-9]{64}$/u.test(candidate.id) &&
@@ -946,7 +1070,8 @@ function planIsValid(plan: MemoryFactExtractionPlan): boolean {
       plan.input,
       plan.candidates,
       plan.candidateOrdinals,
-      plan.rejections
+      plan.rejections,
+      plan.coverageEnd
     ) === plan.outputHash;
 }
 
@@ -1135,7 +1260,8 @@ function parseStagedOutput(value: unknown): StagedExtractionOutput | null {
     !Array.isArray(value.rejections)) return null;
   const candidateOrdinals = value.candidateOrdinals;
   const rejections = value.rejections;
-  if (!candidateOrdinals.every((ordinal) => Number.isSafeInteger(ordinal)) ||
+  if ((value.coverageEnd !== undefined && !Number.isSafeInteger(value.coverageEnd)) ||
+    !candidateOrdinals.every((ordinal) => Number.isSafeInteger(ordinal)) ||
     !rejections.every((rejection) => isRecord(rejection) &&
       Number.isSafeInteger(rejection.candidateOrdinal) &&
       typeof rejection.reasonCode === "string" &&
@@ -1145,6 +1271,9 @@ function parseStagedOutput(value: unknown): StagedExtractionOutput | null {
   return {
     candidateOrdinals: candidateOrdinals as number[],
     candidates: value.candidates as MemoryExtractedCandidate[],
+    ...(value.coverageEnd === undefined
+      ? {}
+      : { coverageEnd: value.coverageEnd as number }),
     rejections: rejections as MemoryFactCandidateRejection[]
   };
 }
@@ -1193,6 +1322,21 @@ async function loadStagedPlan(
   return planIsValid(plan) ? plan : null;
 }
 
+/** Page 0 shares the one semantic call per source message with relation
+ * resolution. A continuation page owns its own call, keyed by its job and
+ * recorded without the message key that budget uses. */
+function adjudicationSourceMessageId(job: MemoryJobDescriptor): string | null {
+  const page = memoryFactExtractionJobIdentity(job)?.page;
+  return page && page.ordinal > 0 ? null : job.sourceMessageId;
+}
+
+function adjudicationReservationWhere(job: MemoryJobDescriptor) {
+  const sourceMessageId = adjudicationSourceMessageId(job);
+  return sourceMessageId === null
+    ? { ownerJobId: job.id, sourceMessageId: null, userId: job.userId }
+    : { sourceMessageId, userId: job.userId };
+}
+
 async function reserveSemanticAdjudication(
   client: PrismaClient,
   job: MemoryJobDescriptor
@@ -1200,10 +1344,11 @@ async function reserveSemanticAdjudication(
   if (!memoryFactExtractionClaimIsValid(job) || job.sourceMessageId === null) {
     return "UNAVAILABLE";
   }
+  const sourceMessageId = adjudicationSourceMessageId(job);
   return client.$transaction(async (tx) => {
     await tx.$queryRaw(Prisma.sql`
       SELECT pg_advisory_xact_lock(hashtextextended(
-        ${`aiqsa:memory:auxiliary:${job.userId}:${job.sourceMessageId}`}, 0
+        ${`aiqsa:memory:auxiliary:${job.userId}:${sourceMessageId ?? job.id}`}, 0
       ))::text AS "lock"
     `);
     const existing = await tx.memoryAuxiliarySemanticCall.findFirst({
@@ -1212,7 +1357,7 @@ async function reserveSemanticAdjudication(
         ownerJobId: true,
         purpose: true
       },
-      where: { sourceMessageId: job.sourceMessageId!, userId: job.userId }
+      where: adjudicationReservationWhere(job)
     });
     if (existing) {
       return existing.ownerJobId === job.id &&
@@ -1222,15 +1367,22 @@ async function reserveSemanticAdjudication(
     }
     await tx.memoryAuxiliarySemanticCall.create({
       data: {
-        id: memorySha256({
-          domain: "aiqsa.memory.auxiliary-semantic-call",
-          sourceMessageId: job.sourceMessageId,
-          userId: job.userId,
-          version: 1
-        }),
+        id: sourceMessageId === null
+          ? memorySha256({
+              domain: "aiqsa.memory.auxiliary-semantic-call",
+              ownerJobId: job.id,
+              userId: job.userId,
+              version: 2
+            })
+          : memorySha256({
+              domain: "aiqsa.memory.auxiliary-semantic-call",
+              sourceMessageId,
+              userId: job.userId,
+              version: 1
+            }),
         ownerJobId: job.id,
         purpose: "FACT_EXTRACTION_ADJUDICATION",
-        sourceMessageId: job.sourceMessageId,
+        sourceMessageId,
         userId: job.userId
       }
     });
@@ -1261,7 +1413,7 @@ async function completeSemanticAdjudication(
     where: {
       ownerJobId: job.id,
       purpose: "FACT_EXTRACTION_ADJUDICATION",
-      sourceMessageId: job.sourceMessageId,
+      sourceMessageId: adjudicationSourceMessageId(job),
       userId: job.userId
     }
   });
@@ -1289,7 +1441,7 @@ async function completeSemanticAdjudication(
       completedAt: null,
       ownerJobId: job.id,
       purpose: "FACT_EXTRACTION_ADJUDICATION",
-      sourceMessageId: job.sourceMessageId,
+      sourceMessageId: adjudicationSourceMessageId(job),
       userId: job.userId
     }
   });
@@ -1405,6 +1557,52 @@ async function resultingIds(
     factId: version.factId,
     factVersionId: evidence.factVersionId
   } : null;
+}
+
+/** Enqueues the page that continues coverage of this job's source message.
+ * It is written in the transaction that settles this page, so a settled page
+ * never loses its tail and a replay of the page enqueues nothing new. Every
+ * later page revalidates source, deletion, suppression, pause and generation
+ * fences before any provider call, so an edited or forgotten source stops. */
+async function continueMemoryFactCoverage(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  claim: MemoryJobDescriptor,
+  input: MemoryFactExtractionInput,
+  coverageEnd?: number
+): Promise<void> {
+  if (!memoryFactExtractionClaimIsValid(claim) ||
+    input.source.userId !== claim.userId ||
+    input.source.sourceMessageId !== claim.sourceMessageId) {
+    throw new MemoryCoordinatorError("memory_fact_plan_invalid", false);
+  }
+  const next = memoryFactNextPage(input, coverageEnd);
+  const identity = memoryFactExtractionJobIdentity(claim);
+  if (!next || !identity || !settings.useMemoryFacts ||
+    !settings.learnAutomatically ||
+    settings.memoryGeneration !== claim.memoryGenerationSnapshot) return;
+  const source = {
+    activeLeafMessageId: claim.activeLeafMessageId,
+    branchGeneration: claim.branchGeneration,
+    chatId: claim.chatId,
+    sourceHash: claim.sourceHash,
+    sourceMessageId: claim.sourceMessageId,
+    sourceRevision: claim.sourceRevision
+  };
+  await enqueueMemoryJob(tx, settings, {
+    idempotencyFingerprint: memoryFactExtractionJobFingerprint(
+      {
+        ...source,
+        memoryGenerationSnapshot: claim.memoryGenerationSnapshot,
+        userId: claim.userId
+      },
+      identity.identityProfile,
+      next
+    ),
+    kind: "EXTRACT_FACTS",
+    pipelineVersion: claim.pipelineVersion,
+    source
+  });
 }
 
 async function applyPlan(
@@ -1704,6 +1902,7 @@ async function applyPlan(
   if (marked.count !== 1) {
     throw new MemoryCoordinatorError("memory_fact_job_state_conflict", true);
   }
+  await continueMemoryFactCoverage(tx, settings, claim, plan.input, plan.coverageEnd);
   return applied > 0 ? "APPLIED" : "EMPTY";
 }
 
@@ -1735,7 +1934,7 @@ export function createPrismaMemoryFactExtractionRepository(
           purpose: true,
           result: true
         },
-        where: { sourceMessageId: job.sourceMessageId, userId: job.userId }
+        where: adjudicationReservationWhere(job)
       });
     },
     apply(
@@ -1825,6 +2024,17 @@ export function createPrismaMemoryFactExtractionRepository(
       now: Date
     ): Promise<void> {
       return completeSemanticAdjudication(tx, job, bindingId, packet, now);
+    },
+    /** Continues coverage after a page that settled without applying a
+     * plan; runs inside the coordinator's guarded job commit. */
+    async continueCoverage(
+      tx: MemoryTransaction,
+      claim: MemoryJobDescriptor,
+      input: MemoryFactExtractionInput,
+      coverageEnd?: number
+    ): Promise<void> {
+      const settings = await lockMemorySettings(tx, claim.userId, false);
+      await continueMemoryFactCoverage(tx, settings, claim, input, coverageEnd);
     },
     discardStale(job: MemoryJobDescriptor, reasonCode: string): Promise<number> {
       return client.$transaction((tx) => invalidateMemoryFactExtractionStaging(

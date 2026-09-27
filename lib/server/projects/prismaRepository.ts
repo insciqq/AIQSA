@@ -16,6 +16,7 @@ import {
   type ProjectDefaultResourceKindWire,
   type ProjectDefaultsWire,
   type ProjectDetailWire,
+  type ProjectDeletionStatusWire,
   type ProjectGrantWire,
   type ProjectPolicyWire,
   type ProjectReadinessWire,
@@ -65,7 +66,7 @@ import {
 } from "./chatDefaults";
 import { notifyProjectEvent } from "./events";
 import type { WorkspaceRuntime } from "../workspace/runtime";
-import { removeWorkspaceForDeletion } from "../workspace/removal";
+import { finalizeProjectDeletion } from "./deletion";
 import { ensureSkillShareRequest } from "../skills/shareRequests";
 
 export type ProjectRepositoryResult<Value> =
@@ -543,7 +544,13 @@ function summary(
   input: { activeGroupIds: ReadonlySet<string>; audienceCount?: number; userId: string }
 ): ProjectSummaryWire | null {
   const roles = rolesFor(row, input.userId, input.activeGroupIds);
-  if (!roles.effectiveRole) return null;
+  if (!roles.effectiveRole || row.status === "DELETING" && roles.directRole !== "OWNER") return null;
+  if (row.status === "DELETING") return {
+    accessRevision: row.accessRevision, audienceCount: 0, chatCount: 0, description: "",
+    deletionStatus: row.deletionLastErrorCode ? "failed" : "pending",
+    directRole: "OWNER", effectiveRole: "OWNER", grantedThrough: [],
+    id: row.id, name: row.name, status: "DELETING", updatedAt: iso(row.updatedAt)
+  };
   const audienceCount = input.audienceCount ?? row.grants.filter((grant) =>
     (grant.userId !== null && grant.user?.status === "active") ||
     (grant.groupId !== null && grant.group?.archivedAt === null)
@@ -560,6 +567,19 @@ function summary(
     name: row.name,
     status: row.status,
     updatedAt: iso(row.updatedAt)
+  };
+}
+
+function deletionDetail(row: ProjectListRow, userId: string): ProjectDetailWire | null {
+  const visible = summary(row, { activeGroupIds: new Set(), userId });
+  if (!visible || row.status !== "DELETING") return null;
+  return {
+    ...visible, capabilities: { archiveChats: false, manageMembers: false, manageMemory: false,
+      manageOwners: false, manageProject: false, mutateChats: false },
+    createdAt: iso(row.createdAt), defaults: EMPTY_PROJECT_DEFAULTS, fileCount: 0, grants: [],
+    instructions: "", instructionsRevision: 0, memoryEnabled: false, memoryRevision: 0,
+    policy: { externalToolsEnabled: false }, policyRevision: 0, publicSharingEnabled: false,
+    resources: []
   };
 }
 
@@ -1975,10 +1995,15 @@ export function createPrismaProjectRepository(
   }
 
   async function getDetail(userId: string, projectId: string): Promise<ProjectDetailWire | null> {
-    const access = await resolveProjectAccess(prisma, { projectId, userId });
+    const access = await resolveProjectAccess(prisma, { allowDeleting: true, projectId, userId });
     if (!access) return null;
+    if (access.status === "DELETING") {
+      if (access.directRole !== "OWNER") return null;
+      const row = await prisma.project.findUnique({ include: projectListInclude, where: { id: projectId } });
+      return row ? deletionDetail(row, userId) : null;
+    }
     const row = await prisma.project.findUnique({ include: projectDetailInclude, where: { id: projectId } });
-    return row ? detail(row, access, await effectiveAudienceCount(prisma, projectId)) : null;
+    return row ? row.status === "DELETING" ? deletionDetail(row, userId) : detail(row, access, await effectiveAudienceCount(prisma, projectId)) : null;
   }
 
   return {
@@ -2004,10 +2029,13 @@ export function createPrismaProjectRepository(
               ]
             }
           },
-          status: { not: "DELETING" }
+          OR: [
+            { status: { not: "DELETING" } },
+            { status: "DELETING", grants: { some: { userId, role: "OWNER" } } }
+          ]
         }
       });
-      const counts = await Promise.all(rows.map((row) => effectiveAudienceCount(prisma, row.id)));
+      const counts = await Promise.all(rows.map((row) => row.status === "DELETING" ? 0 : effectiveAudienceCount(prisma, row.id)));
       return rows.flatMap((row, index) => {
         const value = summary(row, { activeGroupIds, audienceCount: counts[index], userId });
         return value ? [value] : [];
@@ -3321,140 +3349,37 @@ export function createPrismaProjectRepository(
       actorDisplayName: string;
       projectId: string;
       userId: string;
-    }): Promise<ProjectRepositoryResult<{ id: string }>> {
+    }): Promise<ProjectRepositoryResult<{ id: string; status: ProjectDeletionStatusWire }>> {
       try {
-        const now = new Date();
         const prepared = await prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
-            allowDeleting: true,
-            minimumRole: "OWNER",
-            projectId: input.projectId,
-            userId: input.userId
+            allowDeleting: true, minimumRole: "OWNER", projectId: input.projectId, userId: input.userId
           });
-          if (!access) return { kind: "not_found" as const };
+          if (!access || access.directRole !== "OWNER") return { kind: "not_found" as const };
           if (access.status !== "DELETING") {
-            await tx.project.update({
-              data: { deletionRequestedAt: now, status: "DELETING" },
-              where: { id: input.projectId }
-            });
-            await tx.projectAuditEvent.create({
-              data: audit({
-                actorDisplayName: input.actorDisplayName,
-                actorUserId: input.userId,
-                eventType: "deletion_requested",
-                projectId: input.projectId
-              })
+            // Preflight before revocation or the durable deletion transition.
+            if (await tx.modelRun.count({ where: {
+              chat: { projectId: input.projectId }, status: { in: ["preparing", "queued", "streaming", "in_progress"] }
+            } })) return { kind: "conflict" as const, reason: "project_active_run" };
+            const now = new Date();
+            await tx.project.update({ where: { id: input.projectId }, data: {
+              deletionRequestedAt: now, deletionLastErrorCode: null, status: "DELETING"
+            } });
+            await tx.projectAuditEvent.create({ data: audit({
+              actorDisplayName: input.actorDisplayName, actorUserId: input.userId,
+              eventType: "deletion_requested", projectId: input.projectId
+            }) });
+            await tx.sharedChatSnapshot.updateMany({
+              data: { revokedAt: now }, where: { projectId: input.projectId, revokedAt: null }
             });
           }
-          await tx.sharedChatSnapshot.updateMany({
-            data: { revokedAt: now },
-            where: { projectId: input.projectId, revokedAt: null }
-          });
-          const activeRuns = await tx.modelRun.count({
-            where: {
-              chat: { projectId: input.projectId },
-              status: { in: ["preparing", "queued", "streaming", "in_progress"] }
-            }
-          });
-          if (activeRuns > 0) {
-            return {
-              kind: "conflict" as const,
-              reason: "project_active_run"
-            };
-          }
-          const sessions = await tx.workspaceSession.findMany({
-            orderBy: { id: "asc" }, select: { id: true }, where: { chat: { projectId: input.projectId } }
-          });
-          return { kind: "ok" as const, sessions };
+          return { kind: "ok" as const };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
         if (prepared.kind !== "ok") return prepared;
-
-        for (const session of prepared.sessions) {
-          try {
-            await removeWorkspaceForDeletion({ now, prisma, runtime: options.workspaceRuntime, sessionId: session.id });
-          } catch {
-            return {
-              kind: "conflict",
-              reason: options.workspaceRuntime ? "project_workspace_cleanup_failed" : "project_workspace_cleanup_unavailable"
-            };
-          }
-        }
-
-        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
-          await lockProject(tx, input.projectId);
-          const access = await resolveProjectAccess(tx, {
-            allowDeleting: true,
-            minimumRole: "OWNER",
-            projectId: input.projectId,
-            userId: input.userId
-          });
-          if (!access) return { kind: "not_found" as const };
-          const activeRuns = await tx.modelRun.count({
-            where: {
-              chat: { projectId: input.projectId },
-              status: { in: ["preparing", "queued", "streaming", "in_progress"] }
-            }
-          });
-          if (activeRuns > 0) {
-            return { kind: "conflict" as const, reason: "project_active_run" };
-          }
-          const pendingWorkspace = await tx.workspaceSession.count({
-            where: {
-              chat: { projectId: input.projectId },
-              runtimeSandboxId: { not: null }
-            }
-          });
-          if (pendingWorkspace > 0) {
-            return {
-              kind: "conflict" as const,
-              reason: "project_workspace_cleanup_pending"
-            };
-          }
-          const attachments = await tx.attachment.findMany({
-            select: { storageKey: true },
-            where: { projectId: input.projectId }
-          });
-          if (attachments.length > 0) {
-            await tx.attachmentDeletionJob.createMany({
-              data: attachments.map(({ storageKey }) => ({ storageKey })),
-              skipDuplicates: true
-            });
-          }
-          // Project run and Memory evidence is immutable while the Project
-          // exists, but an explicit owner-authorized erasure removes the
-          // aggregate as a whole. Clear restrictive evidence/current-version
-          // edges before the Project cascade removes the remaining rows.
-          await tx.projectRunBinding.deleteMany({ where: { projectId: input.projectId } });
-          await tx.projectMemoryProposal.deleteMany({ where: { projectId: input.projectId } });
-          await tx.projectMemoryFact.updateMany({
-            data: { currentVersionId: null, state: "FORGOTTEN" },
-            where: { projectId: input.projectId }
-          });
-          // Workspace output attachments restrict deletion of their producer
-          // ModelRun. Queue object removal first, then remove relational
-          // attachments and runs explicitly so the fenced WorkspaceSession can
-          // be settled before Chat rows cascade with the Project.
-          await tx.attachment.deleteMany({ where: { projectId: input.projectId } });
-          await tx.modelRun.deleteMany({
-            where: { chat: { projectId: input.projectId } }
-          });
-          const workspaceSessions = await tx.workspaceSession.findMany({
-            select: { id: true },
-            where: { chat: { projectId: input.projectId } }
-          });
-          if (workspaceSessions.length > 0) {
-            const workspaceSessionIds = workspaceSessions.map(({ id }) => id);
-            await tx.workspaceCleanupJob.deleteMany({
-              where: { workspaceSessionId: { in: workspaceSessionIds } }
-            });
-            await tx.workspaceSession.deleteMany({
-              where: { id: { in: workspaceSessionIds } }
-            });
-          }
-          await tx.project.delete({ where: { id: input.projectId } });
-          return { kind: "ok" as const, value: { id: input.projectId } };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+        notifyProjectEvent(input.projectId);
+        const status = await finalizeProjectDeletion({ prisma, projectId: input.projectId, runtime: options.workspaceRuntime });
+        return { kind: "ok", value: { id: input.projectId, status } };
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "project_delete_conflict" };
         throw error;

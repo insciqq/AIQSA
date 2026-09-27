@@ -154,6 +154,9 @@ export type MemoryHistoryIndexPlan = Readonly<{
     commonPathMessageCount: number;
     mode: "APPEND" | "DIVERGENCE" | "FULL_REBUILD" | "UNCHANGED";
     rebuildFromMessageOrdinal: number;
+    // Messages of an indivisible page that exceeded the per-call chunk bound;
+    // only their bounded chunk prefix is indexed.
+    truncatedMessageIds?: readonly string[];
   }>;
   preparedResultHash: string;
   rebuiltChunkIds: readonly string[];
@@ -168,6 +171,22 @@ export type MemoryHistoryIndexPlan = Readonly<{
   toolEvents: readonly MemoryHistoryPreparedToolEvent[];
   work: MemoryHistoryWorkCounters;
 }>;
+
+/** Last message covered by the plan's checkpoint cursor. */
+export function memoryHistoryIndexPlanIndexedThrough(
+  plan: Pick<MemoryHistoryIndexPlan, "checkpointMessages" | "source">
+): string {
+  return plan.checkpointMessages.at(-1)?.messageId ??
+    plan.source.activeLeafMessageId;
+}
+
+/** A plan that indexes one page of a longer uncovered tail. */
+export function memoryHistoryIndexPlanIsPartial(
+  plan: Pick<MemoryHistoryIndexPlan, "checkpointMessages" | "source">
+): boolean {
+  return memoryHistoryIndexPlanIndexedThrough(plan) !==
+    plan.source.activeLeafMessageId;
+}
 
 type FingerprintSource = Pick<
   MemorySourceSnapshot,

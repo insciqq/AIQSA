@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AgentExecutionOutput } from "./executionOutput";
-import { CodexJsonlDecoder, type CodexEvent } from "./codexProtocol";
+import { CODEX_OUTPUT_LIMITS, CodexJsonlDecoder, type CodexEvent } from "./codexProtocol";
 
 describe("private agent output transport", () => {
   it("replays a lost poll without loss, then releases acknowledged bytes", () => {
@@ -72,6 +73,37 @@ describe("private agent output transport", () => {
     output.poll(0);
     output.poll(5);
     expect(() => output.stderr(Buffer.from("secret"))).toThrow("agent_output_limit_exceeded");
+  });
+
+  it("pages output beyond 64 MiB up to the Codex total without gaps or repeats", () => {
+    const pageBytes = 64 * 1024;
+    const output = new AgentExecutionOutput({ pageBytes, pendingBytes: 4 * pageBytes, totalBytes: CODEX_OUTPUT_LIMITS.totalBytes });
+    const chunk = (index: number) => Buffer.alloc(pageBytes, index % 251);
+    const chunks = 64 * 16 + 3;
+    const produced = createHash("sha256");
+    const received = createHash("sha256");
+    let cursor = 0;
+    let replayed = false;
+    for (let index = 0; index < chunks; index += 1) {
+      const bytes = chunk(index);
+      produced.update(bytes);
+      output.stdout(bytes);
+      const page = output.poll(cursor);
+      // A lost response past 64 MiB is fetched again from the same cursor.
+      if (!replayed && cursor > 64 * 1024 * 1024) {
+        expect(output.poll(cursor)).toEqual(page);
+        replayed = true;
+      }
+      expect(page.nextCursor - cursor).toBe(pageBytes);
+      received.update(Buffer.from(page.stdoutBase64, "base64"));
+      cursor = page.nextCursor;
+    }
+    output.end(0);
+    expect(output.poll(cursor)).toMatchObject({ done: true, exitCode: 0, nextCursor: cursor, stdoutBase64: "" });
+    expect(replayed).toBe(true);
+    expect(cursor).toBe(chunks * pageBytes);
+    expect(cursor).toBeGreaterThan(64 * 1024 * 1024);
+    expect(received.digest("hex")).toBe(produced.digest("hex"));
   });
 
   it.each([-1, null, 999])("does not turn an unknown process exit (%s) into success", (code) => {

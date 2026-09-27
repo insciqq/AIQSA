@@ -49,6 +49,36 @@ export const CHAT_NAVIGATION_CURSOR_MAX_LENGTH = 2_048;
 export const CHAT_NAVIGATION_DEFAULT_PAGE_SIZE = 30;
 export const CHAT_NAVIGATION_MAX_PAGE_SIZE = 50;
 export const CHAT_NAVIGATION_QUERY_MAX_LENGTH = 120;
+/**
+ * Reader portions of one answer's outputs. The server summary stays within
+ * them and marks what it leaves out; the decoder applies the same bounds and
+ * drops an invalid optional item on its own, never the message. Citations
+ * allow the agreed 500 per provider response across the default eight tool
+ * rounds; Search results accumulate across rounds under the same bound.
+ */
+export const THREAD_REASONING_MAX_CHARACTERS = 256 * 1_024;
+export const THREAD_REASONING_MAX_ENTRIES = 100;
+export const THREAD_CITATION_MAX_ITEMS = 4_000;
+export const THREAD_SEARCH_SOURCE_MAX_ITEMS = 4_000;
+/**
+ * User-entered chat titles (personal and Project chats) and personal folder
+ * names, counted in Unicode code points. Stored columns are unbounded: the
+ * server rejects longer input (`chat_title_too_long`/`folder_name_too_long`)
+ * instead of truncating, so a saved name is exactly what was submitted.
+ * Project folders keep their own contract. Browser `maxLength` counts UTF-16
+ * code units, so any input the field accepts also fits here.
+ */
+export const CHAT_TITLE_MAX_LENGTH = 120;
+export const PERSONAL_FOLDER_NAME_MAX_LENGTH = 80;
+export function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+/** Server-composed titles (e.g. continuations) cut on a code-point boundary. */
+export function boundedChatTitle(value: string): string {
+  return codePointLength(value) <= CHAT_TITLE_MAX_LENGTH
+    ? value
+    : Array.from(value).slice(0, CHAT_TITLE_MAX_LENGTH).join("").trimEnd();
+}
 export function boundedChatBranchPreview(value: string): string {
   if (value.length <= CHAT_BRANCH_PREVIEW_MAX_LENGTH) return value;
   let end = CHAT_BRANCH_PREVIEW_MAX_LENGTH;
@@ -61,6 +91,37 @@ export function boundedChatBranchPreview(value: string): string {
     end -= 1;
   }
   return value.slice(0, end);
+}
+
+/**
+ * Bounds merged thinking entries for a reader. Entries past the entry bound
+ * join the last kept one (the reader shows them joined anyway), so only text
+ * past the character budget is cut, at a code-point boundary, and marked.
+ */
+export function boundThreadReasoningText(
+  entries: readonly string[]
+): Readonly<{ reasoningText: string[]; truncated: boolean }> {
+  const merged = entries.length > THREAD_REASONING_MAX_ENTRIES
+    ? [
+        ...entries.slice(0, THREAD_REASONING_MAX_ENTRIES - 1),
+        entries.slice(THREAD_REASONING_MAX_ENTRIES - 1).join("\n\n")
+      ]
+    : entries;
+  const reasoningText: string[] = [];
+  let remaining = THREAD_REASONING_MAX_CHARACTERS;
+  for (const entry of merged) {
+    if (entry.length <= remaining) {
+      reasoningText.push(entry);
+      remaining -= entry.length;
+      continue;
+    }
+    const finalCodeUnit = entry.charCodeAt(remaining - 1);
+    const end = finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff ? remaining - 1 : remaining;
+    const kept = entry.slice(0, Math.max(0, end)).trimEnd();
+    if (kept) reasoningText.push(kept);
+    return { reasoningText, truncated: true };
+  }
+  return { reasoningText, truncated: false };
 }
 
 export type {
@@ -100,6 +161,8 @@ export type ThreadArtifactSummary = {
   contextCompaction?: ContextCompactionStatus;
   skillCatalogOmittedCount?: number;
   citations: ThreadCitation[];
+  /** Unique cited links beyond THREAD_CITATION_MAX_ITEMS were left out. */
+  citationsTruncated?: true;
   generatedArtifacts?: ThreadGeneratedArtifact[];
   generatedFiles?: ThreadGeneratedFile[];
   generatedImages?: ThreadGeneratedImage[];
@@ -107,10 +170,15 @@ export type ThreadArtifactSummary = {
   knowledgeState?: ThreadKnowledgeAnswerState;
   knowledgeCitations?: ThreadKnowledgeCitation[];
   memoryAction?: MemoryActionFeedback;
-  memoryStatus?: "LIMITED" | "UNAVAILABLE";
+  memoryStatus?: "INPUT_TOO_LONG" | "LIMITED" | "UNAVAILABLE";
   memorySources?: MemoryAnswerSource[];
+  /** Merged thinking entries, THREAD_REASONING_MAX_CHARACTERS in total at most. */
   reasoningText: string[];
+  /** Part of the thinking was too long to keep or show. */
+  reasoningTruncated?: true;
   sources: ThreadSearchSource[];
+  /** Search results beyond THREAD_SEARCH_SOURCE_MAX_ITEMS were left out. */
+  sourcesTruncated?: true;
   /** Admission → first answer token, in ms; present only when reasoning or tool steps ran. */
   workDurationMs?: number;
 };
@@ -453,6 +521,7 @@ export type ChatRouteServerErrorCode =
   | "chat_not_created"
   | "chat_not_found"
   | "chat_revision_stale"
+  | "chat_title_too_long"
   | "knowledge_plan_invalid"
   | "search_plan_invalid"
   | "workspace_state_invalid"
@@ -675,8 +744,29 @@ function decodeMessagePage(
   return { messages, pageInfo };
 }
 
-function validOptionalString(record: Record<string, unknown>, key: string): boolean {
-  return !(key in record) || typeof record[key] === "string";
+function boundedText(value: unknown, maxLength: number): string | null {
+  return typeof value === "string" && value.trim() && value.length <= maxLength ? value : null;
+}
+
+/** The server's citation projection: an http(s) or mailto link of at most 2,048 characters. */
+function citationHref(value: unknown): string | null {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > 2_048 ||
+    value.startsWith("//") ||
+    /[\u0000-\u001F\u007F\s]/u.test(value)
+  ) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" || url.protocol === "mailto:"
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function decodeThreadCitation(value: unknown): ThreadCitation | null {
@@ -685,25 +775,53 @@ function decodeThreadCitation(value: unknown): ThreadCitation | null {
   }
 
   const index = nonNegativeInteger(value.index);
-  const title = requiredString(value.title);
-  const url = requiredString(value.url);
-  if (
-    index === null ||
-    !title ||
-    !url ||
-    !validOptionalString(value, "snippet") ||
-    !validOptionalString(value, "source")
-  ) {
+  const title = boundedText(value.title, 500);
+  const url = citationHref(value.url);
+  if (index === null || !title || !url) {
     return null;
   }
+  const snippet = boundedText(value.snippet, 2_000);
+  const source = boundedText(value.source, 200);
 
   return {
     index,
-    ...(typeof value.snippet === "string" ? { snippet: value.snippet } : {}),
-    ...(typeof value.source === "string" ? { source: value.source } : {}),
+    ...(snippet ? { snippet } : {}),
+    ...(source ? { source } : {}),
     title,
     url
   };
+}
+
+/** Keeps each decodable, first-seen item up to the bound; the rest is dropped one by one. */
+function decodeOptionalItems<T>(
+  value: unknown,
+  decode: (item: unknown) => T | null,
+  maxItems: number,
+  key?: (item: T) => string
+): Readonly<{ items: T[]; truncated: boolean }> {
+  const items: T[] = [];
+  if (!Array.isArray(value)) return { items, truncated: false };
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    const item = decode(candidate);
+    if (item === null || key && seen.has(key(item))) continue;
+    if (items.length >= maxItems) return { items, truncated: true };
+    if (key) seen.add(key(item));
+    items.push(item);
+  }
+  return { items, truncated: false };
+}
+
+/** Keeps each file whose addition still satisfies the Workspace list rules. */
+function decodeOptionalGeneratedFiles(value: unknown): ThreadGeneratedFile[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const whole = decodeThreadGeneratedFiles(value);
+  if (whole) return whole;
+  let files: ThreadGeneratedFile[] = [];
+  for (const candidate of value) {
+    files = decodeThreadGeneratedFiles([...files, candidate]) ?? files;
+  }
+  return files;
 }
 
 function decodeThreadGroundingDisplay(
@@ -759,130 +877,72 @@ export function decodeThreadGeneratedArtifact(value: unknown): ThreadGeneratedAr
   };
 }
 
+/**
+ * Every summary field is optional presentation data. An invalid or over-limit
+ * value is dropped, or cut and marked, on its own; it never invalidates the
+ * message, its history page or a terminal chat update. Unknown values (a newer
+ * server's enum member, a private field) are left out rather than guessed.
+ */
 function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | null {
-  if (
-    !isRecord(value) ||
-    !Array.isArray(value.citations) ||
-    value.citations.length > 100 ||
-    !Array.isArray(value.reasoningText) ||
-    value.reasoningText.length > 100 ||
-    value.reasoningText.some((text) => typeof text !== "string") ||
-    !Array.isArray(value.sources) ||
-    value.sources.length > 20
-  ) {
+  if (!isRecord(value)) {
     return null;
   }
 
-  const citations = value.citations.map(decodeThreadCitation);
-  let contextCompaction: ContextCompactionStatus | undefined;
-  if (value.contextCompaction !== undefined) {
-    contextCompaction = decodeContextCompactionStatus(value.contextCompaction) ?? undefined;
-    if (!contextCompaction) return null;
-  }
-  if (value.skillCatalogOmittedCount !== undefined && (!Number.isSafeInteger(value.skillCatalogOmittedCount) || Number(value.skillCatalogOmittedCount) < 0)) return null;
-  const sources = value.sources.map(decodeThreadSearchSource);
-  if (
-    citations.some((citation) => citation === null) ||
-    sources.some((source) => source === null)
-  ) {
-    return null;
-  }
-
-  let groundingDisplay: ThreadGroundingDisplay | null | undefined;
-  if (value.groundingDisplay === undefined || value.groundingDisplay === null) {
-    groundingDisplay = value.groundingDisplay;
-  } else {
-    groundingDisplay = decodeThreadGroundingDisplay(value.groundingDisplay);
-    if (!groundingDisplay) return null;
-  }
-
-  const generatedImages = value.generatedImages === undefined ? undefined : Array.isArray(value.generatedImages) ? value.generatedImages.map(decodeThreadGeneratedImage) : null;
-  if (generatedImages === null || generatedImages && (generatedImages.length > 16 || generatedImages.some((image) => !image) || new Set(generatedImages.map((image) => image!.attachmentId)).size !== generatedImages.length)) return null;
-  let generatedFiles: ThreadGeneratedFile[] | undefined;
-  if (value.generatedFiles !== undefined) {
-    const decoded = decodeThreadGeneratedFiles(value.generatedFiles);
-    if (!decoded) return null;
-    generatedFiles = decoded;
-  }
-
-  let generatedArtifacts: ThreadGeneratedArtifact[] | undefined;
-  if (value.generatedArtifacts !== undefined) {
-    if (!Array.isArray(value.generatedArtifacts) || value.generatedArtifacts.length > 16) return null;
-    const decoded = value.generatedArtifacts.map(decodeThreadGeneratedArtifact);
-    if (decoded.some((artifact) => artifact === null)) return null;
-    generatedArtifacts = decoded.filter((artifact): artifact is ThreadGeneratedArtifact => artifact !== null);
-    if (new Set(generatedArtifacts.map((artifact) => artifact.versionId)).size !== generatedArtifacts.length) return null;
-  }
-
-  let knowledgeCitations: ThreadKnowledgeCitation[] | undefined;
-  if (value.knowledgeCitations !== undefined) {
-    if (!Array.isArray(value.knowledgeCitations) || value.knowledgeCitations.length > 24) {
-      return null;
-    }
-    const decoded = value.knowledgeCitations.map(decodeThreadKnowledgeCitation);
-    if (decoded.some((citation) => citation === null)) return null;
-    knowledgeCitations = decoded.filter(
-      (citation): citation is ThreadKnowledgeCitation => citation !== null
-    );
-    if (
-      new Set(knowledgeCitations.map((citation) => citation.handle)).size !==
-      knowledgeCitations.length
-    ) {
-      return null;
-    }
-  }
-
-  let knowledgeState: ThreadKnowledgeAnswerState | undefined;
-  if (value.knowledgeState !== undefined) {
-    if (!isRecord(value.knowledgeState) ||
-      value.knowledgeState.answer !== "answered" &&
-        value.knowledgeState.answer !== "insufficient_evidence" ||
-      value.knowledgeState.scope !== "ready" &&
-        value.knowledgeState.scope !== "partial_sources_ready") return null;
-    knowledgeState = {
-      answer: value.knowledgeState.answer,
-      scope: value.knowledgeState.scope
-    };
-  }
-
-  let memoryAction: MemoryActionFeedback | undefined;
-  if (value.memoryAction !== undefined) {
-    const decoded = decodeMemoryActionFeedback(value.memoryAction);
-    if (!decoded.ok) return null;
-    memoryAction = decoded.value;
-  }
-
-  let memorySources: MemoryAnswerSource[] | undefined;
-  if (value.memorySources !== undefined) {
-    if (!Array.isArray(value.memorySources) ||
-      value.memorySources.length > MEMORY_ANSWER_SOURCE_MAX_ITEMS) return null;
-    const decoded = value.memorySources.map((source) => decodeMemoryAnswerSource(source));
-    if (decoded.some((source) => !source.ok)) return null;
-    memorySources = decoded.flatMap((source) => source.ok ? [source.value] : []);
-  }
-
-  let memoryStatus: "LIMITED" | "UNAVAILABLE" | undefined;
-  if (value.memoryStatus !== undefined) {
-    if (value.memoryStatus !== "LIMITED" && value.memoryStatus !== "UNAVAILABLE") return null;
-    memoryStatus = value.memoryStatus;
-  }
-
-  let workDurationMs: number | undefined;
-  if (value.workDurationMs !== undefined) {
-    if (!Number.isSafeInteger(value.workDurationMs) || (value.workDurationMs as number) < 0) {
-      return null;
-    }
-    workDurationMs = value.workDurationMs as number;
-  }
+  const citations = decodeOptionalItems(value.citations, decodeThreadCitation, THREAD_CITATION_MAX_ITEMS);
+  const sources = decodeOptionalItems(value.sources, decodeThreadSearchSource, THREAD_SEARCH_SOURCE_MAX_ITEMS);
+  const reasoning = boundThreadReasoningText(Array.isArray(value.reasoningText)
+    ? value.reasoningText.filter((text): text is string => typeof text === "string" && text.trim().length > 0)
+    : []);
+  const contextCompaction = value.contextCompaction === undefined
+    ? null
+    : decodeContextCompactionStatus(value.contextCompaction);
+  const groundingDisplay: ThreadGroundingDisplay | null | undefined = value.groundingDisplay === null
+    ? null
+    : value.groundingDisplay === undefined
+      ? undefined
+      : decodeThreadGroundingDisplay(value.groundingDisplay) ?? undefined;
+  const generatedImages = Array.isArray(value.generatedImages)
+    ? decodeOptionalItems(value.generatedImages, decodeThreadGeneratedImage, 16, (image) => image.attachmentId).items
+    : undefined;
+  const generatedFiles = decodeOptionalGeneratedFiles(value.generatedFiles);
+  const generatedArtifacts = Array.isArray(value.generatedArtifacts)
+    ? decodeOptionalItems(value.generatedArtifacts, decodeThreadGeneratedArtifact, 16, (artifact) => artifact.versionId).items
+    : undefined;
+  const knowledgeCitations = Array.isArray(value.knowledgeCitations)
+    ? decodeOptionalItems(value.knowledgeCitations, decodeThreadKnowledgeCitation, 24, (citation) => citation.handle).items
+    : undefined;
+  const knowledgeState: ThreadKnowledgeAnswerState | undefined = isRecord(value.knowledgeState) &&
+    (value.knowledgeState.answer === "answered" || value.knowledgeState.answer === "insufficient_evidence") &&
+    (value.knowledgeState.scope === "ready" || value.knowledgeState.scope === "partial_sources_ready")
+    ? { answer: value.knowledgeState.answer, scope: value.knowledgeState.scope }
+    : undefined;
+  const memoryActionResult = value.memoryAction === undefined ? null : decodeMemoryActionFeedback(value.memoryAction);
+  const memoryAction: MemoryActionFeedback | undefined = memoryActionResult?.ok ? memoryActionResult.value : undefined;
+  const memorySources = Array.isArray(value.memorySources)
+    ? decodeOptionalItems(value.memorySources, (source) => {
+        const decoded = decodeMemoryAnswerSource(source);
+        return decoded.ok ? decoded.value : null;
+      }, MEMORY_ANSWER_SOURCE_MAX_ITEMS).items
+    : undefined;
+  const memoryStatus = value.memoryStatus === "INPUT_TOO_LONG" || value.memoryStatus === "LIMITED" ||
+    value.memoryStatus === "UNAVAILABLE"
+    ? value.memoryStatus
+    : undefined;
+  const skillCatalogOmittedCount = Number.isSafeInteger(value.skillCatalogOmittedCount) &&
+    (value.skillCatalogOmittedCount as number) >= 0
+    ? value.skillCatalogOmittedCount as number
+    : undefined;
+  const workDurationMs = Number.isSafeInteger(value.workDurationMs) && (value.workDurationMs as number) >= 0
+    ? value.workDurationMs as number
+    : undefined;
 
   return {
-    citations: citations.filter(
-      (citation): citation is ThreadCitation => citation !== null
-    ),
+    citations: citations.items,
+    ...(citations.truncated || value.citationsTruncated === true ? { citationsTruncated: true as const } : {}),
     ...(contextCompaction ? { contextCompaction } : {}),
-    ...(typeof value.skillCatalogOmittedCount === "number" ? { skillCatalogOmittedCount: value.skillCatalogOmittedCount } : {}),
+    ...(skillCatalogOmittedCount !== undefined ? { skillCatalogOmittedCount } : {}),
     ...(generatedArtifacts ? { generatedArtifacts } : {}),
-    ...(generatedImages ? { generatedImages: generatedImages as ThreadGeneratedImage[] } : {}),
+    ...(generatedImages ? { generatedImages } : {}),
     ...(generatedFiles !== undefined ? { generatedFiles } : {}),
     ...(groundingDisplay !== undefined ? { groundingDisplay } : {}),
     ...(knowledgeState ? { knowledgeState } : {}),
@@ -890,10 +950,10 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(memoryAction ? { memoryAction } : {}),
     ...(memoryStatus ? { memoryStatus } : {}),
     ...(memorySources !== undefined ? { memorySources } : {}),
-    reasoningText: value.reasoningText as string[],
-    sources: sources.filter(
-      (source): source is ThreadSearchSource => source !== null
-    ),
+    reasoningText: reasoning.reasoningText,
+    ...(reasoning.truncated || value.reasoningTruncated === true ? { reasoningTruncated: true as const } : {}),
+    sources: sources.items,
+    ...(sources.truncated || value.sourcesTruncated === true ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== undefined ? { workDurationMs } : {})
   };
 }
@@ -983,15 +1043,12 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     (value.workspaceSettling !== undefined && value.workspaceSettling !== true) ||
     (value.workspacePreparation === true && (role !== "assistant" || !["queued", "streaming"].includes(status ?? ""))) ||
     (value.workspaceSettling === true && (role !== "assistant" || status !== "complete"))) return null;
-  let artifactSummary: ThreadArtifactSummary | null | undefined;
-  if (value.artifactSummary === undefined || value.artifactSummary === null) {
-    artifactSummary = value.artifactSummary;
-  } else {
-    artifactSummary = decodeThreadArtifactSummary(value.artifactSummary);
-    if (!artifactSummary) {
-      return null;
-    }
-  }
+  // Optional answer outputs never decide whether the message itself is valid:
+  // a summary that is not even an object is dropped, the message is kept.
+  const artifactSummary: ThreadArtifactSummary | null | undefined =
+    value.artifactSummary === undefined || value.artifactSummary === null
+      ? value.artifactSummary
+      : decodeThreadArtifactSummary(value.artifactSummary);
   let assistantIdentity: ThreadAssistantIdentity | null | undefined;
   if (value.assistantIdentity === undefined || value.assistantIdentity === null) {
     assistantIdentity = value.assistantIdentity;

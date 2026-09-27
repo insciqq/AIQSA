@@ -1,11 +1,18 @@
 // @vitest-environment node
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AttachmentProcessingError, type AttachmentProcessingRecord } from "./processing";
+import { utils, write } from "xlsx";
+import { createDocumentParserBoundary } from "../parsing";
+import {
+  AttachmentProcessingError,
+  createAttachmentProcessor,
+  type AttachmentProcessingRecord
+} from "./processing";
 import { getContext, runWithContext, type ObservabilityContext } from "../observability";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import {
   AttachmentProcessingCoordinator,
+  type AttachmentProcessingClaimResult,
   type AttachmentProcessingRepository
 } from "./processingCoordinator";
 
@@ -26,6 +33,10 @@ function claim(attemptCount: number): AttachmentProcessingRecord {
   };
 }
 
+function claimed(record: AttachmentProcessingRecord | null): AttachmentProcessingClaimResult {
+  return { exhausted: [], record };
+}
+
 function repository(record: AttachmentProcessingRecord): AttachmentProcessingRepository & {
   heartbeat: ReturnType<typeof vi.fn>;
   retryLater: ReturnType<typeof vi.fn>;
@@ -34,7 +45,7 @@ function repository(record: AttachmentProcessingRecord): AttachmentProcessingRep
 } {
   let returned = false;
   return {
-    claim: vi.fn(async () => returned ? null : (returned = true, record)),
+    claim: vi.fn(async () => claimed(returned ? null : (returned = true, record))),
     heartbeat: vi.fn(async () => true),
     retryLater: vi.fn(async () => true),
     settleFailed: vi.fn(async () => true),
@@ -75,14 +86,14 @@ describe("attachment processing coordinator", () => {
   it("keeps healthy idle quiet and bounds repeated claim failures with one recovery", async () => {
     const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const repo = repository(claim(1));
-    vi.mocked(repo.claim).mockResolvedValue(null);
+    vi.mocked(repo.claim).mockResolvedValue(claimed(null));
     const coordinator = new AttachmentProcessingCoordinator({ maxParallel: 1, repository: repo,
       process: async () => ({ extractedText: null, metadata: {} }) });
     await coordinator.reconcileNow(); await coordinator.reconcileNow();
     expect(writer).not.toHaveBeenCalled();
     vi.mocked(repo.claim).mockRejectedValue(new Error("PRIVATE_CLAIM_CANARY"));
     for (let index = 0; index < 5; index += 1) await coordinator.reconcileNow();
-    vi.mocked(repo.claim).mockResolvedValue(null);
+    vi.mocked(repo.claim).mockResolvedValue(claimed(null));
     await coordinator.reconcileNow(); await coordinator.reconcileNow();
     const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
     expect(records).toMatchObject([
@@ -126,7 +137,7 @@ describe("attachment processing coordinator", () => {
       ...repository(claim(1)),
       async claim() {
         claims.push(getContext());
-        return queued.shift() ?? null;
+        return claimed(queued.shift() ?? null);
       },
       async heartbeat() {
         heartbeatContext = getContext();
@@ -183,6 +194,126 @@ describe("attachment processing coordinator", () => {
       coordinator.stop();
     }
   });
+
+  it("passes the attempt bound to every claim and rejects unsupported bounds", async () => {
+    const repo = repository(claim(1));
+    await new AttachmentProcessingCoordinator({
+      maxAttempts: 4,
+      maxParallel: 1,
+      now: () => now,
+      process: async () => ({ extractedText: null, metadata: {} }),
+      repository: repo
+    }).reconcileNow();
+
+    expect(repo.claim).toHaveBeenCalledTimes(2);
+    expect(repo.claim).toHaveBeenCalledWith(expect.objectContaining({
+      maxAttempts: 4,
+      now,
+      staleBefore: new Date(now.getTime() - 30_000)
+    }));
+    for (const maxAttempts of [0, 21, 1.5]) {
+      expect(() => new AttachmentProcessingCoordinator({
+        maxAttempts,
+        process: async () => ({ extractedText: null, metadata: {} }),
+        repository: repo
+      })).toThrow(RangeError);
+    }
+  });
+
+  it("records jobs exhausted by the claim without processing them and keeps claiming", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const repo = repository(claim(1));
+    vi.mocked(repo.claim)
+      .mockResolvedValueOnce({
+        exhausted: [{ attemptCount: 3, jobId: "exhausted-job" }, { attemptCount: 50, jobId: "legacy-job" }],
+        record: null
+      })
+      .mockResolvedValueOnce(claimed(null));
+    const processAttachment = vi.fn(async () => ({ extractedText: "PRIVATE_DOCUMENT_CANARY", metadata: {} }));
+
+    await new AttachmentProcessingCoordinator({
+      maxParallel: 1,
+      now: () => now,
+      process: processAttachment,
+      repository: repo
+    }).reconcileNow();
+
+    const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+    expect(repo.claim).toHaveBeenCalledTimes(2);
+    expect(processAttachment).not.toHaveBeenCalled();
+    expect(repo.settleFailed).not.toHaveBeenCalled();
+    expect(records).toEqual([
+      expect.objectContaining({ event: "job_persistence", subsystem: "attachments", job_id: "exhausted-job",
+        stage: "fail", outcome: "confirmed", action: "fail", code: "attachment_processing_attempts_exhausted", attempt: 3 }),
+      expect.objectContaining({ event: "job_persistence", subsystem: "attachments", job_id: "legacy-job",
+        stage: "fail", outcome: "confirmed", action: "fail", code: "attachment_processing_attempts_exhausted", attempt: 50 })
+    ]);
+    expect(records[0]?.trace_id).not.toBe(records[1]?.trace_id);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
+  it("fails a claim above the attempt bound without processing it", async () => {
+    const repo = repository(claim(4));
+    const processAttachment = vi.fn(async () => ({ extractedText: "ready", metadata: {} }));
+
+    await new AttachmentProcessingCoordinator({
+      maxParallel: 1,
+      now: () => now,
+      process: processAttachment,
+      repository: repo
+    }).reconcileNow();
+
+    expect(processAttachment).not.toHaveBeenCalled();
+    expect(repo.settleFailed).toHaveBeenCalledWith({
+      attachmentId: "attachment-1",
+      claimToken: "claim-1",
+      errorCode: "attachment_processing_attempts_exhausted",
+      jobId: "job-1",
+      now
+    });
+    expect(repo.retryLater).not.toHaveBeenCalled();
+  });
+
+  it("keeps the lease alive while a real isolated parser process decodes a workbook", async () => {
+    const book = utils.book_new();
+    utils.book_append_sheet(book, utils.aoa_to_sheet([["Region", "Revenue"], ["North", 10]]), "Sales");
+    const bytes = write(book, { bookType: "xlsx", compression: true, type: "buffer" }) as Buffer;
+    const repo = repository({
+      ...claim(1),
+      byteSize: bytes.byteLength,
+      fileName: "sales.xlsx",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    });
+    const coordinator = new AttachmentProcessingCoordinator({
+      heartbeatMs: 20,
+      maxParallel: 1,
+      process: createAttachmentProcessor({
+        parser: createDocumentParserBoundary({ config: {} }),
+        storage: {
+          getObject: async (storageKey: string) => ({
+            body: bytes,
+            contentType: "application/octet-stream",
+            storageKey
+          })
+        }
+      }),
+      repository: repo
+    });
+
+    await coordinator.reconcileNow();
+
+    expect(repo.heartbeat.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(repo.heartbeat).toHaveBeenCalledWith(expect.objectContaining({ claimToken: "claim-1", jobId: "job-1" }));
+    expect(repo.settleFailed).not.toHaveBeenCalled();
+    expect(repo.settleReady).toHaveBeenCalledWith(expect.objectContaining({
+      claimToken: "claim-1",
+      jobId: "job-1",
+      result: expect.objectContaining({
+        extractedText: "Region\tRevenue\nNorth\t10",
+        metadata: { document: expect.objectContaining({ engine: "spreadsheet", status: "complete" }) }
+      })
+    }));
+  }, 30_000);
 
   it("releases transient failures for a bounded durable retry", async () => {
     const repo = repository(claim(1));

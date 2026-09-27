@@ -86,13 +86,19 @@ export async function loadKnowledgeToolReceipt(
     alias.alias,
     alias
   ])).values()];
-  const budgetEvidence = record(receipt.budgetEvidence) &&
-    Object.keys(receipt.budgetEvidence).length === 0
-    ? undefined
-    : receipt.budgetEvidence;
+  // The budget column also carries automatic-search excerpt-budget omissions;
+  // receipts accepted before that disclosure simply lack the key.
+  let budgetEvidence: unknown = receipt.budgetEvidence;
+  let omittedPassages: unknown;
+  if (record(receipt.budgetEvidence)) {
+    const { omittedPassages: storedOmissions, ...storedBudget } = receipt.budgetEvidence;
+    omittedPassages = storedOmissions;
+    budgetEvidence = Object.keys(storedBudget).length === 0 ? undefined : storedBudget;
+  }
   const common = {
     bases: receipt.baseEvidence,
     budget: budgetEvidence,
+    ...(omittedPassages !== undefined ? { omittedPassages } : {}),
     candidateCount: receipt.candidateCount,
     candidateLimit: receipt.candidateLimit,
     durationMs: receipt.durationMs,

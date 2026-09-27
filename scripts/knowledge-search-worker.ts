@@ -5,6 +5,7 @@ import { PrismaClient } from "@prisma/client";
 import {
   inspectKnowledgeSearchIntegrity,
   rebuildKnowledgeSearchProjections,
+  retryFailedKnowledgeSearchProjections,
   runKnowledgeSearchProjectionPass
 } from "../lib/server/knowledge/searchProjection";
 import {
@@ -18,6 +19,9 @@ const prisma = new PrismaClient();
 const once = process.argv.includes("--once");
 const drain = process.argv.includes("--drain");
 const rebuild = process.argv.includes("--rebuild");
+// Targeted recovery: re-queue terminal FAILED projections for the running
+// worker without recreating the index or resetting READY projections.
+const retryFailed = process.argv.includes("--retry-failed");
 const limit = Number.parseInt(
   process.env.AIQSA_KNOWLEDGE_SEARCH_PROJECTION_BATCH ?? "1",
   10
@@ -26,7 +30,7 @@ const intervalMs = Number.parseInt(
   process.env.AIQSA_KNOWLEDGE_SEARCH_PROJECTION_INTERVAL_MS ?? "2000",
   10
 );
-if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16 ||
+if (rebuild && retryFailed || !Number.isSafeInteger(limit) || limit < 1 || limit > 16 ||
   !Number.isSafeInteger(intervalMs) || intervalMs < 250 || intervalMs > 60_000) {
   throw new Error("knowledge_search_worker_configuration_invalid");
 }
@@ -43,6 +47,14 @@ async function wait(milliseconds: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if (retryFailed) {
+    const result = await retryFailedKnowledgeSearchProjections(prisma);
+    logEvent("runtime_lifecycle", { subsystem: "knowledge_search", stage: "retry",
+      outcome: "completed", count: result.retried });
+    // Alone it only re-queues for the running worker; with --drain it also
+    // projects the re-queued work in this process.
+    if (!drain) return;
+  }
   const search = createKnowledgeOpenSearchTransport();
   const heartbeat = createPrismaKnowledgeSearchWorkerHeartbeat(prisma);
   if (rebuild) {

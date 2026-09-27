@@ -15,7 +15,8 @@ import { CODEX_VERSION } from "./codexProfile";
 import * as observability from "../observability";
 import { prisma } from "../prisma";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
-import type { ToolExecutionResult } from "../tools/types";
+import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
+import * as workspaceCheckpoints from "../workspace/checkpoints";
 
 // Text-result contract from the pinned consumer's CallToolResult conversion:
 // https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/protocol/src/models.rs#L2129
@@ -61,7 +62,7 @@ describe("Agent MCP discovery surface", () => {
     const gateway = (mode: "off" | "auto" | "all") => createAgentMcpGateway({
       request: { agent: { mcpMode: mode }, searchPlan: { mode: "all_selected", options: [] }, mcp: snapshot,
         toolObservationVersion: 1 } as unknown as NormalizedRunRequest,
-      observations: observations.service(), store, runId: "run", userId: "user",
+      observations: observations.service(), store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
     const rpc = (name: string, args: Record<string, unknown>) => new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -106,7 +107,7 @@ describe("Agent MCP discovery surface", () => {
     const gateway = (observed: boolean) => createAgentMcpGateway({
       request: { agent: { mcpMode: "all" }, searchPlan: { mode: "all_selected", options: [] }, mcp: snapshot,
         ...(observed ? { toolObservationVersion: 1 } : {}) } as unknown as NormalizedRunRequest,
-      ...(observed ? { observations: observations.service() } : {}), store, runId: "run", userId: "user",
+      ...(observed ? { observations: observations.service() } : {}), store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
     const rpc = () => new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -148,7 +149,7 @@ describe("Agent MCP discovery surface", () => {
     const gateway = (observed: boolean) => createAgentMcpGateway({
       request: { agent: { mcpMode: "all" }, searchPlan: { mode: "all_selected", options: [] }, mcp: snapshot,
         ...(observed ? { toolObservationVersion: 1 } : {}) } as unknown as NormalizedRunRequest,
-      ...(observed ? { observations: observations.service() } : {}), store, runId: "run", userId: "user",
+      ...(observed ? { observations: observations.service() } : {}), store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
     const rpc = () => new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -188,7 +189,7 @@ describe("Agent MCP discovery surface", () => {
       const store = { mcpTools: async () => kind === "missing" ? [] : [{ toolId, version }],
         toolCall: async () => "attempt", settleTool: vi.fn(async () => {}) } as unknown as ReturnType<typeof createAgentRunStore>;
       const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" },
-        searchPlan: { options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user",
+        searchPlan: { options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user", incarnation: "incarnation",
         signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
       const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
         headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -224,7 +225,7 @@ describe("Agent MCP discovery surface", () => {
       dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
     const store = { mcpTools: async () => [...admitted], toolCall: async () => "call", settleTool: vi.fn() } as unknown as ReturnType<typeof createAgentRunStore>;
     const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" }, searchPlan: { options: [] } } as unknown as NormalizedRunRequest,
-      store, runId: "run", userId: "user", signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+      store, runId: "run", userId: "user", incarnation: "incarnation", signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
     admitted.push({ toolId, version });
     const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -237,7 +238,7 @@ describe("Agent MCP discovery surface", () => {
     const store = { mcpTools: async () => [], admitMcpPlan: async () => {} } as unknown as ReturnType<typeof createAgentRunStore>;
     const request = { artifactTool: true, artifactToolDescription: "Frozen admitted artifact contract", imagePlan: syntheticImagePlan(),
       agent: { mcpMode }, searchPlan: { mode: "all_selected", options: [] }, mcp: { tools: [], servers: [], version: 1 } } as unknown as NormalizedRunRequest;
-    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
+    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
     const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -256,7 +257,7 @@ describe("Agent MCP discovery surface", () => {
     const toolId = "fixture_write", toolVersion = "a".repeat(64);
     const store = { mcpTools: async () => [{ toolId, version: toolVersion }], toolCall: async () => "call",
       settleTool: vi.fn() } as unknown as ReturnType<typeof createAgentRunStore>;
-    const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" }, searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user", signal: new AbortController().signal,
+    const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" }, searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user", incarnation: "incarnation", signal: new AbortController().signal,
       onFailure: vi.fn(), onUsage: vi.fn() });
     const payload = "x".repeat(2 * 1024 * 1024) + "PRIVATE_ARGUMENT_TAIL";
     const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
@@ -296,7 +297,7 @@ describe("Agent MCP discovery surface", () => {
             serverId: "fixture", namespacedName: toolId, originalName: "read", definitionHash: "c".repeat(64), inputSchema: { type: "object" }
           }]
         } } as unknown as NormalizedRunRequest;
-        const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
+        const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user", incarnation: "incarnation",
           signal: new AbortController().signal, onFailure, onUsage: async () => {} });
         const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
           headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -347,7 +348,7 @@ describe("Agent MCP discovery surface", () => {
     const toolId = "fixture_read", toolVersion = "a".repeat(64);
     const store = { mcpTools: async () => [{ toolId, version: toolVersion }], toolCall: async () => "call", settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
     const request = { agent: { mcpMode: "auto" }, searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest;
-    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
+    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure, onUsage: async () => {} });
     const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -391,7 +392,7 @@ describe("Agent MCP discovery surface", () => {
     const toolId = "fixture_read", toolVersion = "a".repeat(64);
     const store = { mcpTools: async () => [{ toolId, version: toolVersion }], toolCall: async () => "call", settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
     const request = { agent: { mcpMode: "auto" }, searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest;
-    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
+    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure, onUsage: async () => {} });
     const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -424,7 +425,7 @@ describe("Agent MCP discovery surface", () => {
     const store = { mcpTools: async () => [], toolCall: async () => "call", settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
     const request = { agent: { mcpMode: "auto" }, searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest;
     const onFailure = vi.fn();
-    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
+    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure, onUsage: async () => {} });
     const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -445,7 +446,7 @@ describe("Agent MCP discovery surface", () => {
     const request = { agent: { mcpMode }, searchPlan: { mode: "all_selected", options: [{
       adapterKind: "provider_model_client", config: {}, optionId: "selected", displayName: "Selected source"
     }] }, mcp: { tools: [], servers: [], version: 1 } } as unknown as NormalizedRunRequest;
-    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
+    const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user", incarnation: "incarnation",
       signal: new AbortController().signal, onFailure: async () => {}, onUsage: async () => {} });
     const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -455,5 +456,87 @@ describe("Agent MCP discovery surface", () => {
     const body = JSON.parse(text.startsWith("event:") ? text.split("\n").find((line) => line.startsWith("data: "))!.slice(6) : text);
     expect(body.result.tools.map((tool: { name: string }) => tool.name).sort())
       .toEqual(mcpMode === "auto" ? ["aiqsa_search", "call_tool", "find_tools"] : ["aiqsa_search"]);
+  });
+});
+
+describe("Agent MCP delivery identity", () => {
+  // Every `codex exec [resume]` process starts JSON-RPC ids again (tools/list=1,
+  // first tools/call=2) with a fresh bearer; one run spans several processes.
+  const rpc = (id: number, name: string, args: Record<string, unknown>) => new Request("http://agent.invalid/mcp", { method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) });
+
+  it("gives a later process a fresh checkpoint for a restarted id while a retry in one process reuses its receipt", async () => {
+    const rows = new Map<string, { id: string; argumentHash: string; result: ToolExecutionResult | null }>();
+    const claimBuiltinTool = vi.fn(async (delivery: ModelToolCall, argumentHash: string) => {
+      const previous = rows.get(delivery.id);
+      if (previous) {
+        if (previous.argumentHash !== argumentHash) throw new Error("agent_builtin_delivery_conflict");
+        return { id: previous.id, claimed: false, result: previous.result };
+      }
+      const row = { id: `row-${rows.size + 1}`, argumentHash, result: null };
+      rows.set(delivery.id, row);
+      return { id: row.id, claimed: true, result: null };
+    });
+    const store = { claimBuiltinTool, builtinResult: vi.fn(async () => null) } as unknown as ReturnType<typeof createAgentRunStore>;
+    const execute = vi.fn(async (delivery: ModelToolCall, context: { persistedToolCallId?: string }): Promise<ToolExecutionResult> => {
+      const result: ToolExecutionResult = { callId: delivery.id, name: delivery.name, status: "complete",
+        content: [{ type: "json", value: { saved: context.persistedToolCallId } }] };
+      [...rows.values()].find(row => row.id === context.persistedToolCallId)!.result = result;
+      return result;
+    });
+    const restore = vi.fn(async (delivery: ModelToolCall) => rows.get(delivery.id)!.result!);
+    vi.spyOn(workspaceCheckpoints, "defaultWorkspaceCheckpoints").mockResolvedValue({ execute, restore } as never);
+    const gateway = (incarnation: string) => createAgentMcpGateway({ request: { agent: { mcpMode: "off" },
+      workspace: { enabled: true }, workspaceCheckpoints: true, searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest,
+    store, runId: "run", userId: "user", incarnation, signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const save = { files: ["project/report.txt"], description: "Draft" };
+    const saved = async (incarnation: string, args: Record<string, unknown> = save) =>
+      codexModelOutput(await rpcResult(await (await gateway(incarnation))(rpc(2, "checkpoint_outputs", args)))).body;
+
+    expect(JSON.parse(await saved("a".repeat(64)))).toEqual({ saved: "row-1" });
+    expect(JSON.parse(await saved("a".repeat(64)))).toEqual({ saved: "row-1" });
+    expect(execute).toHaveBeenCalledOnce();
+    // The first process's result describes the files as they were then.
+    expect(JSON.parse(await saved("b".repeat(64)))).toEqual({ saved: "row-2" });
+    expect(JSON.parse(await saved("c".repeat(64), { ...save, description: "Changed" }))).toEqual({ saved: "row-3" });
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(restore).not.toHaveBeenCalled();
+    const ids = claimBuiltinTool.mock.calls.map(([delivery]) => delivery.id);
+    expect(ids[0]).toMatch(/^agent-mcp:[a-f0-9]{64}$/u);
+    expect(ids[1]).toBe(ids[0]);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it("dispatches a later process's legitimate MCP call with a restarted id and never re-executes a retry", async () => {
+    const toolId = "fixture_write", toolVersion = "a".repeat(64);
+    const dispatch = vi.fn(async () => ({ text: ["done"], isError: false }));
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: async () => ({}),
+      dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    const deliveries: string[] = [];
+    // Mirrors the durable (modelRunId, roundIndex, providerCallId) unique index.
+    const toolCall = vi.fn(async (_name: string, _args: unknown, _workspace?: boolean, deliveryId?: string) => {
+      if (!deliveryId || deliveries.includes(deliveryId)) throw new Error("synthetic_unique_violation");
+      deliveries.push(deliveryId);
+      return `call-${deliveries.length}`;
+    });
+    const store = { mcpTools: async () => [{ toolId, version: toolVersion }], toolCall,
+      settleTool: vi.fn(async () => {}) } as unknown as ReturnType<typeof createAgentRunStore>;
+    const gateway = (incarnation: string) => createAgentMcpGateway({ request: { agent: { mcpMode: "auto" },
+      searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest,
+    store, runId: "run", userId: "user", incarnation, signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const call = async (incarnation: string) => rpcResult(await (await gateway(incarnation))(
+      rpc(2, "call_tool", { tool_id: toolId, tool_version: toolVersion, arguments: {} })));
+
+    expect((await call("a".repeat(64))).isError).not.toBe(true);
+    const retry = await call("a".repeat(64));
+    expect(retry.isError).toBe(true);
+    expect(JSON.parse(codexModelOutput(retry).body).code).toBe("execution_unavailable");
+    expect(dispatch).toHaveBeenCalledOnce();
+    const later = await call("b".repeat(64));
+    expect(later.isError).not.toBe(true);
+    expect(codexModelOutput(later).body).toBe("done");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(deliveries).toHaveLength(2);
   });
 });

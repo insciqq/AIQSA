@@ -126,7 +126,7 @@ describe("usePinnedScroll", () => {
     expect(hasUnseenLatestMessageContent(element)).toBe(false);
   });
 
-  it("keeps an empty thread at its first-run heading instead of pinning its structural spacer", async () => {
+  it("starts an empty thread at its heading and lets the user scroll to its in-flow composer", async () => {
     const { result } = renderHook(() =>
       usePinnedScroll<HTMLDivElement>({
         followKey: "empty",
@@ -148,8 +148,11 @@ describe("usePinnedScroll", () => {
     act(() => {
       element.scrollTop = 80;
       result.current.handleScroll();
+      result.current.refreshLayout();
     });
-    expect(element.scrollTop).toBe(0);
+    await waitForAnimationFrame();
+    expect(element.scrollTop).toBe(80);
+    expect(result.current.showJumpToLatest).toBe(false);
   });
 
   it("keeps Latest hidden when only a spacer extends below the visible message", () => {

@@ -45,7 +45,9 @@ export const KNOWLEDGE_RESULT_VERSIONS = Object.freeze([
 export const KNOWLEDGE_QUERY_MAX_CHARACTERS = 3_000;
 export const KNOWLEDGE_SEARCH_UNAVAILABLE_FAILURE_CODES = Object.freeze([
   "knowledge_search_backend_unavailable",
-  "knowledge_search_projection_unavailable"
+  "knowledge_search_projection_unavailable",
+  "knowledge_search_projection_pending",
+  "knowledge_search_projection_failed"
 ] as const);
 /** Fixed non-user text persisted in a classified search-infrastructure receipt. */
 export const KNOWLEDGE_SEARCH_UNAVAILABLE_QUERY = "knowledge_search_unavailable" as const;
@@ -328,6 +330,19 @@ export type KnowledgeSourceBoundRetrievedPassageEvidence =
     sourceName: string;
   }>;
 
+/**
+ * Ranked passages left out of one search result only because of the excerpt
+ * byte budget. `item_too_large` exceeds the whole budget; `over_budget` did
+ * not fit beside higher-ranked excerpts. Content- and identity-free: omitted
+ * passages were never delivered, so they are not excluded from later searches.
+ */
+export type KnowledgeOmittedPassageReason = "item_too_large" | "over_budget";
+
+export type KnowledgeOmittedPassageEvidence = Readonly<{
+  reason: KnowledgeOmittedPassageReason;
+  sourceTextBytes: number;
+}>;
+
 export type KnowledgeEvidenceScopeAlias = Readonly<{
   alias: string;
   kind: "base" | "source";
@@ -389,6 +404,8 @@ export type KnowledgeRetrievalEvidence = Readonly<{
   fusion: "none" | "rrf_k60" | "weighted_rrf_v2";
   invocationOrdinal: number;
   lexicalBackend?: KnowledgeLexicalBackendEvidenceV1;
+  /** Automatic-search passages omitted by the excerpt budget, in rank order. */
+  omittedPassages?: readonly KnowledgeOmittedPassageEvidence[];
   operation?: KnowledgeOperationKind;
   outcome: KnowledgeRetrievalOutcome;
   /** Decode-only fields from accepted planner-era receipts. */

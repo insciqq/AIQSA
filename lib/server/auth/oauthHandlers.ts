@@ -25,7 +25,12 @@ import { readCookie } from "./session";
 
 export const OAUTH_FLOW_COOKIE_NAME = "aiqsa_oauth_flow";
 export const OAUTH_FLOW_MAX_AGE_SECONDS = 10 * 60;
-export const OAUTH_PROVIDER_ADMISSION_MAX_ATTEMPTS = 60;
+/**
+ * Emergency installation capacity guard for provider exchanges. Per-source budgets are the
+ * primary control; this guard is far above what those budgets let a few sources spend, and
+ * once saturated it still gives every source one exchange per window instead of refusing all.
+ */
+export const OAUTH_PROVIDER_ADMISSION_MAX_ATTEMPTS = 600;
 export const OAUTH_PROVIDER_ADMISSION_WINDOW_MS = 10 * 60 * 1000;
 
 type OAuthFlow = {
@@ -157,6 +162,10 @@ function oauthFlowAdmissionKey(input: {
 
 function oauthProviderAdmissionKey(provider: OAuthProviderId): string {
   return `oauth-callback:${provider}:installation`;
+}
+
+function oauthEmergencySourceKey(provider: OAuthProviderId, source: string): string {
+  return `${oauthProviderAdmissionKey(provider)}:client:${source}`;
 }
 
 function singleQueryValue(params: URLSearchParams, key: string): string | null {
@@ -424,9 +433,17 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
       return response;
     }
 
-    const providerRateLimit = await oauthProviderRateLimiter.check(
+    const installationRateLimit = await oauthProviderRateLimiter.check(
       oauthProviderAdmissionKey(rawProvider)
     );
+    // Past the saturated guard each identified source still gets one exchange per guard
+    // window, so sources that spent their budgets cannot deny a fresh client's callback.
+    const providerRateLimit = installationRateLimit.allowed || clientIdentity.status !== "available"
+      ? installationRateLimit
+      : await oauthProviderRateLimiter.check(
+          oauthEmergencySourceKey(rawProvider, clientIdentity.key),
+          { maxAttempts: 1 }
+        );
 
     if (!providerRateLimit.allowed) {
       const response = redirect(
@@ -486,8 +503,10 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         sessions: deps.sessions,
         userId: settlement.userId
       });
+      // A completed login gives back only its own callback attempt; the source's earlier
+      // failed callbacks keep counting.
       if (rateLimitKey) {
-        await loginRateLimiter.reset(rateLimitKey);
+        await loginRateLimiter.release(rateLimitKey);
       }
 
       return redirect(new URL(flow.nextPath, config.appBaseUrl).toString(), [clearCookie, session.cookie]);

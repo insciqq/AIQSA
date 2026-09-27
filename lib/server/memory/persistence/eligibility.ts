@@ -4,7 +4,7 @@ import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION
 } from "../learning/extraction/contract";
-import { projectMemoryHistorySafeText } from "../history/safety";
+import { projectMemoryHistorySourceText } from "../history/safety";
 import { memorySha256 } from "./lexical";
 import { memoryAutomaticEvidencePausePredicate } from "./pauseIntervals";
 import { memoryFactDependenciesPredicate } from "../learning/dependencies/repository";
@@ -29,16 +29,25 @@ type PersonalMemoryEvidenceQueryRow = PersonalMemoryEvidenceSnapshot & Readonly<
   sourceStartOffset: number | null;
 }>;
 
+/** Projected safe text per message id, valid within one read snapshot where
+ * a message id has exactly one content. A long message can support many
+ * evidence rows; it is projected once per snapshot instead of once per row. */
+export type MemoryEvidenceSourceProjections = Map<
+  string,
+  Readonly<{ hash: string; safeText: string }> | null
+>;
+
 export function memoryExactMessageEvidenceIsCurrent(input: Readonly<{
   content: Prisma.JsonValue;
   evidenceFingerprint: string | null;
+  messageId?: string;
   safeExcerpt: string;
   safeSourceHash: string;
   sourceEndOffset: number | null;
   sourceMessageContentHash: string | null;
   sourceProjectionVersion: string;
   sourceStartOffset: number | null;
-}>): boolean {
+}>, projections?: MemoryEvidenceSourceProjections): boolean {
   if (
     input.sourceProjectionVersion !== MEMORY_FACT_SOURCE_PROJECTION_VERSION ||
     input.evidenceFingerprint === null ||
@@ -51,12 +60,22 @@ export function memoryExactMessageEvidenceIsCurrent(input: Readonly<{
     input.sourceStartOffset === null || input.sourceEndOffset === null ||
     input.sourceStartOffset < 0 || input.sourceEndOffset <= input.sourceStartOffset
   ) return false;
-  const projected = projectMemoryHistorySafeText(
-    textFromContentBlocks(input.content as { blocks?: unknown[] })
-  );
-  return projected.eligible && projected.safeText !== null &&
-    memorySha256(projected.safeText) === input.sourceMessageContentHash &&
-    projected.safeText.slice(input.sourceStartOffset, input.sourceEndOffset) ===
+  // The same message projection that produced the offsets and hash. Up to
+  // 100k code units it is the former single pass, so v5 evidence stays exact.
+  const key = projections && input.messageId !== undefined ? input.messageId : null;
+  let source = key === null ? undefined : projections!.get(key);
+  if (source === undefined) {
+    const projected = projectMemoryHistorySourceText(
+      textFromContentBlocks(input.content as { blocks?: unknown[] })
+    );
+    source = projected.eligible
+      ? { hash: memorySha256(projected.safeText), safeText: projected.safeText }
+      : null;
+    if (key !== null) projections!.set(key, source);
+  }
+  return source !== null &&
+    source.hash === input.sourceMessageContentHash &&
+    source.safeText.slice(input.sourceStartOffset, input.sourceEndOffset) ===
       input.safeExcerpt;
 }
 
@@ -345,8 +364,10 @@ export async function loadPersonalMemoryEvidenceSnapshots(
       )}
     ORDER BY support."factVersionId", support."createdAt", support."id"
   `);
+  const projections: MemoryEvidenceSourceProjections = new Map();
   return rows.flatMap((row) => {
-    if (options.exactVNext && !memoryExactMessageEvidenceIsCurrent(row)) return [];
+    if (options.exactVNext &&
+      !memoryExactMessageEvidenceIsCurrent(row, projections)) return [];
     const {
       content: _content,
       safeExcerpt: _safeExcerpt,

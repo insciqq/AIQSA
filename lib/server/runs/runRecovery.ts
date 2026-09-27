@@ -33,7 +33,7 @@ import {
 } from "../../domain/modelRunEvents";
 import { textMessageContent } from "../../domain/content";
 import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSearchFailureToolResult,
-  knowledgeSearchFailureFromToolResult, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode, type KnowledgeSearchFailureCode } from "../knowledge/searchFailure";
+  knowledgeSearchFailureFromToolResult, knowledgeSearchUnavailableMessage, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode, type KnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import {
   decodeTokenUsage, mergeTokenUsage, normalizeTokenUsage,
   subtractTokenUsage,
@@ -113,7 +113,6 @@ import {
   KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION,
   KNOWLEDGE_INSUFFICIENT_MESSAGE,
-  KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE,
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION,
   type KnowledgeAnswerContractPair
 } from "../knowledge/answerGroundingV5";
@@ -369,9 +368,9 @@ export type RunRecoveryDeps = Readonly<{
     ): Promise<McpRunPlanResult>;
     prepare(
       userId: string,
-      options?: Readonly<{ allowedServerIds?: readonly string[] }>
+      options?: Readonly<{ allowedServerIds?: readonly string[]; allowedToolNames?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
-    prepareProject?(userId: string, serverIds: readonly string[]): Promise<McpRunPlanResult>;
+    prepareProject?(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>): Promise<McpRunPlanResult>;
     router?: McpSemanticRouter;
     routerForRun?(owner: Readonly<{ runId: string; userId: string }>): McpSemanticRouter;
   }>;
@@ -567,6 +566,13 @@ function toolLoopJson(value: unknown, maxBytes: number, code: string): ToolLoopJ
     throw new ToolLoopRecoveryError(code, "Tool-loop state is invalid or too large.");
   }
   return snapshot;
+}
+
+type RecoveryToolUnavailableCode = "artifact_tool_unavailable" | "image_tool_unavailable" |
+  "skill_tool_unavailable" | "vision_model_unavailable";
+
+function recoveryToolUnavailable(code: RecoveryToolUnavailableCode): Error {
+  return Object.assign(new Error(code), { code });
 }
 
 function toolExecutionErrorResult(
@@ -1170,10 +1176,11 @@ async function currentRecoveryMcpDispatchFailure(
   if (!route) return "mcp_accepted_generation_changed";
   try {
     if (!(await context.deps.mcp.filterTools(context.run.userId, [route.tool])).length) return "mcp_tool_access_denied";
+    const selection = { allowedToolNames: [route.tool.namespacedName] };
     const current = context.run.project
       ? context.deps.mcp.prepareProject
-        ? await context.deps.mcp.prepareProject(context.run.userId, [route.serverId]) : null
-      : await context.deps.mcp.prepare(context.run.userId, { allowedServerIds: [route.serverId] });
+        ? await context.deps.mcp.prepareProject(context.run.userId, [route.serverId], selection) : null
+      : await context.deps.mcp.prepare(context.run.userId, { allowedServerIds: [route.serverId], ...selection });
     return currentMcpDispatchFailure(current, route, generationId);
   } catch {
     return "mcp_runtime_unavailable";
@@ -1756,10 +1763,15 @@ async function executePersistedToolCallInContext(
             };
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
       let mcpFailure: McpDispatchFailureCode | null = null;
+      // A process composed without the accepted tool service cannot dispatch
+      // it. That is not a revoked egress destination, so no memory-egress
+      // block is recorded; the call settles with the exact unavailable code.
+      if (isVisionCall && !context.deps.vision) throw recoveryToolUnavailable("vision_model_unavailable");
+      if (isImageCall && !context.deps.images) throw recoveryToolUnavailable("image_tool_unavailable");
       const allowed = isVisionCall
-          ? await context.deps.vision?.authorize(context.run.normalizedRequest.visionAnalysis!) ?? false
+          ? await context.deps.vision!.authorize(context.run.normalizedRequest.visionAnalysis!)
           : isImageCall
-          ? await context.deps.images?.authorize(context.run.normalizedRequest.imagePlan!) ?? false
+          ? await context.deps.images!.authorize(context.run.normalizedRequest.imagePlan!)
           : isRecoveredKnowledgeCall(context, call.name)
           ? (await currentFocusedKnowledgeRecoveryAuthorization(context.deps, {
               ...(context.run.project ? { project: context.run.project } : {}),
@@ -1822,7 +1834,7 @@ async function executePersistedToolCallInContext(
     if (preflightResult) {
       result = preflightResult;
     } else if (isRecoveredSkillCall(context, call.name)) {
-      if (!context.deps.skillTools) throw new Error("skill_tool_unavailable");
+      if (!context.deps.skillTools) throw recoveryToolUnavailable("skill_tool_unavailable");
       const execute = () => context.deps.skillTools!.execute(call, { ...executionContext,
         ...(context.run.project ? { projectId: context.run.project.projectId } : {}) });
       const manifest = decodeFrozenSkillManifest(context.run.normalizedRequest.skills);
@@ -1833,17 +1845,17 @@ async function executePersistedToolCallInContext(
             { version: 1, source: "skill", skillId: skill.skillId, revisionId: skill.revisionId },
             async () => finishResult(await execute())) : await execute();
     } else if (isRecoveredArtifactCall(context, call.name)) {
-      if (!context.deps.artifacts) throw new Error("artifact_tool_unavailable");
+      if (!context.deps.artifacts) throw recoveryToolUnavailable("artifact_tool_unavailable");
       result = await context.deps.artifacts.execute(call, executionContext, { signal });
     } else if (isCheckpointCall) {
       result = await (await defaultWorkspaceCheckpoints()).execute(call, executionContext, signal);
     } else if (isVisionCall) {
-      if (!context.deps.vision) throw new Error("vision_model_unavailable");
+      if (!context.deps.vision) throw recoveryToolUnavailable("vision_model_unavailable");
       result = await context.deps.vision.execute(call, executionContext, signal);
     } else if (isViewImageCall) {
       result = await (await defaultWorkspaceImageViewer()).execute(call, executionContext, signal);
     } else if (isImageCall) {
-      if (!context.deps.images) throw new Error("image_tool_unavailable");
+      if (!context.deps.images) throw recoveryToolUnavailable("image_tool_unavailable");
       result = await context.deps.images.execute(call, executionContext, signal);
     } else if (isRecoveredObservationRead(context, call.name)) {
       result = await executeReadToolResult(await recoveredObservations(context), call, executionContext, signal);
@@ -2039,6 +2051,10 @@ async function executePersistedToolBatch(
     !isRecoveredArtifactCall(context, call.toolName) &&
     !(context.run.normalizedRequest.workspaceCheckpoints && call.toolName === CHECKPOINT_OUTPUTS_TOOL_NAME) &&
     !(context.run.normalizedRequest.visionAnalysis && context.deps.vision && call.toolName === ANALYZE_IMAGE_TOOL_NAME) &&
+    // A running image call is restored only from the image its accepted
+    // binding already saved; without one it stays an unknown outcome and the
+    // paid generation is never repeated.
+    !(context.run.normalizedRequest.imagePlan && context.deps.images && call.toolName === IMAGE_GENERATION_TOOL_NAME) &&
     !isRecoveredKnowledgeCall(context, call.toolName));
   if (ambiguous) {
     throw new ToolLoopRecoveryError(
@@ -2784,14 +2800,13 @@ async function recoverCheckpointedToolLoop(
       }
     }
 
-    function recoveredKnowledgeSearchUnavailable(): boolean {
-      return [...persistedCalls.values()]
+    function recoveredKnowledgeSearchUnavailable(): string | null {
+      return knowledgeSearchUnavailableMessage([...persistedCalls.values()]
         .filter((call) => call.toolName === KNOWLEDGE_SEARCH_TOOL_NAME)
-        .some((call) => {
+        .flatMap((call) => {
           const result = context.knowledgeResults.get(call.providerCallId);
-          return result !== undefined &&
-            knowledgeEvidenceFromToolResult(result)?.outcome === "search_unavailable";
-        });
+          return result ? [result] : [];
+        }));
     }
 
     async function finalizeRecoveredKnowledgeToolLoop(): Promise<void> {
@@ -2810,9 +2825,7 @@ async function recoverCheckpointedToolLoop(
           repository: deps.repository,
           result: {
             finalText: knowledgeScopeLimitedMessage(
-              recoveredKnowledgeSearchUnavailable()
-                ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
-                : KNOWLEDGE_INSUFFICIENT_MESSAGE,
+              recoveredKnowledgeSearchUnavailable() ?? KNOWLEDGE_INSUFFICIENT_MESSAGE,
               run.knowledgeScope?.exclusions
             ),
             ...(currentProviderResponseId

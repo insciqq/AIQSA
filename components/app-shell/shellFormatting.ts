@@ -1,4 +1,5 @@
 import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "@/lib/contracts/workspaceFailure";
+import { CHAT_TITLE_MAX_LENGTH, PERSONAL_FOLDER_NAME_MAX_LENGTH } from "@/lib/contracts/chats";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { CatalogModel } from "@/components/app-shell/types";
 
@@ -82,8 +83,12 @@ export function humanizeErrorCode(code: string): string {
     attachment_not_found: "Attachment not found",
     branch_checkout_failed: "Opening this version failed",
     catalog_malformed: "Catalog response was malformed",
+    chat_title_too_long: `Use at most ${CHAT_TITLE_MAX_LENGTH} characters for the chat title`,
+    folder_name_required: "Enter a folder name",
+    folder_name_too_long: `Use at most ${PERSONAL_FOLDER_NAME_MAX_LENGTH} characters for the folder name`,
     chat_detail_malformed: "Chat detail response was malformed",
     edit_malformed: "Message edit response was malformed",
+    message_delete_conflict: "This message is still in use by another operation. Wait for it to finish, then try deleting again",
     mcp_background_not_supported: "Turn off background mode to use MCP with this model",
     mcp_background_streaming_not_supported:
       "Turn off streaming or background mode to use MCP with this model",
@@ -264,6 +269,20 @@ export async function responseErrorMessageDetails(
   return {
     message: humanizeErrorCode(fallback),
     preserveForComposer: false
+  };
+}
+
+const NAME_FIELD_ERROR_CODES = new Set(["chat_title_too_long", "folder_name_required", "folder_name_too_long"]);
+
+/** Name-contract rejections belong to the field holding the typed value; other failures stay notices. */
+export async function nameSaveFailure(
+  response: Response,
+  fallback: string
+): Promise<Readonly<{ fieldError: string | null; message: string }>> {
+  const details = await responseErrorMessageDetails(response, fallback);
+  return {
+    fieldError: details.code && NAME_FIELD_ERROR_CODES.has(details.code) ? details.message : null,
+    message: details.message
   };
 }
 

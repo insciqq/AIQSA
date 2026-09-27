@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeMemoryUtilityText } from "./querySafety";
+import {
+  MEMORY_UTILITY_TEXT_MAX_CODE_UNITS,
+  sanitizeMemoryUtilityText
+} from "./querySafety";
 
 describe("Memory read query safety boundary", () => {
   it("retains safe multilingual text around a recognized token", () => {
@@ -39,6 +42,22 @@ describe("Memory read query safety boundary", () => {
       expect(sanitizeMemoryUtilityText(value)).toMatchObject({ eligible: false, safeText: "" });
     }
   );
+
+  it("reports text beyond the local budget as too long and returns none of it", () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    const tail = ` token ${secret}; which bakery did I like?`;
+    const oversized = "x".repeat(MEMORY_UTILITY_TEXT_MAX_CODE_UNITS) + tail;
+    expect(sanitizeMemoryUtilityText(oversized)).toMatchObject({
+      eligible: false,
+      safeText: "",
+      tooLong: true
+    });
+    const withinBudget = `${"y".repeat(MEMORY_UTILITY_TEXT_MAX_CODE_UNITS - tail.length)}${tail}`;
+    const safe = sanitizeMemoryUtilityText(withinBudget);
+    expect(safe).toMatchObject({ eligible: true, redacted: true, tooLong: false });
+    expect(safe.safeText).not.toContain(secret);
+    expect(safe.safeText.endsWith("[REDACTED:TOKEN]; which bakery did I like?")).toBe(true);
+  });
 
   it("makes a secret-only query ineligible and leaves high entropy audit-only", () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";

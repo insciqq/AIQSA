@@ -99,4 +99,14 @@ describe("purpose-bound v2 envelopes", () => {
       "secret_encryption_invalid_envelope"
     );
   });
+
+  it("applies a caller's larger plaintext bound symmetrically and keeps the default elsewhere", () => {
+    const options = { maxPlaintextBytes: 2 * 1_048_576 };
+    const large = "x".repeat(1_048_576 + 16);
+    const envelope = encryptSecretEnvelope(large, KEY, CONTEXT, options);
+    expect(decryptSecretEnvelope(envelope, KEY, CONTEXT, options)).toBe(large);
+    expectError(() => decryptSecretEnvelope(envelope, KEY, CONTEXT), "secret_encryption_invalid_envelope");
+    expectError(() => encryptSecretEnvelope("x".repeat(2 * 1_048_576), KEY, CONTEXT, options), "secret_encryption_invalid_envelope");
+    expectError(() => encryptSecretEnvelope("value", KEY, CONTEXT, { maxPlaintextBytes: 64 * 1_048_576 }), "secret_encryption_invalid_envelope");
+  });
 });

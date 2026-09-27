@@ -6,8 +6,22 @@ export type LoginRateLimitDecision = {
   retryAfterSeconds: number;
 };
 
+export type LoginRateLimitCheckOptions = {
+  /**
+   * Ceiling for this check only. The attempt count stays shared, so a key checked under a
+   * lower ceiling keeps its history for later checks under the limiter's own ceiling.
+   */
+  maxAttempts?: number;
+};
+
 export type LoginRateLimiter = {
-  check(key: string): Promise<LoginRateLimitDecision>;
+  check(key: string, options?: LoginRateLimitCheckOptions): Promise<LoginRateLimitDecision>;
+  /**
+   * Returns one attempt admitted by `check` while its window is still open. A successful
+   * attempt releases its own admission instead of resetting a source budget, so earlier
+   * failures from that source keep counting.
+   */
+  release(key: string): Promise<void>;
   reset(key: string): Promise<void>;
 };
 
@@ -94,8 +108,9 @@ export function createFixedWindowLoginRateLimiter(
   }
 
   return {
-    async check(key: string) {
+    async check(key: string, checkOptions: LoginRateLimitCheckOptions = {}) {
       const now = clock();
+      const limit = Math.max(1, checkOptions.maxAttempts ?? maxAttempts);
       sweepExpired(now);
       const existing = store.get(key);
       const bucket =
@@ -106,7 +121,7 @@ export function createFixedWindowLoginRateLimiter(
               resetAtMs: now + windowMs
             };
 
-      if (bucket.count >= maxAttempts) {
+      if (bucket.count >= limit) {
         makeSpaceFor(key, now);
         store.set(key, bucket);
 
@@ -124,6 +139,20 @@ export function createFixedWindowLoginRateLimiter(
         allowed: true,
         retryAfterSeconds: Math.max(0, Math.ceil((bucket.resetAtMs - now) / 1000))
       };
+    },
+    async release(key: string) {
+      const bucket = store.get(key);
+
+      if (!bucket || bucket.resetAtMs <= clock()) {
+        return;
+      }
+
+      // Like the durable store, giving back a window's only attempt closes the window.
+      if (bucket.count > 1) {
+        bucket.count -= 1;
+      } else {
+        store.delete(key);
+      }
     },
     async reset(key: string) {
       store.delete(key);

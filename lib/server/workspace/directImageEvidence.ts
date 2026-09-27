@@ -1,5 +1,6 @@
 import { WorkspaceImageError, type WorkspaceImageDescriptor } from "./imageCapture";
 import { isSafeWorkspaceRelativePath, isWorkspaceOpaqueId } from "@/lib/domain/workspace";
+import { conservativeImageTokens } from "@/lib/domain/imageTokenEstimate";
 
 export type WorkspaceImageEvidence = Readonly<{ consumerKey: string; descriptor: WorkspaceImageDescriptor }>;
 const record = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -39,8 +40,8 @@ export function workspaceImageTokenReserve(messages: readonly unknown[] | undefi
       if (!record(part) || part.type !== "workspace_image") continue;
       const evidence = parseWorkspaceImageEvidence(part.value);
       if (!evidence) throw new WorkspaceImageError("workspace_image_invalid");
-      const d = evidence.descriptor;
-      total += Math.ceil(d.width / 32) * Math.ceil(d.height / 32) * 4 + 1024;
+      // The legacy direct-view path keeps the conservative fallback policy.
+      total += conservativeImageTokens(evidence.descriptor);
     }
   }
   return total;

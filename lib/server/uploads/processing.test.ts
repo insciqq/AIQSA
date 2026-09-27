@@ -148,8 +148,59 @@ describe("attachment processor", () => {
           pageCount: 1,
           parserStatus: "complete",
           status: "partial",
-          truncated: true
+          truncated: true,
+          warnings: ["unreadable_pages", "low_page_coverage", "low_text_density"]
         }
+      }
+    });
+  });
+
+  it("reports inline text cut at the extraction cap as truncated, not complete", async () => {
+    const bytes = Buffer.from(`${"a".repeat(1_000_000)}tail-after-cap`);
+    const process = createAttachmentProcessor({ storage: storage(bytes) });
+
+    const result = await process(record(bytes));
+
+    expect(result.extractedText).toHaveLength(1_000_000);
+    expect(result.extractedText).not.toContain("tail-after-cap");
+    expect(result.metadata).toMatchObject({
+      document: {
+        characterCount: 1_000_000,
+        engine: "inline",
+        extractedTextMaxChars: 1_000_000,
+        parserStatus: "partial",
+        status: "partial",
+        truncated: true,
+        warnings: expect.arrayContaining(["partial_parse", "truncated_oversized_section"])
+      }
+    });
+  });
+
+  it("keeps a parser-side partial result partial even when its text fits", async () => {
+    const bytes = Buffer.from("PK\u0003\u0004docx");
+    const parser = {
+      parse: vi.fn(async () => finalizeParsedDocument({
+        blocks: [],
+        engine: "docling" as const,
+        mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        pageCount: 1,
+        status: "partial" as const,
+        text: "Readable part"
+      }))
+    };
+    const process = createAttachmentProcessor({ parser, storage: storage(bytes) });
+
+    const result = await process(record(bytes, {
+      fileName: "report.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }));
+
+    expect(result.metadata).toMatchObject({
+      document: {
+        parserStatus: "partial",
+        status: "partial",
+        truncated: false,
+        warnings: expect.arrayContaining(["partial_parse"])
       }
     });
   });
@@ -178,6 +229,33 @@ describe("attachment processor", () => {
       }
     });
   });
+
+  it("extracts HTML in the isolated parser process when sidecars are stopped", async () => {
+    const bytes = Buffer.from(
+      "<h1>Report &amp; Notes</h1><script>alert(1)</script><p>A&nbsp;B</p><p>unclosed <a"
+    );
+    const parser = {
+      parse: vi.fn(async () => { throw new DocumentParserError("parser_unavailable"); })
+    };
+    const process = createAttachmentProcessor({ parser, storage: storage(bytes) });
+
+    await expect(process(record(bytes, {
+      fileName: "report.html",
+      mimeType: "text/html"
+    }))).resolves.toEqual({
+      extractedText: "Report & Notes\n\nA B\n\nunclosed <a",
+      metadata: {
+        document: {
+          characterCount: 32,
+          engine: "inline",
+          extractedTextMaxChars: 1_000_000,
+          kind: "html",
+          status: "complete",
+          truncated: false
+        }
+      }
+    });
+  }, 30_000);
 
   it("returns a clear retryable parser code for DOCX when sidecars are stopped", async () => {
     const bytes = Buffer.from("PK\u0003\u0004docx");

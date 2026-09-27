@@ -16,8 +16,17 @@ import {
   estimateApproxTokensFromProjectedParts,
   type ApproxTokenProjectedPart
 } from "../../domain/contextBudget";
-import { safeExternalHref } from "../../domain/links";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import {
+  answerCitationsFromGrounding,
+  foldAnswerCitations,
+  projectAnswerCitation
+} from "../../domain/answerCitations";
+import {
+  foldReasoningEntries,
+  storedReasoningFoldItem,
+  type ReasoningFoldItem
+} from "../../domain/answerReasoning";
 import {
   WORKSPACE_EXPORT_MAX_ATTEMPTS,
   isRetryableWorkspaceExportErrorCode
@@ -30,7 +39,7 @@ import {
   type ThreadWorkspaceOutputStatus
 } from "../../contracts/workspace";
 import { foldWorkspaceActivityEntries, workspaceActivityEntryId, workspaceLifecycleActivity } from "../workspace/activityProjection";
-import { projectThreadSearchSources } from "../../domain/searchSources";
+import { collectThreadSearchSources } from "../../domain/searchSources";
 import { latestGeneratedArtifactsForAnswer } from "../../domain/generatedArtifacts";
 import { decodeAssistantIdentity } from "../../contracts/assistants";
 import {
@@ -39,6 +48,7 @@ import {
   CHAT_BRANCH_PREVIEW_MAX_LENGTH,
   CHAT_HISTORY_CURSOR_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
+  THREAD_SEARCH_SOURCE_MAX_ITEMS,
   boundedChatBranchPreview,
   type ChatContextStats
 } from "../../contracts/chats";
@@ -1132,49 +1142,8 @@ export function summarizeMessageRunWorkspaceActivity(
   };
 }
 
-function safeJsonSnippet(value: unknown): string {
-  if (typeof value === "string") {
-    return value.trim().slice(0, 1200);
-  }
-
-  try {
-    return JSON.stringify(value, null, 2).slice(0, 1200);
-  } catch {
-    return "";
-  }
-}
-
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function reasoningTextFromValue(value: unknown): string | null {
-  if (typeof value === "string") {
-    return value.trim() || null;
-  }
-
-  if (Array.isArray(value)) {
-    const parts = value.map(reasoningTextFromValue).filter((text): text is string => Boolean(text));
-    return parts.length > 0 ? parts.join("\n\n") : null;
-  }
-
-  if (!isRecord(value)) {
-    const text = safeJsonSnippet(value);
-    return text || null;
-  }
-
-  for (const key of ["delta", "summary", "reasoning", "text"]) {
-    if (key in value) {
-      return reasoningTextFromValue(value[key]);
-    }
-  }
-
-  if (Object.keys(value).length === 0) {
-    return null;
-  }
-
-  const text = safeJsonSnippet(value);
-  return text || null;
 }
 
 function artifactType(payload: unknown): string | null {
@@ -1198,39 +1167,18 @@ function contextCompactionFromArtifactPayloads(
   return latest;
 }
 
-function reasoningText(payload: unknown): string | null {
-  const inner = artifactInnerPayload(payload);
-  return reasoningTextFromValue(inner);
+/** Stored rows are read through the write projection, never rewritten. */
+function storedReasoningItem(payload: unknown): ReasoningFoldItem {
+  return artifactType(payload) === "reasoning"
+    ? storedReasoningFoldItem(artifactInnerPayload(payload))
+    : { kind: "other" };
 }
 
-function citationFromPayload(payload: unknown, fallbackIndex: number): ThreadCitation | null {
-  const inner = artifactInnerPayload(payload);
-  if (typeof inner === "string" && inner.trim()) {
-    const url = safeExternalHref(inner);
-    if (!url) return null;
-    return {
-      index: fallbackIndex,
-      title: `Source ${fallbackIndex}`,
-      url
-    };
-  }
-
-  if (!isRecord(inner)) return null;
-  const url = safeExternalHref(optionalString(inner.url) ?? optionalString(inner.href));
-  if (!url) return null;
-  const index = typeof inner.index === "number" && Number.isSafeInteger(inner.index) &&
-    inner.index >= 0
-    ? inner.index
-    : fallbackIndex;
-  const snippet = optionalString(inner.snippet);
-  const source = optionalString(inner.source);
-  return {
-    index,
-    ...(snippet ? { snippet } : {}),
-    ...(source ? { source } : {}),
-    title: optionalString(inner.title) ?? `Source ${index}`,
-    url
-  };
+function storedCitation(payload: unknown): ThreadCitation[] {
+  const citation = artifactType(payload) === "citation"
+    ? projectAnswerCitation(artifactInnerPayload(payload))
+    : null;
+  return citation ? [citation] : [];
 }
 
 function knowledgeCitation(
@@ -1269,30 +1217,27 @@ export function summarizeMessageRunArtifacts(
     .filter((display) => display !== null).at(-1) ?? null;
   const artifactPayloads = run.events.map((event) => event.payload);
   const contextCompaction = contextCompactionFromArtifactPayloads(artifactPayloads);
-  const reasoningPayloads = artifactPayloads.filter(
-    (payload) => artifactType(payload) === "reasoning"
-  );
-  const reasoningTexts = reasoningPayloads
-    .map(reasoningText)
-    .filter((text): text is string => Boolean(text));
-  const citationPayloads = artifactPayloads.filter(
-    (payload) => artifactType(payload) === "citation"
-  );
-  const citations = grounding ? grounding.citations.map((citation, index) => ({
-    index: index + 1, title: citation.title || `Source ${index + 1}`, url: citation.url
-  })) : citationPayloads
-    .map((payload, index) => citationFromPayload(payload, index + 1))
-    .filter((citation): citation is ThreadCitation => Boolean(citation));
+  // One entry per merged thinking block or complete provider item, however
+  // many rows (or legacy per-delta rows) carry it; the reader portion is bounded.
+  const reasoning = foldReasoningEntries(artifactPayloads.map(storedReasoningItem));
+  const reasoningTexts = reasoning.entries;
+  // Every provider response and tool round adds citations; the reader gets
+  // each cited URL once, bounded and marked.
+  const citationList = foldAnswerCitations(grounding
+    ? answerCitationsFromGrounding(grounding.citations)
+    : artifactPayloads.flatMap(storedCitation));
+  const citations = citationList.citations;
   const searchPayloads = artifactPayloads.filter(
     (payload) => artifactType(payload) === "search"
   );
-  const sources = projectThreadSearchSources([
+  const sourceList = collectThreadSearchSources([
     ...run.searchRuns.flatMap((searchRun) =>
       sourceValuesFromSearchRun(searchRun.artifacts)
     ),
     ...searchPayloads.flatMap(sourceValuesFromSearchPayload),
     ...(grounding ? [citations] : [])
-  ]);
+  ], THREAD_SEARCH_SOURCE_MAX_ITEMS);
+  const sources = sourceList.sources;
   const generatedImages = (run.workspaceProducedAttachments ?? []).flatMap((attachment) => {
     const image = attachment.origin === "IMAGE_OUTPUT" && isRecord(attachment.metadata) ? decodeThreadGeneratedImage(attachment.metadata.image) : null;
     return image && image.attachmentId === attachment.id ? [image] : [];
@@ -1386,6 +1331,7 @@ export function summarizeMessageRunArtifacts(
 
   return {
     citations,
+    ...(citationList.truncated ? { citationsTruncated: true as const } : {}),
     ...(contextCompaction ? { contextCompaction } : {}),
     ...(skillCatalogOmittedCount > 0 ? { skillCatalogOmittedCount } : {}),
     ...(generatedArtifacts.length > 0 ? { generatedArtifacts } : {}),
@@ -1398,7 +1344,9 @@ export function summarizeMessageRunArtifacts(
     ...(memoryStatus ? { memoryStatus } : {}),
     ...(memorySources.length > 0 ? { memorySources: [...memorySources] } : {}),
     reasoningText: reasoningTexts,
+    ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
     sources,
+    ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== null ? { workDurationMs } : {})
   };
 }
@@ -1634,7 +1582,7 @@ export function createPrismaChatRepository(
       });
     },
     createFolder: async ({ name, parentId, userId }) => {
-      const trimmed = name.trim().slice(0, 60);
+      const trimmed = name.trim();
       if (!trimmed) {
         return null;
       }
@@ -2041,7 +1989,7 @@ export function createPrismaChatRepository(
       }));
     },
     updateFolder: async ({ defaultKnowledgePlan, folderId, name, parentId, projectMemory, userId }) => {
-      const trimmed = typeof name === "string" ? name.trim().slice(0, 60) : undefined;
+      const trimmed = typeof name === "string" ? name.trim() : undefined;
       if (typeof name === "string" && !trimmed) {
         return null;
       }
@@ -2416,7 +2364,7 @@ export function createPrismaChatRepository(
               ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
               ...(folderId !== undefined ? { projectFolderId: folderId } : {}),
               ...(pinned !== undefined ? { pinned } : {}),
-              ...(title ? { title: title.trim().slice(0, 80), titleRevision: { increment: 1 } } : {}),
+              ...(title ? { title: title.trim(), titleRevision: { increment: 1 } } : {}),
               ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
             },
             select: chatSummarySelect,
@@ -2516,7 +2464,7 @@ export function createPrismaChatRepository(
                   : {}),
                 ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
                 ...(pinned !== undefined ? { pinned } : {}),
-                ...(title ? { title: title.trim().slice(0, 80), titleRevision: { increment: 1 } } : {}),
+                ...(title ? { title: title.trim(), titleRevision: { increment: 1 } } : {}),
                 ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
               },
               select: chatSummarySelect,

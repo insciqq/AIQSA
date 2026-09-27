@@ -3,7 +3,12 @@ import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical"
 import { projectMemoryHistorySafeText } from "./safety";
 
 export const MEMORY_TOOL_EVENT_PROJECTION_VERSION = "memory-tool-event-v2";
+// Settled calls one INDEX_HISTORY job may rebuild. It sizes the job's index
+// page; retained events and later pages are not counted against it.
 export const MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS = 4_096;
+// Keyset read size. Raw call results are projected and released per read so
+// a page never holds every source payload of a long chat at once.
+export const MEMORY_TOOL_EVENT_SOURCE_READ_BATCH = 256;
 export const MEMORY_TOOL_EVENT_MAX_SAFE_TEXT_LENGTH = 2_000;
 const MEMORY_TOOL_EVENT_MAX_SEARCH_TEXT_LENGTH = 4_000;
 

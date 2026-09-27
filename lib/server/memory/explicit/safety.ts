@@ -8,18 +8,24 @@ export type {
   MemorySecretPolicyAction,
   MemorySecretRedactionResult,
   MemorySecretSourceMapEntry,
-  MemorySecretSpan
+  MemorySecretSourceRange,
+  MemorySecretSpan,
+  MemorySecretWindowedRedactionResult,
+  MemorySecretWindowOptions
 } from "./secretParser";
 export {
   MEMORY_SECRET_FINDINGS,
   MEMORY_SECRET_REDACTION_PLACEHOLDER,
+  MEMORY_UNPROCESSED_TEXT_PLACEHOLDER,
   memoryRedactionHasSourceText,
   memoryProjectionHasSourceText,
   memoryProjectionContainsRedaction,
+  memorySecretJoinIsSafe,
   memorySecretSafeObjectKey,
   memoryValueContainsRecognizedSecret,
   parseMemorySecret,
-  redactMemorySecrets
+  redactMemorySecrets,
+  redactMemorySecretsInWindows
 } from "./secretParser";
 
 /**

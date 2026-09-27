@@ -396,8 +396,11 @@ describe("Workspace coordinator", () => {
     const running = vi.spyOn(value.repository, "markSessionRunning");
     await value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
       modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace });
-    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledTimes(failed ? 2 : 1);
-    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith(expect.objectContaining({ status: failed ? "FAILED" : "RESTORED" }));
+    // A failed restore leaves the project untouched; no second, emptying restore runs.
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledOnce();
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith(failed
+      ? expect.objectContaining({ status: "FAILED", failureCode: "workspace_archive_invalid" })
+      : expect.objectContaining({ status: "RESTORED" }));
     expect(vi.mocked(value.repository.settleContinuationSeed!).mock.invocationCallOrder[0]).toBeLessThan(running.mock.invocationCallOrder[0]!);
     expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
   });
@@ -406,11 +409,15 @@ describe("Workspace coordinator", () => {
     const value = fixture();
     Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token", storageKey: "user_1/input", byteSize: 11, checksum: "a".repeat(64) })),
       settleContinuationSeed: vi.fn(async () => failure !== "settlement") });
-    value.runtime.restoreProjectArchive = vi.fn(async () => { throw new WorkspaceRuntimeError("workspace_archive_invalid"); });
-    if (failure === "settlement") vi.mocked(value.runtime.restoreProjectArchive).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_archive_invalid")).mockResolvedValueOnce(undefined);
+    value.runtime.restoreProjectArchive = vi.fn(async () => {
+      throw new WorkspaceRuntimeError(failure === "cleanup" ? "workspace_execution_cleanup_failed" : "workspace_archive_invalid");
+    });
     const running = vi.spyOn(value.repository, "markSessionRunning");
     await expect(value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
       modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace })).rejects.toMatchObject({ code: "workspace_execution_cleanup_failed" });
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledOnce();
+    // Unproven cleanup keeps the claim for lease-expiry recovery instead of settling FAILED.
+    if (failure === "cleanup") expect(value.repository.settleContinuationSeed).not.toHaveBeenCalled();
     expect(running).not.toHaveBeenCalled();
     expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
   });
@@ -503,13 +510,19 @@ describe("Workspace coordinator", () => {
     const data = JSON.stringify({ cookies: [], origins: [] });
     await value.registry.register({ modelRunId: value.runId, modelRunToolCallId: "browser_start", runtimeExecSessionId: "browser_process", sessionId: value.workspace.sessionId });
     vi.mocked(value.runtime.collectBrowserSessions).mockResolvedValueOnce({ files: [outputStream(data, "shop.example.json")], skipped: ["browser_session_too_large"] });
+    const drained: unknown[] = [];
+    vi.mocked(value.repository.saveBrowserSessions).mockImplementationOnce(async (input) => {
+      for await (const item of input.files) drained.push(item);
+      return { saved: 1, unchanged: 0, skipped: { browser_session_too_large: 1 } };
+    });
     const request = { runId: value.runId, userId: "user_1", workspace: value.workspace };
     if (mode === "handoff") await expect(value.coordinator.handoff(request)).resolves.toEqual({ status: "ready" });
     else await expect(value.coordinator.settle({ ...request, outcome: "cancelled" })).resolves.toMatchObject({ quiesced: true, sessionSettled: true });
     expect(value.repository.saveBrowserSessions).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      runId: value.runId, userId: "user_1",
-      files: [{ fileName: "shop.example.json", bytes: Buffer.from(data) }], skipped: ["browser_session_too_large"]
+      runId: value.runId, userId: "user_1", skipped: ["browser_session_too_large"]
     }));
+    // The store pulls states itself, one at a time, after authorizing the run.
+    expect(drained).toEqual([{ fileName: "shop.example.json", bytes: Buffer.from(data) }]);
     expect(vi.mocked(value.runtime.terminateExecutions).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(value.runtime.collectBrowserSessions).mock.invocationCallOrder[0]!);
     expect(vi.mocked(value.repository.saveBrowserSessions).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(value.runtime.retireSessionOperation!).mock.invocationCallOrder[0]!);
     if (mode === "handoff") expect(value.repository.saveBrowserSessions).toHaveBeenCalledWith(expect.objectContaining({ handoffToken: "lease_token_1" }));
@@ -533,6 +546,21 @@ describe("Workspace coordinator", () => {
     vi.mocked(value.runtime.collectBrowserSessions).mockRejectedValueOnce(new Error("synthetic private cookie"));
     await expect(value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace })).resolves.toEqual({ status: "ready" });
     expect(value.repository.saveBrowserSessions).toHaveBeenCalledWith(expect.objectContaining({ files: [], skipped: ["browser_session_read_failed"] }));
+  });
+
+  it.each(["rejected", "reported"] as const)("records a %s whole-save failure as a content-free code without failing handoff", async (mode) => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    if (mode === "rejected") vi.mocked(value.repository.saveBrowserSessions).mockRejectedValueOnce(new Error("synthetic private cookie"));
+    else vi.mocked(value.repository.saveBrowserSessions).mockResolvedValueOnce({ saved: 1, unchanged: 0, skipped: {}, failure: "browser_session_save_failed" });
+    await expect(value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace })).resolves.toEqual({ status: "ready" });
+    const lines = writer.mock.calls.map(([line]) => String(line));
+    const entries = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.code === "workspace_browser_session_save_failed");
+    expect(entries).toEqual([expect.objectContaining({ subsystem: "workspace", outcome: "failed", action: "skip" })]);
+    expect(lines.join("\n")).not.toContain("synthetic");
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("prepares private accepted secrets once before the first command, preserving the accepted run on later calls", async () => {

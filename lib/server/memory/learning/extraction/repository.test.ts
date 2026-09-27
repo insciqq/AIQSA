@@ -124,6 +124,28 @@ describe("automatic-learning source admission", () => {
       id === "target")?.safeText).toBe(longText);
   });
 
+  it("keeps a target longer than one input with its bounded prior context", () => {
+    const longText = "Background paragraph for a long report. ".repeat(2_000) +
+      "My usual response language is French.";
+    expect(longText.length).toBeGreaterThan(24_000);
+    const messages = [
+      userMessage("u1", null, "older user"),
+      assistantMessage("a1", "u1", "older assistant"),
+      userMessage("u2", "a1", "x".repeat(3_000)),
+      assistantMessage("a2", "u2", "y".repeat(3_000)),
+      userMessage("target", "a2", longText)
+    ];
+    const snapshot = sourceSnapshot(messages);
+    // The target is read in pages; the prior-context allowance is unchanged.
+    expect(boundedMemoryFactContextMessageIds(snapshot, "target"))
+      .toEqual(["u1", "a1", "u2", "a2", "target"]);
+    expect(boundedMemoryFactContextMessageIds(sourceSnapshot([
+      userMessage("u2", null, "x".repeat(4_500)),
+      assistantMessage("a2", "u2", "y".repeat(3_600)),
+      userMessage("target", "a2", longText)
+    ]), "target")).toEqual(["target"]);
+  });
+
   it("never skips an oversized or tainted nearest group to reach older context", () => {
     const oversized = [
       userMessage("u1", null, "older user"),

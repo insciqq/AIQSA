@@ -9,6 +9,7 @@ import {
 } from "../providers/anthropicMessages";
 import { calculateContextBudgetLimits } from "../../domain/contextBudget";
 import { createCompatibleResponsesAdapter } from "../providers/compatibleResponses";
+import { createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
 import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 import { runProviderToolLoop } from "./providerToolLoop";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
@@ -1155,6 +1156,35 @@ describe("context-length rejection rebuild", () => {
     expect(dispatched[1]?.contextCompactionRebuild).toEqual({ version: 1, round: 1,
       budgetTokens: Math.floor(estimate(dispatched[0]!) * 0.75) });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+  });
+
+  it("fails a compatible dispatch lost after delivery as unknown, keeping its usage unknown and never rebuilding", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => { throw new TypeError("synthetic connection lost after dispatch"); });
+    const adapter = createCompatibleResponsesAdapter({ client: createFetchOpenAIResponsesClient({ apiKey: "synthetic",
+      baseUrl: "https://lb.example.test/v1", fetchFn, initialRequestRetry: { maxAttempts: 3, sleep: async () => undefined },
+      requestIsolation: true }) });
+    const dispatched: ProviderRunRequest[] = [];
+    const onUsage = vi.fn();
+    const outcome = await runProviderToolLoop({
+      adapter: { buildRequestPreview: adapter.buildRequestPreview,
+        stream: (roundRequest, options) => { dispatched.push(roundRequest); return adapter.stream(roundRequest, options); } },
+      allowContextRebuild: true, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 }, executeTool: vi.fn(),
+      initialRequest: initial({ provider: "openai-compatible" }),
+      onUsage: (usage, _request, context) => onUsage(usage, context), parallelToolCalls: false,
+      prepareRequest: (roundRequest) => {
+        const budgeted = applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: roundRequest });
+        if (!budgeted.ok) throw Object.assign(new Error(budgeted.error.message), { code: budgeted.error.code });
+        return budgeted.request;
+      },
+      tools: [alpha]
+    });
+    expect(outcome).toMatchObject({ status: "failed", failure: { code: "provider_request_outcome_unknown", stage: "provider",
+      message: expect.stringMatching(/outcome and any provider charge are unknown/u) } });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(dispatched).toHaveLength(1);
+    // The dispatched round keeps a partial record without invented counts.
+    expect(onUsage.mock.calls).toEqual([[{}, { completeness: "partial", round: 1 }]]);
   });
 
   it("fails with the provider's refusal when the tightened budget cannot hold the irreducible request", async () => {

@@ -9,6 +9,7 @@ import { fallbackCatalogModel } from "@/components/app-shell/controlDefaults";
 import {
   errorMessage,
   exportFileBaseName,
+  nameSaveFailure,
   responseErrorMessage
 } from "@/components/app-shell/shellFormatting";
 import { chatRouteForChat, chatSendUnderWay, writeChatRoute } from "@/components/app-shell/chatRoute";
@@ -17,6 +18,7 @@ import type {
   Catalog,
   CatalogModel,
   ChatDetail,
+  NameSaveResult,
   WorkspaceChatSummary,
   Notice,
   RunEventView,
@@ -48,6 +50,7 @@ import {
   composerSessionKey,
   composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
+  projectIdFromComposerSessionKey,
   selectComposerSession,
   type ComposerSessionKey,
   useComposerSessionStore
@@ -68,7 +71,11 @@ import {
   type ThreadSnapshot
 } from "@/components/app-shell/threadStore";
 import { sortChatsByFavoriteThenUpdatedAt, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import { mergeWorkspaceProjectDrafts } from "@/components/app-shell/workspaceProjectDraftMerge";
+import {
+  chatScopeProjectId,
+  mergeWorkspaceProjectDrafts,
+  nextChatInScope
+} from "@/components/app-shell/workspaceProjectDraftMerge";
 import type { WorkspaceChatMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
 
 type MutableRef<T> = {
@@ -80,6 +87,16 @@ type ActivateChatOptions = {
   preserveControls?: boolean;
   resumeRuns?: boolean;
 };
+
+/**
+ * Opens what replaces a removed active chat inside its scope (`null` for
+ * personal): `next`, or the scope's blank chat. The address follows through
+ * `replaceState`, so the removal adds no history entry.
+ */
+export type RemovedChatFallback = (
+  scopeProjectId: string | null,
+  next: WorkspaceChatSummary | null
+) => Promise<unknown> | void;
 
 export type OlderPageLoadOutcome = "failed" | "prepended" | "reset";
 
@@ -503,8 +520,9 @@ export function useWorkspaceActions({
     return messages;
   }
 
-  function protectedThreadChatIds(): Set<string> {
-    const protectedChatIds = new Set(chatDetailRequestsRef.current.keys());
+  /** Chats whose composer still owns a send, an edit or an upload in flight. */
+  function pendingComposerChatIds(): Set<string> {
+    const pendingChatIds = new Set<string>();
     const composerState = useComposerSessionStore.getState();
     for (const sessionKey of Object.keys(composerState.sessionsByKey) as ComposerSessionKey[]) {
       const session = composerState.sessionsByKey[sessionKey];
@@ -515,9 +533,17 @@ export function useWorkspaceActions({
           session?.pendingSend ||
           (session?.pendingUploadGenerations.length ?? 0) > 0)
       ) {
-        protectedChatIds.add(sessionChatId);
+        pendingChatIds.add(sessionChatId);
       }
     }
+    return pendingChatIds;
+  }
+
+  function protectedThreadChatIds(): Set<string> {
+    const protectedChatIds = new Set([
+      ...chatDetailRequestsRef.current.keys(),
+      ...pendingComposerChatIds()
+    ]);
     for (const cachedChatId of Object.keys(useThreadStore.getState().threadsByChatId)) {
       if (chatHasActiveStream(cachedChatId) || chatHasPendingThreadMutation(cachedChatId)) {
         protectedChatIds.add(cachedChatId);
@@ -572,7 +598,9 @@ export function useWorkspaceActions({
     const activeChat = activeId
       ? useWorkspaceStore.getState().chats.find((candidate) => candidate.id === activeId)
       : null;
-    if (!activeChat) {
+    // The Project owner applies a Project chat's controls; the personal
+    // catalog never replaces them.
+    if (!activeChat || chatScopeProjectId(activeChat) !== null) {
       return false;
     }
 
@@ -879,7 +907,14 @@ export function useWorkspaceActions({
         let recoveredTemporaryDetail: ChatDetail | null = null;
         let recoveredTemporarySummary: WorkspaceChatSummary | null = null;
         let targetProjectId: string | null = null;
-        if (targetActiveChatId && !nextChats.some((chat) => chat.id === targetActiveChatId)) {
+        // A Project chat its owner already admitted needs no classification.
+        const knownProjectTarget = useWorkspaceStore.getState().chats.some((chat) =>
+          chat.id === targetActiveChatId && chatScopeProjectId(chat) !== null);
+        if (
+          targetActiveChatId &&
+          !knownProjectTarget &&
+          !nextChats.some((chat) => chat.id === targetActiveChatId)
+        ) {
           try {
             // One detail read separates a readable Project chat, which is never
             // admitted here, from a hidden personal one.
@@ -924,20 +959,27 @@ export function useWorkspaceActions({
         const mergedFolders = preserveChangesDuringRead(before.folders, current.folders, body.folders);
         useWorkspaceStore.getState().setFolders(mergedFolders);
         useWorkspaceStore.getState().setChats(mergedChats);
+        // Only chats this personal read removed lose their composer and
+        // thread: Project chats stay in `mergedChats`, and a send, edit or
+        // upload in flight keeps its session until it settles.
         const nextChatIds = new Set(mergedChats.map((chat) => chat.id));
         const nextFolderIds = new Set(mergedFolders.map((folder) => folder.id));
+        const pendingChatIds = pendingComposerChatIds();
+        const retainedChatId = (chatId: string) =>
+          nextChatIds.has(chatId) || pendingChatIds.has(chatId) || chatHasActiveStream(chatId);
         const composerSessionKeys = Object.keys(
           useComposerSessionStore.getState().sessionsByKey
         ) as ComposerSessionKey[];
         for (const sessionKey of composerSessionKeys) {
           const sessionChatId = chatIdFromComposerSessionKey(sessionKey);
-          const sessionFolderId = folderIdFromComposerSessionKey(sessionKey);
-          if (
-            sessionChatId &&
-            !nextChatIds.has(sessionChatId) &&
-            !chatHasActiveStream(sessionChatId)
-          ) {
-            useComposerSessionStore.getState().removeSession(sessionKey);
+          // Project blank folders are not personal folders.
+          const sessionFolderId = projectIdFromComposerSessionKey(sessionKey) === null
+            ? folderIdFromComposerSessionKey(sessionKey)
+            : null;
+          if (sessionChatId) {
+            if (!retainedChatId(sessionChatId)) {
+              useComposerSessionStore.getState().removeSession(sessionKey);
+            }
           } else if (sessionFolderId && !nextFolderIds.has(sessionFolderId)) {
             useComposerSessionStore.getState().removeSession(sessionKey);
             if (
@@ -949,7 +991,7 @@ export function useWorkspaceActions({
           }
         }
         for (const cachedChatId of Object.keys(useThreadStore.getState().threadsByChatId)) {
-          if (!nextChatIds.has(cachedChatId) && !chatHasActiveStream(cachedChatId)) {
+          if (!retainedChatId(cachedChatId)) {
             useThreadStore.getState().removeThread(cachedChatId);
             useRunSurfaceStore.getState().removeSurface(cachedChatId);
           }
@@ -969,11 +1011,17 @@ export function useWorkspaceActions({
             }
             return await activateChat(nextActive, {
               catalogOverride: activationCatalog,
-              preserveControls: options.preserveControls,
+              // A Project chat keeps the controls its Project owner applied.
+              preserveControls: options.preserveControls || chatScopeProjectId(nextActive) !== null,
               resumeRuns: options.resumeRuns
             });
           }
           options.onTargetUnavailable?.(targetProjectId);
+        } else if (
+          projectIdFromComposerSessionKey(useComposerSessionStore.getState().activeSessionKey) !== null
+        ) {
+          // A personal read leaves an open Project's blank chat to its owner.
+          return null;
         }
 
         activateBlankWorkspace();
@@ -1163,7 +1211,10 @@ export function useWorkspaceActions({
     }
   }
 
-  async function deleteChat(chat: WorkspaceChatSummary) {
+  async function deleteChat(
+    chat: WorkspaceChatSummary,
+    activateFallback: RemovedChatFallback = activatePersonalFallback
+  ) {
     if (chatHasActiveStream(chat.id)) {
       setNotice({
         kind: "error",
@@ -1180,7 +1231,8 @@ export function useWorkspaceActions({
       const source = await resolveChatSource(chat.id);
       const archived = await archiveChatRequest(chat.id, source.source.sourceRevision);
 
-      const nextActive = useWorkspaceStore.getState().chats.find((candidate) => candidate.id !== chat.id) ?? null;
+      const scopeProjectId = chatScopeProjectId(chat);
+      const nextActive = nextChatInScope(useWorkspaceStore.getState().chats, chat.id, scopeProjectId);
       useWorkspaceStore.getState().updateChats((current) => current.filter((candidate) => candidate.id !== chat.id));
       useWorkspaceStore.getState().removeNavigationChat(chat.id);
       useThreadStore.getState().removeThread(chat.id);
@@ -1223,11 +1275,7 @@ export function useWorkspaceActions({
       });
 
       if (activeChatIdRef.current === chat.id) {
-        if (nextActive) {
-          await activateChat(nextActive);
-        } else {
-          activateBlankWorkspace();
-        }
+        await activateFallback(scopeProjectId, nextActive);
       }
     } catch (error) {
       setNotice({
@@ -1237,10 +1285,22 @@ export function useWorkspaceActions({
     }
   }
 
-  async function renameChat(chat: WorkspaceChatSummary) {
+  /**
+   * Without a Project owner a removed chat falls back within the personal
+   * scope; a Project chat falls back to the personal blank chat.
+   */
+  async function activatePersonalFallback(
+    scopeProjectId: string | null,
+    next: WorkspaceChatSummary | null
+  ) {
+    if (scopeProjectId === null && next) await activateChat(next);
+    else activateBlankWorkspace();
+  }
+
+  async function renameChat(chat: WorkspaceChatSummary): Promise<NameSaveResult> {
     const title = chatMutation.editingTitle.trim();
     if (!title) {
-      return;
+      return { fieldError: null, ok: false };
     }
 
     try {
@@ -1253,7 +1313,9 @@ export function useWorkspaceActions({
       });
 
       if (!response.ok) {
-        throw new Error(`chat_rename_failed_${response.status}`);
+        const failure = await nameSaveFailure(response, `chat_rename_failed_${response.status}`);
+        if (failure.fieldError) return { fieldError: failure.fieldError, ok: false };
+        throw new Error(failure.message);
       }
 
       const apiChat = decodeChatSummaryResponse(await response.json());
@@ -1265,11 +1327,13 @@ export function useWorkspaceActions({
       mergeChatIntoList(updated);
       chatMutation.finishEditing();
       setNotice(null);
+      return { ok: true };
     } catch (error) {
       setNotice({
         kind: "error",
         text: errorMessage(error)
       });
+      return { fieldError: null, ok: false };
     }
   }
 

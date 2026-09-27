@@ -460,6 +460,59 @@ describe("recall round projection", () => {
     ]);
   });
 
+  it("leaves a turn beyond round capacity to its recall chunks", () => {
+    const messages = [
+      message({
+        createdAt: "2026-08-10T10:00:00.000Z",
+        id: "huge-user",
+        parentMessageId: null,
+        role: "user",
+        text: "Long travel diary entry, day by day. ".repeat(6_800)
+      }),
+      message({
+        createdAt: "2026-08-10T10:01:00.000Z",
+        id: "huge-assistant",
+        influencedByMessageIds: ["huge-user"],
+        parentMessageId: "huge-user",
+        role: "assistant",
+        text: "Thanks for the diary."
+      }),
+      message({
+        createdAt: "2026-08-10T10:02:00.000Z",
+        id: "small-user",
+        parentMessageId: "huge-assistant",
+        role: "user",
+        text: "I am back in Helsinki."
+      })
+    ];
+    const snapshot = buildMemorySafeSourceSnapshot({
+      activeLeafMessageId: "small-user",
+      branchGeneration: 0,
+      chatId: "chat-rounds",
+      folderId: null,
+      messages,
+      mode: "NORMAL",
+      sourceContentHash: "e".repeat(64),
+      sourceRevision: 0,
+      timeZone: "UTC",
+      userId: "owner"
+    });
+    const chunks = chunkMemoryRecallProjection(snapshot).map((chunk) => ({
+      ...chunk,
+      id: memorySha256({ chunk: chunk.contentHash })
+    }));
+    expect(new Set(chunks.flatMap((chunk) =>
+      chunk.messageJoins.map(({ messageId }) => messageId))))
+      .toEqual(new Set(["huge-user", "huge-assistant", "small-user"]));
+
+    const rounds = projectMemoryRecallRounds(snapshot, chunks);
+
+    expect(rounds.map((round) => ({
+      messageIds: round.messageJoins.map(({ messageId }) => messageId),
+      ordinal: round.ordinal
+    }))).toEqual([{ messageIds: ["small-user"], ordinal: 0 }]);
+  });
+
   it("bounds two-sided search keys without splitting non-BMP text", () => {
     const contextualFraming = "Contextual narrative:\nx\n\nRaw round:\n";
     const continuationMarker = " memory round continuation ";

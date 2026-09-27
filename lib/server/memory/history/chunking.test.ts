@@ -3,6 +3,7 @@ import { textMessageContent } from "../../../domain/content";
 import { memorySha256 } from "../persistence/lexical";
 import {
   chunkMemoryRecallProjection,
+  chunkMemoryRecallProjectionPage,
   MemoryHistoryChunkingError
 } from "./chunking";
 import { memoryHistoryChunkId } from "./contract";
@@ -314,6 +315,71 @@ describe("Memory history recall chunking", () => {
     ]);
     expect(chunks.map((chunk) => chunk.turnGroupIds.length)).toEqual([1, 2]);
     expect(chunks[1]?.overlapFromPreviousTurnGroupIds).toEqual([]);
+  });
+
+  it("bounds each call, not the whole history, and reports an exact prefix", () => {
+    const options = {
+      maxApproxTokens: 512,
+      maxCharacters: 350,
+      maxChunks: 2,
+      maxMessagesPerChunk: 4,
+      maxTurnGroupsPerChunk: 2,
+      overlapTurnGroups: 1
+    };
+    const whole = chunkMemoryRecallProjection(multiTurnSnapshot(4), {
+      ...options,
+      maxChunks: 16
+    });
+    expect(whole).toHaveLength(3);
+
+    // Two pages of the same history each fit the per-call bound independently.
+    const firstPage = chunkMemoryRecallProjection(multiTurnSnapshot(2), options);
+    expect(firstPage).toHaveLength(1);
+    expect(firstPage[0]?.contentHash).toBe(whole[0]?.contentHash);
+
+    const overflowing = chunkMemoryRecallProjectionPage(multiTurnSnapshot(4), options);
+    expect(overflowing.complete).toBe(false);
+    expect(overflowing.chunks.map((chunk) => chunk.contentHash))
+      .toEqual(whole.slice(0, 2).map((chunk) => chunk.contentHash));
+    // The third chunk only repeats turn 2 as overlap; turn 3 alone is omitted.
+    expect(overflowing.omittedMessageIds).toEqual(["assistant-3", "user-3"]);
+    expect(() => chunkMemoryRecallProjection(multiTurnSnapshot(4), options))
+      .toThrowError(new MemoryHistoryChunkingError(
+        "memory_history_chunk_limit_exceeded"
+      ));
+
+    const fitting = chunkMemoryRecallProjectionPage(multiTurnSnapshot(4), {
+      ...options,
+      maxChunks: 3
+    });
+    expect(fitting).toMatchObject({ complete: true, omittedMessageIds: [] });
+    expect(fitting.chunks.map((chunk) => chunk.contentHash))
+      .toEqual(whole.map((chunk) => chunk.contentHash));
+  });
+
+  it("chunks a turn above 200k and reports a message with withheld text", () => {
+    const blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo".repeat(3_500);
+    const snapshot = multiTurnSnapshot(2, (role, ordinal) =>
+      role === "user" && ordinal === 0
+        ? "Long travel diary entry, day by day. ".repeat(6_800)
+        : role === "user"
+          ? `Here is my photo.\n${blob}\nAlso, I moved to Rome.`
+          : `Reply ${ordinal}.`);
+
+    const page = chunkMemoryRecallProjectionPage(snapshot);
+
+    expect(page).toMatchObject({
+      complete: true,
+      omittedMessageIds: [],
+      withheldMessageIds: ["user-1"]
+    });
+    expect(page.chunks.length).toBeGreaterThan(60);
+    expect(new Set(page.chunks.flatMap((chunk) =>
+      chunk.messageJoins.map(({ messageId }) => messageId))))
+      .toEqual(new Set(["user-0", "assistant-0", "user-1", "assistant-1"]));
+    expect(JSON.stringify(page.chunks)).not.toContain(blob.slice(0, 40));
+    expect(page.chunks.some((chunk) =>
+      chunk.safeProjectedText.includes("Also, I moved to Rome."))).toBe(true);
   });
 
   it("rejects unbounded or overlap-only chunking configurations", () => {

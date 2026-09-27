@@ -1,6 +1,7 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import type { WorkspaceChatSummary } from "@/components/app-shell/types";
 import {
+  decodeProjectDeletionResponse,
   decodeProjectGrantRemovalPreview,
   decodeProjectResourceChangePreview,
   decodeProjectResponse,
@@ -11,6 +12,7 @@ import {
   type ProjectCandidatesResponseWire,
   type ProjectCandidateTypeWire,
   type ProjectDetailWire,
+  type ProjectDeletionResponseWire,
   type ProjectFolderWire,
   type ProjectGrantRemovalPreviewWire,
   type ProjectMemoryResponseWire,
@@ -150,8 +152,10 @@ export async function updateProject(
   return decoded.project;
 }
 
-export async function deleteProject(projectId: string): Promise<void> {
-  await jsonRequest(`/api/projects/${encodeURIComponent(projectId)}`, jsonMutation("DELETE"));
+export async function deleteProject(projectId: string): Promise<ProjectDeletionResponseWire> {
+  const result = decodeProjectDeletionResponse(await jsonRequest(`/api/projects/${encodeURIComponent(projectId)}`, jsonMutation("DELETE")));
+  if (!result || result.projectId !== projectId) throw new Error("project_deletion_malformed");
+  return result;
 }
 
 export async function createProjectChat(

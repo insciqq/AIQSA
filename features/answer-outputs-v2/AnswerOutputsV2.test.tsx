@@ -3,6 +3,8 @@ import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
+import { summarizeThreadArtifacts } from "@/components/app-shell/threadContent";
+import { foldReasoningEntries } from "@/lib/domain/answerReasoning";
 import { describe, expect, it, vi } from "vitest";
 import { AnswerOutputsV2, ArtifactGenerationCardsV2 } from "./AnswerOutputsV2";
 import { AnswerProcessV2 } from "./AnswerProcessV2";
@@ -254,6 +256,47 @@ describe("answer outputs v2", () => {
   it("renders no placeholder when there is no output", () => {
     const { container } = render(<AnswerOutputsV2 artifact={null} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows merged thinking deltas as one text, live and after reload", () => {
+    const fragment = (entry: "continue" | "start", text: string) => ({
+      data: { artifactType: "reasoning", payload: { entry, text } }, type: "artifact"
+    });
+    const live = summarizeThreadArtifacts([
+      fragment("start", "Let me compare "),
+      fragment("continue", "the two sources "),
+      fragment("continue", "before answering.")
+    ]);
+    // Historical per-delta rows lost their boundary spaces; the read rule rejoins them.
+    const legacy: ThreadArtifactSummary = { citations: [], sources: [], reasoningText: foldReasoningEntries(
+      ["Let me compare", "the two sources", "before answering."].map((text) => ({ kind: "legacy" as const, text }))
+    ).entries };
+    for (const summary of [live, legacy]) {
+      const { unmount } = render(
+        <RunAnswerV2 artifact={summary} content="Answer" presentation={{ kind: "complete", runId: "run-1" }} />
+      );
+      openProcess();
+      const paragraphs = within(screen.getByTestId("answer-reasoning")).getAllByText(/Let me compare/u);
+      expect(paragraphs).toHaveLength(1);
+      expect(paragraphs[0]).toHaveTextContent("Let me compare the two sources before answering.");
+      expect(screen.queryByTestId("answer-reasoning-truncated")).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("says when thinking or the source list is only partly shown", () => {
+    render(
+      <RunAnswerV2
+        artifact={{ ...artifact, citationsTruncated: true, reasoningTruncated: true }}
+        content="Answer"
+        presentation={{ kind: "complete", runId: "run-1" }}
+      />
+    );
+    openProcess();
+    expect(screen.getByTestId("answer-reasoning-truncated")).toHaveTextContent("Thinking is too long to show in full.");
+    fireEvent.click(screen.getByTestId("answer-sources-toggle"));
+    expect(screen.getByTestId("answer-sources-truncated"))
+      .toHaveTextContent("This answer has more sources than can be listed.");
   });
 
   it("distinguishes insufficient evidence and a partially ready selected scope", () => {
@@ -543,6 +586,24 @@ describe("answer outputs v2", () => {
     );
     expect(screen.getByTestId("memory-limited-status")).not.toHaveTextContent(
       /FAILED_SAFE|DEGRADED|error|code/i
+    );
+    expect(screen.queryByText("Memory was unavailable for this response."))
+      .not.toBeInTheDocument();
+  });
+
+  it("says a message was too long for Memory instead of a generic unavailable notice", () => {
+    render(<AnswerOutputsV2 artifact={{
+      citations: [],
+      memoryStatus: "INPUT_TOO_LONG",
+      reasoningText: [],
+      sources: []
+    }} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "This message was too long for Memory to process in full. Memory commands in it were not applied."
+    );
+    expect(screen.getByTestId("memory-input-too-long-status")).not.toHaveTextContent(
+      /INPUT_TOO_LONG|FAILED_SAFE|error|code/i
     );
     expect(screen.queryByText("Memory was unavailable for this response."))
       .not.toBeInTheDocument();

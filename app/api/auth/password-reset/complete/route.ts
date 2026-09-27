@@ -6,6 +6,7 @@ export const runtime = "nodejs";
 
 export const POST = createPasswordResetCompleteHandler({
   getConfig: () => getAuthConfig(),
+  loginRateLimiter: authRateLimiter,
   repository: passwordAuthRepository,
   resetCompleteRateLimiter: authRateLimiter
 });

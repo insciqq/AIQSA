@@ -209,6 +209,26 @@ export function ComposerOperationErrorV2({
   ) : null;
 }
 
+/**
+ * Persistent state of a resumed run that outlived frequent polling. It stays
+ * beside the composer (whose Stop remains available) until the run is
+ * terminal, independent of transient shell notices.
+ */
+export function BackgroundRunStatusV2({
+  onCheck,
+  waiting
+}: Readonly<{
+  onCheck?(): void;
+  waiting: boolean;
+}>) {
+  return waiting ? (
+    <div className="v2-live-composer-error v2-live-background-run" role="status">
+      <span>Run is still active in the background.</span>
+      {onCheck ? <UiV2Button onClick={onCheck}>Check run</UiV2Button> : null}
+    </div>
+  ) : null;
+}
+
 function messageText(message: ThreadMessage): string {
   return textFromThreadContent(message.content);
 }
@@ -574,6 +594,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     (selectedProjectContext && !activeChatSummary)
     ? workspace.projects.detail
     : null;
+  // Deletion status survives direct entry/reload independently of the local
+  // overview toggle. The owner must keep a reachable status and retry action.
+  const projectsSurfaceVisible = projectsSurfaceOpen || activeProject?.status === "DELETING";
   const skillScopeKey = `${session.accountId}:${projectContext ? activeChatSummary?.projectId ?? workspace.projects.selectedProjectId : "personal"}:${session.activeChatId ?? "new"}`;
   const skillScopeRef = useRef(skillScopeKey);
   useLayoutEffect(() => { skillScopeRef.current = skillScopeKey; }, [skillScopeKey]);
@@ -992,12 +1015,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     />
   );
   const composerOperationError = (
-    <ComposerOperationErrorV2
-      error={composer.operationError}
-      live={composer.operationErrorLive}
-      onRetry={() => followupSubmission ? void composer.submitFollowup?.(followupSubmission.runId) : void composer.submitComposer()}
-      retryable={Boolean(composer.operationErrorRetryable || followupSubmission && !followupSubmission.inFlight)}
-    />
+    <>
+      <BackgroundRunStatusV2 onCheck={thread.checkBackgroundRun} waiting={Boolean(thread.backgroundRunWaiting)} />
+      <ComposerOperationErrorV2
+        error={composer.operationError}
+        live={composer.operationErrorLive}
+        onRetry={() => followupSubmission ? void composer.submitFollowup?.(followupSubmission.runId) : void composer.submitComposer()}
+        retryable={Boolean(composer.operationErrorRetryable || followupSubmission && !followupSubmission.inFlight)}
+      />
+    </>
   );
   const shellNotice = session.notice ? (
     <div className="v2-live-notice">
@@ -1363,7 +1389,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           accountLabel={session.accountDisplayName.trim() || session.accountEmail}
           adminEntryVisible={session.adminEntryVisible}
           chatActive={Boolean(session.activeChatId)}
-          projectsSectionOpen={projectsSurfaceOpen}
+          projectsSectionOpen={projectsSurfaceVisible}
           section={libraryOpen && !projectContext ? "library" : "chats"}
           onProjectsSectionChange={setProjectsSurfaceOpen}
           navigationBusy={settings.studio?.busy}
@@ -1493,7 +1519,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               initialTab={libraryInitialTab}
               props={props}
             />
-          ) : projectsSurfaceOpen ? (
+          ) : projectsSurfaceVisible ? (
             <ProjectsSurfaceV2
               composerSlot={(
                 <div className="v2-project-page-composer-stack" ref={setComposerDockRef}>
@@ -1612,7 +1638,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   }}
               onRenameCancel={workspace.pane.actions.cancelChatEdit}
               onRenameChange={workspace.pane.actions.changeEditingChatTitle}
-              onRenameSave={withActiveChat((full) => void workspace.pane.actions.saveChatTitle(full))}
+              onRenameSave={() => {
+                const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+                if (full) return workspace.pane.actions.saveChatTitle(full);
+                void workspace.pane.actions.retry();
+                return undefined;
+              }}
               onRenameStart={withActiveChat((full) => workspace.pane.actions.startChatEdit(full, "header"))}
               renameDisabled={!canRenameActiveProjectChat || Boolean(projectMutationReason)}
               onShare={() => void session.shareActiveBranch()}

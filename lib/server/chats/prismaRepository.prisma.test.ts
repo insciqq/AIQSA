@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { boundedChatBranchPreview } from "../../contracts/chats";
+import {
+  boundedChatBranchPreview,
+  CHAT_TITLE_MAX_LENGTH,
+  PERSONAL_FOLDER_NAME_MAX_LENGTH
+} from "../../contracts/chats";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
@@ -523,6 +527,25 @@ describe("Prisma-backed chat repository", () => {
         { folderId: null, memoryBranchGeneration: 0, memorySourceRevision: 2 },
         { memoryGeneration: 0, memoryRevision: 2 }
       ]);
+    });
+  });
+
+  it("stores maximum-length chat titles and personal folder names without truncation", async () => {
+    await withFolderUser(async ({ userId }) => {
+      const repository = createPrismaChatRepository(prisma);
+      const title = `${"t".repeat(CHAT_TITLE_MAX_LENGTH - 1)}😀`;
+      const renamedTitle = `${"r".repeat(CHAT_TITLE_MAX_LENGTH - 1)}😀`;
+      const name = `${"f".repeat(PERSONAL_FOLDER_NAME_MAX_LENGTH - 1)}😀`;
+      const renamedName = `${"g".repeat(PERSONAL_FOLDER_NAME_MAX_LENGTH - 1)}😀`;
+
+      const chat = await repository.createChat({ title, userId });
+      expect(chat?.title).toBe(title);
+      await expect(repository.updateChat({ chatId: chat?.id ?? "", title: renamedTitle, userId }))
+        .resolves.toMatchObject({ title: renamedTitle });
+      const folder = await repository.createFolder({ name, userId });
+      expect(folder?.name).toBe(name);
+      await expect(repository.updateFolder({ folderId: folder?.id ?? "", name: renamedName, userId }))
+        .resolves.toMatchObject({ name: renamedName });
     });
   });
 

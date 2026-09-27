@@ -102,6 +102,37 @@ function displayNameFromEmail(normalizedEmail: string): string {
   return localPart || "AIQSA User";
 }
 
+/**
+ * Anyone who knows an approved email can submit a registration, so the name it carries is
+ * provisional until someone proves ownership of that email. Only a pending account without any
+ * email-verified identity holds such a name; an active account or a name established after proof
+ * never changes here.
+ */
+export async function replaceProvisionalDisplayName(
+  tx: Prisma.TransactionClient,
+  input: {
+    displayName: string;
+    userId: string;
+  }
+): Promise<void> {
+  await tx.user.updateMany({
+    data: {
+      displayName: input.displayName
+    },
+    where: {
+      authIdentities: {
+        none: {
+          emailVerifiedAt: {
+            not: null
+          }
+        }
+      },
+      id: input.userId,
+      status: "pending"
+    }
+  });
+}
+
 async function findValidInviteToken(
   tx: Prisma.TransactionClient,
   input: {
@@ -674,17 +705,6 @@ export function createPrismaAuthRegistrationRepository(prisma: PrismaClient): Au
               }
             }));
 
-          if (existingUser && input.displayName && existingUser.status === "pending") {
-            await tx.user.update({
-              data: {
-                displayName: input.displayName
-              },
-              where: {
-                id: existingUser.id
-              }
-            });
-          }
-
           identity = await tx.authIdentity.create({
             data: {
               normalizedEmail: input.normalizedEmail,
@@ -713,13 +733,9 @@ export function createPrismaAuthRegistrationRepository(prisma: PrismaClient): Au
         }
 
         if (input.displayName) {
-          await tx.user.update({
-            data: {
-              displayName: input.displayName
-            },
-            where: {
-              id: identity.userId
-            }
+          await replaceProvisionalDisplayName(tx, {
+            displayName: input.displayName,
+            userId: identity.userId
           });
         }
 

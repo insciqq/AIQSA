@@ -7,6 +7,7 @@ import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
+import { startMcpOAuth } from "./support/mcpOAuthStart";
 import { startOAuthMcpEndpoint } from "./support/oauthMcpEndpoint";
 
 const prisma = new PrismaClient();
@@ -104,7 +105,7 @@ test("MCP personal values and OAuth persist through real redirects without wakin
     } });
     expect(created.status()).toBe(201);
     serverId = (await created.json()).server.id;
-    await page.goto(`/api/admin/mcp/${serverId}/oauth/validation/connect`);
+    await startMcpOAuth(page, `/api/admin/mcp/${serverId}/oauth/validation/connect`);
     await page.getByRole("link", { name: "Approve test connection" }).click();
     await expect(page).toHaveURL(/\/admin\?/);
     await expect.poll(async () => Boolean((await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } })).activeRevisionId), { timeout: 30_000 }).toBe(true);
@@ -128,7 +129,7 @@ test("MCP personal values and OAuth persist through real redirects without wakin
     await sheet.getByRole("button", { name: "Save personal values" }).click();
     expect((await savedValues).ok()).toBe(true);
     await expect(sheet.getByLabel("Personal fixture key", { exact: true })).toHaveValue("");
-    await sheet.getByRole("link", { name: "Connect", exact: true }).click();
+    await sheet.getByRole("button", { name: "Connect", exact: true }).click();
     await page.getByRole("link", { name: "Approve test connection" }).click();
     await expect(page).toHaveURL(/library=mcp/);
     await expect(library.getByRole("heading", { name: "MCP servers", exact: true })).toBeVisible();
@@ -159,7 +160,7 @@ test("MCP personal values and OAuth persist through real redirects without wakin
     const disconnected = page.waitForResponse(response => response.url().includes(`/api/me/mcp/${serverId}/oauth/`) && response.request().method() === "POST");
     await sheet.getByRole("button", { name: "Disconnect", exact: true }).click();
     expect((await disconnected).ok()).toBe(true);
-    await expect(sheet.getByRole("link", { name: "Connect", exact: true })).toBeVisible();
+    await expect(sheet.getByRole("button", { name: "Connect", exact: true })).toBeVisible();
     expect(endpoint.counts.revoke).toBeGreaterThan(0);
     expect(endpoint.counts.errors).toBe(0);
     expect(endpoint.counts.personalHeader).toBe(0);

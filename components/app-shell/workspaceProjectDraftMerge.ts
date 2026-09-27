@@ -17,6 +17,26 @@ function validPendingPersonalDraft(chat: WorkspaceChatSummary): boolean {
   return Boolean(chat.pendingPersonalDraft && !chat.projectId);
 }
 
+/** The Project a saved or reserved chat belongs to; `null` for a personal chat. */
+export function chatScopeProjectId(
+  chat: Pick<WorkspaceChatSummary, "pendingProjectDraft" | "projectId">
+): string | null {
+  return chat.projectId ?? chat.pendingProjectDraft?.projectId ?? null;
+}
+
+/**
+ * The chat that replaces a removed active chat stays in its scope: another
+ * personal chat for a personal one, another chat of the same Project for a
+ * Project chat. `null` means the scope's blank chat.
+ */
+export function nextChatInScope(
+  chats: readonly WorkspaceChatSummary[],
+  removedChatId: string,
+  scopeProjectId: string | null
+): WorkspaceChatSummary | null {
+  return chats.find((chat) => chat.id !== removedChatId && chatScopeProjectId(chat) === scopeProjectId) ?? null;
+}
+
 function sortProjectChats(chats: readonly ProjectChatSummaryWire[]): ProjectChatSummaryWire[] {
   return [...chats].sort((left, right) =>
     Number(left.archived) - Number(right.archived) ||
@@ -48,11 +68,15 @@ export function mergeWorkspaceProjectDrafts(input: Readonly<{
   const pending = input.currentChats.filter((chat) => {
     if (incomingIds.has(chat.id)) return false;
     return input.projectId === undefined
-      ? validPendingProjectDraft(chat) || validPendingPersonalDraft(chat)
+      ? validPendingPersonalDraft(chat)
       : validPendingProjectDraft(chat, input.projectId);
   });
+  // The personal list never carries Project chats, so a personal read keeps
+  // every saved and pending Project chat the Project owner already admitted;
+  // their drafts, attachments and controls live on through it.
   const outsideScope = input.projectId === undefined
-    ? []
+    ? input.currentChats.filter((chat) => !incomingIds.has(chat.id) &&
+        (chat.pendingProjectDraft ? validPendingProjectDraft(chat) : Boolean(chat.projectId)))
     : input.currentChats.filter((chat) => chat.projectId !== input.projectId);
   const chats = sortChatsByFavoriteThenUpdatedAt([
     ...outsideScope,

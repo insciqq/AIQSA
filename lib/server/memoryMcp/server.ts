@@ -4,7 +4,7 @@ import type { MemoryConsumerService } from "../memory/consumer/service";
 import { MemoryConsumerServiceError } from "../memory/consumer/service";
 import type { MemoryNativeFactSearchService } from
   "../memory/retrieval/nativeFactSearch";
-import { MEMORY_INTERACTIVE_HARD_DEADLINE_MS } from
+import { MEMORY_STANDALONE_READ_DEADLINE_MS } from
   "../memory/retrieval/deadline";
 import {
   addMemoryInputSchema,
@@ -32,7 +32,7 @@ export const MEMORY_MCP_TOOL_NAMES = [
   "delete_memory"
 ] as const;
 
-export const MEMORY_MCP_REQUEST_DEADLINE_MS = MEMORY_INTERACTIVE_HARD_DEADLINE_MS;
+export const MEMORY_MCP_REQUEST_DEADLINE_MS = MEMORY_STANDALONE_READ_DEADLINE_MS;
 
 export const MEMORY_MCP_SERVER_INSTRUCTIONS = [
   "This server is the authenticated user's long-term Personal Memory. All tools are already scoped to that user; never invent or request a user ID.",

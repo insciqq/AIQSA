@@ -334,14 +334,14 @@ describe("provider runtime factory", () => {
     }
   );
 
-  it("bounded-retries transient initial dispatch for stateless compatible Responses", async () => {
+  it("bounded-retries a rate-limit refusal of the initial dispatch for stateless compatible Responses", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
     try {
       let attempts = 0;
       const fetchFn = vi.fn<typeof fetch>(async () =>
         ++attempts === 1
-          ? new Response("gateway unavailable", { status: 502 })
+          ? new Response("rate limited", { status: 429 })
           : new Response(JSON.stringify({
               id: "response-retried",
               model: "upstream/model",
@@ -363,6 +363,26 @@ describe("provider runtime factory", () => {
     } finally {
       vi.restoreAllMocks();
       vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["an accepted-then-lost connection", () => Promise.reject(new TypeError("synthetic connection lost after dispatch")),
+      { code: "provider_request_outcome_unknown" }],
+    ["a gateway 504", async () => new Response("gateway timeout", { status: 504 }), { status: 504 }]
+  ] as const)("never repeats a compatible answer dispatch after %s", async (_label, reply, failure) => {
+    for (const secret of ["secret", null]) {
+      const fetchFn = vi.fn<typeof fetch>(reply);
+      const base = snapshot("openai_responses_compatible");
+      const runtime = createProviderRuntimeBinding({
+        options: { allowFake: false, fetchFn },
+        secret,
+        snapshot: secret === null
+          ? { ...base, connection: { ...base.connection, allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:11434/v1", authenticationMode: "none" } }
+          : base
+      });
+      await expect(collect(runtime.adapter.stream(compatibleRequest()))).rejects.toMatchObject(failure);
+      expect(fetchFn).toHaveBeenCalledOnce();
     }
   });
 

@@ -56,7 +56,8 @@ type ExecuteMessageRunLifecycleInput = {
     getAssistantMessageId(): string;
   }): RunStreamTokenBuffer;
   failurePrefix: string;
-  fetchRun(runId: string, chatId: string): Promise<unknown>;
+  /** `producer` lets the fetch confirm only the record this stream still owns. */
+  fetchRun(runId: string, chatId: string, options?: { producer?: string }): Promise<unknown>;
   notifyAnswerReady(): Promise<void>;
   onAnswerPublished?(runId: string): void;
   onRunAdmitted?(runId: string): void;
@@ -82,6 +83,14 @@ export type MessageRunLifecycleResult = {
   rejectionMessage?: string;
   runId: string | null;
 };
+
+let producerSerial = 0;
+
+/** A page-unique token naming one foreground stream producer. */
+function nextStreamProducer(): string {
+  producerSerial += 1;
+  return `stream-producer-${producerSerial}`;
+}
 
 function updateStreamChatMessages(
   chatId: string,
@@ -140,7 +149,7 @@ function finishStream(input: {
   chatId: string;
   failed: boolean;
   deferred?: boolean;
-  runId: string | null;
+  producer: string;
 }) {
   const ownsAbortController =
     input.activeStreamAbortRef.current.get(input.chatId) === input.abortController;
@@ -148,7 +157,7 @@ function finishStream(input: {
   if (ownsAbortController) {
     input.activeStreamAbortRef.current.delete(input.chatId);
     useRunLifecycleStore.getState().streamFinished({
-      chatId: input.chatId, runId: input.runId
+      chatId: input.chatId, producer: input.producer
     });
   }
 
@@ -203,6 +212,7 @@ export async function executeMessageRunLifecycle({
   let serverRejectedRequest = false;
   let userFacingFailureMessage: string | null = null;
   const abortController = new AbortController();
+  const producer = nextStreamProducer();
   const ownsStream = () => activeStreamAbortRef.current.get(chatId) === abortController;
   const notifyAdmission = (acceptedRunId: string) => {
     if (admissionNotified) return;
@@ -213,7 +223,8 @@ export async function executeMessageRunLifecycle({
   useRunSurfaceStore.getState().resetSurface(chatId, contextConfigurationKey, optimisticAssistantMessageId);
   useRunLifecycleStore.getState().streamStarted({
     assistantMessageId: optimisticAssistantMessageId,
-    chatId
+    chatId,
+    producer
   });
   void primeAnswerSound();
   activeStreamAbortRef.current.set(chatId, abortController);
@@ -245,7 +256,7 @@ export async function executeMessageRunLifecycle({
       assistantMessageId = admitted.assistantMessageId;
       reconcileMessageIds({ assistantMessageId, currentRunId: runId,
         messageIds: { assistantMessageId, userMessageId: admitted.userMessageId }, optimisticAssistantMessageId });
-      useRunLifecycleStore.getState().runIdReceived({ chatId, runId });
+      useRunLifecycleStore.getState().runIdReceived({ chatId, producer, runId });
       notifyAdmission(runId);
       updateStreamChatMessages(chatId, (messages) => messages.map((message) => message.id === assistantMessageId
         ? { ...message, runId, ...(admitted.run.workspacePreparation ? { workspacePreparation: true } : {}),
@@ -262,7 +273,7 @@ export async function executeMessageRunLifecycle({
         answerPublished = true;
         updateStreamChatMessages(chatId, (messages) => messages.map((message) => message.id === assistantMessageId
           ? { ...message, status: "complete", workspaceSettling: true } : message));
-        useRunLifecycleStore.getState().answerCompleted({ chatId, runId: published.runId });
+        useRunLifecycleStore.getState().answerCompleted({ chatId, producer, runId: published.runId });
         onAnswerPublished?.(published.runId);
         void notifyAnswerReady();
       },
@@ -288,7 +299,7 @@ export async function executeMessageRunLifecycle({
       },
       onRunId(nextRunId) {
         runId = nextRunId;
-        useRunLifecycleStore.getState().runIdReceived({ chatId, runId: nextRunId });
+        useRunLifecycleStore.getState().runIdReceived({ chatId, producer, runId: nextRunId });
         notifyAdmission(nextRunId);
         updateStreamChatMessages(chatId, (current) =>
           current.map((message) =>
@@ -307,11 +318,14 @@ export async function executeMessageRunLifecycle({
       runWasCancelled(abortController, runId));
     failed = !answerPublished && streamResult.failed && !cancelled;
     if (runId && ownsStream()) {
-      useRunLifecycleStore.getState().runIdReceived({ chatId, runId });
+      useRunLifecycleStore.getState().runIdReceived({ chatId, producer, runId });
     }
 
     if (runId) {
-      await fetchRun(runId, chatId);
+      // After answer_complete a successor may already own this chat's record
+      // without a run id; the producer token keeps this late fetch from
+      // binding its run to that successor.
+      await fetchRun(runId, chatId, { producer });
     }
 
     if (!receivedChatUpdate && ownsStream()) {
@@ -368,7 +382,7 @@ export async function executeMessageRunLifecycle({
       chatId,
       failed,
       deferred,
-      runId
+      producer
     });
     if ((deferred || answerPublished) && !failed && !cancelled &&
       !activeStreamAbortRef.current.has(chatId)) {

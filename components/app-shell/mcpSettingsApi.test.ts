@@ -76,6 +76,24 @@ describe("MCP settings API", () => {
     }
   });
 
+  it("decodes each unavailable tool with its reason and rejects unknown reasons", async () => {
+    const unavailableTools = [
+      { name: "delete_repo", reason: "unpublished_addition" },
+      { name: "search", reason: "restricted" }
+    ];
+    const fetchMock = vi.fn(async () => jsonResponse({ servers: [{ ...server, unavailableTools }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(loadUserMcpServers()).resolves.toEqual([{ ...server, unavailableTools }]);
+    for (const malformed of [
+      [{ name: "search", reason: "hidden" }],
+      [{ name: "not a tool", reason: "restricted" }],
+      { name: "search", reason: "restricted" }
+    ]) {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ servers: [{ ...server, unavailableTools: malformed }] }));
+      await expect(loadUserMcpServers()).rejects.toThrow();
+    }
+  });
+
   it("returns stable coded errors with bounded setup issues and OAuth actions", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
       error: "invalid_mcp_values",

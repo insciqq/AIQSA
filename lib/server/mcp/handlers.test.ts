@@ -431,6 +431,19 @@ describe("MCP handler authorization", () => {
     }
   );
 
+  it("projects each unavailable tool with its reason and never drops it", async () => {
+    const repository = new MemoryMcpRepository();
+    const unavailableTools = [
+      { name: "delete_repo", reason: "unpublished_addition" as const },
+      { name: "search", reason: "restricted" as const }
+    ];
+    vi.spyOn(repository, "listUserServers").mockResolvedValue([
+      userServer({ readiness: "ready", runtimeGenerationId: "generation-1", unavailableTools })
+    ]);
+    const body = await (await createUserMcpCatalogHandler(deps(repository))(request({ user: "user-1" }))).json();
+    expect(body.servers[0]).toMatchObject({ tools: [{ name: "create_task" }], unavailableTools });
+  });
+
   it("never derives active health from persisted ready state after a restart", async () => {
     const repository = new MemoryMcpRepository();
     vi.spyOn(repository, "listUserServers").mockResolvedValue([

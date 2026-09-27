@@ -6,6 +6,7 @@ import {
   mergeMcpRunPlanSnapshots
 } from "./discovery";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "./runPlan";
+import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 afterEach(() => vi.unstubAllEnvs());
 
 const catalog: McpCapabilityCatalog = {
@@ -105,11 +106,19 @@ describe("MCP Auto discovery", () => {
     expect([...names[0]!]).toHaveLength(120);
     expect(names[0]!.endsWith("\u{1F600}\u2026")).toBe(true);
     const many = mcpConnectedServicesGuidance({
-      servers: Array.from({ length: 40 }, (_, index) => ({ ...catalog.servers[0]!, serverId: `server-${index}`,
+      servers: Array.from({ length: 70 }, (_, index) => ({ ...catalog.servers[0]!, serverId: `server-${index}`,
         serverName: `Service ${index}` })),
       version: 1
     })!;
-    expect(JSON.parse(/(\[.*\])/u.exec(many)![1]!)).toHaveLength(16);
+    expect(JSON.parse(/(\[.*\])/u.exec(many)![1]!)).toHaveLength(MCP_RUN_PLAN_LIMITS.maxEnabledServers);
+    // Every plan server keeps its name even when each uses the whole name bound.
+    const longest = mcpConnectedServicesGuidance({
+      servers: Array.from({ length: MCP_RUN_PLAN_LIMITS.maxEnabledServers }, (_, index) => ({ ...catalog.servers[0]!,
+        serverId: `server-${index}`, serverName: `${index} ${"n".repeat(200)}` })),
+      version: 1
+    })!;
+    expect(JSON.parse(/(\[.*\])/u.exec(longest)![1]!)).toHaveLength(MCP_RUN_PLAN_LIMITS.maxEnabledServers);
+    expect(longest.length).toBeLessThan(8_500);
   });
 
   it("adds no guidance without a connected service", () => {

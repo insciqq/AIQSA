@@ -185,6 +185,30 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
         }
       }
       return Response.json({ error: "knowledge_profile_input_invalid" }, { status: 400 });
+    },
+
+    /** Targeted recovery of terminal search-index failures. It re-queues only
+     * FAILED projections; READY projections and the index stay untouched. */
+    async POST(request: Request): Promise<Response> {
+      if (!contentTypeIsJson(request)) {
+        return Response.json({ error: "json_required" }, { status: 415 });
+      }
+      const auth = await requireAdmin(request, input.resolveAuth);
+      if (auth.error) return auth.error;
+      const value = await readJsonBodyOrNull(request, "json");
+      const bodyError = requestBodyErrorResponse(value);
+      if (bodyError) return bodyError;
+      if (!record(value) || value.action !== "retry_failed_search_projections" ||
+        !allowedKeys(value, ["action"])) {
+        return Response.json({ error: "knowledge_search_retry_input_invalid" }, { status: 400 });
+      }
+      try {
+        const retried = await input.service.retryFailedSearchProjections();
+        logEvent("service_operation", { subsystem: "admin", stage: "retry", outcome: "completed", count: retried });
+        return Response.json({ knowledge: await input.service.list(), retried });
+      } catch (error) {
+        return failure(error, "retry");
+      }
     }
   };
 }

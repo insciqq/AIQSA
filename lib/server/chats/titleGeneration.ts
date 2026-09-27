@@ -9,7 +9,8 @@ import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfigu
 import { createChatTitleRepository } from "./titleGenerationRepository";
 import { messageTextFromContent, titleFromMessageContent } from "./titlePolicy";
 
-export const CHAT_TITLE_MAX_LENGTH = 56;
+/** Generator bound, stricter than the user-entered `CHAT_TITLE_MAX_LENGTH` contract. */
+export const GENERATED_CHAT_TITLE_MAX_LENGTH = 56;
 export const CHAT_TITLE_GENERATION_TIMEOUT_MS = 8_000;
 export const CHAT_TITLE_QUEUE_TTL_MS = 300_000;
 const QUESTION_EXCERPT_LENGTH = 1_200;
@@ -65,8 +66,8 @@ export function normalizeGeneratedChatTitle(value: unknown): string | null {
   title = title.replace(/[.。!！]+$/u, "").trim();
   if (!title) return null;
   const characters = Array.from(title);
-  if (characters.length > CHAT_TITLE_MAX_LENGTH) {
-    const bounded = characters.slice(0, CHAT_TITLE_MAX_LENGTH).join("");
+  if (characters.length > GENERATED_CHAT_TITLE_MAX_LENGTH) {
+    const bounded = characters.slice(0, GENERATED_CHAT_TITLE_MAX_LENGTH).join("");
     const lastWordBoundary = bounded.lastIndexOf(" ");
     title = (lastWordBoundary > 12 ? bounded.slice(0, lastWordBoundary) : bounded).trimEnd();
   }

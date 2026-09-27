@@ -507,12 +507,12 @@ async function approveInBrowser(
   await guarded(stage, "memory_mcp_smoke_consent_history_copy_missing", () =>
     page.getByText(/Chat history is not available/iu).waitFor());
   emit("oauth_client", { clientStage: stage, milestone: "consent_copy_verified" });
-  let callbackRequested = false;
+  const observed: { callback: URL | null } = { callback: null };
   const observeCallback = (request: PlaywrightRequest) => {
     try {
       const url = new URL(request.url());
       if (url.origin !== issuer && url.searchParams.has("code")) {
-        callbackRequested = true;
+        observed.callback ??= url;
       }
     } catch {
       // Ignore unrelated malformed browser requests.
@@ -537,41 +537,32 @@ async function approveInBrowser(
       consentPostStatus: response.status(),
       milestone: "consent_post_received"
     });
-    ensure(response.status() === 303, stage,
+    // Approval answers with a same-origin page that navigates to the callback;
+    // the browser must reach it on its own under the installation's CSP.
+    ensure(response.status() === 200, stage,
       "memory_mcp_smoke_consent_post_invalid");
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
-    if (!callbackRequested) {
-      const location = response.headers()["location"];
-      const callback = location ? new URL(location, issuer) : null;
-      const expectedCallback = redirectUri ? new URL(redirectUri) : null;
-      emit("oauth_client", {
-        callbackHasCode: callback?.searchParams.has("code") ?? false,
-        callbackIssuerMatches: callback?.searchParams.get("iss") === issuer,
-        callbackOriginMatches: callback?.origin === expectedCallback?.origin,
-        callbackPathMatches: callback?.pathname === expectedCallback?.pathname,
-        callbackStateMatches: callback?.searchParams.get("state") ===
-          parsed.searchParams.get("state"),
-        clientStage: stage,
-        milestone: "callback_redirect_received"
-      });
-      ensure(callback && expectedCallback &&
-        callback.origin === expectedCallback.origin &&
-        callback.pathname === expectedCallback.pathname &&
-        callback.searchParams.has("code") &&
-        callback.searchParams.get("iss") === issuer &&
-        callback.searchParams.get("state") === parsed.searchParams.get("state"),
-      stage, "memory_mcp_smoke_callback_redirect_invalid");
-      await page.goto(callback.toString(), {
-        timeout: 10_000,
-        waitUntil: "commit"
-      }).catch(() => undefined);
-    }
     const callbackDeadline = Date.now() + 10_000;
-    while (!callbackRequested && Date.now() < callbackDeadline) {
+    while (!observed.callback && Date.now() < callbackDeadline) {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
     }
-    ensure(callbackRequested, stage, "memory_mcp_smoke_callback_missing");
-    emit("oauth_client", { clientStage: stage, milestone: "callback_requested" });
+    const callback = observed.callback;
+    ensure(callback, stage, "memory_mcp_smoke_callback_missing");
+    const expectedCallback = redirectUri ? new URL(redirectUri) : null;
+    emit("oauth_client", {
+      callbackIssuerMatches: callback.searchParams.get("iss") === issuer,
+      callbackOriginMatches: callback.origin === expectedCallback?.origin,
+      callbackPathMatches: callback.pathname === expectedCallback?.pathname,
+      callbackStateMatches: callback.searchParams.get("state") ===
+        parsed.searchParams.get("state"),
+      clientStage: stage,
+      milestone: "callback_requested"
+    });
+    ensure(expectedCallback &&
+      callback.origin === expectedCallback.origin &&
+      callback.pathname === expectedCallback.pathname &&
+      callback.searchParams.get("iss") === issuer &&
+      callback.searchParams.get("state") === parsed.searchParams.get("state"),
+    stage, "memory_mcp_smoke_callback_redirect_invalid");
   } finally {
     page.off("request", observeCallback);
   }

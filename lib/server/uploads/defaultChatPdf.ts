@@ -1,18 +1,10 @@
-import { visionAnalysisForStorage } from "../vision/defaultVision";
-import { imageGenerationForStorage } from "../images/defaultImages";
-import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
-import { defaultSkillTools } from "../skills/defaultSkillTools";
-import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
-import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
-import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
-import { knowledgeProviderDispatchLifecycle } from "../knowledge/defaultEvidenceDispatch";
-import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { prisma } from "../prisma";
 import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { sameProviderAdmissionPlan } from "../providerRuntime/admission";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
+import { defaultRunServices } from "../runs/defaultRunServices";
 import { serializeRunOutcome } from "../runs/runOutcome";
 import { activeRunControllerRegistry } from "../runs/runExecution";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
@@ -49,15 +41,9 @@ function createDefaultChatPdf() {
       } catch { return false; }
     },
     continueRun: createChatPdfRunContinuation({
-      images: imageGenerationForStorage(storage),
-      vision: visionAnalysisForStorage(storage),
-      artifacts: artifactServiceForStorage(storage),
-      skillTools: defaultSkillTools,
+      ...defaultRunServices(storage),
       chatTitleGenerator: createPrismaChatTitleGenerator(),
-      knowledgeAdmission: knowledgeRunAdmissionService, knowledgeExecutor: knowledgeToolExecutor,
-      knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle, memoryEgress: defaultMemoryToolEgressReceiptService,
-      mcp: defaultMcpRunPlan, pdfRepository, providerAdmission: providerAdmissionService,
-      providerRuntime: providerRuntimeResolver, repository, storage, workspace
+      pdfRepository, repository, workspace
     }),
     fail: createChatPdfRunFailure({ repository, workspace })
   });

@@ -1,3 +1,4 @@
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { getAuthConfig } from "../auth/config";
@@ -7,10 +8,12 @@ import {
   createBranchChatFromMessageHandler,
   createDeleteMessageHandler,
   createEditMessageBranchHandler,
+  MessageDeleteConflictError,
   type BranchChatRecord,
   type BranchMessageRecord,
   type MessageBranchRepository
 } from "./handlers";
+import { createPrismaMessageBranchRepository } from "./prismaRepository";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -134,6 +137,7 @@ function createMemoryRepository() {
       return {
         activeLeafMessageId: state.activeLeafMessageId,
         chatId: root.chatId,
+        chatUpdatedAt: new Date("2026-09-27T10:00:00.000Z"),
         deletedMessageIds
       };
     }
@@ -441,6 +445,7 @@ describe("message branch route handlers", () => {
       message: {
         activeLeafMessageId: null,
         chatId: "chat-1",
+        chatUpdatedAt: "2026-09-27T10:00:00.000Z",
         deleted: true,
         deletedMessageIds: ["user-1", "assistant-1"],
         id: "user-1"
@@ -482,5 +487,37 @@ describe("message branch route handlers", () => {
         status: "in_progress"
       }
     });
+  });
+
+  it("maps a restricting reference during subtree deletion to a retryable conflict", async () => {
+    const restricted = new Prisma.PrismaClientKnownRequestError("synthetic", { clientVersion: "test", code: "P2003" });
+    const repository = createPrismaMessageBranchRepository({
+      $transaction: vi.fn().mockRejectedValue(restricted)
+    } as unknown as PrismaClient);
+    await expect(repository.deleteMessageSubtree({ messageId: "user-1", userId: "user" }))
+      .rejects.toBeInstanceOf(MessageDeleteConflictError);
+
+    const DELETE = createDeleteMessageHandler({ repository, resolveAuth: auth.resolveAuth });
+    const response = await DELETE(
+      new Request("http://app.local/api/messages/user-1", {
+        headers: { cookie: authCookie() },
+        method: "DELETE"
+      }),
+      { params: { messageId: "user-1" } }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "message_delete_conflict" });
+  });
+
+  it("does not hide unrelated subtree deletion failures", async () => {
+    const repository = createPrismaMessageBranchRepository({
+      $transaction: vi.fn().mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError("synthetic", { clientVersion: "test", code: "P2002" })
+      )
+    } as unknown as PrismaClient);
+
+    await expect(repository.deleteMessageSubtree({ messageId: "user-1", userId: "user" }))
+      .rejects.toMatchObject({ code: "P2002" });
   });
 });

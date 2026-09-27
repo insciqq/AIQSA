@@ -5,9 +5,13 @@ import {
 } from "./clientSession";
 import { ToolHiveClientError } from "./toolhiveClient";
 import { getContext, runWithContext, type ObservabilityContext } from "../observability";
+import type { McpPublishedToolDefinitions } from "./definitions";
 import {
+  MCP_HEALTH_DEADLINE_MS,
+  MCP_HEALTH_INVENTORY_DEADLINE_MS,
   McpRuntimeCoordinator,
   type McpRuntimeCoordinatorRepository,
+  type McpRuntimeGenerationLaunch,
   type McpRuntimeInventoryTool,
   type McpRuntimeLaunch,
   type McpRuntimeSession
@@ -25,12 +29,24 @@ function deferred<Value>() {
   return { promise, reject, resolve };
 }
 
-function launch(overrides: Partial<McpRuntimeLaunch> = {}): McpRuntimeLaunch {
+function tool(name: string, definitionHash = `hash-${name}`, description: string | null = null): McpRuntimeInventoryTool {
+  return { definitionHash, description, inputSchema: { type: "object" }, name };
+}
+
+const DEFAULT_TOOLS = ["echo", "large", "slow"].map((name) => tool(name));
+
+/** What a checked revision published: its exact name/definition pairs. */
+function publishedDefinitions(tools: readonly McpRuntimeInventoryTool[]): McpPublishedToolDefinitions {
+  return { hashes: new Map(tools.map((entry) => [entry.name, entry.definitionHash])), kind: "definitions" };
+}
+
+function launch(overrides: Partial<McpRuntimeGenerationLaunch> = {}): McpRuntimeGenerationLaunch {
   return {
     callTimeoutMs: 10_000,
     fingerprint: "fingerprint-1",
     generationId: "generation-1",
     headers: {},
+    publishedTools: publishedDefinitions(DEFAULT_TOOLS),
     redactionValues: [],
     retryAt: null,
     startupTimeoutMs: 10_000,
@@ -48,12 +64,13 @@ function harness(input: {
   inventory?: McpRuntimeInventoryTool[];
   inventoryDescription?: string;
   now?: () => Date;
+  /** Defaults to the upstream inventory: the server still matches its last check. */
+  published?: McpPublishedToolDefinitions;
   retainedFingerprints?: string[];
 } = {}) {
   const calls: string[] = [];
   let closed = false;
   let fatalResponseErrorCode: McpFatalResponseErrorCode | null = null;
-  let launches = [launch()];
   let listChanged: (() => void) | null = null;
   let inventory = input.inventory ?? ["echo", "large", "slow"].map((name) => ({
     definitionHash: `hash-${name}`,
@@ -61,6 +78,8 @@ function harness(input: {
     inputSchema: { type: "object" },
     name
   }));
+  let launches = [launch({ publishedTools: input.published ?? publishedDefinitions(inventory) })];
+  let sharedLaunches: McpRuntimeGenerationLaunch[] = [];
   const session: McpRuntimeSession = {
     callTool: vi.fn(async ({ name }) => ({
       isError: false,
@@ -102,6 +121,7 @@ function harness(input: {
       return true;
     }),
     synchronizeDesired: vi.fn(async () => launches),
+    synchronizeShared: vi.fn(async () => sharedLaunches),
     touchLastUsed: vi.fn(async () => undefined)
   };
   const createSession = vi.fn(async (
@@ -131,7 +151,8 @@ function harness(input: {
       fatalResponseErrorCode = value;
     },
     setInventory(value: McpRuntimeInventoryTool[]) { inventory = value; },
-    setLaunches(value: McpRuntimeLaunch[]) { launches = value; }
+    setLaunches(value: McpRuntimeGenerationLaunch[]) { launches = value; },
+    setSharedLaunches(value: McpRuntimeGenerationLaunch[]) { sharedLaunches = value; }
   };
 }
 
@@ -330,12 +351,39 @@ describe("MCP runtime coordinator", () => {
       description: failure === "secret" ? "PRIVATE_SECRET" : null }]);
     await vi.advanceTimersByTimeAsync(30_000);
     test.coordinator.operationalStatus("generation-1");
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(MCP_HEALTH_INVENTORY_DEADLINE_MS);
     expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
     expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({
       errorCode: failure === "timeout" ? "mcp_timeout" : failure === "secret" ? "mcp_inventory_invalid" : "mcp_inventory_changed"
     }));
     expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("keeps a maximal paginated health inventory live past the ping deadline without publishing additions", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const published = Array.from({ length: 1_024 }, (_, index) => tool(`tool_${index}`));
+    const test = harness({ inventory: published, now: () => new Date() });
+    await test.coordinator.reconcileNow();
+    vi.mocked(test.session.ping).mockRejectedValue(new McpClientSessionError({ code: "mcp_ping_unsupported", operation: "ping" }));
+    // 32 pages answering within their own deadline take longer than one ping deadline.
+    vi.mocked(test.session.listTools).mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve([...published, tool("tool_1024")]), 32 * (MCP_HEALTH_DEADLINE_MS / 4));
+    }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+    await vi.advanceTimersByTimeAsync(32 * (MCP_HEALTH_DEADLINE_MS / 4));
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
+    expect(vi.mocked(test.session.listTools).mock.calls.at(-1)).toEqual([
+      expect.any(AbortSignal), { requestTimeoutMs: MCP_HEALTH_DEADLINE_MS }
+    ]);
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
+    expect(test.repository.markReady).toHaveBeenCalledOnce();
+    await expect(test.coordinator.callTool({ generationId: "generation-1", name: "tool_1023", arguments: {}, inputSchema: { type: "object" } }))
+      .resolves.toMatchObject({ isError: false });
+    await expect(test.coordinator.callTool({ generationId: "generation-1", name: "tool_1024", arguments: {}, inputSchema: { type: "object" } }))
+      .rejects.toMatchObject({ code: "mcp_tool_not_available" });
     await test.coordinator.stop();
   });
 
@@ -471,43 +519,226 @@ describe("MCP runtime coordinator", () => {
       serverIds: ["server-2"],
       userId: "user-1"
     });
+    expect(test.repository.synchronizeShared).not.toHaveBeenCalled();
     expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
     await test.coordinator.stop();
   });
 
-  it("publishes only enabled tools and fences disabled calls before settlement or I/O", async () => {
+  it("starts a Project's shared runtime on a cold coordinator without any member runtime", async () => {
+    const test = harness();
+    const shared = launch({ fingerprint: "shared-fingerprint", generationId: "shared-generation" });
+    test.setSharedLaunches([shared]);
+
+    await test.coordinator.ensureSharedServersReady(["server-2", "server-2"]);
+
+    expect(test.repository.synchronizeShared).toHaveBeenCalledWith({ now, onDemand: true, serverIds: ["server-2"] });
+    expect(test.repository.synchronizeDesired).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("shared-generation")).toBe(true);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+
+    // A stale inventory is refreshed on the next Project demand, whoever is online.
+    test.setSharedLaunches([{ ...shared, inventoryRefreshRequired: true }]);
+    await test.coordinator.ensureSharedServersReady(["server-2"]);
+    expect(test.createSession).toHaveBeenCalledOnce();
+    expect(test.session.listTools).toHaveBeenCalledTimes(2);
+    expect(test.repository.markReady).toHaveBeenCalledTimes(2);
+    await test.coordinator.stop();
+  });
+
+  it("keeps shared Project runtimes current only in the installation-wide pass", async () => {
+    const test = harness();
+    test.setLaunches([]);
+    test.setSharedLaunches([launch({ fingerprint: "shared-fingerprint", generationId: "shared-generation" })]);
+
+    await test.coordinator.reconcileNow("user-1");
+    expect(test.repository.synchronizeShared).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("shared-generation")).toBe(false);
+
+    await test.coordinator.reconcileNow();
+    expect(test.repository.synchronizeShared).toHaveBeenCalledWith({ now });
+    expect(test.coordinator.hasLiveGeneration("shared-generation")).toBe(true);
+    await test.coordinator.stop();
+  });
+
+  it("offers only published enabled tools and fences held-back calls before settlement or I/O", async () => {
     const test = harness({
-      inventory: ["echo", "Echo", "new_tool"].map((name) => ({
-        definitionHash: `hash-${name}`,
-        description: null,
-        inputSchema: { type: "object" },
-        name
-      }))
+      inventory: [tool("echo"), tool("Echo"), tool("new_tool")],
+      published: publishedDefinitions([tool("echo"), tool("Echo")])
     });
-    test.setLaunches([launch({ disabledToolNames: ["Echo"] })]);
+    test.setLaunches([launch({
+      disabledToolNames: ["Echo"],
+      publishedTools: publishedDefinitions([tool("echo"), tool("Echo")])
+    })]);
 
     await test.coordinator.reconcileNow();
 
-    expect(test.repository.markReady).toHaveBeenCalledWith(expect.objectContaining({
-      inventory: {
-        tools: expect.arrayContaining([
-          expect.objectContaining({ name: "echo" }),
-          expect.objectContaining({ name: "new_tool" })
-        ]),
-        version: 1
-      }
-    }));
-    const readyInventory = vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory;
-    expect(readyInventory.tools.map((tool) => tool.name)).toEqual(["echo", "new_tool"]);
-
-    await expect(test.coordinator.callTool({
-      arguments: {},
-      generationId: "generation-1",
-      inputSchema: { type: "object" },
-      name: "Echo"
-    })).rejects.toMatchObject({ code: "mcp_tool_not_available", operation: "call_tool" });
+    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory).toEqual({
+      exclusions: [
+        { name: "Echo", reason: "disabled_by_policy" },
+        { name: "new_tool", reason: "unpublished_addition" }
+      ],
+      tools: [tool("echo")],
+      version: 1
+    });
+    for (const name of ["Echo", "new_tool"]) {
+      await expect(test.coordinator.callTool({
+        arguments: {},
+        generationId: "generation-1",
+        inputSchema: { type: "object" },
+        name
+      })).rejects.toMatchObject({ code: "mcp_tool_not_available", operation: "call_tool" });
+    }
     expect(test.repository.touchLastUsed).not.toHaveBeenCalled();
     expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("holds back an upstream addition, a changed definition and a missing tool at start", async () => {
+    const test = harness({
+      inventory: [tool("echo", "hash-echo-changed"), tool("large"), tool("delete_repo")],
+      published: publishedDefinitions(DEFAULT_TOOLS)
+    });
+
+    await test.coordinator.reconcileNow();
+
+    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory).toEqual({
+      exclusions: [
+        { name: "delete_repo", reason: "unpublished_addition" },
+        { name: "echo", reason: "definition_drift" },
+        { name: "slow", reason: "missing_upstream" }
+      ],
+      tools: [tool("large")],
+      version: 1
+    });
+    for (const name of ["delete_repo", "echo", "slow"]) {
+      await expect(test.coordinator.callTool({
+        arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name
+      })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    }
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "large"
+    })).resolves.toMatchObject({ structuredContent: { name: "large" } });
+    expect(test.session.callTool).toHaveBeenCalledOnce();
+    await test.coordinator.stop();
+  });
+
+  it("holds back the same changes after list_changed and restores a reverted server without a new check", async () => {
+    const test = harness();
+    await test.coordinator.reconcileNow();
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
+    })).resolves.toMatchObject({ structuredContent: { name: "echo" } });
+
+    test.setInventory([tool("echo", "hash-echo-changed"), tool("large"), tool("delete_repo")]);
+    test.listChanged();
+    await vi.waitFor(() => expect(test.repository.markReady).toHaveBeenCalledTimes(2));
+
+    expect(vi.mocked(test.repository.markReady).mock.calls[1]![0].inventory).toEqual({
+      exclusions: [
+        { name: "delete_repo", reason: "unpublished_addition" },
+        { name: "echo", reason: "definition_drift" },
+        { name: "slow", reason: "missing_upstream" }
+      ],
+      tools: [tool("large")],
+      version: 1
+    });
+    for (const name of ["delete_repo", "echo", "slow"]) {
+      await expect(test.coordinator.callTool({
+        arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name
+      })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    }
+
+    test.setInventory(DEFAULT_TOOLS);
+    test.listChanged();
+    await vi.waitFor(() => expect(test.repository.markReady).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(test.repository.markReady).mock.calls[2]![0].inventory).toEqual({
+      exclusions: [], tools: DEFAULT_TOOLS, version: 1
+    });
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
+    })).resolves.toMatchObject({ structuredContent: { name: "echo" } });
+    expect(test.session.callTool).toHaveBeenCalledTimes(2);
+    await test.coordinator.stop();
+  });
+
+  it("accounts for every published and upstream name exactly once, with policy first", async () => {
+    const published = publishedDefinitions([tool("a"), tool("b"), tool("e"), tool("f")]);
+    const test = harness({
+      inventory: [tool("a"), tool("b", "hash-b-changed"), tool("c"), tool("d")],
+      published
+    });
+    test.setLaunches([launch({ disabledToolNames: ["c", "e"], publishedTools: published })]);
+
+    await test.coordinator.reconcileNow();
+
+    const inventory = vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory;
+    expect(inventory.tools.map(({ name }) => name)).toEqual(["a"]);
+    expect(inventory.exclusions).toEqual([
+      { name: "b", reason: "definition_drift" },
+      { name: "c", reason: "disabled_by_policy" },
+      { name: "d", reason: "unpublished_addition" },
+      { name: "e", reason: "disabled_by_policy" },
+      { name: "f", reason: "missing_upstream" }
+    ]);
+    const covered = [...inventory.tools, ...inventory.exclusions].map(({ name }) => name);
+    expect(new Set(covered).size).toBe(covered.length);
+    expect(covered.sort()).toEqual(["a", "b", "c", "d", "e", "f"]);
+    await test.coordinator.stop();
+  });
+
+  it("matches a revision checked before definitions were recorded by name only", async () => {
+    const test = harness({
+      inventory: [tool("echo", "hash-echo-changed"), tool("large"), tool("delete_repo")],
+      published: { kind: "names", names: new Set(["echo", "large", "slow"]) }
+    });
+
+    await test.coordinator.reconcileNow();
+
+    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory).toEqual({
+      exclusions: [
+        { name: "delete_repo", reason: "unpublished_addition" },
+        { name: "slow", reason: "missing_upstream" }
+      ],
+      tools: [tool("echo", "hash-echo-changed"), tool("large")],
+      version: 1
+    });
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
+    })).resolves.toMatchObject({ structuredContent: { name: "echo" } });
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "delete_repo"
+    })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    await test.coordinator.stop();
+  });
+
+  it("offers nothing and names every upstream tool when the recorded definitions do not verify", async () => {
+    const test = harness({ published: { kind: "invalid" } });
+
+    await test.coordinator.reconcileNow();
+
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory).toEqual({
+      exclusions: DEFAULT_TOOLS.map(({ name }) => ({ name, reason: "unpublished_addition" })),
+      tools: [],
+      version: 1
+    });
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
+    })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("fails closed on an upstream inventory that repeats a tool name", async () => {
+    const test = harness({
+      inventory: [tool("echo"), tool("echo", "hash-echo-other")],
+      published: publishedDefinitions([tool("echo")])
+    });
+
+    await test.coordinator.reconcileNow();
+
+    expect(test.calls).toEqual(["starting", "failed:mcp_inventory_invalid"]);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
     await test.coordinator.stop();
   });
 
@@ -520,48 +751,54 @@ describe("MCP runtime coordinator", () => {
         name: "echo"
       }]
     });
-    test.setLaunches([launch({ disabledToolNames: ["echo"] })]);
+    test.setLaunches([launch({ disabledToolNames: ["echo"], publishedTools: publishedDefinitions([tool("echo")]) })]);
 
     await test.coordinator.reconcileNow();
 
     expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
     expect(test.repository.markReady).toHaveBeenCalledWith(expect.objectContaining({
-      inventory: { tools: [], version: 1 }
+      inventory: { exclusions: [{ name: "echo", reason: "disabled_by_policy" }], tools: [], version: 1 }
     }));
     await test.coordinator.stop();
   });
 
-  it("refreshes the exact enabled-name fence only with accepted inventory", async () => {
-    const test = harness({
-      inventory: [{
-        definitionHash: "hash-echo",
-        description: null,
-        inputSchema: { type: "object" },
-        name: "echo"
-      }]
-    });
+  it("admits a new upstream tool only through a generation whose revision published it", async () => {
+    const test = harness({ inventory: [tool("echo")] });
     await test.coordinator.reconcileNow();
-    test.setInventory([{
-      definitionHash: "hash-new",
-      description: null,
-      inputSchema: { type: "object" },
-      name: "new_tool"
-    }]);
+    test.setInventory([tool("new_tool")]);
     test.listChanged();
     await vi.waitFor(() => expect(test.repository.markReady).toHaveBeenCalledTimes(2));
 
+    expect(vi.mocked(test.repository.markReady).mock.calls[1]![0].inventory).toEqual({
+      exclusions: [
+        { name: "echo", reason: "missing_upstream" },
+        { name: "new_tool", reason: "unpublished_addition" }
+      ],
+      tools: [],
+      version: 1
+    });
+    for (const name of ["echo", "new_tool"]) {
+      await expect(test.coordinator.callTool({
+        arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name
+      })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    }
+
+    // A new check publishes new_tool; its revision starts another generation in
+    // this process while the previous one keeps its own fence until drained.
+    test.setLaunches([launch({
+      fingerprint: "fingerprint-2",
+      generationId: "generation-2",
+      publishedTools: publishedDefinitions([tool("new_tool")])
+    })]);
+    await test.coordinator.reconcileNow();
+
     await expect(test.coordinator.callTool({
-      arguments: {},
-      generationId: "generation-1",
-      inputSchema: { type: "object" },
-      name: "echo"
-    })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
-    await expect(test.coordinator.callTool({
-      arguments: {},
-      generationId: "generation-1",
-      inputSchema: { type: "object" },
-      name: "new_tool"
+      arguments: {}, generationId: "generation-2", inputSchema: { type: "object" }, name: "new_tool"
     })).resolves.toMatchObject({ structuredContent: { name: "new_tool" } });
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "new_tool"
+    })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    expect(test.session.callTool).toHaveBeenCalledOnce();
     await test.coordinator.stop();
   });
 
@@ -927,6 +1164,27 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.stop();
   });
 
+  it("restores an accepted generation with only the tools its own revision published", async () => {
+    const test = harness({ inventory: [tool("echo"), tool("delete_repo")] });
+    test.setLaunches([]);
+    vi.mocked(test.repository.loadAcceptedGeneration).mockResolvedValueOnce(launch({
+      publishedTools: publishedDefinitions([tool("echo")])
+    }));
+
+    await expect(test.coordinator.ensureAcceptedGeneration("generation-1")).resolves.toBe(true);
+
+    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory).toEqual({
+      exclusions: [{ name: "delete_repo", reason: "unpublished_addition" }],
+      tools: [tool("echo")],
+      version: 1
+    });
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "delete_repo"
+    })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
   it("does not start a generation without an active accepted binding", async () => {
     const test = harness();
     test.setLaunches([]);
@@ -1151,6 +1409,22 @@ describe("MCP runtime coordinator", () => {
     delayed.setLaunches([launch({ retryAt: new Date(now.getTime() + 1_000) })]);
     await delayed.coordinator.reconcileNow();
     expect(delayed.calls).toEqual([]);
+  });
+
+  it.each([
+    { code: "mcp_inventory_cursor_cycle", persisted: "mcp_inventory_cursor_cycle" },
+    { code: "mcp_inventory_page_limit", persisted: "mcp_inventory_page_limit" },
+    { code: "mcp_inventory_time_limit", persisted: "mcp_inventory_time_limit" },
+    { code: "mcp_inventory_tool_limit", persisted: "mcp_inventory_tool_limit" },
+    { code: "mcp_inventory_tool_invalid", persisted: "mcp_inventory_invalid" }
+  ] as const)("persists the inventory bound $code as $persisted and stays not ready", async ({ code, persisted }) => {
+    const test = harness();
+    vi.mocked(test.session.listTools).mockRejectedValue(new McpClientSessionError({ code, operation: "list_tools" }));
+    await test.coordinator.reconcileNow();
+    expect(test.calls).toEqual(["starting", `failed:${persisted}`]);
+    expect(test.repository.markReady).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+    await test.coordinator.stop();
   });
 
   it.each([

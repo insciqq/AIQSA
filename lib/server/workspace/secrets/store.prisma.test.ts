@@ -12,7 +12,10 @@ import { createPrismaWorkspaceCoordinatorRepository } from "../coordinator";
 import { namespacedWorkspaceToolName } from "../toolCatalog";
 import { bindWorkspaceSecrets, createWorkspaceSecretStore, decryptWorkspaceSecret, lockWorkspaceSecretOwner } from "./store";
 import { saveWorkspaceBrowserSessions, type WorkspaceBrowserSaveInput } from "./browserStore";
-import { decodeWorkspaceSecretList } from "@/lib/contracts/workspaceSecrets";
+import {
+  decodeWorkspaceSecretList, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES
+} from "@/lib/contracts/workspaceSecrets";
+import type { WorkspaceBrowserSaveItem } from "./browserCollection";
 
 const key = Buffer.alloc(32, 37);
 const users: string[] = [];
@@ -73,6 +76,17 @@ async function browserRun(userId: string): Promise<WorkspaceBrowserSaveInput> {
 
 const saveBrowser = (input: WorkspaceBrowserSaveInput, value = "synthetic-session") => saveWorkspaceBrowserSessions(prisma,
   { ...input, files: [{ fileName: "shop.example.json", bytes: browserBytes(value) }] }, () => key);
+
+/** A valid storage_state padded with JSON whitespace to exactly `size` raw bytes. */
+function sizedBrowserBytes(size: number, value = "synthetic-session") {
+  const state = browserBytes(value);
+  return Buffer.concat([state, Buffer.alloc(size - state.length, 32)]);
+}
+
+async function currentBrowser(userId: string, fileName: string) {
+  const row = await prisma.workspaceSecret.findFirstOrThrow({ where: { userId, browserFileName: fileName }, include: { value: true } });
+  return { valueId: row.valueId, value: decryptWorkspaceSecret(row.value, userId, key).value };
+}
 
 describe("persisted personal Workspace secrets", () => {
   let originalPolicy: Awaited<ReturnType<typeof prisma.workspacePolicy.findUnique>>;
@@ -158,7 +172,7 @@ describe("persisted personal Workspace secrets", () => {
     const report = await saveWorkspaceBrowserSessions(prisma, { ...input, files: [
       { fileName: "../synthetic-private.json", bytes: browserBytes() },
       { fileName: "broken.json", bytes: Buffer.from("not JSON") },
-      { fileName: "large.json", bytes: Buffer.alloc(512 * 1024 + 1) },
+      { fileName: "large.json", bytes: Buffer.alloc(WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1) },
       { fileName: "shop.example.json", bytes: browserBytes() }
     ] }, () => key);
     expect(report).toEqual({ saved: 1, unchanged: 0, skipped: { browser_session_invalid: 2, browser_session_too_large: 1 } });
@@ -166,6 +180,90 @@ describe("persisted personal Workspace secrets", () => {
     expect(row.browserSessionSave).toEqual(report);
     expect(JSON.stringify(row.browserSessionSave)).not.toMatch(/synthetic|shop|cookies|base64/);
     expect(await store().list(foreignUserId)).toEqual([]);
+  });
+
+  it("saves states between 512 KiB and 8 MiB exactly, keeps the previous version for 8 MiB + 1 and decodes the list", async () => {
+    const userId = await owner();
+    const first = await browserRun(userId);
+    const aboveFormer = sizedBrowserBytes(512 * 1024 + 1, "above-former-cap");
+    const maximum = sizedBrowserBytes(WORKSPACE_BROWSER_SESSION_MAX_BYTES, "maximum");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...first, files: [
+      { fileName: "above.example.json", bytes: aboveFormer }, { fileName: "max.example.json", bytes: maximum }
+    ] }, () => key)).toEqual({ saved: 2, unchanged: 0, skipped: {} });
+    expect((await currentBrowser(userId, "above.example.json")).value).toEqual({ kind: "browser_session", originalName: "above.example.json", base64: aboveFormer.toString("base64") });
+    const saved = await currentBrowser(userId, "max.example.json");
+    expect(saved.value).toEqual({ kind: "browser_session", originalName: "max.example.json", base64: maximum.toString("base64") });
+    const rows = await store().list(userId);
+    expect(decodeWorkspaceSecretList(rows)).toEqual(rows);
+    expect(rows.map((row) => row.byteSize).sort((a, b) => a - b)).toEqual([aboveFormer.length, maximum.length]);
+    // Accepted run admission freezes the large revisions for the next personal run.
+    const second = await browserRun(userId);
+    expect(await prisma.workspaceRunSecret.count({ where: { modelRunId: second.runId } })).toBe(2);
+    const over = sizedBrowserBytes(WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1, "too-large");
+    const report = await saveWorkspaceBrowserSessions(prisma, { ...second, files: [{ fileName: "max.example.json", bytes: over }] }, () => key);
+    expect(report).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_too_large: 1 } });
+    expect((await currentBrowser(userId, "max.example.json")).valueId).toBe(saved.valueId);
+    expect(await store().browserAutosave(userId)).toEqual(report);
+  }, 60_000);
+
+  it("enforces the 64 MiB aggregate for autosave and manual import without replacing kept versions", async () => {
+    const userId = await owner();
+    const input = await browserRun(userId);
+    const count = WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES / WORKSPACE_BROWSER_SESSION_MAX_BYTES;
+    // A lazy source: each state exists only while it is being committed.
+    async function* states(): AsyncGenerator<WorkspaceBrowserSaveItem> {
+      for (let index = 0; index < count; index++) yield { fileName: `site-${index}.example.json`, bytes: sizedBrowserBytes(WORKSPACE_BROWSER_SESSION_MAX_BYTES, `state-${index}`) };
+      yield { fileName: "extra.example.json", bytes: browserBytes("over-aggregate") };
+    }
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...input, files: states() }, () => key))
+      .toEqual({ saved: count, unchanged: 0, skipped: { browser_session_total_limit: 1 } });
+    expect(await prisma.workspaceSecret.count({ where: { userId, browserFileName: "extra.example.json" } })).toBe(0);
+    await expect(store().mutate(userId, { action: "create", name: "Extra", description: "",
+      value: { kind: "browser_session", originalName: "extra.example.json", base64: browserBytes().toString("base64") } })).rejects.toThrow("workspace_secret_limit");
+    // Replacing a state counts its own old size out of the aggregate.
+    const next = await browserRun(userId);
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...next, files: [
+      { fileName: "site-0.example.json", bytes: sizedBrowserBytes(WORKSPACE_BROWSER_SESSION_MAX_BYTES, "replacement") }
+    ] }, () => key)).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    const bound = await prisma.workspaceRunSecret.findMany({ where: { modelRunId: next.runId }, include: { value: { select: { byteSize: true } } } });
+    expect(bound.reduce((total, row) => total + row.value.byteSize, 0)).toBe(WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES);
+  }, 120_000);
+
+  it("stops at a fence lost between states, records an unfinished save and never pulls later states", async () => {
+    const userId = await owner();
+    const input = await browserRun(userId);
+    const pulled: string[] = [];
+    async function* fenced(): AsyncGenerator<WorkspaceBrowserSaveItem> {
+      pulled.push("first.example.json");
+      yield { fileName: "first.example.json", bytes: browserBytes("first") };
+      // Another operation takes the session, as a Stop or stale finalizer would.
+      await prisma.workspaceSession.update({ where: { id: input.sessionId }, data: { version: { increment: 1 } } });
+      pulled.push("second.example.json");
+      yield { fileName: "second.example.json", bytes: browserBytes("second") };
+      pulled.push("third.example.json");
+      yield { fileName: "third.example.json", bytes: browserBytes("third") };
+    }
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...input, files: fenced() }, () => key))
+      .toEqual({ saved: 1, unchanged: 0, skipped: { browser_session_stale: 1 } });
+    expect(pulled).toEqual(["first.example.json", "second.example.json"]);
+    expect((await store().list(userId)).map((row) => row.originalName)).toEqual(["first.example.json"]);
+
+    const failing = await browserRun(userId);
+    async function* broken(): AsyncGenerator<WorkspaceBrowserSaveItem> {
+      yield { fileName: "kept.example.json", bytes: browserBytes("kept") };
+      throw new Error("synthetic private cookie");
+    }
+    const report = await saveWorkspaceBrowserSessions(prisma, { ...failing, files: broken() }, () => key);
+    expect(report).toEqual({ saved: 1, unchanged: 0, skipped: {}, failure: "browser_session_save_failed" });
+    const row = await prisma.workspaceRunBinding.findUniqueOrThrow({ where: { modelRunId: failing.runId } });
+    expect(row.browserSessionSave).toEqual(report);
+    expect(JSON.stringify(row.browserSessionSave)).not.toMatch(/synthetic|kept|cookie/);
+    expect(await store().browserAutosave(userId)).toEqual(report);
+    const expired = await browserRun(userId);
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...expired, files: [{ fileName: "late.example.json", bytes: browserBytes("late") }],
+      signal: AbortSignal.abort() }, () => key)).toEqual({ saved: 0, unchanged: 0, skipped: {}, failure: "browser_session_save_failed" });
+    expect(await prisma.workspaceSecret.count({ where: { userId, browserFileName: "late.example.json" } })).toBe(0);
+    expect(await store().browserAutosave(await owner())).toBeNull();
   });
 
   it("accepts only an active run's exact foreground handoff lease and excludes subsequent export recovery", async () => {

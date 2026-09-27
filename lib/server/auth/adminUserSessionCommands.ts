@@ -4,6 +4,7 @@ import {
   adminUserDeletionBlock
 } from "./adminDeletionMetadata";
 import type {
+  AdminDisableUserProjectOwnerRequired,
   AdminRepository,
   AdminRevokeUserSessionsInput
 } from "./adminRepositoryContract";
@@ -17,6 +18,10 @@ import {
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
 import type { AccountMemoryDeletionHook } from "../memory/accountDeletion/integration";
+import {
+  revokeAllInboundMcpGrants,
+  revokeInboundMcpGrantsForUser
+} from "../memoryMcp/oauth/repository";
 
 export type AdminUserSessionCommands = Pick<
   AdminRepository,
@@ -228,6 +233,13 @@ export function createAdminUserSessionCommands(
           return "last_admin_forbidden";
         }
 
+        // Checked before the status write so the deferred Project-owner trigger never has to
+        // roll back the whole disable (and its session revocation) at COMMIT.
+        const ownerConflict = await soleOwnedProjectConflict(tx, target.id);
+        if (ownerConflict) {
+          return ownerConflict;
+        }
+
         const updated = await tx.user.updateMany({
           data: {
             status: "disabled"
@@ -275,21 +287,27 @@ export function createAdminUserSessionCommands(
       });
     },
     async revokeAllSessions(input) {
-      const result = await prisma.authSession.updateMany({
-        data: {
-          revokedAt: new Date(),
-          revokedByUserId: input.revokedByUserId,
-          revokedReason: "admin_revoke_all"
-        },
-        where: {
-          revokedAt: null
-        }
-      });
+      // The installation-wide response to a suspected compromise also ends inbound MCP grants: a
+      // stolen session could have minted one that would otherwise outlive every revoked session.
+      return prisma.$transaction(async (tx) => {
+        const now = new Date();
+        const result = await tx.authSession.updateMany({
+          data: {
+            revokedAt: now,
+            revokedByUserId: input.revokedByUserId,
+            revokedReason: "admin_revoke_all"
+          },
+          where: {
+            revokedAt: null
+          }
+        });
+        await revokeAllInboundMcpGrants(tx, { now, reason: "admin_revoke_all" });
 
-      return result.count;
+        return result.count;
+      });
     },
     async revokeUserSessions(input) {
-      return revokeUserSessions(prisma, input);
+      return prisma.$transaction((tx) => revokeUserSessions(tx, input));
     }
   };
 }
@@ -423,13 +441,86 @@ async function lockActiveAdmins(tx: Prisma.TransactionClient): Promise<{ id: str
   `;
 }
 
+/** Bounds the Projects named in a disable conflict; `projectCount` still reports all of them. */
+const SOLE_OWNED_PROJECT_LIST_LIMIT = 20;
+
+/**
+ * Finds the non-deleting Projects in which the user is the only active direct Owner, after
+ * locking every non-deleting Project the user directly owns. Project grant and lifecycle writers
+ * lock the Project row first: one that committed while these locks were awaited is seen by the
+ * re-read below, and one that waits here fails its serializable row lock afterwards because the
+ * status change rewrites the Project row (access-revision trigger), so it cannot act on the old
+ * Owner set. A concurrent co-Owner disable waits here and then sees this one.
+ */
+async function soleOwnedProjectConflict(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<AdminDisableUserProjectOwnerRequired | null> {
+  const owned = await tx.$queryRaw<{ id: string }[]>`
+    SELECT project_row."id"
+    FROM "Project" AS project_row
+    WHERE project_row."status" <> 'DELETING'
+      AND EXISTS (
+        SELECT 1
+        FROM "ProjectGrant" AS grant_row
+        WHERE grant_row."projectId" = project_row."id"
+          AND grant_row."userId" = ${userId}
+          AND grant_row."groupId" IS NULL
+          AND grant_row."role" = 'OWNER'
+      )
+    ORDER BY project_row."id"
+    FOR UPDATE
+  `;
+  if (owned.length === 0) {
+    return null;
+  }
+
+  // A separate statement: under READ COMMITTED it sees every transaction that committed while
+  // the locks above were awaited.
+  const soleOwned = await tx.project.findMany({
+    orderBy: [{ name: "asc" }, { id: "asc" }],
+    select: { name: true, status: true },
+    where: {
+      grants: {
+        some: { groupId: null, role: "OWNER", userId }
+      },
+      id: { in: owned.map(({ id }) => id) },
+      NOT: {
+        grants: {
+          some: {
+            groupId: null,
+            role: "OWNER",
+            user: { status: "active" },
+            userId: { not: userId }
+          }
+        }
+      },
+      status: { not: "DELETING" }
+    }
+  });
+  if (soleOwned.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "project_owner_required",
+    projectCount: soleOwned.length,
+    projects: soleOwned.slice(0, SOLE_OWNED_PROJECT_LIST_LIMIT).map((project) => ({
+      name: project.name,
+      status: project.status === "ARCHIVED" ? "ARCHIVED" : "ACTIVE"
+    }))
+  };
+}
+
+/** Ends the account's sessions and inbound MCP grants; disable and reject inherit both. */
 async function revokeUserSessions(
-  prisma: PrismaClient | Prisma.TransactionClient,
+  tx: Prisma.TransactionClient,
   input: AdminRevokeUserSessionsInput
 ): Promise<number> {
-  const result = await prisma.authSession.updateMany({
+  const now = new Date();
+  const result = await tx.authSession.updateMany({
     data: {
-      revokedAt: new Date(),
+      revokedAt: now,
       revokedByUserId: input.revokedByUserId,
       revokedReason: "admin_revoke_user"
     },
@@ -437,6 +528,11 @@ async function revokeUserSessions(
       revokedAt: null,
       userId: input.userId
     }
+  });
+  await revokeInboundMcpGrantsForUser(tx, {
+    now,
+    reason: "admin_revoke_user",
+    userId: input.userId
   });
 
   return result.count;

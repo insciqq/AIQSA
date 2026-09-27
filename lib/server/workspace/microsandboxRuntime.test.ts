@@ -7,11 +7,17 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { runWithContext } from "../observability";
 import { SandboxNotFoundError, SandboxNotRunningError } from "microsandbox";
 import { workspaceAttachmentPath, workspaceSandboxName } from "@/lib/domain/workspace";
-import { getWorkspaceConfig } from "./config";
-import { MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
+import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
+import { formatExecOutput } from "microsandbox-mcp/dist/utils/exec-output.js";
+import { limitText, type Truncation } from "microsandbox-mcp/dist/utils/output.js";
+import { fail, ok } from "microsandbox-mcp/dist/utils/response.js";
+import { getWorkspaceConfig, workspaceToolTransportMaxBytes } from "./config";
+import { execPollEventMaxBytes, MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
+import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { tarGzipStream } from "../chats/tarArchive";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -21,7 +27,11 @@ const sdk = vi.hoisted(() => ({
   list: vi.fn(async () => []),
   listWith: vi.fn(),
   callTool: vi.fn(),
-  closeMcp: vi.fn(async () => undefined)
+  closeMcp: vi.fn(async () => undefined),
+  transports: [] as Array<Readonly<{
+    options: Readonly<{ maxBufferSize?: number }>;
+    transport: { onclose?: () => void; onerror?: (error: Error) => void };
+  }>>
 }));
 
 vi.mock("microsandbox", () => ({
@@ -46,7 +56,12 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
   }
 }));
 vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
-  StdioClientTransport: class { close = sdk.closeMcp; }
+  StdioClientTransport: class {
+    close = sdk.closeMcp;
+    onclose?: () => void;
+    onerror?: (error: Error) => void;
+    constructor(options: Readonly<{ maxBufferSize?: number }>) { sdk.transports.push({ options, transport: this }); }
+  }
 }));
 // Catalog schema validation has its own official-catalog contract tests.
 // This fixture isolates lifecycle decisions from the MCP subprocess.
@@ -90,6 +105,17 @@ const callInput: Parameters<WorkspaceRuntime["callBoundTool"]>[0] = {
 function fixture() {
   let state = "running";
   const files = new Map<string, Uint8Array>();
+  const secretPipe = {
+    write: vi.fn(async (_bytes: Uint8Array) => {}),
+    close: vi.fn(async () => {}),
+    [Symbol.asyncDispose]: vi.fn(async () => {})
+  };
+  const secretHelper = {
+    takeStdin: vi.fn(async () => secretPipe),
+    wait: vi.fn(async () => ({ code: 0 })),
+    kill: vi.fn(async () => {}),
+    [Symbol.asyncDispose]: vi.fn(async () => {})
+  };
   const fs = {
     exists: vi.fn(async (path: string) => [...files.keys()].some((file) => file.startsWith(path))),
     read: vi.fn(async (path: string) => files.get(path)!),
@@ -118,6 +144,7 @@ function fixture() {
   const sandbox = {
     exec: vi.fn(async () => ({ success: true })),
     execWith: vi.fn(async (_command: string, _configure: unknown) => ({ success: true, stdout: (): string => "{}", stdoutBytes: () => Buffer.from("{}") })),
+    execStreamWith: vi.fn(async (_command: string, _configure: unknown) => secretHelper),
     fs: () => fs,
     id: runtimeSandboxId,
     name: sandboxName,
@@ -159,9 +186,19 @@ function fixture() {
     return { content: [{ type: "text", text: "ok" }] };
   });
   return {
+    secretPipe, secretHelper,
     builder, files, fs, handle, sandbox,
     runtime: new MicrosandboxWorkspaceRuntime(config),
     setState(value: string) { state = value; }
+  };
+}
+
+function acceptedBrowserState(byteSize = WORKSPACE_BROWSER_SESSION_MAX_BYTES) {
+  const bytes = Buffer.alloc(byteSize, 32);
+  bytes.write('{"cookies":[],"origins":[]}');
+  return {
+    id: randomUUID(), versionId: randomUUID(), name: "Synthetic browser state", description: "",
+    value: { kind: "browser_session" as const, originalName: "synthetic.example.json", base64: bytes.toString("base64") }
   };
 }
 
@@ -170,6 +207,24 @@ describe("Microsandbox Workspace lifecycle", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await Promise.all(skillDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+  });
+
+  it("offers browser states above 512 KiB and stops hashing at the per-file and aggregate budgets", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const megabytes = (count: number) => count * 1024 * 1024;
+    const full = new Uint8Array(megabytes(8));
+    const sizes: Array<[string, number]> = [["a-large.json", 600 * 1024], ...Array.from({ length: 7 }, (_, index): [string, number] => [`b-${index}.json`, megabytes(8)]),
+      ["c-over-budget.json", megabytes(8)], ["d-too-large.json", megabytes(8) + 1]];
+    for (const [name, size] of sizes) value.files.set(`/workspace/secrets/browser/${name}`, size === megabytes(8) ? full : new Uint8Array(size));
+    const listing = JSON.stringify({ entries: sizes.map(([name, size]) => ({ name, size, file: true })) });
+    value.sandbox.execWith.mockResolvedValueOnce({ success: true, stdout: () => listing, stdoutBytes: () => Buffer.from(listing) });
+    const collection = await value.runtime.collectBrowserSessions({ ...sessionInput, modelRunId: "run_fixture" });
+    expect(collection.files.map((file) => file.relativePath)).toEqual(["a-large.json", ...Array.from({ length: 7 }, (_, index) => `b-${index}.json`)]);
+    expect(collection.skipped).toEqual(["browser_session_total_limit", "browser_session_too_large"]);
+    expect(value.fs.readStream).not.toHaveBeenCalledWith("/workspace/secrets/browser/c-over-budget.json");
+    expect(value.fs.readStream).not.toHaveBeenCalledWith("/workspace/secrets/browser/d-too-large.json");
+    await Promise.all(collection.files.map((file) => file.body.cancel()));
   });
 
   it.each(["valid", "corrupt", "short", "disk_full"])("publishes only verified originals and cleans temporary staging on %s", async outcome => {
@@ -351,13 +406,27 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool).toHaveBeenCalledTimes(2);
   });
 
+  it("returns a failed command's mid-log cause within the configured output budget from one dispatch", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const half = "passing test line\n".repeat(1200);
+    sdk.callTool.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false,
+      error: { code: "exec_failed", message: "PRIVATE", details: { exitCode: 1, stdout: `${half}ROOT_CAUSE_CANARY\n${half}`, stderr: "1 failed" } } }) }] });
+    const result = await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell" });
+    expect(result).toMatchObject({ status: "error", exitCode: 1, errorCode: "workspace_command_failed", truncated: false });
+    expect(result.content[0]!.text).toContain("ROOT_CAUSE_CANARY");
+    expect(Buffer.byteLength(result.content[0]!.text!)).toBeGreaterThan(40 * 1_024);
+    expect(Buffer.byteLength(result.content[0]!.text!)).toBeLessThanOrEqual(config.toolOutputMaxBytes);
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+  });
+
   it("delivers accepted env to separate exec, shell and long-lived commands, then removes it for the next run", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
-    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinBytes: vi.fn().mockReturnThis() };
-    value.sandbox.execWith.mockImplementationOnce(async (_command, configure) => {
+    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinPipe: vi.fn().mockReturnThis() };
+    value.sandbox.execStreamWith.mockImplementationOnce(async (_command, configure) => {
       (configure as (input: typeof builder) => unknown)(builder);
-      return { success: true, stdout: () => "", stdoutBytes: () => Buffer.from("") };
+      return value.secretHelper;
     });
     const token = "synthetic '\"$HOME`command`\nvalue";
     await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, secrets: [{
@@ -365,7 +434,8 @@ describe("Microsandbox Workspace lifecycle", () => {
       value: { kind: "env", entries: [{ name: "SERVICE_TOKEN", value: token }] }
     }] });
     expect(JSON.stringify(builder.args.mock.calls)).not.toContain("SERVICE_TOKEN");
-    expect(JSON.parse(builder.stdinBytes.mock.calls[0]![0].toString())).toMatchObject({ environment: { SERVICE_TOKEN: token } });
+    expect(JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString())).toMatchObject({ environment: { SERVICE_TOKEN: token } });
+    expect(builder.stdinPipe).toHaveBeenCalledOnce();
     expect(process.env.SERVICE_TOKEN).not.toBe(token);
     sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
     for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
@@ -386,9 +456,103 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { RECOVERED_TOKEN: "synthetic-recovered" } }) }), undefined, expect.anything());
     sdk.callTool.mockClear();
     value.sandbox.execWith.mockResolvedValue({ success: false, stdout: () => "", stdoutBytes: () => Buffer.from("") });
+    value.secretHelper.wait.mockResolvedValue({ code: 1 });
     await expect(restarted.syncPersonalSecrets({ ...sessionInput, modelRunId: "next", secrets: [] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
     await expect(restarted.callBoundTool({ ...callInput, modelRunId: "next" })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
     expect(sdk.callTool).not.toHaveBeenCalled();
+  });
+
+  it("pipes an exact 8 MiB browser state in sequential bounded chunks before installing it", async () => {
+    const value = fixture();
+    const secret = acceptedBrowserState();
+    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinPipe: vi.fn().mockReturnThis() };
+    value.sandbox.execStreamWith.mockImplementationOnce(async (_command, configure) => {
+      (configure as (input: typeof builder) => unknown)(builder);
+      return value.secretHelper;
+    });
+    let writing = false;
+    value.secretPipe.write.mockImplementation(async bytes => {
+      expect(writing).toBe(false);
+      expect(bytes.byteLength).toBeGreaterThan(0);
+      expect(bytes.byteLength).toBeLessThanOrEqual(1024 * 1024);
+      writing = true;
+      await Promise.resolve();
+      writing = false;
+    });
+    value.secretHelper.wait.mockImplementation(async () => {
+      expect(value.secretPipe.close).toHaveBeenCalledOnce();
+      return { code: 0 };
+    });
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "browser-run", secrets: [secret] });
+    const bytes = Buffer.concat(value.secretPipe.write.mock.calls.map(([chunk]) => chunk));
+    expect(value.secretPipe.write.mock.calls.length).toBeGreaterThan(8);
+    expect(JSON.parse(bytes.toString())).toMatchObject({ runId: "browser-run", secrets: [secret] });
+    expect(JSON.stringify(builder.args.mock.calls)).not.toContain(secret.value.base64.slice(0, 128));
+    expect(value.fs.writeStream).not.toHaveBeenCalled();
+    expect(value.secretHelper.kill).not.toHaveBeenCalled();
+    expect(value.secretPipe[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(value.secretHelper[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an over-limit browser state before starting private byte delivery", async () => {
+    const value = fixture();
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "oversized", secrets: [
+      acceptedBrowserState(WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1)
+    ] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+    expect(value.sandbox.execStreamWith).not.toHaveBeenCalled();
+    expect(value.secretPipe.write).not.toHaveBeenCalled();
+  });
+
+  it("kills the installer and disposes its private pipe after a partial transfer fails", async () => {
+    const value = fixture();
+    value.secretPipe.write.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("private_transfer_failure"));
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "failed", secrets: [
+      acceptedBrowserState()
+    ] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+    expect(value.secretPipe.write).toHaveBeenCalledTimes(2);
+    expect(value.secretPipe.close).not.toHaveBeenCalled();
+    expect(value.secretHelper.wait).not.toHaveBeenCalled();
+    expect(value.secretHelper.kill).toHaveBeenCalledOnce();
+    expect(value.secretPipe[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(value.secretHelper[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(sdk.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("falls back to guest fencing when the failed installer cannot be killed (stopped=%s)", async stopped => {
+    const value = fixture();
+    value.secretPipe.write.mockRejectedValueOnce(new Error("private_transfer_failure"));
+    value.secretHelper.kill.mockRejectedValueOnce(new Error("kill_failed"));
+    if (!stopped) value.sandbox.stopWithTimeout.mockRejectedValueOnce(new Error("stop_failed"));
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "failed", secrets: [] })).rejects.toMatchObject({
+      code: stopped ? "workspace_secrets_prepare_failed" : "workspace_execution_cleanup_failed"
+    });
+    expect(value.sandbox.stopWithTimeout).toHaveBeenCalledOnce();
+    expect(value.secretPipe[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(value.secretHelper[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+  });
+
+  it("stops the exact guest on cancellation before another secret chunk or EOF is sent", async () => {
+    const value = fixture();
+    const controller = new AbortController();
+    value.secretPipe.write.mockImplementationOnce(async () => { controller.abort(); });
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "cancelled", signal: controller.signal,
+      secrets: [acceptedBrowserState()] })).rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+    expect(value.sandbox.stopWithTimeout).toHaveBeenCalledOnce();
+    expect(value.secretPipe.write).toHaveBeenCalledOnce();
+    expect(value.secretPipe.close).not.toHaveBeenCalled();
+    expect(value.secretHelper.kill).toHaveBeenCalledOnce();
+    expect(value.secretPipe[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+    expect(value.secretHelper[Symbol.asyncDispose]).toHaveBeenCalledOnce();
+  });
+
+  it("retains failed guest fencing as a cleanup failure when a secret transfer is cancelled", async () => {
+    const value = fixture();
+    const controller = new AbortController();
+    value.secretPipe.write.mockImplementationOnce(async () => { controller.abort(); });
+    value.sandbox.stopWithTimeout.mockRejectedValueOnce(new Error("cannot_prove_stopped"));
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "cancelled", signal: controller.signal,
+      secrets: [] })).rejects.toMatchObject({ code: "workspace_execution_cleanup_failed" });
+    expect(value.secretPipe.close).not.toHaveBeenCalled();
   });
 
   it("reads labelled inventory pages without connecting, touching or starting stopped environments", async () => {
@@ -595,6 +759,89 @@ describe("Microsandbox Workspace lifecycle", () => {
     sdk.callTool.mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_session_lost"));
     await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code: "workspace_session_lost" });
     expect(sdk.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  describe("MCP transport overflow", () => {
+    const overflow = (() => {
+      try {
+        new ReadBuffer({ maxBufferSize: 4 }).append(Buffer.alloc(5));
+      } catch (error) {
+        return error as Error;
+      }
+      throw new Error("the pinned SDK no longer rejects an oversized line");
+    })();
+    /** What the pinned SDK does on overflow: report, close, then reject pending requests. */
+    const overflowCurrentTransport = () => {
+      const { transport } = sdk.transports.at(-1)!;
+      transport.onerror?.(overflow);
+      transport.onclose?.();
+      return new McpError(ErrorCode.ConnectionClosed, "Connection closed");
+    };
+
+    it("names an unreadable oversized result and serves the next call from a fresh transport", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      sdk.callTool.mockImplementationOnce(async () => { throw overflowCurrentTransport(); });
+      await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code: "workspace_tool_output_limit_exceeded" });
+      expect(sdk.closeMcp).toHaveBeenCalled();
+      const opened = sdk.transports.length;
+      await expect(value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_next" }))
+        .resolves.toMatchObject({ status: "complete" });
+      expect(sdk.transports).toHaveLength(opened + 1);
+      expect(sdk.transports.at(-1)!.options.maxBufferSize).toBe(workspaceToolTransportMaxBytes(config.toolOutputMaxBytes));
+      expect(sdk.callTool).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps concurrent calls lost with the same transport unknown", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      // Share one open transport between the two pending requests.
+      await value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_warm" });
+      let release: (error: Error) => void = () => undefined;
+      const lost = new Promise<never>((_resolve, reject) => { release = reject; });
+      sdk.callTool.mockImplementationOnce(() => lost).mockImplementationOnce(async () => {
+        release(overflowCurrentTransport());
+        return lost;
+      });
+      const first = value.runtime.callBoundTool(callInput);
+      const second = value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_parallel" });
+      await expect(first).rejects.toMatchObject({ code: "workspace_tool_outcome_unknown" });
+      await expect(second).rejects.toMatchObject({ code: "workspace_tool_outcome_unknown" });
+      const opened = sdk.transports.length;
+      await expect(value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_next" }))
+        .resolves.toMatchObject({ status: "complete" });
+      expect(sdk.transports).toHaveLength(opened + 1);
+    });
+
+    it("keeps Stop authoritative when the transport closes during cancellation", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      const controller = new AbortController();
+      sdk.callTool.mockImplementationOnce(async (_params: unknown, _schema: unknown, options: { signal: AbortSignal }) => {
+        controller.abort();
+        expect(options.signal.aborted).toBe(true);
+        throw overflowCurrentTransport();
+      });
+      await expect(value.runtime.callBoundTool({ ...callInput, signal: controller.signal }))
+        .rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+      const opened = sdk.transports.length;
+      await expect(value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_next" }))
+        .resolves.toMatchObject({ status: "complete" });
+      expect(sdk.transports).toHaveLength(opened + 1);
+    });
+
+    it.each([[undefined, 100], [1, 1], [1_000, 1_000], [5_000, 1_000]] as const)(
+      "shares the stdout/stderr budget across a poll page (limit=%s)", async (limit, events) => {
+        const value = fixture();
+        await value.runtime.ensureSession(ensureInput);
+        await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_exec_poll",
+          arguments: { execSessionId: "synthetic_exec", ...(limit === undefined ? {} : { limit }) } });
+        const maxBytes = sdk.callTool.mock.calls.at(-1)![0].arguments.maxBytes as number;
+        expect(maxBytes).toBe(execPollEventMaxBytes(limit, config.toolOutputMaxBytes));
+        expect(maxBytes * events).toBeLessThanOrEqual(2 * config.toolOutputMaxBytes);
+      });
   });
 
   it("resumes a stopped disk for byte-exact output collection", async () => {
@@ -860,6 +1107,58 @@ describe("Microsandbox Workspace lifecycle", () => {
     await value.runtime.stopSession({ sessionId, runtimeSandboxId: null });
     expect(value.handle.stopWithTimeout).toHaveBeenCalledExactlyOnceWith(10_000);
   });
+
+  function projectArchiveExec(value: ReturnType<typeof fixture>, codes: Partial<Record<string, number>>) {
+    value.sandbox.exec.mockImplementation(async (...call: unknown[]) => {
+      const [command, args] = call as [string, string[]];
+      if (command === "bash") value.files.set(args[3]!, new Uint8Array([1, 2, 3]));
+      const code = command === "python3" ? codes[args.at(-1)!] : undefined;
+      const result = { success: code === undefined, code: code ?? 0 };
+      return result;
+    });
+    return () => value.sandbox.exec.mock.calls.map((call: unknown[]) => call as [string, string[]])
+      .filter(([command]) => command === "python3").map(([, args]) => args);
+  }
+
+  it.each([[67, "workspace_archive_limit_exceeded"], [65, "workspace_archive_invalid"], [68, "workspace_output_export_failed"]] as const)(
+    "rejects a continuation archive the restore would refuse before returning it (exit %i)", async (code, expected) => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      const verifyCalls = projectArchiveExec(value, { verify: code });
+      await expect(value.runtime.createProjectArchive({ ...sessionInput, restorable: true })).rejects.toMatchObject({ code: expected });
+      const limits = projectArchiveLimits(config);
+      expect(verifyCalls()).toEqual([["-c", PROJECT_RESTORE_SCRIPT, expect.stringMatching(/\/workspace-export-[a-f0-9]{64}\.tar\.gz$/u),
+        "/workspace/project", String(limits.maxBytes), String(limits.maxEntries), "verify"]]);
+      expect([...value.files.keys()].filter((path) => path.includes("workspace-export-"))).toEqual([]);
+    });
+
+  it("returns a verified continuation archive and leaves download exports unbounded by restore rules", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const verifyCalls = projectArchiveExec(value, {});
+    const restorable = await value.runtime.createProjectArchive({ ...sessionInput, restorable: true });
+    expect(restorable.checksum).toBe(createHash("sha256").update(new Uint8Array([1, 2, 3])).digest("hex"));
+    expect(verifyCalls()).toHaveLength(1);
+    await restorable.body.cancel();
+    const download = await value.runtime.createProjectArchive(sessionInput);
+    expect(verifyCalls()).toHaveLength(1);
+    await download.body.cancel();
+  });
+
+  it.each([[false, "workspace_archive_invalid"], [true, "workspace_execution_cleanup_failed"]] as const)(
+    "recovers only restore staging after a failed restore (recovery fails=%s)", async (recoveryFails, expected) => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      const scriptCalls = projectArchiveExec(value, { restore: 65, ...(recoveryFails ? { recover: 69 } : {}) });
+      const bytes = new TextEncoder().encode("archive bytes");
+      await expect(value.runtime.restoreProjectArchive({ ...sessionInput, byteSize: bytes.byteLength,
+        checksum: createHash("sha256").update(bytes).digest("hex"),
+        archive: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) })).rejects.toMatchObject({ code: expected });
+      expect(scriptCalls().map((args) => args.at(-1))).toEqual(["restore", "recover"]);
+      // No project-wide wipe: the removed `find … rm -rf` fallback must not return.
+      expect(value.sandbox.exec.mock.calls.some((call: unknown[]) => call[0] === "bash")).toBe(false);
+      expect([...value.files.keys()].filter((path) => path.includes("workspace-restore-"))).toEqual([]);
+    });
 });
 
 
@@ -931,4 +1230,55 @@ it("keeps descendant cleanup authority after the model closes the MCP observatio
   } finally {
     vi.useRealTimers();
   }
+});
+
+describe("pinned MCP result envelope on the stdio line", () => {
+  // Real microsandbox-mcp 0.6.16 builders: results carry JSON text only, no
+  // structuredContent copy, so each byte is escaped by two JSON layers.
+  const worst = (bytes: number) => "\u0001".repeat(bytes + 16);
+  const decode = (line: string, maxBufferSize: number) => {
+    const buffer = new ReadBuffer({ maxBufferSize });
+    const bytes = Buffer.from(line);
+    for (let offset = 0; offset < bytes.byteLength; offset += 64 * 1_024) {
+      buffer.append(bytes.subarray(offset, offset + 64 * 1_024));
+    }
+    const message = buffer.readMessage() as unknown as { result: { content: Array<{ text: string }> } };
+    return JSON.parse(message.result.content[0]!.text) as Record<string, unknown>;
+  };
+  const execOutput = (bytes: number) => ({ stdout: () => worst(bytes), stderr: () => worst(bytes), code: 255, success: false }) as
+    unknown as Parameters<typeof formatExecOutput>[0];
+
+  it.each([1_024, 128 * 1_024, 1_048_576])("carries worst-case results within the derived bound at %s bytes", (bound) => {
+    const maxBufferSize = workspaceToolTransportMaxBytes(bound);
+    const exec = formatExecOutput(execOutput(bound), bound);
+    const read = limitText(worst(bound), "content", bound);
+    const results = [
+      ok(exec.data, { truncated: exec.truncated }),
+      fail("exec_failed", "shell command exited with status 255", { details: exec.data }),
+      ok({ path: `/workspace/project/${"p".repeat(4_000)}`, encoding: "utf8", content: read.text },
+        { truncated: read.truncated ? [read.truncated] : undefined })
+    ];
+    for (const limit of [undefined, 1_000]) {
+      const eventBytes = execPollEventMaxBytes(limit, bound);
+      const truncated: Truncation[] = [];
+      const events = Array.from({ length: limit ?? 100 }, (_value, index) => {
+        const kind = index % 2 ? "stderr" : "stdout";
+        const limited = limitText(worst(eventBytes), kind, eventBytes);
+        if (limited.truncated) truncated.push(limited.truncated);
+        return { index: 1_000_000_000 + index, event: { kind, data: limited.text } };
+      });
+      results.push(ok({ events, nextCursor: 1_000_000_000, done: true, exitStatus: { code: 255, success: false },
+        error: "e".repeat(1_024) }, { truncated }));
+    }
+    for (const result of results) {
+      const line = serializeMessage({ jsonrpc: "2.0", id: 2_147_483_647, result });
+      // Leave room for one further pipe chunk buffered behind the line.
+      expect(Buffer.byteLength(line)).toBeLessThanOrEqual(maxBufferSize - 64 * 1_024);
+      expect(decode(line, maxBufferSize)).toEqual(JSON.parse(result.content[0]!.text));
+    }
+    const beyond = Math.ceil(maxBufferSize / 14);
+    const oversized = formatExecOutput(execOutput(beyond), beyond);
+    expect(() => decode(serializeMessage({ jsonrpc: "2.0", id: 1, result: ok(oversized.data) }), maxBufferSize))
+      .toThrow("ReadBuffer exceeded maximum size");
+  });
 });

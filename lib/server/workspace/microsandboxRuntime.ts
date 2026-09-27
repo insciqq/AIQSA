@@ -47,7 +47,7 @@ import { AGENT_PROMPT_MAX_BYTES, INSTALL_CODEX_PROFILE } from "../agents/guest";
 import { CODEX_HOME_DIRECTORY, CODEX_RUN_TOKEN_ENV, codexExecArguments, renderCodexManagedProfile } from "../agents/codexProfile";
 import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
-import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
@@ -55,12 +55,12 @@ import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSec
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
 import { SELECTED_FILE_CAPTURE_GUEST } from "./selectedFileGuest";
-import { PROJECT_ARCHIVE_MAX_ENTRIES, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
+import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceSkillRunState } from "./skillRunState";
 import { WORKSPACE_SKILL_GUEST_SCRIPT } from "./skillGuest";
 import { parseSkillArchive, readSkillArchive, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
-import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "./config";
+import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION, workspaceToolOutputDataMaxBytes, workspaceToolTransportMaxBytes } from "./config";
 import {
   bindOfficialWorkspaceTools,
   injectWorkspaceToolArguments,
@@ -85,6 +85,8 @@ type McpConnection = Readonly<{
   catalog: WorkspaceToolCatalog;
   client: Client;
   transport: StdioClientTransport;
+  /** Transport facts: a closed connection is never reused. */
+  state: { closed: boolean; inFlight: number; overflow: "sole" | "shared" | null };
 }>;
 
 type LocalSession = {
@@ -104,6 +106,11 @@ const EXEC_SESSION_TOOL_SET = new Set<WorkspaceMcpToolName>(WORKSPACE_EXEC_SESSI
 const EXEC_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const MCP_BINARY = resolveRuntimeModulePath("microsandbox-mcp/bin/microsandbox-mcp.js");
+/** Catalog-only connections carry no tool output. */
+const CATALOG_MCP_BUFFER_BYTES = 2 * 1_024 * 1_024;
+/** The pinned MCP's page default and schema maximum for sandbox_exec_poll. */
+const EXEC_POLL_DEFAULT_LIMIT = 100;
+const EXEC_POLL_MAX_LIMIT = 1_000;
 const PROJECT_ARCHIVE_COMMAND =
   "set -o pipefail; cd \"$2\"; " +
   "if find . -xdev \\( -type b -o -type c -o -type s \\) -print -quit | IFS= read -r _; " +
@@ -166,6 +173,17 @@ function boundedBytes(value: Uint8Array, maximum: number): Readonly<{
     originalByteCount: value.byteLength,
     truncated: true
   };
+}
+
+/**
+ * The pinned MCP bounds each polled event separately. Share one result's
+ * stdout/stderr data budget across the requested page so any valid limit fits
+ * the transport; a truncated event is reported and can be polled again alone.
+ */
+export function execPollEventMaxBytes(limit: unknown, toolOutputMaxBytes: number): number {
+  const events = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 1 && limit <= EXEC_POLL_MAX_LIMIT
+    ? limit : typeof limit === "number" ? EXEC_POLL_MAX_LIMIT : EXEC_POLL_DEFAULT_LIMIT;
+  return Math.max(1, Math.floor(workspaceToolOutputDataMaxBytes(toolOutputMaxBytes) / events));
 }
 
 function boundedMcpResult(value: unknown, maximum: number, tool: WorkspaceMcpToolName): WorkspaceToolResult {
@@ -456,15 +474,39 @@ function safeChildEnvironment(): Record<string, string> {
   );
 }
 
-async function openPinnedOfficialMcp(mcpVersion: string): Promise<McpConnection> {
+/** The pinned SDK's ReadBuffer rejects a line above maxBufferSize, then closes the transport. */
+function isStdioBufferOverflow(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("ReadBuffer exceeded maximum size");
+}
+
+/** Counts pending requests so an overflow is attributed only when unambiguous. */
+async function trackedMcpRequest<T>(connection: McpConnection, request: () => Promise<T>): Promise<T> {
+  connection.state.inFlight += 1;
+  try {
+    return await request();
+  } finally {
+    connection.state.inFlight -= 1;
+  }
+}
+
+async function openPinnedOfficialMcp(mcpVersion: string, maxBufferSize = CATALOG_MCP_BUFFER_BYTES): Promise<McpConnection> {
   const transport = new StdioClientTransport({
     args: [MCP_BINARY],
     command: process.execPath,
     env: safeChildEnvironment(),
-    maxBufferSize: 2 * 1_024 * 1_024,
+    maxBufferSize,
     stderr: "pipe"
   });
   transport.stderr?.on("data", () => undefined);
+  const state: McpConnection["state"] = { closed: false, inFlight: 0, overflow: null };
+  // Client.connect chains these handlers. Overflow closes the transport, so
+  // the pending response is lost although the tool finished executing.
+  transport.onerror = (error) => {
+    if (!isStdioBufferOverflow(error)) return;
+    state.closed = true;
+    state.overflow ??= state.inFlight <= 1 ? "sole" : "shared";
+  };
+  transport.onclose = () => { state.closed = true; };
   const client = new Client({ name: "aiqsa-workspace-runner", version: "1" });
   try {
     await client.connect(transport);
@@ -493,7 +535,7 @@ async function openPinnedOfficialMcp(mcpVersion: string): Promise<McpConnection>
     if (catalog.hash !== WORKSPACE_BOUND_TOOL_CATALOG_HASH) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
-    return { catalog, client, transport };
+    return { catalog, client, transport, state };
   } catch (error) {
     await transport.close().catch(() => undefined);
     if (error instanceof WorkspaceRuntimeError) throw error;
@@ -530,7 +572,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     if (session.agents?.size) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
   }
 
-  private async withSkillGuestOperation<T>(session: LocalSession, signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
+  private async withGuestOperation<T>(session: LocalSession, signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
     signal?.throwIfAborted();
     // Native fs/exec calls have no AbortSignal API. Stop this exact guest on
     // cancellation so an interrupted upload cannot outlive its receiver claim.
@@ -563,7 +605,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     this.session(input.sessionId, input.runtimeSandboxId);
     return this.skillState().prepare(input, async () => {
       const session = await this.runningSession(input); this.noAgent(session);
-      await this.withSkillGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "reset" }, input.signal));
+      await this.withGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "reset" }, input.signal));
     }, async () => this.noAgent(this.session(input.sessionId, input.runtimeSandboxId)));
   }
 
@@ -571,7 +613,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     return this.skillState().install(input, input.bundle, async () => {
       const session = await this.runningSession(input); this.noAgent(session);
-      return this.withSkillGuestOperation(session, input.signal, async () => {
+      return this.withGuestOperation(session, input.signal, async () => {
         const archive = await readSkillArchive(input);
         parseSkillArchive(archive);
         const archivePath = `/tmp/aiqsa-skill-${randomUUID()}.tar.gz`;
@@ -592,7 +634,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     await this.skillState().complete(input, async refs => {
       const session = await this.runningSession(input); this.noAgent(session);
-      await this.withSkillGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "links", aliases: refs.map(ref => ref.alias) }, input.signal));
+      await this.withGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "links", aliases: refs.map(ref => ref.alias) }, input.signal));
     });
   }
 
@@ -856,14 +898,23 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   private async mcp(session: LocalSession): Promise<McpConnection> {
-    if (session.mcp) return session.mcp;
+    if (session.mcp && !session.mcp.state.closed) return session.mcp;
+    // A transport closed by overflow or process exit rejects every later
+    // request with "Not connected"; replace it instead of caching it.
+    this.discardClosedMcp(session, session.mcp);
     const connection = await this.openMcpConnection();
     session.mcp = connection;
     return connection;
   }
 
+  private discardClosedMcp(session: LocalSession, connection: McpConnection | undefined): void {
+    if (!connection?.state.closed) return;
+    if (session.mcp === connection) session.mcp = undefined;
+    void connection.transport.close().catch(() => undefined);
+  }
+
   private async openMcpConnection(): Promise<McpConnection> {
-    return openPinnedOfficialMcp(this.config.mcpVersion);
+    return openPinnedOfficialMcp(this.config.mcpVersion, workspaceToolTransportMaxBytes(this.config.toolOutputMaxBytes));
   }
 
   async listStagedAttachments(
@@ -1010,14 +1061,46 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       const environment = workspaceSecretEnvironment(secrets);
       const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
       if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
+      const deadline = AbortSignal.timeout(90_000);
+      const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
+      await this.withGuestOperation(session, signal, async () => {
+        let handle: ExecHandle | undefined;
+        let sink: Awaited<ReturnType<ExecHandle["takeStdin"]>> = null;
+        let exited = false;
+        try {
+          handle = await session.sandbox.execStreamWith("/usr/bin/python3", builder => builder
+            .args(["-I", "-c", INSTALL_WORKSPACE_SECRETS]).timeout(90_000).stdinPipe());
+          signal.throwIfAborted();
+          sink = await handle.takeStdin();
+          if (!sink) throw new Error("prepare_stdin_unavailable");
+          // Native stdinBytes truncates large initial payloads. Await each
+          // bounded pipe write; secret bytes never enter args or output capture.
+          for (let offset = 0; offset < bundle.byteLength; offset += 1024 * 1024) {
+            signal.throwIfAborted();
+            await sink.write(bundle.subarray(offset, offset + 1024 * 1024));
+          }
+          signal.throwIfAborted();
+          await sink.close();
+          const status = await handle.wait();
+          exited = true;
+          signal.throwIfAborted();
+          if (status.code !== 0) throw new Error("prepare_failed");
+        } finally {
+          let cleanupFailed = false;
+          if (handle && !exited) await handle.kill().catch(async () => {
+            // Fence a failed upload before releasing its pipe: EOF could let
+            // a surviving installer mutate the managed secret files.
+            await session.sandbox.stopWithTimeout(10_000).catch(() => { cleanupFailed = true; });
+          });
+          await sink?.[Symbol.asyncDispose]().catch(() => undefined);
+          await handle?.[Symbol.asyncDispose]().catch(() => undefined);
+          if (cleanupFailed) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+        }
+      });
       input.signal?.throwIfAborted();
-      const prepared = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
-        .args(["-I", "-c", INSTALL_WORKSPACE_SECRETS]).timeout(90_000)
-        .stdinBytes(bundle));
-      input.signal?.throwIfAborted();
-      if (!prepared.success) throw new Error("prepare_failed");
       session.secretEnvironment = { modelRunId: input.modelRunId, values: environment };
-    } catch {
+    } catch (error) {
+      if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
       if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
     }
@@ -1216,9 +1299,11 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
               maxBytes: this.config.toolOutputMaxBytes,
               timeoutMs: this.config.turnTimeoutSeconds * 1_000
             }
-          : input.originalName === "sandbox_exec_poll" || input.originalName === "sandbox_fs_read"
-            ? { ...argumentsWithIdentity, maxBytes: this.config.toolOutputMaxBytes }
-            : argumentsWithIdentity;
+          : input.originalName === "sandbox_exec_poll"
+            ? { ...argumentsWithIdentity, maxBytes: execPollEventMaxBytes(argumentsWithIdentity.limit, this.config.toolOutputMaxBytes) }
+            : input.originalName === "sandbox_fs_read"
+              ? { ...argumentsWithIdentity, maxBytes: this.config.toolOutputMaxBytes }
+              : argumentsWithIdentity;
       if (input.signal?.aborted || controller.signal.aborted) {
         throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       }
@@ -1227,14 +1312,14 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       logEvent("tool_deadline", { tool_kind: "workspace", configured_timeout_ms: toolTimeoutMs, effective_timeout_ms: toolTimeoutMs,
         request_timeout_ms: requestTimeoutMs });
       finishRequest = beginWorkspaceToolStage("request");
-      const result = await mcp.client.callTool({
+      const result = await trackedMcpRequest(mcp, () => mcp.client.callTool({
         arguments: boundedArguments,
         name: input.originalName
       }, undefined, {
         maxTotalTimeout: requestTimeoutMs,
         signal: controller.signal,
         timeout: requestTimeoutMs
-      });
+      }));
       if (input.originalName === "sandbox_exec_start") {
         const failure = workspaceMcpFailure(result, this.config.toolOutputMaxBytes, input.originalName);
         if (failure) {
@@ -1255,12 +1340,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     } catch (error) {
       const timedOut = error instanceof McpError && error.code === ErrorCode.RequestTimeout;
       if (timedOut) observeAbort({ stage: "delivery", abort_source: "workspace_deadline", deadline_kind: "sdk_request", timeout_ms: requestTimeoutMs });
-      const facts = timedOut ? { code: "workspace_tool_timeout", reason: "deadline" as const } : workspaceToolFailure(error);
+      // Only the sole in-flight request can own the oversized line. Concurrent
+      // calls lost with the same transport keep an unknown outcome.
+      const overflowed = !controller.signal.aborted && !(error instanceof WorkspaceRuntimeError) &&
+        mcp.state.overflow === "sole";
+      const facts = timedOut ? { code: "workspace_tool_timeout", reason: "deadline" as const }
+        : overflowed ? { code: "workspace_tool_output_limit_exceeded", reason: "safety_limit" as const } : workspaceToolFailure(error);
       const outcome = controller.signal.aborted || facts.reason === "cancelled" ? "cancelled" : "failed";
       if (finishRequest) finishRequest({ outcome, ...facts });
       else logEvent("tool_execution", { tool_kind: "workspace", stage: "admission", outcome, ...facts });
+      this.discardClosedMcp(session, mcp);
       if (error instanceof WorkspaceRuntimeError) throw error;
       if (controller.signal.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+      if (overflowed) throw new WorkspaceRuntimeError("workspace_tool_output_limit_exceeded");
       if (timedOut) throw new WorkspaceRuntimeError("workspace_tool_timeout");
       if (error instanceof McpError && error.code === ErrorCode.InvalidParams) throw new WorkspaceRuntimeError("workspace_request_invalid");
       throw new WorkspaceRuntimeError("workspace_tool_outcome_unknown");
@@ -1313,17 +1405,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const call = (name: WorkspaceMcpToolName, args: Record<string, unknown>) =>
       operationSignal.aborted ? Promise.resolve(null) :
-        mcp.client.callTool({ arguments: args, name }, undefined, { signal: operationSignal, timeout: 2_000 })
+        trackedMcpRequest(mcp, () => mcp.client.callTool({ arguments: args, name }, undefined, { signal: operationSignal, timeout: 2_000 }))
         .then((result) => result.isError !== true ? result : null)
         .catch(() => null);
     await Promise.all(ids.map((execSessionId) => call("sandbox_exec_signal", { execSessionId, signal: "term" })));
     await delay(1_000);
+    // Exit proof needs only status; output bytes would only consume the transport budget.
+    const poll = (execSessionId: string) => call("sandbox_exec_poll", { execSessionId, limit: 1, maxBytes: 1 });
     await Promise.all(ids.map(async (execSessionId) => {
-      let exited = execPollReportsLeaderExit(await call("sandbox_exec_poll", { execSessionId, limit: 1 }));
+      let exited = execPollReportsLeaderExit(await poll(execSessionId));
       if (!exited) {
         await call("sandbox_exec_signal", { execSessionId, signal: "kill" });
         await delay(1_000);
-        exited = execPollReportsLeaderExit(await call("sandbox_exec_poll", { execSessionId, limit: 1 }));
+        exited = execPollReportsLeaderExit(await poll(execSessionId));
       }
       if (exited) await call("sandbox_exec_close", { execSessionId });
       // Retain cached ownership as well: handle disposal cannot erase an
@@ -1374,6 +1468,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     if (terminated.some((entry) => entry.outcome === "unknown")) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
     const files: WorkspaceOutputStream[] = [];
     const skipped: WorkspaceBrowserSkipCode[] = [];
+    let offeredBytes = 0;
     const listed = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder.args(["-I", "-c", LIST_WORKSPACE_BROWSER_SESSIONS]).timeout(10_000));
     input.signal?.throwIfAborted();
     if (!listed.success || listed.stdoutBytes().byteLength > 256 * 1024) return { files, skipped: ["browser_session_read_failed"] };
@@ -1389,12 +1484,15 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       }
       if (entry.size > WORKSPACE_BROWSER_SESSION_MAX_BYTES) { skipped.push("browser_session_too_large"); continue; }
       if (files.length >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) { skipped.push("browser_session_limit"); continue; }
+      // Hash and offer no more than one save can store.
+      if (offeredBytes + entry.size > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES) { skipped.push("browser_session_total_limit"); continue; }
       const path = workspaceBrowserSessionPath(entry.name);
       try {
         const checksum = await hashGuestFile(session.sandbox, path, entry.size, input.signal);
         files.push({ byteSize: entry.size, checksum, body: readStreamBody(() => session.sandbox.fs().readStream(path)),
           mimeType: "application/json", relativePath: entry.name,
           opaqueFileId: createHash("sha256").update(`${session.runtimeSandboxId}\0${input.modelRunId}\0browser\0${entry.name}`).digest("hex") });
+        offeredBytes += entry.size;
       } catch {
         input.signal?.throwIfAborted();
         skipped.push("browser_session_read_failed");
@@ -1510,6 +1608,18 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       await session.sandbox.fs().remove(archivePath).catch(() => undefined);
       throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
     }
+    if (input.restorable) {
+      // A continuation seed must be restorable: prove the restore bounds and
+      // structure in the guest before any stored checkpoint can become READY.
+      const limits = projectArchiveLimits(this.config);
+      const verified = await session.sandbox.exec("python3", ["-c", PROJECT_RESTORE_SCRIPT, archivePath, WORKSPACE_PROJECT_DIRECTORY,
+        String(limits.maxBytes), String(limits.maxEntries), "verify"]).catch(() => null);
+      if (!verified?.success) {
+        await session.sandbox.fs().remove(archivePath).catch(() => undefined);
+        throw new WorkspaceRuntimeError(verified?.code === 67 ? "workspace_archive_limit_exceeded" :
+          verified?.code === 65 ? "workspace_archive_invalid" : "workspace_output_export_failed");
+      }
+    }
     return {
       body: readStreamBody(
         () => session.sandbox.fs().readStream(archivePath),
@@ -1559,14 +1669,19 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       await fs.remove(archivePath).catch(() => undefined);
       throw new WorkspaceRuntimeError("workspace_archive_invalid");
     }
+    const limits = projectArchiveLimits(this.config);
+    const script = (mode: "recover" | "restore") => session.sandbox.exec("python3", ["-c", PROJECT_RESTORE_SCRIPT, archivePath,
+      WORKSPACE_PROJECT_DIRECTORY, String(limits.maxBytes), String(limits.maxEntries), mode]);
     try {
-      const result = await session.sandbox.exec("python3", ["-c", PROJECT_RESTORE_SCRIPT, archivePath, WORKSPACE_PROJECT_DIRECTORY,
-        String(Math.min(this.config.outputTotalMaxBytes, this.config.diskMiB * 1_024 * 1_024)), String(PROJECT_ARCHIVE_MAX_ENTRIES)]);
+      const result = await script("restore");
       if (!result.success) throw new WorkspaceRuntimeError(result.code === 65 ? "workspace_archive_invalid" :
         result.code === 67 ? "workspace_archive_limit_exceeded" : result.code === 69 ? "workspace_execution_cleanup_failed" : "workspace_archive_restore_failed");
     } catch (error) {
-      const cleanup = await session.sandbox.exec("bash", ["-c", "find \"$1\" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +", "aiqsa-workspace-cleanup", WORKSPACE_PROJECT_DIRECTORY]).catch(() => null);
-      if (!cleanup?.success) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+      // The script keeps /project in place and journals its content replacement.
+      // Recovery restores an interrupted replacement from the unchanged backup;
+      // a committed journal keeps the new tree. Unproven recovery fences reuse.
+      const recovered = await script("recover").catch(() => null);
+      if (!recovered?.success) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
       if (error instanceof WorkspaceRuntimeError) throw error;
       throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
     } finally {

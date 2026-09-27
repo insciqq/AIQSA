@@ -5,7 +5,8 @@ import {
   type AiqsaMcpToolCallResult,
   type McpFatalResponseErrorCode
 } from "./clientSession";
-import type { McpOperationalStatus } from "@/lib/contracts/mcp";
+import type { McpOperationalStatus, McpToolExclusionReason } from "@/lib/contracts/mcp";
+import type { McpPublishedToolDefinitions } from "./definitions";
 import { redactMcpToolCallResult } from "./resultRedaction";
 import { ToolHiveClientError } from "./toolhiveClient";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, type LifecycleStage } from "../observability";
@@ -45,6 +46,20 @@ export type McpRuntimeLaunch = {
   url?: string;
 };
 
+/** A member's or shared Project runtime generation launch: what its immutable revision published. */
+export type McpRuntimeGenerationLaunch = McpRuntimeLaunch & {
+  publishedTools: McpPublishedToolDefinitions;
+};
+
+export type McpRuntimeInventoryExclusion = { name: string; reason: McpToolExclusionReason };
+
+/** Persisted with a ready generation: offered tools plus every held-back name with its reason. */
+export type McpRuntimeInventory = {
+  exclusions: McpRuntimeInventoryExclusion[];
+  tools: McpRuntimeInventoryTool[];
+  version: 1;
+};
+
 export type McpRuntimeSession = {
   callTool(input: {
     arguments: Record<string, unknown>;
@@ -56,7 +71,8 @@ export type McpRuntimeSession = {
   exactKnownSecrets?(): readonly string[];
   fatalResponseErrorCode?(): McpFatalResponseErrorCode | null;
   isClosed?(): boolean;
-  listTools(signal?: AbortSignal): Promise<McpRuntimeInventoryTool[]>;
+  /** `requestTimeoutMs` bounds each tools/list page; the session bounds the whole traversal. */
+  listTools(signal?: AbortSignal, options?: { requestTimeoutMs?: number }): Promise<McpRuntimeInventoryTool[]>;
   ping(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
   serverEvidence?(): AiqsaMcpServerEvidence | null;
 };
@@ -70,7 +86,7 @@ export type McpRuntimeCoordinatorRepository = {
   finalizeDeletedServers(): Promise<number>;
   listDrainedGenerationIds(): Promise<string[]>;
   listGenerationFingerprints?(): Promise<string[]>;
-  loadAcceptedGeneration(generationId: string, now: Date): Promise<McpRuntimeLaunch | null>;
+  loadAcceptedGeneration(generationId: string, now: Date): Promise<McpRuntimeGenerationLaunch | null>;
   markFailed(input: {
     errorCode: string;
     fingerprint: string;
@@ -80,7 +96,7 @@ export type McpRuntimeCoordinatorRepository = {
   markReady(input: {
     fingerprint: string;
     generationId: string;
-    inventory: { tools: McpRuntimeInventoryTool[]; version: 1 };
+    inventory: McpRuntimeInventory;
     now: Date;
   }): Promise<boolean>;
   markStarting(input: { fingerprint: string; generationId: string; now: Date }): Promise<boolean>;
@@ -89,7 +105,18 @@ export type McpRuntimeCoordinatorRepository = {
     onDemand?: boolean;
     serverIds?: readonly string[];
     userId?: string;
-  }): Promise<McpRuntimeLaunch[]>;
+  }): Promise<McpRuntimeGenerationLaunch[]>;
+  /**
+   * Installation-owned runtimes that Project runs use. On demand it creates
+   * or selects the requested servers' shared generations; otherwise it keeps
+   * those with recent Project demand. It never reads or changes a member's
+   * McpUserServer.
+   */
+  synchronizeShared(input: {
+    now: Date;
+    onDemand?: boolean;
+    serverIds?: readonly string[];
+  }): Promise<McpRuntimeGenerationLaunch[]>;
   touchLastUsed(generationId: string, now: Date): Promise<void>;
 };
 
@@ -106,16 +133,52 @@ type LiveRuntime = {
   fingerprint: string;
   local: boolean;
   lastProtocolSuccessAt: number;
+  /** Fixed for the generation: its fingerprint binds the revision. */
+  publishedTools: McpPublishedToolDefinitions;
   redactionValues: readonly string[];
   repositoryStateWrite: Promise<boolean> | null;
   session: McpRuntimeSession;
 };
 
+/**
+ * The only filter between an upstream inventory and admission. A tool is
+ * offered only under a published name, with the published definition when the
+ * revision recorded one, and while policy keeps it on. Every other published or
+ * upstream name is kept exactly once with the first matching reason.
+ */
 function effectiveRuntimeTools(
-  tools: readonly McpRuntimeInventoryTool[],
+  upstream: readonly McpRuntimeInventoryTool[],
+  published: McpPublishedToolDefinitions,
   disabledToolNames: ReadonlySet<string>
-): McpRuntimeInventoryTool[] {
-  return tools.filter((tool) => !disabledToolNames.has(tool.name));
+): Pick<McpRuntimeInventory, "exclusions" | "tools"> {
+  const publishedNames: ReadonlySet<string> = published.kind === "definitions"
+    ? new Set(published.hashes.keys())
+    : published.kind === "names" ? published.names : new Set<string>();
+  const upstreamNames = new Set<string>();
+  const exclusions: McpRuntimeInventoryExclusion[] = [];
+  const tools: McpRuntimeInventoryTool[] = [];
+  for (const tool of upstream) {
+    if (upstreamNames.has(tool.name)) {
+      throw new McpClientSessionError({ code: "mcp_inventory_tool_invalid", operation: "list_tools" });
+    }
+    upstreamNames.add(tool.name);
+    const reason: McpToolExclusionReason | null = disabledToolNames.has(tool.name)
+      ? "disabled_by_policy"
+      : !publishedNames.has(tool.name)
+        ? "unpublished_addition"
+        : published.kind === "definitions" && published.hashes.get(tool.name) !== tool.definitionHash
+          ? "definition_drift"
+          : null;
+    if (reason) exclusions.push({ name: tool.name, reason });
+    else tools.push(tool);
+  }
+  for (const name of publishedNames) {
+    if (!upstreamNames.has(name)) {
+      exclusions.push({ name, reason: disabledToolNames.has(name) ? "disabled_by_policy" : "missing_upstream" });
+    }
+  }
+  exclusions.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  return { exclusions, tools };
 }
 
 function assertInventoryDoesNotExposeCredentials(
@@ -160,8 +223,23 @@ const DEFAULT_INTERVAL_MS = 30_000;
 const MAX_PARALLEL_STARTS = 4;
 export const MCP_HEALTH_CADENCE_MS = 30_000;
 export const MCP_HEALTH_DEADLINE_MS = 2_000;
+/**
+ * Inventory health reads a paginated tools/list. Each page must answer within
+ * MCP_HEALTH_DEADLINE_MS as liveness proof, while the complete traversal of a
+ * maximal inventory gets one health cadence rather than a single ping deadline.
+ */
+export const MCP_HEALTH_INVENTORY_DEADLINE_MS = MCP_HEALTH_CADENCE_MS;
 const MAX_PARALLEL_PROBES = 4;
 type HealthProbe = { runtime: LiveRuntime; controller: AbortController | null };
+/** Inventory bounds keep their own cause instead of the generic invalid-inventory code. */
+const EXACT_INVENTORY_ERROR_CODES: ReadonlySet<McpClientSessionError["code"]> = new Set([
+  "mcp_inventory_cursor_cycle",
+  "mcp_inventory_metadata_limit",
+  "mcp_inventory_page_limit",
+  "mcp_inventory_schema_limit",
+  "mcp_inventory_time_limit",
+  "mcp_inventory_tool_limit"
+]);
 const RESPONSE_LIMIT_ERROR_CODES: ReadonlySet<McpClientSessionError["code"]> = new Set([
   "mcp_call_result_too_large",
   "mcp_initialize_response_too_large",
@@ -195,6 +273,7 @@ function stableRuntimeError(error: unknown): string {
     if (error.code === "mcp_request_timeout" || error.code === "mcp_request_cancelled") return "mcp_timeout";
     if (error.code === "mcp_authorization_required") return "mcp_authorization_required";
     if (error.code === "mcp_session_closed") return error.code;
+    if (EXACT_INVENTORY_ERROR_CODES.has(error.code)) return error.code;
     if (error.code.startsWith("mcp_inventory_")) return "mcp_inventory_invalid";
     if (error.operation === "ping") return "mcp_health_check_failed";
   }
@@ -408,6 +487,26 @@ export class McpRuntimeCoordinator {
     await this.#drainUnused();
   }
 
+  /**
+   * Starts, or refreshes a stale inventory of, the shared generations Project
+   * runs use for these servers. A cold process or an idle member therefore
+   * never leaves Project MCP unavailable, and no member row changes.
+   */
+  async ensureSharedServersReady(serverIds: readonly string[], signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const uniqueServerIds = [...new Set(serverIds)];
+    if (uniqueServerIds.length === 0) return;
+    const launches = await this.#repository.synchronizeShared({
+      now: this.#now(),
+      onDemand: true,
+      serverIds: uniqueServerIds
+    });
+    signal?.throwIfAborted();
+    await this.#reconcileLaunches(launches, signal);
+    signal?.throwIfAborted();
+    await this.#drainUnused();
+  }
+
   async callTool(input: {
     arguments: Record<string, unknown>;
     beforeDispatch?(): Promise<void>;
@@ -523,7 +622,8 @@ export class McpRuntimeCoordinator {
   async #probe(generationId: string, probe: HealthProbe, controller: AbortController): Promise<void> {
     const runtime = probe.runtime;
     const timeoutError = new McpClientSessionError({ code: "mcp_request_timeout", operation: "ping" });
-    const timer = setTimeout(() => controller.abort(timeoutError), MCP_HEALTH_DEADLINE_MS);
+    const abortAfter = (deadlineMs: number) => setTimeout(() => controller.abort(timeoutError), deadlineMs);
+    let timer = abortAfter(runtime.healthUsesToolList ? MCP_HEALTH_INVENTORY_DEADLINE_MS : MCP_HEALTH_DEADLINE_MS);
     let onAbort!: () => void;
     const cancelled = new Promise<never>((_resolve, reject) => {
       onAbort = () => reject(controller.signal.reason);
@@ -539,10 +639,12 @@ export class McpRuntimeCoordinator {
             } catch (error) {
               if (!(error instanceof McpClientSessionError) || error.code !== "mcp_ping_unsupported") throw error;
               runtime.healthUsesToolList = true;
+              clearTimeout(timer);
+              timer = abortAfter(MCP_HEALTH_INVENTORY_DEADLINE_MS);
             }
           }
           controller.signal.throwIfAborted();
-          const tools = await runtime.session.listTools(controller.signal);
+          const tools = await runtime.session.listTools(controller.signal, { requestTimeoutMs: MCP_HEALTH_DEADLINE_MS });
           controller.signal.throwIfAborted();
           assertInventoryDoesNotExposeCredentials(tools, runtime.redactionValues, runtime.session);
           const hashes = new Map(tools.map((tool) => [tool.name, tool.definitionHash]));
@@ -619,16 +721,19 @@ export class McpRuntimeCoordinator {
 
   async #reconcileScope(userId?: string): Promise<void> {
     const now = this.#now();
-    const launches = await this.#repository.synchronizeDesired({
+    const personal = await this.#repository.synchronizeDesired({
       now,
       ...(userId ? { userId } : {})
     });
-    await this.#reconcileLaunches(launches);
+    // Only the installation-wide pass keeps shared Project runtimes current;
+    // a member-scoped kick never touches them.
+    const shared = userId ? [] : await this.#repository.synchronizeShared({ now });
+    await this.#reconcileLaunches([...personal, ...shared]);
     await this.#drainUnused();
     for (const generationId of this.#live.keys()) this.operationalStatus(generationId);
   }
 
-  async #reconcileLaunches(launches: McpRuntimeLaunch[], signal?: AbortSignal): Promise<void> {
+  async #reconcileLaunches(launches: McpRuntimeGenerationLaunch[], signal?: AbortSignal): Promise<void> {
     await mapLimit(launches, MAX_PARALLEL_STARTS, async (launch) => {
       signal?.throwIfAborted();
       const live = this.#live.get(launch.generationId);
@@ -656,7 +761,7 @@ export class McpRuntimeCoordinator {
     });
   }
 
-  #start(launch: McpRuntimeLaunch, signal?: AbortSignal): Promise<void> {
+  #start(launch: McpRuntimeGenerationLaunch, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     const active = this.#starts.get(launch.generationId);
     if (active) {
@@ -703,7 +808,8 @@ export class McpRuntimeCoordinator {
     });
   }
 
-  async #performStart(launch: McpRuntimeLaunch, signal: AbortSignal): Promise<void> {
+  async #performStart(launch: McpRuntimeGenerationLaunch, signal: AbortSignal): Promise<void> {
+    const { publishedTools, ...runtimeLaunch } = launch;
     const live = this.#live.get(launch.generationId);
     if (live && isClosedSession(live.session)) {
       await this.#evictFailedRuntime(
@@ -733,7 +839,7 @@ export class McpRuntimeCoordinator {
     try {
       signal.throwIfAborted();
       session = await this.#sessions.create({
-        ...launch,
+        ...runtimeLaunch,
         signal,
         onToolsChanged: () => {
           void this.#refresh(launch.generationId, launch.fingerprint, true);
@@ -746,11 +852,11 @@ export class McpRuntimeCoordinator {
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
       const disabledToolNames = new Set(launch.disabledToolNames ?? []);
-      const effectiveTools = effectiveRuntimeTools(tools, disabledToolNames);
+      const effective = effectiveRuntimeTools(tools, publishedTools, disabledToolNames);
       const accepted = await this.#write(launch.generationId, "complete", () => this.#repository.markReady({
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
-        inventory: { tools: effectiveTools, version: 1 },
+        inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
         now: this.#now()
       }));
       signal.throwIfAborted();
@@ -761,13 +867,14 @@ export class McpRuntimeCoordinator {
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       this.#live.set(launch.generationId, {
         healthUsesToolList: false,
-        toolDefinitionHashes: new Map(effectiveTools.map((tool) => [tool.name, tool.definitionHash])),
+        toolDefinitionHashes: new Map(effective.tools.map((tool) => [tool.name, tool.definitionHash])),
         disabledToolNames,
-        enabledToolNames: new Set(effectiveTools.map((tool) => tool.name)),
+        enabledToolNames: new Set(effective.tools.map((tool) => tool.name)),
         evictionErrorCode: null,
         fingerprint: launch.fingerprint,
         local: Boolean(launch.toolHive),
         lastProtocolSuccessAt: protocolSuccessAt,
+        publishedTools,
         redactionValues: [...launch.redactionValues],
         repositoryStateWrite: null,
         session
@@ -866,12 +973,12 @@ export class McpRuntimeCoordinator {
       const protocolSuccessAt = this.#now().getTime();
       if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
-      const effectiveTools = effectiveRuntimeTools(tools, live.disabledToolNames);
+      const effective = effectiveRuntimeTools(tools, live.publishedTools, live.disabledToolNames);
       if (this.#live.get(generationId) !== live) return false;
       const readinessWrite = this.#write(generationId, "complete", () => this.#repository.markReady({
         fingerprint,
         generationId,
-        inventory: { tools: effectiveTools, version: 1 },
+        inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
         now: this.#now()
       }));
       live.repositoryStateWrite = readinessWrite;
@@ -897,8 +1004,8 @@ export class McpRuntimeCoordinator {
         return false;
       }
       if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");
-      live.enabledToolNames = new Set(effectiveTools.map((tool) => tool.name));
-      live.toolDefinitionHashes = new Map(effectiveTools.map((tool) => [tool.name, tool.definitionHash]));
+      live.enabledToolNames = new Set(effective.tools.map((tool) => tool.name));
+      live.toolDefinitionHashes = new Map(effective.tools.map((tool) => [tool.name, tool.definitionHash]));
       live.lastProtocolSuccessAt = protocolSuccessAt;
       this.#scheduleHealthCheck();
       logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage: "refresh", outcome: "completed" });

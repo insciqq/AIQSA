@@ -12,9 +12,9 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v31";
+  "memory-fact-extraction-policy-v32";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v44";
+  "memory-fact-extraction-prompt-v45";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -41,11 +41,27 @@ export const MEMORY_FACT_MAX_TARGET_CHARACTERS = 24_000;
 export const MEMORY_FACT_MAX_INPUT_CHARACTERS =
   MEMORY_FACT_MAX_TARGET_CHARACTERS + MEMORY_FACT_MAX_CONTEXT_CHARACTERS;
 export const MEMORY_FACT_MAX_CONTEXT_REFS = 8;
-/** The extraction packet and admission share one bounded observation limit. */
+/** One packet admits at most this many observations; a full packet is
+ * continued from its coverage cursor instead of capping the source. */
 export const MEMORY_FACT_MAX_PACKET_CANDIDATES = 8;
 export const MEMORY_FACT_MAX_OUTPUT_CANDIDATES = MEMORY_FACT_MAX_PACKET_CANDIDATES;
 export const MEMORY_FACT_MAX_ACCEPTED_CANDIDATES = MEMORY_FACT_MAX_OUTPUT_CANDIDATES;
 export const MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE = 1;
+/** Provider observations receive receipts up to this bound (a schema that
+ * drops maxItems can exceed the packet); a longer packet is invalid output. */
+export const MEMORY_FACT_MAX_RAW_OBSERVATIONS = 64;
+/** One exact evidence reference, and the text shown after a page's core so
+ * that every evidence span starting in the core is visible completely. */
+export const MEMORY_FACT_MAX_EVIDENCE_CHARACTERS = 2_000;
+/** A target longer than one input is read in pages. A page shows earlier text
+ * of the same message for reading only, then its text; evidence belongs to the
+ * page whose core contains its start, so pages never double-count a span. */
+export const MEMORY_FACT_PAGE_PRECEDING_CHARACTERS = 2_000;
+export const MEMORY_FACT_PAGE_TEXT_CHARACTERS =
+  MEMORY_FACT_MAX_TARGET_CHARACTERS - MEMORY_FACT_PAGE_PRECEDING_CHARACTERS;
+/** Provider pages of one source message. The page at this ordinal is never
+ * dispatched: it records the uncovered remainder as a failed job. */
+export const MEMORY_FACT_MAX_SOURCE_PAGES = 128;
 
 /** The one v1 category vocabulary shared by UI, explicit actions, and
  * automatic learning. Values are storage slugs; labels belong to the UI. */
@@ -161,6 +177,11 @@ export type MemoryFactCandidateRejection = Readonly<{
     | "REJECT_AMBIGUOUS"
     | "REJECT_DUPLICATE"
     | "REJECT_LOW_CONFIDENCE"
+    /** Evidence starts outside this page's core; its own page covers it. */
+    | "REJECT_OUTSIDE_PAGE"
+    /** Beyond a full packet: the continuation page resumes at its evidence,
+     * or, sharing one evidence start with a full packet, it is not retried. */
+    | "REJECT_PACKET_OVERFLOW"
     | "REJECT_SECRET"
     | "REJECT_STALE_SOURCE"
     | "REJECT_TEMPORARY"
@@ -175,12 +196,17 @@ export const MEMORY_FACT_EXTRACTION_RETRIEVAL_CONFIG_FINGERPRINT =
     maxContextCharacters: MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
     maxContextMessages: MEMORY_FACT_MAX_CONTEXT_MESSAGES,
     maxContextRefs: MEMORY_FACT_MAX_CONTEXT_REFS,
+    maxEvidenceCharacters: MEMORY_FACT_MAX_EVIDENCE_CHARACTERS,
     maxEvidencePerCandidate: MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE,
     maxInputCharacters: MEMORY_FACT_MAX_INPUT_CHARACTERS,
     maxInputMessages: MEMORY_FACT_MAX_INPUT_MESSAGES,
     maxPriorTurnGroups: MEMORY_FACT_MAX_PRIOR_TURN_GROUPS,
+    maxRawObservations: MEMORY_FACT_MAX_RAW_OBSERVATIONS,
+    maxSourcePages: MEMORY_FACT_MAX_SOURCE_PAGES,
     maxTargetCharacters: MEMORY_FACT_MAX_TARGET_CHARACTERS,
-    version: 3
+    pagePrecedingCharacters: MEMORY_FACT_PAGE_PRECEDING_CHARACTERS,
+    pageTextCharacters: MEMORY_FACT_PAGE_TEXT_CHARACTERS,
+    version: 4
   });
 
 export const MEMORY_FACT_EXTRACTION_VERSIONS: MemoryExecutionVersions =
@@ -247,6 +273,24 @@ export type MemoryFactContextRef = Readonly<{
   text: string;
 }>;
 
+/** One page of a long target. The target message's text, redaction spans and
+ * evidence offsets inside the input are page-local; evidence is persisted at
+ * `coreStart + offset` of the full safe text and hashed as the full text
+ * (`contentHash`), so exact-evidence proofs never depend on paging. */
+export type MemoryFactTargetPage = Readonly<{
+  /** Full-text offset where this page's evidence responsibility ends. */
+  coreEnd: number;
+  /** Full-text offset of the first character of the page text. */
+  coreStart: number;
+  ordinal: number;
+  /** Earlier text of the same message, shown for reading only. */
+  precedingText: string;
+  /** Length of the full projected safe text. */
+  sourceLength: number;
+  /** The projection withheld some source text unscanned (PARTIAL). */
+  sourceUnprocessed: boolean;
+}>;
+
 export type MemoryFactExtractionInput = Readonly<{
   contextRefs: readonly MemoryFactContextRef[];
   folderId: string | null;
@@ -257,6 +301,8 @@ export type MemoryFactExtractionInput = Readonly<{
   sourceProjectionHash: string;
   sourceProjectionVersion: typeof MEMORY_FACT_SOURCE_PROJECTION_VERSION;
   suppressionIdentitySnapshot: string;
+  /** Absent when the whole target is one input. */
+  targetPage?: MemoryFactTargetPage;
   timeZone: string;
 }>;
 
@@ -385,6 +431,9 @@ export type MemoryExtractedCandidate = Readonly<{
 export type MemoryFactExtractionPlan = Readonly<{
   candidateOrdinals: readonly number[];
   candidates: readonly MemoryExtractedCandidate[];
+  /** Full-text offset covered by a full packet; absent when the packet
+   * covered the whole page core. The next page starts here. */
+  coverageEnd?: number;
   input: MemoryFactExtractionInput;
   outputHash: string;
   rejections: readonly MemoryFactCandidateRejection[];
@@ -402,9 +451,34 @@ function validCounter(value: unknown): value is number {
     Number(value) <= 2_147_483_647;
 }
 
+/** Coverage position of one extraction job over its source message. Page 0
+ * starts at offset 0; each later page starts at the coverage cursor its
+ * predecessor committed. */
+export type MemoryFactJobPage = Readonly<{
+  cursor: number;
+  ordinal: number;
+}>;
+
+export const MEMORY_FACT_FIRST_PAGE: MemoryFactJobPage = Object.freeze({
+  cursor: 0,
+  ordinal: 0
+});
+
+const pageFingerprintPattern = new RegExp(
+  `^${MEMORY_FACT_EXTRACTION_JOB_PREFIX}p([1-9][0-9]{0,2})\\.([1-9][0-9]{0,9}):[a-f0-9]{64}$`,
+  "u"
+);
+
+function validPage(page: MemoryFactJobPage): boolean {
+  return Number.isSafeInteger(page.ordinal) && page.ordinal >= 0 &&
+    page.ordinal <= MEMORY_FACT_MAX_SOURCE_PAGES && validCounter(page.cursor) &&
+    (page.ordinal === 0) === (page.cursor === 0);
+}
+
 export function memoryFactExtractionJobFingerprint(
   source: MemoryFactSourceIdentity,
-  identityProfile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE
+  identityProfile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE,
+  page: MemoryFactJobPage = MEMORY_FACT_FIRST_PAGE
 ): string {
   if (
     !validIdentity(source.activeLeafMessageId) ||
@@ -414,21 +488,39 @@ export function memoryFactExtractionJobFingerprint(
     !validCounter(source.branchGeneration) ||
     !validCounter(source.memoryGenerationSnapshot) ||
     !validCounter(source.sourceRevision) ||
-    !sha256Pattern.test(source.sourceHash)
+    !sha256Pattern.test(source.sourceHash) ||
+    !validPage(page)
   ) throw new Error("memory_fact_source_invalid");
-  return `${MEMORY_FACT_EXTRACTION_JOB_PREFIX}${memorySha256({
+  const identity = {
     chatId: source.chatId,
     memoryGenerationSnapshot: source.memoryGenerationSnapshot,
     identityProfile,
     pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
     sourceMessageId: source.sourceMessageId,
     userId: source.userId
-  })}`;
+  };
+  // Page 0 keeps the established job identity, so admission and identity
+  // cutover still create exactly one first page per source message.
+  if (page.ordinal === 0) {
+    return `${MEMORY_FACT_EXTRACTION_JOB_PREFIX}${memorySha256(identity)}`;
+  }
+  return `${MEMORY_FACT_EXTRACTION_JOB_PREFIX}p${page.ordinal}.${page.cursor}:` +
+    memorySha256({ ...identity, page: { cursor: page.cursor, ordinal: page.ordinal } });
 }
 
-export function memoryFactExtractionIdentityProfile(
+function claimedPage(job: MemoryJobDescriptor): MemoryFactJobPage | null {
+  const match = pageFingerprintPattern.exec(job.idempotencyFingerprint);
+  if (!match) return MEMORY_FACT_FIRST_PAGE;
+  const page = { cursor: Number(match[2]), ordinal: Number(match[1]) };
+  return validPage(page) ? page : null;
+}
+
+/** The identity profile and page proven by the job's own fingerprint. */
+export function memoryFactExtractionJobIdentity(
   job: MemoryJobDescriptor
-): MemoryIdentityProfile | null {
+): Readonly<{ identityProfile: MemoryIdentityProfile; page: MemoryFactJobPage }> | null {
+  const page = claimedPage(job);
+  if (!page) return null;
   for (const profile of MEMORY_IDENTITY_PROFILES) {
     try {
       if (job.idempotencyFingerprint === memoryFactExtractionJobFingerprint(
@@ -442,13 +534,20 @@ export function memoryFactExtractionIdentityProfile(
           sourceRevision: job.sourceRevision!,
           userId: job.userId
         },
-        profile
-      )) return profile;
+        profile,
+        page
+      )) return { identityProfile: profile, page };
     } catch {
       return null;
     }
   }
   return null;
+}
+
+export function memoryFactExtractionIdentityProfile(
+  job: MemoryJobDescriptor
+): MemoryIdentityProfile | null {
+  return memoryFactExtractionJobIdentity(job)?.identityProfile ?? null;
 }
 
 export function memoryFactExtractionClaimIsValid(
@@ -472,6 +571,115 @@ export function memoryFactExtractionClaimIsValid(
     userId: job.userId
   };
   return memoryFactExtractionIdentityProfile({ ...job, ...source }) !== null;
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function splitsSurrogatePair(text: string, offset: number): boolean {
+  if (offset <= 0 || offset >= text.length) return false;
+  const code = text.charCodeAt(offset);
+  return code >= 0xdc00 && code <= 0xdfff && isHighSurrogate(text.charCodeAt(offset - 1));
+}
+
+/** A page boundary never splits a UTF-16 surrogate pair. */
+export function memoryFactPageBoundaryAfter(text: string, offset: number): number {
+  return splitsSurrogatePair(text, offset) ? offset + 1 : offset;
+}
+
+function pageBoundaryBefore(text: string, offset: number): number {
+  return splitsSurrogatePair(text, offset) ? offset - 1 : offset;
+}
+
+export type MemoryFactTargetView =
+  | Readonly<{ kind: "WHOLE" }>
+  | Readonly<{ kind: "PAGE"; page: MemoryFactTargetPage; text: string }>
+  /** The cursor reached the end: only an unprocessed remainder is left. */
+  | Readonly<{ kind: "COVERED" }>
+  | Readonly<{ kind: "INVALID" }>;
+
+/** Deterministic page geometry of one job over the full projected safe text.
+ * A target that fits one input stays whole on page 0. Otherwise the page
+ * text runs from the cursor for MEMORY_FACT_PAGE_TEXT_CHARACTERS, and its core
+ * ends one evidence length before the text does (or at the end of the
+ * message), so every span starting in the core is shown completely. */
+export function memoryFactTargetView(
+  safeText: string,
+  page: MemoryFactJobPage,
+  sourceUnprocessed: boolean
+): MemoryFactTargetView {
+  const length = safeText.length;
+  if (page.ordinal === 0 && length <= MEMORY_FACT_MAX_TARGET_CHARACTERS) {
+    return { kind: "WHOLE" };
+  }
+  if (!validPage(page) || page.cursor > length ||
+    splitsSurrogatePair(safeText, page.cursor)) return { kind: "INVALID" };
+  if (page.cursor === length) {
+    return page.ordinal > 0 ? { kind: "COVERED" } : { kind: "INVALID" };
+  }
+  const textEnd = Math.max(
+    page.cursor + 1,
+    pageBoundaryBefore(
+      safeText,
+      Math.min(length, page.cursor + MEMORY_FACT_PAGE_TEXT_CHARACTERS)
+    )
+  );
+  const coreEnd = textEnd === length
+    ? length
+    : memoryFactPageBoundaryAfter(
+        safeText,
+        textEnd - MEMORY_FACT_MAX_EVIDENCE_CHARACTERS
+      );
+  const precedingStart = memoryFactPageBoundaryAfter(
+    safeText,
+    Math.max(0, page.cursor - MEMORY_FACT_PAGE_PRECEDING_CHARACTERS)
+  );
+  return {
+    kind: "PAGE",
+    page: {
+      coreEnd,
+      coreStart: page.cursor,
+      ordinal: page.ordinal,
+      precedingText: safeText.slice(precedingStart, page.cursor),
+      sourceLength: length,
+      sourceUnprocessed
+    },
+    text: safeText.slice(page.cursor, textEnd)
+  };
+}
+
+/** The page that continues coverage after this input, or null once the source
+ * is covered. An unprocessed remainder or the exhausted page budget still
+ * yields a page, which is never dispatched and records the gap as failed. */
+export function memoryFactNextPage(
+  input: MemoryFactExtractionInput,
+  coverageEnd?: number
+): MemoryFactJobPage | null {
+  const target = input.messages.find((message) =>
+    message.evidenceEligible && message.id === input.source.sourceMessageId);
+  if (!target) return null;
+  const page = input.targetPage;
+  const length = page?.sourceLength ?? target.text.length;
+  const start = page?.coreStart ?? 0;
+  const end = coverageEnd ?? page?.coreEnd ?? length;
+  const ordinal = (page?.ordinal ?? 0) + 1;
+  if (ordinal > MEMORY_FACT_MAX_SOURCE_PAGES || end <= start) return null;
+  if (end < length) return { cursor: end, ordinal };
+  return page?.sourceUnprocessed ? { cursor: length, ordinal } : null;
+}
+
+/** Full-text offset of the target text shown in this input. */
+export function memoryFactTargetTextOffset(input: MemoryFactExtractionInput): number {
+  return input.targetPage?.coreStart ?? 0;
+}
+
+/** The source hash exact evidence records: always the full projected text. */
+export function memoryFactTargetSourceHash(
+  input: MemoryFactExtractionInput,
+  message: MemoryFactInputMessage
+): string {
+  return input.targetPage ? message.contentHash : memorySha256(message.text);
 }
 
 export function memoryFactExtractionInputHash(
@@ -601,11 +809,13 @@ export function memoryFactExtractionOutputHash(
   input: MemoryFactExtractionInput,
   candidates: readonly MemoryExtractedCandidate[],
   candidateOrdinals: readonly number[],
-  rejections: readonly MemoryFactCandidateRejection[]
+  rejections: readonly MemoryFactCandidateRejection[],
+  coverageEnd?: number
 ): string {
   return memorySha256({
     candidateOrdinals,
     candidates,
+    ...(coverageEnd === undefined ? {} : { coverageEnd }),
     inputHash: input.inputHash,
     pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
     rejections

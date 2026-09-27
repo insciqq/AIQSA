@@ -1,5 +1,6 @@
 import { safeExternalHref } from "./links";
 import { GEMINI_SEARCH_SUGGESTIONS_LIMITS } from "./geminiSearchSuggestions";
+import { PROVIDER_RESPONSE_MAX_CITATIONS } from "./answerCitations";
 
 export type GroundingDisplay = {
   provider: "gemini";
@@ -12,6 +13,10 @@ export type GroundingDisplay = {
   }[];
 };
 
+/** One grounded response: the Gemini adapter enforces the same shared cap
+ * first, so this bound always admits what it accepted. */
+export const GROUNDING_DISPLAY_MAX_CITATIONS = PROVIDER_RESPONSE_MAX_CITATIONS;
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -23,7 +28,8 @@ export function decodeGroundingDisplay(value: unknown): GroundingDisplay | null 
     typeof value.suggestionsHtml !== "string" || !value.suggestionsHtml ||
     new TextEncoder().encode(value.suggestionsHtml).byteLength >
       GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxHtmlBytes ||
-    !Array.isArray(value.citations) || value.citations.length > 100) return null;
+    !Array.isArray(value.citations) ||
+    value.citations.length > GROUNDING_DISPLAY_MAX_CITATIONS) return null;
   const citations: GroundingDisplay["citations"] = [];
   for (const candidate of value.citations) {
     if (!record(candidate) ||

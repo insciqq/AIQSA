@@ -8,27 +8,13 @@ import {
   type ThreadWorkspaceActivityEntry
 } from "../../contracts/workspace";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
-import { safeExternalHref } from "../../domain/links";
-import { projectThreadSearchSources } from "../../domain/searchSources";
+import { projectThreadSearchSources, SEARCH_EVENT_SOURCE_LIMIT } from "../../domain/searchSources";
+import { projectAnswerCitation } from "../../domain/answerCitations";
+import { projectReasoningRecord, type ReasoningRecord } from "../../domain/answerReasoning";
 import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "../../contracts/imageGeneration";
-import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
+import { decodeThreadGeneratedArtifact, type ThreadCitation } from "../../contracts/chats";
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
-
-const citationTitleLimit = 500;
-const citationSnippetLimit = 2_000;
-const citationSourceLimit = 200;
-const citationUrlLimit = 2_048;
-const reasoningTextLimit = 32_000;
-const reasoningTraversalLimit = 200;
-
-type RunOutputCitation = {
-  index: number;
-  snippet?: string;
-  source?: string;
-  title: string;
-  url: string;
-};
 
 type RunOutputGeneratedArtifact = {
   byteSize?: number;
@@ -50,14 +36,14 @@ export type RunOutputArtifactEvent =
   | {
       data: {
         artifactType: "citation";
-        payload: RunOutputCitation;
+        payload: ThreadCitation;
       };
       type: "artifact";
     }
   | {
       data: {
         artifactType: "reasoning";
-        payload: { text: string };
+        payload: ReasoningRecord;
       };
       type: "artifact";
     }
@@ -85,71 +71,6 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
   return Object.keys(value).every((key) => allowedKeys.has(key));
 }
 
-function boundedString(value: unknown, maximum: number): string | null {
-  return typeof value === "string" && value.trim()
-    ? value.trim().slice(0, maximum)
-    : null;
-}
-
-function citationUrl(value: unknown): string | null {
-  const candidate = typeof value === "string" && value.trim().length <= citationUrlLimit
-    ? value.trim()
-    : null;
-  return candidate ? safeExternalHref(candidate) : null;
-}
-
-function projectCitation(value: unknown): RunOutputCitation | null {
-  if (typeof value === "string") {
-    const url = citationUrl(value);
-    return url ? { index: 1, title: "Source 1", url } : null;
-  }
-  if (!isRecord(value)) return null;
-  const url = citationUrl(value.url) ?? citationUrl(value.href);
-  if (!url) return null;
-  const index = typeof value.index === "number" && Number.isSafeInteger(value.index) &&
-    value.index >= 0
-    ? value.index
-    : 1;
-  const snippet = boundedString(value.snippet, citationSnippetLimit);
-  const source = boundedString(value.source, citationSourceLimit);
-  return {
-    index,
-    ...(snippet ? { snippet } : {}),
-    ...(source ? { source } : {}),
-    title: boundedString(value.title, citationTitleLimit) ?? `Source ${index}`,
-    url
-  };
-}
-
-function projectReasoningText(value: unknown): string | null {
-  let traversed = 0;
-
-  function visit(candidate: unknown, depth: number): string[] {
-    traversed += 1;
-    if (traversed > reasoningTraversalLimit || depth > 12) return [];
-    if (typeof candidate === "string") {
-      const text = candidate.trim();
-      return text ? [text] : [];
-    }
-    if (Array.isArray(candidate)) {
-      const parts: string[] = [];
-      for (const part of candidate) {
-        if (traversed >= reasoningTraversalLimit) break;
-        parts.push(...visit(part, depth + 1));
-      }
-      return parts;
-    }
-    if (!isRecord(candidate)) return [];
-    for (const key of ["delta", "summary", "reasoning", "text", "content"] as const) {
-      if (key in candidate) return visit(candidate[key], depth + 1);
-    }
-    return [];
-  }
-
-  const text = visit(value, 0).join("\n\n").trim();
-  return text ? text.slice(0, reasoningTextLimit) : null;
-}
-
 function projectSearchSources(value: unknown): ThreadSearchSource[] {
   if (!isRecord(value)) return [];
   const action = isRecord(value.action) ? value.action : null;
@@ -172,16 +93,26 @@ function projectGeneratedArtifact(value: unknown): RunOutputGeneratedArtifact | 
   };
 }
 
-function isExactCitation(value: unknown): value is RunOutputCitation {
+function isExactCitation(value: unknown): value is ThreadCitation {
   if (!isRecord(value) ||
     !hasOnlyKeys(value, ["index", "snippet", "source", "title", "url"])) return false;
-  const projected = projectCitation(value);
+  const projected = projectAnswerCitation(value);
   return projected !== null &&
     projected.index === value.index &&
     projected.title === value.title &&
     projected.url === value.url &&
     projected.snippet === value.snippet &&
     projected.source === value.source;
+}
+
+/** Only the projection's own output: exact text, a known entry, `truncated` only as `true`. */
+function isExactReasoningRecord(value: unknown): value is ReasoningRecord {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["entry", "text", "truncated"])) return false;
+  const projected = projectReasoningRecord(value);
+  return projected !== null &&
+    projected.entry === value.entry &&
+    projected.text === value.text &&
+    projected.truncated === value.truncated;
 }
 
 function isExactSearchSource(value: unknown, expectedRank: number): value is ThreadSearchSource {
@@ -235,15 +166,13 @@ export function projectRunOutputArtifactEvent(
   }
 
   if (event.data.artifactType === "citation") {
-    const payload = projectCitation(event.data.payload);
+    const payload = projectAnswerCitation(event.data.payload);
     return payload ? { data: { artifactType: "citation", payload }, type: "artifact" } : null;
   }
 
   if (event.data.artifactType === "reasoning") {
-    const text = projectReasoningText(event.data.payload);
-    return text
-      ? { data: { artifactType: "reasoning", payload: { text } }, type: "artifact" }
-      : null;
+    const payload = projectReasoningRecord(event.data.payload);
+    return payload ? { data: { artifactType: "reasoning", payload }, type: "artifact" } : null;
   }
 
   if (event.data.artifactType === "search") {
@@ -319,12 +248,7 @@ export function isRunOutputArtifactEvent(
     return isExactCitation(event.data.payload);
   }
   if (event.data.artifactType === "reasoning") {
-    return isRecord(event.data.payload) &&
-      hasOnlyKeys(event.data.payload, ["text"]) &&
-      typeof event.data.payload.text === "string" &&
-      event.data.payload.text.length > 0 &&
-      event.data.payload.text.length <= reasoningTextLimit &&
-      event.data.payload.text.trim() === event.data.payload.text;
+    return isExactReasoningRecord(event.data.payload);
   }
   if (event.data.artifactType === "workspace_checkpoint") {
     return decodeThreadWorkspaceCheckpointOutput(event.data.payload) !== null;
@@ -338,7 +262,7 @@ export function isRunOutputArtifactEvent(
     !hasOnlyKeys(event.data.payload.action, ["sources"]) ||
     !Array.isArray(event.data.payload.action.sources) ||
     event.data.payload.action.sources.length === 0 ||
-    event.data.payload.action.sources.length > 20) return false;
+    event.data.payload.action.sources.length > SEARCH_EVENT_SOURCE_LIMIT) return false;
   return event.data.payload.action.sources.every((source, index) =>
     isExactSearchSource(source, index + 1));
 }

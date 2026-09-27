@@ -18,7 +18,11 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../../persistence/lexical";
-import { loadPersonalEligibleFactVersionIds } from "../../persistence/eligibility";
+import {
+  loadPersonalEligibleFactVersionIds,
+  loadPersonalMemoryEvidenceSnapshots
+} from "../../persistence/eligibility";
+import { projectMemoryHistorySourceText } from "../../history/safety";
 import {
   lockMemorySettings,
   type MemoryTransaction,
@@ -44,9 +48,12 @@ import {
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
   MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+  MEMORY_FACT_MAX_SOURCE_PAGES,
   memoryFactCandidateId,
   memoryFactExtractionInputHash,
   memoryFactExtractionJobFingerprint,
+  memoryFactExtractionJobIdentity,
+  type MemoryFactJobPage,
   memoryFactExtractionOutputHash,
   type MemorySemanticAdjudication,
   type MemoryFactExtractionInput,
@@ -5256,5 +5263,540 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     } finally {
       await cleanupOwner(userId);
     }
+  });
+  describe("[L10] paged fact extraction", () => {
+    const filler = "These notes describe ordinary background context. ";
+
+    function placedText(
+      parts: ReadonlyArray<readonly [offset: number, sentence: string]>,
+      length: number
+    ): string {
+      let text = "";
+      for (const [offset, sentence] of parts) {
+        while (text.length < offset) text += filler;
+        text = `${text.slice(0, offset - 1)} ${sentence}`;
+      }
+      while (text.length < length) text += filler;
+      return `${text.slice(0, length - 1)}.`;
+    }
+
+    function pagedPlan(
+      input: MemoryFactExtractionInput,
+      entries: ReadonlyArray<readonly [quote: string, statement: string]>,
+      polarity: "AFFIRMED" | "NEGATED" = "AFFIRMED"
+    ): MemoryFactExtractionPlan {
+      return decodeMemoryFactExtraction([{
+        arguments: {
+          observations: entries.map(([quote, statement], index) => ({
+            candidate_ref: `P${index + 1}`,
+            confidence_band: "HIGH",
+            dependency_refs: [],
+            entities: [],
+            evidence: exactTextRef(quote),
+            future_useful: true,
+            identity: {
+              dimension_key: null,
+              mode: "PROPOSITION",
+              predicate_key: null,
+              subject: {
+                canonical_label: null,
+                entity_type: "NONE",
+                qualifiers: { brand: null, model: null }
+              }
+            },
+            memory_type: "PREFERENCE",
+            reason_code: "durable_direct_preference",
+            semantic_frame: { ...supportingUserAssertion, polarity },
+            sensitivity: "NORMAL",
+            statement,
+            temporal: {
+              expiration_intent: "NONE",
+              normalization: { kind: "NONE" },
+              perspective: "CURRENT",
+              raw_expression: null
+            },
+            temporary: false,
+            value: emptyObservationValue
+          }))
+        },
+        id: `fact-call-${randomUUID()}`,
+        name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+      }], input);
+    }
+
+    function pageFingerprint(claim: MemoryJobClaim, page: MemoryFactJobPage): string {
+      const identity = memoryFactExtractionJobIdentity(claim);
+      if (!identity) throw new Error("memory_test_page_identity_missing");
+      return memoryFactExtractionJobFingerprint({
+        activeLeafMessageId: claim.activeLeafMessageId!,
+        branchGeneration: claim.branchGeneration!,
+        chatId: claim.chatId!,
+        memoryGenerationSnapshot: claim.memoryGenerationSnapshot,
+        sourceHash: claim.sourceHash!,
+        sourceMessageId: claim.sourceMessageId!,
+        sourceRevision: claim.sourceRevision!,
+        userId: claim.userId
+      }, identity.identityProfile, page);
+    }
+
+    async function createPageJob(
+      claim: MemoryJobClaim,
+      page: MemoryFactJobPage
+    ): Promise<string> {
+      const job = await prisma.memoryJob.create({
+        data: {
+          activeLeafMessageId: claim.activeLeafMessageId,
+          branchGeneration: claim.branchGeneration,
+          chatId: claim.chatId,
+          idempotencyFingerprint: pageFingerprint(claim, page),
+          kind: "EXTRACT_FACTS",
+          memoryGenerationSnapshot: claim.memoryGenerationSnapshot,
+          memoryRevisionSnapshot: claim.memoryRevisionSnapshot,
+          pipelineVersion: claim.pipelineVersion,
+          sourceHash: claim.sourceHash,
+          sourceMessageId: claim.sourceMessageId,
+          sourceRevision: claim.sourceRevision,
+          userId: claim.userId
+        },
+        select: { id: true }
+      });
+      return job.id;
+    }
+
+    async function claimPageJob(
+      claim: MemoryJobClaim,
+      page: MemoryFactJobPage
+    ): Promise<MemoryJobClaim> {
+      const job = await prisma.memoryJob.findFirstOrThrow({
+        where: {
+          idempotencyFingerprint: pageFingerprint(claim, page),
+          state: "QUEUED",
+          userId: claim.userId
+        }
+      });
+      const claimToken = randomUUID();
+      const leaseExpiresAt = new Date(Date.now() + 120_000);
+      const claimed = await prisma.memoryJob.update({
+        data: {
+          attemptCount: { increment: 1 },
+          leaseExpiresAt,
+          leaseToken: claimToken,
+          state: "CLAIMED"
+        },
+        where: { id: job.id }
+      });
+      return {
+        ...claim,
+        attemptCount: claimed.attemptCount,
+        claimToken,
+        id: claimed.id,
+        idempotencyFingerprint: claimed.idempotencyFingerprint,
+        leaseExpiresAt,
+        stage: claimed.stage
+      };
+    }
+
+    async function evidenceProofs(userId: string) {
+      const versions = await prisma.memoryFactVersion.findMany({
+        select: { id: true },
+        where: { userId }
+      });
+      return loadPersonalMemoryEvidenceSnapshots(
+        prisma,
+        userId,
+        versions.map(({ id }) => id),
+        { exactVNext: true }
+      );
+    }
+
+    it("pages a long message with exact full-text evidence and fences its continuation", async () => {
+      const userId = await createOwner("paged-source");
+      try {
+        const early = "I prefer written instructions.";
+        const boundary = "I prefer quiet offices.";
+        const lookahead = "I prefer weekly planning.";
+        const late = "I prefer dark editor themes.";
+        const text = placedText([
+          [1_000, early], [19_990, boundary], [21_000, lookahead], [30_000, late]
+        ], 45_000);
+        expect(text.indexOf(boundary)).toBe(19_990);
+        expect(text.length).toBe(45_000);
+        const chat = await prisma.chat.create({ data: { title: "Paged source", userId } });
+        const turn = await createTurn({
+          assistantText: "Noted.",
+          chatId: chat.id,
+          createdAt: new Date("2026-09-27T09:00:00.000Z"),
+          parentMessageId: null,
+          userId,
+          userText: text
+        });
+        await settleChat(userId, chat.id, turn);
+        const first = await claimFactJob(userId, turn.userMessage.id);
+        const firstInput = await prepare(first);
+        expect(firstInput.targetPage).toMatchObject({
+          coreEnd: 20_000,
+          coreStart: 0,
+          ordinal: 0,
+          precedingText: "",
+          sourceLength: text.length,
+          sourceUnprocessed: false
+        });
+        const firstTarget = firstInput.messages.find(({ evidenceEligible }) =>
+          evidenceEligible)!;
+        expect(firstTarget.text).toBe(text.slice(0, 22_000));
+        expect(firstTarget.contentHash).toBe(memorySha256(text));
+
+        const firstPlan = pagedPlan(firstInput, [
+          [early, "The user prefers written instructions."],
+          [boundary, "The user prefers quiet offices."],
+          [lookahead, "The user prefers weekly planning."],
+          [late, "The user prefers dark editor themes."]
+        ]);
+        expect(firstPlan.candidates.map(({ evidence }) => evidence[0]!.startOffset))
+          .toEqual([1_000, 19_990]);
+        expect(firstPlan.rejections).toEqual([
+          { candidateOrdinal: 2, reasonCode: "REJECT_OUTSIDE_PAGE" },
+          { candidateOrdinal: 3, reasonCode: "REJECT_UNSUPPORTED" }
+        ]);
+        const firstBinding = await createSucceededBinding(
+          userId, first, firstInput.inputHash, firstPlan.outputHash
+        );
+        await expect(applyPlan(userId, first, firstPlan, firstBinding))
+          .resolves.toBe("APPLIED");
+        // Replaying the settled page neither duplicates facts nor pages twice.
+        await expect(applyPlan(userId, first, firstPlan, firstBinding))
+          .resolves.toBe("APPLIED");
+        await expect(prisma.memoryJob.count({
+          where: { kind: "EXTRACT_FACTS", sourceMessageId: turn.userMessage.id, userId }
+        })).resolves.toBe(2);
+
+        const second = await claimPageJob(first, { cursor: 20_000, ordinal: 1 });
+        const secondInput = await prepare(second);
+        expect(secondInput.targetPage).toMatchObject({
+          coreEnd: 40_000,
+          coreStart: 20_000,
+          ordinal: 1,
+          precedingText: text.slice(18_000, 20_000),
+          sourceLength: text.length
+        });
+        expect(secondInput.messages.find(({ evidenceEligible }) =>
+          evidenceEligible)?.text).toBe(text.slice(20_000, 42_000));
+        const secondPlan = pagedPlan(secondInput, [
+          [boundary, "The user prefers quiet offices."],
+          [lookahead, "The user prefers weekly planning."],
+          [late, "The user prefers dark editor themes."]
+        ]);
+        expect(secondPlan.rejections).toEqual([
+          { candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }
+        ]);
+        await expect(applyPlan(userId, second, secondPlan, await createSucceededBinding(
+          userId, second, secondInput.inputHash, secondPlan.outputHash
+        ))).resolves.toBe("APPLIED");
+
+        const evidence = await prisma.memoryEvidence.findMany({
+          orderBy: { sourceStartOffset: "asc" },
+          select: {
+            safeExcerpt: true,
+            sourceEndOffset: true,
+            sourceMessageContentHash: true,
+            sourceStartOffset: true
+          },
+          where: { userId }
+        });
+        expect(evidence.map(({ sourceStartOffset }) => sourceStartOffset))
+          .toEqual([1_000, 19_990, 21_000, 30_000]);
+        for (const row of evidence) {
+          expect(text.slice(row.sourceStartOffset!, row.sourceEndOffset!))
+            .toBe(row.safeExcerpt);
+          expect(row.sourceMessageContentHash).toBe(memorySha256(text));
+        }
+        await expect(evidenceProofs(userId)).resolves.toHaveLength(4);
+        await expect(prisma.memoryFactVersion.count({ where: { userId } }))
+          .resolves.toBe(4);
+
+        // Forgetting the source fences the queued continuation before any
+        // provider work, and no further page is created.
+        const third = await claimPageJob(first, { cursor: 40_000, ordinal: 2 });
+        await withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
+          createMemorySuppressionInTransaction(tx, settings, keyring, {
+            branchGeneration: third.branchGeneration!,
+            chatId: chat.id,
+            explicitOverrideAllowed: false,
+            messageId: turn.userMessage.id,
+            scope: "SOURCE_MESSAGE",
+            suppressionId: randomUUID()
+          }));
+        await expect(repository().prepare(third)).resolves.toMatchObject({
+          decision: { status: "STALE" }
+        });
+        await expect(prisma.memoryJob.count({
+          where: { kind: "EXTRACT_FACTS", sourceMessageId: turn.userMessage.id, userId }
+        })).resolves.toBe(3);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+
+    it("continues a full packet on the same message without losing or repeating a fact", async () => {
+      const userId = await createOwner("full-packet");
+      try {
+        const statements = [
+          "I prefer early meetings.", "I prefer short emails.",
+          "I prefer unsweetened tea.", "I prefer quiet offices.",
+          "I prefer written instructions.", "I prefer weekly planning.",
+          "I prefer dark editor themes.", "I prefer numbered checklists.",
+          "I prefer paper notebooks."
+        ];
+        const text = statements.join(" ");
+        const chat = await prisma.chat.create({ data: { title: "Full packet", userId } });
+        const turn = await createTurn({
+          assistantText: "Noted.",
+          chatId: chat.id,
+          createdAt: new Date("2026-09-27T09:30:00.000Z"),
+          parentMessageId: null,
+          userId,
+          userText: text
+        });
+        await settleChat(userId, chat.id, turn);
+        const first = await claimFactJob(userId, turn.userMessage.id);
+        const firstInput = await prepare(first);
+        expect(firstInput.targetPage).toBeUndefined();
+        // Nine observations, as from a provider schema without maxItems.
+        const firstPlan = pagedPlan(firstInput, statements.map((statement) =>
+          [statement, statement] as const));
+        const resume = text.indexOf(statements[8]!);
+        expect(firstPlan.candidates).toHaveLength(8);
+        expect(firstPlan.coverageEnd).toBe(resume);
+        await expect(applyPlan(userId, first, firstPlan, await createSucceededBinding(
+          userId, first, firstInput.inputHash, firstPlan.outputHash
+        ))).resolves.toBe("APPLIED");
+        await expect(prisma.memoryFactExtractionCandidateReceipt.findFirstOrThrow({
+          select: { outcome: true, reasonCode: true },
+          where: { candidateOrdinal: 8, userId }
+        })).resolves.toEqual({ outcome: "REJECTED", reasonCode: "REJECT_PACKET_OVERFLOW" });
+
+        const second = await claimPageJob(first, { cursor: resume, ordinal: 1 });
+        const secondInput = await prepare(second);
+        expect(secondInput.targetPage).toMatchObject({
+          coreEnd: text.length,
+          coreStart: resume,
+          precedingText: text.slice(0, resume)
+        });
+        const secondPlan = pagedPlan(secondInput, [
+          [statements[7]!, statements[7]!],
+          [statements[8]!, statements[8]!]
+        ]);
+        expect(secondPlan.rejections).toEqual([
+          { candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }
+        ]);
+        const secondBinding = await createSucceededBinding(
+          userId, second, secondInput.inputHash, secondPlan.outputHash
+        );
+        await expect(applyPlan(userId, second, secondPlan, secondBinding))
+          .resolves.toBe("APPLIED");
+        await expect(applyPlan(userId, second, secondPlan, secondBinding))
+          .resolves.toBe("APPLIED");
+        await expect(prisma.memoryFactVersion.count({ where: { userId } }))
+          .resolves.toBe(9);
+        await expect(prisma.memoryEvidence.findFirstOrThrow({
+          select: { sourceEndOffset: true, sourceStartOffset: true },
+          where: { safeExcerpt: statements[8], userId }
+        })).resolves.toEqual({ sourceEndOffset: text.length, sourceStartOffset: resume });
+        // Coverage ended with the message: no third page, one usage per page.
+        await expect(prisma.memoryJob.count({
+          where: { kind: "EXTRACT_FACTS", sourceMessageId: turn.userMessage.id, userId }
+        })).resolves.toBe(2);
+        await expect(prisma.usageEvent.count({ where: { userId } })).resolves.toBe(2);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+
+    it("gives a continuation page its own semantic adjudication", async () => {
+      const userId = await createOwner("page-adjudication");
+      try {
+        const statements = [
+          "I prefer early meetings.", "I prefer short emails.",
+          "I prefer unsweetened tea.", "I prefer quiet offices.",
+          "I prefer written instructions.", "I prefer weekly planning.",
+          "I prefer dark editor themes.", "I prefer numbered checklists."
+        ];
+        const negated = "I do not drink coffee.";
+        const text = [...statements, negated].join(" ");
+        const chat = await prisma.chat.create({ data: { title: "Page adjudication", userId } });
+        const turn = await createTurn({
+          assistantText: "Noted.",
+          chatId: chat.id,
+          createdAt: new Date("2026-09-27T10:00:00.000Z"),
+          parentMessageId: null,
+          userId,
+          userText: text
+        });
+        await settleChat(userId, chat.id, turn);
+        const first = await claimFactJob(userId, turn.userMessage.id);
+        const resume = text.indexOf(negated);
+        await createPageJob(first, { cursor: resume, ordinal: 1 });
+        const second = await claimPageJob(first, { cursor: resume, ordinal: 1 });
+
+        // The message-level budget stays with page 0: a message-less
+        // reservation is admitted only for a continuation page job.
+        await expect(prisma.memoryAuxiliarySemanticCall.create({
+          data: {
+            id: `page-zero-${randomUUID()}`,
+            ownerJobId: first.id,
+            purpose: "FACT_EXTRACTION_ADJUDICATION",
+            sourceMessageId: null,
+            userId
+          }
+        })).rejects.toThrow("Memory semantic adjudication owner is invalid");
+        await expect(repository().reserveAdjudication(first)).resolves.toBe("ACQUIRED");
+        await expect(repository().reserveAdjudication(second)).resolves.toBe("ACQUIRED");
+        await expect(repository().auxiliary(first)).resolves.toMatchObject({
+          ownerJobId: first.id
+        });
+        await expect(repository().auxiliary(second)).resolves.toMatchObject({
+          ownerJobId: second.id
+        });
+        await expect(prisma.memoryAuxiliarySemanticCall.findMany({
+          orderBy: { sourceMessageId: "asc" },
+          select: { ownerJobId: true, sourceMessageId: true },
+          where: { userId }
+        })).resolves.toEqual([
+          { ownerJobId: first.id, sourceMessageId: turn.userMessage.id },
+          { ownerJobId: second.id, sourceMessageId: null }
+        ]);
+
+        const input = await prepare(second);
+        const plan = pagedPlan(input, [[negated, "The user does not drink coffee."]], "NEGATED");
+        expect(plan.candidates).toHaveLength(1);
+        expect(memoryCandidateRequiresSemanticAdjudication(plan.candidates[0]!)).toBe(true);
+        const extractionBindingId = await createSucceededBinding(
+          userId, second, input.inputHash, plan.outputHash
+        );
+        await stagePlanOnly(userId, second, plan, extractionBindingId);
+        const packet = await semanticAdjudicationForPlan(userId, plan);
+        if (!packet) throw new Error("memory_test_adjudication_packet_missing");
+        const authority = await prisma.memoryExecutionBinding.findUniqueOrThrow({
+          select: {
+            connectionId: true,
+            credentialId: true,
+            credentialVersionId: true,
+            destinationFingerprint: true,
+            providerId: true,
+            providerModelId: true,
+            secretFreeExecutionSnapshot: true
+          },
+          where: { id: extractionBindingId }
+        });
+        const adjudicationBindingId = `fact-adjudication-${randomUUID()}`;
+        const startedAt = new Date();
+        await prisma.memoryExecutionBinding.create({
+          data: {
+            ...authority,
+            createdAt: new Date(startedAt.getTime() - 1_000),
+            id: adjudicationBindingId,
+            inputHash: packet.inputHash,
+            logicalRole: "MEMORY_FACT_EXTRACT",
+            memoryJobId: second.id,
+            ordinal: 1,
+            ownerType: "JOB",
+            pipelineVersion: MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION,
+            policyVersion: MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION,
+            promptVersion: MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
+            schemaVersion: MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION,
+            secretFreeExecutionSnapshot:
+              authority.secretFreeExecutionSnapshot as Prisma.InputJsonValue,
+            startedAt,
+            state: "RUNNING",
+            usageCompleteness: "UNAVAILABLE",
+            userId
+          }
+        });
+        await withLockedMemoryTransaction(prisma, userId, async (tx) => {
+          await repository().completeAdjudication(
+            tx, second, adjudicationBindingId, packet, startedAt
+          );
+          await tx.memoryExecutionBinding.update({
+            data: {
+              acceptedOutputHash: packet.outputHash,
+              completedAt: startedAt,
+              recoverableUntil: new Date(startedAt.getTime() + 86_400_000),
+              state: "SUCCEEDED"
+            },
+            where: { id: adjudicationBindingId }
+          });
+        });
+        await expect(repository().auxiliary(second)).resolves.toMatchObject({
+          acceptedOutputHash: packet.outputHash,
+          executionId: adjudicationBindingId,
+          ownerJobId: second.id
+        });
+        await expect(applyPlan(userId, second, plan, extractionBindingId, startedAt, packet))
+          .resolves.toBe("APPLIED");
+        await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(1);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+
+    it("reports an oversized, partially processed or uncovered source as failed, not stale", async () => {
+      const userId = await createOwner("incomplete-source");
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Incomplete source", userId } });
+        const blob = await createTurn({
+          assistantText: "Noted.",
+          chatId: chat.id,
+          createdAt: new Date("2026-09-27T11:00:00.000Z"),
+          parentMessageId: null,
+          userId,
+          userText: "A".repeat(1_100_000)
+        });
+        await settleChat(userId, chat.id, blob);
+        const blobClaim = await claimFactJob(userId, blob.userMessage.id);
+        await expect(repository().prepare(blobClaim)).resolves.toEqual({
+          decision: { errorCode: "memory_fact_source_oversized", status: "CANCELLED" }
+        });
+
+        const longText = `${"Short neutral sentence number. ".repeat(40_000)}End.`;
+        const projected = projectMemoryHistorySourceText(longText);
+        expect(projected.processingState).toBe("PARTIAL");
+        const long = await createTurn({
+          assistantText: "Noted.",
+          chatId: chat.id,
+          createdAt: new Date("2026-09-27T11:10:00.000Z"),
+          parentMessageId: blob.assistantMessage.id,
+          userId,
+          userText: longText
+        });
+        await settleChat(userId, chat.id, long);
+        const longClaim = await claimFactJob(userId, long.userMessage.id);
+        const firstInput = await prepare(longClaim);
+        expect(firstInput.targetPage).toMatchObject({
+          coreEnd: 20_000,
+          sourceLength: projected.safeText!.length,
+          sourceUnprocessed: true
+        });
+        const remainder = { cursor: projected.safeText!.length, ordinal: 1 };
+        await createPageJob(longClaim, remainder);
+        await expect(repository().prepare(await claimPageJob(longClaim, remainder)))
+          .resolves.toEqual({
+            decision: {
+              errorCode: "memory_fact_source_partially_processed",
+              status: "CANCELLED"
+            }
+          });
+        const exhausted = { cursor: 20_000, ordinal: MEMORY_FACT_MAX_SOURCE_PAGES };
+        await createPageJob(longClaim, exhausted);
+        await expect(repository().prepare(await claimPageJob(longClaim, exhausted)))
+          .resolves.toEqual({
+            decision: {
+              errorCode: "memory_fact_source_coverage_exhausted",
+              status: "CANCELLED"
+            }
+          });
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
   });
 });

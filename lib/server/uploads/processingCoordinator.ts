@@ -8,8 +8,28 @@ import type {
 } from "./processing";
 import { AttachmentProcessingError } from "./processing";
 
+const ATTACHMENT_PROCESSING_MAX_ATTEMPTS_CEILING = 20;
+export const ATTACHMENT_PROCESSING_ATTEMPTS_EXHAUSTED =
+  "attachment_processing_attempts_exhausted" satisfies AttachmentProcessingErrorCode;
+
+/** Jobs whose attempts ran out without a settled outcome, closed while claiming. */
+export type AttachmentProcessingExhaustedJob = Readonly<{
+  attemptCount: number;
+  jobId: string;
+}>;
+
+export type AttachmentProcessingClaimResult = Readonly<{
+  exhausted: readonly AttachmentProcessingExhaustedJob[];
+  record: AttachmentProcessingRecord | null;
+}>;
+
 export type AttachmentProcessingRepository = Readonly<{
-  claim(input: { claimToken: string; now: Date; staleBefore: Date }): Promise<AttachmentProcessingRecord | null>;
+  claim(input: {
+    claimToken: string;
+    maxAttempts: number;
+    now: Date;
+    staleBefore: Date;
+  }): Promise<AttachmentProcessingClaimResult>;
   heartbeat(input: { claimToken: string; jobId: string; now: Date }): Promise<boolean>;
   retryLater(input: {
     claimToken: string;
@@ -41,6 +61,11 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_MAX_PARALLEL = 2;
 const RETRY_DELAYS_MS = [1_000, 5_000] as const;
 const DEFAULT_SETTLE_RETRY_DELAYS_MS = [100, 500] as const;
+
+export function validAttachmentProcessingMaxAttempts(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 1 &&
+    value <= ATTACHMENT_PROCESSING_MAX_ATTEMPTS_CEILING;
+}
 
 function waitForSettleRetry(delayMs: number, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return Promise.resolve(false);
@@ -94,6 +119,9 @@ export class AttachmentProcessingCoordinator {
     this.#intervalMs = input.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.#leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
     this.#maxAttempts = input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+    if (!validAttachmentProcessingMaxAttempts(this.#maxAttempts)) {
+      throw new RangeError("attachment_processing_max_attempts_invalid");
+    }
     this.#maxParallel = input.maxParallel ?? DEFAULT_MAX_PARALLEL;
     this.#now = input.now ?? (() => new Date());
     this.#process = input.process;
@@ -138,10 +166,11 @@ export class AttachmentProcessingCoordinator {
   async #worker(): Promise<void> {
     while (true) {
       const now = this.#now();
-      let claim: AttachmentProcessingRecord | null;
+      let claimed: AttachmentProcessingClaimResult;
       try {
-        claim = await this.#repository.claim({
+        claimed = await this.#repository.claim({
           claimToken: randomUUID(),
+          maxAttempts: this.#maxAttempts,
           now,
           staleBefore: new Date(now.getTime() - this.#leaseMs)
         });
@@ -150,7 +179,17 @@ export class AttachmentProcessingCoordinator {
         return;
       }
       reportSubsystemHealthy("attachments", "claim");
-      if (!claim) return;
+      for (const job of claimed.exhausted) {
+        runInBackground(() => runWithContext({ job_id: job.jobId }, () => logEvent("job_persistence", {
+          subsystem: "attachments", stage: "fail", outcome: "confirmed", action: "fail",
+          code: ATTACHMENT_PROCESSING_ATTEMPTS_EXHAUSTED, attempt: job.attemptCount
+        })));
+      }
+      const claim = claimed.record;
+      if (!claim) {
+        if (claimed.exhausted.length > 0) continue;
+        return;
+      }
       await runInBackground(() => runWithContext(
         { job_id: claim.jobId },
         () => this.#processClaim(claim)
@@ -159,6 +198,14 @@ export class AttachmentProcessingCoordinator {
   }
 
   async #processClaim(claim: AttachmentProcessingRecord): Promise<void> {
+    if (claim.attemptCount > this.#maxAttempts) {
+      // Repositories must not grant spent attempts; never process one anyway.
+      await this.#settleFailed(
+        claim,
+        new AttachmentProcessingError(ATTACHMENT_PROCESSING_ATTEMPTS_EXHAUSTED)
+      );
+      return;
+    }
     const started = performance.now();
     logEvent("job_attempt", { subsystem: "attachments", stage: "claim", outcome: "started", attempt: claim.attemptCount });
     let leaseLost = false;
@@ -225,6 +272,13 @@ export class AttachmentProcessingCoordinator {
       }
       return;
     }
+    await this.#settleFailed(claim, failure);
+  }
+
+  async #settleFailed(
+    claim: AttachmentProcessingRecord,
+    failure: AttachmentProcessingError
+  ): Promise<void> {
     try {
       const accepted = await this.#repository.settleFailed({
         attachmentId: claim.id, claimToken: claim.claimToken, errorCode: failure.code, jobId: claim.jobId, now: this.#now()

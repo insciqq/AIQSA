@@ -11,11 +11,21 @@ import type {
 import { prisma } from "@/lib/server/prisma";
 import {
   mcpRuntimeFingerprint,
+  mcpSharedRuntimeFingerprint,
   resolveEffectiveMcpGrant,
   resolveEffectiveMcpValues,
   type EffectiveMcpSlotPlanItem
 } from "./access";
-import { validateMcpDraft, validateMcpSlotValue } from "./definitions";
+import {
+  mcpEndpointBinding,
+  mcpPublishedToolDefinitions,
+  mcpValuesForEndpoint,
+  parseMcpEndpointBindings,
+  validateMcpDraft,
+  validateMcpSlotValue,
+  type McpEndpointBinding,
+  type McpPublishedToolDefinitions
+} from "./definitions";
 import {
   decryptMcpEnvelope,
   encryptMcpEnvelope,
@@ -29,6 +39,7 @@ import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type {
   McpRuntimeCoordinatorRepository,
+  McpRuntimeGenerationLaunch,
   McpRuntimeLaunch
 } from "./runtimeCoordinator";
 
@@ -55,9 +66,12 @@ function isSlotValue(value: unknown): value is McpSlotValue {
     (typeof value === "number" && Number.isFinite(value));
 }
 
+// Launch uses only values entered for the active revision's origin. Unbound
+// legacy values belong to it: publication to another origin pins them first.
 function storedValues(
   envelope: string | null,
   key: Buffer,
+  endpoint: McpEndpointBinding,
   context?: McpEnvelopeContext
 ): StoredValues {
   if (!envelope) return { values: {}, version: 1 };
@@ -68,12 +82,17 @@ function storedValues(
     !decoded.values || typeof decoded.values !== "object" || Array.isArray(decoded.values)) {
     throw runtimeConfigurationError("mcp_values_invalid");
   }
+  const bindings = parseMcpEndpointBindings("endpoints" in decoded ? decoded.endpoints : undefined);
+  if (!bindings) throw runtimeConfigurationError("mcp_values_invalid");
   const values: Record<string, McpSlotValue> = {};
   for (const [slotKey, value] of Object.entries(decoded.values)) {
     if (!isSlotValue(value)) throw runtimeConfigurationError("mcp_values_invalid");
     values[slotKey] = value;
   }
-  return { values, version: 1 };
+  return {
+    values: mcpValuesForEndpoint({ bindings, implicit: endpoint, target: endpoint, values }),
+    version: 1
+  };
 }
 
 function storedEffectiveSnapshot(
@@ -139,7 +158,10 @@ type DesiredRecord = Prisma.McpUserServerGetPayload<{
   };
 }>;
 
-export type RemoteRuntimeCandidate = {
+/** A server as its installation-owned Project runtime sees it: no member row. */
+type SharedRuntimeServerRecord = Prisma.McpServerGetPayload<{ include: { activeRevision: true } }>;
+
+type RemoteRuntimeFields = {
   allowPrivateNetwork: boolean;
   callTimeoutMs: number;
   effectiveEnvelope: {
@@ -153,15 +175,14 @@ export type RemoteRuntimeCandidate = {
   fingerprint: string;
   headers: Record<string, string>;
   oauthConnectionId?: string;
+  publishedTools: McpPublishedToolDefinitions;
   revisionId: string;
   redactionValues: readonly string[];
   startupTimeoutMs: number;
   url: string;
-  userId: string;
-  userServerId: string;
 };
 
-export type LocalRuntimeCandidate = {
+type LocalRuntimeFields = {
   callTimeoutMs: number;
   effectiveEnvelope: {
     plan: ReturnType<typeof resolveEffectiveMcpValues>["plan"];
@@ -173,25 +194,33 @@ export type LocalRuntimeCandidate = {
   externalAccountLabel: null;
   fingerprint: string;
   oauthConnectionId?: undefined;
+  publishedTools: McpPublishedToolDefinitions;
   revisionId: string;
   redactionValues: readonly string[];
   startupTimeoutMs: number;
   toolHive: NonNullable<McpRuntimeLaunch["toolHive"]>;
-  userId: string;
-  userServerId: string;
 };
 
-type EffectiveRuntimeCandidate = Readonly<{
+type UserRuntimeOwner = { userId: string; userServerId: string };
+
+export type RemoteRuntimeCandidate = RemoteRuntimeFields & UserRuntimeOwner;
+
+export type LocalRuntimeCandidate = LocalRuntimeFields & UserRuntimeOwner;
+
+/** The Project runtime of a server: shared or no-auth values only, never a member. */
+export type SharedRuntimeCandidate = (RemoteRuntimeFields | LocalRuntimeFields) & { serverId: string };
+
+type EffectiveRuntimeBase = Readonly<{
   configuration: McpDraftConfiguration;
   credentialSources: readonly McpCredentialSource[];
-  effectiveEnvelope: RemoteRuntimeCandidate["effectiveEnvelope"];
+  effectiveEnvelope: RemoteRuntimeFields["effectiveEnvelope"];
   fingerprint: string;
   externalAccountLabel: string | null;
   oauthConnectionId: string | null;
   revision: NonNullable<DesiredRecord["server"]["activeRevision"]>;
-  userId: string;
-  userServerId: string;
 }>;
+
+type EffectiveRuntimeCandidate = EffectiveRuntimeBase & Readonly<UserRuntimeOwner>;
 
 function safeCredentialSources(
   configuration: McpDraftConfiguration,
@@ -237,9 +266,11 @@ function effectiveRuntimeCandidate(input: {
   const groups = input.record.server.grants.filter((grant) => grant.groupId && groupIds.includes(grant.groupId));
   const access = resolveEffectiveMcpGrant({ direct, groups });
   if (!access.canUse) return null;
+  const endpoint = mcpEndpointBinding(configuration);
   const shared = storedValues(
     input.record.server.sharedConfigEnvelope,
     input.key,
+    endpoint,
     input.record.server.sharedConfigEnvelope
       ? mcpSharedConfigEnvelopeContext(
           input.record.server.id,
@@ -250,6 +281,7 @@ function effectiveRuntimeCandidate(input: {
   const personal = storedValues(
     input.record.personalConfigEnvelope,
     input.key,
+    endpoint,
     input.record.personalConfigEnvelope
       ? mcpPersonalConfigEnvelopeContext(input.record.id, input.record.personalConfigVersion)
       : undefined
@@ -311,13 +343,7 @@ function effectiveRuntimeCandidate(input: {
   };
 }
 
-export function remoteRuntimeCandidate(input: {
-  key: Buffer;
-  oauthRedirectUri?: (serverId: string) => string;
-  record: DesiredRecord;
-}): RemoteRuntimeCandidate | null {
-  const base = effectiveRuntimeCandidate(input);
-  if (!base) return null;
+function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields | null {
   const { configuration } = base;
   const source = configuration.source;
   if (source.kind !== "remote") return null;
@@ -339,21 +365,16 @@ export function remoteRuntimeCandidate(input: {
     fingerprint: base.fingerprint,
     headers,
     ...(base.oauthConnectionId ? { oauthConnectionId: base.oauthConnectionId } : {}),
+    publishedTools: mcpPublishedToolDefinitions(base.revision.validationEvidence),
     redactionValues: effectiveRedactionValues(configuration, base.effectiveEnvelope.values),
     revisionId: base.revision.id,
     startupTimeoutMs: configuration.runtime.startupTimeoutMs,
-    url: source.url,
-    userId: base.userId,
-    userServerId: base.userServerId
+    url: source.url
   };
 }
 
-export function localRuntimeCandidate(input: {
-  key: Buffer;
-  record: DesiredRecord;
-}): LocalRuntimeCandidate | null {
-  const base = effectiveRuntimeCandidate(input);
-  if (!base || base.configuration.source.kind === "remote") return null;
+function localRuntimeFields(base: EffectiveRuntimeBase): LocalRuntimeFields | null {
+  if (base.configuration.source.kind === "remote") return null;
   const artifact = parseMcpLocalResolvedArtifact(
     base.revision.resolvedArtifact,
     base.configuration.source
@@ -374,6 +395,7 @@ export function localRuntimeCandidate(input: {
     effectiveEnvelope: base.effectiveEnvelope,
     externalAccountLabel: null,
     fingerprint: base.fingerprint,
+    publishedTools: mcpPublishedToolDefinitions(base.revision.validationEvidence),
     redactionValues: effectiveRedactionValues(base.configuration, base.effectiveEnvelope.values),
     revisionId: base.revision.id,
     startupTimeoutMs: base.configuration.runtime.startupTimeoutMs,
@@ -382,10 +404,112 @@ export function localRuntimeCandidate(input: {
       envVars,
       generationToken: base.fingerprint,
       image: artifact.imageRef
-    },
-    userId: base.userId,
-    userServerId: base.userServerId
+    }
   };
+}
+
+export function remoteRuntimeCandidate(input: {
+  key: Buffer;
+  oauthRedirectUri?: (serverId: string) => string;
+  record: DesiredRecord;
+}): RemoteRuntimeCandidate | null {
+  const base = effectiveRuntimeCandidate(input);
+  const fields = base && remoteRuntimeFields(base);
+  return base && fields ? { ...fields, userId: base.userId, userServerId: base.userServerId } : null;
+}
+
+export function localRuntimeCandidate(input: {
+  key: Buffer;
+  record: DesiredRecord;
+}): LocalRuntimeCandidate | null {
+  const base = effectiveRuntimeCandidate(input);
+  const fields = base && localRuntimeFields(base);
+  return base && fields ? { ...fields, userId: base.userId, userServerId: base.userServerId } : null;
+}
+
+/**
+ * The installation-owned runtime Project runs use. It is derived from the
+ * server alone: shared or literal values, no grant, preference, personal value
+ * or OAuth identity, so it is one runtime for every member. Project authority
+ * requires a shared value or no authentication, exactly as Project admission.
+ */
+export function sharedRuntimeCandidate(input: {
+  key: Buffer;
+  server: SharedRuntimeServerRecord;
+}): SharedRuntimeCandidate | null {
+  const { server } = input;
+  if (!server.enabled || server.archivedAt) return null;
+  const revision = server.activeRevision;
+  if (!revision) return null;
+  const configuration = revisionConfiguration(revision.configuration);
+  if (!configuration || configuration.auth.mode === "oauth" ||
+    (!server.sharedConfigEnvelope && configuration.auth.mode !== "none")) return null;
+  const shared = storedValues(
+    server.sharedConfigEnvelope,
+    input.key,
+    mcpEndpointBinding(configuration),
+    server.sharedConfigEnvelope
+      ? mcpSharedConfigEnvelopeContext(server.id, server.sharedConfigVersion)
+      : undefined
+  );
+  const effective = resolveEffectiveMcpValues({
+    personalSlotKeys: new Set(),
+    personalValues: {},
+    personalVersion: 0,
+    sharedValues: shared.values,
+    sharedVersion: server.sharedConfigVersion,
+    slots: configuration.slots
+  });
+  if (effective.invalidSlotKeys.length || effective.missingSlotKeys.length) return null;
+  const base: EffectiveRuntimeBase = {
+    configuration,
+    credentialSources: safeCredentialSources(configuration, effective.plan, false),
+    effectiveEnvelope: { plan: effective.plan, values: effective.values, version: 1 },
+    externalAccountLabel: null,
+    fingerprint: mcpSharedRuntimeFingerprint({ plan: effective.plan, revisionId: revision.id }),
+    oauthConnectionId: null,
+    revision
+  };
+  const fields = configuration.source.kind === "remote" ? remoteRuntimeFields(base) : localRuntimeFields(base);
+  return fields ? { ...fields, serverId: server.id } : null;
+}
+
+function generationLaunch(
+  candidate: LocalRuntimeFields | RemoteRuntimeFields,
+  generation: Readonly<{ id: string; inventoryUpdatedAt: Date | null; retryAt: Date | null }>,
+  now: Date
+): McpRuntimeGenerationLaunch {
+  const commonLaunch = {
+    callTimeoutMs: candidate.callTimeoutMs,
+    ...(candidate.disabledToolNames?.length
+      ? { disabledToolNames: candidate.disabledToolNames }
+      : {}),
+    fingerprint: candidate.fingerprint,
+    generationId: generation.id,
+    headers: {},
+    inventoryRefreshRequired: !generation.inventoryUpdatedAt ||
+      now.getTime() - generation.inventoryUpdatedAt.getTime() >= INVENTORY_FRESH_MS,
+    publishedTools: candidate.publishedTools,
+    redactionValues: candidate.redactionValues,
+    retryAt: generation.retryAt,
+    startupTimeoutMs: candidate.startupTimeoutMs
+  };
+  return "url" in candidate
+    ? {
+        ...commonLaunch,
+        allowPrivateNetwork: candidate.allowPrivateNetwork,
+        headers: candidate.headers,
+        ...(candidate.oauthConnectionId
+          ? { oauthConnectionId: candidate.oauthConnectionId }
+          : {}),
+        url: candidate.url
+      }
+    : { ...commonLaunch, toolHive: candidate.toolHive };
+}
+
+function sameCredentialSources(stored: readonly string[], candidate: readonly McpCredentialSource[]): boolean {
+  return stored.length === candidate.length &&
+    stored.every((source) => candidate.includes(source as McpCredentialSource));
 }
 
 function runtimeCandidate(input: {
@@ -416,7 +540,7 @@ export function createPrismaMcpRuntimeRepository(input: {
       const generation = await client.mcpRuntimeGeneration.findFirst({
         include: {
           revision: {
-            select: { configuration: true, id: true, resolvedArtifact: true, serverId: true }
+            select: { configuration: true, id: true, resolvedArtifact: true, serverId: true, validationEvidence: true }
           },
           userServer: {
             select: { serverId: true, userId: true }
@@ -429,7 +553,15 @@ export function createPrismaMcpRuntimeRepository(input: {
           }
         }
       }).catch(retainDatabaseFailure);
-      if (!generation || generation.revision.serverId !== generation.userServer.serverId) return null;
+      if (!generation) return null;
+      // A member's generation or the server's shared Project generation; the
+      // latter proves its identity without any user.
+      const owner = generation.userServer
+        ? { serverId: generation.userServer.serverId, userId: generation.userServer.userId }
+        : generation.sharedServerId !== null
+          ? { serverId: generation.sharedServerId, userId: null }
+          : null;
+      if (!owner || generation.revision.serverId !== owner.serverId) return null;
       const configuration = revisionConfiguration(generation.revision.configuration);
       if (!configuration || (configuration.auth.mode === "oauth") !== Boolean(generation.oauthConnectionId)) {
         return null;
@@ -446,12 +578,16 @@ export function createPrismaMcpRuntimeRepository(input: {
           snapshot.plan.some((item) => !configuredSlotKeys.has(item.slotKey)) ||
           configuration.slots.some((slot) => !Object.hasOwn(snapshot.values, slot.slotKey) ||
             !validateMcpSlotValue(slot, snapshot.values[slot.slotKey]))) return null;
-        const fingerprint = mcpRuntimeFingerprint({
-          oauthConnectionRevision: generation.oauthConnectionId,
-          plan: snapshot.plan,
-          revisionId: generation.revision.id,
-          userId: generation.userServer.userId
-        });
+        const fingerprint = owner.userId === null
+          ? snapshot.plan.some((item) => item.source === "personal")
+            ? null
+            : mcpSharedRuntimeFingerprint({ plan: snapshot.plan, revisionId: generation.revision.id })
+          : mcpRuntimeFingerprint({
+              oauthConnectionRevision: generation.oauthConnectionId,
+              plan: snapshot.plan,
+              revisionId: generation.revision.id,
+              userId: owner.userId
+            });
         if (fingerprint !== generation.fingerprint) return null;
         const commonLaunch = {
           callTimeoutMs: configuration.runtime.callTimeoutMs,
@@ -463,6 +599,8 @@ export function createPrismaMcpRuntimeRepository(input: {
           headers: {},
           inventoryRefreshRequired: !generation.inventoryUpdatedAt ||
             now.getTime() - generation.inventoryUpdatedAt.getTime() >= INVENTORY_FRESH_MS,
+          // The accepted revision, not the active one, bounds what this generation offers.
+          publishedTools: mcpPublishedToolDefinitions(generation.revision.validationEvidence),
           redactionValues: effectiveRedactionValues(configuration, snapshot.values),
           retryAt: generation.retryAt,
           startupTimeoutMs: configuration.runtime.startupTimeoutMs
@@ -596,7 +734,7 @@ export function createPrismaMcpRuntimeRepository(input: {
         }
       }).catch(retainDatabaseFailure);
       const key = encryptionKey();
-      const launches: McpRuntimeLaunch[] = [];
+      const launches: McpRuntimeGenerationLaunch[] = [];
       for (const record of records) {
         const candidate = runtimeCandidate({
           key,
@@ -637,9 +775,7 @@ export function createPrismaMcpRuntimeRepository(input: {
             (selected.oauthConnectionId ?? null) !== (candidate.oauthConnectionId ?? null)) {
             throw runtimeConfigurationError("mcp_runtime_fingerprint_collision");
           }
-          if (selected.credentialSources.some((source) =>
-            !candidate.credentialSources.includes(source as McpCredentialSource)) ||
-            selected.credentialSources.length !== candidate.credentialSources.length) {
+          if (!sameCredentialSources(selected.credentialSources, candidate.credentialSources)) {
             throw runtimeConfigurationError("mcp_runtime_fingerprint_collision");
           }
           if (selected.externalAccountLabel !== candidate.externalAccountLabel) {
@@ -672,31 +808,119 @@ export function createPrismaMcpRuntimeRepository(input: {
           return accepted.count ? selected : null;
         }).catch(retainDatabaseFailure);
         if (!generation) continue;
-        const commonLaunch = {
-          callTimeoutMs: candidate.callTimeoutMs,
-          ...(candidate.disabledToolNames?.length
-            ? { disabledToolNames: candidate.disabledToolNames }
-            : {}),
-          fingerprint: candidate.fingerprint,
-          generationId: generation.id,
-          headers: {},
-          inventoryRefreshRequired: !generation.inventoryUpdatedAt ||
-            now.getTime() - generation.inventoryUpdatedAt.getTime() >= INVENTORY_FRESH_MS,
-          redactionValues: candidate.redactionValues,
-          retryAt: generation.retryAt,
-          startupTimeoutMs: candidate.startupTimeoutMs
-        };
-        launches.push("url" in candidate
-          ? {
-              ...commonLaunch,
-              allowPrivateNetwork: candidate.allowPrivateNetwork,
-              headers: candidate.headers,
-              ...(candidate.oauthConnectionId
-                ? { oauthConnectionId: candidate.oauthConnectionId }
-                : {}),
-              url: candidate.url
+        launches.push(generationLaunch(candidate, generation, now));
+      }
+      return launches;
+    },
+
+    synchronizeShared: async ({ now, onDemand = false, serverIds }) => {
+      const recentDemandCutoff = new Date(now.getTime() - RECENT_ACTIVITY_MS);
+      if (!onDemand) {
+        // Project demand, not member activity, keeps a shared runtime desired.
+        // An idle or no longer eligible one drains; the next Project run starts
+        // it again on demand.
+        await client.mcpSharedRuntime.updateMany({
+          data: { desiredRuntimeGenerationId: null },
+          where: {
+            desiredRuntimeGenerationId: { not: null },
+            OR: [
+              { requestedAt: { lt: recentDemandCutoff } },
+              { server: { OR: [
+                { enabled: false },
+                { archivedAt: { not: null } },
+                { activeRevisionId: null },
+                { projectBindings: { none: {} } }
+              ] } }
+            ]
+          }
+        }).catch(retainDatabaseFailure);
+      }
+      const servers = await client.mcpServer.findMany({
+        include: { activeRevision: true },
+        where: {
+          activeRevisionId: { not: null },
+          archivedAt: null,
+          enabled: true,
+          projectBindings: { some: {} },
+          ...(onDemand
+            ? { id: { in: [...(serverIds ?? [])] } }
+            : { sharedRuntime: { is: { desiredRuntimeGenerationId: { not: null } } } })
+        }
+      }).catch(retainDatabaseFailure);
+      const key = encryptionKey();
+      const launches: McpRuntimeGenerationLaunch[] = [];
+      for (const server of servers) {
+        let candidate: SharedRuntimeCandidate | null;
+        try {
+          candidate = sharedRuntimeCandidate({ key, server });
+          reportSubsystemHealthy("mcp", "preflight", server.id);
+        } catch (error) {
+          reportSubsystemFailure({ subsystem: "mcp", stage: "preflight", scope_id: server.id,
+            code: observedFailureCode(error), action: "skip" });
+          candidate = null;
+        }
+        if (!candidate) {
+          await client.mcpSharedRuntime.updateMany({
+            data: { desiredRuntimeGenerationId: null },
+            where: { serverId: server.id }
+          }).catch(retainDatabaseFailure);
+          continue;
+        }
+        const shared = candidate;
+        const generation = await client.$transaction(async (tx) => {
+          // Concurrent Project runs of several members converge on one row
+          // and one generation instead of failing on a unique fingerprint.
+          await tx.mcpSharedRuntime.createMany({
+            data: [{ requestedAt: now, serverId: shared.serverId }],
+            skipDuplicates: true
+          });
+          const selectedGenerationId = generationId();
+          await tx.mcpRuntimeGeneration.createMany({
+            data: [{
+              credentialSources: [...shared.credentialSources],
+              effectiveConfigEnvelope: encryptMcpEnvelope(
+                shared.effectiveEnvelope,
+                key,
+                mcpRuntimeGenerationEnvelopeContext(selectedGenerationId, shared.fingerprint)
+              ),
+              externalAccountLabel: null,
+              fingerprint: shared.fingerprint,
+              id: selectedGenerationId,
+              oauthConnectionId: null,
+              revisionId: shared.revisionId,
+              sharedServerId: shared.serverId,
+              state: "starting"
+            }],
+            skipDuplicates: true
+          });
+          const selected = await tx.mcpRuntimeGeneration.findUnique({
+            where: { fingerprint: shared.fingerprint }
+          });
+          if (!selected || selected.sharedServerId !== shared.serverId || selected.userServerId !== null ||
+            selected.revisionId !== shared.revisionId || selected.oauthConnectionId !== null ||
+            !sameCredentialSources(selected.credentialSources, shared.credentialSources)) {
+            throw runtimeConfigurationError("mcp_runtime_fingerprint_collision");
+          }
+          // Shared values rotated since they were read make this generation stale.
+          const accepted = await tx.mcpSharedRuntime.updateMany({
+            data: {
+              desiredRuntimeGenerationId: selected.id,
+              ...(onDemand ? { requestedAt: now } : {})
+            },
+            where: {
+              server: {
+                activeRevisionId: shared.revisionId,
+                archivedAt: null,
+                enabled: true,
+                sharedConfigVersion: server.sharedConfigVersion
+              },
+              serverId: shared.serverId
             }
-          : { ...commonLaunch, toolHive: candidate.toolHive });
+          });
+          return accepted.count ? selected : null;
+        }).catch(retainDatabaseFailure);
+        if (!generation) continue;
+        launches.push(generationLaunch(shared, generation, now));
       }
       return launches;
     },
@@ -717,6 +941,15 @@ export function createPrismaMcpRuntimeRepository(input: {
               JOIN "McpServer" AS server ON server."id" = preference."serverId"
               WHERE preference."desiredRuntimeGenerationId" = generation."id"
                 AND preference."enabled" = true
+                AND server."enabled" = true
+                AND server."archivedAt" IS NULL
+                AND server."activeRevisionId" = generation."revisionId"
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM "McpSharedRuntime" AS shared
+              JOIN "McpServer" AS server ON server."id" = shared."serverId"
+              WHERE shared."desiredRuntimeGenerationId" = generation."id"
                 AND server."enabled" = true
                 AND server."archivedAt" IS NULL
                 AND server."activeRevisionId" = generation."revisionId"
@@ -760,6 +993,15 @@ export function createPrismaMcpRuntimeRepository(input: {
             )
             OR EXISTS (
               SELECT 1
+              FROM "McpSharedRuntime" AS shared
+              JOIN "McpServer" AS server ON server."id" = shared."serverId"
+              WHERE shared."desiredRuntimeGenerationId" = generation."id"
+                AND server."enabled" = true
+                AND server."archivedAt" IS NULL
+                AND server."activeRevisionId" = generation."revisionId"
+            )
+            OR EXISTS (
+              SELECT 1
               FROM "McpRunBinding" AS binding
               JOIN "ModelRun" AS run ON run."id" = binding."modelRunId"
               WHERE binding."runtimeGenerationId" = generation."id"
@@ -789,6 +1031,11 @@ export function createPrismaMcpRuntimeRepository(input: {
               FROM "McpUserServer" AS preference
               WHERE preference."desiredRuntimeGenerationId" = generation."id"
                 AND preference."enabled" = true
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM "McpSharedRuntime" AS shared
+              WHERE shared."desiredRuntimeGenerationId" = generation."id"
             )
             OR EXISTS (
               SELECT 1
@@ -836,7 +1083,8 @@ export function createPrismaMcpRuntimeRepository(input: {
           desiredFor: null,
           runBindings: {
             none: { modelRun: { status: { in: [...ACTIVE_RUN_STATUSES] } } }
-          }
+          },
+          sharedDesiredFor: null
         }
       }).catch(retainDatabaseFailure);
       return rows.map((row) => row.id);
@@ -849,7 +1097,8 @@ export function createPrismaMcpRuntimeRepository(input: {
           desiredFor: null,
           runBindings: {
             none: { modelRun: { status: { in: [...ACTIVE_RUN_STATUSES] } } }
-          }
+          },
+          sharedDesiredFor: null
         }
       }).catch(retainDatabaseFailure);
       return deleted.count === 1;

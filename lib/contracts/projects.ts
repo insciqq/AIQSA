@@ -36,6 +36,14 @@ export const PROJECT_INSTRUCTIONS_MAX_LENGTH = 32_000;
 export const PROJECT_ACTIVITY_PAGE_SIZE = 50;
 
 export type ProjectStatusWire = "ACTIVE" | "ARCHIVED" | "DELETING";
+export type ProjectDeletionStatusWire = "pending" | "failed" | "completed";
+export type ProjectDeletionResponseWire = Readonly<{ projectId: string; status: ProjectDeletionStatusWire }>;
+
+export function decodeProjectDeletionResponse(value: unknown): ProjectDeletionResponseWire | null {
+  return isRecord(value) && typeof value.projectId === "string" &&
+    (value.status === "pending" || value.status === "failed" || value.status === "completed")
+    ? { projectId: value.projectId, status: value.status } : null;
+}
 
 export type ProjectDefaultsWire = Readonly<{
   assistantId: string | null;
@@ -186,6 +194,7 @@ export type ProjectGrantSourceWire = Readonly<{
 }>;
 
 export type ProjectSummaryWire = Readonly<{
+  deletionStatus?: Exclude<ProjectDeletionStatusWire, "completed">;
   accessRevision: number;
   audienceCount: number;
   chatCount: number;
@@ -493,10 +502,13 @@ export function decodeProjectSummary(value: unknown): ProjectSummaryWire | null 
     !Array.isArray(value.grantedThrough) ||
     !finiteRevision(value.accessRevision) ||
     !finiteRevision(value.audienceCount) || !finiteRevision(value.chatCount) ||
-    typeof value.updatedAt !== "string") return null;
+    typeof value.updatedAt !== "string" ||
+    (value.deletionStatus !== undefined && (value.status !== "DELETING" ||
+      value.deletionStatus !== "pending" && value.deletionStatus !== "failed"))) return null;
   const grantedThrough = value.grantedThrough.map(decodeGrantSource);
   if (grantedThrough.some((entry) => entry === null)) return null;
   return {
+    ...(value.deletionStatus ? { deletionStatus: value.deletionStatus as "pending" | "failed" } : {}),
     accessRevision: value.accessRevision,
     audienceCount: value.audienceCount,
     chatCount: value.chatCount,

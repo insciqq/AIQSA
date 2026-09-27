@@ -1,9 +1,19 @@
 import { randomUUID } from "node:crypto";
+import type { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
+import {
+  createInboundMcpTestClient,
+  INBOUND_MCP_TEST_AUTHORITIES,
+  liveInboundMcpFamilyCount,
+  type InboundMcpTestClient
+} from "@/tests/support/inboundMcpOAuth";
 import { hashToken } from "../../auth/token";
 import { prisma } from "../../prisma";
 import { createPrismaRetentionRepository } from "../../retention/prune";
-import { createPrismaInboundMcpOAuthRepository } from "./repository";
+import {
+  createPrismaInboundMcpOAuthRepository,
+  revokeInboundMcpGrantsForUser
+} from "./repository";
 
 const ISSUER = "https://aiqsa.example";
 const RESOURCE = "https://aiqsa.example/mcp";
@@ -46,6 +56,98 @@ async function withFixture<T>(run: (input: Readonly<{
   } finally {
     await prisma.user.deleteMany({ where: { id: user.id } });
     await prisma.inboundMcpOAuthClient.deleteMany({ where: { clientId } });
+  }
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+/** Proves an interleaving: resolves once another backend of this database waits on a lock. */
+async function waitForLockWaiter(): Promise<void> {
+  const deadline = Date.now() + 4_000;
+  while (Date.now() < deadline) {
+    const [row] = await prisma.$queryRaw<{ waiting: number }[]>`
+      SELECT count(*)::int AS "waiting"
+      FROM pg_stat_activity
+      WHERE "datname" = current_database() AND "wait_event_type" = 'Lock'
+    `;
+    if ((row?.waiting ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("expected_lock_waiter");
+}
+
+/**
+ * A synthetic owner and test client whose repository can pause one transaction right before its
+ * grant `lastUsedAt` write, after it already holds its token, family or code row locks.
+ */
+async function withRevocationRace<T>(run: (input: Readonly<{
+  armPause(): Readonly<{ held: Promise<void>; release(): void }>;
+  mcp: InboundMcpTestClient;
+  userId: string;
+}>) => Promise<T>): Promise<T> {
+  const suffix = randomUUID();
+  const user = await prisma.user.create({
+    data: {
+      displayName: "Inbound MCP revocation race owner",
+      email: `inbound-mcp-race-${suffix}@example.test`,
+      status: "active"
+    }
+  });
+  let pause: Readonly<{ held: () => void; released: Promise<void> }> | null = null;
+  // Refresh issues its family and grant writes together; the pause signals only after the family
+  // write has settled so the paused transaction really holds that row lock.
+  let familyWrite: Promise<void> = Promise.resolve();
+  const pausingClient = prisma.$extends({
+    query: {
+      inboundMcpOAuthGrant: {
+        async update({ args, query }) {
+          const current = pause;
+          pause = null;
+          if (current) {
+            await familyWrite;
+            current.held();
+            await current.released;
+          }
+          return query(args);
+        }
+      },
+      inboundMcpOAuthTokenFamily: {
+        async update({ args, query }) {
+          const settled = deferred();
+          familyWrite = settled.promise;
+          try {
+            return await query(args);
+          } finally {
+            settled.resolve();
+          }
+        }
+      }
+    }
+  });
+  const mcp = await createInboundMcpTestClient(
+    pausingClient as unknown as PrismaClient,
+    time("2026-09-03T01:00:00.000Z")
+  );
+  try {
+    return await run({
+      armPause() {
+        const held = deferred();
+        const released = deferred();
+        pause = { held: held.resolve, released: released.promise };
+        return { held: held.promise, release: released.resolve };
+      },
+      mcp,
+      userId: user.id
+    });
+  } finally {
+    await prisma.user.deleteMany({ where: { id: user.id } });
+    await mcp.cleanup();
   }
 }
 
@@ -310,6 +412,97 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
         .resolves.toBe(0);
       await expect(prisma.inboundMcpOAuthClient.count({ where: { clientId } }))
         .resolves.toBe(1);
+    });
+  });
+
+  it("fences a refresh that read the grant before an account revocation committed", async () => {
+    await withRevocationRace(async ({ mcp, userId }) => {
+      const connection = await mcp.connect(userId, INBOUND_MCP_TEST_AUTHORITIES.memory);
+      const revocationHeld = deferred();
+      const releaseRevocation = deferred();
+      const revocation = prisma.$transaction(async (tx) => {
+        const revoked = await revokeInboundMcpGrantsForUser(tx, {
+          now: mcp.now,
+          reason: "password_reset",
+          userId
+        });
+        revocationHeld.resolve();
+        await releaseRevocation.promise;
+        return revoked;
+      }, { timeout: 15_000 });
+      await revocationHeld.promise;
+
+      // The refresh sees the committed ACTIVE grant, rotates, then waits on the family row lock.
+      const refresh = mcp.refresh(connection);
+      await waitForLockWaiter();
+      releaseRevocation.resolve();
+      await expect(revocation).resolves.toBe(1);
+      const refreshed = await refresh;
+
+      expect(refreshed.outcome).toBe("rotated");
+      await expect(mcp.access(refreshed.next!)).resolves.toBe(false);
+      await expect(mcp.refresh(refreshed.next!)).resolves.toMatchObject({ outcome: "invalid" });
+      await expect(liveInboundMcpFamilyCount(prisma, userId)).resolves.toBe(0);
+    });
+  });
+
+  it("makes an account revocation wait for an in-flight refresh without deadlock", async () => {
+    await withRevocationRace(async ({ armPause, mcp, userId }) => {
+      const connection = await mcp.connect(userId, INBOUND_MCP_TEST_AUTHORITIES.hub);
+      const pause = armPause();
+      const refresh = mcp.refresh(connection);
+      await pause.held;
+
+      // The refresh holds its family row; the revocation must queue behind it, not take the
+      // grant first and deadlock with the refresh's pending grant write.
+      const revocation = prisma.$transaction((tx) => revokeInboundMcpGrantsForUser(tx, {
+        now: mcp.now,
+        reason: "admin_revoke_user",
+        userId
+      }));
+      await waitForLockWaiter();
+      pause.release();
+      const [refreshed, revoked] = await Promise.all([refresh, revocation]);
+
+      expect(revoked).toBe(1);
+      expect(refreshed.outcome).toBe("rotated");
+      await expect(mcp.access(refreshed.next!)).resolves.toBe(false);
+      await expect(mcp.refresh(refreshed.next!)).resolves.toMatchObject({ outcome: "invalid" });
+      await expect(prisma.inboundMcpOAuthTokenFamily.findMany({
+        select: { revocationReason: true },
+        where: { grant: { userId } }
+      })).resolves.toEqual([{ revocationReason: "admin_revoke_user" }]);
+      await expect(liveInboundMcpFamilyCount(prisma, userId)).resolves.toBe(0);
+    });
+  });
+
+  it("fences the family of a code exchange racing an account revocation and allows reconsent", async () => {
+    await withRevocationRace(async ({ armPause, mcp, userId }) => {
+      const pending = await mcp.approve(userId, INBOUND_MCP_TEST_AUTHORITIES.memory);
+      const pause = armPause();
+      const exchange = mcp.exchange(pending);
+      await pause.held;
+
+      // The exchange has consumed the code and minted a family under the old grant revision.
+      const revocation = prisma.$transaction((tx) => revokeInboundMcpGrantsForUser(tx, {
+        now: mcp.now,
+        reason: "password_change",
+        userId
+      }));
+      await waitForLockWaiter();
+      pause.release();
+      const [exchanged, revoked] = await Promise.all([exchange, revocation]);
+
+      expect(revoked).toBe(1);
+      expect(exchanged).not.toBeNull();
+      await expect(mcp.access(exchanged!)).resolves.toBe(false);
+      await expect(mcp.refresh(exchanged!)).resolves.toMatchObject({ outcome: "invalid" });
+      await expect(liveInboundMcpFamilyCount(prisma, userId)).resolves.toBe(0);
+
+      const reconnected = await mcp.connect(userId, INBOUND_MCP_TEST_AUTHORITIES.memory);
+      await expect(mcp.access(reconnected)).resolves.toBe(true);
+      await expect(mcp.access(exchanged!)).resolves.toBe(false);
+      await expect(liveInboundMcpFamilyCount(prisma, userId)).resolves.toBe(1);
     });
   });
 
