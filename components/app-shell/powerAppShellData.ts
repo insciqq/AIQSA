@@ -29,9 +29,13 @@ import {
   type SearchPlan
 } from "@/lib/domain/search";
 
-const RESUME_POLL_HORIZON_MS = 5 * 60 * 1000;
+// Resumed runs poll with backoff for the horizon, then check at the
+// background cadence until terminal (operator decision N19: 20 minutes, then
+// every 30-60 seconds).
+const RESUME_POLL_HORIZON_MS = 20 * 60 * 1000;
 const RESUME_POLL_INITIAL_DELAY_MS = 1500;
 const RESUME_POLL_MAX_DELAY_MS = 30000;
+const RESUME_POLL_BACKGROUND_DELAY_MS = 60000;
 
 type SavedControlDraft = {
   backgroundMode?: boolean;
@@ -168,6 +172,7 @@ function resolveModelControlDefaults(
 }
 
 export {
+  RESUME_POLL_BACKGROUND_DELAY_MS,
   RESUME_POLL_HORIZON_MS,
   RESUME_POLL_INITIAL_DELAY_MS,
   RESUME_POLL_MAX_DELAY_MS,
