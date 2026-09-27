@@ -18,9 +18,9 @@ export type ToolObservationSourceBinding = Readonly<{ version: 1 }> & (
 export class ObservationStoreError extends Error {
   /** The operation is known to have executed (an unavailable result only). */
   readonly executed: boolean;
-  constructor(readonly code: "tool_observation_unavailable" | "tool_observation_limit_exceeded" |
-    "tool_observation_conflict" | "tool_observation_storage_unavailable" | "tool_observation_busy" |
-    "tool_observation_not_started", options: Readonly<{ executed?: boolean }> = {}) {
+  constructor(readonly code: "tool_observation_unavailable" | "tool_observation_conflict" |
+    "tool_observation_storage_unavailable" | "tool_observation_busy" | "tool_observation_not_started",
+    options: Readonly<{ executed?: boolean }> = {}) {
     super(code);
     this.name = "ObservationStoreError";
     this.executed = code === "tool_observation_unavailable" && options.executed === true;
@@ -31,15 +31,13 @@ export function observationFailure(error: unknown): Readonly<{ code: string; mes
   if (!(error instanceof ObservationStoreError)) return null;
   return { code: error.code, message: error.code === "tool_observation_storage_unavailable"
     ? "Saved tool results require streaming storage, which is unavailable. This new operation was not dispatched."
-    : error.code === "tool_observation_limit_exceeded"
-      ? "The budget for retained tool results is exhausted. This new operation was not dispatched; existing results remain readable."
-      : error.code === "tool_observation_busy"
-        ? "Saved tool results are temporarily busy. This new operation was not dispatched; it may be retried later."
-        : error.code === "tool_observation_not_started"
-          ? "This operation was not started: the run can no longer accept tool results. Nothing was executed."
-          : error.executed
-            ? "The operation executed, but its saved result is unavailable. Do not execute it again to recover the result."
-            : "The original operation may have completed, but its saved result is unavailable. Do not execute it again to recover the result." };
+    : error.code === "tool_observation_busy"
+      ? "Saved tool results are temporarily busy. This new operation was not dispatched; it may be retried later."
+      : error.code === "tool_observation_not_started"
+        ? "This operation was not started: the run can no longer accept tool results. Nothing was executed."
+        : error.executed
+          ? "The operation executed, but its saved result is unavailable. Do not execute it again to recover the result."
+          : "The original operation may have completed, but its saved result is unavailable. Do not execute it again to recover the result." };
 }
 
 /** Storage location, actor/run IDs, credentials and source bindings stay in
@@ -64,7 +62,9 @@ export const TOOL_OBSERVATION_LIMITS = Object.freeze({
   /** Externalized originals (exact size) plus in-flight reservation ceilings
    * of one run and of its branch. Inline rows are bounded database values,
    * like a persisted Off result, and count toward neither budget: every
-   * counted original exceeds `inlineBytes`, so the bytes also bound objects. */
+   * counted original exceeds `inlineBytes`, so the bytes also bound objects.
+   * A call these cannot admit still dispatches, retaining nothing: its result
+   * is delivered as Off delivers it, without a reader. */
   runBytes: 64 * 1024 * 1024,
   branchBytes: 256 * 1024 * 1024,
   /** The tool loop's accepted parallel calls (`maxConcurrency`). */
@@ -89,9 +89,9 @@ export function mcpObservationMaximumBytes(limits: McpResponseWireLimits = getMc
  * bytes plus in-flight ceilings of reservations not yet published. */
 export type ToolObservationBudgetUsage = Readonly<{ runBytes: bigint; branchBytes: bigint }>;
 
-/** The per-run ceiling never refuses a full parallel batch at the configured
- * wire cap when nothing is retained. Search (8 MiB) and Workspace (6 MiB and
- * an envelope) ceilings stay below `runBytes / concurrentCalls`. */
+/** The per-run ceiling admits a full parallel batch at the configured wire
+ * cap when nothing is retained. Search (8 MiB) and Workspace (6 MiB and an
+ * envelope) ceilings stay below `runBytes / concurrentCalls`. */
 export function toolObservationRunBytes(limits: McpResponseWireLimits = getMcpResponseWireLimits()): number {
   return Math.max(TOOL_OBSERVATION_LIMITS.runBytes, TOOL_OBSERVATION_LIMITS.concurrentCalls * mcpObservationMaximumBytes(limits));
 }

@@ -5,14 +5,15 @@ import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
 import { artifactUnavailableReason } from "@/components/artifacts/artifactAvailability";
-import { consumeArtifactRuntimeError } from "@/components/artifacts/artifactRuntimeSession";
 import type { ArtifactRuntimeError } from "@/lib/contracts/artifactRuntime";
-import { loadArtifactDetail, prepareArtifactEdit } from "@/components/artifacts/artifactClient";
+import { prepareArtifactEdit } from "@/components/artifacts/artifactClient";
 import { ArtifactPanelV2 } from "@/components/artifacts/ArtifactPanelV2";
 import { closeArtifactPanel, openArtifactPanel, useArtifactPanelStore } from "@/components/artifacts/artifactPanelStore";
 import { activateArtifactLibraryAccount } from "@/components/app-shell/artifactLibraryStore";
 import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
+import { navigateChatRoute, useChatRoutePath, useControlCenterHref } from "@/components/app-shell/chatRoute";
+import { parseChatRoutePath } from "@/lib/domain/chatRoute";
 import { cancelWorkspaceUpload, retryWorkspaceUpload, useWorkspaceUploadProgress } from "@/components/app-shell/workspaceUploadClient";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 
@@ -22,6 +23,7 @@ import { useChatPdfRoutePreview } from "@/components/app-shell/useChatPdfRoutePr
 import { useChatContinuation } from "@/components/app-shell/useChatContinuation";
 import { composerContextGauge } from "@/components/app-shell/composerContextStats";
 import { WorkspaceExportHistoryV2 } from "./WorkspaceExportHistoryV2";
+import { useArtifactEditAddress } from "./useArtifactEditAddress";
 
 import {
   ChatDeleteConfirmationDialog,
@@ -412,7 +414,6 @@ export function SkillLibraryOverlayV2({
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const refreshThreadLayout = thread.refreshLayout;
-  const artifactFixRequestRef = useRef<string | null>(null);
   const [libraryInitialTab, setLibraryInitialTab] = useState<LibraryTabIdV2 | undefined>(() => {
     if (typeof window === "undefined") return undefined;
     const target = new URL(window.location.href).searchParams.get("library");
@@ -466,39 +467,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
   const [workspaceResetOpen, setWorkspaceResetOpen] = useState(false);
   const [exportHistoryChatId, setExportHistoryChatId] = useState<string | null>(null);
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    const intent = url.searchParams.get("artifactEdit");
-    if (intent !== "edit" && intent !== "runtime_error") return;
-    const chatId = url.searchParams.get("chat");
-    if (!chatId || session.activeChatId !== chatId || thread.activeChatDetailLoading) return;
-    const artifactId = url.searchParams.get("artifactId")?.trim() ?? "";
-    const versionId = url.searchParams.get("versionId")?.trim() ?? "";
-    if (!artifactId || !versionId || /[\u0000-\u001f\u007f]/u.test(artifactId + versionId) || artifactId.length > 128 || versionId.length > 128) return;
-    const requestKey = `${chatId}:${artifactId}:${versionId}:${intent}`;
-    if (artifactFixRequestRef.current === requestKey) return;
-    let active = true;
-    const controller = new AbortController();
-    void prepareArtifactEdit(artifactId, versionId, chatId).then(() => loadArtifactDetail(artifactId, controller.signal)).then(detail => {
-      if (!active || useWorkspaceStore.getState().activeChatId !== chatId) return;
-      const version = detail.versions.find(version => version.id === versionId);
-      if (!version) throw new Error("This artifact is no longer available.");
-      artifactFixRequestRef.current = requestKey;
-      setArtifactEditSession(chatId, { artifactId, versionId, title: detail.title, versionNumber: version.versionNumber }, intent,
-        intent === "runtime_error" ? consumeArtifactRuntimeError(versionId) : undefined);
-      if ((liveWorkspaceRef.current?.getBoundingClientRect().width ?? 0) >= 896) openArtifactPanel({ chatId, artifactId, versionId });
-      requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-testid="composer-v2"] textarea')?.focus({ preventScroll: true }));
-      const currentUrl = new URL(window.location.href);
-      for (const key of ["artifactEdit", "artifactId", "versionId"]) currentUrl.searchParams.delete(key);
-      window.history.replaceState(window.history.state, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
-    }).catch((error: unknown) => {
-      if (!active) return;
-      useComposerSessionStore.getState().updateSession(composerSessionKey(chatId), {
-        operationError: error instanceof Error ? error.message : "Could not prepare this artifact for editing."
-      });
-    });
-    return () => { active = false; controller.abort(); };
-  }, [session.activeChatId, thread.activeChatDetailLoading]);
+  useArtifactEditAddress({
+    activeChatId: session.activeChatId,
+    detailLoading: thread.activeChatDetailLoading,
+    panelFits: () => (liveWorkspaceRef.current?.getBoundingClientRect().width ?? 0) >= 896
+  });
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
@@ -549,6 +522,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const personalMemoryOpen = settings.memory.open;
   const closePersonalMemory = settings.closeMemory;
   const libraryOpen = Boolean(settings.library || settings.knowledge || personalMemoryOpen);
+  const routeChatId = parseChatRoutePath(useChatRoutePath())?.chatId ?? null;
 
   const closeDataSubview = () => {
     setDataSubview(null);
@@ -776,7 +750,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const desired = documentTitleV2({
       activeChatId: session.activeChatId,
       activeChatTitle: session.activeChatTitle,
-      libraryOpen
+      libraryOpen,
+      routeChatId
     });
     if (document.title !== desired) document.title = desired;
     const titleNode = document.head.querySelector("title");
@@ -786,7 +761,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     });
     observer.observe(titleNode, { characterData: true, childList: true, subtree: true });
     return () => observer.disconnect();
-  }, [libraryOpen, session.activeChatId, session.activeChatTitle]);
+  }, [libraryOpen, routeChatId, session.activeChatId, session.activeChatTitle]);
   useEffect(() => {
     // A personal Memory overlay must not survive navigation into a shared
     // Project. Apart from hiding the surface, this prevents a stale overlay
@@ -1286,23 +1261,24 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     );
   };
 
-  const selectNavigationChat = (chat: ChatNavigationSummaryWire) => {
+  // Choosing a chat or a new chat in navigation adds one history entry.
+  const selectNavigationChat = (chat: ChatNavigationSummaryWire) => navigateChatRoute(() => {
     const full = currentWorkspaceChat(chat.id);
     if (full) {
       workspace.projects.actions.leave();
       workspace.pane.actions.activateChat(full);
     }
     else void workspace.pane.actions.retry();
-  };
+  });
   const setNavigationMemoryMode = (chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL") => {
     const full = currentWorkspaceChat(chat.id);
     if (full && full.memoryMode !== mode) {
       void workspace.pane.actions.toggleChatMemorySource(full, mode);
     }
   };
-  const createNavigationChat = (mode: NewChatMode) => {
+  const createNavigationChat = (mode: NewChatMode) => navigateChatRoute(() => {
     void workspace.pane.actions.createChat(null, mode);
-  };
+  });
   const navigationChatState = (chat: ChatNavigationSummaryWire): NavigationChatRowState | null => {
     const full = currentWorkspaceChat(chat.id);
     return full
@@ -2007,6 +1983,7 @@ function SettingsAccountPanelV2({
   const [signingOut, setSigningOut] = useState(false);
   const [saving, setSaving] = useState(false);
   const [signOutError, setSignOutError] = useState(false);
+  const controlCenterHref = useControlCenterHref();
   useEffect(() => { onBusyChange(saving || signingOut); return () => onBusyChange(false); }, [onBusyChange, saving, signingOut]);
   return (
     <>
@@ -2017,7 +1994,7 @@ function SettingsAccountPanelV2({
           description="Installation resources, providers, users and policies."
           title="Control Center"
         >
-          <a className="v2-button v2-focusable" data-tone="ghost" href="/admin">
+          <a className="v2-button v2-focusable" data-tone="ghost" href={controlCenterHref}>
             <UiV2Icon name="shield" />
             <span>Open</span>
           </a>

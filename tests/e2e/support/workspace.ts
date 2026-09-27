@@ -1,4 +1,5 @@
 import { expect, type Download, type Page } from "@playwright/test";
+import { parseChatRoutePath } from "../../../lib/domain/chatRoute";
 import { providerTemplateIds } from "../../../lib/domain/providerTemplates";
 import { selectModel } from "../shell/composer";
 
@@ -8,20 +9,29 @@ export async function loginWithPassword(
   page: Page,
   user: Readonly<{ email: string; password: string }>
 ): Promise<void> {
-  await page.addInitScript(() => {
-    const key = "aiqsa.workspace.e2e.cleared";
-    if (window.sessionStorage.getItem(key) === "1") return;
-    window.localStorage.removeItem("aiqsa.activeChatId");
-    window.sessionStorage.setItem(key, "1");
-  });
+  // Sign-in lands on `/`, which always opens a new chat.
   await page.goto("/login");
-  await page.getByLabel("Email").fill(user.email);
-  await page.getByLabel("Password", { exact: true }).fill(user.password);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await submitPasswordSignIn(page, user);
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
   // The server shell is visible before the client composer and navigation hydrate.
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
   await disableMemoryRecall(page);
+}
+
+/**
+ * Signs in on the login page that is already open. The form is used only once
+ * it marks itself hydrated: before that, the browser would submit the server
+ * markup natively (a GET that puts the credentials in the address).
+ */
+export async function submitPasswordSignIn(
+  page: Page,
+  user: Readonly<{ email: string; password: string }>
+): Promise<void> {
+  const form = page.locator('form[data-hydrated="true"]');
+  await expect(form).toBeVisible({ timeout: 30_000 });
+  await form.getByLabel("Email").fill(user.email);
+  await form.getByLabel("Password", { exact: true }).fill(user.password);
+  await form.getByRole("button", { name: "Sign in", exact: true }).click();
 }
 
 /**
@@ -80,10 +90,11 @@ export async function setWorkspaceEnabled(page: Page, enabled: boolean): Promise
   await page.keyboard.press("Escape");
 }
 
+/** The chat the address names: `/c/<id>` or `/p/<project>/c/<id>`, once a first send is under way. */
 export async function activeChatId(page: Page): Promise<string> {
   let value: string | null = null;
   await expect.poll(async () => {
-    value = await page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId"));
+    value = parseChatRoutePath(await page.evaluate(() => window.location.pathname))?.chatId ?? null;
     return value;
   }, { timeout: 30_000 }).not.toBeNull();
   return value!;

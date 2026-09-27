@@ -1,5 +1,6 @@
 "use client";
 
+import { useControlCenterHref } from "@/components/app-shell/chatRoute";
 import { UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
 import { AccountMenuV2 } from "./AccountMenuV2";
 import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
@@ -70,6 +71,8 @@ export function RailV2({
   onProjects?(): void;
   onSettings?(): void;
 }>) {
+  // Control Center returns to the chat it was opened from.
+  const controlCenterHref = useControlCenterHref();
   return (
     <nav className="v2-rail" aria-label="Workspace" data-testid="workspace-rail">
       <RailButton disabled={navigationBusy} className="v2-rail-brand" icon="brand" label="New chat" onClick={onNewChat} />
@@ -88,7 +91,7 @@ export function RailV2({
         {adminEntryVisible ? (
           <a
             className="v2-rail-button v2-focusable"
-            href="/admin"
+            href={controlCenterHref}
             aria-label="Control Center"
             data-tooltip="Control Center"
             data-tooltip-side="right"

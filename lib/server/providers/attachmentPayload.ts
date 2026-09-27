@@ -78,11 +78,11 @@ function imageProxyTokens(attachment: ProviderAttachment): number {
   return 85 + Math.ceil(width / 512) * Math.ceil(height / 512) * 170;
 }
 
-function nativePdfProxyTokens(attachment: ProviderAttachment): number {
+function nativePdfProxyTokens(attachment: ProviderAttachment, estimateTokens: (value: unknown) => number): number {
   const pageCount = pdfPageCountFromMetadata(attachment.metadata)
     ?? pdfPageCountFromMetadata({ pdfPageCount: metadataRecord(attachment, "pdf").pageCount });
   const extractedTextTokens = attachment.extractedText?.trim()
-    ? estimateApproxTokens(attachment.extractedText)
+    ? estimateTokens(attachment.extractedText)
     : 0;
   const pageTokens = pageCount ? pageCount * 512 : 0;
   const fallbackByteTokens = !pageTokens && !extractedTextTokens
@@ -94,21 +94,24 @@ function nativePdfProxyTokens(attachment: ProviderAttachment): number {
 
 export function providerAttachmentBudgetTokens(input: {
   attachments: ProviderAttachment[];
+  /** The request's context estimate; defaults to the character weights. */
+  estimateTokens?: (value: unknown) => number;
   maxAttachmentTextChars?: number;
   modelCapabilities: ProviderModelCapabilities;
 }): number {
+  const estimateTokens = input.estimateTokens ?? estimateApproxTokens;
   return input.attachments.reduce((total, attachment) => {
     if (attachment.kind === "image") {
       return total + (input.modelCapabilities.vision ? imageProxyTokens(attachment) : 0);
     }
 
     if (usesNativePdfInput(attachment, input.modelCapabilities)) {
-      return total + nativePdfProxyTokens(attachment);
+      return total + nativePdfProxyTokens(attachment, estimateTokens);
     }
 
     if (attachment.kind === "pdf" || attachment.kind === "document") {
       const text = providerAttachmentText(attachment, input.maxAttachmentTextChars);
-      return total + (text ? estimateApproxTokens(text) : 0);
+      return total + (text ? estimateTokens(text) : 0);
     }
 
     return total;

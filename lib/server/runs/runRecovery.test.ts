@@ -5278,6 +5278,8 @@ describe("run recovery", () => {
       phase?: "provider_running";
       providerToolMessages: ToolLoopJsonValue[];
       refresh?: () => Promise<ProviderRunRefreshResult>;
+      /** Recovered answer dispatches (1-based) the provider rejects for context length. */
+      rejectAnswers?: readonly number[];
       /** Notes the accepted policy froze from an earlier turn's checkpoint. */
       reuse?: NonNullable<NormalizedRunRequest["contextCompactionPolicy"]>["reuse"];
       roundIndex: number;
@@ -5311,8 +5313,13 @@ describe("run recovery", () => {
           const context = measureSessionContext({ bridge: openAIResponsesToolBridge, request: next });
           withinBudget.push(context.approximateInputTokens <=
             context.contextWindow! - context.maxOutputTokens - context.safetyMarginTokens);
-          if (answers.length <= input.toolCallsBeforeFinal) {
-            return { ...providerResult, finalText: "", toolCalls: [{ id: `provider-call-${input.roundIndex + answers.length}`,
+          if (input.rejectAnswers?.includes(answers.length)) {
+            throw Object.assign(new Error("OpenAI request failed with status 400"), { code: "provider_context_length_exceeded",
+              status: 400, providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY" });
+          }
+          const accepted = answers.length - (input.rejectAnswers?.filter(index => index < answers.length).length ?? 0);
+          if (accepted <= input.toolCallsBeforeFinal) {
+            return { ...providerResult, finalText: "", toolCalls: [{ id: `provider-call-${input.roundIndex + accepted}`,
               name: recoveryToolName, arguments: { value: "beta" } }] };
           }
           yield { type: "token", data: { delta: "Recovered." } };
@@ -5439,6 +5446,74 @@ describe("run recovery", () => {
       expect(JSON.stringify(recovery.harness.state.events)).not.toContain("PRIVATE_NOTES");
     });
 
+    describe("after a context-length rejection", () => {
+      const rebuild = { version: 1 as const, round: 1, budgetTokens: 2_500 };
+      const pendingRound = (input: Readonly<{ rebuild?: typeof rebuild; rejectAnswers?: readonly number[] }>) => fixture({
+        calls: [persistedRecoveryCall()],
+        compaction: { measurement: measurement("already_fits"), ...(input.rebuild ? { rebuild: input.rebuild } : {}) },
+        // The recovered round fits the admitted budget without a summary.
+        historyChars: 8_000,
+        providerToolMessages: [
+          { arguments: "{\"value\":\"alpha\"}", call_id: "provider-call-1", name: recoveryToolName, type: "function_call" }
+        ],
+        ...(input.rejectAnswers ? { rejectAnswers: input.rejectAnswers } : {}),
+        roundIndex: 1,
+        toolCallsBeforeFinal: 0
+      });
+
+      it("re-derives the recorded rebuild's budget for the recovered dispatch", async () => {
+        const plain = pendingRound({});
+        await plain.recover();
+        expect(plain.harness.state.recoveredErrors).toEqual([]);
+        expect(plain.answers[0]).not.toHaveProperty("contextCompactionRebuild");
+        expect(JSON.stringify(plain.answers[0]?.context)).toContain("OLD_HISTORY");
+
+        const recovery = pendingRound({ rebuild });
+        await recovery.recover();
+        expect(recovery.harness.state.recoveredErrors).toEqual([]);
+        expect(recovery.harness.state.completed).toMatchObject({ finalText: "Recovered." });
+        expect(recovery.answers).toHaveLength(1);
+        expect(recovery.answers[0]?.contextCompactionRebuild).toEqual(rebuild);
+        expect(recovery.answers[0]?.contextCompaction).toMatchObject({ budgetTokens: rebuild.budgetTokens });
+        expect(recovery.answers[0]!.contextCompaction!.afterTokens).toBeLessThanOrEqual(rebuild.budgetTokens);
+        // The tighter budget needs the summary the hybrid policy buys; the history leaves.
+        expect(recovery.summaries.length).toBeGreaterThan(0);
+        expect(JSON.stringify(recovery.answers[0]?.context)).not.toContain("OLD_HISTORY");
+      });
+
+      it("never rebuilds a recorded run twice and fails the recovered round precisely", async () => {
+        const recovery = pendingRound({ rebuild, rejectAnswers: [1] });
+        await recovery.recover();
+        expect(recovery.answers).toHaveLength(1);
+        expect(recovery.installed.calls()[0]).toMatchObject({ state: "complete" });
+        expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
+          error: expect.objectContaining({ code: "provider_context_length_exceeded" }) })]);
+        expect(JSON.stringify(recovery.harness.state)).not.toContain("PRIVATE_PROVIDER_MESSAGE_CANARY");
+      });
+
+      it("rebuilds once when resuming from a tool-batch fence without a recorded rebuild", async () => {
+        const recovery = pendingRound({ rejectAnswers: [1] });
+        await recovery.recover();
+        expect(recovery.harness.state.recoveredErrors).toEqual([]);
+        expect(recovery.harness.state.completed).toMatchObject({ finalText: "Recovered." });
+        expect(recovery.answers).toHaveLength(2);
+        expect(recovery.answers[0]).not.toHaveProperty("contextCompactionRebuild");
+        expect(recovery.answers[1]?.contextCompactionRebuild).toMatchObject({ version: 1, round: 2 });
+      });
+
+      it("never re-sends a round that was lost between its rebuild and redispatch", async () => {
+        // The lost round began before its rebuild; no provider response was saved.
+        const recovery = fixture({ answerRoundUsage: [], calls: [], compaction: { measurement: measurement("already_fits") },
+          historyChars: 8_000, phase: "provider_running", providerToolMessages: [], rejectAnswers: [1], roundIndex: 1,
+          toolCallsBeforeFinal: 0 });
+        await recovery.recover();
+        expect(recovery.answers).toHaveLength(0);
+        expect(recovery.summaries).toHaveLength(0);
+        expect(recovery.harness.state.completed).toBeFalsy();
+        expect(recovery.harness.state.recoveredErrors).toHaveLength(1);
+      });
+    });
+
     it("masks an older recovered result from the run's persisted server observations", async () => {
       const observed = { callId: "provider-call-1", name: recoveryToolName, status: "complete" as const,
         content: [{ type: "text" as const, text: `RESULT_1 ${"r".repeat(16_000)}` }],
@@ -5558,6 +5633,39 @@ describe("run recovery", () => {
         usage: expect.objectContaining({ completeness: state === "claim" ? "complete" : "partial" }) })]);
     });
 
+    it.each([
+      ["dispatched", 2, "unknown"],
+      ["claim", 1, "failed"]
+    ] as const)("fails a lost executor with clarifications on a second pass after its settled %s summary receipt without a phantom answer round",
+      async (state, operations, settled) => {
+        const attempt = { attempt: 1, bindingDigest: "f".repeat(64), id: `csa1_${state}`, sourceDigest: "e".repeat(64), state };
+        const recovery = crashedDuringSummary(attempt);
+        recovery.harness.repository.followups = { accept: vi.fn(), deliver: vi.fn(), close: vi.fn(), beginKnowledge: vi.fn(),
+          load: async () => ({ revision: 1, entries: [{ id: "f", ordinal: 1, text: "Clarification", author: "Author",
+            createdAt: new Date().toISOString(), delivery: "delivered" }] }) };
+        // The first pass settles the lost call durably, then its run failure write is lost.
+        vi.spyOn(recovery.harness.repository, "failRun").mockRejectedValueOnce(new Error("simulated crash before the run failure"));
+        await expect(recovery.recover()).rejects.toThrow("simulated crash before the run failure");
+        expect(recovery.harness.state.failed).toEqual([]);
+        const receipts = recovery.installed.checkpoint().contextCompaction?.summaryAttempts;
+        expect(receipts?.map((entry) => entry.state)).toEqual([settled]);
+        const recordedUsage = recovery.harness.state.usageAttributions.length;
+        const firstPassUsage = recovery.harness.state.usageAttributions.at(-1)!;
+        recovery.harness.repository.loadRunUsageAttributions = async () =>
+          firstPassUsage.map((attribution) => ({ ...attribution, recordedAt: "2026-07-12T09:01:00.000Z" }));
+
+        // The second pass finds no unsettled claim and no provider response id.
+        await recovery.recover();
+        expect(recovery.summaries).toHaveLength(0);
+        expect(recovery.answers).toHaveLength(0);
+        expect(recovery.harness.state.failed).toMatchObject([{ error: { code: "followup_executor_lost" } }]);
+        expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual(receipts);
+        // The round's answer request was never sent: no answer-round operation and no new usage write.
+        expect(recovery.installed.checkpoint().answerRoundUsage.map((entry) => entry.roundIndex)).toEqual([1]);
+        expect(recovery.harness.state.usageAttributions).toHaveLength(recordedUsage);
+        expect(firstPassUsage).toEqual([expect.objectContaining({ operationCount: operations })]);
+      });
+
     it("settles an unsettled claim as never sent, counting no operation, so a later claim may buy the summary", async () => {
       const claim = { attempt: 1, bindingDigest: "f".repeat(64), id: "csa1_claimed", sourceDigest: "e".repeat(64), state: "claim" as const };
       const recovery = crashedDuringSummary(claim);
@@ -5577,6 +5685,37 @@ describe("run recovery", () => {
       expect(checkpointWithContextSummaryReceipt(checkpoint, { attempt: later, compaction: checkpoint.contextCompaction!, roundIndex: 2 })
         ?.contextCompaction?.summaryAttempts).toEqual([notSent, later]);
     });
+
+    it.each([
+      ["claim", "failed", 1, "The summary was not sent"],
+      ["dispatched", "unknown", 2, "The summary was not repeated"]
+    ] as const)("fails a second pass after a settled lost %s summary call without a phantom answer round",
+      async (state, settled, operations, message) => {
+        const attempt = { attempt: 1, bindingDigest: "f".repeat(64), id: `csa1_${state}`, sourceDigest: "e".repeat(64), state };
+        const recovery = crashedDuringSummary(attempt);
+        // The first pass settles the lost call durably, then its run failure write is lost.
+        vi.spyOn(recovery.harness.repository, "settleRecoveredRunError")
+          .mockRejectedValueOnce(new Error("simulated crash before the run failure"));
+        await expect(recovery.recover()).rejects.toThrow("simulated crash before the run failure");
+        expect(recovery.harness.state.recoveredErrors).toEqual([]);
+        const receipts = recovery.installed.checkpoint().contextCompaction?.summaryAttempts;
+        expect(receipts?.map((entry) => entry.state)).toEqual([settled]);
+        const firstPassUsage = recovery.harness.state.usageAttributions.at(-1)!;
+        recovery.harness.repository.loadRunUsageAttributions = async () =>
+          firstPassUsage.map((attribution) => ({ ...attribution, recordedAt: "2026-07-12T09:01:00.000Z" }));
+
+        // The second pass finds no unsettled claim and no provider response id.
+        await recovery.recover();
+        expect(recovery.summaries).toHaveLength(0);
+        expect(recovery.answers).toHaveLength(0);
+        expect(recovery.installed.checkpoint().contextCompaction?.summaryAttempts).toEqual(receipts);
+        // The round's answer request was never sent: no answer-round operation.
+        expect(recovery.installed.checkpoint().answerRoundUsage.map((entry) => entry.roundIndex)).toEqual([1]);
+        expect(recovery.harness.state.recoveredErrors).toEqual([expect.objectContaining({
+          error: expect.objectContaining({ code: "context_compaction_outcome_unknown", message: expect.stringContaining(message) }),
+          usageAttributions: [expect.objectContaining({ operationCount: operations })]
+        })]);
+      });
 
     /** The lost executor committed round 2's summary (receipt and usage in one
      * write), then dispatched the answer request and stopped before its

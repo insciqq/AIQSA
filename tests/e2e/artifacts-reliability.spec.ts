@@ -60,7 +60,6 @@ async function installChat(page: Page, value: Awaited<ReturnType<typeof fixture>
       modelId: message.role === "assistant" ? "gpt-5.5" : null, modelRunId: message.role === "assistant" ? "reliability-run" : null,
       provider: message.role === "assistant" ? "openai" : null,
       artifactSummary: message.role === "assistant" ? { citations: [], sources: [], reasoningText: [], generatedArtifacts: [value.artifact] } : null }));
-  await page.addInitScript(id => localStorage.setItem("aiqsa.activeChatId", id), value.chatId);
   await installMatrixCatalogFixture(page, { folders: [], chats: [{ id: value.chatId, title: value.artifact.title, messages,
     activeLeafMessageId: "reliability-answer", createdAt: timestamp, updatedAt: timestamp, defaultModelId: "gpt-5.5",
     defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length, usageStats: null }] });
@@ -78,7 +77,7 @@ test("live artifact code grows as text, survives layout changes and becomes a re
     const stream = createGatedRunStreamFixture({ key: "artifact-reliability", abortMessage: "Fixture stopped", notReadyError: "fixture_not_ready" });
     await stream.install(page, value.chatId);
     await page.setViewportSize(sizes[0]);
-    await page.goto("/");
+    await page.goto(`/c/${value.chatId}`);
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
     await page.getByRole("button", { name: "Add", exact: true }).click();
     await page.getByRole("menuitem", { name: /^Create artifact/ }).click();
@@ -164,7 +163,8 @@ test("runtime repair carries details through tab storage, and duplicate thumbnai
     await expect(page.getByRole("tabpanel", { name: "Preview", exact: true }).getByRole("alert")).toContainText("notebookCounter is not defined");
     await page.getByRole("button", { name: "Fix with AI", exact: true }).click();
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
-    await expect(composer).toHaveValue(/Fix the runtime error.*notebookCounter is not defined/);
+    // The page prepares the edit, then the chat address mounts the shell and loads the chat.
+    await expect(composer).toHaveValue(/Fix the runtime error.*notebookCounter is not defined/, { timeout: 20_000 });
     expect(page.url()).not.toContain("notebookCounter");
     expect(await page.evaluate(versionId => sessionStorage.getItem(`aiqsa.artifactFix.${versionId}`), value.artifact.versionId)).toBeNull();
     await page.getByRole("button", { name: "Remove artifact edit" }).click();

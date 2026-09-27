@@ -1,5 +1,6 @@
 "use client";
 
+import { chatRouteHref } from "@/lib/domain/chatRoute";
 import { useRouter } from "next/navigation";
 import { UiV2IconSprite } from "@/components/ui-v2";
 import { ArtifactViewerV2 } from "./ArtifactViewerV2";
@@ -15,7 +16,10 @@ export function ArtifactPageV2({ artifactId, versionId }: { artifactId: string; 
       onEditRequest={async (intent, error) => {
         const chatId = await prepareArtifactEdit(artifactId, versionId);
         if (intent === "runtime_error" && error) storeArtifactRuntimeError(versionId, error);
-        router.push(`/?chat=${encodeURIComponent(chatId)}&artifactEdit=${intent}&artifactId=${encodeURIComponent(artifactId)}&versionId=${encodeURIComponent(versionId)}`);
+        router.push(chatRouteHref(
+          { chatId, projectId: null },
+          new URLSearchParams({ artifactEdit: intent, artifactId, versionId })
+        ));
       }} />
   </main>;
 }

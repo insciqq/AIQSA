@@ -81,7 +81,7 @@ import type {
   McpRunPlanResult
 } from "../mcp/runPlan";
 import type { McpSemanticRouter } from "../mcp/router";
-import { mcpFindToolsTool } from "../mcp/discovery";
+import { mcpConnectedServicesGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
@@ -1916,6 +1916,9 @@ export async function prepareRun(
       : "";
     prompt = { ...prompt, system: [prompt.system, imageGuidance, artifactImageGuidance].filter(Boolean).join("\n\n") };
   }
+  // Auto names only the frozen catalog's services; the accepted prompt keeps it through recovery.
+  const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpConnectedServicesGuidance(mcpCatalog) : null;
+  if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
   if (artifactIntent) prompt = { ...prompt, system: `${prompt.system}\n\nThe user explicitly asked for an artifact: call create_artifact for this message.` };
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
   let artifactFocus: NormalizedRunRequest["artifactFocus"];
@@ -2134,11 +2137,15 @@ export async function prepareRun(
     const requiresInitialKnowledgeCall = Boolean(
       plan && !fullContext && knowledgeRequested
     );
-    const clientTools = [
-          ...(baseNormalizedRequest.toolMode !== "none" && !fullContext && knowledgeRequested
-            ? knowledgeRetrievalToolsForRequest(baseNormalizedRequest) : []),
-          ...nonKnowledgeClientTools
-        ];
+    const knowledgeTools = baseNormalizedRequest.toolMode !== "none" && !fullContext && knowledgeRequested
+      ? knowledgeRetrievalToolsForRequest(baseNormalizedRequest) : [];
+    // The forced first round exists to obtain one Knowledge search. Naming it
+    // lets an adapter that can narrow a forced choice restrict it to that
+    // tool instead of forcing a choice over every advertised schema.
+    const forcedToolName = requiresInitialKnowledgeCall
+      ? knowledgeTools.find((tool) => tool.capability === "knowledge")?.name
+      : undefined;
+    const clientTools = [...knowledgeTools, ...nonKnowledgeClientTools];
     const normalized: NormalizedRunRequest = {
       ...baseNormalizedRequest,
       ...(plan ? { knowledgeAnswering: knowledgeAnsweringRequestSnapshot(plan) } : {})
@@ -2146,7 +2153,7 @@ export async function prepareRun(
     const unbudgeted: ProviderRunRequest = {
       ...normalized,
       attachments,
-      ...(requiresInitialKnowledgeCall ? { toolChoice: "required" as const } : {}),
+      ...(requiresInitialKnowledgeCall ? { toolChoice: "required" as const, ...(forcedToolName ? { forcedToolName } : {}) } : {}),
       ...(clientTools.length > 0 ? { tools: clientTools } : {})
     };
     const withEvidence = fullContext

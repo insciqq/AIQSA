@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test, type Download, type Page } from "@playwright/test";
 import { PDFDocument } from "pdf-lib";
+import { parseChatRoutePath } from "../../lib/domain/chatRoute";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import {
   LOCAL_MCP_MEMBER,
@@ -34,12 +35,7 @@ async function loginWithPassword(
   page: Page,
   user: Readonly<{ email: string; password: string }>
 ): Promise<void> {
-  await page.addInitScript(() => {
-    const key = "aiqsa.workspace.e2e.cleared";
-    if (window.sessionStorage.getItem(key) === "1") return;
-    window.localStorage.removeItem("aiqsa.activeChatId");
-    window.sessionStorage.setItem(key, "1");
-  });
+  // Sign-in lands on `/`, which always opens a new chat.
   await page.goto("/login");
   await page.getByLabel("Email").fill(user.email);
   await page.getByLabel("Password", { exact: true }).fill(user.password);
@@ -72,7 +68,7 @@ async function turnWorkspaceOn(page: Page): Promise<void> {
 async function activeChatId(page: Page): Promise<string> {
   let value: string | null = null;
   await expect.poll(async () => {
-    value = await page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId"));
+    value = parseChatRoutePath(await page.evaluate(() => window.location.pathname))?.chatId ?? null;
     return value;
   }).not.toBeNull();
   return value!;

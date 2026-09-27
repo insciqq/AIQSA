@@ -6,7 +6,12 @@ import {
   withTimeoutSignal
 } from "./network";
 import { isOpenAIChatRecord } from "./openaiChatCompletions";
-import { openRouterRoutingFailureCode, openRouterRoutingFailureMessage, providerResponseFailure } from "./responseFailure";
+import {
+  openRouterRoutingFailureCode,
+  openRouterRoutingFailureMessage,
+  providerContextLengthFacts,
+  providerResponseFailure
+} from "./responseFailure";
 
 export type OpenAICompatibleChatClientRequestOptions = {
   signal?: AbortSignal;
@@ -91,6 +96,7 @@ async function throwHttpError(
   providerName: string
 ): Promise<never> {
   let failureCode: string | undefined;
+  let contextLength: ReturnType<typeof providerContextLengthFacts> = null;
   let unsupportedInput = false;
   let capabilityFailureReason: "refusal" | "budget_exhausted" | undefined;
   try {
@@ -100,6 +106,7 @@ async function throwHttpError(
       if (isOpenAIChatRecord(parsed)) {
         const failure = providerResponseFailure("provider_response_failed", parsed, { httpStatus: response.status, providerName });
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
+        contextLength = providerContextLengthFacts(failure);
         unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
         if ("capabilityFailureReason" in failure && (failure.capabilityFailureReason === "refusal" || failure.capabilityFailureReason === "budget_exhausted")) capabilityFailureReason = failure.capabilityFailureReason;
       }
@@ -115,7 +122,7 @@ async function throwHttpError(
     ? openRouterRoutingFailureMessage(routingCode) : providerHttpErrorMessage(providerName, response.status)),
     { httpStatus: response.status },
     failureCode && response.status !== 401 && response.status !== 403
-      ? { code: failureCode, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}) } : {});
+      ? { code: failureCode, ...contextLength, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}) } : {});
 }
 
 export function createFetchOpenAIChatCompletionClient(input: Readonly<{

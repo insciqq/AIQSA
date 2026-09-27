@@ -37,12 +37,18 @@ const thinkingLevels = new Set(["minimal", "low", "medium", "high"]);
 
 export type GeminiInteractionStep = Record<string, unknown>;
 
+/** Interactions `ToolChoiceConfig`: a forced choice narrowed to named tools. */
+export type GeminiAllowedToolsChoice = Readonly<{
+  allowed_tools: Readonly<{ mode: "any"; tools: readonly string[] }>;
+}>;
+export type GeminiToolChoice = "any" | "auto" | "none" | GeminiAllowedToolsChoice;
+
 export type GeminiInteractionsRequestBody = Record<string, unknown> & {
   generation_config: {
     max_output_tokens: number;
     thinking_level?: string;
     thinking_summaries: "none";
-    tool_choice?: "any" | "auto" | "none";
+    tool_choice?: GeminiToolChoice;
   };
   input: GeminiInteractionStep[];
   model: string;
@@ -397,6 +403,17 @@ function usesHostedGoogleSearch(request: ProviderRunRequest): boolean {
     option.protocol === "gemini_google_search");
 }
 
+/** Under `any` Gemini compiles every advertised function schema, and an
+ * arbitrary MCP/Workspace/first-party schema can make the forced round fail
+ * with HTTP 400. A round forced to obtain one advertised tool narrows the
+ * choice to that tool; any other forced round keeps `any`. */
+function forcedToolChoice(request: ProviderRunRequest): GeminiToolChoice {
+  const name = request.forcedToolName;
+  return name && request.tools?.some((tool) => tool.name === name)
+    ? { allowed_tools: { mode: "any", tools: [name] } }
+    : "any";
+}
+
 function buildGeminiInteractionsBody(
   request: ProviderRunRequest,
   options: BuildOptions
@@ -448,7 +465,7 @@ function buildGeminiInteractionsBody(
   };
   if (tools.length > 0) {
     generationConfig.tool_choice = request.toolChoice === "required"
-      ? "any"
+      ? forcedToolChoice(request)
       : request.toolChoice ?? "auto";
   }
 

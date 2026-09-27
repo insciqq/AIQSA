@@ -103,14 +103,11 @@ test("keeps committed Memory actions on their originating answers", async ({ pag
     updatedAt: timestamp,
     usageStats: null
   };
-  await page.addInitScript(() =>
-    window.localStorage.setItem("aiqsa.activeChatId", "chat-memory-actions")
-  );
   await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({ json: memoryConsumerSettingsFixture() });
   });
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/chat-memory-actions");
 
   await expect(page.getByText("Memory saved.", { exact: true })).toBeVisible();
   await expect(page.getByText("Memory updated.", { exact: true })).toBeVisible();
@@ -185,9 +182,6 @@ test("opens an exact Personal Memory source through the opaque action redirect",
     messages: answerMessages,
     title: "Answer with Memory source"
   };
-  await page.addInitScript(() =>
-    window.localStorage.setItem("aiqsa.activeChatId", "answer-memory-source-chat")
-  );
   await installMatrixCatalogFixture(page, { chats: [answerChat, sourceChat], folders: [] });
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({ json: memoryConsumerSettingsFixture() });
@@ -200,7 +194,7 @@ test("opens an exact Personal Memory source through the opaque action redirect",
       navigationRequests.push(requestUrl.searchParams.get("memoryRef") ?? "");
       await route.fulfill({
         body: "",
-        headers: { location: "/?chat=source-personal-chat&message=source-user-message" },
+        headers: { location: "/c/source-personal-chat?message=source-user-message" },
         status: 303
       });
       return;
@@ -217,7 +211,7 @@ test("opens an exact Personal Memory source through the opaque action redirect",
       }
     });
   });
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/answer-memory-source-chat");
 
   // Past-chat excerpts open independently inside the answer process fold.
   await page.getByTestId("tool-activity-disclosure").locator(":scope > summary").click();
@@ -232,7 +226,7 @@ test("opens an exact Personal Memory source through the opaque action redirect",
   await openLink.evaluate((element) => element.removeAttribute("target"));
   await openLink.click();
 
-  await expect(page).toHaveURL(/chat=source-personal-chat.*message=source-user-message/u);
+  await expect(page).toHaveURL(/\/c\/source-personal-chat\?message=source-user-message$/u);
   await expect(page.getByRole("heading", { name: "Exact source chat" })).toBeVisible();
   await expect(page.locator('[data-message-id="source-user-message"]')).toContainText(
     "The exact earlier source statement."
@@ -274,9 +268,6 @@ test("redirects an unavailable Memory source back to a bounded app notice", asyn
     updatedAt: timestamp,
     usageStats: null
   };
-  await page.addInitScript(() =>
-    window.localStorage.setItem("aiqsa.activeChatId", "chat-stale-memory-source")
-  );
   await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({ json: memoryConsumerSettingsFixture() });
@@ -297,7 +288,7 @@ test("redirects an unavailable Memory source back to a bounded app notice", asyn
       }
     });
   });
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/chat-stale-memory-source");
 
   // Past-chat excerpts open independently inside the answer process fold.
   await page.getByTestId("tool-activity-disclosure").locator(":scope > summary").click();
@@ -355,14 +346,11 @@ for (const locale of ["EN", "RU"] as const) {
       updatedAt: timestamp,
       usageStats: null
     };
-    await page.addInitScript((chatId) => {
-      window.localStorage.setItem("aiqsa.activeChatId", chatId);
-    }, chat.id);
     await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
     await page.route("**/api/me/memory/settings", async (route: Route) => {
       await route.fulfill({ json: memoryConsumerSettingsFixture() });
     });
-    await signInWithLocalToken(page);
+    await signInWithLocalToken(page, `/c/${chat.id}`);
 
     const answer = page.locator(`[data-message-id="assistant-action-${locale}"]`);
     await expect(answer.getByTestId("memory-action-statement")).toContainText(action.statement!);
@@ -416,14 +404,11 @@ test("shows a rejected Memory action without post-hoc controls", async ({ page }
     updatedAt: timestamp,
     usageStats: null
   };
-  await page.addInitScript(() =>
-    window.localStorage.setItem("aiqsa.activeChatId", "chat-memory-feedback-action")
-  );
   await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({ json: memoryConsumerSettingsFixture() });
   });
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/chat-memory-feedback-action");
 
   await expect(page.getByText("Memory action was not applied.", {
     exact: true
@@ -485,9 +470,6 @@ test("renders an ambiguous result and mutates only the selected opaque candidate
     updatedAt: timestamp,
     usageStats: null
   };
-  await page.addInitScript(() =>
-    window.localStorage.setItem("aiqsa.activeChatId", "chat-memory-ambiguous")
-  );
   await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({ json: memoryConsumerSettingsFixture() });
@@ -497,7 +479,7 @@ test("renders an ambiguous result and mutates only the selected opaque candidate
     selectedAction = route.request().postDataJSON() as Record<string, unknown>;
     await route.fulfill({ json: { status: "COMMITTED" } });
   });
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/chat-memory-ambiguous");
 
   const answer = page.locator('[data-message-id="assistant-memory-ambiguous"]');
   await expect(answer.getByText(/Several memories match\./u)).toBeVisible();
@@ -531,9 +513,6 @@ test("confirms reset through the safe consumer action without technical IDs", as
     usageStats: null
   };
   let resetBody: Record<string, unknown> | null = null;
-  await page.addInitScript(() =>
-    window.localStorage.setItem("aiqsa.activeChatId", "chat-memory-reset")
-  );
   await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({ json: memoryConsumerSettingsFixture() });
@@ -542,7 +521,7 @@ test("confirms reset through the safe consumer action without technical IDs", as
     resetBody = route.request().postDataJSON() as Record<string, unknown>;
     await route.fulfill({ json: { status: "IN_PROGRESS" }, status: 202 });
   });
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/chat-memory-reset");
 
   await runAccountMenuAction(page, "Memory");
   await page.getByTestId("library-memory-panel")
@@ -587,9 +566,6 @@ test("searches, edits, and forgets one exact saved memory", async ({ page }) => 
   let listRequests = 0;
   let searchBody: Record<string, unknown> | null = null;
 
-  await page.addInitScript(() =>
-    window.localStorage.setItem("aiqsa.activeChatId", "chat-memory-manager")
-  );
   await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({ json: memoryConsumerSettingsFixture() });
@@ -616,7 +592,7 @@ test("searches, edits, and forgets one exact saved memory", async ({ page }) => 
     forgotten = true;
     await route.fulfill({ json: { status: "FORGOTTEN" } });
   });
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/chat-memory-manager");
 
   await runAccountMenuAction(page, "Memory");
   const manager = page.getByTestId("library-memory-panel");
