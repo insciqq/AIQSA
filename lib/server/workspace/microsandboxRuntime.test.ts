@@ -7,8 +7,12 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { runWithContext } from "../observability";
 import { SandboxNotFoundError, SandboxNotRunningError } from "microsandbox";
 import { workspaceAttachmentPath, workspaceSandboxName } from "@/lib/domain/workspace";
-import { getWorkspaceConfig } from "./config";
-import { MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
+import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
+import { formatExecOutput } from "microsandbox-mcp/dist/utils/exec-output.js";
+import { limitText, type Truncation } from "microsandbox-mcp/dist/utils/output.js";
+import { fail, ok } from "microsandbox-mcp/dist/utils/response.js";
+import { getWorkspaceConfig, workspaceToolTransportMaxBytes } from "./config";
+import { execPollEventMaxBytes, MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { tarGzipStream } from "../chats/tarArchive";
@@ -21,7 +25,11 @@ const sdk = vi.hoisted(() => ({
   list: vi.fn(async () => []),
   listWith: vi.fn(),
   callTool: vi.fn(),
-  closeMcp: vi.fn(async () => undefined)
+  closeMcp: vi.fn(async () => undefined),
+  transports: [] as Array<Readonly<{
+    options: Readonly<{ maxBufferSize?: number }>;
+    transport: { onclose?: () => void; onerror?: (error: Error) => void };
+  }>>
 }));
 
 vi.mock("microsandbox", () => ({
@@ -46,7 +54,12 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
   }
 }));
 vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
-  StdioClientTransport: class { close = sdk.closeMcp; }
+  StdioClientTransport: class {
+    close = sdk.closeMcp;
+    onclose?: () => void;
+    onerror?: (error: Error) => void;
+    constructor(options: Readonly<{ maxBufferSize?: number }>) { sdk.transports.push({ options, transport: this }); }
+  }
 }));
 // Catalog schema validation has its own official-catalog contract tests.
 // This fixture isolates lifecycle decisions from the MCP subprocess.
@@ -611,6 +624,89 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool).toHaveBeenCalledTimes(1);
   });
 
+  describe("MCP transport overflow", () => {
+    const overflow = (() => {
+      try {
+        new ReadBuffer({ maxBufferSize: 4 }).append(Buffer.alloc(5));
+      } catch (error) {
+        return error as Error;
+      }
+      throw new Error("the pinned SDK no longer rejects an oversized line");
+    })();
+    /** What the pinned SDK does on overflow: report, close, then reject pending requests. */
+    const overflowCurrentTransport = () => {
+      const { transport } = sdk.transports.at(-1)!;
+      transport.onerror?.(overflow);
+      transport.onclose?.();
+      return new McpError(ErrorCode.ConnectionClosed, "Connection closed");
+    };
+
+    it("names an unreadable oversized result and serves the next call from a fresh transport", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      sdk.callTool.mockImplementationOnce(async () => { throw overflowCurrentTransport(); });
+      await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code: "workspace_tool_output_limit_exceeded" });
+      expect(sdk.closeMcp).toHaveBeenCalled();
+      const opened = sdk.transports.length;
+      await expect(value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_next" }))
+        .resolves.toMatchObject({ status: "complete" });
+      expect(sdk.transports).toHaveLength(opened + 1);
+      expect(sdk.transports.at(-1)!.options.maxBufferSize).toBe(workspaceToolTransportMaxBytes(config.toolOutputMaxBytes));
+      expect(sdk.callTool).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps concurrent calls lost with the same transport unknown", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      // Share one open transport between the two pending requests.
+      await value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_warm" });
+      let release: (error: Error) => void = () => undefined;
+      const lost = new Promise<never>((_resolve, reject) => { release = reject; });
+      sdk.callTool.mockImplementationOnce(() => lost).mockImplementationOnce(async () => {
+        release(overflowCurrentTransport());
+        return lost;
+      });
+      const first = value.runtime.callBoundTool(callInput);
+      const second = value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_parallel" });
+      await expect(first).rejects.toMatchObject({ code: "workspace_tool_outcome_unknown" });
+      await expect(second).rejects.toMatchObject({ code: "workspace_tool_outcome_unknown" });
+      const opened = sdk.transports.length;
+      await expect(value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_next" }))
+        .resolves.toMatchObject({ status: "complete" });
+      expect(sdk.transports).toHaveLength(opened + 1);
+    });
+
+    it("keeps Stop authoritative when the transport closes during cancellation", async () => {
+      const value = fixture();
+      await value.runtime.ensureSession(ensureInput);
+      const controller = new AbortController();
+      sdk.callTool.mockImplementationOnce(async (_params: unknown, _schema: unknown, options: { signal: AbortSignal }) => {
+        controller.abort();
+        expect(options.signal.aborted).toBe(true);
+        throw overflowCurrentTransport();
+      });
+      await expect(value.runtime.callBoundTool({ ...callInput, signal: controller.signal }))
+        .rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+      const opened = sdk.transports.length;
+      await expect(value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_next" }))
+        .resolves.toMatchObject({ status: "complete" });
+      expect(sdk.transports).toHaveLength(opened + 1);
+    });
+
+    it.each([[undefined, 100], [1, 1], [1_000, 1_000], [5_000, 1_000]] as const)(
+      "shares the stdout/stderr budget across a poll page (limit=%s)", async (limit, events) => {
+        const value = fixture();
+        await value.runtime.ensureSession(ensureInput);
+        await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_exec_poll",
+          arguments: { execSessionId: "synthetic_exec", ...(limit === undefined ? {} : { limit }) } });
+        const maxBytes = sdk.callTool.mock.calls.at(-1)![0].arguments.maxBytes as number;
+        expect(maxBytes).toBe(execPollEventMaxBytes(limit, config.toolOutputMaxBytes));
+        expect(maxBytes * events).toBeLessThanOrEqual(2 * config.toolOutputMaxBytes);
+      });
+  });
+
   it("resumes a stopped disk for byte-exact output collection", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
@@ -945,4 +1041,55 @@ it("keeps descendant cleanup authority after the model closes the MCP observatio
   } finally {
     vi.useRealTimers();
   }
+});
+
+describe("pinned MCP result envelope on the stdio line", () => {
+  // Real microsandbox-mcp 0.6.16 builders: results carry JSON text only, no
+  // structuredContent copy, so each byte is escaped by two JSON layers.
+  const worst = (bytes: number) => "\u0001".repeat(bytes + 16);
+  const decode = (line: string, maxBufferSize: number) => {
+    const buffer = new ReadBuffer({ maxBufferSize });
+    const bytes = Buffer.from(line);
+    for (let offset = 0; offset < bytes.byteLength; offset += 64 * 1_024) {
+      buffer.append(bytes.subarray(offset, offset + 64 * 1_024));
+    }
+    const message = buffer.readMessage() as unknown as { result: { content: Array<{ text: string }> } };
+    return JSON.parse(message.result.content[0]!.text) as Record<string, unknown>;
+  };
+  const execOutput = (bytes: number) => ({ stdout: () => worst(bytes), stderr: () => worst(bytes), code: 255, success: false }) as
+    unknown as Parameters<typeof formatExecOutput>[0];
+
+  it.each([1_024, 128 * 1_024, 1_048_576])("carries worst-case results within the derived bound at %s bytes", (bound) => {
+    const maxBufferSize = workspaceToolTransportMaxBytes(bound);
+    const exec = formatExecOutput(execOutput(bound), bound);
+    const read = limitText(worst(bound), "content", bound);
+    const results = [
+      ok(exec.data, { truncated: exec.truncated }),
+      fail("exec_failed", "shell command exited with status 255", { details: exec.data }),
+      ok({ path: `/workspace/project/${"p".repeat(4_000)}`, encoding: "utf8", content: read.text },
+        { truncated: read.truncated ? [read.truncated] : undefined })
+    ];
+    for (const limit of [undefined, 1_000]) {
+      const eventBytes = execPollEventMaxBytes(limit, bound);
+      const truncated: Truncation[] = [];
+      const events = Array.from({ length: limit ?? 100 }, (_value, index) => {
+        const kind = index % 2 ? "stderr" : "stdout";
+        const limited = limitText(worst(eventBytes), kind, eventBytes);
+        if (limited.truncated) truncated.push(limited.truncated);
+        return { index: 1_000_000_000 + index, event: { kind, data: limited.text } };
+      });
+      results.push(ok({ events, nextCursor: 1_000_000_000, done: true, exitStatus: { code: 255, success: false },
+        error: "e".repeat(1_024) }, { truncated }));
+    }
+    for (const result of results) {
+      const line = serializeMessage({ jsonrpc: "2.0", id: 2_147_483_647, result });
+      // Leave room for one further pipe chunk buffered behind the line.
+      expect(Buffer.byteLength(line)).toBeLessThanOrEqual(maxBufferSize - 64 * 1_024);
+      expect(decode(line, maxBufferSize)).toEqual(JSON.parse(result.content[0]!.text));
+    }
+    const beyond = Math.ceil(maxBufferSize / 14);
+    const oversized = formatExecOutput(execOutput(beyond), beyond);
+    expect(() => decode(serializeMessage({ jsonrpc: "2.0", id: 1, result: ok(oversized.data) }), maxBufferSize))
+      .toThrow("ReadBuffer exceeded maximum size");
+  });
 });
