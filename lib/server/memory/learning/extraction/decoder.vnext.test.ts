@@ -3,8 +3,11 @@ import { MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE } from "../../../../contracts/
 import { memorySha256 } from "../../persistence/lexical";
 import {
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+  memoryFactNextPage,
+  memoryFactTargetView,
   type MemoryFactContextRef,
-  type MemoryFactExtractionInput
+  type MemoryFactExtractionInput,
+  type MemoryFactJobPage
 } from "./contract";
 import { decodeMemoryFactExtraction } from "./decoder";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
@@ -842,7 +845,7 @@ describe("Memory v5 semantic-frame decoder", () => {
       .toBe(true);
   });
 
-  it("retains all eight independent observations from one bounded packet", () => {
+  describe("packets and pages", () => {
     const statements = [
       "I prefer early meetings.",
       "I prefer short emails.",
@@ -851,19 +854,205 @@ describe("Memory v5 semantic-frame decoder", () => {
       "I prefer written instructions.",
       "I prefer weekly planning.",
       "I prefer dark editor themes.",
-      "I prefer numbered checklists."
+      "I prefer numbered checklists.",
+      "I prefer paper notebooks."
     ];
-    const observations = statements.map((statement, index) => observation(statement, {
-      candidate_ref: `C${index + 1}`,
-      memory_type: "PREFERENCE",
-      statement
-    }));
-    const plan = decode(statements.join(" "), observations);
-    expect(plan.rejections).toEqual([]);
-    expect(plan.candidates.map(({ statement }) => statement)).toEqual(statements);
-    expect(plan.candidateOrdinals).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-    expect(() => decode(statements.join(" "), [...observations, observations[0]!]))
-      .toThrow();
+    const preferences = (values: readonly string[], evidence?: string) =>
+      values.map((statement, index) => observation(evidence ?? statement, {
+        candidate_ref: `C${index + 1}`,
+        memory_type: "PREFERENCE",
+        statement
+      }));
+    const call = (observations: readonly unknown[]) => [{
+      arguments: { observations },
+      id: "call-1",
+      name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+    }];
+
+    function pagedInput(
+      fullText: string,
+      page: MemoryFactJobPage,
+      redactionSpans: readonly Readonly<{ endOffset: number; startOffset: number }>[] = []
+    ): MemoryFactExtractionInput {
+      const view = memoryFactTargetView(fullText, page, false);
+      if (view.kind !== "PAGE") throw new Error("page_expected");
+      const base = input(view.text, [], redactionSpans);
+      return {
+        ...base,
+        messages: [{ ...base.messages[0]!, contentHash: memorySha256(fullText) }],
+        targetPage: view.page
+      };
+    }
+
+    it("covers a page with a packet below the bound", () => {
+      const text = statements.slice(0, 7).join(" ");
+      const plan = decode(text, preferences(statements.slice(0, 7)));
+      expect(plan.rejections).toEqual([]);
+      expect(plan.candidateOrdinals).toEqual([0, 1, 2, 3, 4, 5, 6]);
+      expect(plan.coverageEnd).toBeUndefined();
+      expect(memoryFactNextPage(plan.input, plan.coverageEnd)).toBeNull();
+    });
+
+    it("continues a full packet from its last observation instead of capping the source", () => {
+      const eight = statements.slice(0, 8);
+      const text = eight.join(" ");
+      const plan = decode(text, preferences(eight));
+      expect(plan.candidates.map(({ statement }) => statement)).toEqual(eight.slice(0, 7));
+      expect(plan.candidateOrdinals).toEqual([0, 1, 2, 3, 4, 5, 6]);
+      expect(plan.rejections).toEqual([
+        { candidateOrdinal: 7, reasonCode: "REJECT_PACKET_OVERFLOW" }
+      ]);
+      expect(plan.coverageEnd).toBe(text.indexOf(eight[7]!));
+      expect(memoryFactNextPage(plan.input, plan.coverageEnd)).toEqual({
+        cursor: text.indexOf(eight[7]!),
+        ordinal: 1
+      });
+    });
+
+    it("isolates a ninth observation by source order without destroying the packet", () => {
+      const text = statements.join(" ");
+      const observations = preferences(statements);
+      // Provider order differs from source order: the ninth source fact first.
+      const plan = decode(text, [observations[8]!, ...observations.slice(0, 8)]);
+      expect(plan.candidates.map(({ statement }) => statement))
+        .toEqual(statements.slice(0, 8));
+      expect(plan.candidateOrdinals).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(plan.rejections).toEqual([
+        { candidateOrdinal: 0, reasonCode: "REJECT_PACKET_OVERFLOW" }
+      ]);
+      expect(plan.coverageEnd).toBe(text.indexOf(statements[8]!));
+
+      const invalidEvidence = decode(text, observations.map((value, index) =>
+        index === 2 ? { ...value, evidence: textRef("not in the source") } : value));
+      expect(invalidEvidence.candidateOrdinals).toEqual([0, 1, 3, 4, 5, 6, 7]);
+      expect(invalidEvidence.rejections).toEqual([
+        { candidateOrdinal: 2, reasonCode: "REJECT_UNSUPPORTED" },
+        { candidateOrdinal: 8, reasonCode: "REJECT_PACKET_OVERFLOW" }
+      ]);
+      expect(invalidEvidence.coverageEnd).toBe(text.indexOf(statements[8]!));
+
+      const repeated = decode(text, [...observations.slice(0, 8), observations[0]!]);
+      expect(repeated.candidateOrdinals).toEqual([0, 1, 2, 3, 4, 5, 6]);
+      expect(repeated.rejections).toEqual([
+        { candidateOrdinal: 7, reasonCode: "REJECT_PACKET_OVERFLOW" },
+        { candidateOrdinal: 8, reasonCode: "REJECT_UNSUPPORTED" }
+      ]);
+      expect(repeated.coverageEnd).toBe(text.indexOf(statements[7]!));
+    });
+
+    it("admits one packet from a shared evidence span and resumes after it", () => {
+      const quote = "I prefer tea, trains, maps, jazz, rain, chess, figs, owls and kites.";
+      const later = "I prefer early meetings.";
+      const text = `${quote} ${later}`;
+      const shared = [
+        "I prefer tea.", "I prefer trains.", "I prefer maps.", "I prefer jazz.",
+        "I prefer rain.", "I prefer chess.", "I prefer figs.", "I prefer owls.",
+        "I prefer kites."
+      ];
+      const plan = decode(text, [
+        ...preferences(shared, quote),
+        observation(later, { candidate_ref: "C10", memory_type: "PREFERENCE", statement: later })
+      ]);
+      expect(plan.candidateOrdinals).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+      expect(plan.rejections).toEqual([
+        { candidateOrdinal: 8, reasonCode: "REJECT_PACKET_OVERFLOW" },
+        { candidateOrdinal: 9, reasonCode: "REJECT_PACKET_OVERFLOW" }
+      ]);
+      expect(plan.coverageEnd).toBe(quote.length);
+    });
+
+    it("fails only a packet larger than its receipts can record", () => {
+      const text = statements.join(" ");
+      const many = Array.from({ length: 64 }, (_, index) =>
+        observation(statements[index % statements.length]!, {
+          candidate_ref: `C${index + 1}`,
+          memory_type: "PREFERENCE",
+          statement: `${statements[index % statements.length]} ${index}`
+        }));
+      expect(decode(text, many).candidates).toHaveLength(8);
+      expect(() => decode(text, [...many, many[0]!])).toThrow();
+    });
+
+    it("maps page evidence to exact full-text offsets and the full-text hash", () => {
+      const filler = "Background notes about the project schedule. ".repeat(1_200);
+      const quote = "I prefer written instructions.";
+      const fullText = `${filler.slice(0, 30_000)}${quote}${filler.slice(0, 20_000)}`;
+      const pageInput = pagedInput(fullText, { cursor: 20_000, ordinal: 1 });
+      const plan = decodeMemoryFactExtraction(call([observation(quote, {
+        memory_type: "PREFERENCE",
+        statement: "The user prefers written instructions."
+      })]), pageInput);
+      expect(plan.rejections).toEqual([]);
+      expect(plan.candidates[0]!.evidence).toEqual([{
+        endOffset: 30_000 + quote.length,
+        messageId: "message-1",
+        quote,
+        sourceTextHash: memorySha256(fullText),
+        startOffset: 30_000
+      }]);
+      expect(fullText.slice(30_000, 30_000 + quote.length)).toBe(quote);
+      expect(plan.coverageEnd).toBeUndefined();
+      expect(memoryFactNextPage(plan.input, plan.coverageEnd))
+        .toEqual({ cursor: 40_000, ordinal: 2 });
+    });
+
+    it("assigns a span to the page where it starts and never double-counts overlap", () => {
+      const filler = "Plain background text for the long report. ".repeat(1_200);
+      const boundary = "I prefer quiet offices.";
+      const lookahead = "I prefer weekly planning.";
+      const fullText = `${filler.slice(0, 19_990)}${boundary}${
+        filler.slice(0, 20_500 - 19_990 - boundary.length)}${lookahead}${filler.slice(0, 20_000)}`;
+      expect(fullText.indexOf(lookahead)).toBe(20_500);
+      const observations = [
+        observation(boundary, { memory_type: "PREFERENCE", statement: boundary }),
+        observation(lookahead, {
+          candidate_ref: "C2",
+          memory_type: "PREFERENCE",
+          statement: lookahead
+        })
+      ];
+      const first = decodeMemoryFactExtraction(
+        call(observations),
+        pagedInput(fullText, { cursor: 0, ordinal: 0 })
+      );
+      expect(first.candidates.map(({ evidence }) => evidence[0]!.startOffset))
+        .toEqual([19_990]);
+      expect(first.candidates[0]!.evidence[0]!.endOffset).toBe(19_990 + boundary.length);
+      expect(first.rejections).toEqual([
+        { candidateOrdinal: 1, reasonCode: "REJECT_OUTSIDE_PAGE" }
+      ]);
+      const next = memoryFactNextPage(first.input, first.coverageEnd);
+      expect(next).toEqual({ cursor: 20_000, ordinal: 1 });
+
+      const second = decodeMemoryFactExtraction(
+        call(observations),
+        pagedInput(fullText, next!)
+      );
+      // The boundary span starts in read-only preceding text of this page.
+      expect(second.rejections).toEqual([
+        { candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }
+      ]);
+      expect(second.candidates.map(({ evidence }) => evidence[0]!.startOffset))
+        .toEqual([20_500]);
+    });
+
+    it("rejects page evidence that overlaps a page-local redaction", () => {
+      const filler = "Neutral filler sentence for paging. ".repeat(1_200);
+      const quote = "I prefer tea without sugar.";
+      const fullText = `${filler.slice(0, 25_000)}${quote}${filler.slice(0, 20_000)}`;
+      const plan = decodeMemoryFactExtraction(call([observation(quote, {
+        memory_type: "PREFERENCE",
+        statement: quote
+      })]), pagedInput(
+        fullText,
+        { cursor: 22_000, ordinal: 1 },
+        [{ endOffset: 3_005, startOffset: 3_002 }]
+      ));
+      expect(plan.candidates).toEqual([]);
+      expect(plan.rejections).toEqual([
+        { candidateOrdinal: 0, reasonCode: "REJECT_SECRET" }
+      ]);
+    });
   });
 
   it.each(["entities", "aliases", "qualifier_supports"] as const)(
