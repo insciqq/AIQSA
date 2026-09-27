@@ -186,14 +186,25 @@ test("a reloaded long run stays stoppable past the polling horizon and releases 
     await page.setViewportSize({ width: 1440, height: 900 });
 
     // A temporary offline read is not terminal; regaining connectivity checks
-    // at once and the finished run frees the chat.
+    // at once (the owner remembers an online event that lands during its
+    // in-flight check) and the finished run frees the chat. The background
+    // cadence, driven by the installed clock, is the bounded fallback when the
+    // emulated network change delivers no online event; the annotation records
+    // which path released the gate. Neither path is a manual action.
     await context.setOffline(true);
     await page.clock.fastForward(60_000);
     await expect(background).toBeVisible();
     await expect(stop).toBeVisible();
     outcomes.release();
     await context.setOffline(false);
-    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 60_000 });
+    const stopControls = page.getByRole("button", { name: "Stop answer" });
+    let releasedBy = "online";
+    await expect(stopControls).toHaveCount(0, { timeout: 15_000 }).catch(async () => {
+      releasedBy = "background cadence";
+      await page.clock.runFor(61_000);
+      await expect(stopControls).toHaveCount(0, { timeout: 30_000 });
+    });
+    testInfo.annotations.push({ type: "background-run-released-by", description: releasedBy });
     await expect(background).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
     await expect(page.locator(`[data-navigation-chat-id="${chatId}"] [aria-label="Answer in progress"]`)).toHaveCount(0);

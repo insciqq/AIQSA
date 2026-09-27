@@ -58,39 +58,72 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Wakes the pending wait of the resume owner of a chat (Check run). */
+/** Wakes the resume owner of a chat (Check run). */
 const resumeWakers = new Map<string, () => void>();
 
+type ResumeWake = {
+  dispose(): void;
+  wait(ms: number): Promise<void>;
+};
+
 /**
- * One resume cadence step. Regaining focus, visibility or connectivity and an
- * explicit Check run end the wait early, so a run that settled while the tab
- * was hidden or offline is observed at once instead of after a full cadence.
+ * Wake source of one resume owner. Regaining focus, visibility or
+ * connectivity and an explicit Check run end the cadence wait early, so a
+ * run that settled while the tab was hidden or offline is observed at once.
+ * A wake arriving while a check is in flight (connectivity returning during a
+ * failing offline read) is remembered for the next wait instead of being lost
+ * for a whole cadence.
  */
-function waitForResumeCheck(chatId: string, ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const hasWindow = typeof window !== "undefined";
-    const hasDocument = typeof document !== "undefined";
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") finish();
-    };
-    const finish = () => {
-      clearTimeout(timer);
+function createResumeWake(chatId: string): ResumeWake {
+  let pending = false;
+  let release: (() => void) | null = null;
+  const wake = () => {
+    if (!release) {
+      pending = true;
+      return;
+    }
+    const current = release;
+    release = null;
+    current();
+  };
+  const onVisibility = () => {
+    if (document.visibilityState === "visible") wake();
+  };
+  const hasWindow = typeof window !== "undefined";
+  const hasDocument = typeof document !== "undefined";
+  if (hasWindow) {
+    window.addEventListener("focus", wake);
+    window.addEventListener("online", wake);
+  }
+  if (hasDocument) document.addEventListener("visibilitychange", onVisibility);
+  resumeWakers.set(chatId, wake);
+
+  return {
+    dispose() {
       if (hasWindow) {
-        window.removeEventListener("focus", finish);
-        window.removeEventListener("online", finish);
+        window.removeEventListener("focus", wake);
+        window.removeEventListener("online", wake);
       }
       if (hasDocument) document.removeEventListener("visibilitychange", onVisibility);
-      if (resumeWakers.get(chatId) === finish) resumeWakers.delete(chatId);
-      resolve();
-    };
-    const timer = setTimeout(finish, ms);
-    if (hasWindow) {
-      window.addEventListener("focus", finish);
-      window.addEventListener("online", finish);
+      if (resumeWakers.get(chatId) === wake) resumeWakers.delete(chatId);
+    },
+    wait(ms) {
+      if (pending) {
+        pending = false;
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          release = null;
+          resolve();
+        }, ms);
+        release = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
     }
-    if (hasDocument) document.addEventListener("visibilitychange", onVisibility);
-    resumeWakers.set(chatId, finish);
-  });
+  };
 }
 
 const attachmentPolls = new Map<string, Promise<void>>();
@@ -490,6 +523,7 @@ export function useRunLifecycleActions({
     let answerNotified = selectThreadSnapshot(useThreadStore.getState(), chat.id).messages.some(
       (message) => message.runId === runId && message.workspaceSettling);
     if (answerNotified) useRunLifecycleStore.getState().answerCompleted({ chatId: chat.id, runId });
+    const resumeWake = createResumeWake(chat.id);
     try {
       let startedAt = Date.now();
       let delayMs = RESUME_POLL_INITIAL_DELAY_MS;
@@ -527,10 +561,11 @@ export function useRunLifecycleActions({
         if (background && ownsResume(chat.id, runId)) {
           useRunLifecycleStore.getState().resumeBackgrounded({ chatId: chat.id, runId });
         }
-        await waitForResumeCheck(chat.id, background ? RESUME_POLL_BACKGROUND_DELAY_MS : delayMs);
+        await resumeWake.wait(background ? RESUME_POLL_BACKGROUND_DELAY_MS : delayMs);
         delayMs = Math.min(Math.round(delayMs * 1.6), RESUME_POLL_MAX_DELAY_MS);
       }
     } finally {
+      resumeWake.dispose();
       useRunLifecycleStore.getState().resumeExited({ chatId: chat.id, runId });
 
       if (activeChatIdRef.current === chat.id) {
