@@ -226,19 +226,34 @@ test("Memory retains focused controls when its own container crosses 1000px", as
   await expectNoHorizontalOverflow(page);
 });
 
-test("OAuth is blocked by personal drafts and promptly recovers from prevented navigation", async ({ page }) => {
+test("OAuth is blocked by personal drafts and promptly recovers from a failed start", async ({ page }) => {
   await prepare(page);
+  const starts: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/me/mcp/studio-mcp/oauth/connect*", async route => {
+    starts.push(route.request().method());
+    await held;
+    await route.fulfill({ status: 503, json: { error: "mcp_oauth_unavailable" } });
+  });
   const input = await openDraft(page, "MCP servers");
-  const link = page.getByRole("link", { name: "Connect", exact: true });
-  await expect(link).toHaveAttribute("aria-disabled", "true");
-  await expect(link).not.toHaveAttribute("href");
+  const button = page.getByRole("button", { name: "Connect", exact: true });
+  await expect(button).toHaveAttribute("aria-disabled", "true");
   await expect(page.getByText("Save or clear your personal values first", { exact: true })).toBeVisible();
+  // aria-disabled keeps focus; force the press to prove it still starts nothing.
+  await button.click({ force: true });
+  expect(starts).toEqual([]);
   await input.fill("");
-  await expect(link).toHaveAttribute("href", "/api/me/mcp/studio-mcp/oauth/connect");
-  await link.evaluate(node => node.addEventListener("click", event => event.preventDefault(), { once: true }));
-  await link.click();
-  await expect(link).toHaveAttribute("href", "/api/me/mcp/studio-mcp/oauth/connect");
-  await expect(page.getByRole("link", { name: "Authorizing", exact: true })).toHaveCount(0);
+  await expect(button).not.toHaveAttribute("aria-disabled");
+  await button.click();
+  const authorizing = page.getByRole("button", { name: "Authorizing", exact: true });
+  await expect(authorizing).toHaveAttribute("aria-busy", "true");
+  await authorizing.click({ force: true });
+  release();
+  await expect(page.getByTestId("mcp-server-sheet").getByRole("alert"))
+    .toHaveText("Authorization for Research service could not be started. Try again.");
+  await expect(button).not.toHaveAttribute("aria-disabled");
+  expect(starts).toEqual(["POST"]);
   expect(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.includes("studio-mcp")))).toEqual([]);
 });
 

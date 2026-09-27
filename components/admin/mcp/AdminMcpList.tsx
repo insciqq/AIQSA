@@ -5,6 +5,7 @@ import { adminSectionPath } from "@/components/admin/adminSections";
 import { sourceDisplay } from "@/components/admin/mcp/adminMcpDraft";
 import { McpServerTile, McpStatusPill } from "@/components/admin/mcp/mcpPrimitives";
 import { mcpAccessSummary, mcpServerStatus, mcpToolsSummary } from "@/components/admin/mcp/mcpServerView";
+import { useAdminMcpOAuthStart } from "@/components/admin/mcp/useAdminMcpOAuthStart";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import { adminMcpAttention, type AdminMcpServer } from "@/lib/contracts/mcp";
 import { CircleAlert, Search } from "lucide-react";
@@ -12,8 +13,8 @@ import { useId, useMemo, useState, type MouseEvent } from "react";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
-const attentionLink =
-  `inline-flex min-h-control-sm items-center rounded-control px-2 text-xs font-medium text-caution hover:bg-caution/10 ${focusRing} ${touchTarget}`;
+const attentionAction =
+  `inline-flex min-h-control-sm items-center rounded-control px-2 text-xs font-medium text-caution hover:bg-caution/10 disabled:cursor-default disabled:opacity-60 ${focusRing} ${touchTarget}`;
 
 /** One set of tracks for the header and every row; the grid stacks below `xl`. */
 const gridTracks = "xl:grid-cols-[2rem_minmax(12rem,1fr)_7rem_8rem_8rem_1rem]";
@@ -30,12 +31,19 @@ export type AdminMcpListProps = Readonly<{
   error: string | null;
   loaded: boolean;
   loading: boolean;
+  /** Why a validation OAuth start could not begin, for the feedback host. */
+  onOAuthError(message: string): void;
   onOpen(serverId: string): void;
   onRetry(): void;
   servers: readonly AdminMcpServer[];
 }>;
 
-function ServerRow({ onOpen, server }: Readonly<{ onOpen(serverId: string): void; server: AdminMcpServer }>) {
+function ServerRow({ oauthPending, onOpen, onStartOAuth, server }: Readonly<{
+  oauthPending: string | null;
+  onOpen(serverId: string): void;
+  onStartOAuth(action: string): void;
+  server: AdminMcpServer;
+}>) {
   const status = mcpServerStatus(server);
   const attention = adminMcpAttention(server);
   const tools = mcpToolsSummary(server);
@@ -70,10 +78,17 @@ function ServerRow({ onOpen, server }: Readonly<{ onOpen(serverId: string): void
           <span className="relative z-[1] mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-caution">
             <CircleAlert aria-hidden="true" className="size-3 shrink-0" />
             <span className="min-w-0">{attention.label}</span>
-            {attention.href ? (
-              <a aria-label={`${attention.action} ${server.name}`} className={attentionLink} href={attention.href}>
+            {attention.oauthAction ? (
+              <button
+                aria-busy={oauthPending === attention.oauthAction || undefined}
+                aria-label={`${attention.action} ${server.name}`}
+                className={attentionAction}
+                disabled={oauthPending !== null}
+                onClick={() => { if (attention.oauthAction) onStartOAuth(attention.oauthAction); }}
+                type="button"
+              >
                 {attention.action}
-              </a>
+              </button>
             ) : null}
           </span>
         ) : null}
@@ -93,11 +108,13 @@ export function AdminMcpList({
   error,
   loaded,
   loading,
+  onOAuthError,
   onOpen,
   onRetry,
   servers
 }: AdminMcpListProps) {
   const [query, setQuery] = useState("");
+  const oauthStart = useAdminMcpOAuthStart(onOAuthError);
   const searchId = useId();
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -162,7 +179,15 @@ export function AdminMcpList({
               <span />
             </div>
             <ul aria-label="MCP servers" className="divide-y divide-trace-subtle">
-              {visible.map((server) => <ServerRow key={server.id} onOpen={onOpen} server={server} />)}
+              {visible.map((server) => (
+                <ServerRow
+                  key={server.id}
+                  oauthPending={oauthStart.pending}
+                  onOpen={onOpen}
+                  onStartOAuth={oauthStart.start}
+                  server={server}
+                />
+              ))}
             </ul>
           </>
         ) : (

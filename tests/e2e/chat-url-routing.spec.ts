@@ -12,6 +12,7 @@ import { chooseSearchStrategy } from "./shell/composer";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
+import { startMcpOAuth } from "./support/mcpOAuthStart";
 import { startOAuthMcpEndpoint } from "./support/oauthMcpEndpoint";
 import { selectFakeModel, setWorkspaceEnabled, submitPasswordSignIn } from "./support/workspace";
 
@@ -491,7 +492,7 @@ test.describe("MCP authorization", () => {
       } });
       expect(serverResponse.status()).toBe(201);
       serverId = (await serverResponse.json()).server.id as string;
-      await page.goto(`/api/admin/mcp/${serverId}/oauth/validation/connect`);
+      await startMcpOAuth(page, `/api/admin/mcp/${serverId}/oauth/validation/connect`);
       await page.getByRole("link", { name: "Approve test connection" }).click();
       await expect(page).toHaveURL(/\/admin\?/u);
       await expect.poll(async () => Boolean((await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } })).activeRevisionId),
@@ -510,11 +511,13 @@ test.describe("MCP authorization", () => {
       const sheet = page.getByRole("dialog", { name: "Synthetic routing tools", exact: true });
       const outcome = library.locator(".v2-settings-banner");
 
-      const connect = sheet.getByRole("link", { name: "Connect", exact: true });
+      const connect = sheet.getByRole("button", { name: "Connect", exact: true });
       // The provider declines: its access_denied redirect carries the flow's own state.
       await row.getByRole("button", { name: "Open Synthetic routing tools" }).click();
-      await expect(connect).toHaveAttribute("href", new RegExp(`return=%2Fc%2F${chatId}$`, "u"));
+      const start = page.waitForRequest((request) => request.method() === "POST" &&
+        new URL(request.url()).pathname === `/api/me/mcp/${serverId}/oauth/connect`);
       await connect.click();
+      expect(new URL((await start).url()).searchParams.get("return")).toBe(`/c/${chatId}`);
       await expect(page.getByRole("link", { name: "Approve test connection" })).toBeVisible({ timeout: 30_000 });
       const state = new URL(page.url()).searchParams.get("state");
       expect(state).toBeTruthy();
@@ -531,10 +534,36 @@ test.describe("MCP authorization", () => {
       await expect(library.getByRole("heading", { name: "MCP servers", exact: true })).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath("routing-mcp-connected-light-1440.png") });
 
-      // A tampered return value falls back to the new chat.
-      await page.goto(`/api/me/mcp/${serverId}/oauth/connect?return=${encodeURIComponent("https://evil.example/c/foreign")}`);
+      // Starting an already connected server enables it. Another site's
+      // navigation (an authenticated top-level GET) or form POST must not.
+      const enabled = async () => ((await (await page.request.get("/api/me/mcp")).json()).servers as { enabled: boolean; id: string }[])
+        .find(({ id }) => id === serverId)?.enabled;
+      const disabled = await page.request.patch(`/api/me/mcp/${serverId}`, { data: { enabled: false } });
+      expect(disabled.ok()).toBe(true);
+      expect(await enabled()).toBe(false);
+      const appOrigin = new URL(page.url()).origin;
+      const connectUrl = `${appOrigin}/api/me/mcp/${serverId}/oauth/connect?return=${encodeURIComponent(`/c/${chatId}`)}`;
+      const attacker = "http://localhost:3999/attacker";
+      await page.route(attacker, (route) => route.fulfill({ contentType: "text/html", body: `<!doctype html>
+        <a id="go" href="${connectUrl}">go</a>
+        <form id="post" method="post" action="${connectUrl}"><button>post</button></form>` }));
+      await page.goto(attacker);
+      const crossSiteGet = page.waitForResponse((response) => response.url() === connectUrl && response.request().method() === "GET");
+      await page.locator("#go").click();
+      expect((await crossSiteGet).status()).toBe(405);
+      await page.goto(attacker);
+      const crossSitePost = page.waitForResponse((response) => response.url() === connectUrl && response.request().method() === "POST");
+      await page.locator("#post button").click();
+      expect((await crossSitePost).status()).toBe(403);
+      expect(await enabled()).toBe(false);
+
+      // The UI's same-origin POST settles it; a tampered return value falls back to the new chat.
+      await page.goto(`/c/${chatId}`);
+      await expect(page.getByTestId("header-title")).toHaveText(title);
+      await startMcpOAuth(page, `/api/me/mcp/${serverId}/oauth/connect?return=${encodeURIComponent("https://evil.example/c/foreign")}`);
       await expect(page).toHaveURL(exactPath("/"), { timeout: 30_000 });
       await expect(outcome).toContainText("External account connected and MCP enabled.");
+      expect(await enabled()).toBe(true);
       expect(endpoint.counts.errors).toBe(0);
     } finally {
       await page.goto("about:blank");

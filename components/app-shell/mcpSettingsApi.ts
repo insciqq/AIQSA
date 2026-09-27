@@ -222,3 +222,38 @@ export function withMcpOAuthReturn(action: string, returnPath: string): string {
   url.searchParams.set("return", returnPath);
   return `${url.pathname}${url.search}`;
 }
+
+/**
+ * Starts an MCP OAuth flow (personal or administrator validation) with an
+ * origin-checked POST and returns where the browser goes next: the provider's
+ * authorization page, or this app's outcome for an existing connection. Start
+ * is never a link: a navigable GET would let another site trigger it.
+ */
+export async function startMcpOAuth(action: string): Promise<string> {
+  const response = await shellFetch(action, {
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
+    method: "POST"
+  });
+  const payload = await responseJson(response);
+  if (!response.ok) {
+    throw new McpSettingsApiError(stableError(payload), response.status, validationIssues(payload));
+  }
+  const location = isRecord(payload) && typeof payload.location === "string" ? payload.location : null;
+  let url: URL | null = null;
+  try {
+    url = location ? new URL(location, window.location.origin) : null;
+  } catch {
+    url = null;
+  }
+  if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
+    throw new McpSettingsApiError("mcp_response_invalid", 502);
+  }
+  return url.toString();
+}
+
+/** A document navigation, not a form submission, so `form-action` does not apply. */
+export function followMcpOAuthStart(location: string): void {
+  window.location.assign(location);
+}
