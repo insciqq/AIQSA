@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { extractTextDocument, textDocumentKind } from "./textDocuments";
+import {
+  extractTextDocument,
+  HTML_TEXT_MAX_INPUT_CHARS,
+  textDocumentKind
+} from "./textDocuments";
+
+function htmlText(source: string, maxChars?: number) {
+  return extractTextDocument(Buffer.from(source), {
+    fileName: "page.html",
+    ...(maxChars === undefined ? {} : { maxChars }),
+    mimeType: "text/html"
+  });
+}
+
+function fastestMs(run: () => void): number {
+  let fastest = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const started = performance.now();
+    run();
+    fastest = Math.min(fastest, performance.now() - started);
+  }
+  return fastest;
+}
 
 describe("text document extraction", () => {
   it("classifies supported text document types by MIME and extension", () => {
@@ -100,6 +122,54 @@ describe("text document extraction", () => {
       kind: "html",
       text: "Report & Notes\n\nA B",
       truncated: false
+    });
+  });
+
+  it("keeps HTML text semantics for case, attributes, inline tags, comments and literals", () => {
+    expect(htmlText(
+      "<DIV class=\"a\"><B>Bold</B> text</DIV><!-- hidden -->" +
+      "<SCRIPT type=\"x\">alert(1)</SCRIPT ><P>&lt;d&gt; &#x41;&#66;</P>"
+    ).text).toBe("Bold text\n\n<d> AB");
+    expect(htmlText("a < b").text).toBe("a < b");
+    expect(htmlText("x<>y").text).toBe("x<>y");
+    expect(htmlText("<br/>One<h7>Two</h7><scripts>Three</scripts>").text).toBe("One Two Three");
+    expect(htmlText("x &#x110000; &#99999999999999999999; y").text)
+      .toBe("x &#x110000; &#99999999999999999999; y");
+  });
+
+  it("keeps unclosed tags as text and discards unclosed raw-text elements once", () => {
+    expect(htmlText("Text <a href").text).toBe("Text <a href");
+    expect(htmlText("Text <p class").text).toBe("Text <p class");
+    expect(htmlText("Before<script>alert(1)<p>after").text).toBe("Before");
+    expect(htmlText("Before<style>p{}</styles><p>after").text).toBe("Before");
+    expect(htmlText("Before<script>x</script").text).toBe("Before");
+  });
+
+  it.each(["<a", "<p ", "<script>", "<style>"])(
+    "extracts runs of unclosed %j in linear time",
+    (token) => {
+      const source = (length: number) => Buffer.from(token.repeat(Math.ceil(length / token.length)));
+      const small = source(256 * 1_024);
+      const large = source(1_024 * 1_024);
+      const extract = (bytes: Buffer) => () => {
+        extractTextDocument(bytes, { fileName: "page.html", mimeType: "text/html" });
+      };
+      const smallMs = fastestMs(extract(small));
+      const largeMs = fastestMs(extract(large));
+      expect(smallMs).toBeLessThan(2_000);
+      // Quadratic scanning grows sixteenfold for fourfold input.
+      expect(largeMs).toBeLessThan(Math.max(8 * smallMs, 250));
+    }
+  );
+
+  it("bounds HTML input before extraction and reports the result as partial", () => {
+    const words = "a".repeat(HTML_TEXT_MAX_INPUT_CHARS - 2);
+    expect(htmlText(`${words}<p class="tail">tail</p>`, HTML_TEXT_MAX_INPUT_CHARS))
+      .toEqual({ kind: "html", text: words, truncated: true });
+    expect(htmlText(`<p>${words}`, HTML_TEXT_MAX_INPUT_CHARS)).toEqual({
+      kind: "html",
+      text: "a".repeat(HTML_TEXT_MAX_INPUT_CHARS - 3),
+      truncated: true
     });
   });
 });

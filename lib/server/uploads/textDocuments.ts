@@ -10,9 +10,16 @@ export type TextDocumentExtractionResult = {
 };
 
 export const DEFAULT_EXTRACTED_TEXT_MAX_CHARS = ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS;
+/** Synchronous HTML work is bounded in UTF-16 units; a longer source is partial. */
+export const HTML_TEXT_MAX_INPUT_CHARS = 16 * 1_024 * 1_024;
 
-const htmlBlockTags =
-  /<\/?(address|article|aside|blockquote|br|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)\b[^>]*>/gi;
+const htmlBlockTagNames: ReadonlySet<string> = new Set([
+  "address", "article", "aside", "blockquote", "br", "dd", "div", "dl", "dt", "fieldset",
+  "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
+  "hr", "li", "main", "nav", "ol", "p", "pre", "section", "table", "tbody", "td", "tfoot",
+  "th", "thead", "tr", "ul"
+]);
+const MAX_CODE_POINT = 0x10ffff;
 
 function normalizeNewlines(value: string): string {
   return value.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
@@ -42,26 +49,88 @@ function decodeHtmlEntities(value: string): string {
 
     if (normalized.startsWith("#x")) {
       const parsed = Number.parseInt(normalized.slice(2), 16);
-      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : match;
+      return parsed <= MAX_CODE_POINT ? String.fromCodePoint(parsed) : match;
     }
 
     if (normalized.startsWith("#")) {
       const parsed = Number.parseInt(normalized.slice(1), 10);
-      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : match;
+      return parsed <= MAX_CODE_POINT ? String.fromCodePoint(parsed) : match;
     }
 
     return named[normalized] ?? match;
   });
 }
 
-function htmlToText(value: string): string {
-  const withoutScripts = value
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ");
-  const withLineBreaks = withoutScripts.replace(htmlBlockTags, "\n");
-  const withoutTags = withLineBreaks.replace(/<[^>]+>/g, " ");
+function isTagNameCharacter(code: number): boolean {
+  return code >= 0x30 && code <= 0x39 || code >= 0x41 && code <= 0x5a ||
+    code >= 0x61 && code <= 0x7a || code === 0x5f;
+}
 
-  return compactLines(decodeHtmlEntities(withoutTags));
+/** Returns the index after a raw-text element's end tag, or -1 when unclosed. */
+function rawTextEnd(shadow: string, name: string, from: number): number {
+  const marker = `</${name}`;
+  let search = from;
+  for (;;) {
+    const found = shadow.indexOf(marker, search);
+    if (found < 0) return -1;
+    const after = found + marker.length;
+    if (!isTagNameCharacter(shadow.charCodeAt(after))) {
+      const close = shadow.indexOf(">", after);
+      return close < 0 ? -1 : close + 1;
+    }
+    search = found + 1;
+  }
+}
+
+/**
+ * One forward pass: every indexOf starts after the previous match, so hostile
+ * unclosed markup cannot cause backtracking. The shadow lowercases ASCII only
+ * and therefore keeps the source offsets.
+ */
+function htmlToText(value: string): string {
+  const shadow = value.replace(/[A-Z]+/gu, (letters) => letters.toLowerCase());
+  const parts: string[] = [];
+  let cursor = 0;
+  while (cursor < value.length) {
+    const open = value.indexOf("<", cursor);
+    if (open < 0) break;
+    const close = value.indexOf(">", open + 1);
+    // An unclosed tag leaves the remainder as text.
+    if (close < 0) break;
+    parts.push(value.slice(cursor, open));
+    if (close === open + 1) {
+      parts.push("<");
+      cursor = close;
+      continue;
+    }
+    const closing = value.charCodeAt(open + 1) === 0x2f;
+    const nameStart = open + (closing ? 2 : 1);
+    let nameEnd = nameStart;
+    while (nameEnd < close && isTagNameCharacter(shadow.charCodeAt(nameEnd))) nameEnd += 1;
+    const name = shadow.slice(nameStart, nameEnd);
+    if (!closing && (name === "script" || name === "style")) {
+      parts.push(" ");
+      // An unclosed script or style discards the remainder once.
+      cursor = rawTextEnd(shadow, name, close + 1);
+      if (cursor < 0) cursor = value.length;
+      continue;
+    }
+    parts.push(htmlBlockTagNames.has(name) ? "\n" : " ");
+    cursor = close + 1;
+  }
+  parts.push(value.slice(cursor));
+
+  return compactLines(decodeHtmlEntities(parts.join("")));
+}
+
+function boundedHtmlSource(value: string): Readonly<{ html: string; truncated: boolean }> {
+  if (value.length <= HTML_TEXT_MAX_INPUT_CHARS) return { html: value, truncated: false };
+  const prefix = takeUtf16SafePrefix(value, HTML_TEXT_MAX_INPUT_CHARS);
+  const open = prefix.lastIndexOf("<");
+  return {
+    html: open > prefix.lastIndexOf(">") ? prefix.slice(0, open) : prefix,
+    truncated: true
+  };
 }
 
 export function textDocumentKind(fileName: string, mimeType: string): TextDocumentKind {
@@ -120,7 +189,9 @@ export function extractTextDocument(
   }
 
   if (kind === "html") {
-    return capText(htmlToText(decoded));
+    const source = boundedHtmlSource(decoded);
+    const extracted = capText(htmlToText(source.html));
+    return source.truncated ? { ...extracted, truncated: true } : extracted;
   }
 
   return capText(decoded);

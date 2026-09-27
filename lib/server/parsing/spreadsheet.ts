@@ -1,8 +1,10 @@
+import { crc32, inflateRawSync } from "node:zlib";
 import { read, utils, type CellObject, type WorkBook, type WorkSheet } from "xlsx";
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import { finalizeParsedDocument, parsedLanguageHints } from "./assessment";
 import { DocumentParserError } from "./errors";
 import {
+  SPREADSHEET_DEFAULT_MAX_CHARACTERS,
   SPREADSHEET_MAX_CELL_TEXT,
   SPREADSHEET_MAX_COLUMNS_PER_SHEET,
   SPREADSHEET_MAX_FORMULA_TEXT,
@@ -32,11 +34,44 @@ import type {
 
 const MAX_ZIP_ENTRIES = 20_000;
 const MAX_ZIP_ENTRY_BYTES = 64 * 1_024 * 1_024;
-const MAX_ZIP_COMPRESSION_RATIO = 2_000;
+// Deflate cannot expand input beyond about 1032:1 plus one maximal match, so a
+// larger declaration is forged. Verified inflation remains the actual bound.
+const DEFLATE_MAX_EXPANSION_RATIO = 1_032;
+const DEFLATE_MAX_EXPANSION_SLACK = 258;
 const BLOCK_ROW_COUNT = 200;
 const BLOCK_COLUMN_COUNT = 50;
-const EOCD_SIGNATURE = 0x06054b50;
+const LOCAL_SIGNATURE = 0x04034b50;
 const CENTRAL_SIGNATURE = 0x02014b50;
+const EOCD_SIGNATURE = 0x06054b50;
+const EOCD_SIGNATURE_BYTES = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+const ZIP64_LOCATOR_SIGNATURE = 0x07064b50;
+const ZIP64_EXTRA_ID = 0x0001;
+const LOCAL_HEADER_BYTES = 30;
+const CENTRAL_HEADER_BYTES = 46;
+const EOCD_BYTES = 22;
+const MAX_EOCD_COMMENT_BYTES = 0xffff;
+const DATA_DESCRIPTOR_FLAG = 0x0008;
+// Traditional, strong, and central-directory encryption.
+const ENCRYPTION_FLAGS = 0x0001 | 0x0040 | 0x2000;
+const STORED = 0;
+const DEFLATED = 8;
+const STORED_VERSION = 10;
+
+type ArchiveEntry = Readonly<{
+  compressedSize: number;
+  crc: number;
+  date: number;
+  flags: number;
+  localOffset: number;
+  method: number;
+  name: Buffer;
+  time: number;
+  uncompressedSize: number;
+}>;
+
+type LocatedArchiveEntry = ArchiveEntry & Readonly<{ dataEnd: number; dataStart: number }>;
+
+type InflatedEntry = Readonly<{ buffer: Buffer; engine: Readonly<{ bytesWritten: number }> }>;
 
 type DenseWorksheet = WorkSheet & Readonly<{
   "!data"?: readonly (readonly (CellObject | undefined)[] | undefined)[];
@@ -56,55 +91,264 @@ function isZipFormat(fileName: string): boolean {
   return extension.endsWith(".xlsx") || extension.endsWith(".ods");
 }
 
-/**
- * SheetJS must inflate OOXML/ODS packages before it can decode cells. Inspect
- * the central directory first so compressed input cannot claim unbounded
- * application memory. ZIP64 and encrypted entries are deliberately rejected.
- */
-export function assertBoundedSpreadsheetArchive(bytes: Buffer): void {
-  if (bytes.byteLength < 22) rejected();
-  const minimum = Math.max(0, bytes.byteLength - 65_557);
-  let eocd = -1;
-  for (let offset = bytes.byteLength - 22; offset >= minimum; offset -= 1) {
-    if (bytes.readUInt32LE(offset) === EOCD_SIGNATURE) {
-      eocd = offset;
-      break;
-    }
+function endOfCentralDirectory(bytes: Buffer): number {
+  if (bytes.byteLength < EOCD_BYTES) rejected();
+  const minimum = Math.max(0, bytes.byteLength - EOCD_BYTES - MAX_EOCD_COMMENT_BYTES);
+  for (let offset = bytes.byteLength - EOCD_BYTES; offset >= minimum; offset -= 1) {
+    if (
+      bytes.readUInt32LE(offset) === EOCD_SIGNATURE &&
+      offset + EOCD_BYTES + bytes.readUInt16LE(offset + 20) === bytes.byteLength
+    ) return offset;
   }
-  if (eocd < 0 || eocd + 22 > bytes.byteLength) rejected();
-  const entryCount = bytes.readUInt16LE(eocd + 10);
-  const centralSize = bytes.readUInt32LE(eocd + 12);
-  const centralOffset = bytes.readUInt32LE(eocd + 16);
-  if (
-    entryCount < 1 || entryCount === 0xffff || entryCount > MAX_ZIP_ENTRIES ||
-    centralSize === 0xffffffff || centralOffset === 0xffffffff ||
-    centralOffset + centralSize > eocd
-  ) outputTooLarge();
+  return rejected();
+}
 
-  let offset = centralOffset;
+function zip64SizeAgrees(bytes: Buffer, offset: number, size: number): boolean {
+  const value = bytes.readBigUInt64LE(offset);
+  return value === 0n || value === BigInt(size);
+}
+
+function assertExtraFields(
+  bytes: Buffer,
+  start: number,
+  length: number,
+  sizes: Readonly<{ compressedSize: number; uncompressedSize: number }>
+): void {
+  const end = start + length;
+  let cursor = start;
+  while (cursor < end) {
+    if (cursor + 4 > end) rejected();
+    const size = bytes.readUInt16LE(cursor + 2);
+    const data = cursor + 4;
+    if (data + size > end) rejected();
+    // A ZIP64-aware reader must agree with the 32-bit sizes that are enforced.
+    if (bytes.readUInt16LE(cursor) === ZIP64_EXTRA_ID && (
+      size >= 8 && !zip64SizeAgrees(bytes, data, sizes.uncompressedSize) ||
+      size >= 16 && !zip64SizeAgrees(bytes, data + 8, sizes.compressedSize)
+    )) rejected();
+    cursor = data + size;
+  }
+}
+
+function entryNameKey(name: Buffer): string {
+  if (name.byteLength === 0) rejected();
+  for (const byte of name) {
+    if (byte < 0x20 || byte === 0x7f || byte === 0x5c) rejected();
+  }
+  return name.toString("latin1").replace(/[A-Z]+/gu, (letters) => letters.toLowerCase());
+}
+
+function centralDirectory(bytes: Buffer): Readonly<{
+  entries: readonly ArchiveEntry[];
+  offset: number;
+}> {
+  const eocd = endOfCentralDirectory(bytes);
+  if (eocd >= 20 && bytes.readUInt32LE(eocd - 20) === ZIP64_LOCATOR_SIGNATURE) rejected();
+  const entryCount = bytes.readUInt16LE(eocd + 10);
+  const size = bytes.readUInt32LE(eocd + 12);
+  const offset = bytes.readUInt32LE(eocd + 16);
+  if (
+    bytes.readUInt16LE(eocd + 4) !== 0 || bytes.readUInt16LE(eocd + 6) !== 0 ||
+    bytes.readUInt16LE(eocd + 8) !== entryCount || entryCount === 0 ||
+    entryCount === 0xffff || size === 0xffffffff || offset === 0xffffffff ||
+    offset + size !== eocd
+  ) rejected();
+  if (entryCount > MAX_ZIP_ENTRIES) outputTooLarge();
+
+  const entries: ArchiveEntry[] = [];
+  const names = new Set<string>();
+  let cursor = offset;
   let uncompressedTotal = 0;
   for (let index = 0; index < entryCount; index += 1) {
-    if (offset + 46 > bytes.byteLength || bytes.readUInt32LE(offset) !== CENTRAL_SIGNATURE) {
+    if (cursor + CENTRAL_HEADER_BYTES > eocd || bytes.readUInt32LE(cursor) !== CENTRAL_SIGNATURE) {
       rejected();
     }
-    const flags = bytes.readUInt16LE(offset + 8);
-    const compressed = bytes.readUInt32LE(offset + 20);
-    const uncompressed = bytes.readUInt32LE(offset + 24);
-    const nameLength = bytes.readUInt16LE(offset + 28);
-    const extraLength = bytes.readUInt16LE(offset + 30);
-    const commentLength = bytes.readUInt16LE(offset + 32);
+    const flags = bytes.readUInt16LE(cursor + 8);
+    const method = bytes.readUInt16LE(cursor + 10);
+    const compressedSize = bytes.readUInt32LE(cursor + 20);
+    const uncompressedSize = bytes.readUInt32LE(cursor + 24);
+    const nameStart = cursor + CENTRAL_HEADER_BYTES;
+    const extraStart = nameStart + bytes.readUInt16LE(cursor + 28);
+    const extraLength = bytes.readUInt16LE(cursor + 30);
+    const next = extraStart + extraLength + bytes.readUInt16LE(cursor + 32);
+    const localOffset = bytes.readUInt32LE(cursor + 42);
     if (
-      (flags & 0x0001) !== 0 || compressed === 0xffffffff || uncompressed === 0xffffffff ||
-      uncompressed > MAX_ZIP_ENTRY_BYTES ||
-      compressed === 0 && uncompressed > 0 ||
-      compressed > 0 && uncompressed / compressed > MAX_ZIP_COMPRESSION_RATIO
-    ) outputTooLarge();
-    uncompressedTotal += uncompressed;
+      next > eocd || compressedSize === 0xffffffff || uncompressedSize === 0xffffffff ||
+      localOffset === 0xffffffff || bytes.readUInt16LE(cursor + 34) !== 0
+    ) rejected();
+    if (uncompressedSize > MAX_ZIP_ENTRY_BYTES) outputTooLarge();
+    uncompressedTotal += uncompressedSize;
     if (uncompressedTotal > SPREADSHEET_MAX_UNCOMPRESSED_BYTES) outputTooLarge();
-    offset += 46 + nameLength + extraLength + commentLength;
-    if (offset > centralOffset + centralSize) rejected();
+    if (
+      (flags & ENCRYPTION_FLAGS) !== 0 || method !== STORED && method !== DEFLATED ||
+      method === STORED && compressedSize !== uncompressedSize ||
+      method === DEFLATED && uncompressedSize >
+        compressedSize * DEFLATE_MAX_EXPANSION_RATIO + DEFLATE_MAX_EXPANSION_SLACK
+    ) rejected();
+    const name = bytes.subarray(nameStart, extraStart);
+    const key = entryNameKey(name);
+    if (names.has(key)) rejected();
+    names.add(key);
+    assertExtraFields(bytes, extraStart, extraLength, { compressedSize, uncompressedSize });
+    entries.push(Object.freeze({
+      compressedSize,
+      crc: bytes.readUInt32LE(cursor + 16),
+      date: bytes.readUInt16LE(cursor + 14),
+      flags,
+      localOffset,
+      method,
+      name,
+      time: bytes.readUInt16LE(cursor + 12),
+      uncompressedSize
+    }));
+    cursor = next;
   }
-  if (offset !== centralOffset + centralSize) rejected();
+  if (cursor !== eocd) rejected();
+  return Object.freeze({ entries: Object.freeze(entries), offset });
+}
+
+function localValueAgrees(local: number, central: number, dataDescriptor: boolean): boolean {
+  return local === central || dataDescriptor && local === 0;
+}
+
+function locatedEntry(
+  bytes: Buffer,
+  entry: ArchiveEntry,
+  directoryOffset: number
+): LocatedArchiveEntry {
+  const offset = entry.localOffset;
+  if (
+    offset + LOCAL_HEADER_BYTES > directoryOffset ||
+    bytes.readUInt32LE(offset) !== LOCAL_SIGNATURE
+  ) rejected();
+  const flags = bytes.readUInt16LE(offset + 6);
+  const dataDescriptor = (entry.flags & DATA_DESCRIPTOR_FLAG) !== 0;
+  const nameStart = offset + LOCAL_HEADER_BYTES;
+  const extraStart = nameStart + bytes.readUInt16LE(offset + 26);
+  const dataStart = extraStart + bytes.readUInt16LE(offset + 28);
+  const dataEnd = dataStart + entry.compressedSize;
+  // The data descriptor itself is never trusted; the directory owns the values.
+  if (
+    dataEnd > directoryOffset || (flags & ENCRYPTION_FLAGS) !== 0 ||
+    ((flags & DATA_DESCRIPTOR_FLAG) !== 0) !== dataDescriptor ||
+    bytes.readUInt16LE(offset + 8) !== entry.method ||
+    !bytes.subarray(nameStart, extraStart).equals(entry.name) ||
+    !localValueAgrees(bytes.readUInt32LE(offset + 14), entry.crc, dataDescriptor) ||
+    !localValueAgrees(bytes.readUInt32LE(offset + 18), entry.compressedSize, dataDescriptor) ||
+    !localValueAgrees(bytes.readUInt32LE(offset + 22), entry.uncompressedSize, dataDescriptor)
+  ) rejected();
+  assertExtraFields(bytes, extraStart, dataStart - extraStart, entry);
+  return Object.freeze({ ...entry, dataEnd, dataStart });
+}
+
+function assertDisjointEntries(entries: readonly LocatedArchiveEntry[]): void {
+  const ordered = [...entries].sort((left, right) => left.localOffset - right.localOffset);
+  for (let index = 1; index < ordered.length; index += 1) {
+    if (ordered[index - 1]!.dataEnd > ordered[index]!.localOffset) rejected();
+  }
+}
+
+function zlibErrorCode(error: unknown): string | null {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? error.code
+    : null;
+  return typeof code === "string" ? code : null;
+}
+
+function verifiedEntryData(bytes: Buffer, entry: LocatedArchiveEntry): Buffer {
+  let data = bytes.subarray(entry.dataStart, entry.dataEnd);
+  if (entry.method === DEFLATED) {
+    let inflated: InflatedEntry;
+    try {
+      inflated = inflateRawSync(data, {
+        info: true,
+        maxOutputLength: entry.uncompressedSize + 1
+      }) as unknown as InflatedEntry;
+    } catch (error) {
+      const code = zlibErrorCode(error);
+      if (code === "Z_MEM_ERROR") outputTooLarge();
+      if (code === "ERR_BUFFER_TOO_LARGE" || code?.startsWith("Z_")) rejected();
+      throw error;
+    }
+    if (
+      inflated.buffer.byteLength !== entry.uncompressedSize ||
+      inflated.engine.bytesWritten !== entry.compressedSize
+    ) rejected();
+    data = inflated.buffer;
+  }
+  if (crc32(data) !== entry.crc) rejected();
+  return data;
+}
+
+function rebuiltStoredArchive(bytes: Buffer, entries: readonly LocatedArchiveEntry[]): Buffer {
+  const size = entries.reduce((total, entry) => total + LOCAL_HEADER_BYTES +
+    CENTRAL_HEADER_BYTES + 2 * entry.name.byteLength + entry.uncompressedSize, EOCD_BYTES);
+  const output = Buffer.alloc(size);
+  const localOffsets: number[] = [];
+  let cursor = 0;
+  for (const entry of entries) {
+    const data = verifiedEntryData(bytes, entry);
+    localOffsets.push(cursor);
+    output.writeUInt32LE(LOCAL_SIGNATURE, cursor);
+    output.writeUInt16LE(STORED_VERSION, cursor + 4);
+    output.writeUInt16LE(entry.time, cursor + 10);
+    output.writeUInt16LE(entry.date, cursor + 12);
+    output.writeUInt32LE(entry.crc, cursor + 14);
+    output.writeUInt32LE(entry.uncompressedSize, cursor + 18);
+    output.writeUInt32LE(entry.uncompressedSize, cursor + 22);
+    output.writeUInt16LE(entry.name.byteLength, cursor + 26);
+    entry.name.copy(output, cursor + LOCAL_HEADER_BYTES);
+    data.copy(output, cursor + LOCAL_HEADER_BYTES + entry.name.byteLength);
+    cursor += LOCAL_HEADER_BYTES + entry.name.byteLength + entry.uncompressedSize;
+  }
+  const directoryOffset = cursor;
+  entries.forEach((entry, index) => {
+    output.writeUInt32LE(CENTRAL_SIGNATURE, cursor);
+    output.writeUInt16LE(STORED_VERSION, cursor + 4);
+    output.writeUInt16LE(STORED_VERSION, cursor + 6);
+    output.writeUInt16LE(entry.time, cursor + 12);
+    output.writeUInt16LE(entry.date, cursor + 14);
+    output.writeUInt32LE(entry.crc, cursor + 16);
+    output.writeUInt32LE(entry.uncompressedSize, cursor + 20);
+    output.writeUInt32LE(entry.uncompressedSize, cursor + 24);
+    output.writeUInt16LE(entry.name.byteLength, cursor + 28);
+    output.writeUInt32LE(localOffsets[index]!, cursor + 42);
+    entry.name.copy(output, cursor + CENTRAL_HEADER_BYTES);
+    cursor += CENTRAL_HEADER_BYTES + entry.name.byteLength;
+  });
+  output.writeUInt32LE(EOCD_SIGNATURE, cursor);
+  output.writeUInt16LE(entries.length, cursor + 8);
+  output.writeUInt16LE(entries.length, cursor + 10);
+  output.writeUInt32LE(cursor - directoryOffset, cursor + 12);
+  output.writeUInt32LE(directoryOffset, cursor + 16);
+  // SheetJS locates the directory by scanning backwards from the last four bytes.
+  if (output.subarray(size - EOCD_BYTES + 1).includes(EOCD_SIGNATURE_BYTES)) rejected();
+  return output;
+}
+
+/**
+ * SheetJS trusts local headers and ZIP64 extras, inflates without a size bound
+ * and checks sizes only afterwards, so it never receives an uploaded archive.
+ * Every central-directory entry must match its local header, fit the size
+ * budgets, and inflate to exactly its declared size and CRC; the result is
+ * rebuilt as one stored archive without extras or comments. Single-disk stored
+ * or deflated entries, verifiable data descriptors, UTF-8 names, well-formed
+ * extras, comments, prefixes and gaps are accepted. ZIP64, multi-disk,
+ * encryption, other methods, header disagreement, overlap and duplicate names
+ * are rejected; declarations above the budgets are too large.
+ */
+export function canonicalizeSpreadsheetArchive(bytes: Buffer): Buffer {
+  const directory = centralDirectory(bytes);
+  const entries = directory.entries.map((entry) =>
+    locatedEntry(bytes, entry, directory.offset));
+  assertDisjointEntries(entries);
+  return rebuiltStoredArchive(bytes, entries);
+}
+
+/** SheetJS chooses its ZIP reader from these bytes regardless of the name. */
+function sheetJsReadsZip(bytes: Buffer): boolean {
+  return bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b &&
+    bytes[2]! < 0x09 && bytes[3]! < 0x09;
 }
 
 function cleanText(value: string, maximum = SPREADSHEET_MAX_CELL_TEXT): Readonly<{
@@ -558,11 +802,13 @@ function blocksForWorkbook(
 }
 
 function parseWorkbook(input: DocumentParseInput, maximumCharacters: number): ParsedWorkbook {
-  if (isZipFormat(input.fileName)) assertBoundedSpreadsheetArchive(input.bytes);
+  const workbookBytes = isZipFormat(input.fileName) || sheetJsReadsZip(input.bytes)
+    ? canonicalizeSpreadsheetArchive(input.bytes)
+    : input.bytes;
   let book: WorkBook;
   try {
     const csv = input.fileName.toLocaleLowerCase("und").endsWith(".csv");
-    book = read(input.bytes, {
+    book = read(workbookBytes, {
       bookDeps: false,
       bookFiles: false,
       bookVBA: false,
@@ -620,7 +866,9 @@ export function parseSpreadsheetDocument(
   options: Readonly<{ maxCharacters?: number }> = {}
 ): ParsedDocument {
   if (input.signal?.aborted) throw input.signal.reason;
-  const maximumCharacters = Math.max(1, Math.floor(options.maxCharacters ?? 5_000_000));
+  const maximumCharacters = Math.max(1, Math.floor(
+    options.maxCharacters ?? SPREADSHEET_DEFAULT_MAX_CHARACTERS
+  ));
   const workbook = parseWorkbook(input, maximumCharacters);
   const indexed = blocksForWorkbook(workbook, maximumCharacters);
   if (indexed.blocks.length < 1) rejected();

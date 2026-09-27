@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import {
   createDocumentParserBoundary,
+  extractHtmlTextInIsolation,
   isDocumentParserError,
   type DocumentParserBoundary
 } from "../parsing";
@@ -10,7 +11,6 @@ import { extractImageMetadata } from "./imageMetadata";
 import { extractPdfTextChunks, isPdfExtractionError } from "./pdf";
 import { getPdfExtractionConfig } from "./pdfConfig";
 import { isStoredObjectTooLargeError, type StorageAdapter } from "./storage";
-import { extractTextDocument } from "./textDocuments";
 
 export type AttachmentProcessingErrorCode =
   | "animated_gif_not_supported"
@@ -86,13 +86,17 @@ function processingError(error: unknown): AttachmentProcessingError {
   return new AttachmentProcessingError("attachment_processing_failed", true);
 }
 
-function htmlFallback(record: AttachmentProcessingRecord, bytes: Buffer, maxChars: number) {
+type HtmlTextExtractor = typeof extractHtmlTextInIsolation;
+
+async function htmlFallback(
+  record: AttachmentProcessingRecord,
+  bytes: Buffer,
+  maxChars: number,
+  signal: AbortSignal | undefined,
+  extractHtmlText: HtmlTextExtractor
+): Promise<AttachmentProcessingResult | null> {
   if (!/\.html?$/iu.test(record.fileName)) return null;
-  const extracted = extractTextDocument(bytes, {
-    fileName: record.fileName,
-    maxChars,
-    mimeType: record.mimeType
-  });
+  const extracted = await extractHtmlText({ bytes, maxChars, ...(signal ? { signal } : {}) });
   return {
     extractedText: extracted.text || null,
     metadata: {
@@ -105,7 +109,7 @@ function htmlFallback(record: AttachmentProcessingRecord, bytes: Buffer, maxChar
         truncated: extracted.truncated
       }
     }
-  } satisfies AttachmentProcessingResult;
+  };
 }
 
 async function processPdfFallback(
@@ -137,6 +141,7 @@ async function processPdfFallback(
 
 async function parseDocument(
   parser: Pick<DocumentParserBoundary, "parse">,
+  extractHtmlText: HtmlTextExtractor,
   record: AttachmentProcessingRecord,
   bytes: Buffer,
   signal: AbortSignal | undefined
@@ -189,7 +194,7 @@ async function parseDocument(
       if (record.kind === "pdf") {
         return processPdfFallback(bytes, signal);
       }
-      const fallback = htmlFallback(record, bytes, maxChars);
+      const fallback = await htmlFallback(record, bytes, maxChars, signal, extractHtmlText);
       if (fallback) return fallback;
     }
     throw error;
@@ -197,10 +202,12 @@ async function parseDocument(
 }
 
 export function createAttachmentProcessor(input: Readonly<{
+  htmlTextExtractor?: HtmlTextExtractor;
   parser?: Pick<DocumentParserBoundary, "parse">;
   storage: Pick<StorageAdapter, "getObject">;
 }>) {
   const parser = input.parser ?? createDocumentParserBoundary();
+  const extractHtmlText = input.htmlTextExtractor ?? extractHtmlTextInIsolation;
 
   return async function processAttachment(
     record: AttachmentProcessingRecord,
@@ -239,7 +246,7 @@ export function createAttachmentProcessor(input: Readonly<{
       if (record.kind !== "document" && record.kind !== "pdf") {
         throw new AttachmentProcessingError("parser_rejected");
       }
-      return await parseDocument(parser, record, object.body, signal);
+      return await parseDocument(parser, extractHtmlText, record, object.body, signal);
     } catch (error) {
       if (signal?.aborted) throw signal.reason ?? error;
       throw processingError(error);

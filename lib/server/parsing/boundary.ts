@@ -23,8 +23,8 @@ import {
   supplementImageHeavyPdfOcr
 } from "./ocrSupplement";
 import { parseInlineMarkdownBlocks } from "./inlineMarkdown";
+import { parseSpreadsheetInIsolation } from "./isolatedParser";
 import { resolveDocumentParserRoute } from "./routing";
-import { parseSpreadsheetDocument } from "./spreadsheet";
 import type {
   DocumentParseInput,
   DocumentParserEngine,
@@ -42,9 +42,11 @@ export type DocumentParserBoundaryOptions = Readonly<{
   config?: DocumentParserConfig;
   fetch?: typeof fetch;
   inlineMaxChars?: number;
+  isolatedParseTimeoutMs?: number;
   nativePdfLimits?: Omit<NativePdfParserOptions, "createWorker">;
   nativePdfParser?: typeof parseNativeTextPdf;
   sidecarFallback?: boolean;
+  spreadsheetParser?: typeof parseSpreadsheetInIsolation;
 }>;
 
 function abortReason(signal: AbortSignal): unknown {
@@ -137,9 +139,11 @@ function attemptForError(
 export class DocumentParserBoundary {
   readonly #adapters: Partial<Record<SidecarParserEngine, DocumentParserEngineAdapter>>;
   readonly #inlineMaxChars: number | undefined;
+  readonly #isolatedParseTimeoutMs: number | undefined;
   readonly #nativePdfLimits: Omit<NativePdfParserOptions, "createWorker"> | undefined;
   readonly #nativePdfParser: typeof parseNativeTextPdf;
   readonly #sidecarFallback: boolean;
+  readonly #spreadsheetParser: typeof parseSpreadsheetInIsolation;
 
   constructor(options: DocumentParserBoundaryOptions = {}) {
     const config = options.config ?? getDocumentParserConfig();
@@ -161,9 +165,11 @@ export class DocumentParserBoundary {
       ...options.adapters
     };
     this.#inlineMaxChars = options.inlineMaxChars;
+    this.#isolatedParseTimeoutMs = options.isolatedParseTimeoutMs;
     this.#nativePdfLimits = options.nativePdfLimits;
     this.#nativePdfParser = options.nativePdfParser ?? parseNativeTextPdf;
     this.#sidecarFallback = options.sidecarFallback ?? true;
+    this.#spreadsheetParser = options.spreadsheetParser ?? parseSpreadsheetInIsolation;
   }
 
   async parse(input: DocumentParseInput): Promise<ParsedDocument> {
@@ -180,9 +186,16 @@ export class DocumentParserBoundary {
       return inlineDocument(input, route.mediaType, this.#inlineMaxChars);
     }
     if (route.kind === "spreadsheet") {
-      return parseSpreadsheetDocument({ ...input, mimeType: route.mediaType }, {
-        maxCharacters: this.#inlineMaxChars
-      });
+      // Workbook decoding runs outside the application process and event loop.
+      return this.#spreadsheetParser({
+        bytes: input.bytes,
+        format: route.format,
+        ...(this.#inlineMaxChars === undefined ? {} : { maxCharacters: this.#inlineMaxChars }),
+        mediaType: route.mediaType,
+        ...(input.signal ? { signal: input.signal } : {})
+      }, this.#isolatedParseTimeoutMs === undefined
+        ? {}
+        : { timeoutMs: this.#isolatedParseTimeoutMs });
     }
 
     const errors: DocumentParserError[] = [];

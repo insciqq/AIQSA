@@ -179,6 +179,33 @@ describe("attachment processor", () => {
     });
   });
 
+  it("extracts HTML in the isolated parser process when sidecars are stopped", async () => {
+    const bytes = Buffer.from(
+      "<h1>Report &amp; Notes</h1><script>alert(1)</script><p>A&nbsp;B</p><p>unclosed <a"
+    );
+    const parser = {
+      parse: vi.fn(async () => { throw new DocumentParserError("parser_unavailable"); })
+    };
+    const process = createAttachmentProcessor({ parser, storage: storage(bytes) });
+
+    await expect(process(record(bytes, {
+      fileName: "report.html",
+      mimeType: "text/html"
+    }))).resolves.toEqual({
+      extractedText: "Report & Notes\n\nA B\n\nunclosed <a",
+      metadata: {
+        document: {
+          characterCount: 32,
+          engine: "inline",
+          extractedTextMaxChars: 1_000_000,
+          kind: "html",
+          status: "complete",
+          truncated: false
+        }
+      }
+    });
+  }, 30_000);
+
   it("returns a clear retryable parser code for DOCX when sidecars are stopped", async () => {
     const bytes = Buffer.from("PK\u0003\u0004docx");
     const parser = {
