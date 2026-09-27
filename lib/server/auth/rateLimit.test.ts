@@ -76,4 +76,19 @@ describe("login rate limiter", () => {
     await limiter.release("source");
     expect(store.get("source")?.count).toBe(2);
   });
+
+  it("closes the window when a window's only attempt is released", async () => {
+    let now = 0;
+    const store = new Map<string, LoginRateLimitBucket>();
+    const limiter = createFixedWindowLoginRateLimiter({ clock: () => now, maxAttempts: 2, store, windowMs: 100 });
+
+    await limiter.check("source");
+    now = 40;
+    await limiter.release("source");
+    await limiter.release("source");
+    expect(store.has("source")).toBe(false);
+
+    expect(await limiter.check("source")).toEqual({ allowed: true, retryAfterSeconds: 1 });
+    expect(store.get("source")).toEqual({ count: 1, resetAtMs: 140 });
+  });
 });

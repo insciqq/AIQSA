@@ -1,58 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { createMemoryDurableLoginRateLimitStore } from "@/tests/support/authRateLimit";
 import {
   createDurableLoginRateLimiter,
-  hashAuthRateLimitKey,
-  type DurableLoginRateLimitStore
+  hashAuthRateLimitKey
 } from "./prismaRateLimit";
-
-function createMemoryDurableStore(): DurableLoginRateLimitStore & {
-  buckets: Map<string, { attemptCount: number; resetAt: Date }>;
-} {
-  const buckets = new Map<string, { attemptCount: number; resetAt: Date }>();
-
-  return {
-    buckets,
-    async consume(input) {
-      const existing = buckets.get(input.keyHash);
-      const bucket =
-        existing && existing.resetAt > input.now
-          ? {
-              attemptCount: existing.attemptCount > input.maxAttempts
-                ? existing.attemptCount
-                : existing.attemptCount + 1,
-              resetAt: existing.resetAt
-            }
-          : {
-              attemptCount: 1,
-              resetAt: input.resetAt
-            };
-
-      buckets.set(input.keyHash, bucket);
-      return bucket;
-    },
-    async delete(keyHash) {
-      buckets.delete(keyHash);
-    },
-    async pruneExpired(now) {
-      for (const [keyHash, bucket] of buckets) {
-        if (bucket.resetAt <= now) {
-          buckets.delete(keyHash);
-        }
-      }
-    },
-    async release(input) {
-      const bucket = buckets.get(input.keyHash);
-
-      if (bucket && bucket.resetAt > input.now) {
-        bucket.attemptCount = Math.max(bucket.attemptCount - 1, 0);
-      }
-    }
-  };
-}
 
 describe("durable auth rate limiter", () => {
   it("stores only an installation-keyed digest", async () => {
-    const store = createMemoryDurableStore();
+    const store = createMemoryDurableLoginRateLimitStore();
     const limiter = createDurableLoginRateLimiter({
       clock: () => 0,
       keySecret: () => "installation-secret",
@@ -80,7 +35,7 @@ describe("durable auth rate limiter", () => {
 
   it("shares a fixed window across independently constructed limiter instances and restarts", async () => {
     let now = 0;
-    const store = createMemoryDurableStore();
+    const store = createMemoryDurableLoginRateLimitStore();
     const options = {
       clock: () => now,
       keySecret: () => "installation-secret",
@@ -103,7 +58,7 @@ describe("durable auth rate limiter", () => {
 
   it("checks one shared count under per-check ceilings and releases only open windows", async () => {
     let now = 0;
-    const store = createMemoryDurableStore();
+    const store = createMemoryDurableLoginRateLimitStore();
     const limiter = createDurableLoginRateLimiter({
       clock: () => now,
       keySecret: () => "installation-secret",
@@ -131,5 +86,30 @@ describe("durable auth rate limiter", () => {
     expect(count()).toBe(3);
     expect((await limiter.check("pair")).allowed).toBe(true);
     expect(count()).toBe(1);
+  });
+
+  it("closes the window when a window's only attempt is released", async () => {
+    let now = 0;
+    const store = createMemoryDurableLoginRateLimitStore();
+    const limiter = createDurableLoginRateLimiter({
+      clock: () => now,
+      keySecret: () => "installation-secret",
+      maxAttempts: 2,
+      store,
+      windowMs: 1_000
+    });
+    const bucket = () => [...store.buckets.values()][0];
+
+    expect((await limiter.check("source")).allowed).toBe(true);
+    now = 400;
+    await expect(limiter.release("source")).resolves.toBeUndefined();
+    await expect(limiter.release("source")).resolves.toBeUndefined();
+    expect(bucket()).toEqual({ attemptCount: 1, resetAt: new Date(400) });
+
+    // The next check counts from 1 in a fresh window, not 2 in the released one.
+    expect(await limiter.check("source")).toEqual({ allowed: true, retryAfterSeconds: 1 });
+    expect(bucket()).toEqual({ attemptCount: 1, resetAt: new Date(1_400) });
+    expect((await limiter.check("source")).allowed).toBe(true);
+    expect((await limiter.check("source")).allowed).toBe(false);
   });
 });

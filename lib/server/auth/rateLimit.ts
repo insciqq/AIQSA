@@ -143,8 +143,15 @@ export function createFixedWindowLoginRateLimiter(
     async release(key: string) {
       const bucket = store.get(key);
 
-      if (bucket && bucket.resetAtMs > clock() && bucket.count > 0) {
+      if (!bucket || bucket.resetAtMs <= clock()) {
+        return;
+      }
+
+      // Like the durable store, giving back a window's only attempt closes the window.
+      if (bucket.count > 1) {
         bucket.count -= 1;
+      } else {
+        store.delete(key);
       }
     },
     async reset(key: string) {
