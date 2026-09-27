@@ -6,9 +6,10 @@ export const MEMORY_RECOVERY_BATCH_SIZE = 8;
 export const MEMORY_RECOVERY_INTERVAL_MS = 60_000;
 export const MEMORY_RECOVERY_DELAYS_MS = Object.freeze([5 * 60_000, 30 * 60_000, 6 * 60 * 60_000]);
 
-/** Only persistence failures whose rollback is known, plus the legacy history
- * apply failure repaired by the current writer. Unknown/model-output failures
- * do not grant another paid execution. These predicates use current_jobs job. */
+/** Only failures with known safe recovery, including pre-dispatch history
+ * chunking and the legacy history apply failure repaired by the current writer.
+ * Unknown/model-output failures do not grant another paid execution.
+ * These predicates use current_jobs job. */
 export function memoryRecoverableFailureSql(): Prisma.Sql {
   return Prisma.sql`(job.kind IN (${Prisma.join(MEMORY_COORDINATOR_JOB_KINDS.map((kind) => Prisma.sql`${kind}::"MemoryJobKind"`))}) AND COALESCE((
     job."errorCode" IN ('memory_job_commit_timeout', 'memory_job_commit_database_p2034',
@@ -25,6 +26,11 @@ export function memoryRecoverableFailureSql(): Prisma.Sql {
         WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
           AND execution."ownerType" = 'JOB' AND execution."logicalRole" = 'MEMORY_HISTORY_CLASSIFY'
           AND execution.state = 'SUCCEEDED' AND execution."acceptedOutputHash" IS NOT NULL) > 32)
+    OR (job.kind = 'INDEX_HISTORY'::"MemoryJobKind" AND job."workStage" = 'source_snapshot'
+      AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND job."errorCode" = 'memory_history_chunk_limit_exceeded'
+      AND NOT EXISTS (SELECT 1 FROM "MemoryExecutionBinding" execution
+        WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id))
   ), FALSE))`;
 }
 

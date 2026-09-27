@@ -5,6 +5,7 @@ import { prisma } from "../../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "./prismaRepository";
 import { readMemoryRecoveryStatus } from "./recoveryStatus";
 import { MEMORY_RECOVERY_DELAYS_MS } from "./recoveryPolicy";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { loadMemorySourceSnapshot } from "../sourceState";
 import { textMessageContent } from "../../../domain/content";
 import { createTestProviderExecutionAuthority, deleteTestProviderExecutionAuthority } from "@/tests/support/providerExecutionAuthority";
@@ -26,14 +27,169 @@ async function fixture() {
       ...overrides
     } }),
     cleanup: async () => {
+      await prisma.usageEvent.deleteMany({ where: { userId } });
       await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
       await prisma.user.delete({ where: { id: userId } });
     }
   };
 }
 
+async function currentHistorySource(f: Awaited<ReturnType<typeof fixture>>) {
+  const chat = await prisma.chat.create({ data: { userId: f.userId, title: "Synthetic history source" } });
+  const message = await prisma.message.create({ data: { chatId: chat.id, role: "user",
+    content: textMessageContent("Synthetic user statement"), createdAt: new Date(f.now.getTime() - 700_000) } });
+  await prisma.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: message.id } });
+  const source = await prisma.$transaction((tx) => loadMemorySourceSnapshot(tx, { chatId: chat.id, userId: f.userId }));
+  if (!source) throw new Error("memory_recovery_fixture_source_missing");
+  return { chat, job: (overrides: Partial<Prisma.MemoryJobUncheckedCreateInput> = {}) => f.job({
+    kind: "INDEX_HISTORY", chatId: chat.id, activeLeafMessageId: message.id,
+    branchGeneration: source.memoryBranchGeneration, sourceRevision: source.memorySourceRevision,
+    sourceHash: source.sourceHash, pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+    stage: "source_snapshot", errorCode: "memory_history_chunk_limit_exceeded", ...overrides
+  }) };
+}
+
 describe("Memory terminal recovery persistence", () => {
   afterAll(() => prisma.$disconnect());
+
+  it("recovers only the due chunk-limit job once, keeping its ID, failure evidence and retry budget", async () => {
+    const f = await fixture();
+    try {
+      const history = await currentHistorySource(f);
+      const job = await history.job({ completedAt: f.now });
+      let now = f.now;
+      for (let index = 0; index < MEMORY_RECOVERY_DELAYS_MS.length; index += 1) {
+        now = new Date(now.getTime() + MEMORY_RECOVERY_DELAYS_MS[index]!);
+        expect(await readMemoryRecoveryStatus(prisma, new Date(now.getTime() - 1)))
+          .toMatchObject({ eligible: 0, scheduled: 1, nextRetrySeconds: 1 });
+        expect(await f.repository.recoverEligibleJobs({ limit: 8, now: new Date(now.getTime() - 1) })).toBe(0);
+        expect(await readMemoryRecoveryStatus(prisma, now)).toMatchObject({ eligible: 1, scheduled: 0 });
+        const winners = await Promise.all([1, 2].map(() => f.repository.recoverEligibleJobs({ limit: 8, now })));
+        expect(winners.reduce((sum, count) => sum + count, 0)).toBe(1);
+        expect(await f.repository.recoverEligibleJobs({ limit: 8, now })).toBe(0);
+        expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({
+          state: "QUEUED", recoveryCount: index + 1, lastRecoveryAt: now,
+          recoveryErrorCode: "memory_history_chunk_limit_exceeded",
+          errorCode: "memory_history_chunk_limit_exceeded", attemptCount: 5, completedAt: null
+        });
+        expect(await prisma.memoryJob.count({ where: { userId: f.userId } })).toBe(1);
+        await prisma.memoryJob.update({ where: { id: job.id }, data: { state: "TERMINAL_FAILED", completedAt: now } });
+      }
+      expect(await readMemoryRecoveryStatus(prisma, now)).toMatchObject({ exhausted: 1, eligible: 0 });
+      expect(await f.repository.recoverEligibleJobs({ limit: 8, now: new Date(now.getTime() + 86400_000) })).toBe(0);
+    } finally { await f.cleanup(); }
+  });
+
+  it("does not admit chunk-limit failures with a different kind, stage, version or error", async () => {
+    const f = await fixture();
+    try {
+      const history = await currentHistorySource(f);
+      await history.job({ kind: "RECLASSIFY_FACTS" });
+      await history.job({ stage: "lexical_apply" });
+      await history.job({ pipelineVersion: "memory-history-incremental-v9" });
+      await history.job({ errorCode: "memory_history_path_limit_exceeded" });
+      await history.job({ errorCode: "memory_history_job_invalid" });
+      expect(await readMemoryRecoveryStatus(prisma, f.now)).toMatchObject({ permanent: 5, eligible: 0 });
+      expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now })).toBe(0);
+    } finally { await f.cleanup(); }
+  });
+
+  it("rejects every binding state on a chunk-limit job, including unstarted pending work", async () => {
+    const f = await fixture();
+    const authority = await createTestProviderExecutionAuthority(prisma, "history-chunk-limit-recovery");
+    try {
+      const history = await currentHistorySource(f);
+      for (const state of ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "OUTCOME_UNKNOWN"] as const) {
+        const job = await history.job();
+        const binding = await prisma.memoryExecutionBinding.create({ data: {
+          ...authority, userId: f.userId, memoryJobId: job.id, ownerType: "JOB", state, ordinal: 0,
+          logicalRole: "MEMORY_HISTORY_CLASSIFY", destinationFingerprint: "d".repeat(64),
+          inputHash: "a".repeat(64), acceptedOutputHash: state === "SUCCEEDED" ? "b".repeat(64) : null,
+          policyVersion: "fixture-v1", promptVersion: "fixture-v1", schemaVersion: "fixture-v1",
+          pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION, secretFreeExecutionSnapshot: {},
+          providerId: "openai_compatible", createdAt: job.createdAt,
+          startedAt: state === "PENDING" ? null : job.createdAt,
+          completedAt: state === "PENDING" || state === "RUNNING" ? null : f.now,
+          recoverableUntil: new Date(f.now.getTime() + 86400_000)
+        } });
+        if (state === "SUCCEEDED") await prisma.usageEvent.create({ data: {
+          memoryExecutionBindingId: binding.id, modelId: authority.providerModelId,
+          provider: "openai_compatible", providerModelId: authority.providerModelId, userId: f.userId
+        } });
+      }
+      expect(await readMemoryRecoveryStatus(prisma, f.now)).toMatchObject({ permanent: 6, eligible: 0 });
+      expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now })).toBe(0);
+    } finally {
+      await f.cleanup();
+      await deleteTestProviderExecutionAuthority(prisma, authority);
+    }
+  });
+
+  it.each([
+    "disabled_owner", "paused_setting", "master_pause", "history_pause", "generation",
+    "excluded", "deleted", "branch", "active_leaf", "source_hash", "deletion_barrier"
+  ] as const)("fences a chunk-limit job across %s", async (fence) => {
+    const f = await fixture();
+    try {
+      const history = await currentHistorySource(f);
+      const job = await history.job();
+      if (fence === "disabled_owner") await prisma.user.update({ where: { id: f.userId }, data: { status: "disabled" } });
+      if (fence === "paused_setting") await prisma.userMemorySettings.update({
+        where: { userId: f.userId }, data: { referenceChatHistory: false }
+      });
+      if (fence === "master_pause" || fence === "history_pause") await prisma.memoryPauseInterval.create({ data: {
+        userId: f.userId, scope: fence === "master_pause" ? "MASTER" : "SEARCH_HISTORY",
+        memoryGeneration: job.memoryGenerationSnapshot,
+        pausedAt: new Date(job.createdAt.getTime() - 1), resumedAt: f.now
+      } });
+      if (fence === "generation") await prisma.userMemorySettings.update({
+        where: { userId: f.userId }, data: { memoryGeneration: { increment: 1 } }
+      });
+      if (fence === "excluded") await prisma.chat.update({
+        where: { id: history.chat.id }, data: { memoryMode: "EXCLUDED" }
+      });
+      if (fence === "deleted") {
+        const deletion = await prisma.memoryDeletionOutbox.create({ data: {
+          userId: f.userId, operation: "SOURCE_PURGE", targetType: "CHAT@memory-chat-delete-v1",
+          targetId: history.chat.id, memoryGeneration: job.memoryGenerationSnapshot,
+          admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: job.sourceRevision,
+          alsoForgetOriginMemories: false
+        } });
+        await prisma.chat.update({
+          where: { id: history.chat.id }, data: {
+            archived: true, memoryMode: "EXCLUDED", permanentDeletionAt: f.now,
+            permanentDeletionOperationId: deletion.id
+          }
+        });
+      }
+      if (fence === "branch") await prisma.chat.update({
+        where: { id: history.chat.id }, data: { memoryBranchGeneration: { increment: 1 } }
+      });
+      if (fence === "active_leaf") await prisma.chat.update({
+        where: { id: history.chat.id }, data: { activeLeafMessageId: null }
+      });
+      if (fence === "source_hash") await prisma.memoryJob.update({
+        where: { id: job.id }, data: { sourceHash: "f".repeat(64) }
+      });
+      if (fence === "deletion_barrier") await prisma.memorySourceBarrier.create({ data: {
+        userId: f.userId, kind: "HISTORY_INDEX", memoryGeneration: job.memoryGenerationSnapshot,
+        sourceCreatedAtCutoff: f.now
+      } });
+      expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now })).toBe(0);
+      expect(await readMemoryRecoveryStatus(prisma, f.now)).toMatchObject({ obsolete: 1, eligible: 0 });
+      expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({
+        state: fence === "source_hash" ? "STALE" : "TERMINAL_FAILED",
+        recoveryCount: 0
+      });
+    } finally {
+      await prisma.memoryJob.deleteMany({ where: { userId: f.userId } });
+      await prisma.chat.updateMany({ where: { userId: f.userId }, data: { activeLeafMessageId: null } });
+      await prisma.message.deleteMany({ where: { chat: { userId: f.userId } } });
+      await prisma.chat.deleteMany({ where: { userId: f.userId } });
+      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: f.userId } });
+      await f.cleanup();
+    }
+  });
 
   it("has one winner under concurrent recovery and retains the original failure and attempt history", async () => {
     const f = await fixture();

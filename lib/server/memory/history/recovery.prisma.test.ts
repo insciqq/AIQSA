@@ -212,6 +212,46 @@ async function assertRecall(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("history recovery without repeated provider work", () => {
+  it("recovers a chunk-limit snapshot failure through the worker and dispatches new work only once", async () => {
+    const f = await fixture();
+    const errorCode = "memory_history_chunk_limit_exceeded";
+    await f.drive({
+      ...f.handler(),
+      async execute(_claim, context) {
+        await context.setStage("source_snapshot");
+        throw new MemoryCoordinatorError(errorCode, false);
+      }
+    });
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({
+      state: "TERMINAL_FAILED", stage: "source_snapshot", errorCode
+    });
+    expect(f.run).not.toHaveBeenCalled();
+    expect(await prisma.memoryExecutionBinding.count({ where: { userId: f.userId } })).toBe(0);
+    expect((await readAdminMemoryProcessing(prisma, f.now())).issues).toContainEqual(
+      expect.objectContaining({ stage: "HISTORY", reason: "PROCESSING_FAILED" })
+    );
+    f.advance();
+    expect(await readMemoryRecoveryStatus(prisma, f.now())).toMatchObject({ eligible: 1 });
+    await f.drive();
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({
+      state: "SUCCEEDED", recoveryCount: 1, recoveryErrorCode: errorCode, lastRecoveryAt: f.now()
+    });
+    expect(f.run).toHaveBeenCalledTimes(3);
+    const bindings = await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+    const usage = await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+    expect(bindings).toHaveLength(3);
+    expect(usage).toHaveLength(3);
+    expect(bindings.every(({ state }) => state === "SUCCEEDED")).toBe(true);
+    await f.drive();
+    expect(f.run).toHaveBeenCalledTimes(3);
+    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(bindings);
+    expect(await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(usage);
+    expect((await readAdminMemoryProcessing(prisma, f.now())).issues).not.toContainEqual(
+      expect.objectContaining({ stage: "HISTORY", reason: "PROCESSING_FAILED" })
+    );
+    await assertRecall(f);
+  });
+
   it("keeps incomplete history and a failed auto-heal successor as separate admin issues", async () => {
     const f = await fixture();
     f.run.mockResolvedValueOnce({ output: {}, providerResponseId: null,

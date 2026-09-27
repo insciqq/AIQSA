@@ -10,7 +10,11 @@ import {
 } from "../../../domain/memory/retrieval";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { prisma } from "../../prisma";
+import { readAdminMemoryProcessing } from "../../admin/memory/processingRepository";
+import { defaultMemoryConsumerService } from "../consumer/defaultConsumer";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
+import { MEMORY_RECOVERY_DELAYS_MS } from "../coordinator/recoveryPolicy";
+import { readMemoryRecoveryStatus } from "../coordinator/recoveryStatus";
 import type { MemoryJobClaim } from "../coordinator/types";
 import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
@@ -2247,10 +2251,17 @@ describe("Memory lexical history index persistence", () => {
     }
   }, 90_000);
 
-  it("[L07] indexes a long chat in bounded cursor pages resumed through backfill", async () => {
+  it.each(["fresh", "recovered chunk limit"] as const)(
+    "[L07] indexes a %s long chat in bounded cursor pages resumed through backfill", async (mode) => {
     const userId = await createOwner("memory-history-paged");
     try {
       const { chat, turns } = await createPagedHistoryChat(userId, 6);
+      await defaultMemoryConsumerService.create(userId, {
+        requestId: randomUUID(), statement: "I prefer pottery classes on Saturdays."
+      });
+      const factsBefore = await prisma.memoryFact.findMany({ where: { userId } });
+      const versionsBefore = await prisma.memoryFactVersion.findMany({ where: { userId } });
+      expect(factsBefore).toHaveLength(1);
       const pathIds = turns.flatMap((turn) =>
         [turn.userMessage.id, turn.assistantMessage.id]);
       let firstPageEntries: Array<{
@@ -2310,6 +2321,31 @@ describe("Memory lexical history index persistence", () => {
         await expect(prisma.memorySearchEntry.count({ where: { userId } }))
           .resolves.toBe(entryCount);
         await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+        if (mode === "recovered chunk limit" && jobs === 1) {
+          // The old writer could fail before dispatch while extending a valid
+          // indexed prefix. Seed that persisted shape, then use normal recovery.
+          const now = new Date();
+          const errorCode = "memory_history_chunk_limit_exceeded";
+          await prisma.memoryJob.update({
+            data: {
+              completedAt: new Date(now.getTime() - MEMORY_RECOVERY_DELAYS_MS[0]!),
+              errorCode, stage: "source_snapshot", state: "TERMINAL_FAILED"
+            },
+            where: { id: claim.id }
+          });
+          expect(await prisma.memoryExecutionBinding.count({ where: { memoryJobId: claim.id } })).toBe(0);
+          await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+          expect((await readAdminMemoryProcessing(prisma, now)).issues).toContainEqual(
+            expect.objectContaining({ stage: "HISTORY", reason: "PROCESSING_FAILED" })
+          );
+          expect(await readMemoryRecoveryStatus(prisma, now)).toMatchObject({ eligible: 1 });
+          const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
+          expect(await coordinator.recoverEligibleJobs({ limit: 8, now })).toBe(1);
+          expect(await coordinator.recoverEligibleJobs({ limit: 8, now })).toBe(0);
+          expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: claim.id } })).toMatchObject({
+            state: "QUEUED", recoveryCount: 1, recoveryErrorCode: errorCode, lastRecoveryAt: now
+          });
+        }
       }
       expect(jobs).toBeGreaterThan(2);
 
@@ -2323,6 +2359,11 @@ describe("Memory lexical history index persistence", () => {
       await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
         .resolves.toMatchObject({ completedChats: 1, state: "READY", totalChats: 1 });
       await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+      expect((await readAdminMemoryProcessing(prisma, new Date())).issues).not.toContainEqual(
+        expect.objectContaining({ stage: "HISTORY", reason: "PROCESSING_FAILED" })
+      );
+      expect(await prisma.memoryFact.findMany({ where: { userId } })).toEqual(factsBefore);
+      expect(await prisma.memoryFactVersion.findMany({ where: { userId } })).toEqual(versionsBefore);
       // Search artifacts of completed pages were retained, not re-created.
       await expect(prisma.memorySearchEntry.findMany({
         orderBy: { id: "asc" },
