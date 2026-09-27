@@ -319,7 +319,9 @@ describe("Conversation v2", () => {
     expect(screen.getByRole("menuitem", { name: "Branch from here" })).toBeDisabled();
     const menu = screen.getByRole("menu", { name: "Answer menu" });
     await waitFor(() => expect(menu).toHaveFocus());
-    fireEvent.keyDown(menu, { key: "Escape" });
+    // Browser focus can still be on the trigger while the menu is positioned.
+    more.focus();
+    fireEvent.keyDown(more, { key: "Escape" });
     await waitFor(() => expect(more).toHaveFocus());
     expect(screen.queryByRole("menu", { name: "Answer menu" })).toBeNull();
   });
