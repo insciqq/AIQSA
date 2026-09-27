@@ -2,12 +2,17 @@ import { memorySha256 } from "../persistence/lexical";
 import type { MemorySecretSourceMapEntry } from "../explicit/safety";
 import { detectMemoryTextLanguage, type MemoryTextLanguage } from "./language";
 import {
-  projectMemoryHistorySafeRecallGroupText,
-  projectMemoryHistorySafeText,
+  MEMORY_HISTORY_UNPROCESSED_TEXT_REASON,
+  memoryHistorySafeTextsJoinSafely,
+  projectMemoryHistorySourceText,
   type MemoryDerivedSafetyClass,
   type MemoryRedactionState
 } from "./safety";
 
+// Up to 100k code units per message the windowed projection is the former
+// single pass, so persisted v6 artifacts stay exact. Longer messages were
+// excluded before and own no v6 artifacts; existing checkpoints are not
+// force-rebuilt for them, which would re-embed all history.
 export const MEMORY_HISTORY_SOURCE_PROJECTION_VERSION =
   "memory-history-source-projection-v6";
 
@@ -433,14 +438,18 @@ function evaluateMessages(
     if (!extracted) reasons.add("MESSAGE_CONTENT_INVALID");
     const hash = contentHash(input.content);
     let projected: MemoryHistoryProjectedMessage | null = null;
+    // A settled message too large to scan is unprocessed, not tainted: its
+    // reply is screened on its own and never supplies fact testimony.
+    let sizeOnlyIneligible = false;
     if (
       reasons.size === 0 &&
       extracted &&
       (input.role === "user" || input.role === "assistant")
     ) {
-      const safety = projectMemoryHistorySafeText(extracted.text);
+      const safety = projectMemoryHistorySourceText(extracted.text);
       if (!safety.eligible) {
         for (const reason of safety.redactionReasonCodes) reasons.add(reason);
+        sizeOnlyIneligible = safety.processingState === "OVERSIZE";
       } else {
         projected = {
           contentHash: hash,
@@ -466,9 +475,13 @@ function evaluateMessages(
         if (extracted.attachmentBlocksOmitted) {
           reasons.add("ATTACHMENT_BLOCK_OMITTED");
         }
+        if (safety.processingState === "PARTIAL") {
+          reasons.add(MEMORY_HISTORY_UNPROCESSED_TEXT_REASON);
+        }
       }
     }
-    const tainted = projected === null || transitiveTaint || directTaintSources.length > 0;
+    const tainted = (projected === null && !sizeOnlyIneligible) ||
+      transitiveTaint || directTaintSources.length > 0;
     evaluated.push({
       contentHash: hash,
       createdAt,
@@ -503,8 +516,12 @@ function recallTurnGroups(evaluated: EvaluatedMessage[]): MemoryHistoryRecallTur
     const occurredFrom = selected[0]!.createdAt;
     const occurredTo = selected.at(-1)!.createdAt;
     if (occurredTo < occurredFrom) fail("memory_history_turn_time_invalid");
-    const groupSafety = projectMemoryHistorySafeRecallGroupText(combinedText);
-    if (!groupSafety.eligible || groupSafety.safeText !== combinedText) {
+    // Each message is already projected; only their join can form a new
+    // secret. A long turn is never excluded for its combined length.
+    if (paired && !memoryHistorySafeTextsJoinSafely(
+      messages[0]!.safeText,
+      messages[1]!.safeText
+    )) {
       for (const message of selected) {
         message.reasonCodes = uniqueSorted([
           ...message.reasonCodes,
@@ -551,12 +568,15 @@ function factEvidenceMessages(evaluated: EvaluatedMessage[]): MemoryHistoryProje
     !message.transitiveTaint &&
     message.projected.safetyClass === "NORMAL");
   const excludedWindowMessageIds = new Set<string>();
+  // Neighbouring user texts are scanned across their boundary for a secret
+  // split between them; the size of either never excludes the other.
   for (let index = 1; index < candidates.length; index += 1) {
     const previous = candidates[index - 1]!;
     const current = candidates[index]!;
-    const windowText = `${previous.projected!.safeText}\n\n${current.projected!.safeText}`;
-    const safety = projectMemoryHistorySafeText(windowText);
-    if (!safety.eligible || safety.safeText !== windowText) {
+    if (!memoryHistorySafeTextsJoinSafely(
+      previous.projected!.safeText,
+      current.projected!.safeText
+    )) {
       excludedWindowMessageIds.add(previous.input.id);
       excludedWindowMessageIds.add(current.input.id);
     }

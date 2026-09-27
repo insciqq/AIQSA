@@ -11,7 +11,9 @@ import {
   type MemorySafeSourceSnapshot
 } from "./sourceProjection";
 import {
-  projectMemoryHistorySafeRecallGroupText,
+  MEMORY_HISTORY_UNPROCESSED_TEXT_REASON,
+  memoryHistoryProjectedTextIsStable,
+  memoryHistorySafeTextsJoinSafely,
   projectMemoryHistorySafeText
 } from "./safety";
 
@@ -363,9 +365,14 @@ function groupIsSafe(group: MemoryHistoryRecallTurnGroup): boolean {
   if (memorySha256(combinedText) !== group.safeTextHash) {
     fail("memory_history_turn_group_invalid");
   }
-  const safety = projectMemoryHistorySafeRecallGroupText(combinedText);
-  return safety.eligible && safety.safeText === combinedText &&
-    safety.providerSafeText === combinedText;
+  // Rescan each message in bounded windows and their join; a long turn is
+  // never rejected for its combined length.
+  return group.messages.every((message) =>
+    memoryHistoryProjectedTextIsStable(message.safeText)) &&
+    (group.messages.length === 1 || memoryHistorySafeTextsJoinSafely(
+      group.messages[0]!.safeText,
+      group.messages[1]!.safeText
+    ));
 }
 
 function chunkTextPassesSafety(text: string): boolean {
@@ -480,6 +487,9 @@ export type MemoryRecallChunkPage = Readonly<{
   complete: boolean;
   /** Messages with source ranges only in chunks beyond the returned prefix. */
   omittedMessageIds: readonly string[];
+  /** Messages in the returned chunks whose projection withholds unscanned
+   * source behind the unprocessed marker; reported like a truncated prefix. */
+  withheldMessageIds: readonly string[];
 }>;
 
 function pieceKey(piece: Piece): string {
@@ -498,7 +508,7 @@ export function chunkMemoryRecallProjectionPage(
 ): MemoryRecallChunkPage {
   validateSnapshot(snapshot);
   if (snapshot.mode !== "NORMAL") {
-    return { chunks: [], complete: true, omittedMessageIds: [] };
+    return { chunks: [], complete: true, omittedMessageIds: [], withheldMessageIds: [] };
   }
   const resolvedOptions = optionsWithDefaults(options);
   const safeGroupSegments = admittedGroupSegments(
@@ -519,10 +529,16 @@ export function chunkMemoryRecallProjectionPage(
     .flatMap((piece) => selectedPieces.has(pieceKey(piece))
       ? []
       : [piece.message.id]));
+  const withheldMessageIds = uniqueSorted(selected
+    .flatMap((chunk) => chunk.pieces)
+    .flatMap((piece) => piece.message.redactionReasonCodes.includes(
+      MEMORY_HISTORY_UNPROCESSED_TEXT_REASON
+    ) ? [piece.message.id] : []));
   return {
     chunks: renderPlannedChunks(snapshot, selected, resolvedOptions),
     complete: selected.length === planned.length,
-    omittedMessageIds
+    omittedMessageIds,
+    withheldMessageIds
   };
 }
 

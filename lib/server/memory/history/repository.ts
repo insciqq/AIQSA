@@ -1188,7 +1188,7 @@ async function prepareWith(
   const chunkPageOf = (
     candidate: ReturnType<typeof buildPage>
   ): MemoryRecallChunkPage => candidate.messages.length === 0
-    ? { chunks: [], complete: true, omittedMessageIds: [] }
+    ? { chunks: [], complete: true, omittedMessageIds: [], withheldMessageIds: [] }
     : chunkMemoryRecallProjectionPage(
         candidate.snapshot,
         { maxChunks: limits.maxChunks },
@@ -1217,7 +1217,12 @@ async function prepareWith(
     page = buildPage(pageStart, pageEnd);
     chunkPage = chunkPageOf(page);
   }
-  const truncatedMessageIds = chunkPage.complete ? [] : chunkPage.omittedMessageIds;
+  // A message whose indexed text withholds unscanned source (too large to
+  // scan in bounded windows) is reported like an indivisible truncated unit.
+  const truncatedMessageIds = [...new Set([
+    ...(chunkPage.complete ? [] : chunkPage.omittedMessageIds),
+    ...chunkPage.withheldMessageIds
+  ])].sort();
   const messages = page.messages;
   const tailSnapshot = page.snapshot;
   const projectedChunks = chunkPage.chunks.map(

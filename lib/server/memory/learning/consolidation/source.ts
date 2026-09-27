@@ -9,7 +9,7 @@ import {
   memoryValueContainsRecognizedSecret,
   redactMemorySecrets
 } from "../../explicit/safety";
-import { projectMemoryHistorySafeText } from "../../history/safety";
+import { projectMemoryHistorySourceText } from "../../history/safety";
 import {
   memorySha256,
   memoryStableJson,
@@ -491,7 +491,7 @@ async function loadCandidate(
     if (v1Candidate && item.messageId !== currentDirectUserMessageId) return null;
     const text = extractDirectText(item.content);
     if (item.role !== "user" || item.status !== "complete" || text === null) return null;
-    const projected = projectMemoryHistorySafeText(text);
+    const projected = projectMemoryHistorySourceText(text);
     if (
       !projected.eligible || projected.safetyClass !== "NORMAL" ||
       memorySha256(projected.safeText) !== item.sourceTextHash ||
