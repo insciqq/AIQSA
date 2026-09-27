@@ -53,7 +53,7 @@ import {
   type ProviderStreamSafetyReport
 } from "../providers/streamSafety";
 import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservability";
-import { observedFailure } from "../providers/providerObservability";
+import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { logEvent, runWithContext } from "../observability";
 import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
 import { logRunPersistence, runDatabaseFailureCode } from "./runObservability";
@@ -185,7 +185,12 @@ import type {
   RunUsageAttribution
 } from "./runRepositoryContract";
 import { UNAVAILABLE_CHAT_WORKSPACE_STATE } from "../../contracts/workspace";
-import { answerDispatchStarted, beforeAnswerDispatch, runProviderToolLoop as continueProviderToolLoop } from "./providerToolLoop";
+import {
+  answerDispatchStarted,
+  beforeAnswerDispatch,
+  runProviderToolLoop as continueProviderToolLoop,
+  unpaidContextRejection
+} from "./providerToolLoop";
 import {
   parsePersistedToolExecutionResult,
   settleableToolExecutionResult,
@@ -979,8 +984,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           rememberReportedUsage(request.provider, request.modelId, usage);
           return { ...next.value, usage };
         } catch (error) {
-          // A request refused before dispatch is no operation.
-          if (lastReportedUsage !== null || answerDispatchStarted(error)) {
+          // A request refused before dispatch is no operation; a provider's
+          // HTTP context-length refusal is unpaid and invents no usage.
+          if (unpaidContextRejection(error, lastReportedUsage)?.httpStatus === undefined &&
+            (lastReportedUsage !== null || answerDispatchStarted(error))) {
             rememberReportedUsage(request.provider, request.modelId,
               normalizeTokenUsage({ ...(lastReportedUsage ?? {}), completeness: "partial" }));
           }
@@ -2098,6 +2105,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           }
         };
         const outcome = await continueProviderToolLoop({
+          // Every checkpoint of a v1 non-Agent run carries the rebuild record.
+          allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
           deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
@@ -3474,7 +3483,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 : pipelineError?.message ?? (isWorkspaceOperationFailureCode(failureCode)
                   ? workspaceOperationFailureMessage(failureCode)
                   : deadlineExceeded ? "The provider request timed out. Its outcome may be unknown."
-                    : "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."))
+                    : providerHttpFailureMessage(failure) ??
+                      "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."))
             };
         if (streamSafetyReport) {
           const snapshot = input.prepared.providerAdmissionPlan.answer.snapshot;

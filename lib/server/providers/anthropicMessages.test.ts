@@ -37,6 +37,48 @@ describe("Anthropic explicit capability rejection", () => {
   });
 });
 
+describe("Anthropic context-length rejection", () => {
+  const sentinel = "PRIVATE_PROVIDER_MESSAGE_CANARY";
+
+  it.each([
+    ["prompt is too long: 208000 tokens > 200000 maximum", { reportedMaximumTokens: 200_000, reportedPromptTokens: 208_000 }],
+    ["input length and `max_tokens` exceed context limit: 188240 + 21333 > 200000, decrease input length or `max_tokens` and try again",
+      { reportedMaximumTokens: 200_000, reportedPromptTokens: 188_240 }]
+  ])("classifies the HTTP 400 invalid_request_error %# for unary and streaming requests", async (message, counts) => {
+    const client = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () =>
+      Response.json({ type: "error", error: { type: "invalid_request_error", message: `${message} ${sentinel}` },
+        request_id: `req_${sentinel}` }, { status: 400 }) });
+    for (const send of [() => client.createMessage({}), () => client.stream({}).next()]) {
+      const failure = await send().catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: "provider_context_length_exceeded", httpStatus: 400, ...counts,
+        message: "Anthropic request failed with status 400" });
+      expect(JSON.stringify(failure)).not.toContain(sentinel);
+      expect(String(failure)).not.toContain(sentinel);
+    }
+  });
+
+  it("classifies the sentence without stated counts", async () => {
+    const client = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () =>
+      Response.json({ type: "error", error: { type: "invalid_request_error", message: `prompt is too long ${sentinel}` } }, { status: 400 }) });
+    const failure = await client.createMessage({}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "provider_context_length_exceeded", httpStatus: 400 });
+    expect(failure).not.toHaveProperty("reportedPromptTokens");
+    expect(failure).not.toHaveProperty("reportedMaximumTokens");
+    expect(JSON.stringify(failure)).not.toContain(sentinel);
+  });
+
+  it("keeps other invalid requests and non-400 statuses unclassified", async () => {
+    for (const [status, type] of [[400, "invalid_request_error"], [413, "request_too_large"], [500, "api_error"]] as const) {
+      const client = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () =>
+        Response.json({ type: "error", error: { type, message: status === 400 ? `messages: text content blocks must be non-empty ${sentinel}`
+          : `prompt is too long: 208000 tokens > 200000 maximum ${sentinel}` } }, { status }) });
+      const failure = await client.createMessage({}).catch((error: unknown) => error);
+      expect(failure).not.toHaveProperty("code");
+      expect(JSON.stringify(failure)).not.toContain(sentinel);
+    }
+  });
+});
+
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
     attachmentIds: [],
@@ -1086,7 +1128,13 @@ describe("Anthropic Messages adapter", () => {
         await collectAdapterStream(client, DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars);
         throw new Error("Expected Anthropic terminal failure.");
       } catch (error) {
-        expect(error).toEqual(new Error(`anthropic_message_${stopReason}`));
+        // The window reached during generation shares the stable context-length
+        // identity, without an HTTP status: it is never a pre-generation refusal.
+        expect(error).toEqual(stopReason === "model_context_window_exceeded"
+          ? Object.assign(new Error(`anthropic_message_${stopReason}`), { code: "provider_context_length_exceeded" })
+          : new Error(`anthropic_message_${stopReason}`));
+        expect(error).not.toHaveProperty("httpStatus");
+        expect(JSON.stringify(error)).not.toContain(providerDetail);
         expect(String(error)).not.toContain(providerDetail);
       }
     }

@@ -26,6 +26,86 @@ const openRouterRoutingMessages = {
     "OpenRouter has no endpoint matching the request's routing requirements. Ask an administrator to review the selected model's routing settings before retrying."
 } as const;
 
+export const PROVIDER_CONTEXT_LENGTH_EXCEEDED = "provider_context_length_exceeded";
+
+/** Token counts a provider stated in a context-length rejection, carried as
+ * own error properties beside the stable code. */
+export type ProviderContextLengthCounts = Readonly<{
+  reportedMaximumTokens?: number;
+  reportedPromptTokens?: number;
+}>;
+
+/** A positive token count no larger than any real context window. */
+export function reportedContextTokens(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 100_000_000 ? value : undefined;
+}
+
+function contextLengthCounts(prompt: unknown, maximum: unknown): ProviderContextLengthCounts {
+  const reportedPromptTokens = reportedContextTokens(typeof prompt === "string" ? Number(prompt) : prompt);
+  const reportedMaximumTokens = reportedContextTokens(typeof maximum === "string" ? Number(maximum) : maximum);
+  return {
+    ...(reportedMaximumTokens !== undefined ? { reportedMaximumTokens } : {}),
+    ...(reportedPromptTokens !== undefined ? { reportedPromptTokens } : {})
+  };
+}
+
+/** Reviewed rejection sentences; the prompt and maximum counts are taken
+ * only where the sentence states them. */
+function contextLengthMessage(message: string): ProviderContextLengthCounts | null {
+  // Anthropic Messages: "prompt is too long: P tokens > M maximum"; older
+  // models: "input length and `max_tokens` exceed context limit: P + O > M".
+  if (/^prompt is too long\b/iu.test(message)) {
+    const counts = /^prompt is too long: (\d{1,9}) tokens > (\d{1,9}) maximum/iu.exec(message);
+    return contextLengthCounts(counts?.[1], counts?.[2]);
+  }
+  let match = /^input length and `?max_tokens`? exceed context limit: (\d{1,9}) \+ \d{1,9} > (\d{1,9})/iu.exec(message);
+  if (match) return contextLengthCounts(match[1], match[2]);
+  // Gemini: "The input token count (P) exceeds the maximum number of tokens
+  // allowed (M)"; Vertex: "... the input token count is P but model only
+  // supports up to M". Kept for other Google endpoints and wordings: the
+  // Gemini Interactions API answers an oversized input with its generic
+  // `invalid_request` envelope instead (see geminiInteractionsTransport.ts).
+  if (/\binput token count\b[^.]{0,120}?\b(?:exceeds the maximum number of tokens|only supports up to)\b/iu.test(message)) {
+    return contextLengthCounts(/\binput token count\s*(?:is\s*)?\(?(\d{1,9})\)?/iu.exec(message)?.[1],
+      /\b(?:tokens allowed|supports up to)\s*\(?(\d{1,9})\)?/iu.exec(message)?.[1]);
+  }
+  // OpenAI-style (Chat Completions, DeepSeek, OpenRouter): "maximum context
+  // length is M tokens. However, you requested T tokens (P in the messages,
+  // O in the completion)", "your messages resulted in P tokens" or
+  // "requested about T tokens (P of text input, ...)".
+  match = /\bmaximum context length is (\d{1,9}) tokens\b/iu.exec(message);
+  if (match) {
+    const prompt = /\((\d{1,9}) (?:in the messages|of text input)\b/iu.exec(message) ??
+      /\b(?:resulted in|requested(?: about)?) (\d{1,9}) tokens\b/iu.exec(message);
+    return contextLengthCounts(prompt?.[1], match[1]);
+  }
+  // OpenAI: "Input tokens exceed the configured limit of M tokens. Your messages resulted in P tokens."
+  match = /\binput tokens exceed the configured limit of (\d{1,9}) tokens\b/iu.exec(message);
+  return match ? contextLengthCounts(/\bresulted in (\d{1,9}) tokens\b/iu.exec(message)?.[1], match[1]) : null;
+}
+
+/**
+ * Classifies a provider error detail as a context-length rejection, in memory:
+ * the explicit OpenAI `context_length_exceeded` code or a reviewed message
+ * shape. Only the bounded counts leave; the message and body never do.
+ */
+export function providerContextLengthRejection(
+  detail: Readonly<Record<string, unknown>> | null | undefined
+): ProviderContextLengthCounts | null {
+  if (!detail) return null;
+  const counts = contextLengthMessage(typeof detail.message === "string" ? detail.message.slice(0, 2_048) : "");
+  return counts ?? (detail.code === "context_length_exceeded" ? {} : null);
+}
+
+/** The reviewed context-length facts of a classified failure, for a transport
+ * error that re-wraps it. */
+export function providerContextLengthFacts(failure: unknown): Readonly<{ code: typeof PROVIDER_CONTEXT_LENGTH_EXCEEDED } & ProviderContextLengthCounts> | null {
+  if (typeof failure !== "object" || failure === null || !("code" in failure) ||
+    failure.code !== PROVIDER_CONTEXT_LENGTH_EXCEEDED) return null;
+  const value = failure as ProviderContextLengthCounts;
+  return { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLengthCounts(value.reportedPromptTokens, value.reportedMaximumTokens) };
+}
+
 export function openRouterRoutingFailureCode(value: unknown): keyof typeof openRouterRoutingMessages | null {
   const code = typeof value === "object" && value !== null && "code" in value ? value.code : null;
   return typeof code === "string" && Object.hasOwn(openRouterRoutingMessages, code)
@@ -62,6 +142,8 @@ export function providerResponseFailure(
     const code = parameters ? "openrouter_required_parameters_unavailable" : "openrouter_routing_unavailable";
     return Object.assign(new Error(openRouterRoutingFailureMessage(code)), { code });
   }
+  // A streamed `error` event carries its code and message at the top level.
+  const contextLength = providerContextLengthRejection(detail ?? (response.type === "error" ? response : null));
   const hasUnsupportedMessage = unsupportedMessage.test(messageText);
   const explicitlyBlocked = typeof detail?.code === "string" && blockedCodes.has(detail.code) ||
     incomplete?.reason === "content_filter" || accessFailureMessage.test(messageText) ||
@@ -69,6 +151,7 @@ export function providerResponseFailure(
   const explicitlyUnsupported = typeof detail?.code === "string" && unsupportedCodes.has(detail.code) ||
     hasUnsupportedMessage && capabilityMessage.test(messageText);
   const code = response.status === "cancelled" ? "provider_response_cancelled"
+    : contextLength ? PROVIDER_CONTEXT_LENGTH_EXCEEDED
     : explicitlyBlocked ? "provider_response_not_retryable"
       : explicitlyUnsupported ? "provider_capability_unsupported"
         : hasUnsupportedMessage ? "provider_response_not_retryable" : undefined;
@@ -81,6 +164,6 @@ export function providerResponseFailure(
   const refusal = incomplete?.reason === "content_filter" || detail?.code === "content_filter" ||
     choiceRecord?.finish_reason === "content_filter" || typeof choiceMessage?.refusal === "string" && choiceMessage.refusal.length > 0;
   const capabilityFailureReason = refusal ? "refusal" : incomplete?.reason === "max_output_tokens" || choiceRecord?.finish_reason === "length" ? "budget_exhausted" : undefined;
-  return Object.assign(new Error(message), code ? { code } : {}, unsupportedInput ? { unsupportedInput: true } : {},
+  return Object.assign(new Error(message), code ? { code } : {}, contextLength ?? {}, unsupportedInput ? { unsupportedInput: true } : {},
     capabilityFailureReason ? { capabilityFailureReason } : {});
 }

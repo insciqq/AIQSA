@@ -45,10 +45,10 @@ function boundedSignal(parent?: AbortSignal) {
  * the object size. A Search restore and a source load hold it all. */
 const STREAMED_READ_BYTES = 128 * 1024;
 
-const OBSERVED_CODES = Object.freeze({ busy: "tool_observation_busy", limit: "tool_observation_limit_exceeded",
+const OBSERVED_CODES = Object.freeze({ busy: "tool_observation_busy", budget_degraded: "tool_observation_budget_degraded",
   waited: "tool_observation_waiting", store_failed: "tool_observation_store_failed" });
 
-/** Content-free store/limit/queue counters. Skills are source-owned and never
+/** Content-free store/budget/queue counters. Skills are source-owned and never
  * reach object storage or the branch budget. */
 function observe(source: string, event: keyof typeof OBSERVED_CODES): void {
   if (source !== "mcp" && source !== "workspace" && source !== "search" && source !== "knowledge") return;
@@ -58,9 +58,9 @@ function observe(source: string, event: keyof typeof OBSERVED_CODES): void {
     return;
   }
   logEvent("tool_execution", { tool_kind: source, stage: "admission", code,
-    outcome: event === "waited" ? "degraded" : "failed",
-    reason: event === "limit" ? "policy" : "safety_limit",
-    action: event === "waited" ? "wait" : event === "busy" ? "retry" : "fail" });
+    outcome: event === "busy" ? "failed" : "degraded",
+    reason: event === "budget_degraded" ? "policy" : "safety_limit",
+    action: event === "busy" ? "retry" : event === "waited" ? "wait" : "degrade" });
 }
 
 type ReaderResponse = Readonly<{
@@ -138,7 +138,8 @@ export function createToolObservationService(input: Readonly<{
      * business call whose successful result later cannot be saved. The
      * business call itself holds no admission capacity: only the storage
      * phase of an externalized original does. A repeated reservation never
-     * calls a generic source's callback: recovery must use its receipt. */
+     * calls a generic source's callback: recovery must use its receipt. An
+     * exhausted retained-bytes budget never refuses the callback either. */
     async withReservation<T>(options: Readonly<{
       producer: ObservationProducer;
       source: ToolObservationSource;
@@ -147,8 +148,16 @@ export function createToolObservationService(input: Readonly<{
       sourceOwned?: boolean;
       signal?: AbortSignal;
     }>, work: (receipt: Readonly<{
+      /** False when the run or branch budget could not admit an original:
+       * use `recordUnretained` instead of `store`, and deliver the executed
+       * result as Off does, bounded like a persisted Off result, without a
+       * descriptor, so it is never masked or recalled. */
+      retained: boolean;
       store(value: Readonly<{ original: unknown; outcome: "complete" | "error";
         sourceTruncated: boolean; maskable: boolean }>): Promise<ToolObservationProjection>;
+      /** Keeps an unretained call's executed outcome as its no-replay receipt
+       * and closes the reservation without an original. */
+      recordUnretained(outcome: "complete" | "error"): Promise<void>;
       /** Null when this owner's result cannot be published; the owner's
        * admitted result then stands without a reader descriptor. */
       storeSource(value: Readonly<{ outcome: "complete" | "error"; sourceTruncated: boolean; maskable: boolean }>): Promise<ToolObservationProjection | null>;
@@ -164,23 +173,22 @@ export function createToolObservationService(input: Readonly<{
         throw new ObservationStoreError("tool_observation_busy");
       }
       signal?.throwIfAborted();
-      const reservation = await repository.reserve(producer, options.source, options.maximumBytes, options.sourceBinding)
-        .catch((error: unknown) => {
-          if (error instanceof ObservationStoreError && error.code === "tool_observation_limit_exceeded") observe(options.source, "limit");
-          throw error;
-        });
+      const reservation = await repository.reserve(producer, options.source, options.maximumBytes, options.sourceBinding);
       // Only a source owner's own claim may execute its producer again (for
       // example a Skill load after a crash); without a fresh reservation it
       // publishes nothing and never touches the earlier attempt's row.
       if (!reservation.claimed && !options.sourceOwned) throw new ObservationStoreError("tool_observation_conflict");
       const publishable = reservation.claimed;
+      const retained = reservation.degraded !== true;
+      if (!retained) observe(options.source, "budget_degraded");
+      // Published, or closed without an original.
       let stored = false;
       let attempted = false;
       let receiptFailed = false;
       let token: string | undefined;
       const store = async (value: Readonly<{ original: unknown; outcome: "complete" | "error";
         sourceTruncated: boolean; maskable: boolean }>): Promise<ToolObservationProjection> => {
-        if (attempted || !publishable) throw new ObservationStoreError("tool_observation_conflict");
+        if (attempted || !publishable || !retained) throw new ObservationStoreError("tool_observation_conflict");
         attempted = true;
         // Preserve known execution independently of storage or Stop.
         await repository.recordOutcome(producer, value.outcome);
@@ -225,8 +233,16 @@ export function createToolObservationService(input: Readonly<{
             onWait: () => observe(options.source, "waited") })
           : publish();
       };
+      const recordUnretained = async (outcome: "complete" | "error"): Promise<void> => {
+        if (attempted || !publishable || retained) throw new ObservationStoreError("tool_observation_conflict");
+        attempted = true;
+        await repository.recordOutcome(producer, outcome);
+        signal?.throwIfAborted();
+        await repository.unavailable(producer, OBSERVED_CODES.budget_degraded);
+        stored = true;
+      };
       try {
-        const result = await work({ store, async recordSearch(result) {
+        const result = await work({ retained, store, recordUnretained, async recordSearch(result) {
           if (options.source !== "search" || !publishable) throw unavailable();
           try {
             await repository.recordSearchReceipt(producer, searchObservationReceipt(result));

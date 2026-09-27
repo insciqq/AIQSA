@@ -83,9 +83,9 @@ describe("store budgets bound externalized bytes, not calls", () => {
   it("keeps the per-run bound on retained bytes and the branch bound unchanged", () => {
     const limits = MCP_RESPONSE_WIRE_LIMIT_CEILINGS;
     const ceiling = mcpObservationMaximumBytes(limits);
-    // A fifth call beyond the accepted concurrency waits for a publication.
+    // A fifth call beyond the accepted concurrency is not admitted (it degrades).
     expect(batch(ceiling, 5, limits)).toEqual([true, true, true, true, false]);
-    // Retained objects still exhaust the run: one more byte is refused.
+    // Retained objects still exhaust the run: one more byte is not admitted.
     const run = BigInt(toolObservationRunBytes(limits));
     expect(admitsToolObservationReservation({ runBytes: run - 1n, branchBytes: run - 1n }, 1, limits)).toBe(true);
     expect(admitsToolObservationReservation({ runBytes: run, branchBytes: run }, 1, limits)).toBe(false);

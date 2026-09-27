@@ -22,7 +22,8 @@ export function describeArtifactTool(policy: ArtifactResourcePolicy = getArtifac
     "For intent=create, provide kind, title and files. Every kind except image also requires an explicit entrypoint matching an included files[].path, for example entrypoint=\"index.html\" for an included index.html. " +
     "The entrypoint file must have MIME type text/html or image/svg+xml; kind=svg requires image/svg+xml. For kind=image, omit entrypoint or set it to null and use only asset_ref image files. " +
     "Write HTML, CSS and JavaScript. Prefer plain CSS; ready precompiled CSS is supported. React/JSX compilation, Tailwind Play CDN and browser/server Tailwind compilation are unavailable. " +
-    "Return complete files with relative local paths, inline code, or supported external resources. " + resources +
+    "Return complete files with relative local paths, inline code, or supported external resources. " +
+    `One call accepts at most ${ARTIFACT_LIMITS.maxFiles} files, ${ARTIFACT_LIMITS.maxEdits} edits and ${ARTIFACT_LIMITS.maxFiles} delete_paths. ` + resources +
     "The viewer runs offline: no fetch/XHR/WebSocket/beacon or other network requests. Embed required data already obtained from conversation/tools as inline JSON. " +
     "Forms may handle submit in JavaScript; never use action or formaction. HTTP(S)/mailto links and window.open ask the viewer to confirm the full address. " +
     "localStorage persists only in this viewer's browser (64 keys, 128 characters/key, 32 KiB/value, 256 KiB total, UTF-16); handle QuotaExceededError. sessionStorage is in-memory; cookies are unavailable. " +
@@ -62,10 +63,12 @@ export function artifactTool(description = LEGACY_ARTIFACT_DESCRIPTION): RunTool
       properties: {
         base_version_id: { type: ["string", "null"], maxLength: 128 },
         entrypoint: { type: ["string", "null"], maxLength: ARTIFACT_LIMITS.maxPathBytes },
+        // Count limits live in the description and server validation. Gemini
+        // compiles every advertised schema under a forced tool choice and
+        // rejects these bounded object arrays with HTTP 400.
         files: {
           type: "array",
           minItems: 1,
-          maxItems: ARTIFACT_LIMITS.maxFiles,
           items: {
             type: "object",
             additionalProperties: false,
@@ -78,12 +81,12 @@ export function artifactTool(description = LEGACY_ARTIFACT_DESCRIPTION): RunTool
             required: ["mimeType", "path"]
           }
         },
-        edits: { type: "array", maxItems: ARTIFACT_LIMITS.maxEdits, items: { type: "object", additionalProperties: false,
+        edits: { type: "array", items: { type: "object", additionalProperties: false,
           properties: { path: { type: "string", maxLength: ARTIFACT_LIMITS.maxPathBytes },
             old_string: { type: "string", minLength: 1, maxLength: ARTIFACT_LIMITS.maxTextFileBytes },
             new_string: { type: "string", maxLength: ARTIFACT_LIMITS.maxTextFileBytes }, replace_all: { type: "boolean" } },
           required: ["path", "old_string", "new_string"] } },
-        delete_paths: { type: "array", maxItems: ARTIFACT_LIMITS.maxFiles, items: { type: "string", maxLength: ARTIFACT_LIMITS.maxPathBytes } },
+        delete_paths: { type: "array", items: { type: "string", maxLength: ARTIFACT_LIMITS.maxPathBytes } },
         intent: { type: "string", enum: ["create", "update"] },
         kind: { type: "string", enum: [...ARTIFACT_KINDS] },
         title: { type: "string", minLength: 1, maxLength: ARTIFACT_LIMITS.maxTitleBytes }

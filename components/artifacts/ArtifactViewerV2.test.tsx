@@ -221,6 +221,15 @@ describe("ArtifactViewerV2", () => {
     expect(onOpenSourceChat).toHaveBeenCalledExactlyOnceWith("chat");
   });
 
+  it("links the standalone page to its source chat's own address", async () => {
+    vi.stubGlobal("fetch", fetchArtifact());
+    render(<ArtifactViewerV2 artifactId="artifact" versionId="v2" host="page" onVersionChange={() => {}}
+      onEditRequest={() => {}} />);
+    await screen.findByRole("heading", { name: "A small world" });
+    fireEvent.click(screen.getByRole("button", { name: "Artifact actions" }));
+    expect(screen.getByRole("menuitem", { name: "Open source chat" })).toHaveAttribute("href", "/c/chat");
+  });
+
   it("closes on iframe Escape only while that exact opaque iframe owns focus", async () => {
     vi.stubGlobal("fetch", fetchArtifact());
     const onClose = vi.fn();

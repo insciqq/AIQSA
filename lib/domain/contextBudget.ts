@@ -40,6 +40,9 @@ export type ContextTruncationSummary = {
 
 export type ContextBudgetInput = {
   contextWindow: number;
+  /** Token estimate for messages and prompt text; defaults to the character
+   * weights of `estimateApproxTokens`. */
+  estimateTokens?: (value: unknown) => number;
   maxOutputTokens?: number;
   messageExtraTokens?: Record<string, number>;
   messages: ContextBudgetMessage[];
@@ -80,7 +83,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function stringifyForEstimate(value: unknown): string {
+/** The text every token estimate measures: text blocks joined by newlines,
+ * other values as JSON. */
+export function stringifyForEstimate(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
@@ -215,11 +220,12 @@ function extraTokensForMessage(input: ContextBudgetInput, message: ContextBudget
 }
 
 function messageTokens(input: ContextBudgetInput, message: ContextBudgetMessage): number {
-  return estimateApproxTokens(message.content) + extraTokensForMessage(input, message);
+  return (input.estimateTokens ?? estimateApproxTokens)(message.content) + extraTokensForMessage(input, message);
 }
 
-function promptTokens(prompt: ContextBudgetInput["prompt"]): number {
-  return estimateApproxTokens(prompt?.system ?? "") + estimateApproxTokens(prompt?.developer ?? "");
+function promptTokens(input: ContextBudgetInput): number {
+  const estimate = input.estimateTokens ?? estimateApproxTokens;
+  return estimate(input.prompt?.system ?? "") + estimate(input.prompt?.developer ?? "");
 }
 
 function groupPriorTurns(messages: ContextBudgetMessage[]): ContextBudgetMessage[][] {
@@ -260,7 +266,7 @@ export function applyContextBudget(input: ContextBudgetInput): ContextBudgetResu
   }
 
   const { budgetTokens, contextWindow, maxOutputTokens, safetyMarginTokens } = calculateContextBudgetLimits(input);
-  const estimatedPromptTokens = promptTokens(input.prompt);
+  const estimatedPromptTokens = promptTokens(input);
   const tokenCounts = input.messages.map((message) => messageTokens(input, message));
   const approxOriginalTokens = estimatedPromptTokens + sum(tokenCounts);
 

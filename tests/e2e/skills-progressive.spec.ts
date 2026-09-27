@@ -164,13 +164,12 @@ test("a settled load can pin an authorized Skill for the next turn without chang
           { origin: "skill", toolName: "load_skill", skillId: skill.id, skillName: skill.name, round: 1, status: "complete" },
           { origin: "skill", toolName: "read_skill_file", skillId: skill.id, skillName: skill.name, skillPath: "references/check.md", round: 2, status: "complete" }
         ] } : null }));
-    await page.addInitScript(id => localStorage.setItem("aiqsa.activeChatId", id), chatId);
     await installMatrixCatalogFixture(page, { folders: [], chats: [{ id: chatId, title: "Progressive Skills activity", messages,
       activeLeafMessageId: "skill-answer", createdAt: timestamp, updatedAt: timestamp, defaultModelId: "gpt-5.5",
       defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length, usageStats: null }] });
     await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture() }));
     await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
-    await page.goto("/");
+    await page.goto(`/c/${chatId}`);
     await page.getByRole("button", { name: "Change Skills mode" }).click();
     await page.getByRole("menuitemradio", { name: /^Off/ }).click();
     await page.getByTestId("tool-activity-disclosure").locator("summary").click();

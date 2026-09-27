@@ -69,7 +69,7 @@ test("opens an authorized Personal Memory source at its exact message", async ({
     projectId: null,
     usageStats: null
   };
-  await installMatrixCatalogFixture(page, { chats: [], folders: [] });
+  await installMatrixCatalogFixture(page, { chats: [linked], folders: [] });
   await page.route("**/api/chats/linked-personal-chat", async (route: Route) => {
     await route.fulfill({ contentType: "application/json", json: { chat: linked } });
   });
@@ -81,10 +81,12 @@ test("opens an authorized Personal Memory source at its exact message", async ({
   });
 
   await signInWithLocalToken(page);
+  // A legacy query link moves to the chat's address and still anchors its message.
   await page.goto("/?chat=linked-personal-chat&message=linked-user");
+  await expect(page).toHaveURL(/\/c\/linked-personal-chat\?message=linked-user$/u);
   await expect(page.getByRole("heading", { name: "Linked Personal source" })).toBeVisible();
   await expect(page.locator('[data-message-id="linked-user"]')).toBeVisible();
-  await expect(page).toHaveURL(/chat=linked-personal-chat.*message=linked-user/u);
+  await expect(page).toHaveURL(/\/c\/linked-personal-chat\?message=linked-user$/u);
 
   await page.goto("/?memorySource=unavailable&keep=yes");
   await expect(page.getByTestId("shell-notice"))
@@ -118,9 +120,6 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   const modePatches: Record<string, unknown>[] = [];
   const temporaryAdmissions: Record<string, unknown>[] = [];
 
-  await page.addInitScript(() =>
-    window.localStorage.setItem("aiqsa.activeChatId", "chat-normal")
-  );
   await installMatrixCatalogFixture(page, { chats: [normal], folders: [] });
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({
@@ -283,7 +282,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     });
   });
 
-  await signInWithLocalToken(page);
+  await signInWithLocalToken(page, "/c/chat-normal");
   const workspace = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(workspace.getByRole("treeitem", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 

@@ -126,6 +126,49 @@ describe("Agent MCP discovery surface", () => {
     expect(JSON.parse(preview)).toMatchObject({ observation: { source: "mcp" }, reader: "read_tool_result", incomplete: true });
   });
 
+  it("dispatches a call beyond the retained-bytes budget and delivers Off's content without a descriptor or refusal", async () => {
+    const observations = memoryToolObservations();
+    const reserve = observations.repository.reserve;
+    // The run's retained-bytes budget cannot admit this call's ceiling.
+    vi.spyOn(observations.repository, "reserve").mockImplementation(async (context, source, _maximumBytes, binding) =>
+      ({ ...await reserve(context, source, 0, binding), degraded: true as const }));
+    const toolId = "fixture_records", toolVersion = "a".repeat(64);
+    const snapshot = { version: 1, servers: [{ serverId: "fixture", revisionId: "revision", fingerprint: "b".repeat(64) }],
+      tools: [{ serverId: "fixture", namespacedName: toolId, originalName: "records", definitionHash: "c".repeat(64), inputSchema: { type: "object" } }] };
+    vi.spyOn(prisma.agentMcpTool, "findUnique").mockResolvedValue({ snapshot } as never);
+    // Above the persisted result bound: Off delivers it whole to Codex.
+    const dispatch = vi.fn(async () => ({ text: [`${"x".repeat(300 * 1024)} rare_tail=degraded`], isError: false, unsupportedContentTypes: [] }));
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: async () => ({}),
+      dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    const logs: unknown[] = [];
+    vi.spyOn(observability, "logEvent").mockImplementation((_event, fields) => { logs.push(fields); });
+    let call = 0;
+    const settleTool = vi.fn();
+    const store = { mcpTools: async () => [{ toolId, version: toolVersion }], admitMcpPlan: async () => {},
+      toolCall: async () => `business-call-${++call}`, settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
+    const gateway = (observed: boolean) => createAgentMcpGateway({
+      request: { agent: { mcpMode: "all" }, searchPlan: { mode: "all_selected", options: [] }, mcp: snapshot,
+        ...(observed ? { toolObservationVersion: 1 } : {}) } as unknown as NormalizedRunRequest,
+      ...(observed ? { observations: observations.service() } : {}), store, runId: "run", userId: "user",
+      signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const rpc = () => new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolId, arguments: {} } }) });
+    const off = await rpcResult(await (await gateway(false))(rpc()));
+    const degraded = await rpcResult(await (await gateway(true))(rpc()));
+    expect(degraded.isError).not.toBe(true);
+    expect(degraded.content).toEqual(off.content);
+    expect(codexModelOutput(degraded).body).toContain("rare_tail=degraded");
+    expect(JSON.stringify(degraded)).not.toMatch(/read_tool_result|tool_observation/u);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(settleTool).toHaveBeenLastCalledWith("business-call-2", "complete", { status: "complete" });
+    expect([...observations.rows.values()]).toEqual([expect.objectContaining({ state: "UNAVAILABLE", executionOutcome: "complete",
+      reservedBytes: 0, failureCode: "tool_observation_budget_degraded", storageKey: null, inlineText: null })]);
+    expect(logs).toContainEqual({ tool_kind: "mcp", stage: "admission", code: "tool_observation_budget_degraded",
+      outcome: "degraded", reason: "policy", action: "degrade" });
+    expect(JSON.stringify(logs)).not.toContain("rare_tail");
+  });
+
   it.each(["missing", "version", "tool_unavailable", "tool_definition_changed", "upstream_unavailable", "execution_outcome_unknown"] as const)(
     "distinguishes %s from a dispatched unknown outcome in both consumer formats", async kind => {
       const version = "a".repeat(64), toolId = "arbitrary_delta";

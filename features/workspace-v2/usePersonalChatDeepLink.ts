@@ -1,20 +1,7 @@
 "use client";
 
+import { boundedRouteId, parseChatRoutePath } from "@/lib/domain/chatRoute";
 import { useEffect, useRef } from "react";
-
-type PersonalChatDeepLinkRequest = {
-  key: string;
-  phase: "handled" | "opening";
-};
-
-function boundedId(value: string | null): string | null {
-  const normalized = value?.trim() ?? "";
-  return normalized.length > 0 &&
-    normalized.length <= 256 &&
-    !/[\u0000-\u001f\u007f]/u.test(normalized)
-    ? normalized
-    : null;
-}
 
 function replaceCurrentUrl(url: URL): void {
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
@@ -62,20 +49,28 @@ export async function openPersonalChatMessage(input: Readonly<{
   }
 }
 
+/**
+ * Anchors `/c/<chat>?message=<id>` once the route owner has opened that
+ * personal chat and loaded its thread, and announces the one-shot
+ * `?memorySource=unavailable` marker. A message that cannot be revealed is
+ * dropped from the address with the same privacy-neutral notice.
+ */
 export function usePersonalChatDeepLink({
-  activateChat,
+  activeChatId,
+  detailLoading,
   onAnchor,
   onUnavailable,
   ready,
   revealMessage
 }: Readonly<{
-  activateChat(chatId: string): Promise<boolean>;
+  activeChatId: string | null;
+  detailLoading: boolean;
   onAnchor(chatId: string, messageId: string): void;
   onUnavailable(): void;
   ready: boolean;
   revealMessage(chatId: string, messageId: string): Promise<boolean>;
 }>): void {
-  const requestRef = useRef<PersonalChatDeepLinkRequest | null>(null);
+  const handledRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -86,52 +81,38 @@ export function usePersonalChatDeepLink({
       onUnavailable();
       return;
     }
-    if (!ready || url.searchParams.has("project")) return;
-
-    const rawChatId = url.searchParams.get("chat");
     const rawMessageId = url.searchParams.get("message");
-    if (rawChatId === null && rawMessageId === null) return;
-    const chatId = boundedId(rawChatId);
-    const messageId = boundedId(rawMessageId);
-    const key = `${rawChatId ?? ""}\u0000${rawMessageId ?? ""}`;
-    if (!chatId || rawMessageId !== null && !messageId) {
-      if (requestRef.current?.key === key) return;
-      requestRef.current = { key, phase: "handled" };
-      url.searchParams.delete("chat");
-      url.searchParams.delete("message");
-      replaceCurrentUrl(url);
-      onUnavailable();
+    const route = parseChatRoutePath(url.pathname);
+    if (!route?.chatId || route.projectId || activeChatId !== route.chatId) {
+      // Returning to the chat later anchors its message again.
+      handledRef.current = null;
       return;
     }
-    if (requestRef.current?.key === key) return;
-
-    const request: PersonalChatDeepLinkRequest = { key, phase: "opening" };
-    requestRef.current = request;
-    void (async () => {
-      let revealed = false;
-      try {
-        const opened = await activateChat(chatId);
-        revealed = opened && (!messageId || await revealMessage(chatId, messageId));
-      } catch {
-        revealed = false;
+    if (!ready || detailLoading || rawMessageId === null) return;
+    const chatId = route.chatId;
+    const key = `${chatId}\u0000${rawMessageId}`;
+    if (handledRef.current === key) return;
+    handledRef.current = key;
+    const dropMessage = () => {
+      const currentUrl = new URL(window.location.href);
+      if (
+        parseChatRoutePath(currentUrl.pathname)?.chatId === chatId &&
+        currentUrl.searchParams.get("message") === rawMessageId
+      ) {
+        currentUrl.searchParams.delete("message");
+        replaceCurrentUrl(currentUrl);
       }
-      if (requestRef.current !== request) return;
-      request.phase = "handled";
-      if (revealed && messageId) {
-        onAnchor(chatId, messageId);
-      } else if (!revealed) {
-        const currentUrl = new URL(window.location.href);
-        if (
-          currentUrl.searchParams.get("chat") === rawChatId &&
-          currentUrl.searchParams.get("message") === rawMessageId &&
-          !currentUrl.searchParams.has("project")
-        ) {
-          currentUrl.searchParams.delete("chat");
-          currentUrl.searchParams.delete("message");
-          replaceCurrentUrl(currentUrl);
-        }
-        onUnavailable();
-      }
-    })();
-  }, [activateChat, onAnchor, onUnavailable, ready, revealMessage]);
+      onUnavailable();
+    };
+    const messageId = boundedRouteId(rawMessageId);
+    if (!messageId) {
+      dropMessage();
+      return;
+    }
+    void revealMessage(chatId, messageId).catch(() => false).then((revealed) => {
+      if (handledRef.current !== key) return;
+      if (revealed) onAnchor(chatId, messageId);
+      else dropMessage();
+    });
+  }, [activeChatId, detailLoading, onAnchor, onUnavailable, ready, revealMessage]);
 }

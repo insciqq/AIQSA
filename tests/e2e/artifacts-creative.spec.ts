@@ -75,9 +75,6 @@ async function installChat(page: Page, fixture: Awaited<ReturnType<typeof create
       modelId: message.role === "assistant" ? "gpt-5.5" : null, modelRunId: message.role === "assistant" ? "creative-run" : null,
       provider: message.role === "assistant" ? "openai" : null,
       artifactSummary: message.role === "assistant" ? { citations: [], sources: [], reasoningText: [], generatedArtifacts: [fixture.artifact] } : null }));
-  await page.addInitScript(chatId => {
-    if (window === window.top) localStorage.setItem("aiqsa.activeChatId", chatId);
-  }, fixture.chatId);
   await installMatrixCatalogFixture(page, { folders: [], chats: [{ id: fixture.chatId, title: fixture.artifact.title, messages,
     activeLeafMessageId: "creative-answer", createdAt: time, updatedAt: time, defaultModelId: "gpt-5.5", defaultProvider: "openai",
     folderId: null, pinned: false, messageCount: 2, usageStats: null }] });
@@ -138,10 +135,11 @@ test("local state survives reload and versions while session state and publicati
     await page.getByRole("menuitem", { name: "Reset saved state" }).click();
     await expect(frame.locator("#score")).toHaveText("0");
     expect(await page.evaluate(id => localStorage.getItem("aiqsa.artifact.state." + id), fixture.artifact.artifactId)).toContain('"score","1"');
-    await installChat(page, fixture); await page.goto("/");
+    await installChat(page, fixture); await page.goto(`/c/${fixture.chatId}`);
     await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByRole("menu", { name: "Account", exact: true }).getByRole("menuitem", { name: "Sign out", exact: true }).click();
-    await expect(page).toHaveURL(/\/login/u);
+    // Sign-out itself allows the logout request 15 seconds.
+    await expect(page).toHaveURL(/\/login/u, { timeout: 15_000 });
     expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("aiqsa.artifact.state.")))).toEqual([]);
   } catch (error) { errors.push(error); } finally { await fixture.cleanup(errors); }
 });
@@ -152,7 +150,7 @@ test("confirmed links keep their full address, focus and layout in private and a
   let anonymous: BrowserContext | undefined;
   try {
     anonymous = await browser.newContext({ baseURL, reducedMotion: "reduce" });
-    await installChat(page, fixture); await page.goto("/");
+    await installChat(page, fixture); await page.goto(`/c/${fixture.chatId}`);
     await page.getByRole("button", { name: "Open artifact: " + fixture.artifact.title, exact: true }).click();
     await page.getByRole("button", { name: "Expand artifact", exact: true }).click();
     const publicPage = await anonymous.newPage(); await publicPage.goto(await fixture.publish());
@@ -227,7 +225,7 @@ test("artifact requests and independent navigation remain blocked on every viewe
     // is reached only when CSP permits dispatch; abort there as a final guard.
     await page.route("**://artifact-leak.invalid/**", route => { outbound.push("request"); return route.abort(); });
     for (const surface of ["standalone", "public", "chat", "library"]) {
-      await page.goto(surface === "standalone" ? fixture.privatePath : surface === "public" ? publication : "/");
+      await page.goto(surface === "standalone" ? fixture.privatePath : surface === "public" ? publication : `/c/${fixture.chatId}`);
       if (surface === "chat") await page.getByRole("button", { name: "Open artifact: " + fixture.artifact.title, exact: true }).click();
       if (surface === "library") {
         await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Studio", exact: true }).click();

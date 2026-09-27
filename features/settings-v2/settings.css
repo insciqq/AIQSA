@@ -1280,6 +1280,23 @@
   flex: 0 0 auto;
 }
 
+/* The grid's first cell: the monogram plus the chat MCP chip's attention
+   signal on its top-right corner. */
+.v2-settings-server-mark-slot {
+  position: relative;
+  display: inline-grid;
+}
+
+.v2-settings-server-signal {
+  position: absolute;
+  top: -0.1875rem;
+  right: -0.1875rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--v2-color-warn);
+}
+
 .v2-settings-server:not([data-enabled]) .v2-settings-server-mark {
   color: var(--v2-color-text2);
   background: var(--v2-color-surface2);

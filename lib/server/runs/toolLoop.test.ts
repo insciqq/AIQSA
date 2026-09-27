@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import {
   continueToolLoop,
   type ToolLoopBudgets,
@@ -500,6 +501,55 @@ describe("provider-neutral tool loop", () => {
     });
     expect(executeTool).toHaveBeenCalledOnce();
     expect(dispatched).toEqual([call("same-id")]);
+  });
+
+  it("reports a reviewed Gemini HTTP identity instead of a generic round failure", async () => {
+    const error = Object.assign(new GeminiHttpError(400, "invalid_request"), {
+      providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY"
+    });
+    const outcome = await continueToolLoop({
+      budgets: defaultBudgets,
+      executeTool: vi.fn(),
+      initialContinuation: null,
+      runProviderRound: async () => { throw error; }
+    });
+
+    expect(outcome).toMatchObject({
+      failure: {
+        code: "provider_http_invalid_request",
+        message: "The model provider rejected the request (Gemini HTTP 400: invalid_request).",
+        round: 1,
+        stage: "provider"
+      },
+      status: "failed"
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+  });
+
+  it("reports a classified context-length rejection by its stable code and safe wording only", async () => {
+    const rejected = Object.assign(new Error("OpenAI request failed with status 400"), {
+      code: "provider_context_length_exceeded", status: 400, reportedMaximumTokens: 272_000, reportedPromptTokens: 300_000,
+      providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY"
+    });
+    const executeTool = vi.fn();
+    const outcome = await continueToolLoop({
+      budgets: defaultBudgets,
+      executeTool,
+      initialContinuation: null,
+      runProviderRound: async () => { throw rejected; }
+    });
+
+    expect(outcome).toMatchObject({
+      failure: {
+        code: "provider_context_length_exceeded",
+        message: "The model provider rejected the request as too long for the model's context window (HTTP 400). Reduce the context or choose a model with a larger context window.",
+        round: 1,
+        stage: "provider"
+      },
+      status: "failed"
+    });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
   });
 
   it("returns a structured provider timeout and validates budgets before starting", async () => {

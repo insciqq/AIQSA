@@ -48,7 +48,8 @@ function text(value: string, id: string, role: "assistant" | "user" = "user"): P
   return { content: { blocks: [{ text: value, type: "text" }] }, id, role };
 }
 
-/** Budget: 4,000 window - 400 output - 400 margin = 3,200 estimated tokens. */
+/** Budget: 4,000 window - 400 output - 400 margin = 3,200 estimated tokens.
+ * The "c", "e", "h" and "k" fills encode at four characters per o200k token. */
 function hybridRequest(input: Readonly<{
   history?: number;
   current?: number;
@@ -58,7 +59,7 @@ function hybridRequest(input: Readonly<{
   stale?: ContextPlanMeasurement["outcome"];
 }> = {}): ProviderRunRequest {
   const messages = [
-    text(`Old synthetic fact. ${"o".repeat((input.history ?? 0) * 4)}`, "old"),
+    text(`Old synthetic fact. ${"h".repeat((input.history ?? 0) * 4)}`, "old"),
     ...(input.summary ? [text(`Model-derived context notes:\n${input.summary.notes}`, `__context-summary-${input.summary.id}`, "assistant")] : []),
     ...(input.recent ?? Array.from({ length: 4 }, (_, index) => text("Acknowledged.", `recent-${index}`, index % 2 ? "user" : "assistant"))),
     text(`Current question. ${"c".repeat((input.current ?? 0) * 4)}`, "current")
@@ -83,7 +84,7 @@ function hybridRequest(input: Readonly<{
 function observedResult(callId: string, seed: string, chars: number) {
   return projectObservationForProvider({
     callId,
-    content: [{ text: `${callId}-${"x".repeat(chars)}`, type: "text" }],
+    content: [{ text: `${callId}-${"k".repeat(chars)}`, type: "text" }],
     name: "read_record",
     observation: { byteSize: chars, checksum: seed.repeat(64), encoding: "json-utf8-v1", handle: `tor1_${seed.repeat(32)}`,
       maskable: true, source: "mcp", sourceTruncated: false, version: 1 },
@@ -171,7 +172,7 @@ describe("single compaction consumer", () => {
     expect(compaction.settle).toHaveBeenLastCalledWith(expect.objectContaining({ state: "committed" }),
       expect.objectContaining({ inputTokens: 5, outputTokens: 2 }), prepared.contextCompactionSummary);
     expect(prepared.contextCompactionSummary?.notes).toContain("old fact");
-    expect(JSON.stringify(prepared.context)).not.toContain("o".repeat(64));
+    expect(JSON.stringify(prepared.context)).not.toContain("h".repeat(64));
     expect(prepared.contextCompaction?.outcome).not.toBe("needs_summary");
     expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(prepared.contextCompaction!.budgetTokens!);
     expect(compaction.events.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
@@ -199,7 +200,7 @@ describe("single compaction consumer", () => {
     const prepared = await compaction.run();
     expect(compaction.summaryRequests).toHaveLength(0);
     expect(prepared.contextCompaction).toMatchObject({ outcome: "masking_applied", maskedObservations: 1 });
-    expect(JSON.stringify(prepared.providerToolMessages)).not.toContain("x".repeat(2_000));
+    expect(JSON.stringify(prepared.providerToolMessages)).not.toContain("k".repeat(2_000));
     expect(compaction.events).toEqual([expect.objectContaining({
       afterTokens: prepared.contextCompaction!.afterTokens,
       beforeTokens: prepared.contextCompaction!.beforeTokens,
@@ -378,7 +379,7 @@ describe("single compaction consumer", () => {
       expect(prepared.contextCompactionSummary?.notes).toBe("The old fact remains binding.");
       expect(prepared.contextCompactionSummary?.sourceRefs).not.toContain("call_abc");
       expect(prepared.contextCompactionSummary?.sourceRefs).not.toContain("call_two");
-      expect(JSON.stringify(prepared.context)).not.toContain("o".repeat(64));
+      expect(JSON.stringify(prepared.context)).not.toContain("h".repeat(64));
       expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
         ["running", "pending"], ["complete", "summary_applied"]
       ]);
@@ -397,7 +398,7 @@ describe("single compaction consumer", () => {
       expect(prepared.contextCompactionSummary).toBeUndefined();
       expect(prepared.context?.messages.map((message) => message.id)).toEqual(
         headroomRequest().context!.messages.map((message) => message.id));
-      expect(JSON.stringify(prepared.context)).toContain("o".repeat(64));
+      expect(JSON.stringify(prepared.context)).toContain("h".repeat(64));
       expect(prepared.context?.summary).toBeUndefined();
       expect(compaction.onTruncation).not.toHaveBeenCalled();
       // Masked, fitting and above the trigger: the summary was for headroom only.
@@ -406,8 +407,8 @@ describe("single compaction consumer", () => {
       expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(3_200);
       expect(prepared.contextCompaction!.beforeTokens).toBeGreaterThan(3_200 * 0.75);
       const transcript = JSON.stringify(prepared.providerToolMessages);
-      expect(transcript).not.toContain("x".repeat(2_000));
-      expect(transcript).toContain("call_three-" + "x".repeat(1_000));
+      expect(transcript).not.toContain("k".repeat(2_000));
+      expect(transcript).toContain("call_three-" + "k".repeat(1_000));
       // The request carries the cycle's settled receipts into every later checkpoint.
       expect(prepared.contextCompactionSummaryAttempts?.map(({ errorCode, state }) => [state, errorCode])).toEqual([
         ["invalid", "context_compaction_summary_invalid"], ["invalid", "context_compaction_summary_invalid"]
@@ -579,10 +580,10 @@ describe("single compaction consumer", () => {
     /** The exact branch as admitted; the frozen policy names the notes and their boundary u2. */
     function carriedRequest(input: Readonly<{ delta?: number; notes?: string; refs?: readonly string[]; window?: number }> = {}): ProviderRunRequest {
       const messages = [
-        text(`Old synthetic fact. ${"o".repeat(3_400 * 4)}`, "u1"),
+        text(`Old synthetic fact. ${"h".repeat(3_400 * 4)}`, "u1"),
         text("Earlier answer.", "a1", "assistant"),
         text("Boundary question.", "u2"),
-        text(`Answer after the notes. ${"n".repeat((input.delta ?? 0) * 4)}`, "a2", "assistant"),
+        text(`Answer after the notes. ${"e".repeat((input.delta ?? 0) * 4)}`, "a2", "assistant"),
         text("Later question.", "u3"),
         text("Later answer.", "a3", "assistant"),
         text("Current question.", "current")
@@ -614,14 +615,14 @@ describe("single compaction consumer", () => {
     });
 
     it("buys one incremental summary of the previous notes plus the exact delta", async () => {
-      const compaction = consumer(carriedRequest({ delta: 2_300 }), { sourceAvailable: async () => true });
+      const compaction = consumer(carriedRequest({ delta: 2_400 }), { sourceAvailable: async () => true });
       const prepared = await compaction.run();
       expect(compaction.summaryRequests).toHaveLength(1);
       const [envelope] = bought(compaction);
       expect(envelope).toContain("previous-notes");
       expect(envelope).toContain("Carried turn-one notes.");
-      expect(envelope).toContain("n".repeat(64));
-      expect(envelope).not.toContain("o".repeat(64));
+      expect(envelope).toContain("e".repeat(64));
+      expect(envelope).not.toContain("h".repeat(64));
       expect(prepared.contextCompactionSummary?.id).not.toBe(carriedNotes().id);
       expect(compaction.events.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
         [1, "running", "pending"], [1, "complete", "summary_applied"]

@@ -36,7 +36,6 @@ for (const viewport of [
         content: "The earlier answer remains here.", createdAt: timestamp, errorMessage: null,
         citationMessageId: null, modelId: model.modelId, modelRunId: "context-run", provider: model.provider }]
     };
-    await page.addInitScript((id) => localStorage.setItem("aiqsa.activeChatId", id), chat.id);
     await installMatrixCatalogFixture(page, { chats: [chat], folders: [] }, { catalog });
     await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
     let continuations = 0;
@@ -44,7 +43,7 @@ for (const viewport of [
       continuations += 1;
       return route.fulfill({ status: 409, json: { error: "chat_summary_unavailable" } });
     });
-    await signInWithLocalToken(page);
+    await signInWithLocalToken(page, `/c/${chat.id}`);
     const trigger = page.getByTestId("header-context-indicator");
     const dialog = page.getByRole("dialog", { name: "Chat context" });
     const composer = page.getByRole("textbox", { name: "Message" });

@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "../../prisma/local-seed-auth";
+import { submitPasswordSignIn } from "./support/workspace";
 
 test.describe.configure({ mode: "serial" });
 
@@ -72,12 +73,11 @@ test.afterAll(async () => {
 
 test("signs in through the visible form with the stable seeded local operator credential", async ({ page }) => {
   await page.goto("/login");
-  await page.getByLabel("Email").fill(LOCAL_OPERATOR_EMAIL);
-  await page.getByLabel("Password", { exact: true }).fill(LOCAL_OPERATOR_PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await submitPasswordSignIn(page, { email: LOCAL_OPERATOR_EMAIL, password: LOCAL_OPERATOR_PASSWORD });
 
-  await expect(page).toHaveURL("/");
-  await expect(page.getByTestId("app-shell")).toBeVisible();
+  // The login request and the first shell render share the standard shell wait on a cold server.
+  await expect(page).toHaveURL("/", { timeout: 30_000 });
+  await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
 });
 
 test("hydrates the login screen and honors the first mode-switch click", async ({ page }) => {
@@ -220,7 +220,8 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
 test("renders a safe OAuth callback outcome without exposing provider details", async ({ page }) => {
   await page.goto("/login?oauth=not_allowed&provider=yandex&next=https://evil.example/steal");
 
-  await expect(page.getByRole("alert")).toHaveText(
+  // The framework's route announcer is a second, empty alert once the page hydrates.
+  await expect(page.getByRole("alert").filter({ hasText: "oauth_not_allowed" })).toHaveText(
     "This Yandex account is not allowed to access AIQSA. (oauth_not_allowed)"
   );
   await expect(page.getByText("evil.example")).toHaveCount(0);
@@ -268,6 +269,8 @@ test("keeps request and invite actions immediately reachable in short landscape"
 });
 
 test("registers, verifies, logs in, and sees an isolated workspace", async ({ page }) => {
+  // Registration, verification and sign-in precede two 30-second shell waits on a cold server.
+  test.setTimeout(180_000);
   const id = randomUUID();
   const email = `e2e-registration-${id}@example.com`;
   const password = `registration-password-${id}`;
@@ -329,10 +332,11 @@ test("registers, verifies, logs in, and sees an isolated workspace", async ({ pa
     await page.getByLabel("Password", { exact: true }).fill(password);
     await page.getByRole("button", { name: "Sign in" }).click();
 
-    await expect(page.getByTestId("app-shell")).toBeVisible();
+    await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
     const workspace = (await (await page.request.get("/api/chats")).json()) as { chats: unknown[] };
     expect(workspace.chats).toHaveLength(0);
-    await expect(page.getByTestId("conversation-empty")).toBeVisible();
+    // The server-rendered shell shows before the client has loaded the catalog and chat list that decide the empty chat.
+    await expect(page.getByTestId("conversation-empty")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("conversation-v2")).not.toContainText("Compare native web search");
   } finally {
     await prisma.user.deleteMany({
