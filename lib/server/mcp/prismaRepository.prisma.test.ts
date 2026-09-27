@@ -622,7 +622,7 @@ describe("MCP published tool inventory", () => {
     exclusions: { name: string; reason: string }[];
     revisionId: string;
     serverId: string;
-    state?: "failed" | "ready";
+    state?: "ready" | "starting";
     tools?: string[];
     userId?: string;
   }) {
@@ -744,8 +744,9 @@ describe("MCP published tool inventory", () => {
       { name: "search", reason: "disabled_by_policy" },
       { name: "write", reason: "definition_drift" }
     ], revisionId, serverId: f.serverId });
+    // A connection mid-refresh reports nothing until its inventory is ready again.
     await readyGeneration({ exclusions: [{ name: "stale_tool", reason: "unpublished_addition" }], revisionId,
-      serverId: f.serverId, state: "failed" });
+      serverId: f.serverId, state: "starting" });
     const idle = await readyGeneration({ exclusions: [{ name: "idle_tool", reason: "missing_upstream" }], revisionId,
       serverId: f.serverId });
     await prisma.mcpUserServer.update({ data: { desiredRuntimeGenerationId: null }, where: { id: idle.preference.id } });
