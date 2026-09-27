@@ -1,4 +1,5 @@
 import { AdminPanel } from "@/components/admin/AdminPanel";
+import { chatReturnPath } from "@/lib/domain/chatRoute";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { authSessionStore } from "@/lib/server/auth/defaultAuth";
 import { resolveAuthToken } from "@/lib/server/auth/requestAuth";
@@ -14,14 +15,16 @@ export const metadata: Metadata = {
   title: "Control Center"
 };
 
+type AdminPageSearchParams = Record<string, string | string[] | undefined>;
+
 type AdminPageProps = Readonly<{
-  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  searchParams?: Promise<AdminPageSearchParams>;
 }>;
 
 /** Sign-in returns to the same Control Center address, including its `return` chat route. */
-async function adminLoginHref(searchParams: AdminPageProps["searchParams"]): Promise<string> {
+function adminLoginHref(params: AdminPageSearchParams): string {
   const query = new URLSearchParams();
-  for (const [key, value] of Object.entries((await searchParams) ?? {})) {
+  for (const [key, value] of Object.entries(params)) {
     for (const entry of Array.isArray(value) ? value : value === undefined ? [] : [value]) {
       query.append(key, entry);
     }
@@ -32,8 +35,9 @@ async function adminLoginHref(searchParams: AdminPageProps["searchParams"]): Pro
 }
 
 export default async function AdminPage({ searchParams }: AdminPageProps = {}) {
+  const params = (await searchParams) ?? {};
   const config = getAuthConfig();
-  const loginHref = await adminLoginHref(searchParams);
+  const loginHref = adminLoginHref(params);
 
   if (!config.configured) {
     redirect(loginHref);
@@ -91,5 +95,13 @@ export default async function AdminPage({ searchParams }: AdminPageProps = {}) {
     );
   }
 
-  return <AdminPanel adminEmail={user.email ?? user.displayName} adminUserId={session.userId} />;
+  // Validated here so the first server render already links back to the origin chat.
+  const requestedReturn = params.return;
+  return (
+    <AdminPanel
+      adminEmail={user.email ?? user.displayName}
+      adminUserId={session.userId}
+      returnPath={chatReturnPath(typeof requestedReturn === "string" ? requestedReturn : null)}
+    />
+  );
 }

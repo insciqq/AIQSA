@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdminShell } from "./AdminShell";
 import {
@@ -138,7 +139,39 @@ describe("useAdminSectionNavigation", () => {
     expect(new URLSearchParams(window.location.search).get("return")).toBe("/p/project-1/c/chat-1");
   });
 
-  it.each(["/admin", "/admin?return=https%3A%2F%2Fevil.example%2Fc%2Fx", "/admin?return=%2Fadmin%3Fsection%3Dusers"])(
+  it("links back to the origin chat from the server markup and follows the address once hydrated", async () => {
+    stubViewport(1440);
+    function ShellWithReturn() {
+      const navigation = useAdminSectionNavigation();
+      return (
+        <AdminShell
+          accountLabel="admin@example.com"
+          navigation={navigation}
+          releaseStatus={null}
+          returnPath="/p/project-1/c/chat-1"
+          topbar={{ title: navigation.activeSectionConfig.label }}
+        >
+          <section />
+        </AdminShell>
+      );
+    }
+    const server = document.createElement("div");
+    server.innerHTML = renderToString(<ShellWithReturn />);
+    const serverChats = [...server.querySelectorAll("a")].filter((link) =>
+      link.getAttribute("aria-label") === "Chats" || link.textContent?.trim() === "Chats");
+    expect(serverChats.length).toBeGreaterThan(0);
+    expect(serverChats.map((link) => link.getAttribute("href"))).toEqual(serverChats.map(() => "/p/project-1/c/chat-1"));
+    expect(server.querySelector('[data-testid="admin-nav-users"]'))
+      .toHaveAttribute("href", "/admin?return=%2Fp%2Fproject-1%2Fc%2Fchat-1&section=users");
+
+    // In the browser the address is the source: a return changed there is followed.
+    window.history.replaceState(null, "", "/admin?return=%2Fc%2Fchat-2");
+    render(<ShellWithReturn />);
+    await waitFor(() => expect(screen.getAllByRole("link", { name: "Chats" })[0]).toHaveAttribute("href", "/c/chat-2"));
+    expect(screen.getAllByRole("link", { name: "Users" })[0]).toHaveAttribute("href", "/admin?return=%2Fc%2Fchat-2&section=users");
+  });
+
+  it.each(["/admin", "/admin?return=https%3A%2F%2Fevil.example%2Fc%2Fx", "/admin?return=%2Fadmin%3Fsection%3Dusers", "/admin?return=%2Fc%2Fa&return=%2Fc%2Fb"])(
     "returns Chats to the new chat from %s",
     async (address) => {
       stubViewport(1440);
