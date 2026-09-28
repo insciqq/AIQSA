@@ -15,6 +15,7 @@ import {
   parseOpenAIResponsesSse
 } from "./openaiResponsesResponse";
 import { providerStreamTimingLimits } from "./network";
+import { guardDeepSeekSynthesis } from "./deepSeekSynthesis";
 import type { ProviderAdapter, ProviderRunResult } from "./types";
 
 export type DeepSeekResponsesAdapterOptions = Readonly<{
@@ -25,7 +26,7 @@ export type DeepSeekResponsesAdapterOptions = Readonly<{
 export function createDeepSeekResponsesAdapter(
   options: DeepSeekResponsesAdapterOptions
 ): ProviderAdapter {
-  return {
+  const adapter: ProviderAdapter = {
     buildRequestPreview: (request) => buildDeepSeekResponsesRequestPreview(request, {
       maxAttachmentTextChars: options.maxAttachmentTextChars
     }),
@@ -90,6 +91,13 @@ export function createDeepSeekResponsesAdapter(
       } catch (error) {
         throw deepSeekResponseError(error);
       }
+    }
+  };
+  return {
+    ...adapter,
+    async *stream(request, runOptions) {
+      const stream = adapter.stream(request, runOptions);
+      return yield* (request.toolChoice === "none" ? guardDeepSeekSynthesis(stream) : stream);
     }
   };
 }

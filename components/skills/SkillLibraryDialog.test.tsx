@@ -65,6 +65,60 @@ const sharedSkillDetail = {
 };
 
 describe("SkillLibraryDialog", () => {
+  it("imports a link from the library and displays committed and failed results separately", async () => {
+    const source = { kind: "github", url: "https://github.com/example/skills", revision: "a".repeat(40) };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/preview")) return Response.json({ source, fingerprint: "b".repeat(64), ignoredFiles: 0,
+        candidates: ["First", "Second"].map(name => ({ path: name, name, description: "Synthetic", fileCount: 0,
+          totalBytes: 100, hasExecutables: false, bundleDigest: "c".repeat(64), matches: [] })) });
+      if (String(input).endsWith("/url")) return Response.json({ ignoredFiles: 0, results: [
+        { name: "First", outcome: "created", skillId: "first" },
+        { name: "Second", outcome: "failed", error: { code: "skill_version_conflict" } }
+      ] });
+      return listResponse();
+    }));
+    const onClose = vi.fn();
+    render(<SkillLibraryDialog onClose={onClose} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
+    const modal = screen.getByRole("dialog", { name: "Import Skills from a link" });
+    fireEvent.change(within(modal).getByRole("textbox", { name: "Source link" }), { target: { value: source.url } });
+    fireEvent.click(within(modal).getByRole("button", { name: "Find Skills" }));
+    await within(modal).findByRole("list");
+    fireEvent.click(within(modal).getByRole("button", { name: "Import selected" }));
+    const result = await screen.findByRole("status", { name: "Import results" });
+    expect(result).toHaveTextContent("1 imported · 0 updated · 0 unchanged · 1 failed");
+    expect(result).toHaveTextContent("New Skills are enabled for Auto.");
+    expect(result).toHaveTextContent("Second: skill version conflict");
+    expect(screen.queryByRole("dialog", { name: "Import Skills from a link" })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("shows the owner source and checks updates using that Skill without closing the library on Escape", async () => {
+    const importSource = { kind: "github", url: "https://github.com/example/skills", revision: "a".repeat(40), path: ".", bundleDigest: "b".repeat(64) };
+    const requests: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/preview")) {
+        requests.push(JSON.parse(String(init?.body)));
+        return Response.json({ source: importSource, fingerprint: "c".repeat(64), ignoredFiles: 0, candidates: [],
+          target: { id: ownedSkill.id, name: ownedSkill.name, version: ownedSkill.version, path: ".", locallyModified: false } });
+      }
+      if (String(input).endsWith("/skill-owned")) return Response.json({ skill: { ...ownedSkillDetail, importSource } });
+      return listResponse();
+    }));
+    const onClose = vi.fn();
+    render(<SkillLibraryDialog onClose={onClose} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Careful editor" }));
+    expect(await screen.findByRole("link", { name: importSource.url })).toHaveAttribute("href", importSource.url);
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    const modal = screen.getByRole("dialog", { name: "Check Skill updates" });
+    await within(modal).findByRole("list");
+    expect(requests).toEqual([{ url: importSource.url, targetSkillId: ownedSkill.id }]);
+    fireEvent.keyDown(within(modal).getByRole("button", { name: "Close link import" }), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Check Skill updates" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Skills" })).toBeVisible();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("enables all Skills for Auto without changing Always use selections", async () => {
     let enabled = false;
     const onSelectionChange = vi.fn();

@@ -357,6 +357,8 @@ export type ProviderRunResult = {
   providerToolCallMessage?: unknown;
   providerResponseId?: string;
   toolCalls?: ModelToolCall[];
+  /** Adapter detected forbidden native tool markup; finalText/events contain only its safe prefix. */
+  synthesisToolCallForbidden?: true;
   usage: ModelRunUsage;
 };
 

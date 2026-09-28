@@ -155,6 +155,6 @@ describe("parameter persistence with an Assistant", () => {
       controlValues: { "openrouter:vendor/model": expect.objectContaining({ reasoningEffort: "low" }) }
     }), expect.anything());
     const assistant = useComposerControlStore.getState().assistant;
-    expect(assistant?.state === "bound" && assistant.rows.controls.origin).toBe("assistant");
+    expect(assistant?.state === "bound" && assistant.rows.controls.origin).toBe("chat");
   });
 });

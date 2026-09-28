@@ -5,6 +5,9 @@ import { crc32 } from "../artifacts/zip";
 import { SkillBundleError, skillLimit } from "./bundleErrors";
 
 export type SkillImportFile = { path: string; bytes: Buffer; executable?: boolean };
+export type SkillZipSelection = { selectPaths: (paths: readonly string[]) => ReadonlySet<string> };
+// Repository metadata may be larger than the admitted Skill bundle collection.
+const MAX_SELECTION_SCAN_ENTRIES = 10_000;
 
 function invalid(code = "skill_archive_invalid"): never {
   throw new SkillBundleError({ code });
@@ -22,7 +25,8 @@ function checkExtra(bytes: Buffer): void {
 }
 
 /** In-memory reader with declared AND actual expansion bounds. No disk extraction. */
-export function readSkillZip(bytes: Buffer): SkillImportFile[] {
+export function readSkillZip(bytes: Buffer, selection?: SkillZipSelection): SkillImportFile[] {
+  skillLimit("archiveBytes", bytes.length, SKILL_ARCHIVE_MAX_BYTES);
   let end = -1;
   for (let index = bytes.length - 22; index >= Math.max(0, bytes.length - 65_557); index -= 1) {
     if (bytes.readUInt32LE(index) === 0x06054b50 && index + 22 + bytes.readUInt16LE(index + 20) === bytes.length) {
@@ -37,11 +41,12 @@ export function readSkillZip(bytes: Buffer): SkillImportFile[] {
   if (count === 0xffff || size === 0xffffffff || start === 0xffffffff) invalid("skill_zip64_unsupported");
   if (bytes.readUInt16LE(end + 4) !== 0 || bytes.readUInt16LE(end + 6) !== 0 || bytes.readUInt16LE(end + 8) !== count) invalid();
   if (start + size !== end || (end >= 20 && bytes.readUInt32LE(end - 20) === 0x07064b50)) invalid();
-  skillLimit("archiveEntries", count, SKILL_ARCHIVE_MAX_ENTRIES);
+  skillLimit("archiveEntries", count, selection ? MAX_SELECTION_SCAN_ENTRIES : SKILL_ARCHIVE_MAX_ENTRIES);
   let cursor = start;
   let expanded = 0;
   const files: SkillImportFile[] = [];
   const ranges: Array<readonly [number, number]> = [];
+  const entries: Array<{ path: string; directory: boolean; system: number; mode: number; method: number; crc: number; packed: number; unpacked: number; dataStart: number }> = [];
   for (let index = 0; index < count; index += 1) {
     if (cursor + 46 > end || bytes.readUInt32LE(cursor) !== 0x02014b50) invalid();
     const system = bytes.readUInt16LE(cursor + 4) >>> 8;
@@ -67,8 +72,6 @@ export function readSkillZip(bytes: Buffer): SkillImportFile[] {
     const normalizedPath = directory ? path.slice(0, -1) : path;
     if (!isSafeWorkspaceRelativePath(normalizedPath) || /^[a-z]:/iu.test(normalizedPath)) invalid("skill_path_invalid");
     const mode = system === 3 || system === 19 ? attributes >>> 16 : 0;
-    const type = mode & 0o170000;
-    if (type !== 0 && type !== (directory ? 0o040000 : 0o100000)) invalid("skill_archive_special_file");
     checkExtra(bytes.subarray(cursor + 46 + nameLength, cursor + 46 + nameLength + extraLength));
     cursor += 46 + nameLength + extraLength + commentLength;
     if (local + 30 > start || bytes.readUInt32LE(local) !== 0x04034b50) invalid();
@@ -80,9 +83,23 @@ export function readSkillZip(bytes: Buffer): SkillImportFile[] {
       !bytes.subarray(local + 30, local + 30 + localNameLength).equals(nameBytes)) invalid();
     checkExtra(bytes.subarray(local + 30 + localNameLength, dataStart));
     if (!(flags & 8) && (bytes.readUInt32LE(local + 14) !== crc || bytes.readUInt32LE(local + 18) !== packed || bytes.readUInt32LE(local + 22) !== unpacked)) invalid();
-    const range: readonly [number, number] = [local, dataStart + packed];
-    if (ranges.some(([from, to]) => from < range[1] && range[0] < to)) invalid();
-    ranges.push(range);
+    ranges.push([local, dataStart + packed]);
+    entries.push({ path, directory, system, mode, method, crc, packed, unpacked, dataStart });
+  }
+  if (cursor !== end) invalid();
+  ranges.sort((a, b) => a[0] - b[0]);
+  for (let index = 1; index < ranges.length; index += 1) if (ranges[index - 1]![1] > ranges[index]![0]) invalid();
+  const selected = selection?.selectPaths(entries.filter((entry) => !entry.directory).map((entry) => entry.path));
+  const selectedDirectories = new Set<string>();
+  if (selected) for (const path of selected) {
+    const parts = path.split("/");
+    for (let count = 1; count < parts.length; count += 1) selectedDirectories.add(`${parts.slice(0, count).join("/")}/`);
+  }
+  const admitted = selected ? entries.filter((entry) => entry.directory ? selectedDirectories.has(entry.path) : selected.has(entry.path)) : entries;
+  skillLimit("archiveEntries", selected ? admitted.filter((entry) => !entry.directory).length : admitted.length, SKILL_ARCHIVE_MAX_ENTRIES);
+  for (const { path, directory, system, mode, method, crc, packed, unpacked, dataStart } of admitted) {
+    const type = mode & 0o170000;
+    if (type !== 0 && type !== (directory ? 0o040000 : 0o100000)) invalid("skill_archive_special_file");
     skillLimit("fileBytes", unpacked, SKILL_FILE_MAX_BYTES);
     skillLimit("archiveBytes", expanded + unpacked, SKILL_ARCHIVE_MAX_BYTES);
     let content: Buffer;
@@ -98,6 +115,5 @@ export function readSkillZip(bytes: Buffer): SkillImportFile[] {
     if (directory) { if (content.length !== 0) invalid(); continue; }
     files.push({ path, bytes: content, ...(system === 3 || system === 19 ? { executable: (mode & 0o111) !== 0 } : {}) });
   }
-  if (cursor !== end) invalid();
   return files;
 }

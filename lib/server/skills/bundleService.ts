@@ -7,22 +7,37 @@ import type { StorageAdapter } from "../uploads/storage";
 import { createSkillBundle, renderSkillMarkdown, skillExportEntries, type SkillBundle, type SkillImportCandidate } from "./bundle";
 import { SkillBundleError, skillLimit } from "./bundleErrors";
 import { lockSkillRevisionWrites, retrySkillRevisionWrite, skillAccessWhere } from "./prismaRepository";
+import { decodeSkillImportSource, type SkillImportSource, type SkillSourceImportAction } from "../../contracts/skillSources";
 
 const checksum = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 export function createSkillBundleService(db: PrismaClient, storage: StorageAdapter) {
-  async function importOne(userId: string, bundle: SkillBundle) {
+  async function importOne(userId: string, bundle: SkillBundle, remote?: { action: SkillSourceImportAction; source: SkillImportSource }) {
     // Stage immutable rows before object I/O. They remain private until the
     // checksum-verified revision becomes current, and protect their objects from pruning.
     const staged = await retrySkillRevisionWrite(() => db.$transaction(async (tx) => {
       await lockSkillRevisionWrites(tx, userId);
-      const matches = await tx.skillDefinition.findMany({ where: {
+      if (remote?.action.kind === "update") {
+        const rows = await tx.$queryRaw<Array<{ version: number; archivedAt: Date | null; deletedAt: Date | null }>>`
+          SELECT "version", "archivedAt", "deletedAt" FROM "SkillDefinition"
+          WHERE "id" = ${remote.action.skillId} AND "ownerUserId" = ${userId} FOR UPDATE`;
+        if (!rows[0] || rows[0].deletedAt || rows[0].archivedAt) throw new SkillBundleError({ code: "skill_not_available" });
+        if (rows[0].version !== remote.action.version) throw new SkillBundleError({ code: "skill_version_conflict" });
+      }
+      const matches = remote ? (remote.action.kind === "create" ? [] : await tx.skillDefinition.findMany({
+        where: { id: remote.action.skillId, ownerUserId: userId, deletedAt: null, archivedAt: null }, include: { currentRevision: true }
+      })) : await tx.skillDefinition.findMany({ where: {
         ownerUserId: userId, deletedAt: null,
         OR: [{ currentRevision: { name: bundle.name } }, { currentRevisionId: null, revisions: { some: { name: bundle.name } } }]
       }, include: { currentRevision: true }, take: 2 });
       if (matches.length > 1) throw new SkillBundleError({ code: "skill_name_ambiguous" });
       const existing = matches[0];
       if (existing?.currentRevision?.bundleDigest === bundle.bundleDigest) {
+        const previousSource = decodeSkillImportSource(existing.importSourceJson);
+        if (remote && (!previousSource || (Object.keys(remote.source) as Array<keyof SkillImportSource>)
+          .some((key) => previousSource[key] !== remote.source[key]))) {
+          await tx.skillDefinition.update({ where: { id: existing.id }, data: { importSourceJson: remote.source, version: { increment: 1 } } });
+        }
         return { unchanged: true as const, skillId: existing.id };
       }
       const definition = existing ?? await tx.skillDefinition.create({ data: { ownerUserId: userId } });
@@ -65,7 +80,8 @@ export function createSkillBundleService(db: PrismaClient, storage: StorageAdapt
       }
       await tx.skillRevision.update({ where: { id: staged.revisionId }, data: { bundleReady: true } });
       await tx.skillDefinition.update({ where: { id: staged.skillId }, data: {
-        currentRevisionId: staged.revisionId, ...(staged.created ? {} : { version: { increment: 1 } })
+        currentRevisionId: staged.revisionId, ...(remote ? { importSourceJson: remote.source } : {}),
+        ...(staged.created ? {} : { version: { increment: 1 } })
       } });
     });
     return { outcome: staged.created ? "created" as const : "updated" as const, skillId: staged.skillId };
@@ -141,7 +157,9 @@ export function createSkillBundleService(db: PrismaClient, storage: StorageAdapt
     return { path: file.path, content: file.textContent, bytes: file.byteSize };
   }
 
-  return { importCandidates, exportOwned, readFile };
+  return { importCandidates, exportOwned, readFile,
+    importRemoteCandidate: (userId: string, bundle: SkillBundle, action: SkillSourceImportAction, source: SkillImportSource) =>
+      importOne(userId, bundle, { action, source }) };
 }
 
 export type SkillBundleService = ReturnType<typeof createSkillBundleService>;

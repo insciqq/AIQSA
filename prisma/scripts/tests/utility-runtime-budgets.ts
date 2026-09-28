@@ -15,7 +15,8 @@ export const utilityRuntimeBudgetFixtures = [
   `,
   proof: `DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM "ModelPolicy" WHERE id = 'installation'
-      AND "mcpAutoDiscoveryTimeoutSeconds" ${expected} AND version = ${nextVersion})
+      -- The later tool-budget default adoption advances this policy once.
+      AND "mcpAutoDiscoveryTimeoutSeconds" ${expected} AND version = ${nextVersion + 1})
     THEN RAISE EXCEPTION 'utility_budget_adoption_or_operator_preservation_failed'; END IF;
   END $$;
   BEGIN;

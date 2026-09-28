@@ -84,14 +84,14 @@ const integerSettings = Object.freeze({
     name: "AIQSA_WORKSPACE_IDLE_TTL_SECONDS"
   },
   maxToolCalls: {
-    defaultValue: 80,
-    maximum: 200,
+    defaultValue: 320,
+    maximum: 800,
     minimum: 1,
     name: "AIQSA_WORKSPACE_MAX_TOOL_CALLS"
   },
   maxToolRounds: {
-    defaultValue: 40,
-    maximum: 100,
+    defaultValue: 160,
+    maximum: 400,
     minimum: 1,
     name: "AIQSA_WORKSPACE_MAX_TOOL_ROUNDS"
   },
@@ -224,14 +224,21 @@ export function getWorkspaceConfig(
     throw new WorkspaceConfigError("workspace_runner_configuration_incomplete");
   }
 
+  const maxToolCalls = integerValue(env, integerSettings.maxToolCalls);
+  // Increasing the product round default must not invalidate an existing
+  // calls-only override. Explicit rounds still receive strict validation.
+  const maxToolRounds = integerValue(env, {
+    ...integerSettings.maxToolRounds,
+    defaultValue: Math.min(integerSettings.maxToolRounds.defaultValue, maxToolCalls)
+  });
   const config = {
     ...(env.AIQSA_AGENT_APP_ORIGIN?.trim() ? { agentGatewayEnabled: true } : {}),
     cpus: integerValue(env, integerSettings.cpus),
     diskMiB: integerValue(env, integerSettings.diskMiB),
     idleTtlSeconds: integerValue(env, integerSettings.idleTtlSeconds),
     imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, "aiqsa-workspace:0.1.28", 512),
-    maxToolCalls: integerValue(env, integerSettings.maxToolCalls),
-    maxToolRounds: integerValue(env, integerSettings.maxToolRounds),
+    maxToolCalls,
+    maxToolRounds,
     mcpVersion: boundedText(env.AIQSA_WORKSPACE_MCP_VERSION, WORKSPACE_MCP_VERSION, 64),
     memoryMiB: integerValue(env, integerSettings.memoryMiB),
     outputFileMaxBytes: integerValue(env, integerSettings.outputFileMaxBytes),

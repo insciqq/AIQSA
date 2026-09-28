@@ -31,6 +31,8 @@ import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiv
 import { SKILLS_SHARING_MIGRATION, skillsSharingFixtureSql, skillsSharingProofSql } from "./skills-sharing-adoption";
 import { SKILLS_PROGRESSIVE_MIGRATION, skillsProgressiveFixtureSql, skillsProgressiveProofSql } from "./skills-progressive-adoption";
 import { ASSISTANTS_V2_MIGRATION, assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql } from "./assistants-v2-adoption";
+import { TOOL_BUDGET_DEFAULTS_MIGRATION, toolBudgetDefaultsFixtures } from "./tool-budget-defaults-adoption";
+import { SKILL_IMPORT_SOURCE_MIGRATION, skillImportSourceFixtureSql, skillImportSourceProofSql } from "./skill-import-source-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -554,6 +556,8 @@ function bootstrapFoundationDigest(database: string): string {
           id,
           "defaultProviderModelId",
           "memoryAdmissionTimeoutSeconds",
+          "maxToolCalls",
+          "maxToolRounds",
           "toolObservationPolicy",
           version,
           "updatedByUserId"
@@ -582,6 +586,8 @@ function bootstrapFoundationDigest(database: string): string {
 }
 
 function runBootstrapProof(database: string): void {
+  assert.equal(psqlScalar(database, `SELECT "maxToolCalls" || ':' || "maxToolRounds" FROM "ModelPolicy" WHERE id = 'installation';`),
+    "80:32", "fresh installation must receive the increased tool budgets");
   assert.equal(psqlScalar(database, `SELECT "limitsEnabled" FROM "AgentPolicy" WHERE id = 'installation';`), "f",
     "Agent budgets must be disabled by default");
   assert.equal(
@@ -7508,6 +7514,12 @@ function main(
     skillsProgressiveFixtureSql, skillsProgressiveProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANTS_V2_MIGRATION,
     assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, SKILL_IMPORT_SOURCE_MIGRATION,
+    skillImportSourceFixtureSql, skillImportSourceProofSql);
+  for (const { fixture, proof, repeatProof } of toolBudgetDefaultsFixtures) {
+    runForwardAdoptionProof(shadowDatabase, migrations, TOOL_BUDGET_DEFAULTS_MIGRATION,
+      fixture, proof, repeatProof);
+  }
   runForwardAdoptionProof(shadowDatabase, migrations, ARTIFACT_VERSIONED_MIGRATION,
     artifactVersionedFixtureSql, artifactVersionedProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, RUN_FOLLOWUPS_MIGRATION,

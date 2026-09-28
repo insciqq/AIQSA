@@ -5,6 +5,8 @@ import {
   loadMoreSkillLibrary,
   exportSkills,
   importSkills,
+  importSkillSource,
+  previewSkillSource,
   loadSkillDetail,
   loadSkillFile,
   SkillRequestError,
@@ -217,5 +219,49 @@ describe("skillLibraryStore", () => {
     const failure = await exportSkills().catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(SkillRequestError);
     expect((failure as SkillRequestError).issue).toEqual({ code: "skill_field_too_long", field: "archiveBytes", actual: 101, limit: 100 });
+  });
+
+  it("decodes source previews positively, including a standalone SKILL.md with no companions", async () => {
+    const source = { kind: "markdown", url: "https://example.org/SKILL.md", revision: "a".repeat(64) };
+    const value = { source: { ...source, privateToken: "discard" }, fingerprint: "b".repeat(64), ignoredFiles: 0,
+      candidates: [{ path: ".", name: "Review", description: "Checks documents", fileCount: 0, totalBytes: 100,
+        hasExecutables: false, bundleDigest: "c".repeat(64), matches: [], instructions: "not a preview contract" }] };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(value)));
+    const result = await previewSkillSource({ url: source.url });
+    expect(result.source).toEqual(source);
+    expect(result.candidates[0]).toMatchObject({ fileCount: 0 });
+    expect(result.candidates[0]).not.toHaveProperty("instructions");
+    await expect(previewSkillSource({ url: source.url, targetSkillId: "mine" })).rejects.toThrow("skill_response_invalid");
+    for (const invalid of [
+      { ...value, source: { ...source, url: "javascript:alert(1)" } },
+      { ...value, candidates: [{ ...value.candidates[0], fileCount: -1 }] },
+      { ...value, candidates: [value.candidates[0], value.candidates[0]] },
+      { ...value, target: { id: "mine", name: "Review", version: 0, path: ".", locallyModified: false } }
+    ]) {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json(invalid)));
+      await expect(previewSkillSource({ url: source.url })).rejects.toThrow("skill_response_invalid");
+    }
+  });
+
+  it("projects valid source provenance only on owner detail", async () => {
+    const importSource = { kind: "github", url: "https://github.com/example/skills", revision: "a".repeat(40), path: "skills/review", bundleDigest: "b".repeat(64) };
+    const detail = { ...skill("mine"), assistantUsageCount: 0, audiences: [], canDelete: true, canEdit: true,
+      canPublish: false, canUnshare: false, instructions: "Review", owner: { displayName: "Viewer" }, workspaceUsageCount: 0 };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ skill: { ...detail, importSource: { ...importSource, secret: "discard" } } })));
+    expect((await loadSkillDetail("mine")).importSource).toEqual(importSource);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ skill: { ...detail, owned: false, importSource } })));
+    await expect(loadSkillDetail("mine")).rejects.toThrow("skill_response_invalid");
+  });
+
+  it("keeps an accepted link import successful when the following library refresh fails", async () => {
+    const input = { url: "https://example.org/SKILL.md", fingerprint: "a".repeat(64), selections: [
+      { path: ".", bundleDigest: "b".repeat(64), action: { kind: "create" as const } }] };
+    const result = { ignoredFiles: 0, results: [{ name: "Review", outcome: "created", skillId: "new" }] };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
+      ? Response.json(result) : Response.json({ error: "unavailable" }, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(importSkillSource(input)).resolves.toEqual(result);
+    expect(useSkillLibraryStore.getState().loadState).toBe("error");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(input);
   });
 });

@@ -150,8 +150,22 @@ describe("composer Assistant rows", () => {
     useComposerControlStore.getState().setTemperature("1.4");
 
     expect(useComposerControlStore.getState().temperature).toBe("1.4");
-    expect(origins()).toMatchObject({ controls: "default", model: "chat" });
-    expect(bound().unsyncedRows).toEqual(["model"]);
+    expect(origins()).toMatchObject({ controls: "chat", model: "chat" });
+    expect(bound().unsyncedRows).toEqual(["model", "controls"]);
+  });
+
+  it("keeps parameter edits as chat overrides when the Assistant inherits its model", () => {
+    const rows = composerAssistantRowsFixture();
+    rows.model = { ...rows.model, assistantValue: { mode: "inherit" }, origin: "default" };
+    rows.controls = { ...rows.controls, assistantValue: {}, origin: "default" };
+    applyAssistant({}, { rows });
+
+    useComposerControlStore.getState().setMaxOutputTokens("256");
+    useComposerControlStore.getState().setReasoningEffort("low");
+
+    expect(useComposerControlStore.getState()).toMatchObject({ maxOutputTokens: "256", reasoningEffort: "low" });
+    expect(origins()).toMatchObject({ controls: "chat", model: "default" });
+    expect(useComposerControlStore.getState().takeUnsyncedAssistantRows()).toEqual(["controls"]);
   });
 
   it("drops a controls override when the model changes and brings the Assistant's parameters back with its model", () => {

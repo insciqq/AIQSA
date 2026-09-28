@@ -690,6 +690,40 @@ describe("message run actions", () => {
       ?.pendingProjectDraft).toBeUndefined();
   });
 
+  it.each([
+    { inherited: true, project: true },
+    { inherited: false, project: true },
+    { inherited: true, project: false },
+    { inherited: false, project: false }
+  ])("sends edited Assistant parameters with inherited=$inherited and project=$project", async ({ inherited, project }) => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: { ...chat(), ...(project ? { projectId: "project-1" } : {}) },
+      attachments: [],
+      buildControlDraft: () => ({
+        maxOutputTokens: useComposerControlStore.getState().maxOutputTokens,
+        reasoningEffort: useComposerControlStore.getState().reasoningEffort
+      })
+    });
+    const assistant = boundComposerAssistantFixture();
+    assistant.rows.model = {
+      ...assistant.rows.model,
+      assistantValue: inherited ? { mode: "inherit" } : { mode: "model", modelId: "other-model" },
+      origin: inherited ? "default" : "chat"
+    };
+    assistant.rows.controls = { ...assistant.rows.controls, assistantValue: {}, origin: "default" };
+    useComposerControlStore.setState({ assistant, maxOutputTokens: "8192" });
+    useComposerControlStore.getState().setMaxOutputTokens("256");
+    useComposerControlStore.getState().setReasoningEffort("low");
+
+    await actions.submitComposer();
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(body.controlDefaults).toMatchObject({ maxOutputTokens: "256", reasoningEffort: "low" });
+    expect(body).not.toHaveProperty("params");
+  });
+
   it("says explicitly that a new Project chat has no Assistant, and only on its first message", async () => {
     const pending = {
       ...chat(),
@@ -1150,6 +1184,7 @@ describe("message run actions", () => {
       vi.stubGlobal("fetch", fetchMock);
       const actions = useAssistantChat({
         attachments: [],
+        buildControlDraft: () => ({ temperature: useComposerControlStore.getState().temperature }),
         buildParams: () => ({ temperature: 0.9 }),
         draft: "Changed rows"
       });
@@ -1174,15 +1209,15 @@ describe("message run actions", () => {
       await actions.submitComposer();
 
       expect(requestBody(fetchMock)).toMatchObject({
+        controlDefaults: { temperature: "0.9" },
         knowledgePlan: { baseIds: ["base-1"], mode: "explicit" },
         mcp: { mode: "load_all" },
         modelId: "gpt-5.5",
         provider: "openai",
         skills: { mode: "auto" }
       });
-      // Parameters follow the model the user chose; they are not a changed row.
+      // The replacement model's parameters are still an explicit chat value.
       expect(requestBody(fetchMock)).not.toHaveProperty("params");
-      expect(requestBody(fetchMock)).not.toHaveProperty("controlDefaults");
       expect(requestBody(fetchMock)).not.toHaveProperty("assistantId");
     });
 

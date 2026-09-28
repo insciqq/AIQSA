@@ -142,6 +142,7 @@ export function skillDetail(entry: SkillDetailEntry, actorIsAdmin: boolean): Ski
       hasExecutables: entry.revision.hasExecutables ?? false },
     owner: { displayName: entry.ownerDisplayName },
     ...(entry.owned && entry.sharing ? { sharing: entry.sharing } : {}),
+    ...(entry.owned && entry.importSource ? { importSource: entry.importSource } : {}),
     workspaceUsageCount: entry.workspaceUsageCount
   };
 }
