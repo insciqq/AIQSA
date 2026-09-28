@@ -1,4 +1,5 @@
 import type { ProviderRunRequest } from "../providers/types";
+import { anthropicToolSchemas } from "../providers/anthropicStrictSchema";
 import {
   invalidProviderToolArguments,
   type ModelToolCall,
@@ -110,13 +111,14 @@ function openRouterFunctionTool(tool: RunTool): SerializedProviderTool {
 }
 
 function anthropicFunctionTool(tool: RunTool): SerializedProviderTool {
+  const projected = anthropicToolSchemas([tool])[0]!;
   return {
     provider: "anthropic",
     tool: {
       description: tool.description,
-      input_schema: tool.inputSchema,
+      input_schema: projected.inputSchema,
       name: tool.name,
-      ...(tool.strict !== undefined ? { strict: tool.strict } : {})
+      ...(projected.strict !== undefined ? { strict: projected.strict } : {})
     }
   };
 }

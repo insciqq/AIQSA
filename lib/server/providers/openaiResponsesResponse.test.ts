@@ -111,6 +111,19 @@ describe("OpenAI Responses response normalization", () => {
     });
   });
 
+  it("retains real reasoning and text for a required-tool correction after a completed no-call round", () => {
+    const output = [
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "private correction reasoning" }] },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "I answered too early." }] }
+    ];
+    const normalized = normalizeCompletedOpenAIResponse({
+      id: "resp-correction", status: "completed", output
+    });
+    expect(normalized.result.toolCalls).toEqual([]);
+    expect(normalized.result.providerToolCallMessage).toEqual(output);
+    expect(JSON.stringify(normalized.result.finalProviderResponsePreview)).not.toContain("private correction reasoning");
+  });
+
   it("normalizes completed text, usage, search, reasoning, citations, and tool continuation", () => {
     const response = {
       error: { code: remoteSecret, message: `must not persist ${remoteSecret}` },

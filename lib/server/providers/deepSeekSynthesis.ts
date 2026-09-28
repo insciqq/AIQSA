@@ -61,6 +61,9 @@ export async function* guardDeepSeekSynthesis(
       return {
         ...result,
         finalText,
+        // Rejected synthesis cannot be continued. The shared Responses
+        // parser now retains original no-call messages for valid corrections.
+        providerToolCallMessage: undefined,
         finalProviderResponsePreview: {
           id: result.providerResponseId,
           provider: "deepseek",

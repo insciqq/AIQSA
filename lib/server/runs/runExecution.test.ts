@@ -4375,6 +4375,40 @@ describe("run execution", () => {
     expect(response).not.toContain("A supported answer.");
   });
 
+  it.each(["compose", "review"] as const)("reports a workflow 11 %s HTTP rejection as a provider failure with a bounded diagnostic", async stage => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const { executor } = toolLoopKnowledgeExecutor();
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    let rounds = 0;
+    const adapter = createAdapter(async function* () {
+      rounds += 1;
+      if (rounds === 1) return providerResult({ finalText: "", toolCalls: [{
+        name: KNOWLEDGE_SEARCH_TOOL_NAME, id: "knowledge-call-1", arguments: { query: "retention", sourceAliases: [] }
+      }] });
+      if (rounds === 2) return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
+      if (rounds === 3 && stage === "review") return providerResult({ finalText: JSON.stringify({
+        version: 1, blocks: [{ kind: "paragraph", text: "A supported answer.", evidenceHandles: ["K1"] }]
+      }) });
+      throw Object.assign(new GeminiHttpError(400, "invalid_request"), { providerMessage: "PRIVATE_PROVIDER_CANARY" });
+    });
+    const base = preparedData({ knowledgeBaseIds: ["base-1"], modelId: "openai-answer-model", provider: "openai" });
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, knowledgeAnswerWorkflowVersion: 11 as const },
+      providerRequest: { ...base.providerRequest, knowledgeAnswerWorkflowVersion: 11 as const } };
+    const response = await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+      knowledgeExecutor: executor, knowledgeProviderDispatch: dispatch.lifecycle })).text();
+    expect(rounds).toBe(stage === "compose" ? 3 : 4);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({
+      code: "knowledge_answer_failed", message: "The Knowledge answer provider failed."
+    }) })]);
+    expect(observation.records()).toContainEqual(expect.objectContaining({
+      event: "run_execution", outcome: "failed", code: "knowledge_answer_failed", provider_code: "provider_http_invalid_request"
+    }));
+    expect(JSON.stringify([response, repository.failedRuns, observation.records()])).not.toContain("PRIVATE_PROVIDER_CANARY");
+  });
+
   it.each([9, 10, 11] as const)("uses reviewed gaps to retrieve new evidence before revising an ordinary answer (%s)", async workflowVersion => {
     const repository = createRepository({ groundingResult: structuralGroundingResult("Reviewed answer [K1] [K2].") });
     const initial = knowledgeEvidence();
@@ -4751,6 +4785,42 @@ describe("run execution", () => {
       expect.objectContaining({ finalText: terminalText })
     ]);
     expect(repository.failedRuns).toEqual([]);
+  });
+
+  it.each([true, false])("checkpoints a no-call Knowledge correction and publishes only its validated outcome (succeeds=%s)", async succeeds => {
+    const repository = createRepository({ groundingResult: structuralGroundingResult("No matching private passage was required.") });
+    const { executor, execute } = toolLoopKnowledgeExecutor(emptyKnowledgeEvidence());
+    const requests: ProviderRunRequest[] = [];
+    const begin = vi.spyOn(repository.repository, "beginToolLoopProviderRound");
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      const finalText = requests.length === 3 ? "No matching private passage was required." : "UNVERIFIED_REQUIRED_TOOL_DRAFT";
+      yield { type: "token", data: { delta: finalText } };
+      return providerResult({ finalText,
+        providerToolCallMessage: [{ type: "reasoning", reasoning_text: "original reasoning" }, { role: "assistant", content: finalText }],
+        ...(succeeds && requests.length === 2 ? { toolCalls: [{ id: "required", name: KNOWLEDGE_SEARCH_TOOL_NAME,
+          arguments: { query: "synthetic", sourceAliases: [] } }] } : {}) });
+    });
+    const base = preparedData({ knowledgeBaseIds: ["base-1"], modelId: "openai-answer-model", provider: "openai" });
+    const prepared = { ...base, providerRequest: { ...base.providerRequest, toolChoice: "required" as const, forcedToolName: KNOWLEDGE_SEARCH_TOOL_NAME } };
+    const body = await createRunExecutionResponse(executionInput({ adapter, prepared, knowledgeExecutor: executor,
+      repository: repository.repository })).text();
+    expect(begin).toHaveBeenCalledTimes(2);
+    expect(begin.mock.calls[1]?.[0]).toMatchObject({ requiredToolCorrectionOfRound: 1, roundIndex: 2,
+      providerContinuation: { requiredToolCorrection: true } });
+    expect(body).not.toContain("UNVERIFIED_REQUIRED_TOOL_DRAFT");
+    expect(requests[1]?.toolChoice).toBe("auto");
+    expect(execute).toHaveBeenCalledTimes(succeeds ? 1 : 0);
+    expect(repository.recordedRunUsageEvents.flatMap(entry => entry.answerRoundUsage ? [entry.answerRoundUsage.roundIndex] : []))
+      .toEqual(succeeds ? [1, 2, 3] : [1, 2]);
+    if (succeeds) {
+      expect([...repository.toolCalls.values()]).toMatchObject([{ roundIndex: 2, state: "complete" }]);
+      expect(repository.completeRuns).toHaveLength(1);
+      expect(repository.failedRuns).toEqual([]);
+    } else {
+      expect(repository.completeRuns).toEqual([]);
+      expect(repository.failedRuns).toMatchObject([{ error: { code: "required_tool_call_missing" } }]);
+    }
   });
 
   it("continues after a completed zero-candidate Knowledge result", async () => {

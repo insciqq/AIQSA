@@ -193,11 +193,12 @@ function summarizeOutput(response: OpenAIResponseRecord): Record<string, unknown
   });
 }
 
-function toolContinuationItems(response: OpenAIResponseRecord): Record<string, unknown>[] {
+function toolContinuationItems(response: OpenAIResponseRecord, includeMessage = false): Record<string, unknown>[] {
   const output = Array.isArray(response.output) ? response.output : [];
 
   return output.filter((item): item is Record<string, unknown> => {
-    return isRecord(item) && (item.type === "function_call" || item.type === "reasoning");
+    return isRecord(item) && (item.type === "function_call" || item.type === "reasoning" ||
+      includeMessage && item.type === "message");
   });
 }
 
@@ -406,7 +407,9 @@ function normalizeOpenAIResponseResult(
         normalizedProviderResponseId
       ),
       finalText,
-      providerToolCallMessage: toolCalls.length > 0 ? toolContinuationItems(response) : undefined,
+      // A completed answer may need one required-tool correction. Preserve
+      // the actual private reasoning and answer for that continuation.
+      providerToolCallMessage: toolContinuationItems(response, toolCalls.length === 0),
       providerResponseId: normalizedProviderResponseId,
       toolCalls,
       usage: extractOpenAIUsage(response)

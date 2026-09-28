@@ -11,6 +11,8 @@ import {
 } from "./providerObservability";
 import { createFetchGeminiInteractionsClient, GeminiHttpError } from "./geminiInteractionsTransport";
 import { createFetchOpenAIResponsesClient } from "./openaiResponsesTransport";
+import { createFetchDeepSeekResponsesClient } from "./deepSeekResponsesTransport";
+import { createFetchAnthropicMessagesClient } from "./anthropicMessages";
 import { executeWithProviderRetry } from "./providerRetry";
 import { ProviderRequestTimeoutError, withTimeoutSignal } from "./network";
 import { ProviderSearchExecutionError } from "./types";
@@ -26,6 +28,19 @@ function capture() {
 
 describe("provider diagnostics", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it.each(["deepseek", "anthropic"])("retains the safe %s invalid-request code in operation evidence", async (provider) => {
+    const records = capture();
+    const fetchFn = observeProviderFetch(async () => Response.json({ error: {
+      type: "invalid_request_error", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } }, { status: 400 }));
+    const send = provider === "deepseek"
+      ? () => createFetchDeepSeekResponsesClient({ apiKey: "synthetic", fetchFn }).create({})
+      : () => createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn }).createMessage({});
+    await observeProviderOperation(identity, "answer", send).catch(() => undefined);
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
+      code: "provider_http_invalid_request", httpStatus: 400, reason: "http" }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_PROVIDER_MESSAGE_CANARY");
+  });
 
   it("keeps physical attempts and retry decisions under the accepted identity without reading bodies", async () => {
     const records = capture();
@@ -133,6 +148,12 @@ describe("provider diagnostics", () => {
     const lookalike = Object.assign(new Error("PRIVATE_MESSAGE_CANARY"), { code: "invalid_request", httpStatus: 400 });
     expect(observedFailure(lookalike)).toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
     expect(providerHttpFailureMessage(lookalike)).toBeNull();
+  });
+
+  it("explains a typed invalid request across native transports without provider prose", () => {
+    const error = Object.assign(new Error("PRIVATE_PROVIDER_CANARY"), { code: "provider_http_invalid_request", status: 400 });
+    expect(providerHttpFailureMessage(error)).toBe("The model provider rejected the request (HTTP 400: invalid_request).");
+    expect(providerHttpFailureMessage({ code: "provider_http_invalid_request", status: 503 })).toBeNull();
   });
 
   it("does not invoke untrusted error getters or infer codes from exception text", () => {

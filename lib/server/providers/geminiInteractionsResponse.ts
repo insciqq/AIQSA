@@ -662,7 +662,9 @@ function resultFromNormalized(input: NormalizedInteraction): ProviderRunResult {
     finalProviderResponsePreview: responsePreview(input),
     finalText: input.finalText,
     ...(input.id ? { providerResponseId: input.id } : {}),
-    providerToolCallMessage: input.toolCalls.length > 0 ? input.protectedSteps : undefined,
+    // Required-tool correction also continues a completed text-only round;
+    // keep its signed private steps intact instead of inventing continuation.
+    providerToolCallMessage: input.protectedSteps,
     toolCalls: input.toolCalls,
     usage: input.usage
   };

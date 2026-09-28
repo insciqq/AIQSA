@@ -2,6 +2,7 @@ import { observeJsonParse } from "./providerObservability";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
+  providerResponseMaxBytes,
   readBoundedResponseText,
   withTimeoutSignal
 } from "./network";
@@ -67,27 +68,35 @@ async function parseJsonResponse(
   return parsed as DeepSeekResponseObject;
 }
 
-/** DeepSeek states an OpenAI-style "maximum context length" rejection. Only
- * the stable identity and the stated counts leave the body. */
-function contextLengthRejection(text: string): ProviderContextLengthCounts | null {
+/** Only reviewed error identities and context counts leave this bounded body. */
+function rejectionFacts(text: string): Readonly<{
+  contextLength: ProviderContextLengthCounts | null;
+  invalidRequest: boolean;
+}> {
   let value: unknown;
-  try { value = JSON.parse(text); } catch { return null; }
+  try { value = JSON.parse(text); } catch { return { contextLength: null, invalidRequest: false }; }
   const error = typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>).error : null;
-  return typeof error === "object" && error !== null && !Array.isArray(error)
-    ? providerContextLengthRejection(error as Record<string, unknown>) : null;
+  const record = typeof error === "object" && error !== null && !Array.isArray(error)
+    ? error as Record<string, unknown> : null;
+  return {
+    contextLength: record ? providerContextLengthRejection(record) : null,
+    invalidRequest: record?.type === "invalid_request_error" || record?.code === "invalid_request_error"
+  };
 }
 
 async function throwHttpError(response: Response, signal: AbortSignal): Promise<never> {
   let contextLength: ProviderContextLengthCounts | null = null;
+  let invalidRequest = false;
   try {
-    const text = await readBoundedResponseText(response, { signal });
-    if (response.status === 400) contextLength = contextLengthRejection(text);
+    const text = await readBoundedResponseText(response, { maxBytes: Math.min(providerResponseMaxBytes(), 64 * 1024), signal });
+    if (response.status === 400) ({ contextLength, invalidRequest } = rejectionFacts(text));
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) throw error;
   }
   throw Object.assign(new DeepSeekHttpError(response.status),
-    contextLength ? { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLength } : {});
+    contextLength ? { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLength }
+      : invalidRequest ? { code: "provider_http_invalid_request" } : {});
 }
 
 export function createFetchDeepSeekResponsesClient(input: Readonly<{

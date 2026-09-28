@@ -108,7 +108,9 @@ describe("Memory execution compatibility", () => {
       role: "MEMORY_FACT_EXTRACT", target: acceptedTarget, utilityPolicyVersion: "test-v1"
     });
     expect(snapshot.version).toBe(4);
+    expect(snapshot.requiredToolModes).toEqual(["native"]);
     expect(memoryFactProviderEvidence(snapshot).memorySnapshotVersion).toBe(4);
+    expect(memoryFactProviderEvidence(snapshot).requiredToolModes).toEqual(["native"]);
     expect(memoryFactDecisionProviderEvidence({ ...snapshot, logicalRole: "MEMORY_CONSOLIDATE" })
       .memorySnapshotVersion).toBe(4);
     const { generationBudget: _budget, ...oldSnapshot } = snapshot as Extract<typeof snapshot, { version: 4 }>;
@@ -118,6 +120,24 @@ describe("Memory execution compatibility", () => {
     expect(memoryFactProviderEvidence(legacy).memorySnapshotVersion).toBeUndefined();
     expect(() => parseMemoryExecutionSnapshot({ ...snapshot, version: 5 }))
       .toThrow("memory_execution_snapshot_invalid");
+    expect(() => parseMemoryExecutionSnapshot({ ...snapshot, requiredToolModes: ["native", "native"] }))
+      .toThrow("memory_execution_snapshot_invalid");
+    const autoBase = target(true);
+    const autoTarget = { ...autoBase, snapshot: { ...autoBase.snapshot, model: { ...autoBase.snapshot.model,
+      capabilities: { ...autoBase.snapshot.model.capabilities,
+        forcedToolCalling: false, validatedAutoToolCalling: true, nativeForcedToolChoice: false }
+    } } };
+    const autoCompatibility = resolveMemoryExecutionCompatibility({
+      role: "MEMORY_FACT_EXTRACT", target: autoTarget, versions
+    });
+    const autoSnapshot = createMemoryExecutionSnapshot({
+      acceptedUtilityEgressFingerprint: "7".repeat(64),
+      compatibilityId: autoCompatibility.compatibilityId,
+      compatibilityRequirement: autoCompatibility.requirement,
+      requiresStrictStructuredOutput: true,
+      role: "MEMORY_FACT_EXTRACT", target: autoTarget, utilityPolicyVersion: "test-v1"
+    });
+    expect(autoSnapshot.requiredToolModes).toEqual(["validated_auto"]);
   });
   it("keeps the bounded role and strict-output declarations", () => {
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_FACT_EXTRACT");

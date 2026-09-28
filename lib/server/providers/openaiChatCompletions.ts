@@ -255,6 +255,9 @@ type OpenAIChatStreamExtension = Readonly<{
     snapshot: ProviderStreamSafetySnapshot | null;
   }>): void;
   finish(): Readonly<{
+    /** Original private fields needed for the next provider request; these
+     * must not be replaced by the display-only reasoning aggregate. */
+    continuationFields?: Record<string, unknown>;
     messageFields?: Record<string, unknown>;
     responseFields?: Record<string, unknown>;
   }>;
@@ -338,9 +341,7 @@ export async function* streamOpenAIChatJsonResponse<
       rawFinalText
     ),
     finalText,
-    ...(toolCalls.length > 0
-      ? { providerToolCallMessage: firstOpenAIChatMessage(response) ?? undefined }
-      : {}),
+    providerToolCallMessage: firstOpenAIChatMessage(response) ?? undefined,
     providerResponseId,
     toolCalls,
     usage: profile.extractUsage(response)
@@ -639,7 +640,7 @@ export async function* streamOpenAIChatSseResponse<
       rawText
     ),
     finalText,
-    ...(toolCalls.length > 0 ? { providerToolCallMessage: message } : {}),
+    providerToolCallMessage: { ...message, ...extensionResult?.continuationFields },
     providerResponseId: responseId,
     toolCalls,
     usage

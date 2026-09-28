@@ -44,6 +44,34 @@ const capabilities = {
   vision: false
 };
 
+describe("model forced-choice restrictions", () => {
+  it.each([
+    ["anthropic_messages", "claude-sonnet-5-5"],
+    ["openrouter_chat_completions", "anthropic/claude-opus-5.5"]
+  ])("preserves accepted %s model metadata while discarding unverified capability claims", (adapterKind, upstreamModelId) => {
+    const model = normalizeProviderModelConfiguration({ adapterKind, upstreamModelId, defaultParams: {},
+      ...(adapterKind === "openrouter_chat_completions" ? { openRouterRouting: { mode: "only_selected", providers: ["anthropic"] } } : {}),
+      capabilities: { ...capabilities, nativeForcedToolChoice: true, forcedToolCalling: true, validatedAutoToolCalling: true } });
+    // Adapter compatibility policy owns current wire restrictions. Snapshot
+    // decoding must not inject today's catalog metadata into accepted state.
+    expect(model.capabilities.nativeForcedToolChoice).toBe(true);
+    expect(model.capabilities).not.toHaveProperty("forcedToolCalling");
+    expect(model.capabilities).not.toHaveProperty("validatedAutoToolCalling");
+  });
+
+  it("does not inject a new capability into an existing Claude 5.5 snapshot", () => {
+    expect(normalizeProviderModelConfiguration({ adapterKind: "anthropic_messages", upstreamModelId: "claude-opus-5-5",
+      defaultParams: {}, capabilities }).capabilities).not.toHaveProperty("nativeForcedToolChoice");
+  });
+
+  it("preserves an exact route restriction without applying Claude 5-wide restrictions", () => {
+    const configuration = { adapterKind: "anthropic_messages", upstreamModelId: "claude-sonnet-5", defaultParams: {}, capabilities };
+    expect(normalizeProviderModelConfiguration(configuration).capabilities).not.toHaveProperty("nativeForcedToolChoice");
+    expect(normalizeProviderModelConfiguration({ ...configuration, capabilities: { ...capabilities, nativeForcedToolChoice: false } })
+      .capabilities.nativeForcedToolChoice).toBe(false);
+  });
+});
+
 function expectCode(operation: () => unknown, code: string): void {
   try {
     operation();

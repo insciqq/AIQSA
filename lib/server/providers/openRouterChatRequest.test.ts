@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { anthropicStrictSchema } from "./anthropicStrictSchema";
+import { memoryFactExtractionTool } from "../memory/learning/extraction/prompt";
 import { currentSearchToolFixture } from "@/tests/support/tools";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { defaultProviderModels } from "../../domain/catalog";
@@ -112,6 +114,16 @@ function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): Provider
 }
 
 describe("OpenRouter request builders", () => {
+  it("keeps native Anthropic routing compatible when a complex Memory schema needs server validation", () => {
+    const body = buildOpenRouterChatRequest(request({ modelId: "anthropic/claude-opus-5.5",
+      toolChoice: "required", tools: [memoryFactExtractionTool] }));
+    expect(body).toMatchObject({ max_tokens: 64, tool_choice: "auto", provider: { require_parameters: true },
+      tools: [{ function: { strict: false, parameters: memoryFactExtractionTool.inputSchema } }] });
+    expect(body).not.toHaveProperty("parallel_tool_calls");
+    expect(body).not.toHaveProperty("max_completion_tokens");
+    expect(memoryFactExtractionTool.strict).toBe(true);
+  });
+
   it.each([undefined, false, true])("preserves strict routing and local parallel preference %s for each tool shape", (parallelToolCalls) => {
     const mixed = openRouterMixedTools();
     for (const tools of [[mixed[1]!], [mixed[1]!, currentSearchToolFixture], mixed]) {
@@ -119,7 +131,8 @@ describe("OpenRouter request builders", () => {
       expect(body).not.toHaveProperty("parallel_tool_calls");
       expect(body).toMatchObject({ max_tokens: 64, provider: { require_parameters: true, data_collection: "deny" } });
       expect(body.tools).toEqual(tools.map((tool) => ({ type: "function", function: {
-        description: tool.description, name: tool.name, parameters: tool.inputSchema, strict: tool.strict
+        description: tool.description, name: tool.name,
+        parameters: tool.strict === true ? anthropicStrictSchema(tool.inputSchema) : tool.inputSchema, strict: tool.strict
       } })));
     }
     for (const tools of [[mixed[0]!], [mixed[0]!, mixed[2]!]]) {
@@ -128,7 +141,9 @@ describe("OpenRouter request builders", () => {
     }
     expect(buildOpenRouterChatRequest(request({ parallelToolCalls, tools: [] }))).not.toHaveProperty("parallel_tool_calls");
     const synthesis = buildOpenRouterChatRequest(request({ parallelToolCalls, tools: mixed, toolChoice: "none" }));
-    expect(synthesis).toMatchObject({ parallel_tool_calls: parallelToolCalls === true, tool_choice: "none" });
+    expect(synthesis).toMatchObject({ max_tokens: 64, tool_choice: "none", provider: { require_parameters: true } });
+    expect(synthesis).not.toHaveProperty("parallel_tool_calls");
+    expect(synthesis).not.toHaveProperty("max_completion_tokens");
   });
 
   it.each(["deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-5"])("routes the mixed application tools for %s without changing accepted controls", (modelId) => {
@@ -326,14 +341,14 @@ describe("OpenRouter request builders", () => {
       }
     ]);
     expect(body).toMatchObject({
-      parallel_tool_calls: true,
+      max_tokens: 64,
       stream: true,
       tool_choice: "none",
       tools: [
         {
           function: {
             name: "search_engine_1",
-            parameters: currentSearchToolFixture.inputSchema
+            parameters: anthropicStrictSchema(currentSearchToolFixture.inputSchema)
           },
           type: "function"
         }

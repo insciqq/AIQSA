@@ -119,7 +119,8 @@ describe("DeepSeek Responses provider", () => {
         type: "function"
       }
     ]);
-    expect(body.tool_choice).toBe("required");
+    expect(body.tool_choice).toBe("auto");
+    expect(body.reasoning).toEqual({ effort: "high" });
     expect(body).not.toHaveProperty("background");
     expect(body).not.toHaveProperty("include");
     expect(body).not.toHaveProperty("metadata");
@@ -183,7 +184,7 @@ describe("DeepSeek Responses provider", () => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret-key");
   });
 
-  it("classifies DeepSeek's OpenAI-style context-length 400 and keeps other failures unclassified", async () => {
+  it("classifies DeepSeek's context-length and invalid-request 400 without provider text", async () => {
     const sentinel = "PRIVATE_PROVIDER_MESSAGE_CANARY";
     const body = (message: string) => Response.json({ error: { code: "invalid_request_error", message: `${message} ${sentinel}`,
       param: null, type: "invalid_request_error" } }, { status: 400 });
@@ -199,8 +200,23 @@ describe("DeepSeek Responses provider", () => {
     const other = createFetchDeepSeekResponsesClient({ apiKey: "key", fetchFn: async () => body("Invalid parameter: tools") });
     const failure = await other.create({}).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(DeepSeekHttpError);
-    expect(failure).not.toHaveProperty("code");
+    expect(failure).toHaveProperty("code", "provider_http_invalid_request");
     expect(JSON.stringify(failure)).not.toContain(sentinel);
+  });
+
+  it.each([
+    [400, "not json"],
+    [400, JSON.stringify({ error: { type: "other_error", message: "PRIVATE_CANARY" } })],
+    [500, JSON.stringify({ error: { type: "invalid_request_error", message: "PRIVATE_CANARY" } })],
+    [400, JSON.stringify({ error: { type: "invalid_request_error", message: "PRIVATE_CANARY".repeat(8192) } })]
+  ])("keeps unrecognized or oversized DeepSeek HTTP errors safe (%s)", async (status, body) => {
+    const client = createFetchDeepSeekResponsesClient({ apiKey: "synthetic", fetchFn: async () => new Response(body, { status }) });
+    for (const send of [() => client.create({}), () => client.stream({})]) {
+      const failure = await send().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(DeepSeekHttpError);
+      expect(failure).not.toHaveProperty("code");
+      expect(JSON.stringify(failure)).not.toContain("PRIVATE_CANARY");
+    }
   });
 
   it("uses DeepSeek JSON Schema output without OpenAI lifecycle parameters", async () => {

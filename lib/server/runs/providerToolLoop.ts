@@ -28,6 +28,8 @@ import { providerRequestContextRebuild } from "./runContextBudget";
 export type ProviderToolLoopContinuation = Readonly<{
   providerResponseId: string | null;
   providerToolMessages: readonly unknown[];
+  /** The run already consumed its one correction of a missing required call. */
+  requiredToolCorrection?: true;
 }>;
 
 export type ProviderToolLoopResume = Readonly<{
@@ -61,6 +63,11 @@ export type ProviderToolLoopInput = Readonly<{
   onProviderResult?(input: Readonly<{
     request: ProviderRunRequest;
     result: ProviderRunResult;
+    round: number;
+  }>): Promise<void> | void;
+  /** Persist the successful round and claim its successor before any retry I/O. */
+  onRequiredToolCorrection?(input: Readonly<{
+    continuation: ProviderToolLoopContinuation;
     round: number;
   }>): Promise<void> | void;
   onSignal?(signal: ToolLoopSignal): Promise<void> | void;
@@ -164,6 +171,7 @@ export function providerToolLoopContinuationAfterResult(
   const calls = result.toolCalls ?? [];
   const withResults = continuationForRound(bridge, continuation, []);
   return {
+    ...withResults,
     providerResponseId: result.providerResponseId ?? withResults.providerResponseId,
     providerToolMessages: [
       ...withResults.providerToolMessages,
@@ -174,6 +182,47 @@ export function providerToolLoopContinuationAfterResult(
           : {})
       })
     ]
+  };
+}
+
+export const REQUIRED_TOOL_CALL_FAILURE = Object.freeze({
+  code: "required_tool_call_missing",
+  fatal: true,
+  message: "The model did not call the required tool."
+});
+
+/** App-level obligation, independent of the tool choice sent on the wire. */
+export function missingRequiredToolCall(
+  request: ProviderRunRequest,
+  calls: readonly ModelToolCall[]
+): boolean {
+  return request.toolChoice === "required" && (request.forcedToolName
+    ? !calls.some(call => call.name === request.forcedToolName)
+    : calls.length === 0);
+}
+
+export function requiredToolCorrectionContinuation(
+  bridge: ProviderToolBridge,
+  continuation: ProviderToolLoopContinuation,
+  result: ProviderRunResult,
+  toolName?: string
+): ProviderToolLoopContinuation {
+  const text = toolName
+    ? `You must call the ${toolName} tool before answering. Call it now with valid arguments. Do not provide a final answer yet.`
+    : "You must call an available tool before answering. Call the appropriate tool now with valid arguments. Do not provide a final answer yet.";
+  const assistantMessage = bridge.provider === "gemini"
+    ? { type: "model_output", content: [{ type: "text", text: result.finalText }] }
+    : { role: "assistant", content: result.finalText };
+  const next = providerToolLoopContinuationAfterResult(bridge, continuation, {
+    ...result,
+    providerToolCallMessage: result.providerToolCallMessage ?? assistantMessage
+  });
+  return {
+    ...next,
+    providerToolMessages: [...next.providerToolMessages, bridge.provider === "gemini"
+      ? { type: "user_input", content: [{ type: "text", text }] }
+      : { role: "user", content: text }],
+    requiredToolCorrection: true
   };
 }
 
@@ -255,9 +304,10 @@ export async function runProviderToolLoop(
         input.projectToolResultForProvider
       );
       const budget = reachedToolLoopBudget(progress, input.budgets);
+      const required = progress.toolRounds === 0 && input.initialRequest.toolChoice === "required";
       const toolChoice = budget || input.initialRequest.toolChoice === "none"
         ? "none"
-        : progress.toolRounds === 0 && input.initialRequest.toolChoice === "required"
+        : required && !continuation.requiredToolCorrection
           ? "required"
           : "auto";
       const requestedRound = withRoundForcedTool({
@@ -290,6 +340,7 @@ export async function runProviderToolLoop(
         // projection. Carry that exact projection into the durable continuation;
         // otherwise recovery would resurrect the bulky pre-mask transcript.
         preparedContinuation = {
+          ...effectiveContinuation,
           providerResponseId: effectiveContinuation.providerResponseId,
           providerToolMessages: preparedRound.providerToolMessages
             ? [...preparedRound.providerToolMessages]
@@ -327,7 +378,9 @@ export async function runProviderToolLoop(
           next = await stream.next();
           while (!next.done) {
             if (next.value.type === "token") {
-              await emitText(next.value.data.delta);
+              // An unsatisfied required call cannot publish an answer, even
+              // when its compatible wire policy allows ordinary text.
+              if (!required) await emitText(next.value.data.delta);
               emittedText += next.value.data.delta;
             } else if (next.value.type === "usage") {
               lastReportedUsage = mergeTokenUsage(lastReportedUsage ?? {}, next.value.data);
@@ -376,6 +429,7 @@ export async function runProviderToolLoop(
         !dispatchedRequest.providerToolMessages
         ? preparedContinuation
         : {
+            ...preparedContinuation,
             providerResponseId: preparedContinuation.providerResponseId,
             providerToolMessages: [...dispatchedRequest.providerToolMessages]
           };
@@ -400,7 +454,7 @@ export async function runProviderToolLoop(
       if (publicationFailed) throw localSettlementError("publication", publicationError);
       const calls = result.toolCalls ?? [];
       if (result.synthesisToolCallForbidden || roundRequest.toolChoice === "none" && calls.length > 0) {
-        if (result.finalText.startsWith(emittedText)) {
+        if (!required && result.finalText.startsWith(emittedText)) {
           const remainingText = result.finalText.slice(emittedText.length);
           if (remainingText) await emitText(remainingText);
         }
@@ -412,7 +466,6 @@ export async function runProviderToolLoop(
           status: "error" as const
         };
       }
-      if (calls.length === 0) return { final: result, status: "complete" as const };
       const normalizedCalls = calls.map((call) => {
         const name = input.normalizeToolCallName?.(call.name, advertisedToolNames) ?? call.name;
         return name === call.name ? call : { ...call, name };
@@ -420,6 +473,18 @@ export async function runProviderToolLoop(
       const normalizedResult = normalizedCalls.some((call, index) => call !== calls[index])
         ? { ...result, toolCalls: normalizedCalls }
         : result;
+      if (required && missingRequiredToolCall(input.initialRequest, normalizedCalls)) {
+        if (calls.length > 0 || continuation.requiredToolCorrection || budget) {
+          return { error: REQUIRED_TOOL_CALL_FAILURE, status: "error" as const };
+        }
+        const correction = requiredToolCorrectionContinuation(
+          input.bridge, dispatchedContinuation, normalizedResult, input.initialRequest.forcedToolName
+        );
+        try { await input.onRequiredToolCorrection?.({ continuation: correction, round }); }
+        catch (error) { throw localSettlementError("publication", error); }
+        return { continuation: correction, status: "continue" as const };
+      }
+      if (calls.length === 0) return { final: result, status: "complete" as const };
       // Validate the entire batch against this provider round before persisting
       // or executing any call. Discovery can add authority only to a later
       // request, even when a provider omits/ignores its optional parallel flag.

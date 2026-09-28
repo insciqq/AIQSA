@@ -51,6 +51,19 @@ function frame(event: string, payload: unknown): string {
 }
 
 describe("Gemini Interactions response normalization", () => {
+  it("retains signed no-call steps for a required-tool correction without exposing the signature", async () => {
+    const steps = [
+      { signature: "private-correction-signature", type: "thought" },
+      { type: "model_output", content: [{ type: "text", text: "I answered too early." }] }
+    ];
+    const normalized = await collect(streamGeminiInteractionsJsonResponse({
+      id: "correction-interaction", status: "completed", steps
+    }, { modelId: "gemini-3.8-flash" }));
+    expect(normalized.result.toolCalls).toEqual([]);
+    expect(normalized.result.providerToolCallMessage).toEqual(steps);
+    expect(JSON.stringify(normalized.result.finalProviderResponsePreview)).not.toContain("private-correction-signature");
+  });
+
   it("normalizes grounded JSON with safe usage and display data", async () => {
     const normalized = await collect(streamGeminiInteractionsJsonResponse({
       id: "interaction-1",
@@ -250,7 +263,11 @@ describe("Gemini Interactions response normalization", () => {
     }));
 
     expect(normalized.result.finalText).toBe("Answer without a thought summary");
-    expect(JSON.stringify(normalized.result)).not.toContain("private-thought-signature");
+    expect(normalized.result.providerToolCallMessage).toContainEqual({
+      signature: "private-thought-signature", type: "thought"
+    });
+    expect(JSON.stringify(normalized.result.finalProviderResponsePreview)).not.toContain("private-thought-signature");
+    expect(JSON.stringify(normalized.events)).not.toContain("private-thought-signature");
   });
 
   it("assembles documented provisional Google Search signatures from later deltas", async () => {

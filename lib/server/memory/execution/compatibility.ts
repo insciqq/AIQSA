@@ -1,5 +1,6 @@
 import { memoryExecutionSha256 } from "./canonical";
 import { memoryExecutionFailure } from "./errors";
+import { resolveProviderToolChoice } from "../../providers/providerToolChoice";
 import {
   memoryVectorSpaceFingerprint,
   type ResolvedMemoryExecutionTarget
@@ -88,10 +89,19 @@ export function resolveMemoryExecutionCompatibility(input: Readonly<{
     ? model.modelClass === "answer"
     : memoryRoleRequiresStrictOutput(input.role);
   const requiresForcedToolCall = memoryRoleRequiresForcedToolCall(input.role);
+  const requiredMode = requiresForcedToolCall ? resolveProviderToolChoice({
+    adapterKind: model.adapterKind,
+    modelId: model.upstreamModelId,
+    modelCapabilities: model.capabilities,
+    params: model.defaultParams,
+    toolChoice: "required"
+  }).requirementMode : null;
   if (requiresStrictStructuredOutput && (
     model.capabilities.toolCalling !== true ||
     (requiresForcedToolCall
-      ? model.capabilities.forcedToolCalling !== true
+      ? requiredMode === "native"
+        ? model.capabilities.forcedToolCalling !== true
+        : model.capabilities.validatedAutoToolCalling !== true
       : model.capabilities.structuredOutput !== true)
   )) {
     return memoryExecutionFailure("memory_execution_capability_unavailable");

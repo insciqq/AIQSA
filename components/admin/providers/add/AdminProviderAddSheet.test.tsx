@@ -235,7 +235,7 @@ describe("AdminProviderAddSheet", () => {
     await within(dialog).findByText(/GPT-5.6 Terra, GPT-5.6 Luna/);
     fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "test-key" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Test & Save" }));
-    await within(dialog).findByText("Checking Forced tool calls…");
+    await within(dialog).findByText("Checking Required tool results…");
     fireEvent.click(within(dialog).getByRole("button", { name: "Stop" }));
     await within(dialog).findByText("Setup stopped");
     expect(setupSignal?.aborted).toBe(true);

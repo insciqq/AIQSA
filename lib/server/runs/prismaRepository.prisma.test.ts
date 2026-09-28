@@ -1578,6 +1578,45 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("claims exactly one required-tool correction after terminal usage and clears the previous response handle", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Required tool correction");
+      expect(await repository.beginToolLoopProviderRound({ providerContinuation: INITIAL_PROVIDER_CONTINUATION,
+        roundIndex: 1, runId: active.runId, userId })).toBe("started");
+      await repository.updateRunProviderResponseId(active.runId, "settled-first-response");
+      const correction: Parameters<RunRepository["beginToolLoopProviderRound"]>[0] = {
+        requiredToolCorrectionOfRound: 1, roundIndex: 2, runId: active.runId, userId,
+        providerContinuation: { providerResponseId: "settled-first-response", requiredToolCorrection: true,
+          providerToolMessages: [{ role: "assistant", content: "Synthetic draft" }, { role: "user", content: "Call the required tool." }] }
+      };
+      const usage = normalizeTokenUsage({ inputTokens: 3, outputTokens: 2, totalTokens: 5 });
+      const recordUsage = (completeness: "partial" | "terminal") => repository.recordRunUsageEvents({
+        chatId: active.chatId, runId: active.runId, userId,
+        answerRoundUsage: { completeness, roundIndex: 1, usage },
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }]
+      });
+      expect(await recordUsage("partial")).toBe(true);
+      expect(await repository.beginToolLoopProviderRound(correction)).toBe("conflict");
+      expect(await recordUsage("terminal")).toBe(true);
+      expect((await Promise.all([repository.beginToolLoopProviderRound(correction), repository.beginToolLoopProviderRound(correction)])).sort())
+        .toEqual(["conflict", "started"]);
+      const saved = await repository.loadCheckpointedToolLoopRun({ runId: active.runId, userId });
+      expect(saved).toMatchObject({ providerResponseId: null, calls: [], checkpoint: { roundIndex: 2, phase: "provider_running",
+        answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage }],
+        providerContinuation: { requiredToolCorrection: true, providerResponseId: "settled-first-response" } } });
+      expect(await repository.beginToolLoopProviderRound({ ...correction, requiredToolCorrectionOfRound: 2, roundIndex: 3 })).toBe("conflict");
+      const cancelled = await createActiveRun(repository, userId, "Cancelled required tool correction");
+      expect(await repository.beginToolLoopProviderRound({ providerContinuation: INITIAL_PROVIDER_CONTINUATION,
+        roundIndex: 1, runId: cancelled.runId, userId })).toBe("started");
+      expect(await repository.recordRunUsageEvents({ chatId: cancelled.chatId, runId: cancelled.runId, userId,
+        answerRoundUsage: { completeness: "terminal", roundIndex: 1, usage },
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }] })).toBe(true);
+      await repository.cancelRun({ payload: cancelPayload, runId: cancelled.runId, userId });
+      expect(await repository.beginToolLoopProviderRound({ ...correction, runId: cancelled.runId })).toBe("cancelled");
+    });
+  });
+
   it("checkpoints tool batches before dispatch and resumes every call state deterministically", async () => {
     await withRunUser(async ({ userId }) => {
       await prisma.user.update({ data: { status: "active" }, where: { id: userId } });

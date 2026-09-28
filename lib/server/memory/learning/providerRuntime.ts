@@ -1,4 +1,4 @@
-import { mergeTokenUsage, normalizeTokenUsage } from "../../../domain/usage";
+import { mergeTokenUsage, normalizeTokenUsage, sumTokenUsage } from "../../../domain/usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   ModelRunSseEvent,
@@ -22,6 +22,8 @@ import {
   type ProviderExecutionSnapshot
 } from "../../providers/runtimeFactory";
 import { ProviderStreamSafetyError } from "../../providers/streamSafety";
+import { resolveProviderToolChoice } from "../../providers/providerToolChoice";
+import { requiredToolCorrectionContinuation } from "../../runs/providerToolLoop";
 import type { ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import type { ModelToolCall } from "../../tools/types";
@@ -39,6 +41,7 @@ type LockedCredentialVersion = Readonly<{
 export type MemoryLearningProviderEvidence = Readonly<{
   memorySnapshotVersion?: 3 | 4;
   generationBudget?: ModelGenerationBudget | null;
+  requiredToolModes?: readonly ("native" | "validated_auto")[];
   connectionId: string;
   credentialId: string;
   credentialVersionId: string;
@@ -388,17 +391,37 @@ export function createAcceptedMemoryLearningProvider<
       throw new Error(input.invalidRuntimeError);
     }
     const builtRequest = input.buildRequest(snapshot, request);
-    const prompt = { prompt: builtRequest.prompt, content: builtRequest.content, tools: builtRequest.tools };
+    const choice = resolveProviderToolChoice({
+      adapterKind: snapshot.model.adapterKind,
+      modelId: snapshot.model.upstreamModelId,
+      modelCapabilities: snapshot.model.capabilities,
+      params: builtRequest.params,
+      toolChoice: builtRequest.toolChoice
+    });
+    if (builtRequest.toolChoice === "required" &&
+      (choice.requirementMode === "native"
+        ? evidence.requiredToolModes !== undefined && !evidence.requiredToolModes.includes("native")
+        : !evidence.requiredToolModes?.includes("validated_auto"))) {
+      throw new Error(input.invalidRuntimeError);
+    }
+    const qualifiedRequest: ProviderRunRequest = choice.requirementMode === "validated_auto" &&
+      builtRequest.toolChoice === "required"
+      ? { ...builtRequest, prompt: { ...builtRequest.prompt,
+          system: [builtRequest.prompt.system,
+            "Call the one declared result tool. A text answer cannot complete this operation."
+          ].filter(Boolean).join("\n\n") } }
+      : builtRequest;
+    const prompt = { prompt: qualifiedRequest.prompt, content: qualifiedRequest.content, tools: qualifiedRequest.tools };
     if (evidence.memorySnapshotVersion === 4 && !evidence.generationBudget) throw new Error(input.invalidRuntimeError);
     const maxOutputTokens = evidence.memorySnapshotVersion === 4
       ? admittedOutputAllowance(evidence.generationBudget!, prompt)
       : evidence.memorySnapshotVersion === 3 ? memoryModelOutputAllowance(snapshot, prompt) : null;
     const providerRequest = maxOutputTokens !== null ? {
-      ...builtRequest,
-      params: { ...builtRequest.params, maxOutputTokens, max_output_tokens: maxOutputTokens }
+      ...qualifiedRequest,
+      params: { ...qualifiedRequest.params, maxOutputTokens, max_output_tokens: maxOutputTokens }
     } : applyMemoryLearningReasoningBudget(
       snapshot,
-      builtRequest,
+      qualifiedRequest,
       {
         ...(input.reasoningToolOutputTokenFloor === undefined
           ? {}
@@ -409,6 +432,42 @@ export function createAcceptedMemoryLearningProvider<
       runtime.adapter.stream(providerRequest, { signal }),
       input.callError
     );
+    if (providerRequest.toolChoice === "required" && providerRequest.tools?.length === 1 &&
+      providerRequest.tools[0]?.strict === true &&
+      (result.toolCalls?.length ?? 0) === 0 && !signal.aborted) {
+      // A corrective request must carry the actual provider continuation,
+      // including private reasoning state when the protocol requires it.
+      if (result.providerToolCallMessage === undefined) {
+        return { providerResponseId: boundedProviderResponseId(result.providerResponseId),
+          toolCalls: result.toolCalls, usage: result.usage };
+      }
+      const continuation = requiredToolCorrectionContinuation(runtime.toolBridge, {
+        providerResponseId: null,
+        providerToolMessages: []
+      }, result, providerRequest.tools[0].name);
+      const correctionRequest: ProviderRunRequest = {
+        ...providerRequest,
+        // Memory requests are stateless (store:false). Replay their genuine
+        // output rather than referring to an unstored provider response.
+        previousProviderResponseId: undefined,
+        providerToolMessages: [...continuation.providerToolMessages],
+        toolChoice: "auto"
+      };
+      let corrected: ProviderRunResult;
+      try {
+        corrected = await collectProviderResult(runtime.adapter.stream(correctionRequest, { signal }), input.callError);
+      } catch (error) {
+        const secondUsage = isRecord(error) && isRecord(error.usage) ? error.usage : { completeness: "unavailable" };
+        // The first physical request settled; retrying the whole binding could
+        // replay it. Preserve both known costs and mark the outcome ambiguous.
+        throw input.callError(sumTokenUsage([result.usage, secondUsage]), error, "UNKNOWN");
+      }
+      return {
+        providerResponseId: boundedProviderResponseId(corrected.providerResponseId),
+        toolCalls: corrected.toolCalls,
+        usage: sumTokenUsage([result.usage, corrected.usage])
+      };
+    }
     return {
       providerResponseId: boundedProviderResponseId(result.providerResponseId),
       toolCalls: result.toolCalls,

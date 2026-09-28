@@ -105,12 +105,18 @@ export async function reauthorizeStoredMemoryExecution(
   // embedding/reranker destination can change it without changing this call's
   // authority. Revalidate the selected role and exact target, including its
   // credential version, configuration, reasoning and policy revision, instead.
+  const currentRequiredToolModes = [
+    ...(current.target.snapshot.model.capabilities.forcedToolCalling === true ? ["native"] : []),
+    ...(current.target.snapshot.model.capabilities.validatedAutoToolCalling === true ? ["validated_auto"] : [])
+  ];
   if (
     input.snapshot.utilityPolicyVersion !== current.policy.policyVersion ||
     input.snapshot.destinationFingerprint !== current.target.destinationFingerprint ||
     input.snapshot.executionTargetFingerprint !== current.target.executionTargetFingerprint ||
     input.snapshot.requiresStrictStructuredOutput !==
       current.compatibility.requiresStrictStructuredOutput ||
+    (input.snapshot.requiredToolModes !== undefined &&
+      JSON.stringify(input.snapshot.requiredToolModes) !== JSON.stringify(currentRequiredToolModes)) ||
     !storedRequirementCompatible(input.snapshot, current.compatibility)
   ) {
     return memoryExecutionFailure("memory_execution_policy_drift");

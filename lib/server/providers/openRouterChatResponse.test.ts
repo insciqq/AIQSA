@@ -56,6 +56,55 @@ async function collect(
 describe("OpenRouter Chat response normalization", () => {
   const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
 
+  it.each(["json", "stream"] as const)("retains original reasoning continuation for a successful no-tool %s response", async mode => {
+    const reasoningDetails = [{ type: "reasoning.encrypted", data: "synthetic-private-signature", format: "anthropic-claude-v1", index: 0 }];
+    const message = { role: "assistant", content: "A draft without the required call", reasoning_details: reasoningDetails };
+    const normalized = await collect(mode === "json"
+      ? streamOpenRouterJsonResponse({ id: "no-tool-response", choices: [{ finish_reason: "stop", message }] }, responseContext)
+      : streamOpenRouterSseResponse(sseResponse([
+          `data: ${JSON.stringify({ id: "no-tool-response", choices: [{ delta: message, finish_reason: "stop" }] })}\n\n`,
+          "data: [DONE]\n\n"
+        ]), responseContext));
+    expect(normalized.result.toolCalls).toEqual([]);
+    expect(normalized.result.providerToolCallMessage).toMatchObject(message);
+  });
+
+  it("reassembles consecutive reasoning text and summary blocks while retaining distinct encrypted continuations", async () => {
+    const details = [
+      { type: "reasoning.text", text: "First ", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.text", text: "thought", signature: null, index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.text", signature: "original-signature", index: 0 },
+      { type: "reasoning.summary", summary: "Short ", index: 0 },
+      { type: "reasoning.summary", summary: "summary", index: 0 },
+      { type: "reasoning.encrypted", data: "opaque-one", id: "one", index: 0 },
+      { type: "reasoning.encrypted", data: "opaque-two", id: "two", index: 0 }
+    ];
+    const normalized = await collect(streamOpenRouterSseResponse(sseResponse([
+      ...details.map(detail => `data: ${JSON.stringify({ choices: [{ delta: { reasoning_details: [detail] } }] })}\n\n`),
+      'data: {"choices":[{"delta":{"content":"Draft"},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n"
+    ]), responseContext));
+    expect(normalized.result.providerToolCallMessage).toMatchObject({ content: "Draft", reasoning_details: [
+      { type: "reasoning.text", text: "First thought", signature: "original-signature", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.summary", summary: "Short summary", index: 0 }, details[5], details[6]
+    ] });
+    expect(normalized.result.providerToolCallMessage).toHaveProperty("reasoning", undefined);
+  });
+
+  it.each(["index", "signature"] as const)("preserves adjacent signed reasoning blocks separated by %s", async boundary => {
+    const details = [
+      { type: "reasoning.text", text: "First block", signature: "first-signature", index: 0 },
+      { type: "reasoning.text", text: "Second block", signature: boundary === "signature" ? "second-signature" : null,
+        index: boundary === "index" ? 1 : 0 }
+    ];
+    const normalized = await collect(streamOpenRouterSseResponse(sseResponse([
+      ...details.map(detail => `data: ${JSON.stringify({ choices: [{ delta: { reasoning_details: [detail] } }] })}\n\n`),
+      'data: {"choices":[{"delta":{"content":"Draft"},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n"
+    ]), responseContext));
+    expect(normalized.result.providerToolCallMessage).toMatchObject({ reasoning_details: details });
+  });
+
   it("extracts first-choice text, provider id, usage aliases, and response preview fields", () => {
     const response = {
       choices: [
@@ -942,6 +991,7 @@ describe("OpenRouter Chat response normalization", () => {
       },
       finalText: "",
       providerResponseId: "header-only-id",
+      providerToolCallMessage: { annotations: [], citations: [], content: null, role: "assistant" },
       toolCalls: [],
       usage: {
         cachedInputTokens: null, cacheWriteInputTokens: null, completeness: "unavailable", totalTokens: null,

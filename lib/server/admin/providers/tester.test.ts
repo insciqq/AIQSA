@@ -214,9 +214,9 @@ describe("admin provider draft tester", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
   });
   it.each([
-    { efforts: ["none", "low", "high"], effort: "none", enabled: false },
-    { efforts: ["low", "high"], effort: "low", enabled: true }
-  ])("verifies strict OpenRouter tools with the lowest supported effort: $effort", async ({ efforts, effort, enabled }) => {
+    { efforts: ["none", "low", "high"], accepted: true },
+    { efforts: ["low", "high"], accepted: false }
+  ])("qualifies strict OpenRouter tools at the configured effort, accepted=$accepted", async ({ efforts, accepted }) => {
     const bodies: Record<string, unknown>[] = [];
     const base = input();
     const outcome = await createAdminProviderDraftTester({ createFetch: () => async (_url, request) => {
@@ -225,7 +225,7 @@ describe("admin provider draft tester", () => {
       if (body.tool_choice === "required") {
         // A reasoning-default backend requires an explicit opt-out; hiding its
         // reasoning output alone does not make a forced call compatible.
-        if (body.reasoning?.effort !== effort || body.reasoning?.enabled !== enabled) {
+        if (body.reasoning?.effort !== "high" || body.reasoning?.enabled !== true || !accepted) {
           return Response.json({ error: { code: 400 } }, { status: 400 });
         }
         return strictToolChatResponse("aiqsa_forced_tool_call_probe", { city: "Oslo" });
@@ -236,9 +236,9 @@ describe("admin provider draft tester", () => {
         reasoningEfforts: efforts, defaultReasoningEffort: "high", toolCalling: true },
         defaultParams: { reasoning: { enabled: true, effort: "high" } } }
     });
-    expect(outcome.evidence.forcedToolCall?.verified).toBe(true);
+    expect(Boolean(outcome.evidence.forcedToolCall?.verified)).toBe(accepted);
     expect(bodies.find((body) => body.tool_choice === "required")).toMatchObject({
-      reasoning: { enabled, effort, exclude: true }, provider: { require_parameters: true },
+      reasoning: { enabled: true, effort: "high" }, provider: { require_parameters: true },
       tools: [{ function: { strict: true } }]
     });
   });
@@ -1108,6 +1108,35 @@ function responsesInput(capabilityRole?: AdminProviderDraftTesterInput["capabili
 }
 
 describe("Responses capability terminals", () => {
+  it("qualifies DeepSeek thinking auto and reasoning-off native calls independently", async () => {
+    const base = input();
+    const toolBodies: Record<string, unknown>[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (Array.isArray(body.tools) && body.tools.length > 0) {
+        toolBodies.push(body);
+        return Response.json({ id: "synthetic-response", status: "completed",
+          output: [{ type: "function_call", call_id: "call-probe", name: "aiqsa_forced_tool_call_probe",
+            arguments: '{"city":"Oslo"}' }],
+          usage: { input_tokens: 4, output_tokens: 5, total_tokens: 9 } });
+      }
+      return completedResponsesResponse();
+    });
+    const tester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+    const outcome = await tester.test(input({
+      capabilityRole: "memory", mode: "tiny_generation", providerFamily: "deepseek",
+      connection: { allowPrivateNetwork: false, apiRoot: "https://api.deepseek.test", authenticationMode: "bearer",
+        responseTimeoutMs: 300_000 },
+      model: { ...base.model, adapterKind: "deepseek_responses_native", openRouterRouting: undefined,
+        upstreamModelId: "deepseek-flash", capabilities: { ...base.model.capabilities,
+          reasoning: true, reasoningEfforts: ["none", "high"], defaultReasoningEffort: "high", toolCalling: true },
+        defaultParams: { reasoning: { effort: "high" }, maxOutputTokens: 8192 } }
+    }));
+    expect(outcome.evidence.forcedToolCall).toMatchObject({ probeVersion: 2, verifiedModes: ["validated_auto", "native"] });
+    expect(toolBodies).toHaveLength(2);
+    expect(toolBodies[0]).toMatchObject({ reasoning: { effort: "high" }, tool_choice: "auto" });
+    expect(toolBodies[1]).toMatchObject({ reasoning: { effort: "none" }, tool_choice: "required" });
+  });
   it.each([
     ["memory", "incomplete"], ["memory", "failed"],
     ["direct_pdf", "incomplete"], ["direct_pdf", "failed"]

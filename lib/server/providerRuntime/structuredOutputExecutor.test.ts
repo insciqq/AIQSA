@@ -259,8 +259,11 @@ describe("accepted structured-output executor", () => {
             } }
           } } }
       } });
-      // The synthetic upstream reproduces the observed request rejection.
-      if (JSON.stringify(wire).includes('"maxItems"')) {
+      // The rejected shape has a bounded array inside another array; the
+      // compatible projection keeps the outer bound only.
+      const requirements = (wire.properties as Record<string, Record<string, unknown>>).requirements!;
+      expect(requirements.maxItems).toBeTypeOf("number");
+      if (JSON.stringify(requirements.items).includes('"maxItems"')) {
         return Response.json({ error: { code: "invalid_request", message: "PRIVATE_UPSTREAM_BODY" } }, { status: 400 });
       }
       expect(body.generation_config).toEqual({ max_output_tokens: 65536, thinking_level: "medium", thinking_summaries: "none" });
@@ -288,19 +291,14 @@ describe("accepted structured-output executor", () => {
       const control = buildGeminiInteractionsStructuredOutputRequest({
         ...fixture.admitted.snapshot.model, adapterKind: "gemini_interactions_native"
       }, { ...request, name: "unrelated_bounded_schema" });
-      expect(control.response_format).toMatchObject({ schema: { properties: { requirements: { maxItems: 16,
-        items: { properties: { tool_ids: { maxItems: 10 } } }
-      } } } });
+      expect(control.response_format).toHaveProperty("schema.properties.requirements.maxItems", 16);
+      expect(control.response_format).not.toHaveProperty("schema.properties.requirements.items.properties.tool_ids.maxItems");
       const portable = buildOpenAIResponsesStructuredOutputRequest({ adapterKind: "openai_responses_native", upstreamModelId: "gpt-router" }, request);
       expect(portable.text).toMatchObject({ format: { schema: { properties: { requirements: { maxItems: 16,
         items: { properties: { tool_ids: { maxItems: 10 } } }
       } } } } });
       expect(request.schema).toEqual(canonical);
     }
-    // The unchanged nested bounds receive the original native rejection.
-    await expect(fixture.execute(fixture.admitted, { ...fixture.requests[0]!, name: "original_schema_control" }))
-      .rejects.toMatchObject({ httpStatus: 400, code: "invalid_request" });
-    expect(fixture.fetchFn).toHaveBeenCalledTimes(3);
   });
 
   it.each([

@@ -270,6 +270,21 @@ describe("universal initial capability setup", () => {
     expect(reusable?.visionInput).toEqual(result.evidence.visionInput);
   });
 
+  it("rechecks automatic selection while retaining an independently proven native mode", async () => {
+    const f = fixture();
+    const result = await f.tester.test(f.input);
+    const model = { ...f.input.model, capabilities: { ...f.input.model.capabilities, nativeForcedToolChoice: false } };
+    result.evidence.forcedToolCall = { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId,
+      probeVersion: 1, verified: true } as NonNullable<typeof result.evidence.forcedToolCall>;
+    const reusable = reusableCapabilitySetupEvidence(result.evidence, model);
+    expect(reusable?.capabilitySetup?.checks.forcedToolCall).toBe("not_checked");
+    expect(reusable?.forcedToolCall).toEqual(result.evidence.forcedToolCall);
+    expect(reusable?.structuredOutput).toEqual(result.evidence.structuredOutput);
+    delete result.evidence.forcedToolCall;
+    result.evidence.capabilitySetup!.checks.forcedToolCall = "unsupported";
+    expect(reusableCapabilitySetupEvidence(result.evidence, model)?.capabilitySetup?.checks.forcedToolCall).toBe("not_checked");
+  });
+
   it("never treats refresh evidence as permission to enable administrator-disabled capabilities", async () => {
     const f = fixture();
     const result = await f.tester.test(f.input);

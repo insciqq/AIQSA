@@ -12,6 +12,7 @@ import {
 } from "./attachmentPayload";
 import { conversationPreview, textConversationForRequest } from "./context";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
+import { resolveProviderToolChoice } from "./providerToolChoice";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
 
 export type DeepSeekResponsesTextContentBlock = Readonly<{
@@ -197,7 +198,7 @@ function buildBody(
     // advertise no tools in the final synthesis request.
     ...(request.toolChoice === "none" ? { tool_choice: "none" as const } : tools.length > 0
       ? {
-          tool_choice: request.toolChoice ?? "auto",
+          tool_choice: resolveProviderToolChoice({ ...request, adapterKind: "deepseek_responses_native", params }).wireToolChoice,
           tools
         }
       : {})

@@ -23,6 +23,8 @@ type SnapshotBase = Readonly<{
   providerExecutionSnapshot: ProviderExecutionSnapshot;
   compatibilityId: string;
   requiresStrictStructuredOutput: boolean;
+  /** Exact verified tool-result routes frozen at binding. Omitted on older bindings. */
+  requiredToolModes?: readonly ("native" | "validated_auto")[];
   utilityPolicyVersion: string;
 }>;
 
@@ -106,6 +108,10 @@ export function createMemoryExecutionSnapshot(input: Readonly<{
     compatibilityId: input.compatibilityId,
     compatibilityRequirement: input.compatibilityRequirement,
     requiresStrictStructuredOutput: input.requiresStrictStructuredOutput,
+    requiredToolModes: [
+      ...(input.target.snapshot.model.capabilities.forcedToolCalling === true ? ["native" as const] : []),
+      ...(input.target.snapshot.model.capabilities.validatedAutoToolCalling === true ? ["validated_auto" as const] : [])
+    ],
     utilityPolicyVersion: input.utilityPolicyVersion,
     // v4 freezes the shared model-aware policy; v2/v3 keep their old allowance.
     generationBudget: memoryRoleRequiresStrictOutput(input.role) ? admitModelGenerationBudget(input.target.snapshot) : null,
@@ -135,6 +141,10 @@ export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeEx
     (value.policyRevision !== null &&
       (!Number.isSafeInteger(value.policyRevision) || Number(value.policyRevision) < 1)) ||
     typeof value.requiresStrictStructuredOutput !== "boolean" ||
+    (value.requiredToolModes !== undefined &&
+      (!Array.isArray(value.requiredToolModes) || value.requiredToolModes.length > 2 ||
+        new Set(value.requiredToolModes).size !== value.requiredToolModes.length ||
+        value.requiredToolModes.some((mode: unknown) => mode !== "native" && mode !== "validated_auto"))) ||
     typeof value.compatibilityId !== "string" || !safeToken.test(value.compatibilityId) ||
     typeof value.utilityPolicyVersion !== "string" || !safeToken.test(value.utilityPolicyVersion) ||
     !isRecord(value.compatibilityRequirement) ||
@@ -160,6 +170,9 @@ export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeEx
     compatibilityRequirement:
       value.compatibilityRequirement as unknown as MemoryExecutionCompatibilityRequirement,
     requiresStrictStructuredOutput: value.requiresStrictStructuredOutput,
+    ...(Array.isArray(value.requiredToolModes)
+      ? { requiredToolModes: value.requiredToolModes as ("native" | "validated_auto")[] }
+      : {}),
     utilityPolicyVersion: value.utilityPolicyVersion
   } as const;
   return value.version === 4

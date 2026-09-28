@@ -7,6 +7,7 @@ import type { NativeRouteAdoptionDiagnostic } from "../../../contracts/nativeRou
 import { reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
 import { capabilityFailureAttempt } from "./capabilityProbeFailure";
+import { resolveProviderToolChoice } from "../../providers/providerToolChoice";
 
 export type NativeRouteDiscovery = (NativeProviderResolution | { available: false; reason: "verification_required" }) & {
   diagnostic?: NativeRouteAdoptionDiagnostic;
@@ -46,7 +47,12 @@ export async function discoverNativeRoute(
       modelId: model.upstreamModelId, endpoints,
       requiredParameters: required.some((check) => ["toolCalling", "parallelToolCalls", "forcedToolCall"].includes(check)) ? ["tools"] : [],
       maxOutputTokens: maxOutputTokensFromParams(model.defaultParams),
-      requireForcedToolChoice: required.includes("forcedToolCall")
+      // An application-required tool result may use validated auto. Requiring
+      // native forcing here would reject that route before its fresh probe.
+      requireForcedToolChoice: required.includes("forcedToolCall") && resolveProviderToolChoice({
+        adapterKind: model.adapterKind, modelId: model.upstreamModelId,
+        modelCapabilities: model.capabilities, params: model.defaultParams, toolChoice: "required"
+      }).requirementMode === "native"
     });
     if (route.available) return route;
     const mismatch = route.mismatch;

@@ -214,6 +214,26 @@ export function defaultAnthropicMessagesParams(): AnthropicMessagesParams {
   };
 }
 
+export function normalizeAnthropicMessagesParams(params: Record<string, unknown>): AnthropicMessagesParams {
+  const defaults = defaultAnthropicMessagesParams();
+  const thinking = isRecord(params.thinking) ? params.thinking : {};
+  const outputConfig = isRecord(params.outputConfig) ? params.outputConfig
+    : isRecord(params.output_config) ? params.output_config : {};
+  return {
+    maxTokens: maxOutputTokensFromParams(params) ?? defaults.maxTokens,
+    temperature: typeof params.temperature === "number" ? params.temperature : defaults.temperature,
+    thinking: {
+      budgetTokens: numberValue(thinking.budgetTokens, 0) || defaults.thinking.budgetTokens,
+      enabled: booleanValue(thinking.enabled, defaults.thinking.enabled),
+      type: thinking.type === "enabled" || thinking.type === "adaptive" ? thinking.type : defaults.thinking.type
+    },
+    outputConfig: {
+      effort: typeof outputConfig.effort === "string" && outputConfig.effort.trim()
+        ? outputConfig.effort.trim() : defaults.outputConfig.effort
+    }
+  };
+}
+
 export function defaultFakeProviderParams(): FakeProviderParams {
   return {
     deterministic: true,

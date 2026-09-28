@@ -33,6 +33,7 @@ function snapshot(): ProviderExecutionSnapshot {
         reasoning: false,
         streaming: false,
         toolCalling: true,
+        forcedToolCalling: true,
         vision: false
       },
       defaultParams: {},
@@ -121,6 +122,139 @@ function evidence(runtime: ProviderExecutionSnapshot) {
 }
 
 describe("Memory learning provider runtime", () => {
+  it("replays stateless Responses correction with original encrypted reasoning and no stored response reference", async () => {
+    const runtime = openAIResponsesSnapshot();
+    const fixture = client("bearer");
+    const reasoning = { id: "rs-one", type: "reasoning", summary: [], encrypted_content: "synthetic-private-continuation" };
+    const answer = { id: "msg-one", type: "message", role: "assistant", content: [{ type: "output_text", text: "An early answer." }] };
+    let round = 0;
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      round += 1;
+      expect(body.store).toBe(false);
+      if (round === 2) {
+        expect(body).not.toHaveProperty("previous_response_id");
+        expect(body.input).toEqual(expect.arrayContaining([
+          reasoning, answer,
+          expect.objectContaining({ role: "user", content: [{ type: "input_text", text: "Extract facts." }] })
+        ]));
+      }
+      return new Response(JSON.stringify({ id: `response-${round}`, status: "completed", output: round === 1
+        ? [reasoning, answer]
+        : [{ type: "function_call", call_id: "call-one", name: "strict_memory_result", arguments: '{"ok":true}' }],
+        usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 }
+      }));
+    });
+    const run = createAcceptedMemoryLearningProvider(fixture.client, {
+      buildRequest: accepted => ({ ...request(accepted), toolChoice: "required", params: { store: false, stream: false, background: false }, tools: [{
+        name: "strict_memory_result", capability: "memory", strict: true, description: "Return the result.",
+        inputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false }
+      }] }),
+      callError: (_usage, cause) => new Error("memory_provider_failed", { cause }),
+      createFetch: () => fetchFn, encryptionKey: () => KEY, invalidRuntimeError: "memory_runtime_invalid"
+    });
+    expect((await run(evidence(runtime), undefined, new AbortController().signal)).toolCalls).toHaveLength(1);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["tool", "missing", "unknown"] as const)("bounds a missing-call correction and accounts its %s result", async outcome => {
+    const runtime = snapshot();
+    const fixture = client();
+    let round = 0;
+    const fetchFn = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      round += 1;
+      if (round === 2) {
+        expect(body.tool_choice).toBe("auto");
+        expect(body.messages).toEqual(expect.arrayContaining([
+          expect.objectContaining({ role: "assistant", content: "I will answer directly." }),
+          expect.objectContaining({ role: "user", content: expect.stringContaining("strict_memory_result") })
+        ]));
+        if (outcome === "unknown") throw new ProviderSafeFetchError("provider_http_request_failed");
+      }
+      const hasTool = round === 2 && outcome === "tool";
+      return new Response(JSON.stringify({
+        id: `response-${round}`, model: "local/model",
+        choices: [{ finish_reason: hasTool ? "tool_calls" : "stop", message: !hasTool
+          ? { role: "assistant", content: "I will answer directly." }
+          : { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: {
+            name: "strict_memory_result", arguments: '{"ok":true}'
+          } }] } }],
+        usage: { completion_tokens: 10, prompt_tokens: 20, total_tokens: 30 }
+      }));
+    });
+    const run = createAcceptedMemoryLearningProvider(fixture.client, {
+      buildRequest: accepted => ({ ...request(accepted), toolChoice: "required", tools: [{
+        name: "strict_memory_result", capability: "memory", strict: true,
+        description: "Return the result.", inputSchema: { type: "object", properties: { ok: { type: "boolean" } },
+          required: ["ok"], additionalProperties: false }
+      }] }),
+      callError: (usage, cause, classification) => Object.assign(new Error("memory_provider_failed", { cause }), { usage, classification }),
+      createFetch: () => fetchFn,
+      invalidRuntimeError: "memory_runtime_invalid"
+    });
+    const execution = run(evidence(runtime), undefined, new AbortController().signal);
+    if (outcome === "unknown") {
+      await expect(execution).rejects.toMatchObject({ classification: "UNKNOWN",
+        usage: { completeness: "partial", inputTokens: 20, outputTokens: 10, totalTokens: 30 } });
+    } else {
+      const result = await execution;
+      expect(result.toolCalls).toHaveLength(outcome === "tool" ? 1 : 0);
+      expect(result.usage).toMatchObject({ inputTokens: 40, outputTokens: 20, totalTokens: 60 });
+    }
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+  it("uses qualified auto for a restricted route while keeping the single strict result contract", async () => {
+    const base = snapshot();
+    const runtime: ProviderExecutionSnapshot = {
+      ...base,
+      connection: { ...base.connection, apiRoot: "https://openrouter.example.test/api/v1", authenticationMode: "bearer" },
+      model: { ...base.model,
+        adapterKind: "openrouter_chat_completions",
+        answerSelectable: true,
+        modelClass: "answer",
+        upstreamModelId: "anthropic/claude-opus-5.5",
+        openRouterRouting: { mode: "automatic", providers: [] },
+        capabilities: { ...base.model.capabilities, nativeForcedToolChoice: false,
+          forcedToolCalling: false, validatedAutoToolCalling: true } },
+      providerFamily: "openrouter"
+    };
+    const fixture = client("bearer");
+    const fetchFn = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.tool_choice).toBe("auto");
+      expect(body.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "system", content: expect.stringContaining("Call the one declared result tool") })
+      ]));
+      return new Response(JSON.stringify({
+        id: "response-auto", model: "anthropic/claude-opus-5.5",
+        choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null,
+          tool_calls: [{ id: "call-1", type: "function", function: {
+            name: "strict_memory_result", arguments: '{"ok":true}'
+          } }] } }],
+        usage: { completion_tokens: 20, prompt_tokens: 30, total_tokens: 50 }
+      }));
+    });
+    const run = createAcceptedMemoryLearningProvider(fixture.client, {
+      buildRequest: accepted => ({ ...request(accepted), toolChoice: "required", tools: [{
+        name: "strict_memory_result", capability: "memory", strict: true,
+        description: "Return the result.", inputSchema: { type: "object", properties: { ok: { type: "boolean" } },
+          required: ["ok"], additionalProperties: false }
+      }] }),
+      callError: (_usage, cause) => new Error("memory_provider_failed", { cause }),
+      createFetch: () => fetchFn,
+      encryptionKey: () => KEY,
+      invalidRuntimeError: "memory_runtime_invalid"
+    });
+    const accepted = { ...evidence(runtime), requiredToolModes: ["validated_auto" as const] };
+    await expect(run(accepted, undefined, new AbortController().signal)).resolves.toMatchObject({
+      toolCalls: [{ name: "strict_memory_result" }]
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    await expect(run({ ...accepted, requiredToolModes: ["native"] }, undefined, new AbortController().signal))
+      .rejects.toThrow("memory_runtime_invalid");
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
   it.each([false, true])("new forced-tool work uses model output capacity with reasoning enabled=%s", async (reasoning) => {
     const base = snapshot();
     const runtime: ProviderExecutionSnapshot = { ...base, model: { ...base.model,

@@ -1,4 +1,5 @@
 import { withResponseReminder } from "./responseReminder";
+import { resolveProviderToolChoice } from "./providerToolChoice";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { RunTool } from "../tools/types";
@@ -241,7 +242,7 @@ function buildBody(
   }
   if (tools.length > 0) {
     body.tools = tools;
-    body.tool_choice = request.toolChoice ?? "auto";
+    body.tool_choice = resolveProviderToolChoice({ ...request, adapterKind: "openai_chat_completions_compatible" }).wireToolChoice;
     body.parallel_tool_calls = request.parallelToolCalls === true;
   }
 

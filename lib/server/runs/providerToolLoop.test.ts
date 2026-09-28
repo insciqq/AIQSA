@@ -53,6 +53,89 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("provider tool loop", () => {
+  it.each(["success", "miss", "wrong", "failed", "checkpoint", "cancelled"] as const)("bounds a required-tool correction and withholds ungrounded drafts: %s", async (mode) => {
+    const requests: ProviderRunRequest[] = [];
+    const usageRounds: number[] = [];
+    const text: string[] = [];
+    const order: string[] = [];
+    const controller = new AbortController();
+    const executeTool = vi.fn(async (call: { id: string; name: string }, context: { round: number }) => {
+      order.push(`execute:${context.round}`);
+      return { status: "complete" as const, value: { callId: call.id, name: call.name,
+        status: "complete" as const, content: [{ type: "text" as const, text: "evidence" }] } };
+    });
+    const correction = vi.fn(async () => {
+      order.push("checkpoint");
+      if (mode === "checkpoint") throw new Error("checkpoint unavailable");
+      if (mode === "cancelled") controller.abort();
+    });
+    const thinking = { type: "reasoning", reasoning_text: "original private reasoning" };
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(round) {
+      requests.push(round);
+      const index = requests.length;
+      order.push(`provider:${index}`);
+      if (mode === "failed" && index === 1) throw new Error("unknown outcome");
+      const calls = mode === "wrong" && index === 1
+        ? [{ arguments: {}, id: "wrong", name: "beta" }]
+        : mode === "success" && index === 2 ? [{ arguments: {}, id: "required", name: "alpha" }] : [];
+      const finalText = index === 3 ? "grounded answer" : "unverified draft";
+      yield { type: "token", data: { delta: finalText } };
+      return { finalText, finalProviderResponsePreview: {}, toolCalls: calls,
+        providerToolCallMessage: [thinking, { role: "assistant", content: finalText }],
+        usage: { inputTokens: index, outputTokens: 1 } };
+    } };
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 }, executeTool,
+      initialRequest: request({ forcedToolName: "alpha", toolChoice: "required", params: { reasoning: { effort: "high" } } }),
+      onRequiredToolCorrection: correction, onUsage: (_usage, _request, context) => { usageRounds.push(context.round); },
+      onSignal: signal => { if (signal.type === "text_delta") text.push(signal.delta); }, parallelToolCalls: false,
+      signal: controller.signal,
+      tools: ["alpha", "beta"].map(name => ({ name, capability: "mcp" as const, description: name, inputSchema: { type: "object" } }))
+    });
+    expect(text).toEqual(mode === "success" ? ["grounded answer"] : []);
+    expect(executeTool).toHaveBeenCalledTimes(mode === "success" ? 1 : 0);
+    expect(requests.map(value => value.params)).toEqual(requests.map(() => ({ reasoning: { effort: "high" } })));
+    if (mode === "success" || mode === "miss") {
+      expect(requests[1]?.toolChoice).toBe("auto");
+      expect(requests[1]?.providerToolMessages).toEqual([thinking, { role: "assistant", content: "unverified draft" },
+        { role: "user", content: expect.stringContaining("alpha") }]);
+      expect(order.indexOf("checkpoint")).toBeLessThan(order.indexOf("provider:2"));
+    }
+    if (mode === "success") {
+      expect(outcome).toMatchObject({ status: "complete", providerRounds: 3, toolRounds: 1, toolCalls: 1 });
+      expect(requests.map(value => value.toolChoice)).toEqual(["required", "auto", "none"]);
+      expect(order).toContain("execute:2");
+      expect(usageRounds).toEqual([1, 2, 3]);
+    } else if (mode === "cancelled") {
+      expect(outcome.status).toBe("cancelled");
+      expect(requests).toHaveLength(1);
+    } else {
+      expect(outcome).toMatchObject({ status: "failed", toolCalls: 0,
+        failure: { code: mode === "checkpoint" ? "run_result_publication_failed" : mode === "failed" ? "provider_round_failed" : "required_tool_call_missing" } });
+      expect(requests).toHaveLength(mode === "miss" ? 2 : 1);
+    }
+    expect(correction).toHaveBeenCalledTimes(mode === "wrong" || mode === "failed" ? 0 : 1);
+  });
+
+  it("retains the required obligation when resuming a claimed corrective round", async () => {
+    const stream = vi.fn(async function* () {
+      return { finalText: "still no call", finalProviderResponsePreview: {}, usage: { inputTokens: 1, outputTokens: 1 } };
+    });
+    const correction = vi.fn();
+    const executeTool = vi.fn();
+    const outcome = await runProviderToolLoop({ adapter: { buildRequestPreview: () => ({}), stream },
+      bridge: openRouterChatToolBridge, budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 },
+      executeTool, initialRequest: request({ toolChoice: "required", forcedToolName: "alpha" }),
+      parallelToolCalls: false, tools: [{ name: "alpha", capability: "mcp", description: "A", inputSchema: { type: "object" } }],
+      onRequiredToolCorrection: correction, resume: { continuation: { providerResponseId: null, providerToolMessages: [], requiredToolCorrection: true },
+        progress: { providerRounds: 1, toolRounds: 0, toolCalls: 0 } }
+    });
+    expect(outcome).toMatchObject({ status: "failed", providerRounds: 2, failure: { code: "required_tool_call_missing" } });
+    expect(stream).toHaveBeenCalledOnce();
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(correction).not.toHaveBeenCalled();
+  });
+
   it.each([
     "context_compaction_source_unavailable",
     "context_compaction_summary_failed",

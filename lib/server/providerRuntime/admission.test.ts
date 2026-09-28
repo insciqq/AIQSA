@@ -689,9 +689,10 @@ describe("provider admission", () => {
         [officialOpenAiModel.id]: {
           forcedToolCall: {
             adapterKind: officialOpenAiModel.adapterKind,
-            probeVersion: 1,
+            probeVersion: 2,
             upstreamModelId: officialOpenAiModel.upstreamModelId,
-            verified: true
+            verified: true,
+            verifiedModes: ["native"]
           },
           structuredOutput: {
             adapterKind: officialOpenAiModel.adapterKind,

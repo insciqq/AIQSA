@@ -169,6 +169,24 @@ function jsonAnswer(text = "JSON answer"): Record<string, unknown> {
 }
 
 describe("OpenRouter Chat facade", () => {
+  it.each(["anthropic/claude-opus-5.5", "anthropic/claude-sonnet-5.5"])(
+    "lowers required selection for %s without disabling reasoning or changing routing", (modelId) => {
+      const original = request({ modelId, toolChoice: "required", tools: openRouterMixedTools() });
+      const body = buildOpenRouterChatRequest(original);
+      expect(body).toMatchObject({ tool_choice: "auto", reasoning: { enabled: true, effort: "high", max_tokens: 32 },
+        provider: { only: ["Anthropic"], allow_fallbacks: false } });
+      expect(original.toolChoice).toBe("required");
+      expect(buildOpenRouterChatRequest({ ...original, toolChoice: "none" }).tool_choice).toBe("none");
+    }
+  );
+
+  it.each(["deepseek/deepseek-v4.1-flash", "anthropic/claude-sonnet-5"])(
+    "retains required choice for routes without an applicable restriction: %s", (modelId) => {
+      expect(buildOpenRouterChatRequest(request({ modelId, toolChoice: "required", tools: openRouterMixedTools() }))
+        .tool_choice).toBe("required");
+    }
+  );
+
   it("keeps every pre-split public facade export available", () => {
     const client: OpenRouterChatClient = {
       createChatCompletion: async () => jsonAnswer()

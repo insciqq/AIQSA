@@ -11,7 +11,7 @@ import { summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository"
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { freezeSkillManifest } from "../skills/runManifest";
 import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
-import { INITIAL_PROVIDER_CONTINUATION, parseToolLoopCheckpoint } from "./toolLoopPersistence";
+import { INITIAL_PROVIDER_CONTINUATION, parseToolLoopCheckpoint, toolLoopCheckpoint } from "./toolLoopPersistence";
 
 function activityStore() {
   const rows: { eventType: string; payload: unknown; sequence: number }[] = [];
@@ -545,6 +545,7 @@ describe("provider dispatch recovery request loading", () => {
 
   it("restores current admitted model capabilities without weakening their validation", async () => {
     const capabilities = { ...normalizedRequest.modelCapabilities, vision: true, forcedToolCalling: true,
+      validatedAutoToolCalling: true, nativeForcedToolChoice: false,
       imageEditing: false, imageGeneration: false, maxOutputTokens: 8192,
       imageInputLimits: { imageBytes: 1048576, imageCount: 4, imagePixels: 4000000, payloadBytes: 5000000 } };
     let accepted: unknown = { ...normalizedRequest, modelCapabilities: capabilities };
@@ -553,7 +554,8 @@ describe("provider dispatch recovery request loading", () => {
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
-    for (const patch of [ { forcedToolCalling: "true" }, { maxOutputTokens: 0 },
+    for (const patch of [ { forcedToolCalling: "true" }, { validatedAutoToolCalling: "true" },
+      { nativeForcedToolChoice: "false" }, { maxOutputTokens: 0 },
       { imageInputLimits: { ...capabilities.imageInputLimits, imageCount: -1 } }, { vision: false } ]) {
       accepted = { ...normalizedRequest, modelCapabilities: { ...capabilities, ...patch } };
       await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
@@ -1343,6 +1345,25 @@ describe("Prisma context summary receipts", () => {
           ...(receipt.summary ? { summary: receipt.summary } : {}) } });
     return { operations, record, run, tx, usageRows };
   }
+
+  it.each(["terminal", "partial", "cancelled"] as const)("claims one required-tool correction only after successful terminal usage: %s", async (state) => {
+    const store = harness({ status: state === "cancelled" ? "cancelled" : "streaming", providerResponseId: "first-response" });
+    store.run.toolLoopState = toolLoopCheckpoint({
+      answerRoundUsage: [{ completeness: state === "partial" ? "partial" : "terminal", roundIndex: 1, usage }],
+      phase: "provider_running", providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1
+    });
+    const correction: Parameters<typeof store.operations.beginToolLoopProviderRound>[0] = { requiredToolCorrectionOfRound: 1, roundIndex: 2, runId: "run-1", userId: "user-1",
+      providerContinuation: { providerResponseId: "first-response", providerToolMessages: [{ role: "assistant", content: "draft" }], requiredToolCorrection: true } };
+    expect(await store.operations.beginToolLoopProviderRound(correction)).toBe(state === "terminal" ? "started" : state === "partial" ? "conflict" : "cancelled");
+    if (state !== "terminal") { expect(store.tx.modelRun.update).not.toHaveBeenCalled(); return; }
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)).toMatchObject({ roundIndex: 2, phase: "provider_running",
+      answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage }],
+      providerContinuation: { requiredToolCorrection: true } });
+    expect(store.tx.modelRun.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ providerResponseId: null }) }));
+    expect(await store.operations.beginToolLoopProviderRound(correction)).toBe("conflict");
+    expect(await store.operations.beginToolLoopProviderRound({ ...correction, requiredToolCorrectionOfRound: 2, roundIndex: 3 })).toBe("conflict");
+    expect(store.tx.modelRun.update).toHaveBeenCalledOnce();
+  });
 
   it("claims the first round's summary before its begin, then settles with usage in one write", async () => {
     const store = harness();

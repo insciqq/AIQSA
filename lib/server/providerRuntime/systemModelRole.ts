@@ -42,6 +42,25 @@ export function applySystemModelReasoningEffort(
   reasoningEffort: string | null
 ): ProviderExecutionSnapshot {
   if (reasoningEffort === null) return snapshot;
+  if (snapshot.model.adapterKind === "anthropic_messages") {
+    const currentThinking = record(snapshot.model.defaultParams.thinking)
+      ? snapshot.model.defaultParams.thinking : {};
+    const currentOutput = record(snapshot.model.defaultParams.outputConfig)
+      ? snapshot.model.defaultParams.outputConfig : {};
+    return {
+      ...snapshot,
+      model: {
+        ...snapshot.model,
+        defaultParams: {
+          ...snapshot.model.defaultParams,
+          thinking: { ...currentThinking, enabled: reasoningEffort !== "none" },
+          outputConfig: reasoningEffort === "none"
+            ? currentOutput
+            : { ...currentOutput, effort: reasoningEffort }
+        }
+      }
+    };
+  }
   const currentReasoning = record(snapshot.model.defaultParams.reasoning)
     ? snapshot.model.defaultParams.reasoning
     : {};

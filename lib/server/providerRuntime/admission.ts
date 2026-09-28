@@ -31,7 +31,7 @@ import {
 } from "../search/configuration";
 import type { SearchProbeBinding } from "../search/probeBinding";
 import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
-import { hasVerifiedForcedToolCall } from "../providers/forcedToolCallEvidence";
+import { hasVerifiedToolChoiceMode } from "../providers/forcedToolCallEvidence";
 import { hasVerifiedCodexWebSearch } from "../providers/codexWebSearch";
 import { hasVerifiedPdfInput } from "../providers/pdfInputEvidence";
 import { hasVerifiedVisionInput } from "../providers/visionInputEvidence";
@@ -473,7 +473,9 @@ async function loadRole(
   const structuredOutput = input.modelClass === "answer" &&
     hasVerifiedStructuredOutput(check.evidence, modelConfig);
   const forcedToolCalling = input.modelClass === "answer" &&
-    hasVerifiedForcedToolCall(check.evidence, modelConfig);
+    hasVerifiedToolChoiceMode(check.evidence, modelConfig, "native");
+  const validatedAutoToolCalling = input.modelClass === "answer" &&
+    hasVerifiedToolChoiceMode(check.evidence, modelConfig, "validated_auto");
   const nativePdfInput = input.modelClass === "answer" &&
     modelConfig.capabilities.nativePdfInput &&
     hasVerifiedPdfInput(check.evidence, modelConfig);
@@ -496,7 +498,7 @@ async function loadRole(
     ? withResolvedModelCapabilities(normalizedSnapshot, { nativePdfInput,
         codexStandaloneWebSearch: modelConfig.capabilities.codexStandaloneWebSearch === true && hasVerifiedCodexWebSearch(check.evidence, modelConfig) })
     : normalizedSnapshot;
-  const snapshot = (structuredOutput || forcedToolCalling) &&
+  const snapshot = (structuredOutput || forcedToolCalling || validatedAutoToolCalling) &&
     resolvedSnapshot.model.adapterKind !== "fake"
     ? {
         ...resolvedSnapshot,
@@ -505,6 +507,7 @@ async function loadRole(
           capabilities: {
             ...resolvedSnapshot.model.capabilities,
             ...(forcedToolCalling ? { forcedToolCalling: true } : {}),
+            ...(validatedAutoToolCalling ? { validatedAutoToolCalling: true } : {}),
             ...(structuredOutput ? { structuredOutput: true } : {})
           }
         }
@@ -575,7 +578,7 @@ async function loadRole(
     authority,
     credentialSource: credential.source,
     ...(structuredOutput ? { verifiedStructuredOutput: true as const } : {}),
-    ...(forcedToolCalling ? { verifiedForcedToolCall: true as const } : {}),
+    ...(forcedToolCalling || validatedAutoToolCalling ? { verifiedForcedToolCall: true as const } : {}),
     ...(hasVerifiedVisionInput(check.evidence, resolvedModel)
       ? { verifiedVisionInput: true as const } : {}),
     modelConfiguration: {

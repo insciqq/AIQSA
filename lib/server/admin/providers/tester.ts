@@ -2,6 +2,7 @@ import { capabilityFailureAttempt, retryCapabilityAttempt } from "./capabilityPr
 import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
 import { testImageCapabilities } from "./imageCapabilityProbe";
 import { randomUUID } from "node:crypto";
+import { normalizeAnthropicMessagesParams } from "../../../domain/providerParams";
 import { shouldProbeCodexWebSearch, readCodexWebSearchResponse } from "../../providers/codexWebSearch";
 import { shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { validateSearchToolArguments } from "../../search/query";
@@ -41,6 +42,7 @@ import {
   forcedToolCallVerificationEvidence,
   supportsForcedToolCallProbe
 } from "../../providers/forcedToolCallEvidence";
+import { resolveProviderToolChoice } from "../../providers/providerToolChoice";
 import {
   createProviderPdfInputProbe,
   type ProviderPdfInputProbe
@@ -269,8 +271,37 @@ async function runForcedToolCallProbe(
     !runtime.toolBridge
   ) throw new Error("forced_tool_call_adapter_unsupported");
   const request = generationRequest(input, false);
-  const effort = lowestConfiguredReasoningEffort(input.model, input.providerFamily);
-  const stream = runtime.adapter.stream({
+  const configuredParams = {
+    ...request.params,
+    ...(input.model.defaultParams.reasoning !== undefined
+      ? { reasoning: input.model.defaultParams.reasoning }
+      : {})
+  };
+  const probe = async (params: Record<string, unknown>) => {
+    const effectiveParams = params;
+    const reasoning = typeof params.reasoning === "object" && params.reasoning !== null
+      ? params.reasoning as Record<string, unknown> : {};
+    const thinking = typeof params.thinking === "object" && params.thinking !== null
+      ? params.thinking as Record<string, unknown> : {};
+    const reasoningActive = reasoning.effort !== "none" &&
+      (reasoning.enabled === true || typeof reasoning.effort === "string") ||
+      thinking.enabled === true;
+    const manualThinking = input.model.adapterKind === "anthropic_messages"
+      ? normalizeAnthropicMessagesParams(params).thinking : null;
+    const thinkingBudget = manualThinking?.enabled && manualThinking.type === "enabled"
+      ? manualThinking.budgetTokens : 0;
+    const desiredTokens = Math.max(reasoningActive ? 1_024 : 128, thinkingBudget + 256);
+    if (desiredTokens > 8_192 || probeOutputTokens(input, desiredTokens) <= thinkingBudget) {
+      throw Object.assign(new Error("capability_probe_inconclusive"), { capabilityFailureReason: "budget_exhausted" });
+    }
+    const choice = resolveProviderToolChoice({
+      adapterKind: input.model.adapterKind,
+      modelId: input.model.upstreamModelId,
+      modelCapabilities: input.model.capabilities,
+      params: effectiveParams,
+      toolChoice: "required"
+    });
+    const stream = runtime.adapter.stream({
     ...request,
     content: {
       blocks: [{
@@ -284,12 +315,9 @@ async function runForcedToolCallProbe(
     },
     parallelToolCalls: false,
     params: {
-      ...request.params,
-      ...(input.model.adapterKind === "openrouter_chat_completions"
-        ? { reasoning: { enabled: effort !== "none", effort, exclude: true } }
-        : {}),
-      maxOutputTokens: probeOutputTokens(input, effort === "none" ? 128 : 1_024),
-      max_output_tokens: probeOutputTokens(input, effort === "none" ? 128 : 1_024)
+      ...effectiveParams,
+      maxOutputTokens: probeOutputTokens(input, desiredTokens),
+      max_output_tokens: probeOutputTokens(input, desiredTokens)
     },
     prompt: {
       developer: null,
@@ -305,20 +333,46 @@ async function runForcedToolCallProbe(
       strict: true
     }]
   }, { signal: input.signal });
-  let next = await stream.next();
-  while (!next.done) next = await stream.next();
-  assertProbeTerminal(next.value);
-  const calls = next.value.toolCalls;
-  const call = calls?.[0];
-  if (
-    calls?.length !== 1 ||
-    call?.name !== forcedToolCallProbeName ||
-    Object.keys(call.arguments).length !== 1 ||
-    call.arguments.city !== "Oslo"
-  ) throw new Error("forced_tool_call_probe_invalid");
+    let next = await stream.next();
+    while (!next.done) next = await stream.next();
+    assertProbeTerminal(next.value);
+    const calls = next.value.toolCalls;
+    const call = calls?.[0];
+    if (
+      calls?.length !== 1 ||
+      call?.name !== forcedToolCallProbeName ||
+      Object.keys(call.arguments).length !== 1 ||
+      call.arguments.city !== "Oslo"
+    ) throw new Error("forced_tool_call_probe_invalid");
+    return choice.requirementMode;
+  };
+  const verifiedModes = [await probe(configuredParams)];
+  // Memory's separate effort control can move between reasoning On and Off.
+  // Qualify both wire modes when the model exposes both; one cannot prove the other.
+  if (input.model.adapterKind === "deepseek_responses_native" ||
+      input.model.adapterKind === "anthropic_messages") {
+    const alternateEffort = input.model.capabilities.reasoningEfforts?.find((value) => value !== "none") ?? "high";
+    const alternateParams = input.model.adapterKind === "deepseek_responses_native"
+      ? { ...configuredParams, reasoning: { effort: verifiedModes[0] === "validated_auto" ? "none" : alternateEffort } }
+      : { ...configuredParams, thinking: verifiedModes[0] === "validated_auto"
+        ? { enabled: false }
+        : { enabled: true, type: "enabled", budgetTokens: 1_024 } };
+    const alternateChoice = resolveProviderToolChoice({
+      adapterKind: input.model.adapterKind,
+      modelId: input.model.upstreamModelId,
+      modelCapabilities: input.model.capabilities,
+      params: alternateParams,
+      toolChoice: "required"
+    });
+    if (alternateChoice.requirementMode !== verifiedModes[0]) {
+      try { verifiedModes.push(await probe(alternateParams)); }
+      catch { /* The default-mode proof remains valid; this mode remains unverified. */ }
+    }
+  }
   const evidence = forcedToolCallVerificationEvidence(
     input.model.adapterKind,
-    input.model.upstreamModelId
+    input.model.upstreamModelId,
+    verifiedModes
   );
   if (!evidence) throw new Error("forced_tool_call_adapter_unsupported");
   return evidence;

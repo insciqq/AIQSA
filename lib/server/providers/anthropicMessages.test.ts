@@ -69,15 +69,38 @@ describe("Anthropic context-length rejection", () => {
     expect(JSON.stringify(failure)).not.toContain(sentinel);
   });
 
-  it("keeps other invalid requests and non-400 statuses unclassified", async () => {
+  it("classifies invalid requests while preserving unrelated HTTP failures", async () => {
     for (const [status, type] of [[400, "invalid_request_error"], [413, "request_too_large"], [500, "api_error"]] as const) {
       const client = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () =>
         Response.json({ type: "error", error: { type, message: status === 400 ? `messages: text content blocks must be non-empty ${sentinel}`
           : `prompt is too long: 208000 tokens > 200000 maximum ${sentinel}` } }, { status }) });
       const failure = await client.createMessage({}).catch((error: unknown) => error);
-      expect(failure).not.toHaveProperty("code");
+      if (status === 400) expect(failure).toHaveProperty("code", "provider_http_invalid_request");
+      else expect(failure).not.toHaveProperty("code");
       expect(JSON.stringify(failure)).not.toContain(sentinel);
     }
+  });
+});
+
+describe("Anthropic required wire compatibility", () => {
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1"])(
+    "preserves adaptive thinking and logical required obligation for %s", (modelId) => {
+      const original = request({ modelId, toolChoice: "required", forcedToolName: mcpTool.name, tools: [mcpTool] });
+      const body = buildAnthropicMessagesRequest(original);
+      expect(body).toMatchObject({ thinking: { type: "adaptive", display: "summarized" },
+        output_config: { effort: "xhigh" }, tool_choice: { type: "auto" } });
+      expect(original).toMatchObject({ toolChoice: "required", forcedToolName: mcpTool.name });
+      expect(buildAnthropicMessagesRequest({ ...original, toolChoice: "none" }))
+        .toHaveProperty("tool_choice", { type: "none" });
+    }
+  );
+
+  it("only lowers manual thinking on models that support adaptive forced calls", () => {
+    const original = request({ modelId: "claude-sonnet-5", toolChoice: "required", tools: [mcpTool] });
+    expect(buildAnthropicMessagesRequest(original)).toHaveProperty("tool_choice.type", "any");
+    expect(buildAnthropicMessagesRequest({ ...original, params: { ...original.params,
+      thinking: { enabled: true, type: "enabled", budgetTokens: 1024 } } }))
+      .toMatchObject({ thinking: { type: "enabled", budget_tokens: 1024 }, tool_choice: { type: "auto" } });
   });
 });
 
@@ -1124,7 +1147,7 @@ describe("Anthropic Messages adapter", () => {
         { type: "message_stop" }
       ])
     };
-    const { events: seen } = await collectAdapterStream(client, DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars);
+    const { events: seen, result } = await collectAdapterStream(client, DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars);
     const reasoning = seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "reasoning"
       ? [event.data.payload as { entry: string; text: string }]
       : []);
@@ -1143,6 +1166,12 @@ describe("Anthropic Messages adapter", () => {
     }
     expect(reasoning.at(-1)).toEqual({ entry: "start", text: "Second block." });
     expect(JSON.stringify(seen)).not.toContain("PRIVATE_THINKING_SIGNATURE");
+    expect(result.providerToolCallMessage).toMatchObject({ role: "assistant", content: [
+      { type: "thinking", signature: "PRIVATE_THINKING_SIGNATURE", thinking: full },
+      { type: "thinking", thinking: "Second block." },
+      { type: "text", text: "Done" }
+    ] });
+    expect(result.toolCalls).toEqual([]);
   });
 
   it.each(["refusal", "model_context_window_exceeded"])(

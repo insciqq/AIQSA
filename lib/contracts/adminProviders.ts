@@ -232,10 +232,13 @@ export type AdminProviderTestEvidence = {
       | "openai_responses_compatible"
       | "openai_responses_native"
       | "openrouter_chat_completions";
-    probeVersion: 1;
     upstreamModelId: string;
     verified: true;
-  };
+  } & ({ probeVersion: 1 } | {
+    probeVersion: 2;
+    /** Independently observed one-tool completion under each wire choice. */
+    verifiedModes: readonly ("native" | "validated_auto")[];
+  });
   structuredOutput?: {
     adapterKind:
       | "anthropic_messages"

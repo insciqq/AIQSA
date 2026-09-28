@@ -280,8 +280,10 @@ export function providerHttpFailureMessage(value: unknown): string | null {
       : "The request exceeded the model's context window."} Reduce the context or choose a model with a larger context window.`;
   }
   const failure = geminiHttpFailure(value);
-  return failure
-    ? `The model provider rejected the request (Gemini HTTP ${failure.httpStatus}: ${failure.identity}).`
+  if (failure) return `The model provider rejected the request (Gemini HTTP ${failure.httpStatus}: ${failure.identity}).`;
+  const observed = observedFailure(value);
+  return observed.code === "provider_http_invalid_request" && observed.httpStatus === 400
+    ? "The model provider rejected the request (HTTP 400: invalid_request)."
     : null;
 }
 

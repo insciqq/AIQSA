@@ -31,7 +31,7 @@ import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
 import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
-import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
+import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1, KnowledgeAnswerProviderError } from "../knowledge/evidenceAnswerExecutionV1";
 import { refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
@@ -954,10 +954,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const publication = await input.repository.updateRunProviderResponseId(runId, providerResponseId).catch(error => { throw new RunSettlementError("publication", error); });
         persistedProviderResponseId = providerResponseId;
         if (publication === "cancelled") {
+          abortController.abort();
           await input.adapter.cancel?.(providerResponseId).catch(() => undefined);
           throw abortError();
         }
-        if (publication === "terminal") throw abortError();
+        if (publication === "terminal") {
+          abortController.abort();
+          throw abortError();
+        }
       }
 
       async function streamProviderRequest(request: ProviderRunRequest): Promise<ProviderRunResult> {
@@ -1641,7 +1645,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           routeInstruction: inputRequest.routeInstruction ?? (fullContextPlan
             ? KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION
             : KNOWLEDGE_FOCUSED_DRAFT_ROUTE_INSTRUCTION),
-          shouldAbort: (error: unknown) => signal.aborted || error instanceof RunFollowupChanged,
+          shouldAbort: (error: unknown) => signal.aborted ||
+            error instanceof RunFollowupChanged || error instanceof RunPipelineError || error instanceof RunSettlementError,
           transport: input.structuredOutputAdapter
             ? "native_strict"
             : "provider_neutral_json"
@@ -2804,6 +2809,19 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           onProviderResult: async ({ result }) => {
             if (result.providerResponseId) await publishProviderResponseId(result.providerResponseId);
           },
+          onRequiredToolCorrection: async ({ continuation, round }) => {
+            const started = await input.repository.beginToolLoopProviderRound({
+              requiredToolCorrectionOfRound: round,
+              providerContinuation: toolLoopJson(continuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+              roundIndex: round + 1,
+              runId,
+              userId: input.userId
+            });
+            if (started === "cancelled") throw abortError();
+            if (started !== "started") {
+              throw new RunPipelineError("tool_loop_checkpoint_conflict", "Required tool correction could not start");
+            }
+          },
           onSignal: async (toolSignal) => {
             if (toolSignal.type === "text_delta") {
               await applyProviderEvent({ data: { delta: toolSignal.delta }, type: "token" });
@@ -3396,6 +3414,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           run_id: runId, stage: executionStage, outcome: cancelled ? "cancelled" : "failed",
           duration_ms: Math.max(0, Date.now() - executionStartedAt),
           code: originalFailure.code, reason: cancelled ? "cancelled" : originalFailure.reason,
+          provider_code: error instanceof KnowledgeAnswerProviderError ? error.providerCode : undefined,
           abort_source: abortController.signal.aborted ? "stop" : workspaceTurnTimedOut ? "workspace_deadline"
             : originalFailure.abort_source === "provider_deadline" ? "provider_deadline" : undefined,
           timeout_ms: originalFailure.timeout_ms, prisma_code: runDatabaseFailureCode(error)

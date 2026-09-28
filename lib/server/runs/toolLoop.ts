@@ -51,6 +51,12 @@ export type ToolLoopSettledCall<Value> = Readonly<{
 
 export type ToolLoopProviderRoundResult<Continuation, FinalValue> =
   | Readonly<{
+      /** A known successful round that needs a bounded provider correction,
+       * without dispatching any tools or consuming a tool round. */
+      continuation: Continuation;
+      status: "continue";
+    }>
+  | Readonly<{
       final: FinalValue;
       status: "complete";
     }>
@@ -610,6 +616,12 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       };
     }
 
+    if (providerResult.status === "continue") {
+      continuation = providerResult.continuation;
+      previousToolResults = [];
+      continue;
+    }
+
     const calls = providerResult.calls;
     const callError = validateCalls(calls, seenCallIds, round);
     if (callError) {
@@ -675,7 +687,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       deferToolUntilBatchEnd: input.deferToolUntilBatchEnd,
       maxConcurrency: providerResult.parallelToolCalls === false ? 1 : input.budgets.maxConcurrency,
       parentSignal: input.signal,
-      round: toolRound,
+      round,
       timeoutMs: input.budgets.toolCallTimeoutMs,
       toolObservation: input.toolObservation
     });

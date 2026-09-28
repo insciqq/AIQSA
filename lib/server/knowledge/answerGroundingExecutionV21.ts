@@ -363,8 +363,17 @@ async function executeAcceptedOperation(input: Readonly<{
       }).catch(() => undefined);
       throw error;
     }
+    const failure = observedFailure(error);
+    if (isKnowledgeEvidenceAnswerOperation(input.operation) &&
+      (failure.reason === "cancelled" || failure.code === "provider_request_outcome_unknown")) {
+      observation.cancelled = failure.reason === "cancelled";
+      await input.lifecycle.markAmbiguous(prepared, {
+        reason: observation.cancelled ? "provider_dispatch_cancelled" : "provider_request_outcome_unknown"
+      }).catch(() => undefined);
+      throw error;
+    }
     logEvent("tool_execution", {
-      ...observedFailure(error), tool_kind: "knowledge", stage: "request",
+      ...failure, tool_kind: "knowledge", stage: "request",
       operation_index: input.ordinal, operation_stage: observation.operationStage, outcome: "degraded", action: "degrade"
     });
     execution = {
