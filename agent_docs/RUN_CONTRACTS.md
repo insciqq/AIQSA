@@ -3,17 +3,17 @@
 Owner: Run pipeline maintainers
 Scope: Accepted execution, context, tools, evidence, recovery and outputs.
 
-[Critical invariants](CRITICAL_INVARIANTS.md) owns historical immutability, tenancy and privacy. Executable contracts live in [runs](../lib/server/runs/) and their domain owners.
+[Critical invariants](CRITICAL_INVARIANTS.md) owns historical immutability, tenancy and privacy.
 
 ## Admission And Context
 
-Admission freezes non-secret execution/dependency/credential/budget bindings. Assistants use authorized complete definitions, never client expansions. Recovery preserves execution/identity; regeneration re-admits. Projects continually recheck authority/credentials/revocation/configuration.
+Admission freezes non-secret execution/dependency/credential/budget bindings. Assistants take fixed rows only from definitions, others from chat-authorized values; bound chats reject prompt/Search-preference fields and fixed-row values. Implicit Project defaults bind only first messages lacking `assistantId` and composer fields, never failing them. Projects continually recheck authority/credentials/revocation/configuration.
 
-Context follows active ancestors, never siblings. Preserve user turns after errors/partial answers; deduplicate identities and reject replay. Trim whole prior turns within limits; reject irreducible overflow. Ordinary runs use server baseline plus Project instructions; previews expose only baseline/answer rules.
+Context follows active ancestors, never siblings. Preserve user turns after errors/partial answers; deduplicate identities and reject replay. Trim whole prior turns within limits; reject irreducible overflow. Runs use server baseline (Assistants only its date/time) plus Project instructions; previews expose only baseline/answer rules.
 
 Observation policy defaults to `v1`; Off is the kill switch. Admission freezes it: absent/off stays legacy without backfill; tool-capable non-Agent v1 admissions without a Knowledge plan freeze `hybrid`; Knowledge runs keep the legacy guard. V1 masks only server-recorded observations, keeping the newest batch, instructions, current input and follow-ups; unknown windows, `toolChoice:"none"`, split batches and Agent history add no masks. `needs_summary` buys chunked summaries on the admitted binding, from the newest span when the plan cannot cover the source (older turns leave as truncation); afterwards only covered turns and tool rounds leave, never notes; committed failure never trims; a failed headroom summary keeps the fitting request, never rebought that run. A provider context-length refusal before any accepted round output permits one checkpointed v1 rebuild per run under a tightened budget; tools never rerun. Summary sources exclude provider reasoning/signatures/attachment identifiers. Later turns carry their branch's newest compatible checkpoint notes, never sibling notes or opaque continuations. PDF/OCR remain standalone guards; conversational PDF continuations share the answer consumer.
 
-Personal presets supplement personal/temporary chats, never Assistants/Projects. They may replace answer rules without authority; date/time uses baseline zone. Assistants own hidden user-level reminders after current content/attachments. Both are irreducible, frozen through recovery, and excluded from previews/utility prompts. Knowledge keeps accepted instructions/effective question; instructions are not Memory facts.
+Personal presets supplement personal/temporary chats, never Assistants/Projects. They, like Assistant answer rules, may replace default answer rules without authority; date/time uses baseline zone. Assistants own hidden user-level reminders after current content/attachments. Presets and Assistant reminders are irreducible, frozen through recovery, and excluded from previews/utility prompts. Knowledge keeps accepted instructions/effective question; instructions are not Memory facts.
 
 Acceptance transfers execution server-side; disconnect never cancels preparation/commands. Stop/deadlines/authority remain. Recovery uses live owners without replay; PDF gates eligible Memory and final admission refreezes authority/evidence. Preparation forbids provider/tool I/O. Optional Memory failure cannot bypass authority. Temporary/Project bypass Memory; inbound Memory MCP stays independent. [Memory](MEMORY.md) owns preparation.
 

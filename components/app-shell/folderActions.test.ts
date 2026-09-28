@@ -164,6 +164,7 @@ describe("folder actions", () => {
       chats: [
         {
           activeRun: false,
+          assistant: null,
           folderId: state.folder.id,
           id: "chat-a",
           title: "Chat A",
@@ -171,6 +172,7 @@ describe("folder actions", () => {
         },
         {
           activeRun: false,
+          assistant: null,
           folderId: null,
           id: "chat-b",
           title: "Chat B",

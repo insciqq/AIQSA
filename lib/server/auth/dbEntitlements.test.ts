@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { loadEntitlementsForUser } from "./dbEntitlements";
+import { loadEntitlementsForMemberships, loadEntitlementsForUser } from "./dbEntitlements";
 
 describe("database entitlement loader", () => {
   it("derives full access from an active system-group membership without grant rows", async () => {
@@ -34,6 +34,18 @@ describe("database entitlement loader", () => {
           { groupId: { in: ["full-access"] } }
         ]
       }
+    }));
+  });
+
+  it("resolves from memberships the caller already read without reading them again", async () => {
+    const accessGrantFindMany = vi.fn(async () => []);
+    const entitlements = await loadEntitlementsForMemberships({
+      accessGrant: { findMany: accessGrantFindMany }
+    } as never, "user-1", [{ groupId: "full-access", systemRole: "full_access" }, { groupId: "team", systemRole: null }]);
+
+    expect(entitlements.fullAccess).toBe(true);
+    expect(accessGrantFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { OR: [{ userId: "user-1" }, { groupId: { in: ["full-access", "team"] } }] }
     }));
   });
 

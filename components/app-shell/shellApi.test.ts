@@ -160,6 +160,7 @@ describe("shell SSE protocol", () => {
 describe("chat wire mapping", () => {
   const detail: ChatDetailWire = {
     activeLeafMessageId: "message-cancelled",
+    assistant: null,
     contextStats: {
       approximateActiveBranchInputTokens: 144
     },

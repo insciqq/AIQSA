@@ -9,7 +9,6 @@ import {
   RunSetupV2,
   TemporaryChatIndicatorV2,
   WorkspaceHeaderV2,
-  answerIdentityV2,
   knowledgeReferenceForMessageV2,
   liveAnswerSourceV2,
   announcedPresentationV2,
@@ -206,32 +205,6 @@ describe("Run setup v2", () => {
   });
 });
 
-describe("Answer identity v2", () => {
-  it("keeps ordinary answers neutral", () => {
-    expect(answerIdentityV2({})).toBeNull();
-  });
-
-  it("projects only the accepted Assistant identity", () => {
-    expect(answerIdentityV2({
-      assistantIdentity: {
-        avatar: {
-          accents: [1],
-          backgroundShape: "circle",
-          foregroundShape: "ring",
-          kind: "generated",
-          paletteId: "ocean",
-          recipeVersion: 1,
-          rotations: [0, 1]
-        },
-        name: "Quarterly analyst"
-      }
-    })).toEqual({
-      label: "Quarterly analyst",
-      testId: "answer-assistant-identity"
-    });
-  });
-});
-
 describe("Knowledge citation provenance v2", () => {
   it("uses the original answer authority for a copied branch message", () => {
     expect(knowledgeReferenceForMessageV2({
@@ -334,9 +307,11 @@ describe("Run announcer wiring v2", () => {
       const element = (step: (typeof steps)[number]) => <RunLifecycleAnnouncerV2 activeChatId="chat-a"
         presentation={announcedPresentationV2(step.tail, step.thread ?? thread())} sourceChatId="chat-a" />;
       const view = render(element(steps[0]!));
+      let last = "";
       const sample = () => {
         const text = screen.getByTestId("run-lifecycle-announcer").textContent ?? "";
-        if (text && text !== spoken.at(-1)) spoken.push(text);
+        if (text && text !== last) spoken.push(text);
+        last = text;
       };
       for (const step of steps) {
         view.rerender(element(step));
@@ -370,6 +345,22 @@ describe("Run announcer wiring v2", () => {
       { tail: { ...streaming, content: "Done", status: "complete" }, thread: thread({ currentRunId: "run-live" }) },
       { tail: { ...streaming, content: "Done", status: "complete" } }
     ])).toEqual(["Working on the answer…", READY]);
+  });
+
+  it("keeps a send refused after earlier answers silent and speaks the next send again", () => {
+    const earlier = answer({ content: "Earlier answer", id: "message-old", runId: "run-old" });
+    const optimistic = (id: string) => answer({ content: "", id, runId: undefined, status: "streaming" });
+    const sending = thread({ activeChatStreaming: true });
+    const durable = answer({ content: "", id: "message-new", runId: "run-new", status: "streaming" });
+    // The refusal rolls the optimistic answer back: the earlier answer is the tail again.
+    expect(follow([
+      { tail: earlier },
+      { tail: optimistic("assistant-1"), thread: sending },
+      { tail: earlier },
+      { tail: optimistic("assistant-2"), thread: sending },
+      { tail: durable, thread: thread({ activeChatStreaming: true, currentRunId: "run-new" }) },
+      { tail: { ...durable, content: "Done", status: "complete" }, thread: thread({ currentRunId: "run-new" }) }
+    ])).toEqual(["Working on the answer…", "Working on the answer…", READY]);
   });
 
   it("projects a failed cycle superseded in one replayed batch for the answer that owns the run", () => {
@@ -544,7 +535,7 @@ describe("Workspace header v2", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("chooses the model from the header selector and locks it under an Assistant", () => {
+  it("chooses the model from the header selector and opens a locked one in its fixed state", () => {
     const onToggle = vi.fn();
     const { rerender } = render(
       <WorkspaceHeaderV2
@@ -583,13 +574,46 @@ describe("Workspace header v2", () => {
         }}
       />
     );
+    // A fixed model keeps its lock but still opens the picker.
     const locked = screen.getByTestId("header-model-trigger");
-    expect(locked).toBeDisabled();
+    expect(locked).toBeEnabled();
+    expect(locked).toHaveAttribute("data-locked");
     expect(locked).toHaveAttribute("title", "Managed by the Assistant");
+    expect(locked).toHaveAccessibleName("Decision Writer · gpt-5.6-terra");
+    fireEvent.click(locked);
+    expect(onToggle).toHaveBeenLastCalledWith(locked);
     expect(locked).toHaveAttribute("aria-expanded", "true");
     expect([...locked.querySelectorAll("use")].map((use) => use.getAttribute("href")))
       .toEqual(["#v2-icon-plug", "#v2-icon-lock"]);
     expect(screen.getByTestId("header-title")).toBeVisible();
+  });
+
+  it("orders the model, the Assistant selector and the title, with the model's provenance dot", () => {
+    render(
+      <WorkspaceHeaderV2
+        {...headerProps()}
+        assistantSelector={<button data-testid="assistant-slot" type="button">HR Helper</button>}
+        modelSelector={{
+          expanded: false,
+          family: "gemini",
+          fromAssistant: true,
+          label: "Gemini",
+          name: "Gemini 3.8 Flash",
+          onToggle: vi.fn(),
+          title: "Gemini 3.8 Flash · recommended by HR Helper"
+        }}
+      />
+    );
+
+    const trigger = screen.getByTestId("header-model-trigger");
+    expect(trigger).toHaveTextContent(/^Gemini 3\.8 Flash$/u);
+    expect(trigger).toHaveAttribute("data-provenance", "assistant");
+    expect(trigger).toHaveAttribute("title", "Gemini 3.8 Flash · recommended by HR Helper");
+    expect(trigger).toBeEnabled();
+    const order = [trigger, screen.getByTestId("assistant-slot"), screen.getByTestId("header-title")];
+    for (const [index, element] of order.slice(1).entries()) {
+      expect(order[index]!.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
   });
 
   it("gates Delete… on the capability and lists nested move destinations", () => {

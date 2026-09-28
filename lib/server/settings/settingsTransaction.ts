@@ -7,6 +7,7 @@ import type {
   UserSettingsUpdateResult
 } from "./handlers";
 import { decodeSearchPlan } from "../../domain/search";
+import { isAssistantAvailable } from "../assistants/bindingAccess";
 
 export type SettingsTransactionClient = Pick<
   Prisma.TransactionClient,
@@ -25,6 +26,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function serializeSettings(settings: {
+  defaultAssistantId: string | null;
   defaultControlValues: unknown;
   defaultKnowledgePlan: unknown;
   defaultMcpMode: string;
@@ -40,6 +42,7 @@ function serializeSettings(settings: {
 }): UserSettingsRecord {
   const defaultProviderModelId = settings.defaultProviderModel?.id ?? null;
   return {
+    defaultAssistantId: settings.defaultAssistantId,
     defaultControlValues: settings.defaultControlValues,
     defaultKnowledgePlan: settings.defaultKnowledgePlan,
     defaultMcpMode: settings.defaultMcpMode,
@@ -60,6 +63,7 @@ function settingsUpdateData(
   currentControlValues: unknown
 ): Prisma.UserSettingsUpdateInput {
   const {
+    defaultAssistantId,
     defaultControlValues,
     defaultKnowledgePlan,
     defaultProviderModelId,
@@ -87,6 +91,13 @@ function settingsUpdateData(
       ? {
           defaultProviderModel: defaultProviderModelId
             ? { connect: { id: defaultProviderModelId } }
+            : { disconnect: true }
+        }
+      : {}),
+    ...(defaultAssistantId !== undefined
+      ? {
+          defaultAssistant: defaultAssistantId
+            ? { connect: { id: defaultAssistantId } }
             : { disconnect: true }
         }
       : {})
@@ -149,6 +160,17 @@ export async function applySettingsUpdateInTransaction(
   update: UserSettingsUpdate,
   validationModels: SettingsValidationModel[]
 ): Promise<UserSettingsUpdateResult> {
+  // The Assistant is locked before the settings row, in the order Assistant
+  // deletion takes them, so a concurrent delete waits instead of failing the
+  // foreign key.
+  const assistantId = update.defaultAssistantId;
+  if (typeof assistantId === "string" && !await isAssistantAvailable(tx, {
+    assistantId,
+    lock: true,
+    scope: { kind: "personal", userId }
+  })) {
+    return { kind: "assistant_not_available" };
+  }
   const [lockedSettings] = await tx.$queryRaw<LockedSettingsRow[]>`
     SELECT
       settings."id",
@@ -176,6 +198,7 @@ export async function applySettingsUpdateInTransaction(
   const settings = await tx.userSettings.update({
     data: settingsUpdateData(update, lockedSettings.defaultControlValues),
     select: {
+      defaultAssistantId: true,
       defaultControlValues: true,
       defaultKnowledgePlan: true,
       defaultMcpMode: true,
@@ -200,6 +223,10 @@ export async function applySettingsUpdateInTransaction(
 
   return {
     kind: "updated",
-    settings: serializeSettings(settings)
+    settings: {
+      ...serializeSettings(settings),
+      // Only a default set here was just checked; callers resolve an untouched one.
+      ...(assistantId !== undefined ? { defaultAssistantAvailable: assistantId !== null } : {})
+    }
   };
 }

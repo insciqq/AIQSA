@@ -6,6 +6,9 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { getAuthConfig } from "../auth/config";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { createTestAuth } from "@/tests/support/auth";
+import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
+import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
+import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
@@ -38,6 +41,7 @@ import { reconcileStaleRuns } from "./runRecovery";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
+  AssistantRunConflictError,
   AttachmentLinkConflictError,
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
@@ -66,6 +70,31 @@ const entitledFakeModel: ResolvedEntitlements = {
   providerKeys: new Set(),
   searchStrategies: new Set()
 };
+
+function handlerAssistant(rows: Partial<AssistantRows> = {}): AssistantRunResolution {
+  const fields = {
+    knowledgeSelection: { baseIds: [], mode: "none" as const, sourceIds: [], version: 1 as const },
+    mcpServerIds: [],
+    providerModelId: "fake-qsa",
+    runControls: {},
+    searchPlan: { mode: "all_selected" as const, optionIds: [] },
+    skillIds: []
+  };
+  return {
+    assistant: {
+      ...fields,
+      assistantId: "assistant-1",
+      definitionVersion: 1,
+      identity: { avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+        paletteId: "ember", recipeVersion: 1, rotations: [0, 0] }, name: "Reviewer" },
+      name: "Reviewer",
+      provider: "fake",
+      rows: { ...assistantRowsFromLegacyFields(fields), ...rows },
+      systemPrompt: "Review carefully."
+    },
+    ok: true
+  };
+}
 
 function projectRunAdmission(projectId: string): ProjectRunAdmission {
   return {
@@ -1545,21 +1574,31 @@ describe("model run route handlers", () => {
     expect(validateEditTarget).toHaveBeenCalledWith({ ...artifactEdit, chatId: "chat-1", ownerUserId: config.bootstrapUserId });
     expect(repository.createRegenerationRun).toHaveBeenCalledTimes(admissionsBeforeArtifactRetry);
 
-    const resolveAssistant = vi.fn().mockResolvedValue({ ok: false,
-      code: "assistant_not_available", status: 404 });
-    const assistantRetry = createRegenerateModelRunHandler({ ...authDeps, repository,
-      providers: { fake: adapter }, assistants: { resolveForRun: resolveAssistant },
+    // A frozen snapshot of a since-deleted Assistant fails provenance at
+    // admission and reports the neutral unavailability, never an internal error.
+    const frozenAssistant: NonNullable<import("./runPreparation").MaterializedPreparedRunData["assistant"]> = {
+      assistantId: "deleted-assistant", definitionVersion: 4,
+      identity: { avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+        paletteId: "ember", recipeVersion: 1, rotations: [0, 0] }, name: "Deleted" } };
+    repository.createRegenerationRun = vi.fn<typeof repository.createRegenerationRun>(async () => {
+      throw new AssistantRunConflictError();
+    });
+    const deletedRetry = createRegenerateModelRunHandler({ ...authDeps, repository, providers: { fake: adapter },
       chatPdf: { kick, findAdmission: async () => null, resolve: resolveCurrentRoute,
-        loadRetry: async () => ({ assistantId: "saved-assistant", skillIds: [] }) } });
-    const previousAdmissions = vi.mocked(repository.createRegenerationRun).mock.calls.length;
-    const unavailable = await assistantRetry(new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({
-        retryPdfPreparation: true, assistantId: "client-replacement", systemPrompt: "client override"
-      })
+        loadRetry: async () => ({ adapter, prepared: { ...saved.prepared, assistant: frozenAssistant,
+          chatAssistant: { assistantId: "deleted-assistant", bind: true, overridesPatch: { search: { mode: "off" } } },
+          defaults: null, sourceKind: "regenerate" } }) } });
+    const deleted = await deletedRetry(new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({ retryPdfPreparation: true })
     }), { params: { messageId: "assistant-message-1" } });
-    expect(unavailable.status).toBe(404);
-    expect(resolveAssistant).toHaveBeenCalledWith(config.bootstrapUserId, "saved-assistant");
-    expect(vi.mocked(repository.createRegenerationRun).mock.calls).toHaveLength(previousAdmissions);
+    expect(deleted.status).toBe(409);
+    await expect(deleted.json()).resolves.toEqual({ error: "assistant_not_available" });
+    expect(repository.createRegenerationRun).toHaveBeenCalledWith(expect.objectContaining({
+      assistant: expect.objectContaining({ assistantId: "deleted-assistant", definitionVersion: 4 }),
+      // The retry rechecks the binding but never replays the frozen override change.
+      chatAssistant: { assistantId: "deleted-assistant", bind: false, overridesPatch: {} }
+    }));
+    expect(stream).not.toHaveBeenCalled();
   });
 
   it("accepts one follow-up after answer publication and acknowledges the same durable message on retry", async () => {
@@ -2470,39 +2509,55 @@ describe("model run route handlers", () => {
     expect(provider.buildRequestPreview).not.toHaveBeenCalled();
   });
 
-  it("rejects assistant-governed overrides sent alongside an assistant selection", async () => {
-    const { repository, state } = createMemoryRepository();
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: createFakeProviderAdapter()
-      },
-      repository
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          assistantId: "assistant-1",
-          modelId: "fake-qsa",
-          text: "Assistant run with overrides"
-        }),
-        headers: {
-          cookie: authCookie()
+  it("refuses a value for a fixed Assistant row and stores an adjustable one for the chat", async () => {
+    for (const policy of ["fixed", "adjustable"] as const) {
+      const { repository, state } = createMemoryRepository();
+      repository.loadAssistantRowContext = assistantRowContextLoader({
+        defaultModelId: "fake-qsa", models: { "fake-qsa": "fake" }
+      });
+      const POST = createSendMessageHandler({
+        ...authDeps,
+        assistants: { resolveForRun: async () => handlerAssistant({ search: { policy, value: { mode: "all_selected", optionIds: ["web"] } } }) },
+        providers: {
+          fake: createFakeProviderAdapter()
         },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
+        repository
+      });
+      const response = await POST(
+        new Request("http://app.local/api/chats/chat-1/messages", {
+          body: JSON.stringify({
+            assistantId: "assistant-1",
+            searchPlan: { mode: "all_selected", optionIds: [] },
+            text: "Assistant run with a Search change"
+          }),
+          headers: {
+            cookie: authCookie()
+          },
+          method: "POST"
+        }),
+        {
+          params: {
+            chatId: "chat-1"
+          }
         }
-      }
-    );
+      );
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: "assistant_overrides_not_allowed"
-    });
-    expect(state.created).toBeNull();
+      if (policy === "fixed") {
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toEqual({
+          error: "assistant_overrides_not_allowed"
+        });
+        expect(state.created).toBeNull();
+        continue;
+      }
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(state.created?.chatAssistant).toEqual({
+        assistantId: "assistant-1", bind: true, overridesPatch: { search: { mode: "off" } }
+      });
+      expect(state.created?.assistant?.rows?.search).toBe("chat");
+      expect(state.created?.defaults).toBeUndefined();
+    }
   });
 
   it("persists normalized OpenAI streaming token, artifact, usage, and done events", async () => {
@@ -3879,6 +3934,63 @@ describe("model run route handlers", () => {
       userMessageId: "user-message-1"
     });
     expect(state.completed?.finalText).toContain("Fake answer: Original question");
+  });
+
+  it("regenerates with the chat's binding and refuses a different request Assistant", async () => {
+    const { repository, state } = createMemoryRepository();
+    const findSource = repository.findRegenerationSource;
+    repository.findRegenerationSource = async (...args) => {
+      const source = await findSource(...args);
+      return source ? { ...source, chat: { ...source.chat, assistantId: "assistant-1" } } : null;
+    };
+    repository.loadAssistantRowContext = assistantRowContextLoader({
+      defaultModelId: "fake-qsa", models: { "fake-qsa": "fake" }
+    });
+    const resolveForRun = vi.fn(async () => handlerAssistant({
+      search: { policy: "adjustable", value: { mode: "all_selected", optionIds: ["web"] } }
+    }));
+    const POST = createRegenerateModelRunHandler({
+      ...authDeps,
+      assistants: { resolveForRun },
+      providers: { fake: createFakeProviderAdapter() },
+      repository
+    });
+    const regenerate = (body: Record<string, unknown>) => POST(
+      new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+        body: JSON.stringify(body),
+        headers: { cookie: authCookie(), "content-type": "application/json" },
+        method: "POST"
+      }),
+      { params: { messageId: "assistant-message-1" } }
+    );
+
+    const conflict = await regenerate({ assistantId: "assistant-2" });
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toEqual({ error: "assistant_binding_conflict" });
+    expect(state.regenerated).toBeNull();
+
+    // The full ordinary composer payload is refused and admits nothing.
+    const ordinary = await regenerate({
+      controlDefaults: { temperature: "0.7" }, modelId: "fake-qsa", params: { temperature: 0.7 }, provider: "fake",
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      searchPreferencePlan: { mode: "all_selected", optionIds: [] }, searchPreferenceSource: "personal",
+      workspace: { enabled: false }
+    });
+    expect(ordinary.status).toBe(400);
+    await expect(ordinary.json()).resolves.toEqual({ error: "assistant_overrides_not_allowed" });
+    expect(state.regenerated).toBeNull();
+
+    // The current client in a bound chat: changed-row keys only, no Assistant id.
+    const response = await regenerate({
+      searchPlan: { mode: "all_selected", optionIds: [] }, timeZone: "Europe/Berlin", workspace: { enabled: false }
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(resolveForRun).toHaveBeenCalledWith(config.bootstrapUserId, "assistant-1");
+    expect(state.regenerated?.chatAssistant).toEqual({
+      assistantId: "assistant-1", bind: false, overridesPatch: { search: { mode: "off" } }
+    });
+    expect(state.regenerated?.assistant?.assistantId).toBe("assistant-1");
   });
 
   it("rejects an unavailable assistant selection before creating a regeneration run", async () => {

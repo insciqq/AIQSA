@@ -1,6 +1,14 @@
 import { DEFAULT_CHAT_MAX_OUTPUT_TOKENS } from "@/lib/domain/providerParams";
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
-import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
+import type {
+  AssistantAvailability,
+  AssistantAvatarRecipe,
+  AssistantRowDeviation,
+  AssistantRowKey,
+  AssistantRowPolicy,
+  AssistantRowProvenance,
+  AssistantRowValues
+} from "@/lib/contracts/assistants";
 import {
   decodeKnowledgePlan,
   EMPTY_KNOWLEDGE_SELECTION,
@@ -27,31 +35,17 @@ export type ComposerModelSelection = {
 };
 
 /**
- * "user" changes are manual edits of an Assistant-governed control and remove
- * the selected Assistant identity with a non-blocking notice (strict identity).
- * "system" changes (chat activation, defaults recovery) rewrite the governed
- * tuple wholesale and clear any selection silently. "assistant" changes are the
- * atomic application of a selected revision and keep the identity.
+ * "user" changes are the user's edits: with an Assistant they change an
+ * adjustable row for the chat and are refused on a fixed row. "system" changes
+ * (chat activation, defaults, restore) write values without touching the
+ * Assistant or the rows' origins.
  */
-export type ComposerControlChangeOrigin = "assistant" | "system" | "user";
+export type ComposerControlChangeOrigin = "system" | "user";
 export type ComposerKnowledgePlanSource = "assistant" | "chat" | "explicit" | "off" | "project";
 
-export type ComposerAssistantSelection = {
-  avatar: AssistantAvatarRecipe;
-  description: string;
-  id: string;
-  includedSkills?: { id: string; name: string; mode?: AssistantSkillMode; instructionApproxTokens?: number }[];
-  skillsMode?: SkillsMode;
-  /** Safe summary copy such as "Knowledge · 2"; never dependency ids/names. */
-  knowledgeLabel?: string | null;
-  knowledgeResourceCount?: number;
-  name: string;
-  /** Approximate prompt size for the context gauge only; text stays server-side. */
-  promptCharacterCount: number;
-  starterPrompts: string[];
-};
-
-export type ComposerMcpSelection = McpRunSelection;
+/** The Assistant's exact MCP server list; only an Assistant row sets it. */
+export type ComposerMcpExactSelection = { hiddenCount?: number; mode: "exact"; serverIds: string[] };
+export type ComposerMcpSelection = McpRunSelection | ComposerMcpExactSelection;
 
 export type ComposerSkillSelection = {
   description: string;
@@ -61,35 +55,73 @@ export type ComposerSkillSelection = {
   promptCharacterCount: number;
 };
 
-export type ComposerManualDraftBackup = {
-  backgroundMode: boolean;
-  maxOutputTokens: string;
-  knowledgePlanSource: Exclude<ComposerKnowledgePlanSource, "assistant">;
-  knowledgeSelection: KnowledgeSelection;
-  reasoningEffort: string;
-  reasoningMode: string;
-  searchPlanMode: SearchPlanMode;
-  selectedModelId: string;
-  selectedKnowledgeBaseIds: string[];
-  mcpSelection: ComposerMcpSelection;
-  skillsMode: SkillsMode;
-  selectedProvider: string;
-  selectedSearchOptionIds: string[];
-  selectedSkills: ComposerSkillSelection[];
-  streamMode: boolean;
-  temperature: string;
+/**
+ * One setup row of the chat's Assistant. The effective value lives in the
+ * ordinary composer fields the row owns (`COMPOSER_ASSISTANT_ROW_FIELDS`), so
+ * every existing control and the run request read one value.
+ */
+export type ComposerAssistantRow<Key extends AssistantRowKey = AssistantRowKey> = {
+  /** The Assistant's own value, redacted like Assistant content. */
+  assistantValue: AssistantRowValues[Key];
+  /** Set when the Assistant's adjustable value is unavailable to the user. */
+  deviation: AssistantRowDeviation | null;
+  origin: AssistantRowProvenance;
+  policy: AssistantRowPolicy;
 };
 
+export type ComposerAssistantRows = { [Key in AssistantRowKey]: ComposerAssistantRow<Key> };
+
+export type ComposerAssistantSkill = {
+  id: string;
+  instructionApproxTokens?: number;
+  mode: AssistantSkillMode;
+  name: string;
+};
+
+/** The composer values a row returns to on a composer-only reset (blank chat). */
+export type ComposerAssistantRowReset = {
+  controls: Partial<ComposerControlSnapshot>;
+  origin: AssistantRowProvenance;
+};
+
+export type ComposerBoundAssistant = {
+  availability: AssistantAvailability;
+  avatar: AssistantAvatarRecipe;
+  /** Known when the Assistant was chosen from its definition; restore leaves it to the list. */
+  description: string | null;
+  id: string;
+  includedSkills: ComposerAssistantSkill[];
+  name: string;
+  owned: boolean;
+  ownerDisplayName: string;
+  /** Approximate prompt size for the context gauge only; null when unknown. */
+  promptCharacterCount: number | null;
+  resets: Partial<Record<AssistantRowKey, ComposerAssistantRowReset>>;
+  rows: ComposerAssistantRows;
+  starterPrompts: string[] | null;
+  state: "bound";
+  /** Rows the user changed for an existing chat that its chat update has not taken yet. */
+  unsyncedRows: AssistantRowKey[];
+};
+
+/**
+ * The chat's Assistant. `unavailable` and `deleted` carry no identity and
+ * block sending until the user chooses; nothing is substituted. A consumer's
+ * `unavailable` says `archived` when its owner archived the Assistant.
+ */
+export type ComposerAssistantState =
+  | ComposerBoundAssistant
+  | { state: "deleted" }
+  | { reason?: "archived"; state: "unavailable" };
+
 export type ComposerControlSnapshot = {
-  assistantManualBackup: ComposerManualDraftBackup | null;
-  assistantRemovedNotice: boolean;
+  assistant: ComposerAssistantState | null;
   backgroundMode: boolean;
   maxOutputTokens: string;
   knowledgePlanSource: ComposerKnowledgePlanSource;
   knowledgeSelection: KnowledgeSelection;
   reasoningEffort: string;
   reasoningMode: string;
-  selectedAssistant: ComposerAssistantSelection | null;
   selectedKnowledgeBaseIds: string[];
   mcpSelection: ComposerMcpSelection;
   skillsMode: SkillsMode;
@@ -104,28 +136,37 @@ export type ComposerControlSnapshot = {
   temperature: string;
 };
 
+/** The ordinary composer fields each Assistant row owns. */
+export const COMPOSER_ASSISTANT_ROW_FIELDS = {
+  controls: ["backgroundMode", "maxOutputTokens", "reasoningEffort", "reasoningMode", "streamMode", "temperature"],
+  knowledge: ["knowledgePlanSource", "knowledgeSelection", "selectedKnowledgeBaseIds"],
+  model: ["selectedModelId", "selectedProvider"],
+  search: ["searchPlanMode", "selectedSearchOptionIds"],
+  skills: ["skillsMode"],
+  tools: ["mcpSelection"]
+} as const satisfies Record<AssistantRowKey, readonly (keyof ComposerControlSnapshot)[]>;
+
 export type ComposerControlStore = ComposerControlSnapshot & {
-  applyAssistantSelection(input: {
-    assistant: ComposerAssistantSelection;
-    controlDefaults: ControlDefaults;
-    modelId: string;
-    knowledgeBaseIds?: readonly string[];
-    knowledgeSelection?: KnowledgeSelection;
-    provider: string;
-    searchOptionIds: readonly string[];
-    searchPlanMode: SearchPlanMode;
+  applyAssistantState(input: {
+    assistant: ComposerAssistantState;
+    controls: Partial<ComposerControlSnapshot>;
   }): void;
   applyControlDefaults(defaults: ControlDefaults): void;
   applyModelSelection(
     selection: ComposerModelSelection,
     origin?: ComposerControlChangeOrigin
   ): void;
-  clearAssistantRemovedNotice(): void;
-  removeAssistant(): void;
+  /**
+   * Removes the Assistant. Values an Assistant alone can express (an exact
+   * MCP list, a hidden Knowledge plan) return to the given ordinary values.
+   */
+  clearAssistant(fallback?: { mcpSelection: McpRunSelection; skillsMode: SkillsMode }): void;
+  /** Returns a row to the Assistant in composer state; false without a local baseline. */
+  resetAssistantRow(key: AssistantRowKey): boolean;
   setBackgroundMode(value: boolean): void;
   setMaxOutputTokens(value: string): void;
-  setMcpSelection(value: ComposerMcpSelection): void;
-  setSkillsMode(value: SkillsMode): void;
+  setMcpSelection(value: McpRunSelection, origin?: ComposerControlChangeOrigin): void;
+  setSkillsMode(value: SkillsMode, origin?: ComposerControlChangeOrigin): void;
   setSelectedKnowledgePlan(
     selection: KnowledgeSelection | readonly string[],
     source?: Exclude<ComposerKnowledgePlanSource, "assistant">,
@@ -145,11 +186,12 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   setShowReasoningBlocks(update: StateUpdate<boolean>): void;
   setStreamMode(value: boolean): void;
   setTemperature(value: string): void;
+  /** Hands the rows changed for an existing chat to its chat update, once. */
+  takeUnsyncedAssistantRows(): AssistantRowKey[];
 };
 
 export const initialComposerControlSnapshot: ComposerControlSnapshot = {
-  assistantManualBackup: null,
-  assistantRemovedNotice: false,
+  assistant: null,
   backgroundMode: true,
   maxOutputTokens: String(DEFAULT_CHAT_MAX_OUTPUT_TOKENS),
   mcpSelection: { mode: "auto" },
@@ -158,7 +200,6 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
   reasoningEffort: "medium",
   reasoningMode: "standard",
-  selectedAssistant: null,
   selectedKnowledgeBaseIds: [],
   selectedModelId: "gpt-5.5",
   selectedProvider: "openai",
@@ -175,104 +216,154 @@ function applyUpdate<T>(current: T, update: StateUpdate<T>): T {
   return typeof update === "function" ? (update as (value: T) => T)(current) : update;
 }
 
-function clonedKnowledgeSelection(selection: KnowledgeSelection): KnowledgeSelection {
+function cloneValue<T>(value: T): T {
+  return value === undefined ? value : structuredClone(value);
+}
+
+export function boundComposerAssistant(
+  state: Pick<ComposerControlSnapshot, "assistant">
+): ComposerBoundAssistant | null {
+  return state.assistant?.state === "bound" ? state.assistant : null;
+}
+
+/** A detached copy of the fields a row owns. */
+export function composerAssistantRowControls(
+  state: ComposerControlSnapshot,
+  key: AssistantRowKey
+): Partial<ComposerControlSnapshot> {
+  return Object.fromEntries(COMPOSER_ASSISTANT_ROW_FIELDS[key].map((field) =>
+    [field, cloneValue(state[field])]
+  )) as Partial<ComposerControlSnapshot>;
+}
+
+/**
+ * The Assistant's parameters belong to its own model: they govern the
+ * controls row only while the effective model is that model. With another
+ * model, parameters are ordinary chat parameters.
+ */
+export function assistantGovernsControls(
+  state: Pick<ComposerControlSnapshot, "assistant" | "selectedModelId">
+): boolean {
+  const model = boundComposerAssistant(state)?.rows.model.assistantValue;
+  return model?.mode === "model" && model.modelId !== null && model.modelId === state.selectedModelId;
+}
+
+function sameRowValues(
+  state: ComposerControlSnapshot,
+  key: AssistantRowKey,
+  update: Partial<ComposerControlSnapshot>
+): boolean {
+  return COMPOSER_ASSISTANT_ROW_FIELDS[key].every((field) =>
+    !(field in update) || JSON.stringify(update[field]) === JSON.stringify(state[field])
+  );
+}
+
+/**
+ * A user edit of a row. Without an Assistant it is an ordinary edit; a fixed
+ * row refuses it with no side effect; an adjustable row takes it as the
+ * chat's value.
+ */
+function rowChange(
+  state: ComposerControlSnapshot,
+  key: AssistantRowKey,
+  update: Partial<ComposerControlSnapshot>
+): Partial<ComposerControlSnapshot> {
+  const assistant = boundComposerAssistant(state);
+  if (!assistant) return update;
+  const row = assistant.rows[key];
+  if (row.policy === "fixed") return {};
+  if (sameRowValues(state, key, update)) return {};
   return {
-    ...selection,
-    baseIds: [...selection.baseIds],
-    sourceIds: [...selection.sourceIds]
+    ...update,
+    assistant: {
+      ...assistant,
+      rows: { ...assistant.rows, [key]: { ...row, origin: "chat" } },
+      unsyncedRows: assistant.unsyncedRows.includes(key)
+        ? assistant.unsyncedRows
+        : [...assistant.unsyncedRows, key]
+    }
   };
 }
 
-function manualBackupFrom(state: ComposerControlSnapshot): ComposerManualDraftBackup {
+function controlChange(
+  state: ComposerControlSnapshot,
+  update: Partial<ComposerControlSnapshot>
+): Partial<ComposerControlSnapshot> {
+  return assistantGovernsControls(state) ? rowChange(state, "controls", update) : update;
+}
+
+function assistantControlDefaults(
+  defaults: ControlDefaults,
+  controls: AssistantRowValues["controls"]
+): ControlDefaults {
   return {
-    backgroundMode: state.backgroundMode,
-    maxOutputTokens: state.maxOutputTokens,
-    mcpSelection: { ...state.mcpSelection },
-    skillsMode: state.skillsMode,
-    knowledgeSelection: clonedKnowledgeSelection(state.knowledgeSelection),
-    knowledgePlanSource: state.knowledgePlanSource === "assistant" ? "off" : state.knowledgePlanSource,
-    reasoningEffort: state.reasoningEffort,
-    reasoningMode: state.reasoningMode,
-    searchPlanMode: state.searchPlanMode,
-    selectedModelId: state.selectedModelId,
-    selectedKnowledgeBaseIds: [...state.selectedKnowledgeBaseIds],
-    selectedProvider: state.selectedProvider,
-    selectedSearchOptionIds: [...state.selectedSearchOptionIds],
-    selectedSkills: state.selectedSkills.map((skill) => ({ ...skill })),
-    streamMode: state.streamMode,
-    temperature: state.temperature
+    backgroundMode: controls.backgroundMode ?? defaults.backgroundMode,
+    maxOutputTokens: controls.maxOutputTokens !== undefined
+      ? String(controls.maxOutputTokens)
+      : defaults.maxOutputTokens,
+    reasoningEffort: controls.reasoningEffort ?? defaults.reasoningEffort,
+    reasoningMode: controls.reasoningMode ?? defaults.reasoningMode,
+    streamMode: controls.streamMode ?? defaults.streamMode,
+    temperature: controls.temperature !== undefined
+      ? String(controls.temperature)
+      : defaults.temperature
   };
 }
 
 /**
- * Strict identity: a manual change to a governed control removes the Assistant
- * and keeps the resolved values as the ordinary unnamed draft, with the notice
- * flag driving one non-blocking indication. System rewrites clear silently.
+ * A user model change. With an Assistant the model row becomes the chat's
+ * value; a controls override belongs to the model it was set for, so
+ * the parameters follow the chosen model: the Assistant's own model gets its
+ * parameters again, another model gets the user's saved values.
  */
-function droppedAssistantIdentity(
+function userModelSelection(
   state: ComposerControlSnapshot,
-  origin: ComposerControlChangeOrigin
+  { controlDefaults, modelId, provider, searchStrategyIds }: ComposerModelSelection
 ): Partial<ComposerControlSnapshot> {
-  if (origin === "assistant" || !state.selectedAssistant) {
-    return {};
-  }
-  const hiddenAssistantKnowledge = state.knowledgePlanSource === "assistant" &&
-    state.knowledgeSelection.mode === "inherited";
-  return {
-    assistantManualBackup: null,
-    assistantRemovedNotice: origin === "user",
-    ...(hiddenAssistantKnowledge
+  const assistant = boundComposerAssistant(state);
+  const assistantModel = assistant?.rows.model.assistantValue;
+  const governs = assistantModel?.mode === "model" && assistantModel.modelId === modelId;
+  const controlsRow = assistant?.rows.controls;
+  const controls = governs && controlsRow
+    ? assistantControlDefaults(controlDefaults, controlsRow.assistantValue)
+    : controlDefaults;
+  const searchRowFree = !assistant || assistant.rows.search.origin === "chat";
+  const update: Partial<ComposerControlSnapshot> = {
+    ...controls,
+    selectedModelId: modelId,
+    selectedProvider: provider,
+    ...(searchRowFree && searchStrategyIds &&
+      state.selectedSearchOptionIds.some((id) => !searchStrategyIds.includes(id))
       ? {
-          knowledgePlanSource: "off" as const,
-          knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
-          selectedKnowledgeBaseIds: []
+          selectedSearchOptionIds: state.selectedSearchOptionIds.filter((id) =>
+            searchStrategyIds.includes(id)
+          )
         }
-      : state.knowledgePlanSource === "assistant"
-        ? { knowledgePlanSource: "explicit" as const }
-        : {}),
-    selectedAssistant: null
+      : {})
+  };
+  if (!assistant || !controlsRow) return update;
+  const changed = rowChange(state, "model", update);
+  const changedAssistant = changed.assistant?.state === "bound" ? changed.assistant : null;
+  if (!changedAssistant) return changed;
+  const controlsOrigin: AssistantRowProvenance = governs &&
+    Object.keys(controlsRow.assistantValue).length > 0 ? "assistant" : "default";
+  return {
+    ...changed,
+    assistant: {
+      ...changedAssistant,
+      rows: {
+        ...changedAssistant.rows,
+        controls: { ...changedAssistant.rows.controls, origin: controlsOrigin }
+      },
+      unsyncedRows: changedAssistant.unsyncedRows.filter((row) => row !== "controls")
+    }
   };
 }
 
-export const useComposerControlStore = create<ComposerControlStore>((set) => ({
+export const useComposerControlStore = create<ComposerControlStore>((set, get) => ({
   ...initialComposerControlSnapshot,
-  applyAssistantSelection({
-    assistant,
-    controlDefaults,
-    knowledgeBaseIds = [],
-    knowledgeSelection,
-    modelId,
-    provider,
-    searchOptionIds,
-    searchPlanMode
-  }) {
-    const resolvedKnowledgeSelection = knowledgeSelection ??
-      explicitKnowledgeSelection({ baseIds: knowledgeBaseIds });
-    set((state) => ({
-      assistantManualBackup: state.selectedAssistant
-        ? state.assistantManualBackup
-        : manualBackupFrom(state),
-      assistantRemovedNotice: false,
-      backgroundMode: controlDefaults.backgroundMode,
-      maxOutputTokens: controlDefaults.maxOutputTokens,
-      knowledgePlanSource: "assistant",
-      knowledgeSelection: clonedKnowledgeSelection(resolvedKnowledgeSelection),
-      reasoningEffort: controlDefaults.reasoningEffort,
-      reasoningMode: controlDefaults.reasoningMode,
-      selectedAssistant: {
-        ...assistant,
-        includedSkills: assistant.includedSkills?.map((skill) => ({ ...skill })) ?? [],
-        starterPrompts: [...assistant.starterPrompts]
-      },
-      selectedKnowledgeBaseIds: [...resolvedKnowledgeSelection.baseIds],
-      selectedModelId: modelId,
-      selectedProvider: provider,
-      selectedSearchOptionIds: [...searchOptionIds],
-      selectedSkills: state.selectedSkills.map((skill) => ({ ...skill })),
-      searchPlanMode,
-      streamMode: controlDefaults.streamMode,
-      temperature: controlDefaults.temperature
-    }));
+  applyAssistantState({ assistant, controls }) {
+    set({ ...cloneValue(controls), assistant: cloneValue(assistant) });
   },
   applyControlDefaults(defaults) {
     set({
@@ -284,134 +375,132 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       temperature: defaults.temperature
     });
   },
-  applyModelSelection({ controlDefaults, modelId, provider, searchStrategyIds }, origin = "user") {
-    set((state) => ({
-      ...droppedAssistantIdentity(state, origin),
-      backgroundMode: controlDefaults.backgroundMode,
-      maxOutputTokens: controlDefaults.maxOutputTokens,
-      reasoningEffort: controlDefaults.reasoningEffort,
-      reasoningMode: controlDefaults.reasoningMode,
-      selectedModelId: modelId,
-      selectedProvider: provider,
-      ...(searchStrategyIds &&
-        state.selectedSearchOptionIds.some((id) => !searchStrategyIds.includes(id))
-        ? {
-            selectedSearchOptionIds: state.selectedSearchOptionIds.filter((id) =>
-              searchStrategyIds.includes(id)
-            )
-          }
-        : {}),
-      streamMode: controlDefaults.streamMode,
-      temperature: controlDefaults.temperature
-    }));
+  applyModelSelection(selection, origin = "user") {
+    const { controlDefaults, modelId, provider, searchStrategyIds } = selection;
+    set((state) => origin === "user"
+      ? userModelSelection(state, selection)
+      : {
+          ...controlDefaults,
+          selectedModelId: modelId,
+          selectedProvider: provider,
+          ...(searchStrategyIds &&
+            state.selectedSearchOptionIds.some((id) => !searchStrategyIds.includes(id))
+            ? {
+                selectedSearchOptionIds: state.selectedSearchOptionIds.filter((id) =>
+                  searchStrategyIds.includes(id)
+                )
+              }
+            : {})
+        });
   },
-  clearAssistantRemovedNotice() {
-    set({ assistantRemovedNotice: false });
-  },
-  removeAssistant() {
+  clearAssistant(fallback) {
     set((state) => {
-      if (!state.selectedAssistant) {
-        return {};
-      }
-      const backup = state.assistantManualBackup;
+      if (!state.assistant) return {};
+      // A privacy-hidden Assistant plan has no ids a browser may send back.
+      const hiddenKnowledge = state.knowledgeSelection.mode === "inherited";
       return {
-        assistantManualBackup: null,
-        assistantRemovedNotice: false,
-        selectedAssistant: null,
-        ...(backup
+        assistant: null,
+        ...(state.mcpSelection.mode === "exact"
+          ? { mcpSelection: { ...(fallback?.mcpSelection ?? { mode: "auto" as const }) } }
+          : {}),
+        ...(fallback ? { skillsMode: fallback.skillsMode } : {}),
+        ...(hiddenKnowledge
           ? {
-              backgroundMode: backup.backgroundMode,
-              maxOutputTokens: backup.maxOutputTokens,
-              mcpSelection: { ...backup.mcpSelection },
-              skillsMode: backup.skillsMode,
-              knowledgeSelection: clonedKnowledgeSelection(backup.knowledgeSelection),
-              knowledgePlanSource: backup.knowledgePlanSource,
-              reasoningEffort: backup.reasoningEffort,
-              reasoningMode: backup.reasoningMode,
-              searchPlanMode: backup.searchPlanMode,
-              selectedModelId: backup.selectedModelId,
-              selectedKnowledgeBaseIds: [...backup.selectedKnowledgeBaseIds],
-              selectedProvider: backup.selectedProvider,
-              selectedSearchOptionIds: [...backup.selectedSearchOptionIds],
-              selectedSkills: backup.selectedSkills.map((skill) => ({ ...skill })),
-              streamMode: backup.streamMode,
-              temperature: backup.temperature
+              knowledgePlanSource: "off" as const,
+              knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
+              selectedKnowledgeBaseIds: []
             }
-          : {})
+          : state.knowledgePlanSource === "assistant"
+            ? { knowledgePlanSource: "explicit" as const }
+            : {})
       };
     });
   },
+  resetAssistantRow(key) {
+    const assistant = boundComposerAssistant(get());
+    const reset = assistant?.resets[key];
+    if (!assistant || !reset || assistant.rows[key].policy === "fixed") return false;
+    // A controls override belongs to the model it was set for: the
+    // Assistant's model brings back the parameters the chain gives it.
+    const controlsReset = key === "model" ? assistant.resets.controls : undefined;
+    set({
+      ...cloneValue(reset.controls),
+      ...(controlsReset ? cloneValue(controlsReset.controls) : {}),
+      assistant: {
+        ...assistant,
+        rows: {
+          ...assistant.rows,
+          [key]: { ...assistant.rows[key], origin: reset.origin },
+          ...(controlsReset
+            ? { controls: { ...assistant.rows.controls, origin: controlsReset.origin } }
+            : {})
+        },
+        unsyncedRows: assistant.unsyncedRows.filter((row) =>
+          row !== key && !(controlsReset && row === "controls"))
+      }
+    });
+    return true;
+  },
   setBackgroundMode(value) {
-    set((state) => ({ ...droppedAssistantIdentity(state, "user"), backgroundMode: value }));
+    set((state) => controlChange(state, { backgroundMode: value }));
   },
   setMaxOutputTokens(value) {
-    set((state) => ({ ...droppedAssistantIdentity(state, "user"), maxOutputTokens: value }));
+    set((state) => controlChange(state, { maxOutputTokens: value }));
   },
-  setMcpSelection(mcpSelection) {
-    set((state) => state.selectedAssistant
-      ? {}
-      : {
-          mcpSelection: { ...mcpSelection }
-        });
+  setMcpSelection(mcpSelection, origin = "user") {
+    set((state) => origin === "user"
+      ? rowChange(state, "tools", { mcpSelection: { ...mcpSelection } })
+      : { mcpSelection: { ...mcpSelection } });
   },
-  setSkillsMode(skillsMode) {
-    set(state => state.selectedAssistant ? {} : { skillsMode });
+  setSkillsMode(skillsMode, origin = "user") {
+    set((state) => origin === "user" ? rowChange(state, "skills", { skillsMode }) : { skillsMode });
   },
   setSelectedKnowledgePlan(selection, source = "explicit", origin = "user") {
     const decoded = decodeKnowledgePlan(Array.isArray(selection)
       ? explicitKnowledgeSelection({ baseIds: selection })
       : selection);
     if (!decoded.ok) return;
-    // An inherited plan contains no client-authorized ids and is valid only
-    // while its server-owned source remains attached. It must never be sent
-    // back as an explicit browser plan after an override/detachment.
-    const knowledgeSelection = source === "explicit" && decoded.plan.mode === "inherited"
-      ? EMPTY_KNOWLEDGE_SELECTION
-      : decoded.plan;
-    set((state) => ({
-      ...droppedAssistantIdentity(state, origin),
-      knowledgePlanSource: source === "explicit" && knowledgeSelection.mode === "none"
-        ? "off"
-        : source,
-      knowledgeSelection,
-      selectedKnowledgeBaseIds: [...knowledgeSelection.baseIds]
-    }));
+    set((state) => {
+      // A user edit is always the user's own explicit plan.
+      const effectiveSource = origin === "user" && boundComposerAssistant(state) ? "explicit" : source;
+      // An inherited plan contains no client-authorized ids and is valid only
+      // while its server-owned source remains attached. It must never be sent
+      // back as an explicit browser plan after an override/detachment.
+      const knowledgeSelection = effectiveSource === "explicit" && decoded.plan.mode === "inherited"
+        ? EMPTY_KNOWLEDGE_SELECTION
+        : decoded.plan;
+      const update: Partial<ComposerControlSnapshot> = {
+        knowledgePlanSource: effectiveSource === "explicit" && knowledgeSelection.mode === "none"
+          ? "off"
+          : effectiveSource,
+        knowledgeSelection,
+        selectedKnowledgeBaseIds: [...knowledgeSelection.baseIds]
+      };
+      return origin === "user" ? rowChange(state, "knowledge", update) : update;
+    });
   },
   setReasoningEffort(value) {
-    set((state) => ({ ...droppedAssistantIdentity(state, "user"), reasoningEffort: value }));
+    set((state) => controlChange(state, { reasoningEffort: value }));
   },
   setReasoningMode(value) {
-    set((state) => ({ ...droppedAssistantIdentity(state, "user"), reasoningMode: value }));
+    set((state) => controlChange(state, { reasoningMode: value }));
   },
   setSelectedModelId(value, origin = "user") {
-    set((state) => ({ ...droppedAssistantIdentity(state, origin), selectedModelId: value }));
+    set((state) => origin === "user"
+      ? rowChange(state, "model", { selectedModelId: value })
+      : { selectedModelId: value });
   },
   setSelectedProvider(value, origin = "user") {
-    set((state) => ({ ...droppedAssistantIdentity(state, origin), selectedProvider: value }));
+    set((state) => origin === "user"
+      ? rowChange(state, "model", { selectedProvider: value })
+      : { selectedProvider: value });
   },
   setSelectedSearchPlan(optionIds, mode, origin = "user") {
-    const selectedSearchOptionIds = [...optionIds];
-    set((state) => ({
-      ...droppedAssistantIdentity(state, origin),
-      searchPlanMode: mode,
-      selectedSearchOptionIds
-    }));
+    const update = { searchPlanMode: mode, selectedSearchOptionIds: [...optionIds] };
+    set((state) => origin === "user" ? rowChange(state, "search", update) : update);
   },
   setSelectedSkills(selectedSkills) {
-    set((state) => {
-      const next = selectedSkills.map((skill) => ({ ...skill }));
-      return {
-        selectedSkills: next,
-        ...(state.assistantManualBackup
-          ? {
-              assistantManualBackup: {
-                ...state.assistantManualBackup,
-                selectedSkills: next.map((skill) => ({ ...skill }))
-              }
-            }
-          : {})
-      };
-    });
+    set({ selectedSkills: selectedSkills.map((skill) => ({ ...skill })) });
   },
   setShowCitations(update) {
     set((state) => ({ showCitations: applyUpdate(state.showCitations, update) }));
@@ -420,9 +509,16 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
     set((state) => ({ showReasoningBlocks: applyUpdate(state.showReasoningBlocks, update) }));
   },
   setStreamMode(value) {
-    set((state) => ({ ...droppedAssistantIdentity(state, "user"), streamMode: value }));
+    set((state) => controlChange(state, { streamMode: value }));
   },
   setTemperature(value) {
-    set((state) => ({ ...droppedAssistantIdentity(state, "user"), temperature: value }));
+    set((state) => controlChange(state, { temperature: value }));
+  },
+  takeUnsyncedAssistantRows() {
+    const assistant = boundComposerAssistant(get());
+    if (!assistant || assistant.unsyncedRows.length === 0) return [];
+    const rows = assistant.unsyncedRows;
+    set({ assistant: { ...assistant, unsyncedRows: [] } });
+    return rows;
   }
 }));

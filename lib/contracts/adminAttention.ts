@@ -10,6 +10,7 @@ import type { ErrorResponse } from "./http";
 export type AdminAttentionSeverity = "bad" | "neutral" | "warn";
 
 export type AdminAttentionCode =
+  | "assistants_listing_pending"
   | "email_delivery_failing"
   | "email_not_configured"
   | "knowledge_needs_attention"
@@ -30,6 +31,7 @@ export type AdminAttentionCode =
   | "users_without_model_access";
 
 export const adminAttentionSections = [
+  "assistants",
   "email",
   "groups",
   "mcp",
@@ -64,6 +66,7 @@ export type AdminAttentionItem = {
 };
 
 export const adminAttentionSources = [
+  "assistants",
   "dashboard",
   "email",
   "knowledge",
@@ -93,6 +96,7 @@ export type AdminAttentionErrorResponse = ErrorResponse<
 >;
 
 const ATTENTION_CODES = new Set<AdminAttentionCode>([
+  "assistants_listing_pending",
   "email_delivery_failing",
   "email_not_configured",
   "knowledge_needs_attention",
@@ -126,6 +130,7 @@ export function adminAttentionItemSource(item: AdminAttentionItem): AdminAttenti
   if (item.code.startsWith("mcp_")) return "mcp";
   if (item.code.startsWith("search_")) return "search";
   if (item.code.startsWith("skills_")) return "skills";
+  if (item.code.startsWith("assistants_")) return "assistants";
   return "email";
 }
 

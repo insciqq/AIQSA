@@ -12,6 +12,7 @@ import {
   type ResolvedEntitlements
 } from "@/lib/server/auth/entitlements";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
+import { isAssistantAvailable } from "@/lib/server/assistants/bindingAccess";
 import { loadEntitlementsForUser } from "@/lib/server/auth/dbEntitlements";
 import type { CatalogData } from "@/lib/server/catalog/currentUserCatalog";
 import { availableSearchStrategiesForModel } from "@/lib/domain/catalogMatrix";
@@ -45,10 +46,11 @@ import type {
 
 type CatalogPrismaClient = Pick<
   PrismaClient,
-  "modelPolicy" | "providerModel" | "searchOption" | "searchPolicy" | "user"
+  "$queryRaw" | "modelPolicy" | "providerModel" | "searchOption" | "searchPolicy" | "user" | "userSettings"
 >;
 
 type UserSettingsRow = {
+  defaultAssistantId: string | null;
   defaultControlValues: unknown;
   defaultKnowledgePlan: unknown;
   defaultMcpMode: string;
@@ -121,7 +123,22 @@ type ActiveCatalogModelConfiguration = ProviderModelConfiguration | {
 };
 
 export type CatalogDataLoaderDeps = {
+  /**
+   * False leaves the saved default Assistant unchecked (`defaultAssistantAvailable`
+   * absent), for a caller that never reads the catalog's default Assistant.
+   */
+  checkDefaultAssistant?: boolean;
+  /**
+   * False sends the loader's reads one after another, so that it holds one
+   * connection at a time, for a caller that already reads in parallel.
+   */
+  concurrentReads?: boolean;
   env?: Record<string, string | undefined>;
+  /**
+   * The user's memberships of groups that are not archived, when the caller
+   * has read them already; the loader then reads none of its own.
+   */
+  loadActiveGroupIds?(userId: string): Promise<readonly string[]>;
   loadEntitlements?(userId: string): Promise<ResolvedEntitlements>;
   prisma: CatalogPrismaClient;
 };
@@ -589,51 +606,85 @@ export function filterExposedSearchOptions(input: {
   });
 }
 
+const catalogSettingsSelect = {
+  defaultAssistantId: true,
+  defaultControlValues: true,
+  defaultKnowledgePlan: true,
+  defaultMcpMode: true,
+  defaultSkillsMode: true,
+  defaultWorkspaceEnabled: true,
+  defaultProviderModelId: true,
+  defaultSearchPlan: true,
+  answerSoundEnabled: true,
+  answerSoundId: true,
+  sendWithEnter: true,
+  showCitations: true,
+  showReasoningBlocks: true
+} as const;
+
+/** Runs the reads together, or one after another when `concurrent` is false. */
+async function runReads<T extends readonly unknown[] | []>(
+  concurrent: boolean,
+  reads: { readonly [K in keyof T]: () => PromiseLike<T[K]> }
+): Promise<T> {
+  if (concurrent) return Promise.all(reads.map((read) => read())) as Promise<unknown> as Promise<T>;
+  const results: unknown[] = [];
+  for (const read of reads) results.push(await read());
+  return results as unknown as T;
+}
+
 export function createPrismaCatalogDataLoader({
+  checkDefaultAssistant = true,
+  concurrentReads = true,
   env = process.env,
+  loadActiveGroupIds,
   loadEntitlements = loadEntitlementsForUser,
   prisma
 }: CatalogDataLoaderDeps) {
   return async function loadCatalogData(userId: string): Promise<CatalogData | null> {
-    const user = (await prisma.user.findUnique({
-      include: {
-        groups: {
-          include: {
-            group: {
-              select: {
-                archivedAt: true
+    // With the memberships given, the settings row alone answers: it exists
+    // only for an existing user.
+    const [row, activeGroupIds] = await runReads(concurrentReads, [
+      () => loadActiveGroupIds
+        ? prisma.userSettings.findUnique({ select: catalogSettingsSelect, where: { userId } })
+          .then((settings) => settings && { settings })
+        : prisma.user.findUnique({
+            include: {
+              groups: {
+                include: {
+                  group: {
+                    select: {
+                      archivedAt: true
+                    }
+                  }
+                }
+              },
+              settings: {
+                select: catalogSettingsSelect
               }
+            },
+            where: {
+              id: userId
             }
-          }
-        },
-        settings: {
-          select: {
-            defaultControlValues: true,
-            defaultKnowledgePlan: true,
-            defaultMcpMode: true,
-            defaultSkillsMode: true,
-            defaultWorkspaceEnabled: true,
-            defaultProviderModelId: true,
-            defaultSearchPlan: true,
-            answerSoundEnabled: true,
-            answerSoundId: true,
-            sendWithEnter: true,
-            showCitations: true,
-            showReasoningBlocks: true
-          }
-        }
-      },
-      where: {
-        id: userId
-      }
-    })) as CatalogUserRow | null;
+          }) as Promise<CatalogUserRow | null>,
+      async () => loadActiveGroupIds?.(userId)
+    ]);
 
-    if (!user?.settings) {
+    if (!row?.settings) {
       return null;
     }
+    // Credential resolution skips memberships of archived groups, so the
+    // active memberships a caller passes stand in for all of them.
+    const user = {
+      groups: activeGroupIds
+        ? activeGroupIds.map((groupId): CatalogMembershipRow => ({ group: { archivedAt: null }, groupId }))
+        : "groups" in row ? row.groups : [],
+      settings: row.settings as UserSettingsRow
+    };
 
-    const [models, searchOptions, entitlements, modelPolicy, searchPolicy] = await Promise.all([
-      prisma.providerModel.findMany({
+    const defaultAssistantId = user.settings.defaultAssistantId;
+    const [models, searchOptions, entitlements, modelPolicy, searchPolicy, defaultAssistantAvailable] = await runReads(concurrentReads, [
+      () => prisma.providerModel.findMany({
         include: providerModelCatalogAuthorityInclude(userId),
         orderBy: [{ connectionId: "asc" }, { displayName: "asc" }, { id: "asc" }],
         where: {
@@ -644,7 +695,7 @@ export function createPrismaCatalogDataLoader({
           }
         }
       }),
-      prisma.searchOption.findMany({
+      () => prisma.searchOption.findMany({
         include: {
           sourceConnection: {
             select: {
@@ -681,15 +732,21 @@ export function createPrismaCatalogDataLoader({
           enabled: true
         }
       }),
-      loadEntitlements(userId),
-      prisma.modelPolicy?.findUnique({
+      () => loadEntitlements(userId),
+      () => prisma.modelPolicy?.findUnique({
         select: { defaultProviderModelId: true, reasoningEffort: true },
         where: { id: "installation" }
       }) ?? Promise.resolve(null),
-      prisma.searchPolicy?.findUnique({
+      () => prisma.searchPolicy?.findUnique({
         select: { defaultPlan: true },
         where: { id: "installation" }
-      }) ?? Promise.resolve(null)
+      }) ?? Promise.resolve(null),
+      () => checkDefaultAssistant && defaultAssistantId
+        ? isAssistantAvailable(prisma, {
+            assistantId: defaultAssistantId,
+            scope: { kind: "personal", userId }
+          })
+        : Promise.resolve(checkDefaultAssistant ? false : undefined)
     ]);
     const availableModels = filterAvailableProviderModels({
       exposeFake: exposeFakeProvider(env),
@@ -725,6 +782,8 @@ export function createPrismaCatalogDataLoader({
       searchPolicy,
       searchStrategies: exposedSearchOptions,
       settings: {
+        ...(defaultAssistantAvailable === undefined ? {} : { defaultAssistantAvailable }),
+        defaultAssistantId,
         defaultControlValues: user.settings.defaultControlValues,
         defaultKnowledgePlan: user.settings.defaultKnowledgePlan,
         defaultMcpMode: user.settings.defaultMcpMode,

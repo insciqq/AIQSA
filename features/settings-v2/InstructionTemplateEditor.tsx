@@ -8,6 +8,8 @@ const variables = [{ label: "Date", value: "{local_date}" }, { label: "Time", va
 
 export function InstructionTemplateEditor(props: Readonly<{
   label: string; previewLabel: string; value: string; maxLength: number; disabled?: boolean; onChange(value: string): void;
+  /** Opt-in for full-page editors: Split first while the editor is wide enough. */
+  splitWhenWide?: boolean;
 }>) {
   const [context, setContext] = useState<{ now: Date; timeZone: string } | null>(null);
   useEffect(() => {

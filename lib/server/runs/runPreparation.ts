@@ -5,7 +5,6 @@ import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/a
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
-import type { AssistantIdentity } from "../../contracts/assistants";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
@@ -23,10 +22,10 @@ import {
 } from "../../contracts/knowledge";
 import { decodeMcpRunSelection } from "../../contracts/mcp";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
-import { resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
-import { renderInstructionPreset } from "../../domain/instructionTemplates";
-import type { AssistantRunControls } from "../../contracts/assistants";
-import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
+import { resolveAssistantChatBaseline, resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
+import { renderAssistantInstructions, renderInstructionPreset } from "../../domain/instructionTemplates";
+import { materializeAssistantRowControls, assistantRunRowProvenance } from "../assistants/rowResolution";
+import { materializeAssistantRunParams, runControlsFromSavedValues } from "../assistants/runControlMaterialization";
 import type {
   AssistantRunMaterialization,
   AssistantRunResolver
@@ -35,6 +34,15 @@ import {
   parameterControlsForModel,
   type CatalogAdapterKind
 } from "../../domain/catalog";
+import {
+  admitChatAssistant,
+  assistantRowFailure,
+  chatAssistantSource,
+  chatAssistantWithPatch,
+  knowledgeSelectionFromRow,
+  searchPlanFromRow,
+  type ChatAssistantAdmission
+} from "./assistantRunAdmission";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
   contextSummaryReuseCandidates,
@@ -130,6 +138,8 @@ import {
   type AttachmentLimitNumericFacts
 } from "./runAttachmentMaterialization";
 import type {
+  AcceptedAssistantRun,
+  AcceptedChatAssistant,
   AcceptedRunDefaults,
   AcceptedSkillRun,
   ProjectRunAdmission,
@@ -152,7 +162,8 @@ const pdfTextUnavailableMessage =
 const zeroEmittedPdfTextUnavailableMessage =
   "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file.";
 
-function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: string): string {
+/** The parameter dialect params are materialized and validated in for a model. */
+export function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: string): string {
   if (providerFamily === "deepseek") return "deepseek";
   if (providerFamily === "gemini") return "gemini";
   if (adapterKind === "anthropic_messages") return "anthropic";
@@ -166,7 +177,13 @@ type RunPreparationRepository = Pick<
   | "loadAttachments"
   | "loadConversationContextForExpectedLeaf"
   | "loadConversationContextForLeaf"
-> & Partial<Pick<RunRepository, "loadBranchContextCheckpoints" | "loadKnowledgeFullContextPassages">>;
+> & Partial<Pick<
+  RunRepository,
+  | "loadAssistantRowContext"
+  | "loadBranchContextCheckpoints"
+  | "loadKnowledgeFullContextPassages"
+  | "loadProjectAssistantRowContext"
+>>;
 
 /**
  * Notes a hybrid admission freezes as a candidate instead of buying a summary
@@ -275,6 +292,8 @@ export type RunPreparationDeps = Readonly<{
 export type SendRunPreparationSource = Readonly<{
   chat: Readonly<{
     activeLeafMessageId: string | null;
+    assistantId?: string | null;
+    assistantOverrides?: unknown;
     defaultKnowledgePlan?: unknown;
     defaultModelId: string;
     defaultProvider: string;
@@ -302,6 +321,8 @@ export type RegenerateRunPreparationSource = Readonly<{
       provider: string | null;
     }> | null;
     chat: Readonly<{
+      assistantId?: string | null;
+      assistantOverrides?: unknown;
       defaultKnowledgePlan?: unknown;
       defaultModelId: string;
       defaultProvider: string;
@@ -349,10 +370,11 @@ type PreparedRunDefaultsData = AcceptedRunDefaults;
 
 export type MaterializedPreparedRunData = {
   followupAdmission?: RunFollowupAdmission;
-  assistant?: { assistantId: string; definitionVersion: number; identity: AssistantIdentity };
+  /** Kept beside `normalizedRequest`; `rows` is absent in snapshots frozen before rows existed. */
+  assistant?: AcceptedAssistantRun;
+  /** Assistant runs: the chat binding to recheck and the override change to store at admission. */
+  chatAssistant?: AcceptedChatAssistant;
   chatPdfAdmissions?: ChatPdfAttachmentAdmission[];
-  /** Manual choices to re-admit an explicit Assistant PDF retry against current content. */
-  manualSkillIds?: string[];
   contextTruncation: ContextTruncationSummary | null;
   defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
@@ -580,7 +602,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     ...(prepared.assistant
       ? { assistant: mutablePreparedData<NonNullable<MaterializedPreparedRunData["assistant"]>>(prepared.assistant) }
       : {}),
-    ...(prepared.manualSkillIds ? { manualSkillIds: [...prepared.manualSkillIds] } : {}),
+    ...(prepared.chatAssistant
+      ? { chatAssistant: mutablePreparedData<AcceptedChatAssistant>(prepared.chatAssistant) }
+      : {}),
     contextTruncation: mutablePreparedData<ContextTruncationSummary | null>(prepared.contextTruncation),
     defaults: mutablePreparedData<PreparedRunDefaultsData | null>(prepared.defaults),
     expectedActiveLeafId: prepared.expectedActiveLeafId,
@@ -765,48 +789,6 @@ function numberFromDraft(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function projectRunControlsFromDefaults(
-  values: Readonly<Record<string, boolean | string>>
-): AssistantRunControls | null {
-  const allowed = new Set([
-    "backgroundMode",
-    "maxOutputTokens",
-    "reasoningEffort",
-    "reasoningMode",
-    "streamMode",
-    "temperature"
-  ]);
-  if (Object.keys(values).some((key) => !allowed.has(key))) return null;
-  const controls: AssistantRunControls = {};
-  if (values.backgroundMode !== undefined) {
-    if (typeof values.backgroundMode !== "boolean") return null;
-    controls.backgroundMode = values.backgroundMode;
-  }
-  if (values.streamMode !== undefined) {
-    if (typeof values.streamMode !== "boolean") return null;
-    controls.streamMode = values.streamMode;
-  }
-  if (values.maxOutputTokens !== undefined) {
-    const parsed = numberFromDraft(values.maxOutputTokens);
-    if (parsed === null || !Number.isInteger(parsed) || parsed < 1) return null;
-    controls.maxOutputTokens = parsed;
-  }
-  if (values.temperature !== undefined) {
-    const parsed = numberFromDraft(values.temperature);
-    if (parsed === null) return null;
-    controls.temperature = parsed;
-  }
-  if (values.reasoningEffort !== undefined) {
-    if (typeof values.reasoningEffort !== "string" || !values.reasoningEffort) return null;
-    controls.reasoningEffort = values.reasoningEffort;
-  }
-  if (values.reasoningMode !== undefined) {
-    if (typeof values.reasoningMode !== "string" || !values.reasoningMode) return null;
-    controls.reasoningMode = values.reasoningMode;
-  }
-  return controls;
-}
-
 function clamp(value: number, min: number, max = Number.MAX_SAFE_INTEGER): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -878,33 +860,34 @@ function standardChatPrompt(body: Readonly<Record<string, unknown>> | null, now:
 }
 
 /**
- * Assistant runs use the selected immutable revision's own instructions and do
- * not inherit the standard-chat baseline; the cross-cutting visible-answer
- * contract remains explicit in the resolved developer prompt for both modes.
+ * Assistant runs receive the code-owned date and time sentence without the
+ * generic persona, followed by the Assistant's own instructions, rendered once
+ * at admission from the same clock and validated zone as the ordinary baseline;
+ * recovery reuses the accepted text. The author's answer rules replace the
+ * visible-answer contract, and the reminder is rendered with the same values.
+ * Null means a rendered text exceeds its limit.
  */
-function assistantPrompt(assistant: AssistantRunMaterialization): NormalizedRunRequest["prompt"] {
+function assistantPrompt(
+  assistant: AssistantRunMaterialization,
+  body: Readonly<Record<string, unknown>> | null,
+  now: Date
+): NormalizedRunRequest["prompt"] | null {
+  const baseline = resolveAssistantChatBaseline({ timeZone: body?.timeZone, now });
+  const rendered = renderAssistantInstructions(assistant, { now, timeZone: baseline.timeZone });
+  if (!rendered) return null;
+
   return {
-    developer: [assistant.developerPrompt, VISIBLE_ANSWER_CONTRACT]
-      .filter((part): part is string => Boolean(part?.trim()))
-      .join("\n\n"),
-    system: assistant.systemPrompt.trim() ? assistant.systemPrompt : null
+    baseline: {
+      source: "assistant_chat",
+      timeZone: baseline.timeZone,
+      timeZoneSource: baseline.timeZoneSource
+    },
+    developer: rendered.answerRules ?? VISIBLE_ANSWER_CONTRACT,
+    responseReminder: rendered.responseReminder,
+    system: [baseline.renderedSystemPrompt, rendered.systemPrompt]
+      .filter((part) => part.trim()).join("\n\n")
   };
 }
-
-const assistantGovernedBodyKeys = [
-  "controlDefaults",
-  "modelId",
-  "mcp",
-  "knowledgePlan",
-  "params",
-  "prompt",
-  "provider",
-  "searchPlan",
-  "searchPreferencePlan",
-  "searchPreferenceSource",
-  "skills",
-  "tools"
-] as const;
 
 function resolvedOrdinaryKnowledgePlan(
   body: Readonly<Record<string, unknown>> | null,
@@ -1064,9 +1047,42 @@ function validateKnowledgeCapabilities(input: Readonly<{
     : { code: "knowledge_tool_calling_not_supported", status: 400 };
 }
 
+/**
+ * Prepares a run. A Project default applied implicitly to a new Project chat
+ * never fails the run: when preparing with it fails for any reason,
+ * the run is prepared again as an ordinary Project run in an unbound chat, so
+ * neither its instructions nor any of its rows apply. An optional Skill
+ * catalog decision already requested for the first attempt is not requested
+ * again.
+ */
 export async function prepareRun(
   deps: RunPreparationDeps,
   input: RunPreparationInput
+): Promise<RunPreparationResult> {
+  const attempt = { implicitProjectDefault: false, skillCatalogRelevanceUsed: false };
+  const relevance = deps.skillCatalogRelevance;
+  const result = await prepareRunWith(relevance
+    ? {
+        ...deps,
+        skillCatalogRelevance: (request) => {
+          attempt.skillCatalogRelevanceUsed = true;
+          return relevance(request);
+        }
+      }
+    : deps, input, attempt);
+  if (result.ok || !attempt.implicitProjectDefault) return result;
+  const { skillCatalogDecision: _decision, ...withoutDecision } = input;
+  return prepareRunWith(deps, attempt.skillCatalogRelevanceUsed ? withoutDecision : input, {
+    implicitProjectDefault: false,
+    skillCatalogRelevanceUsed: false,
+    withoutProjectDefault: true
+  });
+}
+
+async function prepareRunWith(
+  deps: RunPreparationDeps,
+  input: RunPreparationInput,
+  attempt: { implicitProjectDefault: boolean; skillCatalogRelevanceUsed: boolean; withoutProjectDefault?: true }
 ): Promise<RunPreparationResult> {
   const body = input.body;
   const artifactIntentValue = body && Object.hasOwn(body, "artifactIntent") ? body.artifactIntent
@@ -1096,49 +1112,31 @@ export async function prepareRun(
   const project = chat.project
     ? { ...chat.project, memoryEnabled: false, memoryItems: [] }
     : undefined;
+  // A chat runs with its bound Assistant; the request may only bind an
+  // unbound chat or repeat the binding. A new Project chat whose first
+  // message names no Assistant and carries no ordinary composer key starts
+  // with the Project's default.
+  const newProjectChat = Boolean(project && input.source.kind === "send" && input.source.draftProjectChat &&
+    !attempt.withoutProjectDefault);
+  const assistantSource = chatAssistantSource(body, chat, newProjectChat ? project!.defaults.assistantId : null);
+  if (!assistantSource.ok) return failure(assistantSource.code, assistantSource.status);
+  attempt.implicitProjectDefault = assistantSource.projectDefault === true;
   if (agentEnabled && !workspaceEnabled) return failure("agent_workspace_required", 400);
-  if (agentEnabled && (project || body?.assistantId)) return failure("agent_personal_chat_required", 400);
+  if (agentEnabled && (project || assistantSource.assistantId)) return failure("agent_personal_chat_required", 400);
 
   let assistantRun: AssistantRunMaterialization | null = null;
-  if (body && "assistantId" in body && body.assistantId !== undefined && body.assistantId !== null) {
-    if (
-      typeof body.assistantId !== "string" ||
-      !body.assistantId.trim() ||
-      body.assistantId.length > 64
-    ) {
-      return failure("assistant_not_available", 404);
-    }
-    // There is no per-run override patch: a request that both selects an
-    // Assistant and carries Assistant-governed controls is rejected instead of
-    // silently preferring either side.
-    for (const key of assistantGovernedBodyKeys) {
-      if (key in body) {
-        return failure("assistant_overrides_not_allowed", 400);
-      }
-    }
-    if (!deps.assistants) {
-      return failure("assistant_not_available", 404);
-    }
-    const resolution = project
-      ? deps.assistants.resolveForProject
-        ? await deps.assistants.resolveForProject(project.projectId, body.assistantId.trim())
-        : { code: "assistant_not_available" as const, ok: false as const, status: 404 as const }
-      : await deps.assistants.resolveForRun(input.userId, body.assistantId.trim());
-    if (!resolution.ok) {
-      return failure(resolution.code, resolution.status);
-    }
-    assistantRun = resolution.assistant;
-  }
-
-  if (!assistantRun && project?.defaults.assistantId &&
-    !assistantGovernedBodyKeys.some((key) => Object.hasOwn(body ?? {}, key))) {
-    if (!deps.assistants?.resolveForProject) return failure("assistant_not_available", 503);
-    const resolution = await deps.assistants.resolveForProject(
-      project.projectId,
-      project.defaults.assistantId
-    );
-    if (!resolution.ok) return failure(resolution.code, resolution.status);
-    assistantRun = resolution.assistant;
+  let chatAssistant: ChatAssistantAdmission | null = null;
+  if (assistantSource.assistantId) {
+    const admitted = await admitChatAssistant(deps, {
+      body,
+      scope: project ? { kind: "project", projectId: project.projectId } : { kind: "personal" },
+      source: { ...assistantSource, assistantId: assistantSource.assistantId },
+      storedOverrides: chat.assistantOverrides,
+      userId: input.userId
+    });
+    if (!admitted.ok) return failure(admitted.code, admitted.status);
+    chatAssistant = admitted;
+    assistantRun = admitted.assistant;
   }
 
   let manualSkillIds: string[] = [];
@@ -1151,7 +1149,8 @@ export async function prepareRun(
   if (rawSkillsMode !== undefined && (!isRecord(rawSkillsMode) ||
     Object.keys(rawSkillsMode).some((key) => key !== "mode") ||
     (rawSkillsMode.mode !== "auto" && rawSkillsMode.mode !== "off"))) return failure("skills_mode_invalid", 400);
-  const skillsMode = assistantRun?.skills?.mode ?? (isRecord(rawSkillsMode) && rawSkillsMode.mode === "off" ? "off" : "auto");
+  const skillsMode = chatAssistant?.resolution.rows.skills.value.mode ??
+    (isRecord(rawSkillsMode) && rawSkillsMode.mode === "off" ? "off" : "auto");
   const assistantPinnedIds = assistantRun?.skillIds.filter((id) => assistantRun.skillModes?.[id] !== "available") ?? [];
   const assistantAvailableIds = assistantRun?.skillIds.filter((id) => assistantRun.skillModes?.[id] === "available") ?? [];
   const effectiveSkillIds = resolveEffectiveSkillIds(assistantPinnedIds, manualSkillIds);
@@ -1192,8 +1191,8 @@ export async function prepareRun(
   if ("ok" in resolvedChatMode) {
     return resolvedChatMode;
   }
-  let decodedKnowledgePlan = assistantRun
-    ? { ok: true as const, plan: assistantRun.knowledgeSelection }
+  let decodedKnowledgePlan = chatAssistant
+    ? { ok: true as const, plan: knowledgeSelectionFromRow(chatAssistant.resolution.rows.knowledge.value) }
     : resolvedOrdinaryKnowledgePlan(body, chat);
   if (!decodedKnowledgePlan.ok) {
     return failure(decodedKnowledgePlan.code, 400);
@@ -1229,7 +1228,11 @@ export async function prepareRun(
       });
     } catch (error) {
       if (error instanceof KnowledgeRunAdmissionError) {
-        return failure(error.code, 404);
+        // The Assistant's own Knowledge is its dependency: the failure stays
+        // neutral. The user's own choices report as in an ordinary chat.
+        return chatAssistant?.resolution.rows.knowledge.provenance === "assistant"
+          ? failure("assistant_not_available", 409)
+          : failure(error.code, 404);
       }
       throw error;
     }
@@ -1263,8 +1266,8 @@ export async function prepareRun(
   if (decodedSearchPlan && !decodedSearchPlan.ok) {
     return failure(decodedSearchPlan.code, 400);
   }
-  let requestedSearchPlan = assistantRun
-    ? assistantRun.searchPlan
+  let requestedSearchPlan = chatAssistant
+    ? searchPlanFromRow(chatAssistant.resolution.rows.search.value)
     : decodedSearchPlan && decodedSearchPlan.ok
       ? decodedSearchPlan.plan
       : { mode: "all_selected" as const, optionIds: [] as string[] };
@@ -1289,15 +1292,15 @@ export async function prepareRun(
       return failure("search_preference_invalid", 400);
     }
   }
-  const selectedProvider = assistantRun
-    ? assistantRun.provider
+  const selectedProvider = chatAssistant
+    ? chatAssistant.modelProvider
     : typeof body?.provider === "string"
       ? body.provider
       : input.source.kind === "send"
         ? chat.defaultProvider
         : input.source.source.assistantMessage?.provider ?? chat.defaultProvider;
-  const selectedModelId = assistantRun
-    ? assistantRun.providerModelId
+  const selectedModelId = chatAssistant
+    ? chatAssistant.resolution.rows.model.value.modelId
     : typeof body?.modelId === "string"
       ? body.modelId
       : input.source.kind === "send"
@@ -1431,38 +1434,52 @@ export async function prepareRun(
     return failure("content_required", 400);
   }
 
-  const ordinaryMcpSelection = project || assistantRun || body?.tools === "none"
+  // An Assistant's Tools row is its exact allowlist (Load all semantics) or
+  // an ordinary chat mode over the chat's servers: the runner's own in a
+  // personal chat, the Project's in a Project chat.
+  const assistantTools = chatAssistant && body?.tools !== "none"
+    ? chatAssistant.resolution.rows.tools.value
+    : null;
+  const assistantMcpServerIds = assistantTools?.mode === "exact" ? assistantTools.serverIds : [];
+  const assistantMcpMode = assistantTools && assistantTools.mode !== "exact" ? { mode: assistantTools.mode } : null;
+  const ordinaryMcpSelection = project || body?.tools === "none"
     ? null
-    : body?.mcp === undefined
-      ? { mode: "auto" as const }
-      : decodeMcpRunSelection(body.mcp);
+    : chatAssistant
+      ? assistantMcpMode
+      : body?.mcp === undefined
+        ? { mode: "auto" as const }
+        : decodeMcpRunSelection(body.mcp);
   if (!project && !assistantRun && body?.tools !== "none" &&
     ordinaryMcpSelection === null) {
     return failure("mcp_selection_invalid", 400);
   }
   const assistantMcpUnavailable = Boolean(
-    assistantRun && assistantRun.mcpServerIds.length > 0 && !deps.mcp
+    assistantRun && assistantMcpServerIds.length > 0 && !deps.mcp
   );
   const ordinaryLoadAllMcpUnavailable = Boolean(
     ordinaryMcpSelection?.mode === "load_all" && !deps.mcp
   );
   const projectMcpSelection = project && body?.tools !== "none"
-    ? body?.mcp === undefined
-      ? { mode: project.defaults.mcpMode }
-      : decodeMcpRunSelection(body.mcp)
+    ? chatAssistant
+      ? assistantMcpMode
+      : body?.mcp === undefined
+        ? { mode: project.defaults.mcpMode }
+        : decodeMcpRunSelection(body.mcp)
     : null;
-  if (project && body?.tools !== "none" &&
+  if (project && !chatAssistant && body?.tools !== "none" &&
     projectMcpSelection === null) {
     return failure("mcp_selection_invalid", 400);
   }
   const projectMcpServerIds = project
-    ? assistantRun
-      ? assistantRun.mcpServerIds
+    ? chatAssistant
+      ? assistantMcpServerIds.length > 0
+        ? assistantMcpServerIds
+        : projectMcpSelection && projectMcpSelection.mode !== "off" ? project.mcpServerIds : []
       : projectMcpSelection?.mode === "off"
         ? []
         : project.mcpServerIds
     : [];
-  if (project && assistantRun && projectMcpServerIds.some((id) => !project.mcpServerIds.includes(id))) {
+  if (project && assistantMcpServerIds.some((id) => !project.mcpServerIds.includes(id))) {
     return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
   }
   if (project && !project.policy.externalToolsEnabled && (
@@ -1478,10 +1495,10 @@ export async function prepareRun(
           ? null
           : await deps.mcp.prepare(input.userId, { allowedServerIds: projectMcpServerIds })
       : null
-    : assistantRun
-    ? assistantRun.mcpServerIds.length > 0 && deps.mcp
+    : assistantMcpServerIds.length > 0
+    ? deps.mcp
       ? await deps.mcp.prepare(input.userId, {
-          allowedServerIds: assistantRun.mcpServerIds
+          allowedServerIds: assistantMcpServerIds
         })
       : null
     : ordinaryMcpSelection?.mode === "load_all" && deps.mcp
@@ -1594,7 +1611,12 @@ export async function prepareRun(
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
   const instructionTime = new Date();
-  const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body, instructionTime);
+  const normalizedPrompt = assistantRun
+    ? assistantPrompt(assistantRun, body, instructionTime)
+    : standardChatPrompt(body, instructionTime);
+  if (!normalizedPrompt) {
+    return failure("assistant_instructions_expansion_too_large", 400, "This Assistant's instructions exceed the text limit after date and time substitution. They must be shortened before it can answer.");
+  }
   let personalInstructions: import("../instructions/store").PersonalInstructionSnapshot | undefined;
   if (!assistantRun && !project && deps.instructions) {
     try { personalInstructions = await deps.instructions.resolveForRun(input.userId); }
@@ -1617,7 +1639,7 @@ export async function prepareRun(
     ...scopedPrompt,
     ...(renderedInstructions ? { personalInstructions: renderedInstructions.personalInstructions,
       ...(renderedInstructions.overridesAnswerRules ? { developer: null } : {}) } : {}),
-    responseReminder: assistantRun?.responseReminder ?? renderedInstructions?.responseReminder ?? "",
+    responseReminder: normalizedPrompt.responseReminder ?? renderedInstructions?.responseReminder ?? "",
     memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
   };
   const sendContext =
@@ -1698,21 +1720,27 @@ export async function prepareRun(
       Boolean(modelConfiguration.reasoningRequestMapping?.modePath)
   });
   let paramsBody: Record<string, unknown>;
-  if (assistantRun) {
-    const materialized = materializeAssistantRunParams({
+  let rowResolution = chatAssistant?.resolution ?? null;
+  if (chatAssistant) {
+    // The chat's controls over the Assistant's (when the effective model is
+    // its model) over the context's saved values (the user's for the model,
+    // or the Project's), over built-ins.
+    const materialized = materializeAssistantRowControls(chatAssistant.resolution, {
       baseParams: defaultParams,
       controls: parameterControls,
-      parameterProvider,
-      runControls: assistantRun.runControls
+      parameterProvider
     });
     if (!materialized.ok) {
-      // A saved control the current model no longer supports is never clamped
-      // or silently dropped; the run fails closed with a stable conflict.
-      return failure("assistant_configuration_unavailable", 409);
+      // A request value the model does not support is refused like an
+      // ordinary invalid param; an Assistant control that no longer fits
+      // fails closed with a stable conflict, never clamped or dropped.
+      const rejected = assistantRowFailure(materialized, chatAssistant.scope.kind);
+      return failure(rejected.code, rejected.status);
     }
     paramsBody = materialized.params;
+    rowResolution = materialized.resolution;
   } else if (project) {
-    const projectControls = projectRunControlsFromDefaults(project.defaults.controlValues);
+    const projectControls = runControlsFromSavedValues(project.defaults.controlValues);
     if (!projectControls) return failure("project_configuration_unavailable", 409);
     const materialized = materializeAssistantRunParams({
       baseParams: defaultParams,
@@ -1754,7 +1782,7 @@ export async function prepareRun(
     return failure("mcp_not_ready", 409, "Enabled MCP tools are unavailable.");
   }
   if (mcpPlan && !mcpPlan.ok) {
-    if (assistantRun) {
+    if (assistantMcpServerIds.length > 0) {
       // Consumers may lack visibility into a required server, so the failure
       // is privacy-neutral and never names the affected servers.
       return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
@@ -2263,7 +2291,8 @@ export async function prepareRun(
   }
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   // Assistant-derived values never overwrite the user's ordinary manual
-  // defaults, so an Assistant run persists no accepted-defaults update.
+  // defaults or the chat's ordinary default columns, so an Assistant run
+  // persists no accepted-defaults update; its chat changes are overrides.
   const defaults: PreparedRunDefaultsData | null = assistantRun || project
     ? null
     : {
@@ -2279,14 +2308,16 @@ export async function prepareRun(
 
   const prepared = immutablePreparedData<MaterializedPreparedRunData>({
     ...(followupAdmission ? { followupAdmission } : {}),
-    ...(chatPdfAdmissions.length ? { chatPdfAdmissions, ...(assistantRun ? { manualSkillIds } : {}) } : {}),
-    ...(assistantRun
+    ...(chatPdfAdmissions.length ? { chatPdfAdmissions } : {}),
+    ...(chatAssistant && rowResolution
       ? {
           assistant: {
-            assistantId: assistantRun.assistantId,
-            definitionVersion: assistantRun.definitionVersion,
-            identity: assistantRun.identity
-          }
+            assistantId: chatAssistant.assistant.assistantId,
+            definitionVersion: chatAssistant.assistant.definitionVersion,
+            identity: chatAssistant.assistant.identity,
+            rows: assistantRunRowProvenance(rowResolution)
+          },
+          chatAssistant: chatAssistantWithPatch(chatAssistant.chatAssistant, rowResolution.overridesPatch)
         }
       : {}),
     contextTruncation: providerBudget.contextTruncation,

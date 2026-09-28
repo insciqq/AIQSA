@@ -6,6 +6,7 @@ import {
   type ProjectWorkspaceResponseWire
 } from "../../contracts/projects";
 import { defaultChatTitle } from "../chats/titlePolicy";
+import { isAssistantAvailable } from "../assistants/bindingAccess";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { resolveProjectAccess } from "./access";
 import {
@@ -14,7 +15,7 @@ import {
 } from "./chatDefaults";
 import { projectChatSelect, projectChatWire } from "./chatProjection";
 import { notifyProjectEvent } from "./events";
-import type { ProjectRepositoryResult } from "./prismaRepository";
+import { loadProjectAssistantAuthority, type ProjectRepositoryResult } from "./prismaRepository";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 import type { WorkspaceAvailabilityService } from "../workspace/availability";
 
@@ -103,8 +104,23 @@ export function createPrismaProjectContentRepository(
       workspaceEnabled?: boolean;
     }): Promise<ProjectRepositoryResult<ProjectChatSummaryWire>> {
       const workspaceSnapshot = await workspaceAvailability.snapshot();
+      // A new chat starts bound to the Project's default Assistant while the
+      // Project can run it; an archived, unbound or unusable default is
+      // skipped. Usability is read before the serializable transaction.
+      const projectAuthority = await loadProjectAssistantAuthority(prisma, input.projectId);
+      const defaultAssistantId = projectAuthority?.defaults.assistantId ?? null;
+      const usableDefault = defaultAssistantId !== null && projectAuthority!.assistantIds.has(defaultAssistantId)
+        ? defaultAssistantId
+        : null;
       try {
         return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
+          // The definition is locked before the Project, in the order
+          // Assistant deletion takes them.
+          const bindable = usableDefault !== null && await isAssistantAvailable(tx, {
+            assistantId: usableDefault,
+            lock: true,
+            scope: { kind: "project", projectId: input.projectId }
+          });
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "CONTRIBUTOR",
@@ -129,6 +145,7 @@ export function createPrismaProjectContentRepository(
             return { kind: "conflict" as const, reason: "project_configuration_unavailable" };
           }
           const defaults = decoded.defaults;
+          const assistantId = bindable && defaults.assistantId === usableDefault ? usableDefault : null;
           const authority = await loadProjectChatDefaultAuthority(tx, input.projectId);
           const safeDefaults = projectChatDefaultsProjection(authority, {
             defaultKnowledgePlan: defaults.knowledgePlan,
@@ -145,6 +162,7 @@ export function createPrismaProjectContentRepository(
               projectId: input.projectId,
               title: input.title?.trim() || defaultChatTitle,
               userId: null,
+              ...(assistantId ? { assistantId } : {}),
               ...(input.workspaceEnabled === undefined
                 ? {}
                 : { workspaceEnabled: input.workspaceEnabled })

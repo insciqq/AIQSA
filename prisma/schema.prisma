@@ -827,6 +827,8 @@ model User {
   authSessions                        AuthSession[]
   authSessionsRevoked                 AuthSession[]                      @relation("AuthSessionRevoker")
   assistantDefinitions                AssistantDefinition[]              @relation("AssistantDefinitionOwner")
+  assistantListingRequests            AssistantListingRequest[]          @relation("AssistantListingRequester")
+  assistantListingReviews             AssistantListingRequest[]          @relation("AssistantListingReviewer")
   assistantPins                       AssistantPin[]
   assistantPublications               AssistantPublication[]             @relation("AssistantPublicationPublisher")
   chats                               Chat[]
@@ -1293,6 +1295,7 @@ model UserSettings {
   defaultMcpMode          String         @default("auto")
   defaultSkillsMode       SkillsMode     @default(auto)
   defaultWorkspaceEnabled Boolean        @default(true)
+  defaultAssistantId      String?
   answerSoundEnabled      Boolean        @default(true)
   answerSoundId           String         @default("rise") @db.VarChar(16)
   sendWithEnter           Boolean        @default(true)
@@ -1302,7 +1305,9 @@ model UserSettings {
   updatedAt               DateTime       @updatedAt
   user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   defaultProviderModel    ProviderModel? @relation("UserDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
+  defaultAssistant        AssistantDefinition? @relation("UserDefaultAssistant", fields: [defaultAssistantId], references: [id], onDelete: SetNull)
 
+  @@index([defaultAssistantId])
   @@index([defaultProviderModelId])
   @@index([userId, activeInstructionPresetId])
 }
@@ -1529,6 +1534,25 @@ enum SkillShareRequestState {
   superseded
 }
 
+enum AssistantListingRequestState {
+  pending
+  approved
+  rejected
+  withdrawn
+  superseded
+}
+
+enum AssistantRowPolicy {
+  fixed
+  adjustable
+}
+
+enum AssistantMcpMode {
+  inherit
+  off
+  exact
+}
+
 enum SkillsMode {
   auto
   off
@@ -1674,18 +1698,32 @@ model AssistantDefinition {
   description        String                    @default("")
   category           String?
   avatar             Json
-  providerModelId    String
+  /// Null means Inherit; a fixed model row requires a concrete model.
+  providerModelId    String?
   systemPrompt       String
+  /// Retired and merged into systemPrompt; kept only for previous-release writers.
   developerPrompt    String?
+  answerRules        String?
   responseReminder   String                    @default("")
   skillsMode         SkillsMode                @default(auto)
   runControls        Json                      @default("{}")
   searchPlan         Json
+  mcpMode            AssistantMcpMode          @default(off)
   mcpServerIds       String[]                  @default([])
   knowledgeSelection Json                      @default("{\"baseIds\":[],\"mode\":\"none\",\"sourceIds\":[],\"version\":1}")
   starterPrompts     String[]                  @default([])
+  modelPolicy        AssistantRowPolicy        @default(fixed)
+  /// An empty control set is never fixed, so the column default matches runControls.
+  controlsPolicy     AssistantRowPolicy        @default(adjustable)
+  searchPolicy       AssistantRowPolicy        @default(fixed)
+  toolsPolicy        AssistantRowPolicy        @default(fixed)
+  knowledgePolicy    AssistantRowPolicy        @default(fixed)
+  skillsPolicy       AssistantRowPolicy        @default(fixed)
   owner              User                      @relation("AssistantDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  providerModel      ProviderModel             @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  providerModel      ProviderModel?            @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  boundChats         Chat[]
+  defaultForSettings UserSettings[]            @relation("UserDefaultAssistant")
+  listingRequests    AssistantListingRequest[]
   pins               AssistantPin[]
   projectBindings    ProjectAssistantBinding[]
   publications       AssistantPublication[]
@@ -1703,6 +1741,8 @@ model AssistantPublication {
   scope             AssistantPublicationScope
   groupId           String?
   publishedByUserId String?
+  /// Installation scope only; unique among Featured publications through a SQL partial index.
+  featuredOrder     Int?
   createdAt         DateTime                  @default(now())
   updatedAt         DateTime                  @updatedAt
   assistant         AssistantDefinition       @relation(fields: [assistantId], references: [id], onDelete: Restrict)
@@ -1834,6 +1874,27 @@ model SkillShareRequest {
 
   @@index([state, createdAt, id])
   @@index([skillId, createdAt, id])
+  @@index([requestedByUserId])
+  @@index([reviewedByUserId])
+}
+
+/// One pending request per Assistant (SQL partial unique index); decided rows are frozen by a guard trigger.
+model AssistantListingRequest {
+  id                String                       @id @default(uuid())
+  assistantId       String
+  requestedByUserId String
+  state             AssistantListingRequestState @default(pending)
+  definitionVersion Int
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+  reviewNote        String?
+  createdAt         DateTime                     @default(now())
+  assistant         AssistantDefinition          @relation(fields: [requestedByUserId, assistantId], references: [ownerUserId, id], onDelete: Cascade, onUpdate: Restrict)
+  requestedBy       User                         @relation("AssistantListingRequester", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  reviewedBy        User?                        @relation("AssistantListingReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([state, createdAt, id])
+  @@index([assistantId, createdAt, id])
   @@index([requestedByUserId])
   @@index([reviewedByUserId])
 }
@@ -3060,6 +3121,10 @@ model Chat {
   defaultProviderModelId          String?
   defaultKnowledgePlan            Json?
   defaultSearchPlan               Json?
+  /// Lookups by Assistant use a SQL partial index over bound chats.
+  assistantId                     String?
+  /// Per-chat changes to adjustable Assistant rows; a present key means changed for this chat.
+  assistantOverrides              Json?
   memoryMode                      MemoryChatMode       @default(NORMAL)
   memoryBranchGeneration          Int                  @default(0)
   memorySourceRevision            Int                  @default(0)
@@ -3077,6 +3142,7 @@ model Chat {
   updatedAt                       DateTime             @updatedAt
   /// The migration uses PostgreSQL's column-scoped SET NULL so deleting the leaf clears only activeLeafMessageId, never Chat.id.
   activeLeafMessage               Message?             @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
+  assistant                       AssistantDefinition? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
   attachments                     Attachment[]
   createdBy                       User?                @relation("ProjectChatCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   folder                          Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -3098,6 +3164,7 @@ model Chat {
   @@index([projectFolderId])
   @@index([userId, permanentDeletionAt])
   @@index([userId, archived, updatedAt])
+  @@index([userId, assistantId, updatedAt])
 }
 
 model AgentPolicy {
@@ -3370,8 +3437,8 @@ model ModelRun {
   updatedAt                    DateTime                            @updatedAt
   assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
   branchSourceMessages         Message[]                           @relation("BranchSourceModelRun")
-  /// Accepted identity is immutable; execution lives in the normalized request and exact bindings.
-  assistant                    AssistantDefinition?                @relation(fields: [assistantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  /// Accepted identity is immutable; deleting the definition only detaches assistantId. Execution lives in the normalized request and exact bindings.
+  assistant                    AssistantDefinition?                @relation(fields: [assistantId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   chat                         Chat                                @relation(fields: [chatId], references: [id], onDelete: Cascade)
   events                       ModelRunEvent[]
   mcpRunBindings               McpRunBinding[]
@@ -3404,7 +3471,7 @@ model ModelRun {
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
   @@unique([userId, chatId, id])
-  @@index([assistantId])
+  @@index([assistantId, createdAt])
   @@index([chatId, createdAt])
   @@index([provider, modelId])
   @@index([status])

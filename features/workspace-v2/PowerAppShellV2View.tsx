@@ -2,6 +2,7 @@
 
 import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
+import { openAssistantDetail } from "@/components/app-shell/assistantGalleryActions";
 
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
 import { artifactUnavailableReason } from "@/components/artifacts/artifactAvailability";
@@ -13,7 +14,7 @@ import { activateArtifactLibraryAccount } from "@/components/app-shell/artifactL
 import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
 import { navigateChatRoute, useChatRoutePath, useControlCenterHref } from "@/components/app-shell/chatRoute";
-import { parseChatRoutePath } from "@/lib/domain/chatRoute";
+import { boundedRouteId, parseChatRoutePath } from "@/lib/domain/chatRoute";
 import { cancelWorkspaceUpload, retryWorkspaceUpload, useWorkspaceUploadProgress } from "@/components/app-shell/workspaceUploadClient";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 
@@ -80,7 +81,6 @@ import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
-import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
 import { ProjectSkillPicker } from "@/components/skills/ProjectSkillPicker";
 import type { SelectedSkillName } from "@/components/skills/SkillSelectionSummary";
@@ -105,6 +105,11 @@ import {
   AnswerOutputsV2,
   ArtifactGenerationCardsV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import {
+  AnswerIdentityChipV2,
+  answerIdentityV2,
+  previousVisibleAnswersV2
+} from "@/features/answer-outputs-v2/AnswerIdentityV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import {
   ReadingRoomShellV2,
@@ -117,7 +122,7 @@ import {
   presentRunLifecycleV2,
   presentToolActivityV2,
   settledRunPresentationV2,
-  type RunPresentationV2
+  type AnnouncedRunPresentationV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { documentTitleV2 } from "@/features/workspace-v2/documentTitle";
 import {
@@ -162,6 +167,10 @@ import type {
   ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
 import { RunSetupV2 } from "./RunSetupV2";
+import { AssistantBindingNoticeV2 } from "./AssistantBindingNoticeV2";
+import { AssistantIntroV2, AssistantStartersV2 } from "./AssistantIntroV2";
+import { AssistantStripV2 } from "./AssistantStripV2";
+import { HeaderAssistantSelectorV2, headerModelProvenanceV2 } from "./HeaderAssistantSelectorV2";
 import {
   WorkspaceHeaderV2,
   type HeaderOverflowActionV2,
@@ -242,28 +251,6 @@ function currentWorkspaceFolder(folderId: string) {
 }
 
 
-export type AnswerIdentityV2 = Readonly<{
-  label: string;
-  testId: "answer-assistant-identity";
-}>;
-
-/**
- * Optional quiet accepted Assistant identity. Ordinary answers stay neutral:
- * provider, adapter, raw model, revision numbers, and opaque ids never become
- * answer chrome — the label is the Assistant's name alone.
- */
-export function answerIdentityV2(
-  message: Pick<ThreadMessage, "assistantIdentity">
-): AnswerIdentityV2 | null {
-  if (message.assistantIdentity) {
-    return {
-      label: message.assistantIdentity.name,
-      testId: "answer-assistant-identity"
-    };
-  }
-  return null;
-}
-
 export function knowledgeReferenceForMessageV2(
   message: Pick<ThreadMessage, "citationMessageId" | "id" | "runId">,
   artifact: ThreadMessage["artifactSummary"] | null,
@@ -329,12 +316,17 @@ export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentatio
   return { ...live, presentation, transportLost };
 }
 
-/** The announcer follows the tail answer; an empty or loading chat is idle without a run. */
+/**
+ * The announcer follows the tail answer by id; an empty or loading chat is idle without a run.
+ * The id tells a rolled-back answer's older settled predecessor from its own settlement.
+ */
 export function announcedPresentationV2(
   tail: ThreadMessage | undefined,
   thread: AnswerPresentationThreadV2
-): RunPresentationV2 {
-  return tail?.role === "assistant" ? presentAnswerV2(tail, thread).presentation : { kind: "idle", runId: null };
+): AnnouncedRunPresentationV2 {
+  return tail?.role === "assistant"
+    ? { ...presentAnswerV2(tail, thread).presentation, answerId: tail.id }
+    : { kind: "idle", runId: null };
 }
 
 export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
@@ -469,11 +461,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // The account-scoped OAuth owner consumes the destination with its outcome.
     if (url.searchParams.get("library") === "mcp" && url.searchParams.has("oauth")) return;
     const target = libraryTabGroups.flatMap(group => group.tabs).find(id => id === url.searchParams.get("library"));
+    // `?library=assistants&assistant=<id>` opens that Assistant's detail sheet; both are consumed together.
+    const assistantLink = url.searchParams.has("assistant") ? boundedRouteId(url.searchParams.get("assistant")) : undefined;
     url.searchParams.delete("library");
+    url.searchParams.delete("assistant");
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
     if (!target) return;
-    if (settings.studio) settings.studio.open(target);
-    else settings.openLibrary();
+    if (settings.studio) {
+      if (target === "assistants" && assistantLink !== undefined) settings.studio.open(target, () => openAssistantDetail(assistantLink));
+      else settings.studio.open(target);
+    } else settings.openLibrary();
   }, [settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
@@ -538,6 +535,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     refreshThreadLayout();
   }, [composerDockHeight, refreshThreadLayout]);
   const composerLayerController = useRef<ComposerV2LayerController | null>(null);
+  // The header opens a layer of the composer. While no composer is mounted (a
+  // conversation or the workspace still loading renders none) its trigger is
+  // not actionable, so a click is never silently dropped.
+  const [composerLayerHost, setComposerLayerHost] = useState(false);
+  const attachComposerLayerController = useCallback((controller: ComposerV2LayerController | null) => {
+    composerLayerController.current = controller;
+    setComposerLayerHost(controller !== null);
+  }, []);
+  const assistantSelectorRef = useRef<HTMLButtonElement | null>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement | null>(null);
   const previousActiveChatIdRef = useRef(session.activeChatId);
   const personalMemoryOpen = settings.memory.open;
   const closePersonalMemory = settings.closeMemory;
@@ -624,7 +631,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       return skill ? [skill] : [];
     }));
   }
-  const pinnedSkillIds = resolveEffectiveSkillIds((composer.assistant.selected?.includedSkills ?? []).filter(skill => skill.mode !== "available").map(skill => skill.id), selectedSkills.map(skill => skill.id));
+  // The chat Assistant's Skill links: undefined without an Assistant, empty
+  // while it is unavailable or deleted.
+  const assistantIncludedSkills = composer.assistant.current
+    ? composer.assistant.current.state === "bound" ? composer.assistant.current.includedSkills : []
+    : undefined;
+  const pinnedSkillIds = resolveEffectiveSkillIds((assistantIncludedSkills ?? []).filter(skill => skill.mode !== "available").map(skill => skill.id), selectedSkills.map(skill => skill.id));
   const pinLoadedSkill = (skillId: string) => pinSkillForNextTurn({
     skillId, isCurrentScope: () => skillScopeRef.current === skillScopeKey,
     ...(projectContext ? { projectSkills: (activeProject?.resources ?? []).flatMap(resource => resource.type === "skill"
@@ -633,8 +645,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   });
   const latestMessage = thread.visibleMessages.at(-1);
   function openSkillLibrary() { setSkillLibraryScope(skillScopeKey); }
-  const effectiveSkillsMode = composer.assistant.selected?.skillsMode ?? skillsMode;
-  const assistantAvailableSkills = composer.assistant.selected ? (composer.assistant.selected.includedSkills ?? []).filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length : undefined;
+  const assistantAvailableSkills = assistantIncludedSkills ? assistantIncludedSkills.filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length : undefined;
   const continuationEligible = Boolean(workspace.pane.actions.openContinuedChat && session.activeChatId && latestMessage?.role === "assistant" &&
     latestMessage.status === "complete" && !thread.activeChatStreaming && !thread.activeChatDetailLoading &&
     !thread.activeChatDetailError && !activeProjectChat?.archived &&
@@ -886,31 +897,39 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     return parts.length > 0 ? parts.join(" · ") : null;
   }, [composer.currentParameterControls, composer.reasoningEffort, composer.temperature]);
   // Header model selector (operator decision 2026-09-02): the trigger lives
-  // in the header on every width and anchors the composer-owned picker; the
-  // selected Assistant locks it, an absent catalog or a live answer disables it.
+  // in the header on every width and anchors the composer-owned picker. It
+  // shows the model name only; the chat Assistant's provenance is the dot and
+  // the tooltip, a fixed model locks it (PRD 10.6). An absent catalog or a
+  // live answer disables it.
+  const chatAssistant = composer.assistant.current;
   const headerModelSelector = useMemo<WorkspaceHeaderModelSelectorV2>(() => {
     const catalog = composer.catalog;
     const model = composer.currentModel;
     const provider = catalog?.providers.find((candidate) => candidate.id === model?.provider);
-    const assistant = composer.assistant.selected;
     const noModels = Boolean(catalog && catalog.models.length === 0);
     const modelName = model?.displayName ?? (noModels ? "No models available" : "Choose model");
+    const provenance = headerModelProvenanceV2(chatAssistant, modelName, catalog?.models ?? []);
+    // A fixed model still opens the picker for its Parameters row,
+    // except while the Assistant blocks sending.
     return {
-      disabled: !catalog || Boolean(composer.catalogError) || noModels || thread.activeChatStreaming,
+      disabled: !catalog || Boolean(composer.catalogError) || noModels || thread.activeChatStreaming ||
+        Boolean(provenance.blocked) || !composerLayerHost,
       expanded: composerLayer === "model",
       family: provider?.family ?? null,
+      fromAssistant: provenance.fromAssistant,
       label: provider?.name ?? model?.provider ?? "",
-      locked: Boolean(assistant),
-      lockedReason: "Managed by the Assistant",
-      name: assistant ? `${assistant.name} · ${modelName}` : modelName,
-      onToggle: (anchor) => composerLayerController.current?.toggle("model", anchor)
+      locked: provenance.locked,
+      name: modelName,
+      onToggle: (anchor) => composerLayerController.current?.toggle("model", anchor),
+      title: provenance.title
     };
   }, [
-    composer.assistant.selected,
+    chatAssistant,
     composer.catalog,
     composer.catalogError,
     composer.currentModel,
     composerLayer,
+    composerLayerHost,
     thread.activeChatStreaming
   ]);
   const composerSurface = (
@@ -934,7 +953,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         const store = useComposerSessionStore.getState();
         store.updateSession(store.activeSessionKey, { artifactEdit: null });
       }}
-      assistantRemovedNotice={composer.assistant.removedNotice}
+      assistant={composer.assistant}
       attachmentItems={attachmentItems}
       attachmentLimitUsage={attachmentUsage}
       attachmentPolicy={attachmentPolicyForModel(
@@ -948,20 +967,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         : composer.composerDisabledHint}
       draft={composer.draft}
       hasReadyAttachments={attachmentItems.some((item) => !item.blocksSend)}
-      layerController={composerLayerController}
+      layerController={attachComposerLayerController}
       modelParametersSummary={modelParametersSummary}
       onAttachmentCountLimitExceeded={composer.composerActions.rejectAttachmentCount}
-      onDismissAssistantRemovedNotice={composer.assistant.clearRemovedNotice}
       onDraftChange={composer.composerActions.changeDraft}
       onLayerChange={setComposerLayer}
       onMakeModelDefault={composer.makeModelDefault}
-      onOpenAssistantPicker={() => composer.assistant.setPickerOpen(true)}
       onOpenKnowledgeLibrary={projectContext ? undefined : settings.openKnowledge}
       onOpenMcpSettings={projectContext ? workspace.projects.actions.openSettings : settings.openMcp}
       onOpenModelParameters={() => setRunSetupOpen(true)}
       onOpenSkillLibrary={openSkillLibrary}
       onOverrideKnowledgePlan={composer.knowledge.override}
-      onRemoveAssistant={composer.assistant.remove}
       onRemoveAttachment={id => { if (!cancelWorkspaceUpload(id)) composer.composerActions.removeAttachment(id); }}
       onRejectedFiles={(files) => composer.composerActions.rejectAttachments(files.map((file) => file.name))}
       onRetryAttachment={id => { if (!retryWorkspaceUpload(id)) composer.composerActions.retryAttachment?.(id); }}
@@ -984,7 +1000,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onUploadFiles={(files) => composer.uploadFiles(files)}
       onReuseFile={composer.reuseFile}
       runId={thread.currentRunId}
-      selectedAssistant={composer.assistant.selected}
       knowledgePlanSource={composer.knowledge.planSource}
       mcpSelection={mcpSelection}
       selectedKnowledgeSelection={composer.knowledge.selection}
@@ -1014,6 +1029,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       }}
     />
   );
+  const focusComposerInput = () => {
+    composerDockRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true });
+  };
   const composerOperationError = (
     <>
       <BackgroundRunStatusV2 onCheck={thread.checkBackgroundRun} waiting={Boolean(thread.backgroundRunWaiting)} />
@@ -1023,6 +1041,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onRetry={() => followupSubmission ? void composer.submitFollowup?.(followupSubmission.runId) : void composer.submitComposer()}
         retryable={Boolean(composer.operationErrorRetryable || followupSubmission && !followupSubmission.inFlight)}
       />
+      {/* Every composer stack shows the unavailable Assistant right above the composer. */}
+      <AssistantBindingNoticeV2
+        current={composer.assistant.current}
+        onChooseAnother={() => composer.assistant.setPickerOpen(true)}
+        onContinueWithout={composer.assistant.continueWithout}
+        onOpenInStudio={projectContext ? null : composer.assistant.editById}
+        onRestore={composer.assistant.restore}
+        pending={composer.assistant.pending}
+        restoreFocus={focusComposerInput}
+      />
     </>
   );
   const shellNotice = session.notice ? (
@@ -1030,38 +1058,50 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       <ShellNotice notice={session.notice} onDismiss={session.dismissNotice} />
     </div>
   ) : null;
-  const assistantOrientation = composer.assistant.selected &&
-    !composer.draft.trim() &&
-    composer.attachments.length === 0 &&
-    !composer.uploading ? (
-      <div className="v2-live-assistant-intro" data-testid="assistant-blank-intro">
-        <AssistantAvatarV2 recipe={composer.assistant.selected.avatar} size={64} />
-        <p>Assistant</p>
-        <h1>{composer.assistant.selected.name}</h1>
-        {composer.assistant.selected.description ? (
-          <span>{composer.assistant.selected.description}</span>
-        ) : null}
-        {composer.assistant.selected.starterPrompts.length > 0 ? (
-          <div
-            className="v2-live-assistant-starters"
-            data-testid="assistant-starter-prompts"
-            aria-label="Starter prompts"
-          >
-            {composer.assistant.selected.starterPrompts.slice(0, 4).map((prompt) => (
-              <button
-                className="v2-focusable"
-                key={prompt}
-                type="button"
-                onClick={() => composer.assistant.sendStarter(prompt)}
-              >
-                {prompt}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    ) : undefined;
+  // A blank chat with an Assistant opens with its quiet intro; the intro stays
+  // while the user types so the composer below it never moves.
+  const assistantOrientation = chatAssistant?.state === "bound" ? (
+    <AssistantIntroV2
+      avatar={chatAssistant.avatar}
+      description={chatAssistant.description}
+      name={chatAssistant.name}
+      owned={chatAssistant.owned}
+      ownerDisplayName={chatAssistant.ownerDisplayName}
+      projectName={chatAssistant.project ? chatAssistant.projectName ?? null : undefined}
+    />
+  ) : undefined;
+  // Quiet rows under the blank composer (PRD 10.5, 10.6): the Assistant strip
+  // of a blank personal or temporary chat, or the chosen Assistant's starters
+  // while it can send. Both reserve their space while a draft exists.
+  const blankComposerIdle = !composer.draft.trim() && composer.attachments.length === 0 &&
+    !composer.uploading && !composer.sending;
+  // The picker's Parameters row closes with the picker, so the parameters
+  // layer returns focus to the header model selector, or to the Assistant
+  // selector beside it while the model selector is disabled.
+  const restoreRunSetupFocus = () => [modelTriggerRef.current, assistantSelectorRef.current]
+    .find((trigger) => trigger && !trigger.disabled) ?? null;
+  const assistantStripItems = !projectContext && !session.activeChatId && !chatAssistant
+    ? composer.assistant.stripItems
+    : [];
+  const blankComposerRow = assistantStripItems.length > 0 ? (
+    <AssistantStripV2
+      idle={blankComposerIdle}
+      items={assistantStripItems}
+      onChoose={composer.assistant.choose}
+      onOpenPicker={() => composer.assistant.setPickerOpen(true)}
+      restoreFocus={focusComposerInput}
+    />
+  ) : chatAssistant?.state === "bound" && !chatAssistant.blockReason && chatAssistant.starterPrompts.length > 0 ? (
+    <AssistantStartersV2
+      key={chatAssistant.id}
+      idle={blankComposerIdle}
+      onSend={composer.assistant.sendStarter}
+      prompts={chatAssistant.starterPrompts}
+      restoreFocus={focusComposerInput}
+    />
+  ) : null;
   const messageById = new Map(thread.visibleMessages.map((message) => [message.id, message]));
+  const previousAnswerById = previousVisibleAnswersV2(thread.visibleMessages);
   const liveTail = thread.visibleMessages.at(-1);
   const readingAnchorMessageId = liveTail?.role === "assistant"
     ? liveTail.parentMessageId
@@ -1174,22 +1214,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // answer adds only direct user outputs; it never grows a receipt row or
     // post-hoc execution surface.
     const settled = settledRunPresentationV2(presentation);
-    const identity = answerIdentityV2(source);
-    // Answer anatomy: identity leads; the process fold (Thinking → Steps →
-    // Memory) sits above the text with the memory-saved notice under it; the
-    // actions row below carries the pager, the Sources chip and the verbs.
+    const identity = answerIdentityV2(source, previousAnswerById.get(source.id) ?? null);
+    // Answer anatomy: identity leads where the Assistant changes; the process
+    // fold (Thinking → Steps → Memory) sits above the text with the
+    // memory-saved notice under it; the actions row below carries the pager,
+    // the Sources chip and the verbs.
     const leadingSlot = activeChatSummary?.hasContinuationSource && !source.runId &&
       source.parentMessageId === thread.visibleMessages[0]?.id && thread.visibleMessages[0]?.parentMessageId === null ? (
       <a className="v2-chat-continuation-source v2-focusable"
         href={`/api/chats/${encodeURIComponent(activeChatSummary.id)}/continuation-source`}>Previous chat</a>
-    ) : identity && source.assistantIdentity ? (
-      <div className="v2-answer-lead">
-        <span className="v2-answer-identity" data-testid={identity.testId}>
-          <AssistantAvatarV2 recipe={source.assistantIdentity.avatar} size={20} />
-          <span>{identity.label}</span>
-        </span>
-      </div>
-    ) : null;
+    ) : identity ? <AnswerIdentityChipV2 identity={identity} /> : null;
     const noticeSlot = settled && artifact?.memoryAction ? (
       <MemoryActionConfirmationV2
         action={artifact.memoryAction}
@@ -1563,6 +1597,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             <div className="v2-live-conversation">
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
+              assistantSelector={(
+                <HeaderAssistantSelectorV2
+                  assistant={composer.assistant}
+                  focusComposer={focusComposerInput}
+                  triggerRef={assistantSelectorRef}
+                />
+              )}
               contextStats={composer.composerContextStats}
               continuation={continuationEligible ? continuation : null}
               continuationFiles={activeChatSummary?.workspace?.continuationFiles}
@@ -1588,6 +1629,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 />
               )}
               modelSelector={headerModelSelector}
+              modelTriggerRef={modelTriggerRef}
               moveDisabled={Boolean(
                 projectContext && (
                   workspace.projects.busy ||
@@ -1660,6 +1702,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   {shellNotice}
                   {composerOperationError}
                   {composerSurface}
+                  {blankComposerRow}
                 </div>
               ) : undefined}
               error={thread.activeChatDetailError}
@@ -1725,25 +1768,23 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onRetry={branches.retry}
         />
       ) : null}
-      {runSetupOpen ? <RunSetupV2 composer={composer} onClose={() => setRunSetupOpen(false)} /> : null}
+      {runSetupOpen ? (
+        <RunSetupV2 composer={composer} onClose={() => setRunSetupOpen(false)} restoreFocus={restoreRunSetupFocus} />
+      ) : null}
       {composer.assistant.openPicker ? (
         <AssistantPickerV2
+          anchorRef={assistantSelectorRef}
           assistants={composer.assistant.pickerItems}
+          currentAssistantId={composer.assistant.current?.state === "bound" ? composer.assistant.current.id : null}
           loading={composer.assistant.pickerLoading}
-          onClose={() => composer.assistant.setPickerOpen(false)}
-          onCreateFromCurrentSetup={composer.assistant.startFromCurrentSetup}
-          onManage={() => {
+          onBrowse={() => {
             composer.assistant.setPickerOpen(false);
             composer.assistant.openLibrary();
           }}
-          onUnavailableAction={(assistantId, action) => {
-            composer.assistant.setPickerOpen(false);
-            if (action === "mcp-settings") settings.openMcp();
-            else composer.assistant.editById(assistantId);
-          }}
-          onSelect={composer.assistant.selectById}
+          onClose={() => composer.assistant.setPickerOpen(false)}
+          onSelect={composer.assistant.choose}
+          projectScoped={projectContext}
           recentIds={composer.assistant.recentIds}
-          selectedAssistantId={composer.assistant.selected?.id ?? null}
         />
       ) : null}
       {exportHistoryChatId && exportHistoryChatId === session.activeChatId ? (
@@ -1762,12 +1803,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ) : null}
       {skillLibraryScope === skillScopeKey && projectContext ? (
         <ProjectSkillPicker key={`project:${skillScopeKey}`}
-          skillsMode={effectiveSkillsMode} availableCount={assistantAvailableSkills} modelContextWindow={composer.currentModel?.contextWindow ?? undefined}
+          skillsMode={skillsMode} availableCount={assistantAvailableSkills} modelContextWindow={composer.currentModel?.contextWindow ?? undefined}
           resources={(activeProject?.resources ?? []).flatMap((resource) => resource.type === "skill" ? [{
             id: resource.resourceId, name: resource.label, description: resource.description ?? "", available: resource.available,
             instructionApproxTokens: resource.instructionApproxTokens
           }] : [])}
-          includedSkills={composer.assistant.selected?.includedSkills ?? []}
+          includedSkills={assistantIncludedSkills ?? []}
           selectedSkills={selectedSkills}
           state={workspace.projects.syncState === "error" ? "error" : activeProject
             ? "ready" : workspace.projects.syncState === "syncing" ? "loading" : "unavailable"}
@@ -1776,10 +1817,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       <SkillLibraryOverlayV2 key={`personal:${skillScopeKey}`}
-        skillsMode={effectiveSkillsMode} availableCount={assistantAvailableSkills}
+        skillsMode={skillsMode} availableCount={assistantAvailableSkills}
         modelContextWindow={composer.currentModel?.contextWindow ?? undefined}
         open={skillLibraryScope === skillScopeKey && !projectContext}
-        includedSkills={composer.assistant.selected?.includedSkills}
+        includedSkills={assistantIncludedSkills}
         selectedSkills={selectedSkills}
         selectedIds={selectedSkills.map((skill) => skill.id)}
         onClose={() => setSkillLibraryScope(null)}

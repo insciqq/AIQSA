@@ -1,5 +1,6 @@
 import { useAssistantLibraryStore } from "@/components/app-shell/assistantLibraryStore";
 import { deactivateArchivedChats } from "@/components/app-shell/archivedChatsStore";
+import { useChatAssistantProjectionStore } from "@/components/app-shell/chatAssistantProjectionStore";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
 import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
@@ -23,6 +24,10 @@ export function resetAssistantLibraryStoreForTest(): void {
 
 export function resetArchivedChatsStoreForTest(): void {
   deactivateArchivedChats();
+}
+
+export function resetChatAssistantProjectionStoreForTest(): void {
+  resetZustandStore(useChatAssistantProjectionStore);
 }
 
 export function resetComposerControlStoreForTest(): void {

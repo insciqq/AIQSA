@@ -20,6 +20,7 @@ const now = new Date("2026-08-13T12:00:00.000Z");
 const chats: ChatNavigationSummaryWire[] = [
   {
     activeRun: true,
+    assistant: null,
     folderId: null,
     id: "today",
     title: "Running answer",
@@ -27,6 +28,7 @@ const chats: ChatNavigationSummaryWire[] = [
   },
   {
     activeRun: false,
+    assistant: null,
     folderId: null,
     id: "yesterday",
     title: "Selected brief",
@@ -157,6 +159,45 @@ describe("Navigation v2", () => {
     expect(screen.getByLabelText("Answer in progress")).toBeVisible();
   });
 
+  it("leads a chat with its Assistant's 16px avatar and leaves other rows unchanged", () => {
+    const assistant = {
+      avatar: {
+        accents: [0, 4],
+        backgroundShape: "circle",
+        foregroundShape: "diamond",
+        kind: "generated",
+        paletteId: "ocean",
+        recipeVersion: 1,
+        rotations: [0, 2]
+      },
+      name: "Research partner"
+    } as const satisfies NonNullable<ChatNavigationSummaryWire["assistant"]>;
+    sidebar({ chats: [{ ...chats[0], assistant }, { ...chats[1], assistant }, {
+      activeRun: false,
+      assistant: null,
+      folderId: null,
+      id: "plain",
+      title: "Plain chat",
+      updatedAt: "2026-08-12T07:00:00.000Z"
+    }] });
+
+    const running = screen.getByRole("treeitem", { name: "Running answer" });
+    const settled = screen.getByRole("treeitem", { name: "Selected brief" });
+    const plain = screen.getByRole("treeitem", { name: "Plain chat" });
+    for (const row of [running, settled]) {
+      const avatar = within(row).getByTestId("assistant-avatar");
+      expect(avatar).toHaveAttribute("width", "16");
+      expect(avatar).toHaveAttribute("aria-hidden", "true");
+      expect(row).not.toHaveTextContent("Research partner");
+    }
+    // The live dot stays first; the avatar follows it.
+    expect(within(running).getByLabelText("Answer in progress").nextElementSibling)
+      .toBe(within(running).getByTestId("assistant-avatar"));
+    expect(within(plain).queryByTestId("assistant-avatar")).toBeNull();
+    expect(plain.firstElementChild).toBeEmptyDOMElement();
+    expect(plain.querySelector(".v2-chat-title")).toHaveTextContent("Plain chat");
+  });
+
   it("uses one roving Tab stop and opens the focused row menu with Shift+F10", async () => {
     sidebar();
     const tree = screen.getByRole("tree", { name: "Personal chats" });
@@ -197,6 +238,7 @@ describe("Navigation v2", () => {
       activeChatId: "blank",
       chats: [{
         activeRun: false,
+        assistant: null,
         folderId: null,
         id: "blank",
         title: "New Chat",

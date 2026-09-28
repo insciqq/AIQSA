@@ -184,6 +184,8 @@ test("a guarded Studio draft keeps the address on the shown chat until it is dis
     await runAccountMenuAction(page, "Assistants");
     const library = page.getByTestId("library-v2");
     await library.getByRole("button", { name: "New assistant", exact: true }).first().click();
+    // "New assistant" opens the start sheet; Blank is chosen.
+    await page.getByRole("dialog", { name: "New assistant", exact: true }).getByRole("button", { name: "Continue", exact: true }).click();
     const name = library.getByLabel("Name Required", { exact: true });
     await name.fill("Unsaved routing assistant");
     const confirmation = page.getByTestId("discard-changes-confirmation");

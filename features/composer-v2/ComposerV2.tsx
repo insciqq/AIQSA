@@ -1,7 +1,18 @@
 "use client";
 
 import { mcpReadinessPresentation } from "@/components/app-shell/mcpReadiness";
+import type { ComposerMcpSelection } from "@/components/app-shell/composerControlStore";
 import type { ComposerArtifactEdit } from "@/components/app-shell/composerSessionStore";
+import {
+  AssistantRowNoticeV2,
+  assistantRowDescription,
+  assistantRowNoticeText,
+  assistantRowProvenance,
+  assistantRowResettable,
+  boundComposerAssistantV2,
+  type AssistantRowProvenanceV2,
+  type ComposerV2Assistant
+} from "./AssistantRowProvenanceV2";
 
 import { isImeCompositionEvent } from "@/components/keyboard";
 import { RUN_FOLLOWUP_MAX_CHARS } from "@/lib/contracts/runFollowups";
@@ -27,7 +38,6 @@ import {
   attachmentSendBlockReasonV2,
   type ComposerAttachmentItemV2
 } from "@/features/attachments-v2/attachmentPresentation";
-import type { AssistantSummary } from "@/lib/contracts/assistants";
 import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
@@ -228,7 +238,11 @@ export type ComposerV2Props = Readonly<{
   artifactUnavailableReason?: string | null;
   onCreateArtifact?(): void;
   onRemoveArtifactCreate?(): void;
-  assistantRemovedNotice?: boolean;
+  /**
+   * The chat's Assistant: each control shows the Assistant's part in its row
+   * and resets it. Without one the composer behaves as an ordinary chat.
+   */
+  assistant?: ComposerV2Assistant | null;
   attachmentItems?: readonly ComposerAttachmentItemV2[];
   attachmentLimitUsage?: AttachmentLimitUsage | null;
   attachmentPolicy?: ComposerAttachmentPolicy;
@@ -248,19 +262,16 @@ export type ComposerV2Props = Readonly<{
     maxCount: number;
   }): void;
   onDraftChange(value: string): void;
-  onDismissAssistantRemovedNotice?(): void;
   /** Observes which layer is open (the header selector mirrors it as aria-expanded). */
   onLayerChange?(layer: ComposerV2Layer): void;
   onMakeModelDefault?(model: CatalogModel): void;
-  onOpenAssistantPicker?(): void;
   /** Opens the Knowledge section ("Manage Knowledge ›"). */
   onOpenKnowledgeLibrary?(): void;
   onOpenMcpSettings?(): void;
   onOpenSkillLibrary?(): void;
-  /** Detaches an inherited Assistant/Project plan before manual selection. */
+  /** Detaches an inherited Project plan before manual selection. */
   onOverrideKnowledgePlan?(): void;
   onOpenModelParameters?(): void;
-  onRemoveAssistant?(): void;
   onRemoveAttachment?(id: string): void;
   onRemoveArtifactEdit?(): void;
   onRejectedFiles?(files: readonly File[]): void;
@@ -287,14 +298,9 @@ export type ComposerV2Props = Readonly<{
   onUploadFiles?(files: readonly File[]): Promise<void> | void;
   onReuseFile?(attachmentId: string, fileName: string): Promise<boolean>;
   runId?: string | null;
-  selectedAssistant?: (Pick<AssistantSummary, "id" | "name"> & {
-    includedSkills?: readonly { id: string; name: string; mode?: "pinned" | "available" }[];
-    skillsMode?: "auto" | "off";
-    knowledgeLabel?: string | null;
-    knowledgeResourceCount?: number;
-  }) | null;
   knowledgePlanSource?: "assistant" | "chat" | "explicit" | "off" | "project";
-  mcpSelection?: McpRunSelection;
+  /** The effective MCP selection; an Assistant's exact server list is read from `assistant`. */
+  mcpSelection?: ComposerMcpSelection;
   skillsMode?: "auto" | "off";
   onSelectSkillsMode?(mode: "auto" | "off"): void;
   selectedKnowledgeSelection?: KnowledgeSelection;
@@ -366,53 +372,82 @@ function modelCapabilityLabels(model: CatalogModel): string[] {
   return labels;
 }
 
+/* Tab skips controls the layout does not draw (the desktop popover hides the
+   sheet header's Close). */
 function focusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(
     'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]'
-  )).filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+  )).filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true" &&
+    element.checkVisibility?.() !== false);
 }
 
 function optionElements(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>("[data-v2-composer-option]:not(:disabled)"));
+  return Array.from(container.querySelectorAll<HTMLElement>(
+    '[data-v2-composer-option]:not(:disabled):not([aria-disabled="true"])'
+  ));
+}
+
+/*
+ * The option a menu opens on: its first enabled choice, never an action that
+ * trails the choices (a footer link, "Pin your Skills…", Reset). A menu whose
+ * choices are all disabled opens on the layer itself.
+ */
+function initialOption(container: HTMLElement): HTMLElement | undefined {
+  return optionElements(container).find((option) => !option.hasAttribute("data-v2-composer-trailing"));
 }
 
 /*
  * One menu row for every composer popover: a radio glyph (single choice),
- * an icon plus trailing check (multi-select), or a plain action item.
+ * an icon plus trailing check (multi-select), or a plain action item
+ * (`button` is the same action inside a dialog layer).
  */
 function CapabilityRow({
   children,
+  current = false,
   disabled = false,
   icon,
   onClick,
   reason,
   selected = false,
-  selectionRole = "checkbox"
+  selectionRole = "checkbox",
+  trailing = false
 }: Readonly<{
   children: ReactNode;
+  /**
+   * The value in force, which this menu cannot change: drawn as chosen at
+   * full strength and announced as checked but unavailable (`aria-disabled`),
+   * unlike a dimmed option that cannot be used.
+   */
+  current?: boolean;
   disabled?: boolean;
   icon?: UiV2IconName;
   onClick?(event: ReactMouseEvent<HTMLButtonElement>): void;
   reason?: string | null;
   selected?: boolean;
-  selectionRole?: "checkbox" | "item" | "radio";
+  selectionRole?: "button" | "checkbox" | "item" | "radio";
+  /** An action after the menu's choices; the menu never opens on it. */
+  trailing?: boolean;
 }>) {
   const role = selectionRole === "radio"
     ? "menuitemradio"
-    : selectionRole === "item" ? "menuitem" : "menuitemcheckbox";
+    : selectionRole === "item" ? "menuitem" : selectionRole === "button" ? undefined : "menuitemcheckbox";
+  const action = selectionRole === "item" || selectionRole === "button";
+  const checked = selected || current;
   return (
     <button
       className="v2-composer-capability-row v2-focusable"
       data-v2-composer-option="true"
+      data-v2-composer-trailing={trailing || undefined}
       data-selection={selectionRole}
       type="button"
       role={role}
-      aria-checked={selectionRole === "item" ? undefined : selected}
-      disabled={disabled}
-      onClick={onClick}
+      aria-checked={action ? undefined : checked}
+      aria-disabled={current || undefined}
+      disabled={disabled && !current}
+      onClick={current ? undefined : onClick}
     >
       {selectionRole === "radio" ? (
-        <span className="v2-composer-radio" data-checked={selected || undefined} aria-hidden="true" />
+        <span className="v2-composer-radio" data-checked={checked || undefined} aria-hidden="true" />
       ) : icon ? (
         <UiV2Icon name={icon} />
       ) : (
@@ -422,7 +457,7 @@ function CapabilityRow({
         <span>{children}</span>
         {reason ? <span>{reason}</span> : null}
       </span>
-      {selectionRole === "checkbox" && selected ? <UiV2Icon name="check" /> : null}
+      {selectionRole === "checkbox" && checked ? <UiV2Icon name="check" /> : null}
     </button>
   );
 }
@@ -436,7 +471,7 @@ export function ComposerV2({
   artifactUnavailableReason = null,
   onCreateArtifact,
   onRemoveArtifactCreate,
-  assistantRemovedNotice = false,
+  assistant = null,
   attachmentItems = [],
   attachmentLimitUsage = null,
   attachmentPolicy = DEFAULT_COMPOSER_ATTACHMENT_POLICY,
@@ -450,16 +485,13 @@ export function ComposerV2({
   modelParametersSummary = null,
   onAttachmentCountLimitExceeded,
   onDraftChange,
-  onDismissAssistantRemovedNotice,
   onLayerChange,
   onMakeModelDefault,
-  onOpenAssistantPicker,
   onOpenKnowledgeLibrary,
   onOpenMcpSettings,
   onOpenModelParameters,
   onOpenSkillLibrary,
   onOverrideKnowledgePlan,
-  onRemoveAssistant,
   onRemoveAttachment,
   onRemoveArtifactEdit,
   onRejectedFiles,
@@ -481,7 +513,6 @@ export function ComposerV2({
   onUploadFiles,
   onReuseFile,
   runId = null,
-  selectedAssistant = null,
   sendWithEnter = true,
   mcpSelection = { mode: "auto" },
   skillsMode = "auto",
@@ -536,7 +567,22 @@ export function ComposerV2({
   );
   const currentProvider = providers.find((provider) => provider.id === currentModel?.provider);
   const noModels = Boolean(config && models.length === 0);
-  const controlsLocked = Boolean(selectedAssistant);
+  // The Assistant's part in each row: a dot on the control while the value is
+  // the Assistant's, and the menu's first line in words. Nothing is hidden.
+  const boundAssistant = boundComposerAssistantV2(assistant);
+  const modelProvenance = assistantRowProvenance(boundAssistant, "model");
+  const searchProvenance = assistantRowProvenance(boundAssistant, "search");
+  const toolsProvenance = assistantRowProvenance(boundAssistant, "tools");
+  const knowledgeProvenance = assistantRowProvenance(boundAssistant, "knowledge");
+  const skillsProvenance = assistantRowProvenance(boundAssistant, "skills");
+  const searchFixed = searchProvenance?.kind === "fixed";
+  const toolsFixed = toolsProvenance?.kind === "fixed";
+  const knowledgeFixed = knowledgeProvenance?.kind === "fixed";
+  const skillsFixed = skillsProvenance?.kind === "fixed";
+  const effectiveMcpSelection: ComposerMcpSelection = boundAssistant
+    ? boundAssistant.rows.tools.value
+    : mcpSelection;
+  const includedSkills = boundAssistant?.includedSkills ?? [];
   const agentReason = agent?.unavailableReason ??
     ((selectedKnowledgeSelection && selectedKnowledgeSelection.mode !== "none") || selectedKnowledgeBaseIds.length > 0
       ? "Turn off Knowledge to use Agent." : null);
@@ -560,8 +606,8 @@ export function ComposerV2({
   const readyAttachment = hasReadyAttachments || attachmentItems.some(
     (item) => !attachmentItemBlocksSend(item)
   );
-  const effectiveSkillIds = resolveEffectiveSkillIds((selectedAssistant?.includedSkills ?? []).filter(skill => skill.mode !== "available").map(({ id }) => id), selectedSkillIds);
-  const effectiveSkillsMode = selectedAssistant?.skillsMode ?? skillsMode;
+  const effectiveSkillIds = resolveEffectiveSkillIds(includedSkills.filter(skill => skill.mode !== "available").map(({ id }) => id), selectedSkillIds);
+  const effectiveSkillsMode = skillsMode;
   const followupTooLong = draft.length > RUN_FOLLOWUP_MAX_CHARS;
   const sendDisabled = followupMode ? Boolean(followupSending || stopping || inputDisabled || !draft.trim() || followupTooLong) : Boolean(
     sending || inputDisabled || artifactBlockReason || agentBlockReason || attachmentBlockReason || (!draft.trim() && !readyAttachment)
@@ -598,18 +644,24 @@ export function ComposerV2({
   const selectedSearchSet = new Set(selectedSearchOptionIds);
   const knowledgeSelection = selectedKnowledgeSelection ??
     explicitKnowledgeSelection({ baseIds: selectedKnowledgeBaseIds });
-  const knowledgeInheritedFrom = selectedAssistant || knowledgePlanSource === "assistant"
-    ? "assistant" as const
-    : knowledgePlanSource === "project"
-      ? "project" as const
-      : knowledgeSelection.mode === "inherited"
-        ? knowledgeSelection.inheritedFrom
-        : null;
-  const knowledgeControlsLocked = knowledgeInheritedFrom !== null;
+  // A Project default stays locked until the user overrides it for the chat;
+  // an Assistant's Knowledge is locked only when the Assistant fixes it.
+  const knowledgeInheritedFrom = knowledgePlanSource === "project"
+    ? "project" as const
+    : knowledgeSelection.mode === "inherited"
+      ? knowledgeSelection.inheritedFrom
+      : null;
+  const knowledgeProjectLocked = knowledgeInheritedFrom === "project";
+  const knowledgeControlsLocked = knowledgeProjectLocked || knowledgeFixed;
   const selectedKnowledgeSet = new Set(knowledgeSelection.baseIds);
   const selectedKnowledgeSourceSet = new Set(knowledgeSelection.sourceIds);
+  const assistantKnowledge = boundAssistant?.rows.knowledge.assistantValue;
+  // A privacy-hidden Assistant plan is only counted, never identified.
+  const assistantKnowledgeCount = assistantKnowledge?.mode === "explicit"
+    ? assistantKnowledge.baseIds.length + assistantKnowledge.sourceIds.length + (assistantKnowledge.hiddenCount ?? 0)
+    : 0;
   const selectedKnowledgeResourceCount = knowledgeSelection.mode === "inherited"
-    ? selectedAssistant?.knowledgeResourceCount ?? 0
+    ? assistantKnowledgeCount
     : knowledgeSelection.baseIds.length + knowledgeSelection.sourceIds.length;
   const knowledgeById = new Map(
     (config?.knowledgeBases ?? []).map((base) => [base.id, base])
@@ -716,16 +768,18 @@ export function ComposerV2({
     queueMicrotask(() => {
       if (cancelled || !layerRef.current) return;
       const target = layer === "model"
-        ? layerRef.current.querySelector<HTMLElement>("[data-v2-model-search]")
+        ? layerRef.current.querySelector<HTMLElement>("[data-v2-model-search]") ??
+          layerRef.current.querySelector<HTMLElement>('[data-testid="composer-v2-model-parameters"]')
         : layer === "files"
           ? layerRef.current.querySelector<HTMLElement>("[data-v2-file-search]")
         : layer === "knowledge"
           ? layerRef.current.querySelector<HTMLElement>("[data-v2-knowledge-search]") ??
-            optionElements(layerRef.current)[0]
+            initialOption(layerRef.current)
           : layer === "search"
             ? focusableElements(layerRef.current)[0]
-            : optionElements(layerRef.current)[0];
-      (target ?? layerRef.current).focus();
+            : initialOption(layerRef.current);
+      // A menu opens at its first line: focus never scrolls it.
+      (target ?? layerRef.current).focus({ preventScroll: true });
     });
     const dismiss = (event: PointerEvent) => {
       const target = event.target;
@@ -952,7 +1006,7 @@ export function ComposerV2({
 
   // Search, Knowledge, Skills, and MCP rows are selection toggles: the menu
   // stays open so several can be combined in one visit. Only rows that hand
-  // off to another surface (Assistant picker, file dialog, Skill Library,
+  // off to another surface (file dialog, Skill Library,
   // MCP settings, Model parameters) close it.
   function toggleKnowledge(base: ComposerConfigKnowledgeBase) {
     if (!onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds) return;
@@ -988,6 +1042,35 @@ export function ComposerV2({
     onSelectMcp({ mode });
   }
 
+  /* The menu's first line: fixed, adjustable, changed, or fallback in words. */
+  function provenanceNotice(provenance: AssistantRowProvenanceV2 | null, assistantValue: string | null) {
+    const text = assistantRowNoticeText(provenance, assistantValue);
+    return provenance && text ? <AssistantRowNoticeV2 kind={provenance.kind} text={text} /> : null;
+  }
+
+  /* "Reset to Assistant" reads "unchanged" until the row is changed for this chat. */
+  function resetToAssistantRow(
+    provenance: AssistantRowProvenanceV2 | null,
+    selectionRole: "button" | "item" = "item"
+  ) {
+    if (!provenance || !assistantRowResettable(provenance)) return null;
+    return (
+      <CapabilityRow
+        icon="regenerate"
+        selectionRole={selectionRole}
+        trailing
+        disabled={!provenance.changed || activeRun}
+        reason={provenance.changed ? "Changed for this chat" : "unchanged"}
+        onClick={() => {
+          assistant?.resetRow(provenance.row);
+          closeLayer();
+        }}
+      >
+        Reset to Assistant
+      </CapabilityRow>
+    );
+  }
+
   const knowledgeHasBases = (config?.knowledgeBases.length ?? 0) > 0;
   const knowledgeDocumentCount = typeof config?.knowledgeDocumentTotal === "number"
     ? config.knowledgeDocumentTotal
@@ -996,29 +1079,22 @@ export function ComposerV2({
     (config?.knowledgeDocumentTotal === undefined &&
       (config?.knowledgeBases ?? []).some((base) => base.documentCount > 0));
   // The Knowledge chip is available only when the current catalog contains a
-  // selectable base or document. Assistant-locked state keeps its selected
-  // label even when the ordinary picker is unavailable.
+  // selectable base or document. An inherited or Assistant-set plan keeps its
+  // chip even when the ordinary picker is unavailable.
   const knowledgeAvailable = Boolean(onSelectKnowledgeSelection || onSelectKnowledgeBaseIds) && (
     knowledgeHasBases || knowledgeHasDocuments
   );
   const knowledgeChipVisible = Boolean(config) && (
-    knowledgeControlsLocked || knowledgeSelection.mode !== "none" ||
-    (knowledgeAvailable && !controlsLocked)
+    knowledgeInheritedFrom !== null || knowledgeSelection.mode !== "none" || knowledgeAvailable ||
+    (knowledgeProvenance !== null && knowledgeProvenance.kind !== "own")
   );
   const knownSingleKnowledgeName = selectedKnowledgeResourceCount === 1
     ? selectedKnowledgeNames[0]
     : null;
   const knowledgeChipValue = knowledgeInheritedFrom === "assistant"
-    ? knownSingleKnowledgeName && knownSingleKnowledgeName !== "unavailable"
-      ? `${knownSingleKnowledgeName} from Assistant`
-      : selectedKnowledgeResourceCount > 0
-        ? `${selectedKnowledgeResourceCount} from Assistant`
-        : selectedAssistant?.knowledgeLabel === "All Knowledge" ||
-            knowledgeSelection.mode === "all_my_knowledge"
-          ? "All from Assistant"
-          : knowledgeSelection.mode === "inherited"
-            ? "From Assistant"
-            : "Off from Assistant"
+    ? selectedKnowledgeResourceCount > 0
+      ? resourceCountLabel(selectedKnowledgeResourceCount)
+      : "Selected Knowledge"
     : knowledgeInheritedFrom === "project"
       ? knownSingleKnowledgeName && knownSingleKnowledgeName !== "unavailable"
         ? `${knownSingleKnowledgeName} from Project`
@@ -1045,9 +1121,10 @@ export function ComposerV2({
     if (!option) return "Unavailable source";
     const name = searchEngineShortName(option, currentModel?.providerFamily ?? currentProvider?.family);
     return compatibleSearchOptionIds.has(id) ? name : `${name} (unavailable for this model)`;
-  }).join(", ") : "Off"}${controlsLocked ? " · from Assistant" : ""}`;
+  }).join(", ") : "Off"}${assistantRowDescription(searchProvenance)}`;
   const searchChipVisible = Boolean(config) && (
-    selectedSearchOptionIds.length > 0 || (concreteSearchOptions.length > 0 && !controlsLocked)
+    selectedSearchOptionIds.length > 0 || concreteSearchOptions.length > 0 ||
+    (searchProvenance !== null && searchProvenance.kind !== "own")
   );
   const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
   // Transitional states (activating, on-demand idle) are not problems; only
@@ -1060,11 +1137,77 @@ export function ComposerV2({
   const mcpAttentionLabel = mcpServersNeedingAttention
     ? `${mcpServersNeedingAttention} MCP ${mcpServersNeedingAttention === 1 ? "server needs" : "servers need"} attention. Open MCP settings.`
     : undefined;
-  const mcpDescription = `MCP: ${mcpSelection.mode === "load_all" ? "Load all" : mcpSelection.mode === "off" ? "Off" : "Auto"}${mcpAttentionLabel ? `. ${mcpAttentionLabel}` : ""}`;
-  const skillsDescription = `Skills: ${effectiveSkillsMode === "off" ? "Auto off" : "Auto"}${effectiveSkillIds.length ? ` · ${effectiveSkillIds.length} pinned (always loaded)` : ""}${controlsLocked ? " · from Assistant" : ""}`;
-  const knowledgeDescription = `Knowledge: ${knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? "Off"
-    : selectedKnowledgeNames.length ? `${selectedKnowledgeNames.join(", ")}${knowledgeInheritedFrom ? ` · from ${knowledgeInheritedFrom === "project" ? "Project" : "Assistant"}` : ""}`
-      : knowledgeChipValue}`;
+  // An Assistant's exact server list: names the viewer can see, the rest counted.
+  const mcpServerById = new Map((config?.mcpServers ?? []).map((server) => [server.id, server] as const));
+  const mcpExactServers = effectiveMcpSelection.mode === "exact"
+    ? effectiveMcpSelection.serverIds.flatMap((id) => {
+        const server = mcpServerById.get(id);
+        return server ? [server] : [];
+      })
+    : [];
+  const mcpExactHiddenCount = effectiveMcpSelection.mode === "exact"
+    ? (effectiveMcpSelection.hiddenCount ?? 0) + effectiveMcpSelection.serverIds.length - mcpExactServers.length
+    : 0;
+  const mcpExactCount = mcpExactServers.length + mcpExactHiddenCount;
+  const mcpAssistantList = boundAssistant && effectiveMcpSelection.mode === "exact" ? boundAssistant : null;
+  // Names after the third, and servers the user cannot see, are only counted.
+  const mcpExactMore = Math.max(0, mcpExactServers.length - 3) + mcpExactHiddenCount;
+  const mcpAssistantListReason = mcpExactServers.length > 0
+    ? `All tools of: ${mcpExactServers.slice(0, 3).map((server) => server.name).join(", ")}${
+      mcpExactMore > 0 ? ` and ${mcpExactMore} more` : ""}`
+    : `All tools of: ${mcpExactCount} ${mcpExactCount === 1 ? "server" : "servers"}`;
+  const mcpModeLabel = effectiveMcpSelection.mode === "exact"
+    ? `${mcpExactCount} ${mcpExactCount === 1 ? "server" : "servers"}`
+    : effectiveMcpSelection.mode === "load_all" ? "Load all" : effectiveMcpSelection.mode === "off" ? "Off" : "Auto";
+  const mcpDescription = `MCP: ${mcpModeLabel}${assistantRowDescription(toolsProvenance)}${mcpAttentionLabel ? `. ${mcpAttentionLabel}` : ""}`;
+  const skillsDescription = `Skills: ${effectiveSkillsMode === "off" ? "Auto off" : "Auto"}${effectiveSkillIds.length ? ` · ${effectiveSkillIds.length} pinned (always loaded)` : ""}${assistantRowDescription(skillsProvenance)}`;
+  const knowledgeFallback = knowledgeProvenance?.kind === "fallback";
+  // A fallback already names the Project default: the origin is said once.
+  const knowledgeDescription = `Knowledge: ${knowledgeSelection.mode === "none" && !knowledgeProjectLocked ? "Off"
+    : selectedKnowledgeNames.length ? `${selectedKnowledgeNames.join(", ")}${
+      knowledgeProjectLocked && !knowledgeFallback ? " · from Project" : ""}`
+      : knowledgeChipValue}${assistantRowDescription(knowledgeProvenance)}`;
+  // The Assistant's own value of a changed row in the chip's words ("… starts
+  // with Off"); null when the user cannot see all of it.
+  const assistantRows = boundAssistant?.rows;
+  const assistantSearch = assistantRows?.search.assistantValue;
+  const assistantSearchIds = assistantSearch && "optionIds" in assistantSearch && !assistantSearch.hiddenCount
+    ? assistantSearch.optionIds
+    : [];
+  const assistantSearchOptions = assistantSearchIds.flatMap((id) =>
+    concreteSearchOptions.filter((option) => option.strategyId === id));
+  const assistantSearchLabel = assistantSearch?.mode === "off"
+    ? "Off"
+    : assistantSearchIds.length > 0 && assistantSearchOptions.length === assistantSearchIds.length
+      ? assistantSearchOptions.map((option) =>
+          searchEngineShortName(option, currentModel?.providerFamily ?? currentProvider?.family)).join(", ")
+      : null;
+  const assistantTools = assistantRows?.tools.assistantValue;
+  const assistantToolsCount = assistantTools?.mode === "exact"
+    ? assistantTools.serverIds.length + (assistantTools.hiddenCount ?? 0)
+    : 0;
+  const assistantToolsLabel = assistantTools?.mode === "off"
+    ? "Off"
+    : assistantTools?.mode === "exact" ? `${assistantToolsCount} ${assistantToolsCount === 1 ? "server" : "servers"}` : null;
+  const assistantKnowledgeName = assistantKnowledge?.mode === "explicit" && assistantKnowledgeCount === 1
+    ? knowledgeById.get(assistantKnowledge.baseIds[0] ?? "")?.name ?? sourceById.get(assistantKnowledge.sourceIds[0] ?? "")?.name
+    : undefined;
+  const assistantKnowledgeLabel = assistantKnowledge?.mode === "none"
+    ? "Off"
+    : assistantKnowledge?.mode === "explicit" ? assistantKnowledgeName ?? resourceCountLabel(assistantKnowledgeCount) : null;
+  const assistantSkillsLabel = assistantRows ? assistantRows.skills.assistantValue.mode === "off" ? "Auto off" : "Auto" : null;
+  const addKnowledgeReason = knowledgeFixed ? assistantRowNoticeText(knowledgeProvenance) : null;
+  const overrideKnowledgeAction = onOverrideKnowledgePlan ? (
+    <button
+      className="v2-composer-layer-link v2-focusable"
+      data-v2-composer-option="true"
+      type="button"
+      role="menuitem"
+      onClick={onOverrideKnowledgePlan}
+    >
+      Override for this chat
+    </button>
+  ) : null;
   const agentDisabledReason = activeRun ? "A response is running." : !agent?.enabled ? agentReason : null;
   const agentExplanation = activeRun ? "A response is running." : agentReason;
   const agentDescription = `Agent: ${agent?.enabled ? "On" : "Off"}. ${agentExplanation ? `${agentExplanation} ` : ""}${AGENT_HELP}`;
@@ -1107,42 +1250,6 @@ export function ComposerV2({
             event.currentTarget.value = "";
           }}
         />
-        {selectedAssistant ? (
-          <div className="v2-composer-assistant" data-testid="composer-v2-assistant-lock">
-            <span className="v2-composer-assistant-chip">
-              <UiV2Icon name="assistant" />
-              <span>Assistant: <strong>{selectedAssistant.name}</strong></span>
-              {onRemoveAssistant ? (
-                <UiV2IconButton
-                  icon="close"
-                  label="Remove assistant"
-                  onClick={onRemoveAssistant}
-                />
-              ) : null}
-            </span>
-            <span className="v2-composer-assistant-help">
-              Model, tools and instructions come from the assistant.
-            </span>
-          </div>
-        ) : null}
-        {assistantRemovedNotice && !selectedAssistant ? (
-          <div
-            className="v2-composer-status"
-            data-testid="composer-assistant-removed-notice"
-            role="status"
-          >
-            <span>Assistant removed. Your manual settings now apply.</span>
-            {onDismissAssistantRemovedNotice ? (
-              <button
-                className="v2-focusable"
-                type="button"
-                onClick={onDismissAssistantRemovedNotice}
-              >
-                Dismiss
-              </button>
-            ) : null}
-          </div>
-        ) : null}
 
         {artifactCreate ? <div className="v2-composer-artifact-edit">
           <UiV2Icon name="artifact" /><span>Artifact</span>
@@ -1244,8 +1351,9 @@ export function ComposerV2({
               {searchChipVisible ? (
                 <button ref={searchTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
                   data-quiet={searchActive ? undefined : ""} data-glyph="globe"
+                  data-provenance={searchProvenance?.marker ? "assistant" : undefined}
                   data-tooltip={searchDescription} data-tooltip-side="top"
-                  disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
+                  disabled={activeRun || !onSelectSearchOptionIds}
                   aria-controls={`${layerId}-search`} aria-expanded={layer === "search"} aria-haspopup="dialog"
                   aria-label={activeSearchEngineName ? `Choose web search: ${activeSearchEngineName}` : "Choose web search"}
                   aria-describedby={`${layerId}-search-description`}
@@ -1256,7 +1364,8 @@ export function ComposerV2({
               ) : null}
               {knowledgeChipVisible ? (
                 <button ref={knowledgeTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
-                  data-quiet={knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? "" : undefined} data-glyph="book"
+                  data-quiet={knowledgeSelection.mode === "none" && !knowledgeProjectLocked ? "" : undefined} data-glyph="book"
+                  data-provenance={knowledgeProvenance?.marker ? "assistant" : undefined}
                   disabled={activeRun || (!knowledgeControlsLocked && !onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds)}
                   aria-controls={`${layerId}-knowledge`} aria-expanded={layer === "knowledge"} aria-haspopup="menu"
                   aria-label="Choose Knowledge" aria-describedby={`${layerId}-knowledge-description`}
@@ -1266,21 +1375,21 @@ export function ComposerV2({
                     description={knowledgeDescription} descriptionId={`${layerId}-knowledge-description`} />
                 </button>
               ) : null}
-              {!controlsLocked ? (
-                <button className="v2-composer-indicator v2-focusable" type="button"
-                  data-quiet={mcpSelection.mode === "load_all" ? undefined : ""} data-glyph="tool"
-                  data-off={mcpSelection.mode === "off" || undefined} data-mcp-mode={mcpSelection.mode}
-                  disabled={activeRun} aria-controls={`${layerId}-tools`} aria-expanded={layer === "tools"} aria-haspopup="menu"
-                  aria-label="Change MCP mode" aria-describedby={`${layerId}-mcp-description`}
-                  data-tooltip={mcpDescription} data-tooltip-side="top"
-                  onClick={event => openLayer("tools", event.currentTarget)}>
-                  <CapabilityChipContent label="MCP" icon="tool" signal={mcpAttentionLabel ? "attention" : undefined}
-                    description={mcpDescription} descriptionId={`${layerId}-mcp-description`} />
-                </button>
-              ) : null}
+              <button className="v2-composer-indicator v2-focusable" type="button"
+                data-quiet={effectiveMcpSelection.mode === "load_all" || effectiveMcpSelection.mode === "exact" ? undefined : ""} data-glyph="tool"
+                data-off={effectiveMcpSelection.mode === "off" || undefined} data-mcp-mode={effectiveMcpSelection.mode}
+                data-provenance={toolsProvenance?.marker ? "assistant" : undefined}
+                disabled={activeRun} aria-controls={`${layerId}-tools`} aria-expanded={layer === "tools"} aria-haspopup="menu"
+                aria-label="Change MCP mode" aria-describedby={`${layerId}-mcp-description`}
+                data-tooltip={mcpDescription} data-tooltip-side="top"
+                onClick={event => openLayer("tools", event.currentTarget)}>
+                <CapabilityChipContent label="MCP" icon="tool" signal={mcpAttentionLabel ? "attention" : undefined}
+                  description={mcpDescription} descriptionId={`${layerId}-mcp-description`} />
+              </button>
               <button className="v2-composer-indicator v2-focusable" type="button"
                 data-quiet={effectiveSkillIds.length && effectiveSkillsMode !== "off" ? undefined : ""} data-glyph="wand"
                 data-off={effectiveSkillsMode === "off" || undefined} data-skills-mode={effectiveSkillsMode}
+                data-provenance={skillsProvenance?.marker ? "assistant" : undefined}
                 aria-label="Change Skills mode" aria-controls={`${layerId}-skills`} aria-expanded={layer === "skills"}
                 aria-haspopup="menu" aria-describedby={`${layerId}-skills-description`} disabled={activeRun}
                 data-tooltip={skillsDescription} data-tooltip-side="top" onClick={event => openLayer("skills", event.currentTarget)}>
@@ -1356,17 +1465,27 @@ export function ComposerV2({
                   config={config}
                   groups={groupedModels}
                   parametersSummary={modelParametersSummary}
+                  provenance={modelProvenance}
                   query={modelQuery}
+                  recommendedModelId={boundAssistant?.rows.model.assistantValue.mode === "model"
+                    ? boundAssistant.rows.model.assistantValue.modelId
+                    : null}
                   selectedModelId={selectedModelId}
                   selectedProvider={selectedProvider}
                   onMakeDefault={onMakeModelDefault}
-                  onOpenParameters={onOpenModelParameters && !controlsLocked
+                  onOpenParameters={onOpenModelParameters
                     ? () => {
                         onOpenModelParameters();
                         closeLayer();
                       }
                     : undefined}
                   onQuery={setModelQuery}
+                  onReset={modelProvenance
+                    ? () => {
+                        assistant?.resetRow("model");
+                        closeLayer();
+                      }
+                    : undefined}
                   onSelect={(model) => {
                     onSelectModel?.(model);
                     closeLayer();
@@ -1375,13 +1494,13 @@ export function ComposerV2({
               ) : layer === "search" ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">Web search</p>
-                  {controlsLocked ? <p className="v2-composer-layer-note">Managed by the Assistant</p> : null}
+                  {provenanceNotice(searchProvenance, assistantSearchLabel)}
                   <SearchPlanPickerV2
                     options={concreteSearchOptions.map(option => ({ ...option,
                       executionModes: currentModel?.searchOptionCompatibility?.[option.strategyId]?.executionModes ?? option.executionModes }))}
                     plan={{ mode: searchPlanMode, optionIds: selectedSearchOptionIds }}
                     availableIds={compatibleSearchOptionIds}
-                    disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
+                    disabled={searchFixed || activeRun || !onSelectSearchOptionIds}
                     onChange={plan => {
                       if (plan.mode !== searchPlanMode) onSelectSearchPlanMode?.(plan.mode);
                       else onSelectSearchOptionIds?.(plan.optionIds);
@@ -1389,6 +1508,7 @@ export function ComposerV2({
                     onReset={onResetSearchPlan}
                     scope="chat"
                   />
+                  {resetToAssistantRow(searchProvenance, "button")}
                 </div>
               ) : layer === "files" ? (
                 <SavedFilePickerV2
@@ -1399,147 +1519,180 @@ export function ComposerV2({
               ) : layer === "skills" ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">Skills</p>
-                  {controlsLocked ? <CapabilityRow selected disabled selectionRole="radio" reason={`Defined by the selected Assistant · ${effectiveSkillsMode === "off" ? "Off" : "Auto"}`}>
-                    Assistant Skills
-                  </CapabilityRow> : <>
+                  {boundAssistant ? <>
+                    {/* With an Assistant: its Skills stay read-only and the
+                        user pins on top of them (FRONTEND.md). */}
+                    {provenanceNotice(skillsProvenance, assistantSkillsLabel)}
+                    <CapabilityRow selected={skillsMode === "auto"} selectionRole="radio" current={skillsFixed && skillsMode === "auto"}
+                      disabled={skillsFixed || activeRun || !currentModel?.capabilities.toolCalling || !onSelectSkillsMode}
+                      reason={!currentModel?.capabilities.toolCalling ? "This model cannot load Skills on demand. Always use instructions still apply." : null}
+                      onClick={() => { onSelectSkillsMode?.("auto"); closeLayer(); }}>Auto · loads on demand</CapabilityRow>
+                    <CapabilityRow selected={skillsMode === "off"} selectionRole="radio" current={skillsFixed && skillsMode === "off"}
+                      disabled={skillsFixed || activeRun || !onSelectSkillsMode}
+                      onClick={() => { onSelectSkillsMode?.("off"); closeLayer(); }}>Off · Always Skills only</CapabilityRow>
+                    {includedSkills.length > 0 || (boundAssistant.rows.skills.assistantValue.hiddenCount ?? 0) > 0 ? (
+                      <div className="v2-composer-included" role="group" aria-label="Included by the Assistant">
+                        <p className="v2-composer-layer-label" aria-hidden="true">Included by the Assistant</p>
+                        {includedSkills.map((skill) => (
+                          <p className="v2-composer-included-row" key={skill.id}>
+                            <span>{skill.name}</span>
+                            <span>{skill.mode === "available" ? "On demand" : "Always"}</span>
+                          </p>
+                        ))}
+                        {(boundAssistant.rows.skills.assistantValue.hiddenCount ?? 0) > 0 ? (
+                          <p className="v2-composer-included-row">
+                            <span>{boundAssistant.rows.skills.assistantValue.hiddenCount} more not visible to you</span>
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <div className="v2-composer-layer-divider" role="separator" />
+                    <CapabilityRow icon="plus" selectionRole="item" trailing disabled={activeRun || !onOpenSkillLibrary}
+                      onClick={() => { closeLayer(); onOpenSkillLibrary?.(); }}>Pin your Skills…</CapabilityRow>
+                    {resetToAssistantRow(skillsProvenance)}
+                  </> : <>
                     <CapabilityRow selected={skillsMode === "auto"} selectionRole="radio" disabled={activeRun || !currentModel?.capabilities.toolCalling || !onSelectSkillsMode}
                       reason={!currentModel?.capabilities.toolCalling ? "This model cannot load Skills on demand. Always use instructions still apply." : "The model loads enabled Skills when useful"}
                       onClick={() => { onSelectSkillsMode?.("auto"); closeLayer(); }}>Auto</CapabilityRow>
                     <CapabilityRow selected={skillsMode === "off"} selectionRole="radio" disabled={activeRun || !onSelectSkillsMode}
                       reason="Always use instructions still apply" onClick={() => { onSelectSkillsMode?.("off"); closeLayer(); }}>Off</CapabilityRow>
+                    <CapabilityRow icon="wand" selectionRole="item" trailing disabled={activeRun || !onOpenSkillLibrary} reason="Choose Auto loading or Always use"
+                      onClick={() => { closeLayer(); onOpenSkillLibrary?.(); }}>Skills…</CapabilityRow>
                   </>}
-                  <CapabilityRow icon="wand" selectionRole="item" disabled={activeRun || !onOpenSkillLibrary} reason="Choose Auto loading or Always use"
-                    onClick={() => { closeLayer(); onOpenSkillLibrary?.(); }}>Skills…</CapabilityRow>
                 </div>
               ) : layer === "tools" ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">MCP tools</p>
-                  {controlsLocked ? (
+                  {provenanceNotice(toolsProvenance, assistantToolsLabel)}
+                  {/* The Assistant's exact list, while in force, is the chosen
+                      option: every tool of those servers. The modes below act
+                      on the user's own servers; choosing one changes the row
+                      for this chat. */}
+                  {mcpAssistantList ? (
                     <CapabilityRow
+                      current={toolsFixed}
+                      disabled={activeRun}
+                      reason={mcpAssistantListReason}
                       selected
-                      disabled
-                      reason="Defined by the selected Assistant"
                       selectionRole="radio"
+                      onClick={closeLayer}
                     >
-                      Assistant tools
+                      {`${mcpAssistantList.name}'s servers`}
                     </CapabilityRow>
-                  ) : (
-                    <>
-                      <CapabilityRow
-                        selected={mcpSelection.mode === "auto"}
-                        disabled={activeRun || !currentModel?.capabilities.toolCalling || !onSelectMcp}
-                        reason={!currentModel?.capabilities.toolCalling
-                          ? "The current model cannot use tools; this mode is preserved"
-                          : "Small catalog first; matching tools load when the model asks"}
-                        selectionRole="radio"
-                        onClick={() => {
-                          selectMcpMode("auto");
-                          closeLayer();
-                        }}
-                      >
-                        Auto
-                      </CapabilityRow>
-                      <CapabilityRow
-                        selected={mcpSelection.mode === "load_all"}
-                        disabled={activeRun || !currentModel?.capabilities.toolCalling || !onSelectMcp}
-                        reason={!currentModel?.capabilities.toolCalling
-                          ? "The current model cannot use tools; this mode is preserved"
-                          : "Every tool from enabled servers, from the first message"}
-                        selectionRole="radio"
-                        onClick={() => {
-                          selectMcpMode("load_all");
-                          closeLayer();
-                        }}
-                      >
-                        Load all
-                      </CapabilityRow>
-                      <CapabilityRow
-                        selected={mcpSelection.mode === "off"}
-                        disabled={activeRun || !onSelectMcp}
-                        reason="No MCP tools this turn"
-                        selectionRole="radio"
-                        onClick={() => {
-                          selectMcpMode("off");
-                          closeLayer();
-                        }}
-                      >
-                        Off
-                      </CapabilityRow>
-                    </>
-                  )}
-                  {!controlsLocked ? (
-                    /* What the modes act on: enabling stays a Settings action
-                       (FRONTEND.md), so this is disclosure, not selection. */
-                    <div className="v2-composer-layer-footer">
-                      {mcpAttentionServers.length > 0 ? (
-                        <div className="v2-composer-mcp-problems" role="status">
-                          <p>MCP servers need attention</p>
-                          {mcpAttentionServers.map((server) => (
-                            <p key={server.id}>{server.name} · {mcpReadinessPresentation(server.attention ?? server.readiness, server.runtimeErrorCode).label}</p>
-                          ))}
-                        </div>
-                      ) : null}
-                      <div className="v2-composer-layer-footer-row">
-                        <p className="v2-composer-layer-note" data-testid="composer-v2-mcp-enabled">
-                          {enabledMcpServers.length === 0
-                            ? "No servers enabled."
-                            : `Enabled servers · ${enabledMcpServers.length}${
-                              mcpServersNeedingAttention > 0
-                                ? ` · ${mcpServersNeedingAttention} need${mcpServersNeedingAttention === 1 ? "s" : ""} attention`
-                                : ""
-                            }`}
-                        </p>
-                        {onOpenMcpSettings ? (
-                          <button
-                            className="v2-composer-layer-link v2-composer-mcp-settings v2-focusable"
-                            data-v2-composer-option="true"
-                            type="button"
-                            role="menuitem"
-                            aria-label="Manage enabled MCP servers"
-                            onClick={() => {
-                              onOpenMcpSettings();
-                              closeLayer();
-                            }}
-                          >
-                            {mcpServersNeedingAttention ? "Configure" : "Manage"}
-                            <UiV2Icon name="chevron-right" />
-                          </button>
-                        ) : null}
+                  ) : null}
+                  <CapabilityRow
+                    selected={effectiveMcpSelection.mode === "auto"}
+                    current={toolsFixed && effectiveMcpSelection.mode === "auto"}
+                    disabled={toolsFixed || activeRun || !currentModel?.capabilities.toolCalling || !onSelectMcp}
+                    reason={!currentModel?.capabilities.toolCalling
+                      ? "The current model cannot use tools; this mode is preserved"
+                      : "Small catalog first; matching tools load when the model asks"}
+                    selectionRole="radio"
+                    onClick={() => {
+                      selectMcpMode("auto");
+                      closeLayer();
+                    }}
+                  >
+                    Auto
+                  </CapabilityRow>
+                  <CapabilityRow
+                    selected={effectiveMcpSelection.mode === "load_all"}
+                    current={toolsFixed && effectiveMcpSelection.mode === "load_all"}
+                    disabled={toolsFixed || activeRun || !currentModel?.capabilities.toolCalling || !onSelectMcp}
+                    reason={!currentModel?.capabilities.toolCalling
+                      ? "The current model cannot use tools; this mode is preserved"
+                      : "Every tool from enabled servers, from the first message"}
+                    selectionRole="radio"
+                    onClick={() => {
+                      selectMcpMode("load_all");
+                      closeLayer();
+                    }}
+                  >
+                    Load all
+                  </CapabilityRow>
+                  <CapabilityRow
+                    selected={effectiveMcpSelection.mode === "off"}
+                    current={toolsFixed && effectiveMcpSelection.mode === "off"}
+                    disabled={toolsFixed || activeRun || !onSelectMcp}
+                    reason="No MCP tools this turn"
+                    selectionRole="radio"
+                    onClick={() => {
+                      selectMcpMode("off");
+                      closeLayer();
+                    }}
+                  >
+                    Off
+                  </CapabilityRow>
+                  {resetToAssistantRow(toolsProvenance)}
+                  {/* What the user's modes act on: enabling stays a Settings
+                      action (FRONTEND.md), so this is disclosure, not
+                      selection. The Assistant's list keeps only a problem and
+                      its Configure path. */}
+                  {!mcpAssistantList || mcpAttentionServers.length > 0 ? <div className="v2-composer-layer-footer">
+                    {mcpAttentionServers.length > 0 ? (
+                      <div className="v2-composer-mcp-problems" role="status">
+                        <p>MCP servers need attention</p>
+                        {mcpAttentionServers.map((server) => (
+                          <p key={server.id}>{server.name} · {mcpReadinessPresentation(server.attention ?? server.readiness, server.runtimeErrorCode).label}</p>
+                        ))}
                       </div>
-                      {enabledMcpServers.length > 0 ? (
-                        <div className="v2-composer-tags" data-testid="composer-v2-mcp-servers">
-                          {enabledMcpServers.map((server) => (
-                            <span className="v2-composer-tag" key={server.id}>{server.name}</span>
-                          ))}
-                        </div>
+                    ) : null}
+                    <div className="v2-composer-layer-footer-row">
+                      {!mcpAssistantList ? <p className="v2-composer-layer-note" data-testid="composer-v2-mcp-enabled">
+                        {enabledMcpServers.length === 0
+                          ? "No servers enabled."
+                          : `Enabled servers · ${enabledMcpServers.length}${
+                            mcpServersNeedingAttention > 0
+                              ? ` · ${mcpServersNeedingAttention} need${mcpServersNeedingAttention === 1 ? "s" : ""} attention`
+                              : ""
+                          }`}
+                      </p> : null}
+                      {onOpenMcpSettings ? (
+                        <button
+                          className="v2-composer-layer-link v2-composer-mcp-settings v2-focusable"
+                          data-v2-composer-option="true"
+                          data-v2-composer-trailing="true"
+                          type="button"
+                          role="menuitem"
+                          aria-label="Manage enabled MCP servers"
+                          onClick={() => {
+                            onOpenMcpSettings();
+                            closeLayer();
+                          }}
+                        >
+                          {mcpServersNeedingAttention ? "Configure" : "Manage"}
+                          <UiV2Icon name="chevron-right" />
+                        </button>
                       ) : null}
                     </div>
-                  ) : null}
+                    {!mcpAssistantList && enabledMcpServers.length > 0 ? (
+                      <div className="v2-composer-tags" data-testid="composer-v2-mcp-servers">
+                        {enabledMcpServers.map((server) => (
+                          <span className="v2-composer-tag" key={server.id}>{server.name}</span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div> : null}
                 </div>
               ) : layer === "knowledge" ? (
                 <div className="v2-composer-layer-scroll">
-                  {knowledgeControlsLocked ? (
+                  {/* One notice for one fact: a fallback line carries the
+                      Project's override; the lock box stands alone otherwise. */}
+                  {knowledgeFallback ? (
+                    <AssistantRowNoticeV2
+                      kind="fallback"
+                      text={assistantRowNoticeText(knowledgeProvenance) ?? ""}
+                      action={knowledgeProjectLocked ? overrideKnowledgeAction : null}
+                    />
+                  ) : provenanceNotice(knowledgeProvenance, assistantKnowledgeLabel)}
+                  {knowledgeProjectLocked && !knowledgeFallback ? (
                     <div className="v2-composer-knowledge-inherited" role="status">
                       <UiV2Icon name="lock" />
                       <span>
-                        <strong>
-                          {knowledgeInheritedFrom === "assistant"
-                            ? `${selectedAssistant?.name ?? "The Assistant"} controls Knowledge.`
-                            : "This Project controls the default Knowledge."}
-                        </strong>{" "}
+                        <strong>This Project controls the default Knowledge.</strong>{" "}
                         Its selection is used until you override it for this chat.
                       </span>
-                      {onOverrideKnowledgePlan ? (
-                        <button
-                          className="v2-composer-layer-link v2-focusable"
-                          data-v2-composer-option="true"
-                          type="button"
-                          role="menuitem"
-                          onClick={onOverrideKnowledgePlan}
-                        >
-                          Override for this chat
-                        </button>
-                      ) : null}
+                      {overrideKnowledgeAction}
                     </div>
                   ) : null}
                   {onSearchKnowledgeSources ||
@@ -1559,6 +1712,7 @@ export function ComposerV2({
                   ) : null}
                   <CapabilityRow
                     selected={knowledgeSelection.mode === "none"}
+                    current={knowledgeControlsLocked && knowledgeSelection.mode === "none"}
                     disabled={knowledgeControlsLocked || activeRun}
                     reason="Answer without reading documents"
                     selectionRole="radio"
@@ -1572,6 +1726,7 @@ export function ComposerV2({
                   {!sharedProject && onSelectKnowledgeSelection && knowledgeHasDocuments ? (
                     <CapabilityRow
                       selected={knowledgeSelection.mode === "all_my_knowledge"}
+                      current={knowledgeControlsLocked && knowledgeSelection.mode === "all_my_knowledge"}
                       disabled={knowledgeControlsLocked || activeRun}
                       reason={`Every ready document you own${
                         typeof config?.knowledgeDocumentTotal === "number"
@@ -1596,23 +1751,29 @@ export function ComposerV2({
                   ) : null}
                   {knowledgeSelection.mode === "inherited" ? (
                     <>
-                      <p className="v2-composer-layer-label">
-                        From {knowledgeSelection.inheritedFrom === "assistant" ? "Assistant" : "Project"}
-                      </p>
+                      {/* The first line already names the Assistant. */}
+                      {knowledgeSelection.inheritedFrom === "assistant" && assistantRowNoticeText(knowledgeProvenance)
+                        ? null
+                        : (
+                          <p className="v2-composer-layer-label">
+                            From {knowledgeSelection.inheritedFrom === "assistant"
+                              ? boundAssistant?.name ?? "Assistant"
+                              : "Project"}
+                          </p>
+                        )}
                       <CapabilityRow
                         icon="book"
-                        selected
-                        disabled
-                        reason={selectedAssistant?.knowledgeLabel ?? (
-                          selectedAssistant?.knowledgeResourceCount
-                            ? resourceCountLabel(selectedAssistant.knowledgeResourceCount)
-                            : "Selection details stay private"
-                        )}
+                        current
+                        reason={knowledgeSelection.inheritedFrom === "assistant" && assistantKnowledgeCount > 0
+                          ? resourceCountLabel(assistantKnowledgeCount)
+                          : "Selection details stay private"}
                       >
                         Selected Knowledge
                       </CapabilityRow>
                     </>
                   ) : null}
+                  {/* Reset follows the modes, above lists that can run long. */}
+                  {resetToAssistantRow(knowledgeProvenance)}
                   {visibleKnowledgeBases.length > 0 ? (
                     <p className="v2-composer-layer-label">Bases</p>
                   ) : null}
@@ -1627,6 +1788,7 @@ export function ComposerV2({
                         key={base.id}
                         icon="library"
                         selected={selected}
+                        current={selected && knowledgeControlsLocked}
                         disabled={knowledgeControlsLocked || activeRun ||
                           (base.archived && !selected) || atLimit}
                         reason={reason}
@@ -1643,8 +1805,8 @@ export function ComposerV2({
                     const selected = selectedKnowledgeSourceSet.has(source.id);
                     const unavailable = source.readiness !== "ready";
                     const atLimit = !selected && explicitSelectionAtLimit;
-                    const reason = knowledgeControlsLocked
-                      ? `Managed by the ${knowledgeInheritedFrom === "project" ? "Project" : "Assistant"}`
+                    const reason = knowledgeProjectLocked
+                      ? "Managed by the Project"
                       : atLimit
                         ? `Selection limit · ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES} resources`
                       : unavailable
@@ -1657,6 +1819,7 @@ export function ComposerV2({
                         key={`source:${source.id}`}
                         icon="book"
                         selected={selected}
+                        current={selected && knowledgeControlsLocked}
                         disabled={knowledgeControlsLocked || activeRun || !onSelectKnowledgeSelection ||
                           (unavailable && !selected) || atLimit}
                         reason={reason}
@@ -1680,8 +1843,8 @@ export function ComposerV2({
                         icon="library"
                         selected
                         disabled={knowledgeControlsLocked || activeRun}
-                        reason={knowledgeControlsLocked
-                          ? `Managed by the ${knowledgeInheritedFrom === "project" ? "Project" : "Assistant"}`
+                        reason={knowledgeProjectLocked
+                          ? "Managed by the Project"
                           : "Access revoked"}
                         onClick={() => {
                           selectKnowledge(explicitKnowledgeSelection({
@@ -1701,8 +1864,8 @@ export function ComposerV2({
                         icon="book"
                         selected
                         disabled={knowledgeControlsLocked || activeRun}
-                        reason={knowledgeControlsLocked
-                          ? `Managed by the ${knowledgeInheritedFrom === "project" ? "Project" : "Assistant"}`
+                        reason={knowledgeProjectLocked
+                          ? "Managed by the Project"
                           : "Access revoked"}
                         onClick={() => {
                           selectKnowledge(explicitKnowledgeSelection({
@@ -1723,6 +1886,7 @@ export function ComposerV2({
                         <button
                           className="v2-composer-layer-link v2-focusable"
                           data-v2-composer-option="true"
+                          data-v2-composer-trailing="true"
                           type="button"
                           role="menuitem"
                           onClick={() => {
@@ -1769,28 +1933,14 @@ export function ComposerV2({
                   ) : null}
                   <CapabilityRow
                     icon="book"
-                    disabled={controlsLocked || activeRun || !knowledgeAvailable}
-                    reason={controlsLocked ? "Managed by the Assistant" : "Base or document for this chat"}
+                    disabled={knowledgeFixed || activeRun || !knowledgeAvailable}
+                    reason={addKnowledgeReason ?? "Base or document for this chat"}
                     selectionRole="item"
                     onClick={(event) => {
                       openLayer("knowledge", knowledgeTriggerRef.current ?? event.currentTarget);
                     }}
                   >
                     Add Knowledge…
-                  </CapabilityRow>
-                  <CapabilityRow
-                    icon="assistant"
-                    disabled={activeRun || !onOpenAssistantPicker}
-                    reason={selectedAssistant
-                      ? `Selected: ${selectedAssistant.name}`
-                      : "Pinned · Recent · Yours · Shared"}
-                    selectionRole="item"
-                    onClick={() => {
-                      onOpenAssistantPicker?.();
-                      closeLayer();
-                    }}
-                  >
-                    Use an Assistant…
                   </CapabilityRow>
                   <CapabilityRow
                     icon="wand"
@@ -1837,15 +1987,74 @@ function modelCapabilityGlyphs(model: CatalogModel): ModelCapabilityGlyph[] {
   return glyphs;
 }
 
+/*
+ * The model row of the chat's Assistant as the picker's first line: a fixed
+ * model, the recommended model, a change for this chat with Reset, or the
+ * fallback.
+ */
+function ModelProvenanceLine({
+  currentModelName,
+  models,
+  onReset,
+  provenance,
+  recommendedModelId
+}: Readonly<{
+  currentModelName: string | null;
+  models: readonly CatalogModel[];
+  onReset?(): void;
+  provenance: AssistantRowProvenanceV2 | null;
+  recommendedModelId: string | null;
+}>) {
+  if (!provenance) return null;
+  const recommended = models.find((model) => model.modelId === recommendedModelId);
+  if (provenance.changed) {
+    return (
+      <AssistantRowNoticeV2
+        kind={provenance.kind}
+        text={assistantRowNoticeText(provenance, recommended?.displayName ?? null) ?? ""}
+        action={onReset ? (
+          <button className="v2-composer-provenance-action v2-focusable" type="button" onClick={onReset}>
+            Reset to Assistant
+          </button>
+        ) : null}
+      />
+    );
+  }
+  if (provenance.kind === "own") return null;
+  if (provenance.kind === "fixed") {
+    return (
+      <AssistantRowNoticeV2
+        kind="fixed"
+        text={`Fixed by ${provenance.assistantName}${currentModelName ? ` — ${currentModelName}` : ""}`}
+      />
+    );
+  }
+  if (provenance.kind !== "adjustable") {
+    const text = assistantRowNoticeText(provenance);
+    return text ? <AssistantRowNoticeV2 kind={provenance.kind} text={text} /> : null;
+  }
+  if (!recommended) return null;
+  return (
+    <AssistantRowNoticeV2
+      kind="adjustable"
+      text={`Recommended by ${provenance.assistantName} — ${recommended.displayName}`}
+      action={<span className="v2-composer-provenance-state">In use</span>}
+    />
+  );
+}
+
 function ModelLayer({
   config,
   groups,
   onMakeDefault,
   onOpenParameters,
   onQuery,
+  onReset,
   onSelect,
   parametersSummary,
+  provenance,
   query,
+  recommendedModelId,
   selectedModelId,
   selectedProvider
 }: Readonly<{
@@ -1854,9 +2063,12 @@ function ModelLayer({
   onMakeDefault?(model: CatalogModel): void;
   onOpenParameters?(): void;
   onQuery(value: string): void;
+  onReset?(): void;
   onSelect(model: CatalogModel): void;
   parametersSummary: string | null;
+  provenance: AssistantRowProvenanceV2 | null;
   query: string;
+  recommendedModelId: string | null;
   selectedModelId: string;
   selectedProvider: string;
 }>) {
@@ -1864,9 +2076,56 @@ function ModelLayer({
   const organizationDefault = config?.catalog.defaults.organizationModelDefault;
   const hasMatches = groups.some((group) => group.models.length > 0);
   const modelCount = groups.reduce((count, group) => count + group.models.length, 0);
+  const fixed = provenance?.kind === "fixed";
+  const currentModelName = config?.catalog.models.find((model) =>
+    model.modelId === selectedModelId && model.provider === selectedProvider
+  )?.displayName ?? null;
+  const footer = (
+    <div className="v2-composer-layer-footer">
+      {onOpenParameters ? (
+        <button
+          className="v2-composer-model-parameters v2-focusable"
+          data-testid="composer-v2-model-parameters"
+          type="button"
+          onClick={onOpenParameters}
+        >
+          <UiV2Icon name="sliders" />
+          <span>Parameters</span>
+          {parametersSummary ? (
+            <span className="v2-composer-model-parameters-summary">{parametersSummary}</span>
+          ) : null}
+          <UiV2Icon name="chevron-right" />
+        </button>
+      ) : null}
+      <p className="v2-composer-model-note">
+        Applies to your next message.
+      </p>
+    </div>
+  );
+  const provenanceLine = (
+    <ModelProvenanceLine
+      currentModelName={currentModelName}
+      models={config?.catalog.models ?? EMPTY_MODELS}
+      onReset={onReset}
+      provenance={provenance}
+      recommendedModelId={recommendedModelId}
+    />
+  );
+
+  // A model fixed by the Assistant cannot change in the chat: the picker
+  // shows why and keeps only its Parameters row.
+  if (fixed) {
+    return (
+      <div className="v2-composer-model-fixed" data-testid="composer-v2-model-fixed">
+        {provenanceLine}
+        {footer}
+      </div>
+    );
+  }
 
   return (
     <>
+      {provenanceLine}
       <label className="v2-composer-model-search-wrap">
         <span className="v2-sr-only">Search models</span>
         <UiV2Icon name="search" />
@@ -1945,26 +2204,7 @@ function ModelLayer({
           </section>
         ))}
       </div>
-      <div className="v2-composer-layer-footer">
-        {onOpenParameters ? (
-          <button
-            className="v2-composer-model-parameters v2-focusable"
-            data-testid="composer-v2-model-parameters"
-            type="button"
-            onClick={onOpenParameters}
-          >
-            <UiV2Icon name="sliders" />
-            <span>Parameters</span>
-            {parametersSummary ? (
-              <span className="v2-composer-model-parameters-summary">{parametersSummary}</span>
-            ) : null}
-            <UiV2Icon name="chevron-right" />
-          </button>
-        ) : null}
-        <p className="v2-composer-model-note">
-          Applies to your next message.
-        </p>
-      </div>
+      {footer}
     </>
   );
 }

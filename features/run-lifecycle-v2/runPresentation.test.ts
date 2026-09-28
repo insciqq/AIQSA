@@ -13,6 +13,7 @@ import {
   stepDurationSumV2,
   stepRunAnnouncementV2,
   toolActivityOriginV2,
+  type AnnouncedRunPresentationV2,
   type RunAnnouncerMemoryV2,
   type RunPresentationV2,
   type RunLifecycleStateV2,
@@ -589,7 +590,7 @@ describe("PDF preparation presentation", () => {
 });
 
 describe("run announcer policy", () => {
-  function speak(sequence: readonly RunPresentationV2[]) {
+  function speak(sequence: readonly AnnouncedRunPresentationV2[]) {
     let memory: RunAnnouncerMemoryV2 | null = null;
     const spoken: string[] = [];
     for (const presentation of sequence) {
@@ -597,6 +598,7 @@ describe("run announcer policy", () => {
       memory = step.memory;
       const text = [...step.parts, step.terminal].filter(Boolean).join(" ");
       if (text) spoken.push(text);
+      if (step.withdrawn) spoken.push("(withdrawn)");
     }
     return spoken;
   }
@@ -655,6 +657,61 @@ describe("run announcer policy", () => {
     ]);
     // A replay first observed mid-run counts its settled cycles as already seen.
     expect(speak([live(replay), live(replay)])).toEqual(["Working on the answer…"]);
+  });
+
+  it("withdraws a started answer that a refused send rolled back, once and silently", () => {
+    const idle: RunPresentationV2 = { kind: "idle", runId: null };
+    const steps = (sequence: readonly RunPresentationV2[]) => {
+      let memory: RunAnnouncerMemoryV2 | null = null;
+      return sequence.map((presentation) => {
+        const step = stepRunAnnouncementV2(memory, "chat-a", presentation);
+        memory = step.memory;
+        return step.withdrawn ? "(withdrawn)" : [...step.parts, step.terminal].filter(Boolean).join(" ");
+      });
+    };
+    // The refused answer is withdrawn once; the next send is a new run and starts again.
+    expect(steps([idle, thinking(null), idle, idle, thinking(null), { kind: "complete", runId: "run-b" }]))
+      .toEqual(["", "Working on the answer…", "(withdrawn)", "", "Working on the answer…",
+        "Answer ready. The message field is available."]);
+    // An answer that had adopted its run id is withdrawn the same way.
+    expect(steps([idle, thinking("run-a"), idle])).toEqual(["", "Working on the answer…", "(withdrawn)"]);
+    // Nothing was announced, nothing is withdrawn.
+    expect(steps([idle, idle])).toEqual(["", ""]);
+    // Settled and historical answers are never withdrawn.
+    expect(steps([idle, thinking("run-a"), { kind: "cancelled", runId: "run-a" }, idle]))
+      .toEqual(["", "Working on the answer…", "Run stopped. The message field is available.", ""]);
+    expect(steps([idle, thinking("run-a"), { failure: { code: null, message: "Provider timed out", recovery: "retry" },
+      kind: "terminal_error", runId: "run-a" }, idle]))
+      .toEqual(["", "Working on the answer…", "Run failed. Provider timed out. The message field is available.", ""]);
+    expect(steps([{ kind: "complete", runId: "run-old" }, idle])).toEqual(["", ""]);
+    // A chat change is not a withdrawal.
+    const started = stepRunAnnouncementV2(null, "chat-a", thinking(null)).memory;
+    expect(stepRunAnnouncementV2(started, "chat-b", idle)).toMatchObject({ chatChanged: true, withdrawn: false });
+  });
+
+  it("withdraws a refused answer when the earlier settled answer is the tail again", () => {
+    const READY = "Answer ready. The message field is available.";
+    const answer = (answerId: string, presentation: RunPresentationV2): AnnouncedRunPresentationV2 =>
+      ({ ...presentation, answerId });
+    const earlier = answer("message-old", { kind: "complete", runId: "run-old" });
+    const done = answer("message-b", { kind: "complete", runId: "run-b" });
+    // Refused, then sent again: the second send starts and settles once.
+    expect(speak([earlier, answer("assistant-1", thinking(null)), earlier, earlier,
+      answer("assistant-2", thinking(null)), answer("message-b", thinking("run-b")), done, done]))
+      .toEqual(["Working on the answer…", "(withdrawn)", "Working on the answer…", READY]);
+    // So after an earlier answer without a run id, such as a continuation summary.
+    const summary = answer("message-summary", { kind: "complete", runId: null });
+    expect(speak([summary, answer("assistant-1", thinking(null)), summary]))
+      .toEqual(["Working on the answer…", "(withdrawn)"]);
+    // The followed answer adopting its durable id as it settles is its own settlement.
+    expect(speak([earlier, answer("assistant-1", thinking(null)), done])).toEqual(["Working on the answer…", READY]);
+    expect(speak([earlier, answer("assistant-1", thinking(null)), answer("message-b", { kind: "complete", runId: null })]))
+      .toEqual(["Working on the answer…", READY]);
+    // An answer settled in place keeps its id and is announced.
+    const failed = answer("message-x", { failure: { code: null, message: "Provider timed out", recovery: "retry" },
+      kind: "recoverable_error", runId: "run-x" });
+    expect(speak([failed, answer("message-x", thinking("run-y")), answer("message-x", { kind: "complete", runId: "run-y" })]))
+      .toEqual(["Working on the answer…", READY]);
   });
 
   it("does not count a cycle already settled when the run was first observed", () => {

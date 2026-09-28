@@ -3,8 +3,8 @@
 import { UiV2Button } from "@/components/ui-v2";
 import { SkillLibrarySection } from "@/components/skills/SkillLibraryDialog";
 import { useState } from "react";
+import { AssistantGalleryV2 } from "@/features/library-v2/assistants/gallery/AssistantGalleryV2";
 import {
-  AssistantsPanelV2,
   FilesPanelV2,
   KnowledgePanelV2,
   LibraryV2,
@@ -17,6 +17,7 @@ import type {
   LibraryTabV2
 } from "@/features/library-v2/contracts";
 import type { MemoryConsumerItem } from "@/lib/contracts/memoryConsumer";
+import { ASSISTANT_FIXTURE_SUMMARIES, fixtureGalleryView } from "./AssistantsGalleryFixtureV2";
 
 export type LibraryGalleryStateV2 =
   | "all-sections"
@@ -28,40 +29,8 @@ export type LibraryGalleryStateV2 =
   | "memory-disabled"
   | "skills";
 
-const assistants = [
-  {
-    archived: false,
-    available: true,
-    description: "Собирает спокойные продуктовые брифы из проверяемых источников.",
-    id: "research-editor",
-    name: "Research editor",
-    owned: true,
-    pinned: true,
-    revision: 7
-  },
-  {
-    archived: false,
-    available: true,
-    description: "Проверяет релизные изменения и формирует короткий checklist.",
-    id: "release-reviewer",
-    name: "Release reviewer",
-    owned: true,
-    revision: 3
-  },
-  {
-    archived: false,
-    available: false,
-    description: "Сопоставляет внутренние договоры и публичные требования.",
-    id: "contract-analyst",
-    name: "Contract analyst",
-    owned: false,
-    revision: 2,
-    unavailable: {
-      explanation: "A saved dependency is not available to you.",
-      headline: "Required access unavailable"
-    }
-  }
-] as const;
+const assistants = ASSISTANT_FIXTURE_SUMMARIES.filter((assistant) =>
+  ["research-analyst", "translator", "sales-brief"].includes(assistant.id));
 
 const bases = [
   {
@@ -242,7 +211,17 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
                     The Assistant draft changed. Its owner requires an explicit exit.
                   </div>
                 ) : null}
-                <AssistantsPanelV2 assistants={assistants} onOpen={() => setDirty(true)} />
+                <AssistantGalleryV2
+                  busy={false}
+                  catalogError={null}
+                  catalogState="ready"
+                  gallery={fixtureGalleryView(assistants, () => setDirty(true))}
+                  notice={null}
+                  onDismissNotice={() => undefined}
+                  onFromCurrentChat={() => setDirty(true)}
+                  onNewAssistant={() => setDirty(true)}
+                  onRetry={() => undefined}
+                />
               </div>
             ),
             id: "assistants",

@@ -6,6 +6,7 @@ import { hashPassword } from "../../lib/server/auth/password";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { writeZip } from "../../lib/server/artifacts/zip";
 import { runAccountMenuAction } from "./shell/page";
+import { captureState } from "./support/capture";
 import { expectCenterUnobscured, expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 import { loginWithPassword } from "./support/workspace";
@@ -28,18 +29,14 @@ async function openOwnerDetail(page: Page, name: string): Promise<Locator> {
 }
 
 async function capture(page: Page, anchor: Locator, testInfo: TestInfo, surface: string) {
-  for (const theme of ["light", "dark"]) {
-    await page.evaluate(value => { document.documentElement.dataset.theme = value; document.documentElement.dataset.colorScheme = value; }, theme);
-    for (const viewport of [{ width: 1440, height: 900 }, { width: 834, height: 1194 }, { width: 1194, height: 834 },
-      { width: 390, height: 844 }, { width: 844, height: 390 }]) {
-      await page.setViewportSize(viewport);
-      await anchor.scrollIntoViewIfNeeded();
+  await captureState(page, testInfo, `skills-sharing-${surface}`, {
+    anchor,
+    atEachSize: async () => {
       await expectWithinViewport(page, anchor);
       await expectCenterUnobscured(anchor);
       await expectNoHorizontalOverflow(page);
-      await page.screenshot({ path: testInfo.outputPath(`skills-sharing-${surface}-${theme}-${viewport.width}x${viewport.height}.png`), animations: "disabled" });
     }
-  }
+  });
 }
 
 test("Skill approval shares only reviewed content, preserves the approved revision after edits, and shows rejection and withdrawal", async ({ page: admin, browser, baseURL }, testInfo) => {

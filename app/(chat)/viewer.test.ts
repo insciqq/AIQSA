@@ -17,6 +17,7 @@ vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "s
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect }));
 
 import NewChatPage from "./page";
+import AssistantEntryPage from "./assistant/[assistantId]/page";
 import ChatPage from "./c/[chatId]/page";
 import ProjectChatPage from "./p/[projectId]/c/[chatId]/page";
 import { loadChatViewer } from "./viewer";
@@ -60,6 +61,20 @@ describe("chat pages", () => {
 
     signedIn("disabled");
     await expect(NewChatPage({ searchParams: search({}) })).rejects.toThrow("NEXT_REDIRECT /login");
+  });
+
+  it("authorizes an Assistant entry link like a chat page and never looks up the Assistant", async () => {
+    signedIn();
+    await expect(AssistantEntryPage({ params: Promise.resolve({ assistantId: "assistant-1" }), searchParams: search({}) }))
+      .resolves.toBeNull();
+    expect(mocks.findUser).toHaveBeenCalledOnce();
+
+    mocks.resolveAuthToken.mockResolvedValue(null);
+    await expect(AssistantEntryPage({ params: Promise.resolve({ assistantId: "a/b 1" }), searchParams: search({}) }))
+      .rejects.toThrow("NEXT_REDIRECT");
+    const location = new URL(mocks.redirect.mock.calls[0]![0], "https://aiqsa.invalid");
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("next")).toBe("/assistant/a%2Fb%201");
   });
 
   it("redirects legacy query links to the path form before rendering the new chat", async () => {

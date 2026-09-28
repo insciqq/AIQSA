@@ -1,6 +1,6 @@
 # FRONTEND
 
-Owns presentation and interaction rules. [Components](../components/AGENTS.md), [contracts](../lib/contracts/), and [tokens](../styles/tokens-v2.css) own implementation.
+Owns presentation and interaction rules.
 
 ## State And Trust
 
@@ -11,9 +11,9 @@ Owns presentation and interaction rules. [Components](../components/AGENTS.md), 
 
 ## Conversation And Workspace
 
-Chat/composer stay primary across layouts. Models belong in the header, tools near the composer; Assistants are opt-in. Branches/previews are temporary overlays. Artifact previews open by user action in a closable side panel or compact full-screen sheet, preserving focus, draft and scroll across versions. Chats have URLs (`/c/<id>`, `/p/<id>/c/<id>`), `/` opens a new chat, overlays/drafts/pending folders stay browser state, unavailable targets fall back privacy-neutrally to `/`, and shell-leaving flows return to their origin chat.
+Chat/composer stay primary across layouts. Models and Assistant selection belong in the header, tools near the composer; Assistants are opt-in, also from empty chats. Branches/previews are temporary overlays. Artifact previews open by user action in a closable side panel or compact full-screen sheet, preserving focus, draft and scroll across versions. Chats have URLs (`/c/<id>`, `/p/<id>/c/<id>`); `/` and `/assistant/<id>` open new chats, overlays/drafts/pending folders stay browser state, unavailable targets fall back privacy-neutrally to `/`; shell-leaving flows return to their origin chat.
 
-The composer preserves one keyed draft and the explicit model, Assistant, tools, and run controls. Unavailable configuration never silently substitutes another target. MCP retry never switches Auto to Load all implicitly. Editing a sent message uses its own inline draft, keeps sent attachments and the composer draft, and visibly branches. Keyboard submission respects IME and multiline entry.
+The composer preserves one keyed draft and the explicit model, Assistant, tools, and run controls. Nothing is substituted silently. Assistant-governed controls show provenance: fixed rows lock (fixed models still open parameters); unavailable adjustable values visibly fall back to the user's or Project's default; others change per chat with reset. MCP retry never switches Auto to Load all implicitly. Editing a sent message uses its own inline draft, keeps sent attachments and the composer draft, and visibly branches. Keyboard submission respects IME and multiline entry.
 
 Continuation preserves controls/Workspace; copy drafts and settled attachments into its empty composer. Pending uploads/session work retain ownership. Focus without scrolling. Server model revalidation retains the source default for absent/unavailable selections. New chats use personal defaults; chat Search edits and sending never change them.
 
@@ -44,7 +44,7 @@ Configuration owners: Providers for deployments, Defaults & roles for assignment
 
 Knowledge management shows current documents, readiness, access, and product actions. A usable artifact remains Ready; Needs attention requires an executable recovery action. Otherwise unavailable remains unavailable. Keep technical profiles, generations, chunks, scores, raw failures, and processing internals out of ordinary surfaces; support references are opaque. Separate Base membership changes from canonical document deletion, make multi-membership restore consequences explicit, and show permanent deletion as a durable pending operation. Technical retrieval failure never becomes “the documents contain no answer.” Authenticated citations may expose exact source/locator/excerpt context, without a diagnostic inspector.
 
-Assistant edits and Skill pins affect future runs. Auto/Off is independent of pins; personal Enabled preferences exclude Projects/Assistants. Assistant links stay read-only in the composer. Import needs no review gate. Show limits; omit revision/bundle editors.
+Auto/Off is independent of pins; personal Enabled preferences exclude Projects/Assistants. Assistant Skill links stay read-only in chat; users pin on top. Import needs no review gate. Show limits; omit revision/bundle editors. Archive is reversible; Delete lists consequences.
 
 Connected apps owns external-client permissions; consent and revocation name the resource. Memory consent covers fact read/add/change/delete, excluding chat history; revocation preserves facts. MCP enablement covers chats and authorized Hub clients. Active requires fresh protocol evidence independently of enablement; opening Studio or Settings never wakes idle servers. Admin Test & Save validates before replacement and preserves intentional disablement.
 

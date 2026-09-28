@@ -1,0 +1,757 @@
+/*
+ * Studio › Assistants editor page and the New assistant sheet.
+ * The editor subview lifts the Studio width cap (as Skills does); the
+ * page is its own container, with two columns from 65rem (1040px) and a
+ * 22.5rem (360px) Setup column. Split in the instructions is decided by the
+ * Markdown editor's own container (880px).
+ */
+.v2-library-content:has(> .v2-assistant-editor-page) {
+  width: min(100%, 78rem);
+}
+
+/*
+ * The panel is the page's scroller. A control that takes the focus at its
+ * lower edge scrolls clear of the sticky bar: the scroll padding is the
+ * bar's height (top border, top padding, its rows, the safe-area-aware
+ * bottom padding) plus a 0.75rem gap. A row of buttons is 2rem, 2.75rem on
+ * touch; on a page 30rem or narrower the status takes a row of its own above
+ * the buttons (an 18px line and the 0.5rem row gap), see the bar's rules.
+ */
+.v2-library-panel:has(> .v2-library-content > .v2-assistant-editor-page) {
+  --v2-assistant-editor-bar-status-row: 0rem;
+  --v2-assistant-editor-bar-actions-row: 2rem;
+  padding-bottom: 0;
+  scroll-padding-bottom: calc(
+    1px + 0.75rem
+    + var(--v2-assistant-editor-bar-status-row)
+    + var(--v2-assistant-editor-bar-actions-row)
+    + max(0.75rem, env(safe-area-inset-bottom))
+    + 0.75rem
+  );
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* The page is 30rem or narrower: the panel's 2rem of gutters below 768px,
+   also the 16.25rem Studio column from 768px. */
+@media (max-width: 32rem), (min-width: 768px) and (max-width: 48.25rem) {
+  .v2-library-panel:has(> .v2-library-content > .v2-assistant-editor-page) {
+    --v2-assistant-editor-bar-status-row: calc(1.125rem + 0.5rem);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-library-panel:has(> .v2-library-content > .v2-assistant-editor-page) {
+    --v2-assistant-editor-bar-actions-row: 2.75rem;
+  }
+}
+
+.v2-assistant-editor-page {
+  container: assistant-editor / inline-size;
+  min-width: 0;
+}
+
+.v2-assistant-editor-title {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--v2-color-border);
+}
+
+.v2-assistant-editor-title h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 1.25rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.v2-assistant-editor-notice {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border-left: 2px solid var(--v2-color-ok);
+  color: var(--v2-color-text2);
+  background: color-mix(in srgb, var(--v2-color-ok) 9%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.v2-assistant-editor-notice > span { flex: 1; min-width: 0; }
+
+.v2-assistant-editor-notice[data-tone="error"],
+.v2-assistant-editor-notice[data-tone="warn"] {
+  border-left-color: var(--v2-color-warn);
+  background: color-mix(in srgb, var(--v2-color-warn) 9%, transparent);
+}
+
+/*
+ * The library's notice (a save, a Sharing change) stays in view: in the
+ * flow under the title at the top of the page, stuck to the top edge of
+ * the scrolled page further down, its tint mixed into the page's own
+ * background and above the page's positioned pieces (the bottom bar is 5).
+ */
+.v2-assistant-editor-library-notice {
+  position: sticky;
+  z-index: 6;
+  top: 0;
+  background: color-mix(in srgb, var(--v2-color-ok) 9%, var(--v2-color-canvas));
+}
+
+.v2-assistant-editor-library-notice[data-tone="error"] {
+  background: color-mix(in srgb, var(--v2-color-warn) 9%, var(--v2-color-canvas));
+}
+
+.v2-assistant-conflict {
+  margin-top: 0.75rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--v2-color-warn);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.v2-assistant-conflict > p { margin: 0 0 0.5rem; }
+.v2-assistant-conflict strong { color: var(--v2-color-text); }
+.v2-assistant-conflict summary { color: var(--v2-color-text); font-weight: 600; }
+
+.v2-assistant-conflict-compare {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-conflict-differs { color: var(--v2-color-warn); font-weight: 600; }
+
+.v2-assistant-conflict pre {
+  max-height: 14rem;
+  margin: 0.5rem 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  color: var(--v2-color-text2);
+}
+
+.v2-assistant-conflict-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.v2-assistant-conflict-note { margin: 0.5rem 0 0; color: var(--v2-color-text3); font-size: 0.75rem; }
+
+.v2-assistant-editor-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 2rem;
+  margin-top: 1.5rem;
+}
+
+@container assistant-editor (min-width: 65rem) {
+  .v2-assistant-editor-grid { grid-template-columns: minmax(0, 1fr) 22.5rem; }
+  .v2-assistant-setup-column { padding-left: 1.5rem; border-left: 1px solid var(--v2-color-border); }
+}
+
+.v2-assistant-editor-main { display: grid; min-width: 0; }
+
+.v2-assistant-editor-section {
+  display: grid;
+  min-width: 0;
+  gap: 0.75rem;
+  padding-bottom: 1.5rem;
+}
+
+.v2-assistant-editor-section + .v2-assistant-editor-section {
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-assistant-editor-section h3,
+.v2-assistant-setup-column h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 650;
+}
+
+.v2-assistant-editor-section > p,
+.v2-assistant-setup-column > header p {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.v2-assistant-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* Fields */
+.v2-assistant-field { display: grid; min-width: 0; gap: 0.375rem; }
+
+.v2-assistant-field > label {
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.v2-assistant-field > label small { margin-left: 0.25rem; color: var(--v2-color-text3); font-weight: 500; }
+.v2-assistant-field > small { color: var(--v2-color-text3); font-size: 0.6875rem; line-height: 1.45; }
+.v2-assistant-field-narrow { max-width: 16rem; }
+.v2-assistant-count { justify-self: end; font-variant-numeric: tabular-nums; }
+
+/* The field rule weighs (0,1,0) through :where(), so the focus and invalid
+   states below win over its border without !important. */
+.v2-assistant-editor-page :where(.v2-assistant-field, .v2-assistant-parameter, .v2-assistant-starters, .v2-assistant-model, .v2-assistant-setup-select) :where(input:not([type="checkbox"], [type="radio"]), select, textarea) {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.375rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  outline: 0;
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+.v2-assistant-editor-page textarea { resize: vertical; line-height: 1.55; }
+
+.v2-assistant-editor-page :is(input, select, textarea):focus-visible {
+  border-color: var(--v2-color-accent);
+  box-shadow: 0 0 0 2px var(--v2-color-accent-dim);
+}
+
+.v2-assistant-editor-page :is(input, select, textarea):disabled {
+  color: var(--v2-color-text3);
+  background: var(--v2-color-surface2);
+}
+
+/* As heavy as the focus rule, (0,2,1), and later: a focused invalid field keeps the error border. */
+.v2-assistant-editor-page :is(input, select, textarea)[aria-invalid="true"] { border-color: var(--v2-color-danger); }
+
+.v2-assistant-editor-page :is(input, select, textarea)[aria-invalid="true"]:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--v2-color-danger) 25%, transparent);
+}
+
+.v2-assistant-field-error {
+  margin: 0;
+  color: var(--v2-color-danger);
+  font-size: 0.71875rem;
+  line-height: 1.45;
+}
+
+/* Identity */
+.v2-assistant-identity {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 1rem;
+}
+
+.v2-assistant-identity-fields { display: grid; min-width: 0; gap: 0.875rem; }
+
+.v2-assistant-avatar-picker {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 0.375rem;
+}
+
+.v2-assistant-avatar-change {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.375rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.v2-assistant-avatar-change:hover { color: var(--v2-color-text); background: var(--v2-color-hover); }
+
+.v2-assistant-recipe-popover {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  display: grid;
+  width: min(18.5rem, calc(100vw - 2rem));
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface);
+  box-shadow: var(--v2-shadow-float);
+}
+
+.v2-assistant-recipe-popover > p {
+  margin: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.v2-assistant-recipe-choices { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+
+.v2-assistant-recipe-choice {
+  display: inline-grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--v2-radius-s);
+  background: transparent;
+  cursor: pointer;
+}
+
+.v2-assistant-recipe-choice[aria-checked="true"] { border-color: var(--v2-color-accent); background: var(--v2-color-accent-dim); }
+.v2-assistant-recipe-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; padding-top: 0.25rem; }
+
+/*
+ * The editor's disclosures (answer rules, response reminder, the latest
+ * saved version of a conflict): one chevron row like the product's other
+ * disclosures; the whole row carries the focus ring and, on touch, 44px.
+ */
+.v2-assistant-editor-page .v2-instructions-reminder { padding: 0.25rem 0.75rem; }
+.v2-assistant-editor-page .v2-instructions-reminder[open] { padding-bottom: 0.75rem; }
+
+.v2-assistant-editor-page .v2-instructions-reminder > summary {
+  display: flex;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+  border-radius: var(--v2-radius-s);
+  list-style: none;
+  cursor: pointer;
+}
+
+.v2-assistant-editor-page .v2-instructions-reminder > summary::-webkit-details-marker { display: none; }
+
+.v2-assistant-editor-page .v2-instructions-reminder > summary > .v2-icon {
+  flex: 0 0 auto;
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--v2-color-text3);
+  transition: transform var(--v2-motion-fast);
+}
+
+.v2-assistant-editor-page .v2-instructions-reminder[open] > summary > .v2-icon { transform: rotate(90deg); }
+
+/* Instructions */
+.v2-assistant-instructions { display: flex; min-width: 0; flex-direction: column; }
+
+.v2-assistant-instructions > .v2-markdown-editor {
+  min-height: 20rem;
+  height: clamp(20rem, 100vh - 22rem, 40rem);
+  height: clamp(20rem, 100dvh - 22rem, 40rem);
+}
+
+.v2-assistant-disclosure-summary { display: inline-grid; gap: 0.125rem; vertical-align: top; }
+.v2-assistant-disclosure-summary small { color: var(--v2-color-text3); font-size: 0.6875rem; font-weight: 400; }
+
+/* Starters. Scoped to the editor: the chat's starter pills share the class
+   name, and this stylesheet also applies on the chat page. */
+.v2-assistant-editor-page .v2-assistant-starters { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+
+.v2-assistant-editor-page .v2-assistant-starters > li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.v2-assistant-editor-page .v2-assistant-starters small { color: var(--v2-color-text3); font-size: 0.6875rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Setup column */
+.v2-assistant-setup-column { display: grid; min-width: 0; align-content: start; gap: 1rem; }
+.v2-assistant-setup-column > header { display: grid; gap: 0.375rem; }
+.v2-assistant-rows { min-width: 0; margin: 0; padding: 0; border: 0; border-top: 1px solid var(--v2-color-border); }
+.v2-assistant-row { min-width: 0; border-bottom: 1px solid var(--v2-color-border); }
+
+.v2-assistant-row-head {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+}
+
+.v2-assistant-row-toggle {
+  display: grid;
+  min-width: 0;
+  min-height: 2.75rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.25rem 0.25rem 0.25rem 0;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.v2-assistant-row-toggle > .v2-icon:first-child { color: var(--v2-color-text3); }
+.v2-assistant-row-copy { display: grid; min-width: 0; gap: 0.125rem; }
+.v2-assistant-row-copy strong { font-size: 0.8125rem; font-weight: 600; }
+
+.v2-assistant-row-copy small {
+  overflow: hidden;
+  color: var(--v2-color-text3);
+  font-size: 0.71875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-assistant-row-chevron { color: var(--v2-color-text3); transition: transform var(--v2-motion-fast); }
+.v2-assistant-row-toggle[aria-expanded="true"] .v2-assistant-row-chevron { transform: rotate(180deg); }
+.v2-assistant-row[data-invalid] .v2-assistant-row-copy strong { color: var(--v2-color-danger); }
+.v2-assistant-row > .v2-assistant-field-error,
+.v2-assistant-setup-deviation { margin: 0 0 0.5rem 1.625rem; }
+.v2-assistant-setup-deviation { color: var(--v2-color-warn); font-size: 0.71875rem; line-height: 1.45; }
+
+.v2-assistant-row-body {
+  display: grid;
+  min-width: 0;
+  gap: 0.75rem;
+  padding: 0 0 0.875rem 1.625rem;
+  font-size: 0.8125rem;
+}
+
+.v2-assistant-row-body[hidden] { display: none; }
+
+/* One width for "Fixed" and "Adjustable" (about 95px), so pills and row
+   chevrons form straight columns. */
+.v2-assistant-policy {
+  display: inline-flex;
+  min-width: 6.25rem;
+  min-height: 1.875rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3125rem;
+  padding: 0.1875rem 0.625rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: 999px;
+  color: var(--v2-color-text2);
+  background: transparent;
+  font: inherit;
+  font-size: 0.71875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-assistant-policy[aria-pressed="true"] {
+  border-color: var(--v2-color-accent);
+  color: var(--v2-color-accent-text);
+  background: var(--v2-color-accent-dim);
+}
+
+.v2-assistant-policy:disabled { cursor: default; opacity: 0.6; }
+
+/*
+ * The policy explanation is long: let the shared tooltip wrap. Both hosts
+ * already carry the text as their description, so the visible tooltip gets
+ * an empty text alternative and is not read a second time; engines without
+ * the alternative-text syntax keep the first declaration.
+ */
+.v2-assistant-policy[data-tooltip]::after,
+.v2-assistant-skills-count[data-tooltip]::after {
+  width: min(17rem, 70vw);
+  white-space: normal;
+  content: attr(data-tooltip);
+  content: attr(data-tooltip) / "";
+}
+
+.v2-assistant-setup-note { margin: 0; color: var(--v2-color-text3); font-size: 0.75rem; line-height: 1.45; }
+
+.v2-assistant-setup-modes,
+.v2-assistant-setup-options {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: 0.125rem;
+}
+
+.v2-assistant-setup-options > legend {
+  margin-bottom: 0.25rem;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.v2-assistant-setup-modes > label,
+.v2-assistant-setup-options > label {
+  display: grid;
+  min-width: 0;
+  min-height: 2rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.5rem;
+  padding: 0.3125rem 0;
+  color: var(--v2-color-text2);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-setup-modes input,
+.v2-assistant-setup-options input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0.125rem 0 0;
+  accent-color: var(--v2-color-accent);
+}
+
+.v2-assistant-setup-modes small,
+.v2-assistant-setup-options label small {
+  display: block;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+}
+
+.v2-assistant-setup-options > label[data-attention] small { color: var(--v2-color-warn); }
+.v2-assistant-setup-options > small,
+.v2-assistant-setup-options > p { margin: 0; color: var(--v2-color-text3); font-size: 0.6875rem; }
+.v2-assistant-setup-select { display: grid; gap: 0.375rem; color: var(--v2-color-text2); font-size: 0.75rem; }
+.v2-assistant-setup-retry { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; color: var(--v2-color-danger); }
+
+.v2-assistant-model { display: grid; gap: 0.375rem; }
+.v2-assistant-model > small { color: var(--v2-color-text3); font-size: 0.6875rem; line-height: 1.45; }
+.v2-assistant-model-picker { position: relative; display: flex; align-items: center; }
+
+.v2-assistant-model-picker > :first-child {
+  position: absolute;
+  z-index: 1;
+  left: 0.625rem;
+  pointer-events: none;
+}
+
+/* Room for the provider mark (0.625rem inset, 1rem wide). The selector
+   outweighs the shared field rule, so its padding shorthand no longer puts
+   the name under the mark. */
+.v2-assistant-editor-page .v2-assistant-model .v2-assistant-model-picker select { padding-left: 2rem; }
+
+/* Reasoning & parameters */
+.v2-assistant-parameters { display: grid; gap: 0.875rem; }
+.v2-assistant-parameter { display: grid; min-width: 0; gap: 0.3125rem; }
+.v2-assistant-parameter-label { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; font-size: 0.75rem; font-weight: 600; }
+.v2-assistant-parameter-label small { color: var(--v2-color-text3); font-weight: 500; }
+.v2-assistant-parameter > p { margin: 0; color: var(--v2-color-text3); font-size: 0.6875rem; line-height: 1.45; }
+.v2-assistant-parameter-input { display: flex; align-items: center; gap: 0.375rem; }
+
+.v2-assistant-parameter-input > button {
+  flex: 0 0 auto;
+  padding: 0.25rem;
+  border: 0;
+  color: var(--v2-color-accent-text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.71875rem;
+  cursor: pointer;
+}
+
+.v2-assistant-tristate {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0.1875rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-surface2);
+}
+
+.v2-assistant-tristate > button {
+  min-height: 2rem;
+  padding: 0.25rem 0.375rem;
+  border: 0;
+  border-radius: calc(var(--v2-radius-s) - 0.125rem);
+  color: var(--v2-color-text2);
+  background: transparent;
+  font: inherit;
+  font-size: 0.71875rem;
+  cursor: pointer;
+}
+
+.v2-assistant-tristate > button[aria-pressed="true"] { color: var(--v2-color-text); background: var(--v2-color-surface); }
+
+/* Skills */
+.v2-assistant-skills { display: grid; min-width: 0; gap: 0.75rem; }
+
+.v2-assistant-skills-switch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.v2-assistant-skills-switch > span { display: grid; gap: 0.125rem; }
+.v2-assistant-skills-switch strong { font-size: 0.8125rem; font-weight: 600; }
+.v2-assistant-skills-switch small { color: var(--v2-color-text3); font-size: 0.6875rem; line-height: 1.4; }
+.v2-assistant-skill-links { display: grid; margin: 0; padding: 0; list-style: none; }
+
+/* Name, delivery and Remove on one line; an unavailable Skill's note takes
+   the full width under them. */
+.v2-assistant-skill-links > li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.125rem 0.5rem;
+  padding: 0.375rem 0;
+  border-bottom: 1px solid var(--v2-color-border);
+}
+
+.v2-assistant-skill-links > li > .v2-settings-segment { grid-area: 1 / 2; }
+.v2-assistant-skill-links > li > .v2-icon-button { grid-area: 1 / 3; }
+.v2-assistant-skill-name { grid-area: 1 / 1; min-width: 0; overflow: hidden; font-size: 0.8125rem; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.v2-assistant-skill-note { grid-area: 2 / 1 / 3 / -1; color: var(--v2-color-warn); font-size: 0.6875rem; line-height: 1.45; }
+.v2-assistant-skill-links .v2-settings-segment-option { padding: 0 0.5rem; font-size: 0.75rem; }
+
+/* The chosen delivery reads as the policy toggle's Fixed: accent edge, text and wash. */
+.v2-assistant-skill-links .v2-settings-segment-option[data-selected="true"] {
+  box-shadow: inset 0 0 0 1px var(--v2-color-accent);
+  color: var(--v2-color-accent-text);
+  background: var(--v2-color-accent-dim);
+}
+.v2-assistant-skills-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.v2-assistant-skills-count { border-radius: var(--v2-radius-s); color: var(--v2-color-text3); font-size: 0.75rem; cursor: help; }
+
+/* Sharing card */
+.v2-assistant-sharing-card {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.v2-assistant-sharing-card > .v2-icon { color: var(--v2-color-text3); }
+.v2-assistant-sharing-card > span { display: grid; min-width: 0; gap: 0.125rem; }
+.v2-assistant-sharing-card strong { font-size: 0.8125rem; font-weight: 600; }
+.v2-assistant-sharing-card > span > small { overflow: hidden; color: var(--v2-color-text3); font-size: 0.71875rem; text-overflow: ellipsis; white-space: nowrap; }
+.v2-assistant-sharing-hint { grid-column: 3; justify-self: end; color: var(--v2-color-text3); font-size: 0.6875rem; }
+
+/* Sticky bottom bar */
+.v2-assistant-editor-bar {
+  position: sticky;
+  z-index: 5;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-top: 1.5rem;
+  padding: 0.75rem 0 max(0.75rem, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--v2-color-border);
+  background: var(--v2-color-canvas);
+}
+
+/* The status shrinks and wraps within its own line rather than pushing the
+   actions to a second row; below 30rem the actions take a row of their own. */
+.v2-assistant-editor-bar-status {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+}
+
+.v2-assistant-editor-bar-status [data-tone="warn"] { color: var(--v2-color-warn); font-weight: 600; }
+.v2-assistant-editor-bar-status [data-tone="error"] { color: var(--v2-color-danger); }
+.v2-assistant-editor-bar-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; margin-left: auto; }
+
+@container assistant-editor (max-width: 30rem) {
+  .v2-assistant-field-narrow { max-width: none; }
+  .v2-assistant-editor-bar-status > span:first-child { display: none; }
+  .v2-assistant-editor-bar-actions { width: 100%; }
+  .v2-assistant-editor-bar-actions > .v2-button { flex: 1 1 auto; justify-content: center; }
+}
+
+/* New assistant sheet */
+.v2-assistant-new { display: grid; gap: 1rem; }
+.v2-assistant-new > fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+
+.v2-assistant-new-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
+  gap: 0.5rem;
+}
+
+.v2-assistant-new-choice {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 0.375rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  cursor: pointer;
+}
+
+.v2-assistant-new-choice:hover { background: var(--v2-color-hover); }
+.v2-assistant-new-choice[data-selected] { border-color: var(--v2-color-accent); background: var(--v2-color-accent-dim); }
+.v2-assistant-new-choice:has(input:focus-visible) { outline: 2px solid var(--v2-color-accent); outline-offset: 2px; }
+
+.v2-assistant-new-choice-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--v2-color-text);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.v2-assistant-new-choice-title > .v2-icon { color: var(--v2-color-accent-text); }
+.v2-assistant-new-choice > small { color: var(--v2-color-text2); font-size: 0.75rem; line-height: 1.45; }
+.v2-assistant-new-note { margin: 0; color: var(--v2-color-text3); font-size: 0.75rem; line-height: 1.45; }
+
+@media (hover: none), (pointer: coarse) {
+  .v2-assistant-editor-page :where(.v2-assistant-field, .v2-assistant-parameter, .v2-assistant-starters, .v2-assistant-model, .v2-assistant-setup-select) :where(input:not([type="checkbox"], [type="radio"]), select),
+  .v2-assistant-editor-page .v2-instructions-reminder > summary,
+  .v2-assistant-policy,
+  .v2-assistant-avatar-change,
+  .v2-assistant-tristate > button,
+  .v2-assistant-recipe-choice { min-height: 2.75rem; }
+  .v2-assistant-recipe-choice { min-width: 2.75rem; }
+  .v2-assistant-setup-modes > label,
+  .v2-assistant-setup-options > label { min-height: 2.75rem; align-items: center; }
+  .v2-assistant-setup-modes input,
+  .v2-assistant-setup-options input { margin-top: 0; }
+  /* No hardware keyboard to press Ctrl / ⌘ S with. */
+  .v2-assistant-editor-bar-status > span:first-child { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-assistant-row-chevron,
+  .v2-assistant-editor-page .v2-instructions-reminder > summary > .v2-icon { transition: none; }
+}

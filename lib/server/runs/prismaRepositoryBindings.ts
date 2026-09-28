@@ -12,7 +12,12 @@ import {
   decodeAssistantIdentity,
   type AssistantIdentity
 } from "../../contracts/assistants";
+import {
+  decodeStoredChatAssistantOverrides,
+  storedChatAssistantOverrides
+} from "../../contracts/chats";
 import { SKILL_MAX_SELECTED } from "../../contracts/skills";
+import { nextChatAssistantOverrides } from "../chats/assistantOverrides";
 import {
   applySettingsUpdateInTransaction,
   type SettingsTransactionClient
@@ -56,10 +61,11 @@ import {
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
   SkillRunConflictError,
+  type AcceptedChatAssistant,
   type AcceptedSkillRun,
   type AcceptedRunDefaults
 } from "./runRepositoryContract";
-import { isRecord, json } from "./prismaRepositoryShared";
+import { isPrismaSerializationConflict, isRecord, json } from "./prismaRepositoryShared";
 
 function modelControlKey(input: { modelId: string; provider: string }): string {
   return `${input.provider}:${input.modelId}`;
@@ -108,20 +114,6 @@ class SkillProvenanceSerializationError extends Error {
     super("skill_provenance_serialization_conflict");
     this.name = "SkillProvenanceSerializationError";
   }
-}
-
-function isPrismaSerializationConflict(error: unknown): boolean {
-  if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    return error.code === "P2034" ||
-      (error.code === "P2010" &&
-        isRecord(error.meta) &&
-        (error.meta.code === "40001" || error.meta.code === "40P01"));
-  }
-  // Prisma createMany can surface rollback-safe PostgreSQL conflicts as an
-  // UnknownRequestError instead of P2010. Match the structured connector code,
-  // never arbitrary query text, so unrelated database failures still escape.
-  return error instanceof Prisma.PrismaClientUnknownRequestError &&
-    /PostgresError\s*\{\s*code:\s*"(?:40001|40P01)"/u.test(error.message);
 }
 
 /** Recheck live authority and the complete resolved definition at first
@@ -195,6 +187,46 @@ export async function assertAssistantRunProvenance(
     if (isPrismaSerializationConflict(error)) {
       throw new AssistantProvenanceSerializationError();
     }
+    throw error;
+  }
+}
+
+/**
+ * Rechecks a personal Assistant run's chat binding under the chat lock and
+ * stores the run's override change. The chat must still be bound to the
+ * prepared Assistant, or still be unbound when this run binds it; a deleted
+ * Assistant's marker or another binding fails closed with the neutral
+ * conflict. Stored controls follow their model through `nextChatAssistantOverrides`.
+ */
+export async function applyAcceptedChatAssistant(
+  tx: Pick<Prisma.TransactionClient, "chat">,
+  chatId: string,
+  accepted: AcceptedChatAssistant
+): Promise<void> {
+  const chat = await tx.chat.findUnique({
+    select: { assistantId: true, assistantOverrides: true },
+    where: { id: chatId }
+  });
+  if (!chat) throw new AssistantRunConflictError();
+  const stored = decodeStoredChatAssistantOverrides(chat.assistantOverrides);
+  if (stored?.kind === "deleted") throw new AssistantRunConflictError();
+  const binding = accepted.bind && chat.assistantId === null;
+  if (!binding && chat.assistantId !== accepted.assistantId) throw new AssistantRunConflictError();
+  if (!binding && Object.keys(accepted.overridesPatch).length === 0) return;
+  // An undecodable stored value counts as none and is replaced.
+  const current = !binding && stored?.kind === "overrides" ? stored.overrides : {};
+  const next = storedChatAssistantOverrides(nextChatAssistantOverrides(current, accepted.overridesPatch));
+  try {
+    await tx.chat.update({
+      data: {
+        ...(binding ? { assistantId: accepted.assistantId } : {}),
+        assistantOverrides: next === null ? Prisma.DbNull : next as Prisma.InputJsonValue
+      },
+      where: { id: chatId }
+    });
+  } catch (error) {
+    // Retried like a provenance conflict; exhausted retries end neutral.
+    if (isPrismaSerializationConflict(error)) throw new AssistantProvenanceSerializationError();
     throw error;
   }
 }

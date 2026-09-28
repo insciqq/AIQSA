@@ -5,7 +5,18 @@ import {
   resetComposerSessionStoreForTest,
   resetWorkspaceStoreForTest
 } from "@/tests/support/appShellStores";
-import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
+import {
+  useComposerControlStore,
+  type ComposerControlSnapshot
+} from "@/components/app-shell/composerControlStore";
+import { resetChatAssistantProjectionStoreForTest } from "@/tests/support/appShellStores";
+import { useWorkspaceActions, type BlankDefaultAssistant } from "@/components/app-shell/workspaceActions";
+import { catalog as catalogFixture } from "@/tests/support/assistantLibraryFixtures";
+import {
+  enterProjectComposerContext,
+  enterProjectComposerControlBoundary,
+  leaveProjectComposerContext
+} from "@/features/workspace-v2/PowerAppShellV2";
 import {
   composerSessionKey,
   projectComposerSessionKey,
@@ -45,6 +56,7 @@ import {
   projectChatSummaryFromApi
 } from "@/components/app-shell/projectWorkspaceApi";
 import { useProjectWorkspaceController } from "./useProjectWorkspaceController";
+import { boundComposerAssistantFixture } from "@/tests/support/composerAssistantFixtures";
 
 const projectSummary: ProjectSummaryWire = {
   accessRevision: 1,
@@ -262,8 +274,9 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     await act(async () => { await hook.result.current.actions.selectChat("chat-1"); });
     expect(input.applyProjectDefaults).toHaveBeenLastCalledWith(projectDetail,
       expect.objectContaining({ id: "chat-1", defaultSearchPlan: off }));
+    // The chat's Assistant comes from its own projection, never the Project default.
     expect(input.activateChat).toHaveBeenLastCalledWith(
-      expect.objectContaining({ id: "chat-1", defaultSearchPlan: off }), { preserveControls: true });
+      expect.objectContaining({ id: "chat-1", defaultSearchPlan: off }), { preserveControls: true, readAssistant: true });
     expect(apiMocks.loadProjectWorkspace).toHaveBeenCalledOnce();
     hook.unmount();
   });
@@ -484,6 +497,8 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(result.current.selectedProjectId).toBeNull();
     expect(input.activateBlankWorkspace).toHaveBeenCalledOnce();
     expect(input.onProjectContextLeft).toHaveBeenCalledTimes(2);
+    // Leaving is not losing access: the personal state returns as it was.
+    expect(input.onProjectContextLeft).toHaveBeenLastCalledWith();
   });
 
   it("does not dispatch Manager-only folder or movement mutations for a Contributor", async () => {
@@ -647,7 +662,7 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
       useComposerControlStore.setState({
         knowledgePlanSource: "project",
         knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-        selectedAssistant: null,
+        assistant: null,
         selectedKnowledgeBaseIds: [],
         selectedModelId: "model-1",
         selectedProvider: "openai",
@@ -669,22 +684,12 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
         sourceIds: ["manual-source"],
         version: 1
       },
-      selectedAssistant: {
-        avatar: {
-          accents: [0],
-          backgroundShape: "circle",
-          foregroundShape: "diamond",
-          kind: "generated",
-          paletteId: "ocean",
-          recipeVersion: 1,
-          rotations: [0, 1]
-        },
+      assistant: boundComposerAssistantFixture({
         description: "Manually selected for this question",
         id: "manual-assistant",
         name: "Manual assistant",
-        promptCharacterCount: 38,
-        starterPrompts: []
-      },
+        promptCharacterCount: 38
+      }),
       selectedKnowledgeBaseIds: ["manual-base"],
       selectedModelId: "manual-model",
       selectedProvider: "manual-provider",
@@ -714,7 +719,7 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
         baseIds: ["manual-base"],
         sourceIds: ["manual-source"]
       },
-      selectedAssistant: expect.objectContaining({ id: "manual-assistant" }),
+      assistant: expect.objectContaining({ id: "manual-assistant" }),
       selectedKnowledgeBaseIds: ["manual-base"],
       selectedModelId: "manual-model",
       selectedProvider: "manual-provider",
@@ -812,6 +817,7 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     expect(result.current.selectedProjectId).toBeNull();
     expect(useWorkspaceStore.getState().chats.some((chat) => chat.projectId === "project-1")).toBe(false);
     expect(input.onProjectAccessLost).toHaveBeenCalledWith(["chat-1"]);
+    expect(input.onProjectContextLeft).toHaveBeenLastCalledWith({ accessLost: true });
     expect(input.setNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
   });
 
@@ -932,5 +938,170 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
 
     expect(useWorkspaceStore.getState().chats).toEqual([]);
     expect(input.onProjectAccessLost).toHaveBeenCalledWith(["revoked-chat"]);
+  });
+});
+
+/*
+ * The shell's wiring with the real owners: the personal workspace actions,
+ * this controller and the shell's Project entry and exit. Only the network
+ * and the Project's own defaults are stand-ins.
+ */
+describe("personal composer across a Project visit", () => {
+  const readyProject: ProjectDetailWire = {
+    ...projectDetail,
+    resources: [{
+      available: true,
+      id: "model-binding-1",
+      label: "Shared model",
+      modelId: "model-1",
+      provider: "openai",
+      reason: null,
+      resourceId: "model-1",
+      type: "model"
+    }]
+  };
+  const personalKey = composerSessionKey(null);
+
+  beforeEach(() => {
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+    resetComposerControlStoreForTest();
+    resetComposerSessionStoreForTest();
+    resetWorkspaceStoreForTest();
+    resetChatAssistantProjectionStoreForTest();
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    apiMocks.loadProjects.mockResolvedValue([projectSummary]);
+    apiMocks.loadProject.mockResolvedValue(readyProject);
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    apiMocks.loadProjectActivity.mockResolvedValue({ events: [], nextCursor: null });
+    useWorkspaceStore.setState({ catalog: catalogFixture(), workspaceReady: true });
+  });
+
+  afterEach(() => {
+    resetComposerControlStoreForTest();
+    resetComposerSessionStoreForTest();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function useShellWiring() {
+    const controls = { current: null as ComposerControlSnapshot | null };
+    const blankDefaultAssistant = { current: null as BlankDefaultAssistant | null };
+    const personalBlankDefaultAssistant = { current: null as BlankDefaultAssistant | null };
+    // No personal default Assistant is set; a load would resolve nothing.
+    const chooseDefaultAssistant = vi.fn(async () => false);
+    const workspace = useWorkspaceActions({
+      activeChatIdRef: { current: null },
+      applyModelControlDefaults: vi.fn(),
+      blankDefaultAssistantRef: blankDefaultAssistant,
+      chatDetailRequestsRef: { current: new Map() },
+      chatHasActiveStream: () => false,
+      chatMutation: { editingTitle: "", finishEditing: vi.fn() },
+      chooseDefaultAssistant,
+      loadingChatDetailIdRef: { current: null },
+      resumeChatRun: vi.fn(),
+      setNotice: vi.fn(),
+      setSelectedKnowledgePlan: vi.fn(),
+      setSelectedModelId: vi.fn(),
+      setSelectedProvider: vi.fn(),
+      setSelectedSearchPlan: vi.fn(),
+      workspaceRefreshPromiseRef: { current: null }
+    });
+    const refs = { blankDefaultAssistant, controls, personalBlankDefaultAssistant };
+    const input = {
+      ...controllerInput(),
+      activateBlankWorkspace: () => workspace.activateBlankWorkspace(),
+      activateChat: workspace.activateChat,
+      activateProjectBlankWorkspace: (projectId: string) => {
+        workspace.activateBlankWorkspace(null, "NORMAL", projectId);
+        enterProjectComposerControlBoundary(controls);
+        useComposerSessionStore.getState().activateSession(projectComposerSessionKey(projectId));
+      },
+      // The Project default a new Project chat starts with.
+      applyProjectDefaults: vi.fn(() => {
+        useComposerControlStore.setState({
+          assistant: boundComposerAssistantFixture({ id: "project-default", name: "Project default" }),
+          selectedModelId: "model-1",
+          selectedProvider: "openai"
+        });
+      }),
+      onProjectContextEntered: vi.fn(() => enterProjectComposerContext(refs)),
+      onProjectContextLeft: vi.fn((options?: { accessLost?: boolean }) => leaveProjectComposerContext({
+        ...refs,
+        accessLost: options?.accessLost ?? false,
+        applyPersonalBlankDefaults: () => workspace.applyPersonalBlankDefaults(),
+        skipBlankDefaultAssistant: workspace.skipBlankDefaultAssistant
+      }))
+    };
+    return { chooseDefaultAssistant, input, workspace };
+  }
+
+  /** A personal blank chat with an Assistant the user chose and an unsent draft. */
+  function choosePersonalAssistant() {
+    useComposerSessionStore.getState().activateSession(personalKey);
+    useComposerControlStore.setState({
+      assistant: boundComposerAssistantFixture({ id: "personal-notes", name: "Personal notes" }),
+      selectedModelId: "personal-model",
+      selectedProvider: "personal-provider"
+    });
+    useComposerSessionStore.getState().setDraft("Unsent personal draft");
+  }
+
+  function expectPersonalBlankChatAsBefore() {
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(personalKey);
+    expect(selectComposerSession(useComposerSessionStore.getState(), personalKey).draft).toBe("Unsent personal draft");
+    expect(useComposerControlStore.getState()).toMatchObject({
+      assistant: expect.objectContaining({ id: "personal-notes" }),
+      selectedModelId: "personal-model",
+      selectedProvider: "personal-provider"
+    });
+  }
+
+  it.each([
+    ["from a Project chat", true],
+    ["from the Project's blank chat", false]
+  ])("returns the personal blank chat's Assistant and draft on leaving %s", async (_label, openChat) => {
+    const { chooseDefaultAssistant, input } = useShellWiring();
+    choosePersonalAssistant();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    expect(useComposerControlStore.getState().assistant).toBeNull();
+    if (openChat) {
+      // "Start shared chat" starts with the Project default.
+      await act(async () => { expect(await result.current.actions.createChat()).toBe(true); });
+      expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "project-default" });
+    }
+
+    // "Chats" and "All projects" both call this.
+    await act(async () => {
+      result.current.actions.leave();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expectPersonalBlankChatAsBefore();
+    expect(chooseDefaultAssistant).not.toHaveBeenCalled();
+  });
+
+  it("clears the Assistant but keeps the personal draft when Project access ends", async () => {
+    const { input } = useShellWiring();
+    choosePersonalAssistant();
+    apiMocks.leaveProject.mockResolvedValue({ accessRemaining: false });
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    await act(async () => { expect(await result.current.actions.createChat()).toBe(true); });
+
+    await act(async () => { expect(await result.current.actions.leaveProject()).toBe(true); });
+
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(personalKey);
+    expect(selectComposerSession(useComposerSessionStore.getState(), personalKey).draft).toBe("Unsent personal draft");
+    expect(useComposerControlStore.getState().assistant).toBeNull();
   });
 });

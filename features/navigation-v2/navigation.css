@@ -531,6 +531,19 @@
   content: "";
 }
 
+/* A chat with an Assistant leads with its 16px avatar, after the live dot;
+   the row keeps its height and the title keeps the flexible column. */
+.v2-chat-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.v2-chat-avatar {
+  display: block;
+  flex: 0 0 auto;
+}
+
 .v2-chat-title {
   min-width: 0;
   overflow: hidden;

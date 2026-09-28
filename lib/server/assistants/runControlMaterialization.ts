@@ -22,6 +22,61 @@ function recordValue(value: unknown): Record<string, unknown> {
   return isRecord(value) ? { ...value } : {};
 }
 
+function numberFromSavedValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Converts saved control values (per-model user values, Project defaults and
+ * the ordinary `controlDefaults` request field, where numbers travel as
+ * strings) into provider-neutral controls. Null for an unknown field or a
+ * value of the wrong kind.
+ */
+export function runControlsFromSavedValues(
+  values: Readonly<Record<string, unknown>>
+): AssistantRunControls | null {
+  const allowed = new Set([
+    "backgroundMode",
+    "maxOutputTokens",
+    "reasoningEffort",
+    "reasoningMode",
+    "streamMode",
+    "temperature"
+  ]);
+  if (Object.keys(values).some((key) => !allowed.has(key))) return null;
+  const controls: AssistantRunControls = {};
+  if (values.backgroundMode !== undefined) {
+    if (typeof values.backgroundMode !== "boolean") return null;
+    controls.backgroundMode = values.backgroundMode;
+  }
+  if (values.streamMode !== undefined) {
+    if (typeof values.streamMode !== "boolean") return null;
+    controls.streamMode = values.streamMode;
+  }
+  if (values.maxOutputTokens !== undefined) {
+    const parsed = numberFromSavedValue(values.maxOutputTokens);
+    if (parsed === null || !Number.isInteger(parsed) || parsed < 1) return null;
+    controls.maxOutputTokens = parsed;
+  }
+  if (values.temperature !== undefined) {
+    const parsed = numberFromSavedValue(values.temperature);
+    if (parsed === null) return null;
+    controls.temperature = parsed;
+  }
+  if (values.reasoningEffort !== undefined) {
+    if (typeof values.reasoningEffort !== "string" || !values.reasoningEffort) return null;
+    controls.reasoningEffort = values.reasoningEffort;
+  }
+  if (values.reasoningMode !== undefined) {
+    if (typeof values.reasoningMode !== "string" || !values.reasoningMode) return null;
+    controls.reasoningMode = values.reasoningMode;
+  }
+  return controls;
+}
+
 export function assistantRunControlIssue(
   runControls: AssistantRunControls,
   controls: ModelParameterControls
@@ -76,7 +131,7 @@ export function assistantRunControlsSupported(
 }
 
 /**
- * Server-authoritative materialization of an Assistant revision's
+ * Server-authoritative materialization of an Assistant's
  * provider-neutral controls into exact dialect params, shared by send,
  * regeneration, and edited-branch admission. Saved values are used exactly and
  * never clamped, omitted, or substituted: a stored control the current model

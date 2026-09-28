@@ -5,11 +5,9 @@ Scope: HTTP/API and control-plane boundaries.
 
 ## API Boundary
 
-[`app/api/`](../app/api/) owns routes and methods; [`lib/contracts/`](../lib/contracts/) owns client-safe wire shapes. Authenticate, bound/decode input, invoke the server owner, and serialize an explicit projection. Recheck ownership, entitlement, and lifecycle at the operation; browser filtering grants no authority. Browser mutations use the shared same-origin and bounded-body boundary. Stable errors omit raw exceptions and resource-existence clues.
+[`app/api/`](../app/api/) owns routes and methods; [`lib/contracts/`](../lib/contracts/) owns client-safe wire shapes. Authenticate, bound/decode input, invoke the server owner, and serialize an explicit projection. Recheck ownership, entitlement, and lifecycle at the operation. Browser mutations use the shared same-origin and bounded-body boundary. Stable errors omit raw exceptions and resource-existence clues.
 
 Project SSE authenticates sessions and reauthorizes membership during delivery. Cursors order invalidations, never grant authority; expired history requires canonical resync, and access loss closes delivery. Mutations stay bounded. Skill lists expose metadata; instructions/files require authorized reads. Discovery/pagination stay server-side.
-
-Dependency direction belongs to [Architecture](ARCHITECTURE.md), authentication threats to [Security](SECURITY.md).
 
 HTTP correlation begins at the owned Node listener with a fresh server-generated trace and response header; client headers cannot select it. Production route labels come only from the active build's manifest, and describe pathname matching rather than proof of handler execution. Unknown/dev routes never fall back to raw URLs. Accepted run and job identities correlate independent requests and recovery without changing authority or adding persistence fields. Shared coordinators and timers start outside the triggering request's context; each claimed operation owns its context.
 
@@ -17,9 +15,9 @@ Diagnostics validate event fields at runtime. HTTP completion, operation outcome
 
 ## Control Planes
 
-Configuration transitions use optimistic concurrency and atomic validation. Never silently clamp, substitute, or partially apply a multi-resource change. Accepted runs retain their admitted configuration; edits affect future work.
+Configuration transitions use optimistic concurrency and atomic validation. Never silently clamp, substitute, or partially apply a multi-resource change.
 
-Assistant publication must preserve direct Skill audience coverage and require approved revisions for all linked Skills. Project publication or explicit manager refresh applies the complete eligible dependency plan atomically; later Assistant edits never silently change Project grants. Missing dependencies make it unavailable until authorized refresh. Unlink/unpublish clears affected defaults/plans/dependent authorities atomically and reports safe consequences.
+Assistant publication must preserve direct Skill audience coverage and require approved revisions for all linked Skills. Project publication or explicit manager refresh applies the complete eligible dependency plan atomically; later Assistant edits never silently change Project grants. Missing dependencies make it unavailable until authorized refresh. Unlink/unpublish clears affected defaults/plans/dependent authorities atomically and reports safe consequences. Non-administrators list installation-wide only through approved requests; approval checks the requested version, and later edits stay unreviewed. Administrators read private definitions only through pending requests for the current version.
 
 Answer recommendations and purpose-specific System Model assignments are independent and grant no entitlement. Each system role uses its configured deployment and installation credential without substitution. Consolidated administration does not merge domain ownership: Knowledge activation creates an immutable profile with explicit reprocessing/reindexing, while Personal Memory retains owner-scoped entitlement and generation rules.
 
@@ -37,6 +35,4 @@ Workspace upload admission is chat-scoped and requires installation/runtime capa
 
 Direct PDF execution may read a settled original before extraction completes, with bounded size/checksum validation. Local-extraction execution consumes ready text only. Original availability does not depend on extraction success.
 
-Anonymous sharing uses a hashed high-entropy bearer token and one positive public schema for creation and reads of a sanitized immutable snapshot. Unknown fields, private attachments, Memory/Knowledge/tool evidence, recovery state, and private identifiers are dropped; public readers never access live chat state.
-
-See [Persistence](PERSISTENCE.md) for lifecycle, [Run contracts](RUN_CONTRACTS.md) for accepted execution, and [Providers](PROVIDERS.md) for transport.
+Anonymous sharing uses a hashed high-entropy bearer token and one positive public schema for creation and reads of a sanitized immutable snapshot. Unknown fields, private attachments, Memory/Knowledge/tool evidence, recovery state, and private identifiers are dropped.

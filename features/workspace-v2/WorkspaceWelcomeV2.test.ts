@@ -7,7 +7,6 @@ import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
 import {
   CompactKnowledgePollingV2,
   compactKnowledgeRefreshPendingV2,
-  dispatchAssistantUnavailableActionV2,
   knowledgeSummaryStatusV2,
   memoryManagerErrorCopy,
   useStudioMcpAttentionV2
@@ -15,38 +14,6 @@ import {
 
 afterEach(() => {
   vi.useRealTimers();
-});
-
-describe("Assistant unavailable action routing", () => {
-  it("opens the owned Assistant editor for a fixable saved setup", () => {
-    const onOpenEditor = vi.fn();
-    const onOpenMcpSettings = vi.fn();
-
-    dispatchAssistantUnavailableActionV2({
-      action: "open-editor",
-      assistantId: "assistant-1",
-      onOpenEditor,
-      onOpenMcpSettings
-    });
-
-    expect(onOpenEditor).toHaveBeenCalledWith("assistant-1");
-    expect(onOpenMcpSettings).not.toHaveBeenCalled();
-  });
-
-  it("opens MCP Settings over the current section", () => {
-    const onOpenEditor = vi.fn();
-    const onOpenMcpSettings = vi.fn();
-
-    dispatchAssistantUnavailableActionV2({
-      action: "mcp-settings",
-      assistantId: "assistant-1",
-      onOpenEditor,
-      onOpenMcpSettings
-    });
-
-    expect(onOpenMcpSettings).toHaveBeenCalledOnce();
-    expect(onOpenEditor).not.toHaveBeenCalled();
-  });
 });
 
 describe("Studio MCP attention", () => {

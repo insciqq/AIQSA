@@ -1,6 +1,7 @@
 import { decodeAnswerSoundPreferences, type AnswerSoundPreferences } from "./answerSound";
 import {
   decodeOptionalChatDefaults,
+  decodeOptionalDefaultAssistant,
   type ChatDefaultMcpMode
 } from "./chatDefaults";
 import type { ErrorResponse, SessionErrorCode } from "./http";
@@ -119,6 +120,10 @@ export type CatalogSearchStrategy = CatalogWireSearchStrategy;
 export type CatalogSearchStrategyKind = CatalogSearchStrategy["kind"];
 
 export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
+  /** Personal default Assistant while it is available; see `ChatDefaultAssistant`. */
+  assistantId?: string | null;
+  /** A saved default Assistant is no longer available and is not applied. */
+  assistantUnavailable?: boolean;
   controlValues: Record<string, unknown>;
   hasPersonalModelDefault: boolean;
   /** Personal chat defaults applied when a new chat starts; absent on older wires. */
@@ -477,8 +482,13 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     skillsMode: defaults.skillsMode,
     sendWithEnter: defaults.sendWithEnter
   });
+  const defaultAssistant = decodeOptionalDefaultAssistant({
+    assistantId: defaults.assistantId,
+    assistantUnavailable: defaults.assistantUnavailable
+  });
   if (
     !chatDefaults ||
+    !defaultAssistant ||
     (defaults.workspaceEnabled !== undefined && typeof defaults.workspaceEnabled !== "boolean") ||
     models.some((model) => model === null) ||
     providers.some((provider) => provider === null) ||
@@ -511,6 +521,8 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     ...(attachmentLimits ? { attachmentLimits } : {}),
     defaults: {
       ...answerSound,
+      assistantId: defaultAssistant.assistantId,
+      assistantUnavailable: defaultAssistant.assistantUnavailable,
       controlValues: defaults.controlValues,
       hasPersonalModelDefault: defaults.hasPersonalModelDefault,
       knowledgePlan: chatDefaults.knowledgePlan,

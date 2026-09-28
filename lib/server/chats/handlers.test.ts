@@ -16,6 +16,7 @@ import {
   type ChatRepository
 } from "./handlers";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import { ChatAssistantUpdateError } from "./assistantUpdateError";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -887,6 +888,96 @@ describe("chat route handlers", () => {
     await expect(patchResponse.json()).resolves.toEqual({ error: "active_run_in_progress" });
     expect(deleteResponse.status).toBe(409);
     await expect(deleteResponse.json()).resolves.toEqual({ error: "active_run_in_progress" });
+  });
+
+  it("passes Assistant binding fields through and answers their refusals with stable codes", async () => {
+    const calls: Parameters<ChatRepository["updateChat"]>[0][] = [];
+    let failure: Error | null = null;
+    const repository: ChatRepository = {
+      ...historyRepositoryMethods,
+      archiveChat: async () => false,
+      createChat: async () => null,
+      createFolder: async () => null,
+      deleteFolder: async () => false,
+      getChat: async () => null,
+      listWorkspace: async () => null,
+      searchChatContent: async () => [],
+      updateChat: async (input) => {
+        calls.push(input);
+        if (failure) throw failure;
+        return {
+          activeLeafMessageId: null,
+          assistantId: input.assistantId ?? null,
+          createdAt: "2026-09-28T00:00:00.000Z",
+          defaultModelId: null,
+          defaultProvider: null,
+          folderId: null,
+          id: input.chatId,
+          messageCount: 0,
+          pinned: false,
+          title: "Bound",
+          updatedAt: "2026-09-28T00:00:00.000Z"
+        };
+      },
+      updateFolder: async () => null
+    };
+    const PATCH = createUpdateChatHandler({ repository, resolveAuth: auth.resolveAuth });
+    const patch = (body: unknown) => PATCH(
+      new Request("http://app.local/api/chats/chat-1", {
+        body: JSON.stringify(body),
+        headers: { cookie: authCookie() },
+        method: "PATCH"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+
+    const bound = await patch({ assistantId: "assistant-1", unknownKey: true });
+    expect(bound.status).toBe(200);
+    await expect(bound.json()).resolves.toMatchObject({ chat: { assistantId: "assistant-1", id: "chat-1" } });
+    const overrides = await patch({ assistantOverrides: { model: { mode: "model", modelId: "model-2" }, search: null } });
+    expect(overrides.status).toBe(200);
+    const removed = await patch({ assistantId: null });
+    await expect(removed.json()).resolves.toMatchObject({ chat: { assistantId: null } });
+    expect(calls.map(({ assistantId, assistantOverrides }) => ({ assistantId, assistantOverrides }))).toEqual([
+      { assistantId: "assistant-1", assistantOverrides: undefined },
+      { assistantId: undefined, assistantOverrides: { model: { mode: "model", modelId: "model-2" }, search: null } },
+      { assistantId: null, assistantOverrides: undefined }
+    ]);
+    expect(calls[0]).not.toHaveProperty("unknownKey");
+
+    // Malformed values are refused before the repository, never dropped.
+    calls.length = 0;
+    const malformed = await Promise.all([
+      patch({ assistantId: "" }),
+      patch({ assistantId: 42 }),
+      patch({ assistantId: "bad id" }),
+      patch({ assistantOverrides: { model: { mode: "inherit" } } }),
+      patch({ assistantOverrides: { unknownRow: null } }),
+      patch({ assistantOverrides: [] })
+    ]);
+    expect(malformed.map((response) => response.status)).toEqual([404, 404, 404, 400, 400, 400]);
+    await expect(Promise.all(malformed.map((response) => response.json()))).resolves.toEqual([
+      { error: "assistant_not_available" },
+      { error: "assistant_not_available" },
+      { error: "assistant_not_available" },
+      { error: "assistant_overrides_invalid" },
+      { error: "assistant_overrides_invalid" },
+      { error: "assistant_overrides_invalid" }
+    ]);
+    expect(calls).toEqual([]);
+
+    const refusals: Array<[Error, number, string]> = [
+      [new ChatAssistantUpdateError("assistant_not_available"), 404, "assistant_not_available"],
+      [new ChatAssistantUpdateError("assistant_overrides_not_allowed"), 400, "assistant_overrides_not_allowed"],
+      [new ChatAssistantUpdateError("assistant_overrides_invalid"), 400, "assistant_overrides_invalid"],
+      [new ActiveRunConflictError(), 409, "active_run_in_progress"]
+    ];
+    for (const [error, status, code] of refusals) {
+      failure = error;
+      const response = await patch({ assistantId: "assistant-2" });
+      expect(response.status).toBe(status);
+      await expect(response.json()).resolves.toEqual({ error: code });
+    }
   });
 
   it("rejects updates for archived chats using the normal not-found response", async () => {

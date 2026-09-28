@@ -234,8 +234,9 @@ export type ProjectResourceWire = Readonly<{
 /**
  * Client-safe Project run controls. This projection is intentionally separate
  * from every personal catalog: a member can compose with resources published
- * to the Project without receiving a matching personal grant. Assistant prompt
- * text and provider/MCP credentials never enter this contract.
+ * to the Project without receiving a matching personal grant. Members read a
+ * bound Assistant's instructions like any user of it; provider/MCP
+ * credentials never enter this contract.
  */
 export type ProjectComposerWire = Readonly<{
   assistants: readonly Readonly<{
@@ -580,7 +581,9 @@ function decodeProjectComposer(value: unknown): ProjectComposerWire | null {
       (entry.promptCharacterCount as number) < 0) return null;
     const content = decodeAssistantContent(entry.content);
     const summary = decodeAssistantSummary(entry.summary);
-    return content && summary && content.providerModelId && content.name === summary.name
+    // The rows carry the model: an inherited or redacted one (a model the
+    // Project does not provide reads as none) runs with the Project default.
+    return content && summary && content.name === summary.name
       ? { promptCharacterCount: entry.promptCharacterCount as number, content, summary }
       : null;
   });

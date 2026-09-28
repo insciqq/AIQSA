@@ -127,8 +127,8 @@
   border-bottom: 0;
 }
 
-/* The title group is the only group that yields width: its chip and title
-   ellipsize while the action controls keep their full hit areas. */
+/* The title group yields width first: its chip and title ellipsize while
+   the action controls keep their full hit areas. */
 .v2-live-title {
   display: flex;
   min-width: 0;
@@ -136,16 +136,21 @@
   align-items: center;
 }
 
-/* At the desktop/compact boundary the concrete model remains readable while
-   the location trail yields first. Below 960px the mobile/compact rules may
-   shrink the model pill again to protect the viewport. */
-@media (min-width: 60rem) {
-  .v2-live-model {
-    flex: 0 0 auto;
+/* With a header bar (768px and wider) the chat title and its location trail
+   yield first, down to 6rem; then the Assistant selector, which shows the
+   widest form that fits (HeaderAssistantSelectorV2); the model name last:
+   it keeps its width while the selector shows a label. */
+@media (min-width: 768px) {
+  .v2-live-header-island > .v2-live-model:has(+ .v2-live-assistant:is([data-fit="label"], [data-fit="word"])) {
+    flex-shrink: 0;
   }
 
   .v2-live-title {
     flex: 1 1 0;
+  }
+
+  .v2-live-title:has(> h1) {
+    min-width: 6rem;
   }
 
   .v2-live-crumb {
@@ -224,6 +229,227 @@
 
 .v2-live-model > .v2-monogram {
   --v2-monogram-size: 1rem;
+}
+
+/* The model comes from the chat's Assistant (PRD 10.6): the same dot as the
+   composer chips; the tooltip carries the words. It sits on the pill's
+   corner here, inside it on touch and on the provider mark in the phone
+   island, so it is always whole and always the model's. */
+.v2-live-model {
+  position: relative;
+}
+
+.v2-live-model-dot {
+  position: absolute;
+  top: -0.2rem;
+  right: -0.1rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--v2-color-accent);
+  box-shadow: 0 0 0 2px var(--v2-color-canvas);
+}
+
+/* Model selector and Assistant selector, in this order (PRD 10.6). */
+.v2-live-header-island {
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+/*
+ * Assistant selector: without an Assistant a quiet header icon; with one the
+ * model selector's pill with avatar 20, name and chevron. A binding that
+ * blocks sending takes the error outline.
+ */
+.v2-live-assistant {
+  flex: 0 1 auto;
+}
+
+.v2-live-assistant[data-state="empty"] {
+  flex: none;
+  color: var(--v2-color-text2);
+}
+
+.v2-live-assistant:not([data-state="empty"]) {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  height: 2.125rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: 0.625rem;
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--v2-motion-fast),
+    border-color var(--v2-motion-fast),
+    box-shadow var(--v2-motion-fast);
+}
+
+.v2-live-assistant:not([data-state="empty"]):hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-live-assistant[aria-expanded="true"] {
+  border-color: var(--v2-color-accent);
+  box-shadow: 0 0 0 3px var(--v2-color-accent-dim);
+}
+
+/* A blocking binding's label ("Assistant archived") or state word is never
+   clipped: the selector shows only a form that fits whole and keeps its
+   width. A chosen Assistant's name still truncates, to about six
+   characters before the avatar stands alone. */
+.v2-live-assistant[data-state="blocked"] {
+  flex-shrink: 0;
+  border-color: color-mix(in srgb, var(--v2-color-danger) 55%, transparent);
+  color: var(--v2-color-danger);
+}
+
+.v2-live-assistant-avatar {
+  flex: none;
+}
+
+/* The forms the selector does not show stay measurable, out of flow and
+   unseen; the icon form keeps the padding and border of the others. */
+.v2-live-assistant:not([data-fit="label"]) > [data-label="label"],
+.v2-live-assistant:not([data-fit="word"]) > [data-label="word"],
+.v2-live-assistant[data-fit="icon"] > .v2-live-assistant-chevron {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.v2-live-assistant[data-fit="icon"] {
+  min-width: 2.125rem;
+  justify-content: center;
+}
+
+.v2-live-assistant-name {
+  min-width: 0;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v2-live-assistant-chevron {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--v2-color-text2);
+}
+
+.v2-live-assistant-menu.v2-responsive-menu-popover {
+  width: 20rem;
+}
+
+.v2-live-assistant-menu-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem 0.375rem;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.v2-live-assistant-menu-head > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-live-assistant-menu-head > svg {
+  flex: none;
+}
+
+/*
+ * The notice above the composer while the chat's Assistant is unavailable,
+ * archived or deleted (PRD 10.7): what happened, then the choices; sending
+ * waits for one of them.
+ */
+.v2-assistant-notice {
+  display: flex;
+  width: min(var(--v2-measure), 100%);
+  min-width: 0;
+  margin: 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--v2-color-danger) 40%, transparent);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text);
+  background: color-mix(in srgb, var(--v2-color-danger) 7%, var(--v2-color-surface));
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.v2-assistant-notice > .v2-icon {
+  flex: none;
+  color: var(--v2-color-danger);
+}
+
+.v2-assistant-notice-copy {
+  min-width: 0;
+  flex: 1 1 14rem;
+  margin: 0;
+}
+
+.v2-assistant-notice-copy strong {
+  display: block;
+  font-weight: 600;
+}
+
+.v2-assistant-notice-copy small {
+  display: block;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+}
+
+.v2-assistant-notice-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.v2-assistant-notice-actions > .v2-button {
+  min-height: 2rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+}
+
+/* While an action runs the choices are held, not disabled, so the pressed
+   one keeps focus; they read as the disabled buttons do. */
+.v2-assistant-notice-actions > .v2-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* The notice is the only way out of a blocked chat: its choices keep the
+   44px touch targets, 8px apart when they wrap. */
+@media (hover: none), (pointer: coarse) {
+  .v2-assistant-notice-actions {
+    gap: 0.5rem;
+  }
+
+  .v2-assistant-notice-actions > .v2-button {
+    min-height: 2.75rem;
+  }
 }
 
 /* No kicker: the header carries the plain title only (S1 §4.3), preceded by
@@ -452,18 +678,28 @@
   text-align: center;
 }
 
-.v2-live-assistant-intro > p,
 .v2-live-assistant-intro > h1,
 .v2-live-assistant-intro > span {
   margin: 0;
 }
 
-.v2-live-assistant-intro > p {
-  color: var(--v2-color-accent);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+.v2-live-assistant-intro > svg {
+  margin-bottom: 0.375rem;
+}
+
+/*
+ * The intro never pushes the composer out of view: the name keeps two lines
+ * and the description four; short screens (below 32rem tall, a phone on its
+ * side) shrink the avatar and keep one line of each. Script reads these
+ * clamps and cuts the text at a word to fit them, so the last line centres
+ * like the others; the clamp itself only shows before that.
+ */
+.v2-live-assistant-intro > h1,
+.v2-live-assistant-intro > .v2-live-assistant-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .v2-live-assistant-intro > h1 {
@@ -471,6 +707,11 @@
   font-weight: 600;
   letter-spacing: -0.025em;
   line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.v2-live-assistant-intro > .v2-live-assistant-description {
+  -webkit-line-clamp: 4;
 }
 
 .v2-live-assistant-intro > span {
@@ -478,32 +719,146 @@
   color: var(--v2-color-text2);
   font-size: 0.875rem;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
-.v2-live-assistant-starters {
-  display: grid;
-  width: min(30rem, 100%);
+/* One line; a long Project name ends in an ellipsis. */
+.v2-live-assistant-intro > .v2-live-assistant-by {
+  max-width: min(30rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 0.125rem;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+/*
+ * Quiet pills under the blank composer: the Assistant strip and the starter
+ * prompts share the inactive composer chip style and wrap whole. A row that
+ * was shown keeps its space while the user types (`data-reserved`), so the
+ * centred composer never moves under the cursor. With the stack's gap, the
+ * top margin leaves 1rem between the composer and the first row, so the
+ * rows do not read as more composer chips.
+ */
+.v2-assistant-strip {
+  position: relative;
+  display: flex;
+  box-sizing: border-box;
+  width: min(var(--v2-measure), 100%);
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
   gap: 0.375rem;
-  margin-top: 0.75rem;
+  margin-top: 0.625rem;
+  padding: 0 0.5rem;
 }
 
-.v2-live-assistant-starters button {
-  min-height: 2.75rem;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--v2-color-border2);
-  border-radius: var(--v2-radius-m);
-  color: var(--v2-color-text2);
-  background: var(--v2-color-surface);
+.v2-assistant-strip[data-reserved] {
+  visibility: hidden;
+}
+
+/* Pills past the strip's two rows leave the flow but stay measurable. */
+.v2-assistant-strip > [data-overflow] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.v2-assistant-strip .v2-composer-indicator {
+  max-width: 100%;
+}
+
+/* A pill shortened to fit its row (inline max-width) ends its name in an ellipsis. */
+.v2-assistant-strip .v2-composer-indicator-face {
+  max-width: 100%;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0 0.625rem;
+}
+
+.v2-assistant-strip .v2-composer-indicator-icon {
+  margin-left: -0.3125rem;
+}
+
+.v2-assistant-strip .v2-composer-indicator-icon svg {
+  border-radius: 0.25rem;
+}
+
+.v2-assistant-strip .v2-composer-indicator-label {
+  min-width: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A starter keeps its natural width up to the row's and wraps to a second
+   line beyond it: its pill becomes a rounded box (the 1rem radius is the
+   whole pill of a one-line starter) and only what does not fit two lines
+   ends in an ellipsis. Its whole text stays the button's name. The text
+   starts at the box's edge, so the ellipsis line never leans off-centre. */
+.v2-assistant-strip.v2-assistant-starters .v2-composer-indicator {
+  border-radius: 1rem;
+}
+
+.v2-assistant-strip.v2-assistant-starters .v2-composer-indicator-face {
+  padding: 0.375rem 0.75rem;
+}
+
+.v2-assistant-strip.v2-assistant-starters .v2-composer-indicator-label {
+  display: -webkit-box;
+  max-width: none;
+  overflow-wrap: anywhere;
+  text-align: start;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.v2-assistant-strip-all {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  padding: 0 0.5rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text3);
+  background: transparent;
   font: inherit;
-  font-size: 0.8125rem;
-  text-align: left;
+  font-size: 0.78125rem;
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.v2-live-assistant-starters button:hover {
-  border-color: var(--v2-color-accent);
+.v2-assistant-strip-all:hover {
   color: var(--v2-color-text);
-  background: var(--v2-color-hover);
+}
+
+/*
+ * Touch: every item keeps a 44px target, "All Assistants…" too, while its
+ * row takes only the 32px face, so rows sit as close as pills of a row. A
+ * target reaches 0.375rem past its face above and below (padding, cancelled
+ * by the negative margin); targets of two rows overlap in the gap between
+ * them, their faces never do.
+ */
+@media (hover: none), (pointer: coarse) {
+  .v2-assistant-strip > * {
+    margin-block: -0.375rem;
+  }
+
+  .v2-assistant-strip > .v2-composer-indicator {
+    padding-block: 0.375rem;
+  }
+
+  .v2-assistant-strip-all {
+    min-height: 2.75rem;
+  }
 }
 
 /*
@@ -688,6 +1043,18 @@
   box-shadow: 0 0 0 2px var(--v2-color-accent-dim);
 }
 
+/* Parameters fixed by the Assistant stay readable, not editable. */
+.v2-run-setup-body :is(input, select):disabled,
+.v2-run-setup-switches button:disabled {
+  color: var(--v2-color-text2);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.v2-run-setup-body > .v2-composer-provenance {
+  padding: 0;
+}
+
 .v2-run-setup-switches {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -858,6 +1225,84 @@
     max-width: none;
   }
 
+  /* The Assistant selector joins the model pill as its right segment: icon
+     or avatar only, no name (PRD 11). */
+  .v2-live-header-island {
+    max-width: 100%;
+    height: 2.5rem;
+    margin: 0 auto;
+    gap: 0;
+    border: 1px solid var(--v2-color-border2);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
+    box-shadow: var(--v2-shadow-float);
+    pointer-events: auto;
+  }
+
+  .v2-live-header-island > .v2-live-model {
+    height: 100%;
+    margin: 0;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .v2-live-header-island > .v2-live-model:has(+ .v2-live-assistant) {
+    gap: 0.375rem;
+    padding: 0 0.625rem;
+    border: 0;
+    border-radius: 999px 0 0 999px;
+    font-size: 0.8125rem;
+  }
+
+  /* Beside the Assistant segment the model name gets the room: the island
+     reads as the control without a chevron (a fixed model keeps its lock),
+     and the provenance dot sits on the provider mark, away from the seam. */
+  .v2-live-header-island > .v2-live-model:not([data-locked]):has(+ .v2-live-assistant) > .v2-icon:last-child {
+    display: none;
+  }
+
+  .v2-live-header-island > .v2-live-model:has(+ .v2-live-assistant) > .v2-live-model-dot {
+    top: calc(50% - 0.6875rem);
+    right: auto;
+    left: 1.3125rem;
+    box-shadow: 0 0 0 2px var(--v2-color-surface);
+  }
+
+  .v2-live-header-island > .v2-live-model[aria-expanded="true"]:has(+ .v2-live-assistant) {
+    box-shadow: inset 0 0 0 1px var(--v2-color-accent);
+  }
+
+  .v2-live-header-island > .v2-live-model[aria-expanded="true"] {
+    border-color: var(--v2-color-accent);
+  }
+
+  .v2-live-header-island > .v2-live-assistant,
+  .v2-live-header-island > .v2-live-assistant:not([data-state="empty"]) {
+    width: 2.75rem;
+    height: 100%;
+    flex: none;
+    justify-content: center;
+    padding: 0 0.125rem 0 0;
+    border: 0;
+    border-left: 1px solid var(--v2-color-border);
+    border-radius: 0 999px 999px 0;
+    background: transparent;
+  }
+
+  .v2-live-header-island > .v2-live-assistant[aria-expanded="true"] {
+    box-shadow: inset 0 0 0 1px var(--v2-color-accent);
+  }
+
+  .v2-live-header-island > .v2-live-assistant[data-state="blocked"] {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--v2-color-danger) 60%, transparent);
+  }
+
+  .v2-live-header-island .v2-live-assistant-name,
+  .v2-live-header-island .v2-live-assistant-chevron {
+    display: none;
+  }
+
   .v2-live-title,
   .v2-live-header-actions {
     pointer-events: auto;
@@ -972,8 +1417,14 @@
     padding-bottom: max(0.75rem, var(--v2-safe-area-bottom));
   }
 
-  .v2-live-workspace .v2-conversation-orientation-copy {
+  .v2-live-workspace .v2-conversation-orientation-copy,
+  .v2-live-workspace .v2-live-assistant-intro {
     align-self: center;
+  }
+
+  /* Phones offer three starters. */
+  .v2-assistant-strip.v2-assistant-starters > :nth-child(n + 4) {
+    display: none;
   }
 
   .v2-live-composer-dock {
@@ -992,6 +1443,27 @@
   }
 }
 
+@media (max-height: 32rem) {
+  .v2-live-assistant-intro {
+    gap: 0.25rem;
+  }
+
+  .v2-live-assistant-intro > svg {
+    width: 2rem;
+    height: 2rem;
+    margin-bottom: 0;
+  }
+
+  .v2-live-assistant-intro > h1 {
+    font-size: 1.125rem;
+    -webkit-line-clamp: 1;
+  }
+
+  .v2-live-assistant-intro > .v2-live-assistant-description {
+    -webkit-line-clamp: 1;
+  }
+}
+
 @media (min-width: 42.01rem) and (max-height: 32rem) {
   .v2-live-workspace .v2-conversation-orientation {
     align-content: start;
@@ -1000,13 +1472,9 @@
     padding-bottom: max(1rem, var(--v2-safe-area-bottom));
   }
 
-  .v2-live-assistant-starters {
-    width: 100%;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .v2-live-assistant-starters button {
-    height: 100%;
+  /* A phone on its side also offers three starters. */
+  .v2-assistant-strip.v2-assistant-starters > :nth-child(n + 4) {
+    display: none;
   }
 }
 
@@ -1062,8 +1530,20 @@
  * touch target to at least 40px (S3 §11).
  */
 @media (hover: none), (pointer: coarse) {
-  .v2-live-model {
+  .v2-live-model,
+  .v2-live-assistant:not([data-state="empty"]) {
     height: 2.75rem;
+  }
+
+  .v2-live-assistant[data-fit="icon"] {
+    min-width: 2.75rem;
+  }
+
+  /* The 44px pill nearly touches the top of the screen: the dot sits inside it. */
+  .v2-live-model-dot {
+    top: 0.25rem;
+    right: 0.25rem;
+    box-shadow: 0 0 0 2px var(--v2-color-surface);
   }
 
   .v2-live-temporary-trigger::after {
@@ -1087,13 +1567,17 @@
 
 /* Touch (C2): the "⋯" island and the model pill keep 44px targets. */
 @media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
+  .v2-live-header-island {
+    height: 2.75rem;
+  }
+
   .v2-live-header-actions .v2-icon-button {
     width: 2.75rem;
     height: 2.75rem;
   }
 
   .v2-workspace-shell[data-chat-active="true"] .v2-live-header {
-    padding-right: 6.5rem;
+    padding-right: 6.25rem;
   }
 
   .v2-live-header {

@@ -29,6 +29,7 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 type ModalLayer = {
   dialogRef: RefObject<HTMLElement | null>;
   opener: HTMLElement | null;
+  restoreFocus(): HTMLElement | null;
 };
 
 type IsolatedState = { ariaHidden: string | null; inert: boolean };
@@ -100,18 +101,25 @@ function syncPageIsolation() {
 }
 
 function focusable(element: HTMLElement | null): element is HTMLElement {
-  if (!element?.isConnected) return false;
+  if (!element?.isConnected || element === document.body || element.matches(":disabled")) return false;
   for (let current: HTMLElement | null = element; current; current = current.parentElement) {
     if (current.inert || current.hasAttribute("inert")) return false;
   }
   return true;
 }
 
+function layerFocusTarget(layer: ModalLayer): HTMLElement | null {
+  if (focusable(layer.opener)) return layer.opener;
+  const fallback = layer.restoreFocus();
+  return focusable(fallback) ? fallback : null;
+}
+
 /*
  * Runs once after every layer change of a commit settled, so unmount order
  * within the commit does not matter. Focus returns to the nearest connected,
- * reachable opener of the closed layers (the innermost first); a layer that
- * remains open keeps focus it already holds.
+ * reachable opener of the closed layers (the innermost first), or to the
+ * layer's own fallback when its opener is gone, disabled or was the page
+ * itself; a layer that remains open keeps focus it already holds.
  */
 function restoreClosedLayerFocus() {
   focusRestoreQueued = false;
@@ -120,8 +128,12 @@ function restoreClosedLayerFocus() {
   if (closed.length === 0) return;
   const topDialog = layerStack.at(-1)?.dialogRef.current ?? null;
   if (topDialog && bodyChildContaining(topDialog)?.contains(document.activeElement)) return;
-  const opener = closed.map(({ layer }) => layer.opener).find(focusable);
-  if (opener) opener.focus();
+  let target: HTMLElement | null = null;
+  for (const { layer } of closed) {
+    target = layerFocusTarget(layer);
+    if (target) break;
+  }
+  if (target) target.focus();
   else if (topDialog) focusableElements(topDialog)[0]?.focus();
 }
 
@@ -145,15 +157,22 @@ function closeLayer(layer: ModalLayer) {
 export function useModalLayerV2({
   closeBlocked = false,
   enabled = true,
-  onClose
+  onClose,
+  restoreFocus
 }: {
   closeBlocked?: boolean;
   enabled?: boolean;
   onClose(): void;
+  /** Where focus goes on close when the control that opened the layer is gone. */
+  restoreFocus?(): HTMLElement | null;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+  const restoreFocusRef = useRef(restoreFocus);
+  useLayoutEffect(() => {
+    restoreFocusRef.current = restoreFocus;
+  }, [restoreFocus]);
   const portalReady = useSyncExternalStore(
     subscribeToBrowser,
     browserSnapshot,
@@ -172,7 +191,11 @@ export function useModalLayerV2({
       openerRef.current = activeElement;
     }
     initialFocusRef.current?.focus();
-    const layer: ModalLayer = { dialogRef, opener: openerRef.current };
+    const layer: ModalLayer = {
+      dialogRef,
+      opener: openerRef.current,
+      restoreFocus: () => restoreFocusRef.current?.() ?? null
+    };
     openLayer(layer);
     return () => closeLayer(layer);
   }, [enabled, portalReady]);

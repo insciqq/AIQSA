@@ -2,10 +2,34 @@ import { describe, expect, it } from "vitest";
 import type { CatalogWireModel } from "../../contracts/catalog";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import type { McpRunPlanRecord } from "../mcp/runPlan";
+import type { AssistantRows, AssistantRunControls } from "../../contracts/assistants";
+import type { SearchPlan } from "../../contracts/search";
 import {
-  validateAssistantConfigurationAgainstCatalog,
-  type AssistantCatalogView
+  assistantRowCatalogFailures,
+  assistantRowsForCopier,
+  emptyAssistantCatalogView,
+  firstAssistantCatalogFailure,
+  type AssistantCatalogView,
+  type AssistantMcpRunnability
 } from "./catalogValidation";
+
+/** The flat configuration of the former editor, as concrete rows. */
+function validateAssistantConfigurationAgainstCatalog(
+  configuration: { mcpServerIds: string[]; providerModelId: string; runControls: AssistantRunControls; searchPlan: SearchPlan },
+  view: AssistantCatalogView,
+  options: { mcpRunnability: AssistantMcpRunnability }
+) {
+  return firstAssistantCatalogFailure(assistantRowCatalogFailures({
+    controls: configuration.runControls,
+    model: { mode: "model", modelId: configuration.providerModelId },
+    search: configuration.searchPlan.optionIds.length > 0
+      ? { mode: configuration.searchPlan.mode, optionIds: [...configuration.searchPlan.optionIds] }
+      : { mode: "off" },
+    tools: configuration.mcpServerIds.length > 0
+      ? { mode: "exact", serverIds: configuration.mcpServerIds }
+      : { mode: "off" }
+  }, view, options));
+}
 
 function model(
   searchOptionCompatibility: CatalogWireModel["searchOptionCompatibility"] = {}
@@ -308,5 +332,101 @@ describe("Assistant catalog validation", () => {
       view,
       { mcpRunnability: "exact" }
     )).toBe("tools");
+  });
+
+  it("needs no catalog entry for inherit, Off and None and checks Search entitlement without a model", () => {
+    const view = {
+      accessibleMcpServerIds: new Set<string>(),
+      entitledSearchOptionIds: new Set(["entitled"]),
+      mcpRunPlan: { isGenerationLive: () => false, now: new Date("2026-08-07T10:00:00.000Z"), recordsByServerId: new Map() },
+      modelById: new Map<string, CatalogWireModel>()
+    } satisfies AssistantCatalogView;
+    const options = { mcpRunnability: "startable" as const };
+    expect(assistantRowCatalogFailures({
+      controls: { temperature: 0.4 }, model: { mode: "inherit" }, search: { mode: "inherit" }, tools: { mode: "inherit" }
+    }, view, options)).toEqual({});
+    expect(assistantRowCatalogFailures({
+      controls: {}, model: { mode: "inherit" }, search: { mode: "all_selected", optionIds: ["entitled"] }, tools: { mode: "off" }
+    }, view, options)).toEqual({});
+    expect(assistantRowCatalogFailures({
+      controls: {}, model: { mode: "model", modelId: "hidden-model" },
+      search: { mode: "all_selected", optionIds: ["entitled", "hidden"] },
+      tools: { mode: "exact", serverIds: ["hidden-server"] }
+    }, view, options)).toEqual({ model: true, search: true, tools: true });
+  });
+});
+
+describe("Assistant rows for a copier", () => {
+  const view = {
+    accessibleMcpServerIds: new Set(["mcp-1"]),
+    entitledSearchOptionIds: new Set(["web"]),
+    mcpRunPlan: { isGenerationLive: () => false, now: new Date("2026-08-07T10:00:00.000Z"), recordsByServerId: new Map() },
+    modelById: new Map([["model-1", model({ web: { clientToolCompatible: true, executionModes: ["all_selected"] } })]])
+  } satisfies AssistantCatalogView;
+
+  function rows(overrides: Partial<AssistantRows> = {}): AssistantRows {
+    return {
+      controls: { policy: "fixed", value: { temperature: 0.5 } },
+      knowledge: { policy: "fixed", value: { baseIds: ["base-1"], mode: "explicit", sourceIds: [] } },
+      model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
+      search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["web"] } },
+      skills: { policy: "fixed", value: { links: [
+        { delivery: "always", skillId: "skill-usable" }, { delivery: "on_demand", skillId: "skill-private" }
+      ], mode: "auto" } },
+      tools: { policy: "fixed", value: { mode: "exact", serverIds: ["mcp-1"] } },
+      ...overrides
+    };
+  }
+
+  it("keeps every row the copier can use", () => {
+    const source = rows({ skills: { policy: "fixed", value: { links: [{ delivery: "always", skillId: "skill-usable" }], mode: "off" } } });
+    expect(assistantRowsForCopier(source, view, { knowledge: true, skillIds: new Set(["skill-usable"]) }))
+      .toEqual({ report: { downgradedRows: [], droppedSkillCount: 0 }, rows: source });
+  });
+
+  it("downgrades unusable rows to adjustable inherit or None and drops unusable Skills", () => {
+    const copied = assistantRowsForCopier(rows({
+      model: { policy: "fixed", value: { mode: "model", modelId: "hidden-model" } },
+      search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["web", "hidden-search"] } }
+    }), view, { knowledge: false, skillIds: new Set(["skill-usable"]) });
+    expect(copied.report).toEqual({ downgradedRows: ["model", "controls", "search", "knowledge"], droppedSkillCount: 1 });
+    expect(copied.rows).toEqual({
+      controls: { policy: "adjustable", value: {} },
+      knowledge: { policy: "adjustable", value: { mode: "none" } },
+      model: { policy: "adjustable", value: { mode: "inherit" } },
+      search: { policy: "adjustable", value: { mode: "inherit" } },
+      skills: { policy: "fixed", value: { links: [{ delivery: "always", skillId: "skill-usable" }], mode: "auto" } },
+      tools: { policy: "fixed", value: { mode: "exact", serverIds: ["mcp-1"] } }
+    });
+  });
+
+  it("copies for a copier without any catalog by downgrading every concrete row", () => {
+    const empty = emptyAssistantCatalogView(new Date("2026-08-07T10:00:00.000Z"));
+    const copied = assistantRowsForCopier(rows(), empty, { knowledge: false, skillIds: new Set() });
+    expect(copied.report).toEqual({
+      downgradedRows: ["model", "controls", "search", "tools", "knowledge"],
+      droppedSkillCount: 2
+    });
+    expect(copied.rows.model).toEqual({ policy: "adjustable", value: { mode: "inherit" } });
+    const inherit = rows({
+      controls: { policy: "adjustable", value: {} },
+      model: { policy: "adjustable", value: { mode: "inherit" } },
+      search: { policy: "adjustable", value: { mode: "inherit" } },
+      skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
+      tools: { policy: "adjustable", value: { mode: "inherit" } }
+    });
+    expect(assistantRowsForCopier(inherit, empty, { knowledge: false, skillIds: new Set() }).report)
+      .toEqual({ downgradedRows: ["knowledge"], droppedSkillCount: 0 });
+  });
+
+  it("resets tools before judging a Search plan that only fails next to MCP", () => {
+    const hostedModel = model({ hosted: { clientToolCompatible: false, executionModes: ["all_selected"] } });
+    const copied = assistantRowsForCopier(rows({
+      search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["hosted"] } },
+      tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["hidden-server"] } }
+    }), { ...view, entitledSearchOptionIds: new Set(["hosted"]), modelById: new Map([["model-1", hostedModel]]) },
+    { knowledge: true, skillIds: new Set(["skill-usable", "skill-private"]) });
+    expect(copied.report).toEqual({ downgradedRows: ["tools"], droppedSkillCount: 0 });
+    expect(copied.rows.search).toEqual({ policy: "fixed", value: { mode: "all_selected", optionIds: ["hosted"] } });
   });
 });

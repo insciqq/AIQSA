@@ -18,6 +18,7 @@ const severityPill: Record<AdminAttentionSeverity, string> = {
 };
 
 const sourceLabel: Record<AdminAttentionSource, string> = {
+  assistants: "Assistants",
   dashboard: "users",
   email: "email",
   knowledge: "Knowledge",

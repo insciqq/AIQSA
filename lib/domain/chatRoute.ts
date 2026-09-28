@@ -55,9 +55,28 @@ export function parseChatRoutePath(pathname: string): ChatRoute | null {
   return null;
 }
 
+/**
+ * The Assistant entry address `/assistant/<id>`. It opens a new personal chat
+ * with that Assistant and settles on `/`, so it is never a chat's route; a
+ * malformed id is kept as null and resolves like an unknown Assistant.
+ */
+export type AssistantEntryRoute = Readonly<{ assistantId: string | null }>;
+
+export function parseAssistantEntryPath(pathname: string): AssistantEntryRoute | null {
+  const segments = pathname.split("/").slice(1);
+  return segments.length === 2 && segments[0] === "assistant"
+    ? { assistantId: routeSegment(segments[1]) }
+    : null;
+}
+
+/** The shareable link of an Assistant; the id is its only parameter. */
+export function formatAssistantEntryPath(assistantId: string): string {
+  return `/assistant/${encodeURIComponent(assistantId)}`;
+}
+
 /** Whether the chat pages serve a pathname, even one naming a malformed id. */
 export function isChatRoutePathname(pathname: string): boolean {
-  return pathname === "/" || /^\/[cp]\//u.test(pathname);
+  return pathname === "/" || /^\/(?:[cp]|assistant)\//u.test(pathname);
 }
 
 export function formatChatRoutePath(route: ChatRoute): string {

@@ -10,6 +10,7 @@ import { initialComposerControlSnapshot, type ComposerControlSnapshot } from "./
 import type { SessionContextStatus } from "@/lib/contracts/sessionStatus";
 import type { Catalog, FolderSummary, WorkspaceChatSummary } from "./types";
 import { decodeUploadAttachmentResponse } from "@/lib/contracts/uploads";
+import { boundComposerAssistantFixture } from "@/tests/support/composerAssistantFixtures";
 
 function configurationKey(controls: Partial<ComposerControlSnapshot> = {}, workspaceEnabled = false): string {
   return composerContextConfigurationKey({ ...initialComposerControlSnapshot, maxOutputTokens: "1024", ...controls }, {
@@ -176,11 +177,9 @@ describe("usePowerAppShellViewModel", () => {
     view.rerender(refresh());
     expect(view.result.current.composerContextStats.approximateInputTokens).toBe(6000);
     for (const change of [
-      { contextConfigurationKey: configurationKey({ selectedAssistant: {
-        id: "other", name: "Helper", description: "", promptCharacterCount: 0, starterPrompts: [],
-        avatar: { accents: [], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated",
-          paletteId: "ocean", recipeVersion: 1, rotations: [0, 1] }
-      } }) },
+      { contextConfigurationKey: configurationKey({ assistant: boundComposerAssistantFixture({
+        id: "other", name: "Helper", promptCharacterCount: 0
+      }) }) },
       { contextConfigurationKey: configurationKey({ selectedSkills: [{ id: "skill-b", name: "Skill", description: "", promptCharacterCount: 0 }] }) },
       { contextConfigurationKey: configurationKey({ mcpSelection: { mode: "off" } }) },
       { contextConfigurationKey: configurationKey({}, true) },

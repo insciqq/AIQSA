@@ -26,6 +26,7 @@ import {
   settledRunPresentationV2,
   stepDurationSumV2,
   stepRunAnnouncementV2,
+  type AnnouncedRunPresentationV2,
   type RunAnnouncerMemoryV2,
   type RunPresentationV2
 } from "./runPresentation";
@@ -439,7 +440,7 @@ export function RunLifecycleAnnouncerV2({
   sourceChatId
 }: {
   activeChatId: string | null;
-  presentation: RunPresentationV2;
+  presentation: AnnouncedRunPresentationV2;
   sourceChatId: string;
 }) {
   // The polite region is an external system: its text is written directly so
@@ -478,7 +479,9 @@ export function RunLifecycleAnnouncerV2({
     }
     const step = stepRunAnnouncementV2(memoryRef.current, sourceChatId, presentation);
     memoryRef.current = step.memory;
-    if (step.chatChanged) {
+    // A withdrawn answer clears its stale phase so the next run's identical
+    // sentence changes the region again.
+    if (step.chatChanged || step.withdrawn) {
       cancelPending();
       spokenAtRef.current = Number.NEGATIVE_INFINITY;
       announce("");

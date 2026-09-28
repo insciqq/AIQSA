@@ -1,6 +1,4 @@
-import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import type { AttachmentPreviewKind } from "@/lib/contracts/uploads";
-import type { AssistantUnavailabilityCopy } from "./assistantAvailabilityCopy";
 import type { ReactNode } from "react";
 
 export type LibraryTabIdV2 = "assistants" | "instructions" | "skills" | "knowledge" | "memory" | "files" | "artifacts" | "mcp" | "secrets" | "defaults";
@@ -50,21 +48,6 @@ export type LibrarySubviewV2 = Readonly<{
   onBack(): void;
   /** Optional ancestors between the selected section and this resource. */
   trail?: readonly string[];
-}>;
-
-export type AssistantSummaryV2 = Readonly<{
-  archived: boolean;
-  available: boolean;
-  /** Current Assistant avatar recipe, when known. */
-  avatar?: AssistantAvatarRecipe;
-  description: string;
-  id: string;
-  modelLabel?: string | null;
-  name: string;
-  owned: boolean;
-  ownerDisplayName?: string | null;
-  pinned?: boolean;
-  unavailable?: AssistantUnavailabilityCopy;
 }>;
 
 export type KnowledgeSummaryV2 = Readonly<{

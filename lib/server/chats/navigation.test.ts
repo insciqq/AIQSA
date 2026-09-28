@@ -3,6 +3,7 @@ import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
 import {
   createListChatNavigationHandler,
+  createPrismaChatNavigationRepository,
   createSearchChatNavigationHandler,
   type ChatNavigationRepository
 } from "./navigation";
@@ -19,6 +20,7 @@ function repository() {
       page: {
         chats: [{
           activeRun: true,
+          assistant: null,
           folderId: "folder-1",
           id: "chat-1",
           title: "Quarterly review",
@@ -58,6 +60,7 @@ describe("chat navigation handlers", () => {
     const body = await response.json();
     expect(body.chats[0]).toEqual({
       activeRun: true,
+      assistant: null,
       folderId: "folder-1",
       id: "chat-1",
       title: "Quarterly review",
@@ -167,5 +170,52 @@ describe("chat navigation handlers", () => {
     await expect(response.json()).resolves.toEqual({
       error: "chat_navigation_cursor_invalid"
     });
+  });
+
+  it("shows an Assistant avatar only while the viewer can use that Assistant, with one lookup per page", async () => {
+    const avatar = {
+      accents: [0, 4],
+      backgroundShape: "circle",
+      foregroundShape: "diamond",
+      kind: "generated",
+      paletteId: "ocean",
+      recipeVersion: 1,
+      rotations: [0, 2]
+    };
+    const updatedAt = new Date("2026-09-28T00:00:00.000Z");
+    const row = (id: string, assistantId: string | null) => ({
+      assistantId, folderId: null, id, modelRuns: [], title: id, updatedAt
+    });
+    const queryRaw = vi.fn(async () => [{ avatar, id: "assistant-live", name: "Live helper" }]);
+    const client = {
+      $queryRaw: queryRaw,
+      chat: {
+        findMany: vi.fn(async () => [
+          row("chat-live", "assistant-live"),
+          row("chat-live-2", "assistant-live"),
+          row("chat-revoked", "assistant-revoked"),
+          row("chat-plain", null)
+        ])
+      },
+      folder: { findMany: vi.fn(async () => []) }
+    };
+    const result = await createPrismaChatNavigationRepository(client as never)
+      .listPage({ cursor: null, limit: 30, userId: "user-1" });
+
+    expect(queryRaw).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ kind: "ok" });
+    const chats = result.kind === "ok" ? result.page.chats : [];
+    expect(chats.map((chat) => [chat.id, chat.assistant])).toEqual([
+      ["chat-live", { avatar, name: "Live helper" }],
+      ["chat-live-2", { avatar, name: "Live helper" }],
+      ["chat-revoked", null],
+      ["chat-plain", null]
+    ]);
+
+    queryRaw.mockClear();
+    client.chat.findMany.mockResolvedValueOnce([row("chat-plain", null)]);
+    await createPrismaChatNavigationRepository(client as never)
+      .listPage({ cursor: null, limit: 30, userId: "user-1" });
+    expect(queryRaw).not.toHaveBeenCalled();
   });
 });

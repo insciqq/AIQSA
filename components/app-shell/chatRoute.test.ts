@@ -56,6 +56,7 @@ function summary(input: Partial<WorkspaceChatSummary> & { id: string }): Workspa
 function targets(overrides: Partial<ChatRouteTargets> = {}) {
   let state: ChatRoute = BLANK;
   const fake = {
+    openAssistant: vi.fn(async (_assistantId: string | null) => "opened" as const),
     openBlank: vi.fn(() => { state = BLANK; }),
     openChat: vi.fn(async (chatId: string) => {
       state = { chatId, projectId: null };
@@ -310,6 +311,48 @@ describe("resolving an address", () => {
     expect(address()).toBe("/");
   });
 
+  it("opens an Assistant entry on the new chat and replaces the entry address with it", async () => {
+    window.history.replaceState(null, "", "/assistant/assistant-1?message=m&library=assistants");
+    const length = window.history.length;
+    const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
+    const fake = targets();
+    const resolution = beginChatRouteResolution();
+    await expect(resolveChatRoute({ assistantId: "assistant-1" }, resolution, fake)).resolves.toEqual(BLANK);
+    expect(fake.openBlank).toHaveBeenCalledOnce();
+    expect(fake.openAssistant).toHaveBeenCalledExactlyOnceWith("assistant-1");
+    expect(vi.mocked(fake.openBlank).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(fake.openAssistant).mock.invocationCallOrder[0]!);
+    expect(fake.showUnavailable).not.toHaveBeenCalled();
+    expect(isCurrentChatRouteResolution(resolution)).toBe(false);
+    expect(replace).toHaveBeenCalledExactlyOnceWith(null, "", "/?library=assistants");
+    expect(push).not.toHaveBeenCalled();
+    expect(window.history.length).toBe(length);
+  });
+
+  it("shows one neutral notice on the new chat for every Assistant entry it can't open", async () => {
+    for (const assistantId of ["missing-or-foreign", null]) {
+      window.history.replaceState(null, "", "/assistant/x");
+      const fake = targets({ openAssistant: vi.fn(async () => "unavailable" as const) });
+      await resolveChatRoute({ assistantId }, beginChatRouteResolution(), fake);
+      expect(fake.openAssistant).toHaveBeenCalledExactlyOnceWith(assistantId);
+      expect(fake.showUnavailable).toHaveBeenCalledExactlyOnceWith("assistant");
+      expect(address()).toBe("/");
+    }
+  });
+
+  it("drops an Assistant entry that resolves after another navigation", async () => {
+    window.history.replaceState(null, "", "/assistant/assistant-1");
+    let finish!: (outcome: "unavailable") => void;
+    const fake = targets({ openAssistant: vi.fn(() => new Promise<"unavailable">((resolve) => { finish = resolve; })) });
+    const pending = resolveChatRoute({ assistantId: "assistant-1" }, beginChatRouteResolution(), fake);
+    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
+    finish("unavailable");
+    await expect(pending).resolves.toBeNull();
+    expect(fake.showUnavailable).not.toHaveBeenCalled();
+    expect(address()).toBe("/c/chat-2");
+  });
+
   it("ignores a result that arrives after another navigation", async () => {
     window.history.replaceState(null, "", "/c/chat-1");
     let finish!: (outcome: "missing") => void;
@@ -351,6 +394,26 @@ describe("browser history", () => {
     expect(isCurrentChatRouteResolution(resolution)).toBe(false);
     traverse("/c/%00");
     expect(resolve.mock.calls[2]![0]).toBeNull();
+  });
+
+  it("resolves a traversed Assistant entry, even from the new chat it settles on", () => {
+    const { resolve } = renderHistory({ currentRoute: () => BLANK, requestNavigation: (proceed) => proceed() });
+    traverse("/assistant/assistant-1");
+    traverse("/assistant/%00");
+    expect(resolve.mock.calls.map(([route]) => route)).toEqual([{ assistantId: "assistant-1" }, { assistantId: null }]);
+  });
+
+  it("adds the new chat, not the entry address, when a confirmation releases a traversed entry", () => {
+    let release!: () => void;
+    const { resolve } = renderHistory({
+      currentRoute: () => ({ chatId: "chat-2", projectId: null }),
+      requestNavigation: (proceed) => { release = proceed; }
+    });
+    traverse("/assistant/assistant-1");
+    const push = vi.spyOn(window.history, "pushState");
+    release();
+    expect(push).toHaveBeenCalledExactlyOnceWith(null, "", "/");
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({ assistantId: "assistant-1" }, expect.anything());
   });
 
   it("ignores traversals that keep the shown route or leave the chat pages", () => {

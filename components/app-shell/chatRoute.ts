@@ -13,14 +13,27 @@ import {
   controlCenterHref,
   formatChatRoutePath,
   isChatRoutePathname,
+  parseAssistantEntryPath,
   parseChatRoutePath,
   sameChatRoute,
   withoutChatScopedParameters,
+  type AssistantEntryRoute,
   type ChatRoute
 } from "@/lib/domain/chatRoute";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
-export type { ChatRoute };
+export type { AssistantEntryRoute, ChatRoute };
+
+/** What an address asks the shell to show; null for a chat address with a malformed id. */
+export type ChatAddress = AssistantEntryRoute | ChatRoute | null;
+
+export function isAssistantEntry(address: ChatAddress): address is AssistantEntryRoute {
+  return address !== null && "assistantId" in address;
+}
+
+function chatAddressOf(pathname: string): ChatAddress {
+  return parseAssistantEntryPath(pathname) ?? parseChatRoutePath(pathname);
+}
 
 /**
  * The address is the only persisted location of the shell. State owners write
@@ -72,9 +85,14 @@ export function chatRouteForState(): ChatRoute {
       };
 }
 
-/** The route the address names; null outside the chat pages or for a malformed id. */
+/** The route the address names; null outside the chat pages, for a malformed id and for an entry address. */
 export function currentChatRoute(): ChatRoute | null {
   return typeof window === "undefined" ? null : parseChatRoutePath(window.location.pathname);
+}
+
+/** What the address asks for; null outside the chat pages or for a malformed chat id. */
+export function currentChatAddress(): ChatAddress {
+  return typeof window === "undefined" ? null : chatAddressOf(window.location.pathname);
 }
 
 function routeHref(route: ChatRoute): string | null {
@@ -151,7 +169,7 @@ export function cancelChatRouteResolution(resolution: ChatRouteResolution | null
   if (resolution !== null && pendingResolution === resolution) pendingResolution = null;
 }
 
-export type ChatRouteUnavailable = "chat" | "project" | "projectChat";
+export type ChatRouteUnavailable = "assistant" | "chat" | "project" | "projectChat";
 
 export type ChatRouteTargets = Readonly<{
   /** Opens a personal chat; a chat readable only inside its Project reports that Project. */
@@ -161,6 +179,12 @@ export type ChatRouteTargets = Readonly<{
     projectId: string,
     chatId: string | null
   ): Promise<"opened" | "project" | "superseded" | "unavailable">;
+  /**
+   * Starts the open personal new chat with an Assistant (null for a malformed
+   * id). `unavailable` leaves it without an Assistant; `opened` also covers a
+   * new chat the user moved on from before the Assistant resolved.
+   */
+  openAssistant(assistantId: string | null): Promise<"opened" | "unavailable">;
   /** Shows the personal new chat, leaving any Project. */
   openBlank(): void;
   showUnavailable(target: ChatRouteUnavailable): void;
@@ -172,10 +196,12 @@ export type ChatRouteTargets = Readonly<{
  * Resolves an address (`null` for a malformed one) into state and settles the
  * address on the resulting route. Unknown, foreign and malformed targets share
  * one privacy-neutral notice; a load failure keeps the address for a retry.
- * Results that arrive after another navigation are ignored.
+ * An Assistant entry settles on the new chat in place of its own address, so
+ * history never returns to it. Results that arrive after another navigation
+ * are ignored.
  */
 export async function resolveChatRoute(
-  route: ChatRoute | null,
+  route: ChatAddress,
   resolution: ChatRouteResolution,
   targets: ChatRouteTargets
 ): Promise<ChatRoute | null> {
@@ -197,6 +223,11 @@ export async function resolveChatRoute(
     if (!route) {
       targets.openBlank();
       targets.showUnavailable("chat");
+    } else if (isAssistantEntry(route)) {
+      targets.openBlank();
+      const outcome = await targets.openAssistant(route.assistantId);
+      if (!current()) return null;
+      if (outcome === "unavailable") targets.showUnavailable("assistant");
     } else if (route.projectId) {
       if (!await openProject({ chatId: route.chatId, projectId: route.projectId })) return null;
     } else if (route.chatId) {
@@ -248,7 +279,7 @@ export function useShownChatRoute(): void {
 export function useChatRouteHistory(input: Readonly<{
   currentRoute(): ChatRoute;
   requestNavigation(proceed: () => void): void;
-  resolve(route: ChatRoute | null, resolution: ChatRouteResolution): void;
+  resolve(route: ChatAddress, resolution: ChatRouteResolution): void;
 }>): void {
   const latest = useRef(input);
   useEffect(() => {
@@ -259,15 +290,16 @@ export function useChatRouteHistory(input: Readonly<{
       const { pathname } = window.location;
       // Another page owns the traversed entry; the framework router shows it.
       if (!isChatRoutePathname(pathname)) return;
-      const target = parseChatRoutePath(pathname);
+      const target = chatAddressOf(pathname);
       const origin = latest.current.currentRoute();
-      if (target && sameChatRoute(target, origin)) return;
+      if (target && !isAssistantEntry(target) && sameChatRoute(target, origin)) return;
       let synchronous = true;
       let released = false;
       latest.current.requestNavigation(() => {
         if (released) return;
         released = true;
-        if (!synchronous) commitRoute(target ?? BLANK_CHAT_ROUTE, true);
+        // An entry address settles on the new chat it opens.
+        if (!synchronous) commitRoute(target && !isAssistantEntry(target) ? target : BLANK_CHAT_ROUTE, true);
         latest.current.resolve(target, beginChatRouteResolution());
       });
       synchronous = false;

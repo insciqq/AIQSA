@@ -28,6 +28,7 @@ import { visibleMessagePath } from "@/components/app-shell/threadPath";
 import {
   chatDetailBodyFromUnknown,
   chatUpdateFromEvent,
+  resolveModelControlDefaults,
   resolvePreferredSearchPlan
 } from "@/components/app-shell/powerAppShellData";
 import type { SearchPlanMode } from "@/lib/domain/search";
@@ -61,7 +62,23 @@ import {
   resolveChatSource,
   restoreChat as restoreChatRequest
 } from "@/components/app-shell/chatLifecycleApi";
-import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
+import {
+  boundComposerAssistant,
+  useComposerControlStore,
+  type ComposerControlChangeOrigin
+} from "@/components/app-shell/composerControlStore";
+import {
+  composerAssistantFromProjection,
+  type ComposerAssistantContext
+} from "@/components/app-shell/composerAssistantState";
+import {
+  cachedChatAssistantProjection,
+  useChatAssistantProjectionStore
+} from "@/components/app-shell/chatAssistantProjectionStore";
+import { useSkillLibraryStore } from "@/components/app-shell/skillLibraryStore";
+import type { AssistantIdentity } from "@/lib/contracts/assistants";
+import type { McpRunSelection } from "@/lib/contracts/mcp";
+import type { SkillsMode } from "@/lib/contracts/skills";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import {
   emptyThreadHistoryState,
@@ -85,6 +102,12 @@ type MutableRef<T> = {
 type ActivateChatOptions = {
   catalogOverride?: Catalog | null;
   preserveControls?: boolean;
+  /**
+   * With preserved controls, still reads a chat whose Assistant projection
+   * is unknown: a Project chat opened by its owner, which applies the
+   * Project's values but never an Assistant.
+   */
+  readAssistant?: boolean;
   resumeRuns?: boolean;
 };
 
@@ -125,27 +148,64 @@ function preserveChangesDuringRead<T extends { id: string }>(
   ];
 }
 
+/**
+ * How a chat's Assistant projection is applied in its scope: the ordinary
+ * values of the chat without an Assistant, the values an Assistant alone can
+ * express return to, and the catalog its rows resolve in.
+ */
+export type ChatAssistantScope = {
+  applyChatDefaults(chat: WorkspaceChatSummary): void;
+  clearFallback: { mcpSelection: McpRunSelection; skillsMode: SkillsMode };
+  context: ComposerAssistantContext;
+  known?(assistantId: string): Readonly<{
+    description?: string;
+    promptCharacterCount?: number;
+    starterPrompts?: string[];
+  }>;
+};
+
+/**
+ * The personal default Assistant of the open blank chat: still loading, or
+ * applied; `skipped` when something else decides the blank chat's Assistant
+ * (an Assistant entry link, the end of Project access). It stays with that
+ * blank chat; the next new chat starts afresh.
+ */
+export type BlankDefaultAssistant =
+  | Readonly<{ assistantId: string; state: "applied" | "loading" }>
+  | Readonly<{ state: "skipped" }>;
+
+const SKIPPED_BLANK_ASSISTANT: BlankDefaultAssistant = Object.freeze({ state: "skipped" });
+
 type WorkspaceActionsInput = {
   activeChatIdRef: MutableRef<string | null>;
   applyModelControlDefaults(model?: CatalogModel | null, controlValues?: Record<string, unknown>): void;
+  /** Kept across renders; absent together with `chooseDefaultAssistant`. */
+  blankDefaultAssistantRef?: MutableRef<BlankDefaultAssistant | null>;
   chatDetailRequestsRef: MutableRef<Map<string, Promise<ChatDetail | null>>>;
   chatHasActiveStream(chatId: string): boolean;
   chatHasPendingThreadMutation?(chatId: string): boolean;
   chatMutation: WorkspaceChatMutationPort;
+  /**
+   * Chooses the personal default Assistant for the open blank chat as the
+   * user would, while `isCurrent` holds; resolves whether it was applied.
+   */
+  chooseDefaultAssistant?(assistantId: string, isCurrent: () => boolean): Promise<boolean>;
   loadingChatDetailIdRef: MutableRef<string | null>;
+  /** The scope of a Project chat's Assistant; null while its Project is not loaded. */
+  projectChatAssistantScope?(chat: WorkspaceChatSummary): ChatAssistantScope | null;
   resumeChatRun(chat: WorkspaceChatSummary): void;
   setNotice(notice: Notice | null): void;
-  setSelectedModelId(value: string, origin?: "assistant" | "system" | "user"): void;
+  setSelectedModelId(value: string, origin?: ComposerControlChangeOrigin): void;
   setSelectedKnowledgePlan(
     selection: KnowledgePlan | readonly string[],
     source?: "chat" | "explicit" | "off" | "project",
-    origin?: "assistant" | "system" | "user"
+    origin?: ComposerControlChangeOrigin
   ): void;
-  setSelectedProvider(value: string, origin?: "assistant" | "system" | "user"): void;
+  setSelectedProvider(value: string, origin?: ComposerControlChangeOrigin): void;
   setSelectedSearchPlan(
     optionIds: readonly string[],
     mode: SearchPlanMode,
-    origin?: "assistant" | "system" | "user"
+    origin?: ComposerControlChangeOrigin
   ): void;
   workspaceRefreshPromiseRef: MutableRef<Promise<ChatDetail | null> | null>;
 };
@@ -153,11 +213,14 @@ type WorkspaceActionsInput = {
 export function useWorkspaceActions({
   activeChatIdRef,
   applyModelControlDefaults,
+  blankDefaultAssistantRef,
   chatDetailRequestsRef,
   chatHasActiveStream,
   chatHasPendingThreadMutation = () => false,
   chatMutation,
+  chooseDefaultAssistant,
   loadingChatDetailIdRef,
+  projectChatAssistantScope,
   resumeChatRun,
   setNotice,
   setSelectedModelId,
@@ -203,7 +266,11 @@ export function useWorkspaceActions({
     };
   }
 
-  function mergeChatIntoList(chat: WorkspaceChatSummary) {
+  /**
+   * `assistant` replaces the list row's Assistant after a local change of the
+   * chat's binding; otherwise the row keeps the server's projection.
+   */
+  function mergeChatIntoList(chat: WorkspaceChatSummary, assistant?: AssistantIdentity | null) {
     const currentChat = useWorkspaceStore.getState().chats.find(
       (candidate) => candidate.id === chat.id
     );
@@ -221,6 +288,7 @@ export function useWorkspaceActions({
       );
       useWorkspaceStore.getState().upsertNavigationChat({
         activeRun: existing?.activeRun ?? chatHasActiveStream(chat.id),
+        assistant: assistant !== undefined ? assistant : existing?.assistant ?? null,
         folderId: resolvedChat.folderId,
         id: resolvedChat.id,
         title: resolvedChat.title,
@@ -366,6 +434,7 @@ export function useWorkspaceActions({
         ) {
           return null;
         }
+        useChatAssistantProjectionStore.getState().setProjection(chatId, chat.assistant);
 
         return cacheChatDetail(chatDetailFromApi(chat), {
           summary: requestSummary,
@@ -563,8 +632,60 @@ export function useWorkspaceActions({
     return removedChatIds;
   }
 
+  function personalChatAssistantScope(catalog: Catalog | null | undefined): ChatAssistantScope {
+    return {
+      applyChatDefaults: (chat) => applyOrdinaryChatDefaults(chat, catalog),
+      clearFallback: {
+        mcpSelection: { mode: catalog?.defaults.mcpMode ?? "auto" },
+        skillsMode: catalog?.defaults.skillsMode ?? "auto"
+      },
+      context: {
+        controlDefaults: (model) => resolveModelControlDefaults(model, catalog?.defaults.controlValues),
+        models: catalog?.models ?? [],
+        skill: (skillId) => useSkillLibraryStore.getState().data?.skills.find((skill) => skill.id === skillId) ?? null
+      }
+    };
+  }
+
+  /**
+   * Applies the chat's Assistant as the server last projected it. A chat
+   * without a binding, or one not read yet, has no Assistant; unavailable and
+   * deleted bindings stay visible so the user chooses what happens next.
+   */
+  function applyChatAssistant(
+    chat: WorkspaceChatSummary,
+    catalogOverride: Catalog | null | undefined = useWorkspaceStore.getState().catalog
+  ) {
+    const scope = chatScopeProjectId(chat) === null
+      ? personalChatAssistantScope(catalogOverride)
+      : projectChatAssistantScope?.(chat) ?? null;
+    if (!scope) return;
+    const projection = cachedChatAssistantProjection(chat.id);
+    if (projection?.state === "bound") {
+      useComposerControlStore.getState().applyAssistantState(composerAssistantFromProjection(
+        projection,
+        scope.context,
+        scope.known?.(projection.id)
+      ));
+      return;
+    }
+    const current = useComposerControlStore.getState().assistant;
+    if (current?.state === "bound") scope.applyChatDefaults(chat);
+    if (current) useComposerControlStore.getState().clearAssistant(scope.clearFallback);
+    // An unavailable binding keeps its reason (archived by its owner).
+    if (projection) useComposerControlStore.getState().applyAssistantState({ assistant: { ...projection }, controls: {} });
+  }
+
   function applyChatDefaults(chat: WorkspaceChatSummary, catalogOverride: Catalog | null | undefined = useWorkspaceStore.getState().catalog) {
-    const model = fallbackCatalogModel(catalogOverride, {
+    applyOrdinaryChatDefaults(chat, catalogOverride);
+    applyChatAssistant(chat, catalogOverride);
+  }
+
+  function applyOrdinaryChatDefaults(
+    chat: WorkspaceChatSummary,
+    catalogOverride: Catalog | null | undefined = useWorkspaceStore.getState().catalog
+  ) {
+    const model = fallbackCatalogModel(catalogOverride ?? null, {
       modelId: chat.defaultModelId,
       provider: chat.defaultProvider
     });
@@ -646,7 +767,15 @@ export function useWorkspaceActions({
       };
       useThreadStore.getState().replaceThread(chat.id, cachedThread);
     }
+    // A chat's Assistant is restored from the server projection, never from
+    // browser state; a chat opened with its own controls not read in this
+    // session reads it once. Preserved controls already hold the Assistant,
+    // unless the caller asks for it (`readAssistant`).
+    const projectionUnknown = cachedChatAssistantProjection(chat.id) === undefined &&
+      !chat.pendingPersonalDraft && !chat.pendingProjectDraft &&
+      (!options.preserveControls || Boolean(options.readAssistant));
     const needsDetail =
+      projectionUnknown ||
       !cachedThread ||
       threadHistoryState(cachedThread).snapshotUpdatedAt === null ||
       (!chatHasActiveStream(chat.id) &&
@@ -685,7 +814,27 @@ export function useWorkspaceActions({
       preserveControls: true,
       resumeRuns: options.resumeRuns !== false
     });
+    // The fresh projection replaces what the cache knew when the chat opened.
+    // A Project chat's owner applies its Project values first.
+    if (!options.preserveControls || options.readAssistant || chatScopeProjectId(currentSummary) !== null) {
+      applyChatAssistant(currentSummary, options.catalogOverride ?? undefined);
+    }
     return detail;
+  }
+
+  /**
+   * Re-reads a chat after a change of its Assistant and applies the new
+   * projection while the chat is still open and `isCurrent` holds.
+   */
+  async function refreshChatAssistant(chatId: string, isCurrent: () => boolean = () => true): Promise<boolean> {
+    const detail = await fetchChatDetail(chatId, { force: true });
+    if (!detail) return false;
+    if (activeChatIdRef.current === chatId && isCurrent()) {
+      const summary = useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chatId) ??
+        summaryFromDetail(detail);
+      applyChatAssistant(summary);
+    }
+    return true;
   }
 
   async function activatePersonalChatById(chatId: string): Promise<ChatDetail | null> {
@@ -717,6 +866,9 @@ export function useWorkspaceActions({
     memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY" = "NORMAL",
     routeProjectId: string | null = null
   ) {
+    // A chat's Assistant stays with that chat; an Assistant chosen for the
+    // blank chat stays while the blank chat does.
+    const leavingChat = activeChatIdRef.current !== null;
     activeChatIdRef.current = null;
     loadingChatDetailIdRef.current = null;
     useWorkspaceStore.getState().setPendingChatFolderId(folderId);
@@ -735,37 +887,103 @@ export function useWorkspaceActions({
       );
     }
     pruneThreadCache();
-    if (!useComposerControlStore.getState().selectedAssistant) {
-      const catalog = useWorkspaceStore.getState().catalog;
-      const defaultModel = catalog?.models.find(
-        (candidate) =>
-          candidate.provider === catalog.defaults.provider &&
-          candidate.modelId === catalog.defaults.modelId
-      );
-      setSelectedProvider(defaultModel?.provider ?? "", "system");
-      setSelectedModelId(defaultModel?.modelId ?? "", "system");
-      applyModelControlDefaults(defaultModel, catalog?.defaults.controlValues);
-      const searchPlan = resolvePreferredSearchPlan(catalog?.defaults.searchPlan, catalog?.searchStrategies);
-      setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
-      const projectPlan = folderId
-        ? useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId)
-            ?.defaultKnowledgePlan ?? null
-        : null;
-      // Personal Chat defaults start a new chat; a
-      // folder default still wins for Knowledge. Admission re-checks both.
-      const personalPlan = projectPlan
-        ? null
-        : reconcilePersonalKnowledgeDefault(catalog?.defaults.knowledgePlan ?? null);
-      setSelectedKnowledgePlan(
-        projectPlan ?? personalPlan ?? EMPTY_KNOWLEDGE_SELECTION,
-        projectPlan ? "project" : personalPlan ? "explicit" : "off",
-        "system"
-      );
-      useComposerControlStore.getState().setMcpSelection({
-        mode: catalog?.defaults.mcpMode ?? "auto"
-      });
-      useComposerControlStore.getState().setSkillsMode(catalog?.defaults.skillsMode ?? "auto");
+    if (leavingChat || !useComposerControlStore.getState().assistant) {
+      applyPersonalBlankDefaults(folderId);
     }
+    if (routeProjectId === null) reconcileBlankDefaultAssistant(leavingChat);
+  }
+
+  /**
+   * A new personal chat starts with the personal default Assistant as if the
+   * user had chosen it. Temporary and Project chats never use it; after
+   * "Remove for this chat" the blank chat stays without it until the next
+   * new chat. Call it whenever the open blank chat changes its mode.
+   */
+  function reconcileBlankDefaultAssistant(newChat = false) {
+    if (!blankDefaultAssistantRef || !chooseDefaultAssistant) return;
+    if (newChat) blankDefaultAssistantRef.current = null;
+    const sessionKey = useComposerSessionStore.getState().activeSessionKey;
+    if (
+      activeChatIdRef.current !== null ||
+      chatIdFromComposerSessionKey(sessionKey) !== null ||
+      projectIdFromComposerSessionKey(sessionKey) !== null
+    ) return;
+    const mark = blankDefaultAssistantRef.current;
+    if (mark?.state === "skipped") return;
+    const bound = boundComposerAssistant(useComposerControlStore.getState());
+    if (composerSessionModeFromKey(sessionKey) === "TEMPORARY") {
+      if (mark?.state === "loading") blankDefaultAssistantRef.current = null;
+      if (mark?.state === "applied" && bound?.id === mark.assistantId) {
+        blankDefaultAssistantRef.current = null;
+        applyPersonalBlankDefaults(folderIdFromComposerSessionKey(sessionKey));
+      }
+      return;
+    }
+    const assistantId = useWorkspaceStore.getState().catalog?.defaults.assistantId ?? null;
+    if (mark && mark.assistantId !== assistantId) {
+      // The setting changed since this blank chat took the previous default.
+      blankDefaultAssistantRef.current = null;
+      if (bound?.id === mark.assistantId) applyPersonalBlankDefaults(folderIdFromComposerSessionKey(sessionKey));
+    }
+    if (blankDefaultAssistantRef.current || useComposerControlStore.getState().assistant || !assistantId) return;
+    const loading: BlankDefaultAssistant = { assistantId, state: "loading" };
+    blankDefaultAssistantRef.current = loading;
+    const isCurrent = () => blankDefaultAssistantRef.current === loading &&
+      activeChatIdRef.current === null &&
+      useComposerSessionStore.getState().activeSessionKey === sessionKey &&
+      useComposerControlStore.getState().assistant === null;
+    void chooseDefaultAssistant(assistantId, isCurrent).then((applied) => {
+      if (blankDefaultAssistantRef.current !== loading) return;
+      const kept = applied || boundComposerAssistant(useComposerControlStore.getState())?.id === assistantId;
+      blankDefaultAssistantRef.current = kept ? { assistantId, state: "applied" } : null;
+    });
+  }
+
+  /**
+   * Something else decides the open personal blank chat's Assistant (an
+   * Assistant entry link, whether it resolves or not; the end of Project
+   * access): the personal default stops loading and does not come back for
+   * this blank chat.
+   */
+  function skipBlankDefaultAssistant() {
+    if (blankDefaultAssistantRef) blankDefaultAssistantRef.current = SKIPPED_BLANK_ASSISTANT;
+  }
+
+  /** Personal Chat defaults of a new chat, without an Assistant. */
+  function applyPersonalBlankDefaults(folderId: string | null = useWorkspaceStore.getState().pendingChatFolderId) {
+    const catalog = useWorkspaceStore.getState().catalog;
+    useComposerControlStore.getState().clearAssistant({
+      mcpSelection: { mode: catalog?.defaults.mcpMode ?? "auto" },
+      skillsMode: catalog?.defaults.skillsMode ?? "auto"
+    });
+    const defaultModel = catalog?.models.find(
+      (candidate) =>
+        candidate.provider === catalog.defaults.provider &&
+        candidate.modelId === catalog.defaults.modelId
+    );
+    setSelectedProvider(defaultModel?.provider ?? "", "system");
+    setSelectedModelId(defaultModel?.modelId ?? "", "system");
+    applyModelControlDefaults(defaultModel, catalog?.defaults.controlValues);
+    const searchPlan = resolvePreferredSearchPlan(catalog?.defaults.searchPlan, catalog?.searchStrategies);
+    setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
+    const projectPlan = folderId
+      ? useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId)
+          ?.defaultKnowledgePlan ?? null
+      : null;
+    // Personal Chat defaults start a new chat; a
+    // folder default still wins for Knowledge. Admission re-checks both.
+    const personalPlan = projectPlan
+      ? null
+      : reconcilePersonalKnowledgeDefault(catalog?.defaults.knowledgePlan ?? null);
+    setSelectedKnowledgePlan(
+      projectPlan ?? personalPlan ?? EMPTY_KNOWLEDGE_SELECTION,
+      projectPlan ? "project" : personalPlan ? "explicit" : "off",
+      "system"
+    );
+    useComposerControlStore.getState().setMcpSelection({
+      mode: catalog?.defaults.mcpMode ?? "auto"
+    }, "system");
+    useComposerControlStore.getState().setSkillsMode(catalog?.defaults.skillsMode ?? "auto", "system");
   }
 
   /**
@@ -934,6 +1152,7 @@ export function useWorkspaceActions({
               const memoryState = await loadChatMemoryState(targetActiveChatId);
               if (memoryState.mode === "TEMPORARY" && !memoryState.archived) {
                 recoveredTemporaryDetail = chatDetailFromApi(wireDetail);
+                useChatAssistantProjectionStore.getState().setProjection(wireDetail.id, wireDetail.assistant);
                 recoveredTemporarySummary = {
                   ...summaryFromDetail(recoveredTemporaryDetail),
                   memoryMode: "TEMPORARY",
@@ -1098,6 +1317,8 @@ export function useWorkspaceActions({
           : {})
       };
       mergeChatIntoList(summary);
+      // The server created the chat without an Assistant.
+      useChatAssistantProjectionStore.getState().setProjection(summary.id, null);
 
       if (sourceSessionKey) {
         const sourceWasSelected =
@@ -1167,7 +1388,11 @@ export function useWorkspaceActions({
       useComposerSessionStore.getState().updateSession(composerSessionKey(summary.id), {
         workspaceEnabled: session.workspaceEnabled
       });
-      mergeChatIntoList(summary);
+      // The row shows the Assistant the first message names.
+      const assistant = boundComposerAssistant(controls);
+      mergeChatIntoList(summary, assistant?.availability.ok
+        ? { avatar: assistant.avatar, name: assistant.name }
+        : null);
       await activateChat(summary, { preserveControls: true, resumeRuns: false });
       return summary;
     } catch (error) {
@@ -1233,11 +1458,15 @@ export function useWorkspaceActions({
 
       const scopeProjectId = chatScopeProjectId(chat);
       const nextActive = nextChatInScope(useWorkspaceStore.getState().chats, chat.id, scopeProjectId);
+      // Undo brings the row back with the Assistant it showed.
+      const listedAssistant = useWorkspaceStore.getState().navigationChats
+        .find((candidate) => candidate.id === chat.id)?.assistant ?? null;
       useWorkspaceStore.getState().updateChats((current) => current.filter((candidate) => candidate.id !== chat.id));
       useWorkspaceStore.getState().removeNavigationChat(chat.id);
       useThreadStore.getState().removeThread(chat.id);
       useRunSurfaceStore.getState().removeSurface(chat.id);
       useComposerSessionStore.getState().removeSession(composerSessionKey(chat.id));
+      useChatAssistantProjectionStore.getState().forget(chat.id);
       chatDetailRequestsRef.current.delete(chat.id);
       setNotice({
         action: {
@@ -1258,6 +1487,7 @@ export function useWorkspaceActions({
                 useWorkspaceStore.getState().upsertChat(restoredChat);
                 useWorkspaceStore.getState().upsertNavigationChat({
                   activeRun: false,
+                  assistant: listedAssistant,
                   folderId: restoredChat.folderId,
                   id: restoredChat.id,
                   title: restoredChat.title,
@@ -1430,7 +1660,9 @@ export function useWorkspaceActions({
     activateBlankWorkspace,
     activateChat,
     activatePersonalChatById,
+    applyChatAssistant,
     applyChatUpdate,
+    applyPersonalBlankDefaults,
     createChat,
     createPersonalChatForSend,
     deleteChat,
@@ -1440,9 +1672,12 @@ export function useWorkspaceActions({
     loadEarlierMessages,
     pruneThreadCache,
     reapplyActiveChatDefaults,
+    reconcileBlankDefaultAssistant: () => reconcileBlankDefaultAssistant(),
     refreshActiveChat,
+    refreshChatAssistant,
     refreshWorkspace,
     renameChat,
+    skipBlankDefaultAssistant,
     setChatKnowledgeDefault,
     toggleChatFavorite,
     updateChatFolder

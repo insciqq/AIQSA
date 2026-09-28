@@ -1,7 +1,17 @@
 "use client";
 
-import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
+import type { ComposerMcpSelection } from "@/components/app-shell/composerControlStore";
+import type { ShellComposerAssistant } from "@/components/app-shell/powerAppShellV2Contracts";
+import {
+  ASSISTANT_ROW_KEYS,
+  type AssistantRowDeviation,
+  type AssistantRowKey,
+  type AssistantRowPolicy,
+  type AssistantRowProvenance,
+  type AssistantRowValues
+} from "@/lib/contracts/assistants";
+import type { ChatAssistantRowValues } from "@/lib/contracts/chats";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
 import {
@@ -21,11 +31,18 @@ import {
   type ComposerV2Layer,
   type ComposerV2LayerController
 } from "@/features/composer-v2/ComposerV2";
+import type { ComposerV2Assistant } from "@/features/composer-v2/AssistantRowProvenanceV2";
 import { HeaderModelSelectorV2 } from "@/features/workspace-v2/WorkspaceHeaderV2";
+import { headerModelProvenanceV2 } from "@/features/workspace-v2/HeaderAssistantSelectorV2";
 import type { ComposerAttachmentItemV2 } from "@/features/attachments-v2/attachmentPresentation";
 
 export type ComposerGalleryState =
   | "assistant"
+  | "assistant-changed"
+  | "assistant-fallback"
+  | "assistant-fixed"
+  | "assistant-fixed-model"
+  | "assistant-project-fallback"
   | "assistant-knowledge"
   | "add"
   | "attachments"
@@ -56,8 +73,12 @@ const avatar = {
 export const composerGalleryConfig: ComposerConfig = {
   assistants: [{
     archived: false,
+    audience: { everyone: false, groupNames: [] },
     availability: { ok: true },
     avatar,
+    featured: false,
+    featuredOrder: null,
+    rowAvailability: {},
     category: "research",
     description: "Собирает и сравнивает проверяемые источники.",
     fingerprint: {
@@ -75,6 +96,7 @@ export const composerGalleryConfig: ComposerConfig = {
     pinned: true,
     published: false,
     scope: { kind: "owner" },
+    skillLinkCount: 0,
     starterPrompts: ["Сравни источники"],
     updatedAt: "2026-08-13T09:00:00.000Z"
   }],
@@ -285,6 +307,42 @@ export const composerGalleryConfig: ComposerConfig = {
   }]
 };
 
+/**
+ * What a Project chat's composer receives (`PowerAppShellV2View`): the
+ * Project's Knowledge and MCP servers only, no personal documents, and the
+ * composer marked as a shared Project, which never offers All my knowledge.
+ */
+export const composerGalleryProjectConfig: ComposerConfig = {
+  ...composerGalleryConfig,
+  knowledgeBases: [{
+    archived: false,
+    attentionDocumentCount: 0,
+    description: "Shared with the Project",
+    documentCount: 12,
+    id: "kb-launch",
+    name: "Launch playbooks",
+    owned: false,
+    processingDocumentCount: 0,
+    readinessState: "ready",
+    readyDocumentCount: 12
+  }],
+  knowledgeDocumentTotal: 2,
+  knowledgeSources: [{
+    description: "Shared with the Project",
+    id: "project-source-1",
+    name: "Launch checklist",
+    owned: false,
+    readiness: "ready"
+  }, {
+    description: "Shared with the Project",
+    id: "project-source-2",
+    name: "Rollout calendar",
+    owned: false,
+    readiness: "ready"
+  }],
+  mcpServers: composerGalleryConfig.mcpServers.filter((server) => server.id === "mcp-office")
+};
+
 const attachmentGalleryItems: ComposerAttachmentItemV2[] = [{
   byteSize: 12_400,
   fileName: "budget.csv",
@@ -338,25 +396,161 @@ const attachmentGalleryUsage: AttachmentLimitUsage = {
 
 const navigationChats: ChatNavigationSummaryWire[] = [{
   activeRun: false,
+  assistant: null,
   folderId: null,
   id: "composer-fixture",
   title: "Квартальный отчёт",
   updatedAt: "2026-08-13T09:00:00.000Z"
 }];
 
+type BoundGalleryAssistant = Extract<ShellComposerAssistant, { state: "bound" }>;
+
+/** The gallery Assistant's own values: a recommended model, no web search, one MCP server, one base, two Skills. */
+export const composerGalleryAssistantValues: AssistantRowValues = {
+  controls: { reasoningEffort: "high" },
+  knowledge: { baseIds: ["kb-finance"], mode: "explicit", sourceIds: [] },
+  model: { mode: "model", modelId: "gpt-5.2" },
+  search: { mode: "off" },
+  skills: {
+    links: [
+      { delivery: "always", skillId: "skill-citations" },
+      { delivery: "on_demand", skillId: "skill-charts" }
+    ],
+    mode: "auto"
+  },
+  tools: { mode: "exact", serverIds: ["mcp-office"] }
+};
+
+/**
+ * A bound Assistant as the shell projects it. Rows default to adjustable,
+ * set by the Assistant and unchanged; `values` are the effective values.
+ */
+export function composerGalleryAssistant(input: Readonly<{
+  assistantValues?: Partial<AssistantRowValues>;
+  deviations?: Partial<Record<AssistantRowKey, AssistantRowDeviation>>;
+  origins?: Partial<Record<AssistantRowKey, AssistantRowProvenance>>;
+  policies?: Partial<Record<AssistantRowKey, AssistantRowPolicy>>;
+  /** A Project chat's Assistant: fallback rows use the Project default. */
+  project?: boolean;
+  values?: Partial<ChatAssistantRowValues>;
+}> = {}): BoundGalleryAssistant {
+  const assistantValues = { ...composerGalleryAssistantValues, ...input.assistantValues };
+  const rows = Object.fromEntries(ASSISTANT_ROW_KEYS.map((row) => [row, {
+    assistantValue: assistantValues[row],
+    deviation: input.deviations?.[row] ?? null,
+    origin: input.origins?.[row] ?? "assistant",
+    policy: input.policies?.[row] ?? "adjustable",
+    value: input.values?.[row] ?? assistantValues[row]
+  }])) as BoundGalleryAssistant["rows"];
+  const origins = input.origins ?? {};
+  return {
+    availability: { ok: true },
+    avatar,
+    blockReason: null,
+    changedRows: ASSISTANT_ROW_KEYS.filter((row) => origins[row] === "chat"),
+    description: "Собирает и сравнивает проверяемые источники.",
+    id: "assistant-research",
+    includedSkills: [
+      { id: "skill-citations", mode: "pinned", name: "Policy citations" },
+      { id: "skill-charts", mode: "available", name: "Charts" }
+    ],
+    name: "Research editor",
+    owned: !input.project,
+    ownerDisplayName: input.project ? "Project" : "Мария",
+    ...(input.project ? { project: true as const } : {}),
+    rows,
+    scope: "chat",
+    starterPrompts: ["Сравни источники"],
+    state: "bound"
+  };
+}
+
+type GalleryAssistantSetup = Readonly<{
+  assistantValues?: Partial<AssistantRowValues>;
+  deviations?: Partial<Record<AssistantRowKey, AssistantRowDeviation>>;
+  origins: Partial<Record<AssistantRowKey, AssistantRowProvenance>>;
+  policies?: Partial<Record<AssistantRowKey, AssistantRowPolicy>>;
+  project?: boolean;
+}>;
+
+const ALL_FIXED: Record<AssistantRowKey, AssistantRowPolicy> = {
+  controls: "fixed", knowledge: "fixed", model: "fixed", search: "fixed", skills: "fixed", tools: "fixed"
+};
+
+function galleryAssistantSetup(state: ComposerGalleryState): GalleryAssistantSetup | null {
+  switch (state) {
+    case "assistant":
+      return { origins: {} };
+    case "assistant-fixed":
+      return { origins: {}, policies: ALL_FIXED };
+    // A new Assistant's default: a fixed model with adjustable parameters.
+    case "assistant-fixed-model":
+      return { origins: {}, policies: { model: "fixed" } };
+    case "assistant-changed":
+      return { origins: { knowledge: "chat", search: "chat", skills: "chat", tools: "chat" } };
+    case "assistant-project-fallback":
+      // The Project provides neither the Assistant's model nor its
+      // Knowledge: its entry counts that Knowledge without naming it.
+      return {
+        assistantValues: {
+          knowledge: { baseIds: [], hiddenCount: 1, mode: "explicit", sourceIds: [] },
+          model: { mode: "model", modelId: null }
+        },
+        deviations: {
+          knowledge: { reason: "knowledge_access" },
+          model: { reason: "model_access" }
+        },
+        origins: { controls: "default", knowledge: "fallback", model: "fallback" },
+        project: true
+      };
+    case "assistant-fallback":
+      return {
+        assistantValues: { model: { mode: "model", modelId: null } },
+        deviations: {
+          knowledge: { reason: "knowledge_access" },
+          model: { reason: "model_access" }
+        },
+        origins: { controls: "default", knowledge: "fallback", model: "fallback" }
+      };
+    case "assistant-knowledge":
+      return {
+        assistantValues: { knowledge: { baseIds: [], hiddenCount: 2, mode: "explicit", sourceIds: [] } },
+        origins: {}
+      };
+    default:
+      return null;
+  }
+}
+
 function initialLayer(state: ComposerGalleryState): ComposerV2Layer {
-  if (state === "model") return "model";
-  if (state === "add" || state === "assistant") return "add";
+  if (state === "model" || state === "assistant-fallback" || state === "assistant-fixed-model") return "model";
+  if (state === "assistant-project-fallback") return "knowledge";
+  if (state === "add") return "add";
+  if (state === "assistant") return "skills";
+  if (state === "assistant-fixed") return "tools";
+  if (state === "assistant-changed") return "search";
   if (state === "assistant-knowledge" || state === "knowledge" || state === "project-knowledge") {
     return "knowledge";
   }
   return null;
 }
 
+const INITIAL_LAYER_TRIGGERS: Readonly<Record<Exclude<ComposerV2Layer, null>, string>> = {
+  add: 'button[aria-label="Add"]',
+  files: 'button[aria-label="Add"]',
+  knowledge: 'button[aria-label="Choose Knowledge"]',
+  model: '[data-testid="header-model-trigger"]',
+  search: 'button[aria-label^="Choose web search"]',
+  skills: 'button[aria-label="Change Skills mode"]',
+  tools: 'button[aria-label="Change MCP mode"]',
+  workspace: 'button[aria-label^="Workspace details"]'
+};
+
 export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalleryState }) {
   const wideChips = state === "chips-wide";
   const offChips = state === "chips-off" || state === "chips-off-pinned";
   const chipFixture = wideChips || offChips || state === "chips-agent";
+  const projectFallback = state === "assistant-project-fallback";
   const [config, setConfig] = useState<ComposerConfig>(() => state === "zero"
     ? {
         ...composerGalleryConfig,
@@ -376,46 +570,96 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
         },
         mcpServers: []
       }
-    : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
-        wideChips || offChips ? { ...server, enabled: true } : server
-      ) });
+    : projectFallback
+      ? composerGalleryProjectConfig
+      : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
+          wideChips || offChips ? { ...server, enabled: true } : server
+        ) });
   const [workspaceEnabled, setWorkspaceEnabled] = useState(!offChips);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const allCapabilities = chipFixture || ["capabilities", "workspace-running", "workspace-failed"].includes(state);
   const [draft, setDraft] = useState(state === "default" ? "Подготовь краткое резюме" : "");
+  // Assistant states mirror the composer store: a change marks an adjustable
+  // row as changed for this chat, a fixed row refuses it, Reset restores it.
+  const [assistantSetup] = useState(() => galleryAssistantSetup(state));
+  const assistantValues = { ...composerGalleryAssistantValues, ...assistantSetup?.assistantValues };
+  const assistantKnowledgeSelection = (): KnowledgeSelection => {
+    const knowledge = assistantValues.knowledge;
+    return knowledge.mode !== "explicit"
+      ? EMPTY_KNOWLEDGE_SELECTION
+      : knowledge.hiddenCount
+        ? inheritedKnowledgeSelection("assistant")
+        : explicitKnowledgeSelection({ baseIds: knowledge.baseIds, sourceIds: knowledge.sourceIds });
+  };
+  const assistantChanged = state === "assistant-changed";
+  const assistantFallback = state === "assistant-fallback" || state === "assistant-project-fallback";
+  const [assistantOrigins, setAssistantOrigins] = useState(assistantSetup?.origins ?? {});
   const [selectedModel, setSelectedModel] = useState({ modelId: "gpt-5.2", provider: "openai-work" });
-  const [searchIds, setSearchIds] = useState<string[]>(state === "zero" || offChips || state === "chips-agent"
+  const [searchIds, setSearchIds] = useState<string[]>(state === "zero" || offChips || state === "chips-agent" ||
+    (assistantSetup && !assistantChanged)
     ? [] : wideChips ? ["web-primary", "research-search"] : ["web-primary"]);
   const [knowledgeSelection, setKnowledgeSelection] = useState<KnowledgeSelection>(() => {
     if (state === "zero" || offChips || state === "chips-agent") return EMPTY_KNOWLEDGE_SELECTION;
     if (wideChips) return explicitKnowledgeSelection({ baseIds: ["kb-finance", "kb-product"], sourceIds: ["source-7"] });
-    if (state === "assistant-knowledge") return inheritedKnowledgeSelection("assistant");
-    if (state === "project-knowledge") {
+    // A Project's fallback row runs with the Project's default Knowledge.
+    if (projectFallback) return explicitKnowledgeSelection({ baseIds: ["kb-launch"], sourceIds: [] });
+    if (state === "project-knowledge" || assistantChanged || assistantFallback) {
       return explicitKnowledgeSelection({ baseIds: ["kb-product"], sourceIds: ["source-7"] });
     }
+    if (assistantSetup) return assistantKnowledgeSelection();
     return explicitKnowledgeSelection({ baseIds: ["kb-finance"] });
   });
   const [knowledgePlanSource, setKnowledgePlanSource] = useState<
     "assistant" | "explicit" | "off" | "project"
-  >(() => state === "assistant-knowledge"
+  >(() => assistantSetup && !assistantChanged && !assistantFallback
     ? "assistant"
-    : state === "project-knowledge" ? "project" : state === "zero" ? "off" : "explicit");
-  const [mcpSelection, setMcpSelection] = useState<McpRunSelection>({ mode: wideChips ? "load_all" : offChips ? "off" : "auto" });
-  const [skillsMode, setSkillsMode] = useState<"auto" | "off">(offChips ? "off" : "auto");
+    : state === "project-knowledge" || projectFallback ? "project" : state === "zero" ? "off" : "explicit");
+  const [mcpSelection, setMcpSelection] = useState<ComposerMcpSelection>(assistantSetup && !assistantChanged
+    ? structuredClone(composerGalleryAssistantValues.tools as ComposerMcpSelection)
+    : { mode: wideChips ? "load_all" : offChips ? "off" : "auto" });
+  const [skillsMode, setSkillsMode] = useState<"auto" | "off">(offChips || assistantChanged ? "off" : "auto");
   const [attachmentItems, setAttachmentItems] = useState<ComposerAttachmentItemV2[]>(
     state === "attachments" ? attachmentGalleryItems : []
   );
   const attachmentSequenceRef = useRef(0);
-  const [assistant, setAssistant] = useState(() => {
-    const selected = state === "assistant" || state === "assistant-knowledge"
-      ? config.assistants[0] ?? null
-      : null;
-    return selected ? {
-      ...selected,
-      knowledgeLabel: selected.fingerprint.knowledgeLabel,
-      knowledgeResourceCount: selected.fingerprint.knowledgeResourceCount
-    } : null;
-  });
+  const rowFixed = (row: AssistantRowKey) => assistantSetup?.policies?.[row] === "fixed";
+  /* A user change of a row; false when the Assistant fixes it. */
+  const changeRow = (row: AssistantRowKey): boolean => {
+    if (!assistantSetup) return true;
+    if (rowFixed(row)) return false;
+    setAssistantOrigins((current) => ({ ...current, [row]: "chat" }));
+    return true;
+  };
+  const resetRow = (row: AssistantRowKey) => {
+    if (!assistantSetup || rowFixed(row)) return;
+    setAssistantOrigins((current) => ({ ...current, [row]: assistantSetup.origins[row] ?? "assistant" }));
+    if (row === "model") setSelectedModel({ modelId: "gpt-5.2", provider: "openai-work" });
+    if (row === "search") setSearchIds([]);
+    if (row === "tools") setMcpSelection(structuredClone(assistantValues.tools as ComposerMcpSelection));
+    if (row === "skills") setSkillsMode(assistantValues.skills.mode);
+    if (row === "knowledge") {
+      setKnowledgeSelection(assistantKnowledgeSelection());
+      setKnowledgePlanSource("assistant");
+    }
+  };
+  const galleryAssistant: ComposerV2Assistant | null = assistantSetup ? {
+    current: composerGalleryAssistant({
+      ...assistantSetup,
+      origins: assistantOrigins,
+      values: {
+        knowledge: knowledgeSelection.mode === "inherited"
+          ? assistantValues.knowledge as ChatAssistantRowValues["knowledge"]
+          : knowledgeSelection.mode === "explicit"
+            ? { baseIds: knowledgeSelection.baseIds, mode: "explicit", sourceIds: knowledgeSelection.sourceIds }
+            : { mode: knowledgeSelection.mode },
+        model: { mode: "model", modelId: selectedModel.modelId },
+        search: searchIds.length > 0 ? { mode: "all_selected", optionIds: searchIds } : { mode: "off" },
+        skills: { ...assistantValues.skills, mode: skillsMode },
+        tools: mcpSelection
+      }
+    }),
+    resetRow
+  } : null;
   // The model is chosen from the header selector, which anchors the
   // composer-owned picker through its layer controller.
   const galleryRef = useRef<HTMLDivElement>(null);
@@ -435,11 +679,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   useEffect(() => {
     const layer = initialLayer(state);
     if (!layer || initiallyOpenedStateRef.current === state) return;
-    const selector = layer === "model"
-      ? '[data-testid="header-model-trigger"]'
-      : layer === "knowledge"
-        ? 'button[aria-label="Choose Knowledge"]'
-        : 'button[aria-label="Add"]';
+    const selector = INITIAL_LAYER_TRIGGERS[layer];
     const frame = window.requestAnimationFrame(() => {
       initiallyOpenedStateRef.current = state;
       galleryRef.current?.querySelector<HTMLButtonElement>(selector)?.click();
@@ -484,8 +724,8 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                 expanded: openLayer === "model",
                 family: currentProvider?.family ?? null,
                 label: currentProvider?.name ?? "",
-                locked: Boolean(assistant),
-                name: assistant ? `${assistant.name} · ${modelName}` : modelName,
+                ...headerModelProvenanceV2(galleryAssistant?.current ?? null, modelName, config.catalog.models),
+                name: modelName,
                 onToggle: (anchor) => layerController.current?.toggle("model", anchor)
               }}
             />
@@ -507,6 +747,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                 enabled: agentEnabled, onToggle: setAgentEnabled,
                 unavailableReason: workspaceEnabled ? undefined : "Enable Workspace to use Agent."
               } : undefined}
+              assistant={galleryAssistant}
               attachmentItems={attachmentItems}
               attachmentLimitUsage={state === "attachments" ? attachmentGalleryUsage : null}
               config={state === "error" ? null : config}
@@ -519,19 +760,16 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               onDraftChange={setDraft}
               onLayerChange={setOpenLayer}
               onMakeModelDefault={() => undefined}
-              onOpenAssistantPicker={() => undefined}
-              onOpenKnowledgeLibrary={() => undefined}
+              onOpenKnowledgeLibrary={projectFallback ? undefined : () => undefined}
               onOpenMcpSettings={() => undefined}
               onOpenModelParameters={() => undefined}
               onOpenSkillLibrary={() => undefined}
               onOverrideKnowledgePlan={() => {
-                setAssistant(null);
                 setKnowledgePlanSource("explicit");
                 if (knowledgeSelection.mode === "inherited") {
                   setKnowledgeSelection(EMPTY_KNOWLEDGE_SELECTION);
                 }
               }}
-              onRemoveAssistant={() => setAssistant(null)}
               onRemoveAttachment={(id) => setAttachmentItems((current) =>
                 current.filter((item) => item.id !== id)
               )}
@@ -555,13 +793,16 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                   : item)
               )}
               onSelectKnowledgeSelection={(selection) => {
+                if (!changeRow("knowledge")) return;
                 setKnowledgeSelection(selection);
                 setKnowledgePlanSource(selection.mode === "none" ? "off" : "explicit");
               }}
-              onSelectMcp={setMcpSelection}
-              onSelectSkillsMode={setSkillsMode}
-              onSelectModel={(model) => setSelectedModel({ modelId: model.modelId, provider: model.provider })}
-              onSelectSearchOptionIds={(ids) => setSearchIds([...ids])}
+              onSelectMcp={(selection) => { if (changeRow("tools")) setMcpSelection(selection); }}
+              onSelectSkillsMode={(mode) => { if (changeRow("skills")) setSkillsMode(mode); }}
+              onSelectModel={(model) => {
+                if (changeRow("model")) setSelectedModel({ modelId: model.modelId, provider: model.provider });
+              }}
+              onSelectSearchOptionIds={(ids) => { if (changeRow("search")) setSearchIds([...ids]); }}
               onSend={() => setDraft("")}
               onToggleMcpServer={(serverId, enabled) => setConfig((current) => ({
                 ...current,
@@ -589,13 +830,12 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               selectedSkillIds={wideChips || state === "chips-off-pinned"
                 ? Array.from({ length: 32 }, (_, index) => `skill-${index}`)
                 : allCapabilities && !chipFixture ? ["one", "two", "three"] : []}
-              selectedAssistant={assistant}
               knowledgePlanSource={knowledgePlanSource}
               selectedKnowledgeSelection={knowledgeSelection}
               selectedModelId={selectedModel.modelId}
               selectedProvider={selectedModel.provider}
               selectedSearchOptionIds={searchIds}
-              sharedProject={state === "project-knowledge"}
+              sharedProject={state === "project-knowledge" || projectFallback}
             />
           </div>
         </main>

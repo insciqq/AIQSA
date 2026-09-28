@@ -11,7 +11,11 @@ import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sour
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
-import { boundedChatTitle } from "../../contracts/chats";
+import {
+  boundedChatTitle,
+  decodeStoredChatAssistantOverrides,
+  storedChatAssistantOverrides
+} from "../../contracts/chats";
 import { CHAT_SUMMARY_LEASE_MS, ChatContinuationError, type ContinuationRepository, type ContinuationSource } from "./continuation";
 import type { StorageAdapter } from "../uploads/storage";
 import { WorkspaceRuntimeError, type WorkspaceOutputStream, type WorkspaceRuntime } from "../workspace/runtime";
@@ -21,15 +25,20 @@ import { loadExposedChatModelId } from "./chatCreationDefaults";
 import { loadProjectChatDefaultAuthority } from "../projects/chatDefaults";
 
 const sourceSelect = {
-  activeLeafMessageId: true, archived: true, defaultProviderModelId: true, defaultKnowledgePlan: true, defaultSearchPlan: true, folderId: true,
+  activeLeafMessageId: true, archived: true, assistantId: true, assistantOverrides: true,
+  defaultProviderModelId: true, defaultKnowledgePlan: true, defaultSearchPlan: true, folderId: true,
   id: true, memoryMode: true, permanentDeletionAt: true, projectFolderId: true, projectId: true,
   title: true, updatedAt: true, userId: true, workspaceEnabled: true
 } satisfies Prisma.ChatSelect;
 
 async function lockedSource(tx: Prisma.TransactionClient, input: {
-  chatId: string; userId: string; leafMessageId: string; updatedAt?: Date;
+  chatId: string; userId: string; leafMessageId: string; updatedAt?: Date; lockAssistant?: boolean;
 }) {
-  const boundary = await tx.chat.findUnique({ select: { projectId: true }, where: { id: input.chatId } });
+  const boundary = await tx.chat.findUnique({ select: { assistantId: true, projectId: true }, where: { id: input.chatId } });
+  // A copied binding holds its definition before the Project and chat rows,
+  // in the order Assistant deletion takes them.
+  const assistantId = input.lockAssistant ? boundary?.assistantId ?? null : null;
+  if (assistantId) await tx.$queryRaw`SELECT "id" FROM "AssistantDefinition" WHERE "id" = ${assistantId} FOR KEY SHARE`;
   if (boundary?.projectId) await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${boundary.projectId} FOR SHARE`;
   await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${input.chatId} FOR UPDATE`;
   const access = await resolveChatAccess(tx, {
@@ -39,12 +48,24 @@ async function lockedSource(tx: Prisma.TransactionClient, input: {
   const chat = access ? await tx.chat.findUnique({ select: sourceSelect, where: { id: input.chatId } }) : null;
   if (!chat || !actor || chat.archived || chat.permanentDeletionAt) throw new ChatContinuationError("chat_not_found", 404);
   if (chat.activeLeafMessageId !== input.leafMessageId ||
-    input.updatedAt && chat.updatedAt.getTime() !== input.updatedAt.getTime()) throw new ChatContinuationError("chat_changed");
+    input.updatedAt && chat.updatedAt.getTime() !== input.updatedAt.getTime() ||
+    input.lockAssistant && chat.assistantId !== assistantId) throw new ChatContinuationError("chat_changed");
   const active = await tx.modelRun.findFirst({ select: { id: true }, where: {
     chatId: chat.id, status: { in: ["queued", "preparing", "streaming", "in_progress"] }
   } });
   if (active) throw new ChatContinuationError("chat_busy");
   return { actor, chat, projectRole: access?.project?.effectiveRole ?? null };
+}
+
+/** The new chat keeps the Assistant and the rows changed for it; a deleted Assistant's marker stays behind. */
+function continuedAssistantBinding(chat: Readonly<{ assistantId: string | null; assistantOverrides: unknown }>) {
+  if (!chat.assistantId) return {};
+  const stored = decodeStoredChatAssistantOverrides(chat.assistantOverrides);
+  const overrides = stored?.kind === "overrides" ? storedChatAssistantOverrides(stored.overrides) : null;
+  return {
+    assistantId: chat.assistantId,
+    ...(overrides ? { assistantOverrides: overrides as Prisma.InputJsonObject } : {})
+  };
 }
 
 function currentInput(source: ContinuationSource) {
@@ -394,7 +415,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
 
     complete: async (source, claim, summary) => {
       const result = await client.$transaction(async (tx) => {
-        const { actor, chat, projectRole } = await lockedSource(tx, currentInput(source));
+        const { actor, chat, projectRole } = await lockedSource(tx, { ...currentInput(source), lockAssistant: true });
         const operation = await tx.chatContinuation.findFirst({ where: {
           id: claim.id, attemptId: claim.attemptId, actorUserId: source.userId, status: "running", cancelRequestedAt: null,
           OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { gt: new Date() } }]
@@ -413,6 +434,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           defaultProviderModelId: operation.requestedProviderModelId ?? chat.defaultProviderModelId, memoryMode: chat.memoryMode,
           defaultKnowledgePlan: chat.defaultKnowledgePlan ?? Prisma.DbNull,
           defaultSearchPlan: chat.defaultSearchPlan ?? Prisma.DbNull,
+          ...continuedAssistantBinding(chat),
           workspaceEnabled: chat.workspaceEnabled,
           ...(chat.projectId ? {
             userId: null, projectId: chat.projectId, projectFolderId: chat.projectFolderId,

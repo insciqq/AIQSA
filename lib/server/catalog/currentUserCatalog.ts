@@ -18,12 +18,17 @@ import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import {
   decodeChatDefaultMcpMode,
   INSTALLATION_CHAT_DEFAULTS,
+  type ChatDefaultAssistant,
   type ChatDefaults
 } from "../../contracts/chatDefaults";
 import { decodeKnowledgePlan } from "../../contracts/knowledge";
 import { supportsAgentAdapter } from "../providers/agentResponses";
 
 export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
+  /** Saved personal default Assistant, before any availability check. */
+  defaultAssistantId?: string | null;
+  /** Whether the saved default Assistant is available to the user now; absent means not checked. */
+  defaultAssistantAvailable?: boolean;
   defaultControlValues: unknown;
   /** Persisted knowledge selection for new chats; absent or invalid means none. */
   defaultKnowledgePlan?: unknown;
@@ -53,6 +58,19 @@ export function resolveChatDefaults(
     skillsMode: settings.defaultSkillsMode === "off" ? "off" : "auto",
     sendWithEnter: settings.sendWithEnter ?? INSTALLATION_CHAT_DEFAULTS.sendWithEnter
   };
+}
+
+/**
+ * Names the saved default only while it is available to the user; otherwise
+ * reports it as unavailable without naming it, and never clears it. An
+ * unchecked default fails closed.
+ */
+export function catalogDefaultAssistant(
+  settings: Pick<CatalogSettingsRecord, "defaultAssistantAvailable" | "defaultAssistantId">
+): ChatDefaultAssistant {
+  return settings.defaultAssistantId && settings.defaultAssistantAvailable === true
+    ? { assistantId: settings.defaultAssistantId, assistantUnavailable: false }
+    : { assistantId: null, assistantUnavailable: Boolean(settings.defaultAssistantId) };
 }
 
 export type CatalogData = {
@@ -236,6 +254,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       searchPlan: searchPreference.preferredPlan,
       searchPreferenceSource: searchPreference.source,
       ...resolveChatDefaults(input.settings),
+      ...catalogDefaultAssistant(input.settings),
       workspaceEnabled: input.settings.defaultWorkspaceEnabled ?? true,
       showCitations: input.settings.showCitations,
       showReasoningBlocks: input.settings.showReasoningBlocks

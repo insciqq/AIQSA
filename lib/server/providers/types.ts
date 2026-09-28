@@ -223,13 +223,15 @@ export type NormalizedRunRequest = {
     personalInstructions?: string;
     responseReminder?: string;
     /**
-     * Exact standard-chat baseline evidence for ordinary runs: the resolved
-     * zone and its source are recorded because the rendered text in `system`
-     * must never depend on a live clock or mutable template after acceptance.
-     * Assistant runs use their immutable revision instructions and omit this.
+     * Exact baseline evidence: the resolved zone and its source are recorded
+     * because the rendered text in `system` must never depend on a live clock
+     * or mutable template after acceptance. Ordinary runs use the standard-chat
+     * baseline; Assistant runs use its date and time sentence without the
+     * persona and render their own instructions with the same zone. Historical
+     * Assistant runs omit this.
      */
     baseline?: {
-      source: "standard_chat";
+      source: "standard_chat" | "assistant_chat";
       timeZone: string;
       timeZoneSource: "client" | "utc_fallback";
     };

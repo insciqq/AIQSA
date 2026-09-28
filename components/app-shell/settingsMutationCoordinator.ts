@@ -122,6 +122,9 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
     ...(Object.prototype.hasOwnProperty.call(patch, "knowledgePlan")
       ? { defaultKnowledgePlan: patch.knowledgePlan ?? null }
       : {}),
+    ...(Object.prototype.hasOwnProperty.call(patch, "assistantId")
+      ? { defaultAssistantId: patch.assistantId ?? null }
+      : {}),
     ...(patch.mcpMode !== undefined ? { defaultMcpMode: patch.mcpMode } : {}),
     ...(patch.skillsMode !== undefined ? { defaultSkillsMode: patch.skillsMode } : {}),
     ...(patch.workspaceEnabled !== undefined ? { defaultWorkspaceEnabled: patch.workspaceEnabled } : {}),
@@ -189,6 +192,10 @@ function reconciledPatch(
   }
   if (Object.prototype.hasOwnProperty.call(sent, "knowledgePlan")) {
     patch.knowledgePlan = settings.defaultKnowledgePlan;
+  }
+  if (Object.prototype.hasOwnProperty.call(sent, "assistantId")) {
+    patch.assistantId = settings.defaultAssistantId ?? null;
+    patch.assistantUnavailable = settings.defaultAssistantUnavailable ?? false;
   }
   if (sent.mcpMode !== undefined) {
     patch.mcpMode = settings.defaultMcpMode;

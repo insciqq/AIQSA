@@ -25,6 +25,7 @@ export type ConversationGalleryState =
 const navigationChats: ChatNavigationSummaryWire[] = [
   {
     activeRun: false,
+    assistant: null,
     folderId: null,
     id: "conversation-fixture",
     title: "Research synthesis",
@@ -32,6 +33,7 @@ const navigationChats: ChatNavigationSummaryWire[] = [
   },
   {
     activeRun: false,
+    assistant: null,
     folderId: null,
     id: "conversation-second",
     title: "Quarterly product brief",

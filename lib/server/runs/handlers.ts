@@ -100,7 +100,7 @@ export type RunHandlerDeps = {
       adapter: ProviderAdapter;
       prepared: MaterializedPreparedRunData;
       toolBridge?: ProviderToolBridge;
-    }> | Readonly<{ assistantId: string; skillIds: readonly string[] }> | null>;
+    }> | null>;
   }>;
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
@@ -651,6 +651,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         } } : {}),
         ...deferredPdfInput(preparedData, admissionKey),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
+        ...(preparedData.chatAssistant ? { chatAssistant: preparedData.chatAssistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,
         content: preparedData.normalizedRequest.content,
         ...(preparedData.defaults
@@ -834,7 +835,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     if (body?.retryPdfPreparation === true && !retry) {
       return Response.json({ error: "pdf_preparation_unavailable" }, { status: 409 });
     }
-    if (retry && "prepared" in retry) {
+    if (retry) {
       if (body?.artifactIntent !== undefined && body.artifactIntent !== retry.prepared.normalizedRequest.artifactIntent) return Response.json({ error: "artifact_intent_unavailable" }, { status: 409 });
       const artifactEdit = retry.prepared.normalizedRequest.artifactEdit;
       const requestedEdit = body?.artifactEdit === undefined ? undefined : decodeArtifactEdit(body.artifactEdit);
@@ -848,12 +849,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     }
     const scopeFingerprint = chatPdfFingerprint({ chatId: source.chat.id, project: source.chat.project ?? null,
       memoryMode: source.chat.memoryMode ?? null, userMessage: source.userMessage });
-    const preparation = retry && "prepared" in retry ? { ok: true as const, ...retry } : await prepareRun(deps, {
-      body: retry && "assistantId" in retry
-        ? { assistantId: retry.assistantId, skillIds: retry.skillIds,
-            ...(body?.artifactEdit !== undefined ? { artifactEdit: body.artifactEdit } : {}),
-            ...(body?.artifactIntent !== undefined ? { artifactIntent: body.artifactIntent } : {}) }
-        : body,
+    const preparation = retry ? { ok: true as const, ...retry } : await prepareRun(deps, {
+      body,
       skillCatalogDecision: {
         operationKey: admissionKey,
         authorizeScope: async () => {
@@ -878,11 +875,17 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     }
 
     let preparedData = materializePreparedRunData(preparation.prepared);
+    // A PDF retry reuses its frozen preparation: it rechecks that the chat is
+    // still bound to the same Assistant but never replays the override change.
+    const chatAssistant = preparedData.chatAssistant && retry
+      ? { assistantId: preparedData.chatAssistant.assistantId, bind: false, overridesPatch: {} }
+      : preparedData.chatAssistant;
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
         ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
+        ...(chatAssistant ? { chatAssistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,
         ...(preparedData.defaults
           ? {

@@ -29,7 +29,7 @@ describe("permanent chat deletion reconciliation", () => {
   it.each([true, false])("removes both navigation projections with search active (deleted chat active: %s)", (active) => {
     const deleted = chat("delete");
     const kept = chat("keep");
-    const navigation = [deleted, kept].map((entry) => ({ ...entry, activeRun: false, pinned: false }));
+    const navigation = [deleted, kept].map((entry) => ({ ...entry, activeRun: false, assistant: null, pinned: false }));
     useWorkspaceStore.setState({ chats: [deleted, kept], activeChatId: active ? deleted.id : kept.id,
       navigationChats: navigation, navigationSearchChats: navigation, navigationSearchQuery: "example" });
     useThreadStore.getState().replaceThread(deleted.id, { activeLeafId: null, messages: [], usageStats: null });

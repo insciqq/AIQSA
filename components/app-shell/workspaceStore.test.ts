@@ -106,6 +106,7 @@ describe("workspace store", () => {
   it("merges compact navigation pages and keeps search results isolated", () => {
     const older = {
       activeRun: false,
+      assistant: null,
       folderId: null,
       id: "older",
       title: "Older",

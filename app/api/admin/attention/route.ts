@@ -5,6 +5,7 @@ import { defaultAdminMemoryStatusService } from "@/lib/server/admin/memory/statu
 import { adminProviderService } from "@/lib/server/admin/providers/defaultProviders";
 import { adminSystemModelPolicyService } from "@/lib/server/admin/providers/systemModelPolicyDefault";
 import { adminSearchService } from "@/lib/server/admin/search/defaultService";
+import { countReviewableAssistantListingRequests } from "@/lib/server/assistants/listingShared";
 import { adminRepository, resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { adminEmailService } from "@/lib/server/email/defaultEmail";
 import { mcpRepository } from "@/lib/server/mcp/defaultMcp";
@@ -26,7 +27,8 @@ const service = createAdminAttentionService({
     providers: () => adminProviderService.listConnections(),
     search: (actingAdminUserId) => adminSearchService.list({ userId: actingAdminUserId }),
     systemRoles: () => adminSystemModelPolicyService.list(),
-    skills: () => prisma.skillShareRequest.count({ where: { state: "pending", skill: { archivedAt: null, deletedAt: null } } })
+    skills: () => prisma.skillShareRequest.count({ where: { state: "pending", skill: { archivedAt: null, deletedAt: null } } }),
+    assistants: () => countReviewableAssistantListingRequests(prisma)
   }
 });
 

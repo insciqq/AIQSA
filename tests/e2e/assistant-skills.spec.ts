@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
 import { runAccountMenuAction } from "./shell/page";
+import { e2eAssistantRows } from "./support/assistants";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
@@ -29,11 +30,12 @@ async function createAssistant(page: Page, name: string, skillIds: string[]): Pr
   const created = await page.request.post("/api/me/assistants", { data: {
     avatar: { accents: [0, 2], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated",
       paletteId: "ocean", recipeVersion: 1, rotations: [0, 1] },
-    category: null, description: "", developerPrompt: null,
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-    mcpServerIds: [], name, providerModelId: model.modelId,
-    runControls: { reasoningEffort: "medium" }, searchPlan: { mode: "all_selected", optionIds: [] },
-    skillIds, starterPrompts: [], systemPrompt: "You are terse."
+    category: null, description: "", name,
+    rows: e2eAssistantRows(model.modelId, {
+      controls: { policy: "fixed", value: { reasoningEffort: "medium" } },
+      skills: { policy: "fixed", value: { links: skillIds.map((skillId) => ({ delivery: "always", skillId })), mode: "auto" } }
+    }),
+    starterPrompts: [], systemPrompt: "You are terse."
   } });
   expect(created.status()).toBe(201);
   return (await created.json()).assistant.id;
@@ -70,6 +72,16 @@ async function openLibrary(page: Page): Promise<void> {
   await expect(page.getByTestId("library-v2")).toBeVisible();
 }
 
+/** Edit lives in the card's "…" menu (a sheet on phones). */
+async function editAssistant(page: Page, assistantId: string, name: string): Promise<void> {
+  await page.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: `More actions for ${name}`, exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+}
+
+function linkedSkillIds(assistant: { content: { rows: { skills: { value: { links: { skillId: string }[] } } } } }): string[] {
+  return assistant.content.rows.skills.value.links.map((link) => link.skillId);
+}
+
 test("Skill availability refreshes owner repair and privacy-safe recipient cards and picker", async ({ page, browser, baseURL }) => {
   await signInWithLocalToken(page);
   const recipientContext = await browser.newContext({ baseURL, hasTouch: true, viewport: { width: 390, height: 844 } });
@@ -90,30 +102,37 @@ test("Skill availability refreshes owner repair and privacy-safe recipient cards
     await recipient.getByRole("button", { name: "Sign in", exact: true }).click();
     await expect(recipient.getByTestId("app-shell")).toBeVisible();
 
+    const startChat = (viewer: Page) =>
+      viewer.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: `Start chat with ${name}`, exact: true });
     for (const viewer of [page, recipient]) {
       await openLibrary(viewer);
-      await expect(viewer.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: `Use ${name}`, exact: true })).toBeEnabled();
+      await expect(startChat(viewer)).toBeEnabled();
     }
     await archiveSkill(page, skill.id, true);
     for (const viewer of [page, recipient]) {
       await viewer.reload();
       await openLibrary(viewer);
-      const card = viewer.getByTestId(`assistant-card-${assistantId}`);
-      await expect(card.getByRole("button", { name: `Use ${name}`, exact: true })).toBeDisabled();
-      await expect(card).toContainText("Needs available Skills");
-      await card.getByRole("button", { name: "Why?", exact: true }).click();
+      await expect(startChat(viewer)).toBeDisabled();
     }
-    const ownerCard = page.getByTestId(`assistant-card-${assistantId}`);
-    await ownerCard.getByRole("button", { name: "Edit setup", exact: true }).click();
+    // The card's status line is the reason: the owner reads what needs attention, the recipient only the fact.
+    await expect(page.getByTestId(`assistant-card-${assistantId}`)).toContainText("Needs attention");
+    await editAssistant(page, assistantId, name);
     const editor = page.getByTestId("assistant-editor");
     await expect(editor).toBeVisible();
-    await expect(editor.getByRole("button", { name: "Use in chat", exact: true })).toHaveCount(0);
     await editor.locator('button[aria-controls="assistant-setup-skills"]').click();
-    await expect(editor.getByRole("checkbox", { name: `${skill.name} · unavailable Order 1`, exact: true })).toBeEnabled();
+    const ownerLinks = editor.getByRole("list", { name: "Linked Skills" });
+    await expect(ownerLinks.getByRole("listitem").filter({ hasText: skill.name })).toContainText("Unavailable");
+    await expect(ownerLinks.getByRole("button", { name: `Remove ${skill.name}`, exact: true })).toBeEnabled();
 
     const recipientCard = recipient.getByTestId(`assistant-card-${assistantId}`);
-    await expect(recipientCard).toContainText("Required Skills are not available to you.");
-    await expect(recipientCard.getByRole("button", { name: "Edit setup", exact: true })).toHaveCount(0);
+    await expect(recipientCard).toContainText("Not available to you");
+    await expect(recipientCard).not.toContainText(skill.name);
+    // No repair path for someone else's Assistant: its menu has no Edit.
+    await recipientCard.getByRole("button", { name: `More actions for ${name}`, exact: true }).click();
+    await expect(recipient.getByRole("menuitem", { name: "Duplicate", exact: true })).toBeVisible();
+    await expect(recipient.getByRole("menuitem", { name: "Edit", exact: true })).toHaveCount(0);
+    await recipient.keyboard.press("Escape");
+    await expect(recipient.getByRole("menuitem", { name: "Duplicate", exact: true })).toHaveCount(0);
     const hidden = await recipient.request.get(`/api/me/assistants/${assistantId}`);
     expect(hidden.ok()).toBe(true);
     const hiddenBody = await hidden.json();
@@ -121,8 +140,8 @@ test("Skill availability refreshes owner repair and privacy-safe recipient cards
     expect(JSON.stringify(hiddenBody)).not.toContain(skill.id);
     expect(JSON.stringify(hiddenBody)).not.toContain(skill.name);
     await recipient.getByRole("button", { name: "Back to chat", exact: true }).click();
-    await recipient.getByRole("button", { name: "Add", exact: true }).click();
-    await recipient.getByRole("menuitem", { name: /Use an Assistant/ }).click();
+    // The picker opens from the header selector since the "+" entry was removed.
+    await recipient.getByTestId("header-assistant-selector").click();
     await expect(recipient.getByTestId(`assistant-picker-row-${assistantId}`)).toBeDisabled();
     await recipient.keyboard.press("Escape");
 
@@ -130,11 +149,13 @@ test("Skill availability refreshes owner repair and privacy-safe recipient cards
     for (const viewer of [page, recipient]) {
       await viewer.reload();
       await openLibrary(viewer);
-      await expect(viewer.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: `Use ${name}`, exact: true })).toBeEnabled();
+      await expect(startChat(viewer)).toBeEnabled();
     }
-    await recipient.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: `Use ${name}`, exact: true }).click();
+    await startChat(recipient).click();
     await expect(recipient.getByTestId("library-v2")).toHaveCount(0);
-    await expect(recipient.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 1 pinned \(always loaded\)/);
+    // The Assistant's fixed Always Skill counts as pinned, and the chip says who fixed the row.
+    await expect(recipient.getByRole("button", { name: "Change Skills mode" }))
+      .toHaveAccessibleDescription(`Skills: Auto · 1 pinned (always loaded) · Fixed by ${name}`);
   } finally {
     await recipientContext.close();
     await cleanFixtures(page, assistantId, skills);
@@ -153,16 +174,20 @@ test("Assistant Skill discovery spans pages, retries failures and preserves orde
     const oldest = skills[0]!;
     const originalSkills = skills.slice(1, 32);
     const originalIds = originalSkills.map(({ id }) => id);
-    assistantId = await createAssistant(page, `Paged Assistant ${suffix}`, originalIds);
+    const assistantName = `Paged Assistant ${suffix}`;
+    assistantId = await createAssistant(page, assistantName, originalIds);
     await openLibrary(page);
-    await page.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: "Edit", exact: true }).click();
+    await editAssistant(page, assistantId, assistantName);
     const editor = page.getByTestId("assistant-editor");
     const description = editor.getByLabel("Description", { exact: true });
     await description.fill("Preserve this unsaved description through discovery.");
     await editor.locator('button[aria-controls="assistant-setup-skills"]').click();
+    const links = editor.getByRole("list", { name: "Linked Skills" });
+    await expect(links.getByRole("listitem")).toHaveCount(originalSkills.length);
     for (const [index, skill] of originalSkills.entries()) {
-      await expect(editor.getByRole("checkbox", { name: `${skill.name} Order ${index + 1}`, exact: true })).toBeChecked();
+      await expect(links.getByRole("listitem").nth(index)).toContainText(skill.name);
     }
+    await expect(editor.getByText(`${originalSkills.length} always · 0 on demand`, { exact: true })).toBeVisible();
     let pageAttempts = 0;
     let searchAttempts = 0;
     let detailRequests = 0;
@@ -176,7 +201,7 @@ test("Assistant Skill discovery spans pages, retries failures and preserves orde
         await route.fulfill({ status: 503, json: { error: "skill_request_failed" } });
       } else await route.continue();
     });
-    const browse = editor.getByRole("button", { name: "Browse Skills", exact: true });
+    const browse = editor.getByRole("button", { name: "Add Skills…", exact: true });
     await browse.tap();
     const picker = page.getByRole("dialog", { name: "Skills", exact: true });
     await expectWithinViewport(page, picker);
@@ -203,27 +228,28 @@ test("Assistant Skill discovery spans pages, retries failures and preserves orde
     await page.keyboard.press("Escape");
     await expect(browse).toBeFocused();
     await expect(description).toHaveValue("Preserve this unsaved description through discovery.");
-    await expect(editor.getByRole("checkbox", { name: `${oldest.name} Order 32`, exact: true })).toBeChecked();
+    await expect(links.getByRole("listitem").nth(31)).toContainText(oldest.name);
+    await expect(links.getByRole("radiogroup", { name: `Delivery for ${oldest.name}` }).getByRole("radio", { name: "Always" }))
+      .toHaveAttribute("aria-checked", "true");
     expect(detailRequests).toBe(0);
     await editor.getByTestId("assistant-editor-save").click();
     await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved. Future runs use these changes.");
     const saved = (await (await page.request.get(`/api/me/assistants/${assistantId}`)).json()).assistant;
-    expect(saved.content.skillIds).toEqual([...originalIds, oldest.id]);
+    expect(linkedSkillIds(saved)).toEqual([...originalIds, oldest.id]);
 
     await page.unroute(/\/api\/me\/skills(?:\?|$)/u);
     await archiveSkill(page, oldest.id, true);
     await page.reload();
     await openLibrary(page);
-    await page.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: "Edit setup", exact: true }).click();
+    await editAssistant(page, assistantId, assistantName);
     await editor.locator('button[aria-controls="assistant-setup-skills"]').click();
-    await expect(editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 32`, exact: true })).toBeChecked();
-    // Removal deletes the row, so there is no unchecked input left to await.
-    await editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 32`, exact: true }).click();
-    await expect(editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 32`, exact: true })).toHaveCount(0);
+    await expect(links.getByRole("listitem").nth(31)).toContainText("Unavailable");
+    await links.getByRole("button", { name: `Remove ${oldest.name}`, exact: true }).click();
+    await expect(links.getByRole("listitem").filter({ hasText: oldest.name })).toHaveCount(0);
     await editor.getByTestId("assistant-editor-save").click();
     await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved. Future runs use these changes.");
     const repaired = (await (await page.request.get(`/api/me/assistants/${assistantId}`)).json()).assistant;
-    expect(repaired.content.skillIds).toEqual(originalIds);
+    expect(linkedSkillIds(repaired)).toEqual(originalIds);
     expect(repaired.availability.ok).toBe(true);
     expect(repaired.content.description).toBe("Preserve this unsaved description through discovery.");
   } finally {

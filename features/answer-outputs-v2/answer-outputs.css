@@ -177,8 +177,9 @@
   }
 }
 
-/* Accepted Assistant identity heads the answer (F6): avatar + name, quiet
-   secondary ink, never a revision or raw model id. */
+/* Accepted Assistant identity heads the answer (F6) only where the Assistant
+   changes: avatar + name, quiet secondary ink, never a revision or raw model
+   id. A change to no Assistant reads "No Assistant" in tertiary ink. */
 .v2-answer-identity {
   display: inline-flex;
   width: fit-content;
@@ -194,6 +195,25 @@
 .v2-answer-identity svg {
   flex: 0 0 auto;
   border-radius: 0.3125rem;
+}
+
+.v2-answer-identity[data-identity="none"] {
+  color: var(--v2-color-text3);
+}
+
+.v2-answer-identity-none {
+  display: inline-grid;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px dashed var(--v2-color-border2);
+  border-radius: 0.3125rem;
+}
+
+.v2-answer-identity-none .v2-icon {
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 /* Leading answer block: identity, then the collapsed Reasoning disclosure. */

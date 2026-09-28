@@ -128,12 +128,13 @@ type ControllerInput = Readonly<{
   activateProjectBlankWorkspace(projectId: string): void;
   activateChat(
     chat: WorkspaceChatSummary,
-    options?: { preserveControls?: boolean; resumeRuns?: boolean }
+    options?: { preserveControls?: boolean; readAssistant?: boolean; resumeRuns?: boolean }
   ): Promise<unknown> | unknown;
   applyProjectDefaults(project: ProjectDetailWire, chat: WorkspaceChatSummary): void;
   isLocallyStreaming(chatId: string): boolean;
   onProjectContextEntered(): void;
-  onProjectContextLeft(): void;
+  /** `accessLost`: the Project closed because access to it ended. */
+  onProjectContextLeft(options?: { accessLost?: boolean }): void;
   onProjectAccessLost(chatIds: readonly string[]): void;
   preferredModelId?: string;
   refreshActiveChat(
@@ -336,7 +337,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
       input.activateBlankWorkspace();
       // Blank personal activation may resolve catalog defaults when no
       // Assistant is selected. Restore the exact pre-Project controls last.
-      input.onProjectContextLeft();
+      input.onProjectContextLeft({ accessLost: true });
       if (notify) {
         input.setNotice(detail?.status === "DELETING"
           ? { kind: "success", text: "Project deleted." }
@@ -1123,7 +1124,8 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
           candidate.id === chatId && candidate.projectId === detail.id
         ) ?? projectChatSummaryFromApi(chat);
         input.applyProjectDefaults(detail, summary);
-        await input.activateChat(summary, { preserveControls: true });
+        // The chat's Assistant comes from its own projection, read if unknown.
+        await input.activateChat(summary, { preserveControls: true, readAssistant: true });
         return true;
       },
       selectProject: async (projectId) => {

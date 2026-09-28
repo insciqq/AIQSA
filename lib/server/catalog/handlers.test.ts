@@ -30,6 +30,25 @@ describe("catalog handler", () => {
   });
 
   it.each([
+    [undefined, undefined, { assistantId: null, assistantUnavailable: false }],
+    ["assistant-1", true, { assistantId: "assistant-1", assistantUnavailable: false }],
+    ["assistant-1", false, { assistantId: null, assistantUnavailable: true }],
+    ["assistant-1", undefined, { assistantId: null, assistantUnavailable: true }]
+  ] as const)("names the default Assistant %s only while it is available (%s)", (assistantId, available, expected) => {
+    const catalog = buildCurrentUserCatalog({
+      entitlements: { modelKeys: new Set(), providerKeys: new Set(), searchStrategies: new Set() },
+      models: defaultProviderModels,
+      searchStrategies: [],
+      settings: {
+        defaultAssistantAvailable: available, defaultAssistantId: assistantId,
+        defaultControlValues: {}, defaultProviderModelId: null, defaultSearchPlan: null,
+        showCitations: true, showReasoningBlocks: false
+      }
+    });
+    expect(catalog.defaults).toMatchObject(expected);
+  });
+
+  it.each([
     { effort: "high", personalModel: null, personal: {}, allowed: true, expected: "high" },
     { effort: "high", personalModel: null, personal: { temperature: "0.5" }, allowed: true, expected: "high" },
     { effort: "high", personalModel: null, personal: { reasoningEffort: "low" }, allowed: true, expected: "low" },
@@ -133,6 +152,8 @@ describe("catalog handler", () => {
       "mcpMode",
       "skillsMode",
       "sendWithEnter",
+      "assistantId",
+      "assistantUnavailable",
       "workspaceEnabled",
       "showCitations",
       "showReasoningBlocks",

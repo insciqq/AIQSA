@@ -1,6 +1,6 @@
 # CRITICAL_INVARIANTS
 
-Mandatory safety read. [INDEX](INDEX.md) routes the narrower owners; executable artifacts define exact state machines and wire shapes.
+Mandatory safety read. [INDEX](INDEX.md) routes the narrower owners.
 
 ## Data And Authority
 
@@ -8,7 +8,7 @@ Mandatory safety read. [INDEX](INDEX.md) routes the narrower owners; executable 
 - Resolve controls from the current user's server-filtered catalog and revalidate before admission and external dispatch. A browser, model, tool result, or stored reference cannot grant entitlement, substitute an unavailable target, or mint mutation authority.
 - Authenticate and authorize private resources at the operation boundary. Admin status does not grant access to private Assistants or Knowledge. Invisible and nonexistent resources share privacy-neutral responses.
 - Project authority is scoped to that Project and its current roles; each Project retains a direct active Owner. Project runs use delegated/shared resources, never personal credentials, Memory, history, unpublished Skills, OAuth identity, or personal MCP values. Membership alone does not add resources to personal catalogs.
-- Assistant publication grants live future use, not dependency entitlements. Accepted runs keep their definition and name/avatar snapshot. Ordinary chat uses the server-owned baseline; the browser cannot replace it.
+- Assistant publication grants live future use, not dependency entitlements; fixed rows and Skill links are dependencies, adjustable rows chat-replaceable starting values. Accepted runs keep their definition, effective rows and name/avatar snapshot. Ordinary chat uses the server-owned baseline; the browser cannot replace it.
 - Knowledge Sources, Versions, ready artifacts, and accepted evidence retain their identities. Membership removal, replacement, and reprocessing affect future snapshots. Search rechecks scope and exact authorized processing/embedding/reranking destinations before I/O. Citations require proof that persisted evidence reached synthesis. [Run contracts](RUN_CONTRACTS.md) and [Persistence](PERSISTENCE.md) own the details.
 - Personal Memory mutations require exact current-owner authority: direct current-user evidence or a facts-only command through an active owner-bound inbound MCP OAuth grant. Optional retrieval signals may degrade, but cannot weaken ownership, lifecycle, deletion, safety, or Project/temporary-chat fences. Derived indexes never replace PostgreSQL authority. [Memory](MEMORY.md) owns redaction, admission, and learning rules.
 

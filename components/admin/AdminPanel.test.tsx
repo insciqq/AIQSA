@@ -1468,6 +1468,49 @@ describe("AdminPanel", () => {
     expect(within(users).getAllByTestId("admin-user-row")).toHaveLength(3);
   });
 
+  it("counts Assistants listing requests in the sidebar and opens the requests from an attention jump", async () => {
+    const assistantsAttention: AdminAttention = {
+      checkedAt: "2026-09-07T12:00:00.000Z",
+      items: [{
+        action: "Review Assistants",
+        code: "assistants_listing_pending",
+        count: 3,
+        detail: "3 Assistants waiting to be listed for everyone",
+        id: "assistants_listing_pending",
+        severity: "warn",
+        target: { filter: "requests", section: "assistants" },
+        title: "Assistants are waiting for review"
+      }],
+      unavailable: []
+    };
+    const requested: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      requested.push(url);
+      if (url === "/api/admin") return dashboardResponse(dashboard);
+      if (url === "/api/admin/attention") return dashboardResponse({ attention: assistantsAttention });
+      if (url.startsWith("/api/admin/assistants?state=requests")) {
+        return dashboardResponse({ state: "requests", requests: [], nextCursor: null, pendingCount: 2 });
+      }
+      return dashboardResponse({ error: "unexpected_request" }, 500);
+    });
+    window.history.replaceState(null, "", "/admin");
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    const overview = await screen.findByTestId("admin-section-overview");
+    const list = await within(overview).findByRole("list", { name: "Needs attention" });
+    await waitFor(() => expect(screen.getByRole("link", { name: "Assistants" })).toHaveTextContent("3"));
+    expect(requested).toContain("/api/admin/assistants?state=requests&limit=1");
+
+    fireEvent.click(within(list).getByRole("button", { name: /Review Assistants/ }));
+    const section = await screen.findByTestId("admin-section-assistants");
+    expect(window.location.search).toBe("?section=assistants&filter=requests");
+    expect(await within(section).findByText("No requests waiting for review")).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Requests · 2" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("link", { name: "Assistants" })).toHaveTextContent("2");
+    expect(document.title).toBe("Assistants · Control Center · AIQSA");
+  });
+
   it("translates local validation and API failures without exposing raw error codes", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;

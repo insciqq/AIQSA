@@ -42,7 +42,6 @@ import type {
   PowerAppShellV2Props,
   ShellComposerView
 } from "@/components/app-shell/powerAppShellV2Contracts";
-import { AssistantLibrary } from "@/components/assistants/AssistantLibrary";
 import { SkillLibrarySection } from "@/components/skills/SkillLibraryDialog";
 import {
   isKnowledgeSubview,
@@ -51,16 +50,14 @@ import {
   knowledgeSubviewChrome,
   useKnowledgeLibraryExit
 } from "@/components/knowledge/KnowledgeLibrary";
+import { AssistantsTabV2, assistantsTabSubviewV2 } from "@/features/library-v2/assistants/AssistantsTabV2";
 import {
-  AssistantsPanelV2,
   FilesPanelV2,
   KnowledgePanelV2,
   LibraryV2,
   MemoryPanelV2
 } from "@/features/library-v2/LibraryV2";
-import { assistantUnavailabilityCopy } from "@/features/library-v2/assistantAvailabilityCopy";
 import type {
-  AssistantSummaryV2,
   FileSummaryV2,
   KnowledgeSummaryV2,
   LibraryTabIdV2,
@@ -109,6 +106,11 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
   const skillsMode = useComposerControlStore(state => state.skillsMode);
+  // The chat's Assistant links; an unavailable or deleted one links none.
+  const currentAssistant = composer.assistant.current;
+  const assistantSkills = currentAssistant
+    ? currentAssistant.state === "bound" ? currentAssistant.includedSkills : []
+    : undefined;
   const mcpAttention = useStudioMcpAttentionV2(session.accountId);
   const assistantView = settings.library;
   const knowledgeView = settings.knowledge;
@@ -159,9 +161,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const [skillExit, setSkillExit] = useState<(() => void) | null>(null);
   useBeforeUnloadGuard(formDirty || formBusy);
   useBeforeUnloadGuard(memoryDraftDirty);
-  const assistantDirty = Boolean(
-    assistantView?.task === "editor" && assistantView.editor?.dirty
-  );
+  const assistantDirty = Boolean(assistantView?.dirty);
   useBeforeUnloadGuard(assistantDirty);
 
   const closeAssistantSubview = () => {
@@ -170,7 +170,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
   const requestAssistantSubviewClose = () => {
     if (assistantView?.busy || assistantView?.editor?.saving) return;
-    if (assistantView?.task === "editor" && assistantView.editor?.dirty) {
+    if (assistantView?.task === "editor" && assistantDirty) {
       setAssistantExit(() => closeAssistantSubview);
       return;
     }
@@ -184,7 +184,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     if (navigationBusy) return;
     if (activeTab === "knowledge" && knowledgeExit.dirty) knowledgeExit.requestExit(proceed);
     else if (activeTab === "assistants" && assistantDirty) {
-      setAssistantExit(() => () => { assistantView?.editor?.onCancel(); proceed(); });
+      setAssistantExit(() => () => { assistantView?.onDiscardDrafts(); proceed(); });
     } else if (activeTab === "memory" && memoryDraftDirty) setMemoryExit(() => proceed);
     else if (activeTab === "skills" && skillDirty) setSkillExit(() => proceed);
     else if (formDirty) setFormExit({ proceed, remount: remountForm });
@@ -204,25 +204,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     if (activeTab === "files") void refreshFileLibrary(true).catch(() => undefined);
   }, [activeTab]);
 
-  const assistants: AssistantSummaryV2[] = (assistantView?.list.assistants ?? composer.assistant.pickerItems)
-    .map((assistant) => {
-      const unavailable = assistantUnavailabilityCopy(assistant);
-      return {
-        archived: assistant.archived,
-        available: assistant.availability.ok,
-        avatar: assistant.avatar,
-        description: assistant.description,
-        id: assistant.id,
-        modelLabel: assistant.fingerprint.modelLabel,
-        name: assistant.name,
-        owned: assistant.owned,
-        ownerDisplayName: assistant.ownerDisplayName,
-        pinned: assistant.pinned,
-        ...(unavailable
-          ? { unavailable }
-          : {})
-      };
-    });
   const knowledge: KnowledgeSummaryV2[] = knowledgeView
     ? knowledgeView.list.knowledgeBases.map((base) => ({
       description: base.description,
@@ -297,29 +278,12 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     { id: "mcp", label: "MCP servers", attention: mcpAttention, content: <McpSettingsSection key={session.accountId} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
     {
       content: (
-        assistantView && assistantView.task !== "list" ? (
-          <AssistantLibrary view={assistantView} onRequestClose={requestAssistantSubviewClose} />
-        ) : (
-          <AssistantsPanelV2
-            assistants={assistants}
-            error={assistantView?.catalogError}
-            loadState={assistantView?.catalogState ?? "loading"}
-            onArchiveToggle={(id, archived) => assistantView?.list.onArchiveToggle(id, archived)}
-            onCreate={() => assistantView?.list.onNewAssistant()}
-            onCreateFromCurrentSetup={composer.assistant.startFromCurrentSetup}
-            onDuplicate={(id) => assistantView?.list.onDuplicate(id)}
-            onOpen={(id) => assistantView?.list.onEdit(id)}
-            onPinToggle={(id, pinned) => assistantView?.list.onPinToggle(id, pinned)}
-            onRetry={() => assistantView?.onRetryCatalog()}
-            onUnavailableAction={(id, action) => dispatchAssistantUnavailableActionV2({
-              action,
-              assistantId: id,
-              onOpenEditor: (assistantId) => assistantView?.list.onEdit(assistantId),
-              onOpenMcpSettings: settings.openMcp
-            })}
-            onUse={(id) => assistantView?.list.onUse(id)}
-          />
-        )
+        <AssistantsTabV2
+          composer={composer}
+          onOpenMcpSettings={settings.openMcp}
+          onRequestClose={requestAssistantSubviewClose}
+          view={assistantView ?? null}
+        />
       ),
       id: "assistants",
       label: "Assistants"
@@ -469,10 +433,10 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     {
       content: (
         <SkillLibrarySection
-          includedSkills={composer.assistant.selected?.includedSkills}
+          includedSkills={assistantSkills}
           selectedSkills={selectedSkills}
-          skillsMode={composer.assistant.selected?.skillsMode ?? skillsMode}
-          availableCount={composer.assistant.selected ? (composer.assistant.selected.includedSkills ?? []).filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length : undefined}
+          skillsMode={skillsMode}
+          availableCount={assistantSkills?.filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length}
           modelContextWindow={composer.currentModel?.contextWindow ?? undefined}
           onDirtyChange={setSkillDirty}
           selectedIds={selectedSkills.map((skill) => skill.id)}
@@ -503,6 +467,8 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     }
   ];
 
+  const assistantSubview = assistantsTabSubviewV2(assistantView ?? null, requestAssistantSubviewClose);
+
   return (
     <>
       <CompactKnowledgePollingV2
@@ -518,14 +484,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           else if (intent.kind === "tab") settings.studio.open(intent.to, proceed);
           else settings.studio.exit(proceed);
         }}
-        subview={activeTab === "instructions" ? instructionsSubview : activeTab === "assistants" && assistantView?.task === "editor" && assistantView.editor
-          ? {
-              backLabel: "Assistants",
-              busy: assistantView.busy || assistantView.editor.saving,
-              key: `assistant-editor-${assistantView.editor.mode}`,
-              label: assistantView.editor.draft.name.trim() || "New assistant",
-              onBack: requestAssistantSubviewClose
-            }
+        subview={activeTab === "instructions" ? instructionsSubview : activeTab === "assistants" && assistantSubview ? assistantSubview
           : activeTab === "knowledge" && knowledgeView && isKnowledgeSubview(knowledgeView) ? {
               ...knowledgeSubviewChrome(knowledgeView),
               busy: knowledgeView.busy,
@@ -628,19 +587,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 export function useStudioMcpAttentionV2(accountId: string): boolean {
   useEffect(() => observeMcpSettings(), [accountId]);
   return useMcpSettingsStore((state) => state.servers.some((server) => mcpSetupAttention(server) !== null));
-}
-
-export function dispatchAssistantUnavailableActionV2(input: Readonly<{
-  action: "mcp-settings" | "open-editor";
-  assistantId: string;
-  onOpenEditor(assistantId: string): void;
-  onOpenMcpSettings(): void;
-}>): void {
-  if (input.action === "open-editor") {
-    input.onOpenEditor(input.assistantId);
-    return;
-  }
-  input.onOpenMcpSettings();
 }
 
 type KnowledgeReadinessStateV2 =

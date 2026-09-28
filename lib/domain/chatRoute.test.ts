@@ -5,9 +5,11 @@ import {
   chatReturnPath,
   chatRouteHref,
   controlCenterHref,
+  formatAssistantEntryPath,
   formatChatRoutePath,
   isChatRoutePathname,
   legacyChatRouteHref,
+  parseAssistantEntryPath,
   parseChatRoutePath,
   sameChatRoute,
   withoutChatScopedParameters
@@ -63,6 +65,30 @@ describe("chat route contract", () => {
     expect(isChatRoutePathname("/admin")).toBe(false);
     expect(isChatRoutePathname("/artifacts/a/versions/v")).toBe(false);
     expect(isChatRoutePathname("/c")).toBe(false);
+  });
+
+  it("round-trips the Assistant entry link, which is a chat page but never a chat's route", () => {
+    const assistantId = "7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+    expect(formatAssistantEntryPath(assistantId)).toBe(`/assistant/${assistantId}`);
+    expect(parseAssistantEntryPath(`/assistant/${assistantId}`)).toEqual({ assistantId });
+    expect(formatAssistantEntryPath("a/b?c#d")).toBe("/assistant/a%2Fb%3Fc%23d");
+    expect(parseAssistantEntryPath(formatAssistantEntryPath("a/b?c#d"))).toEqual({ assistantId: "a/b?c#d" });
+    expect(isChatRoutePathname(`/assistant/${assistantId}`)).toBe(true);
+    expect(parseChatRoutePath(`/assistant/${assistantId}`)).toBeNull();
+    expect(chatReturnPath(`/assistant/${assistantId}`)).toBe("/");
+  });
+
+  it("keeps a malformed or over-long Assistant id as an entry that names no Assistant", () => {
+    expect(parseAssistantEntryPath(`/assistant/${"x".repeat(256)}`)).toEqual({ assistantId: "x".repeat(256) });
+    for (const pathname of [`/assistant/${"x".repeat(257)}`, "/assistant/%00", "/assistant/%E0%A4%A", "/assistant/%20", "/assistant/"]) {
+      expect(parseAssistantEntryPath(pathname)).toEqual({ assistantId: null });
+      expect(isChatRoutePathname(pathname)).toBe(true);
+    }
+    for (const pathname of ["/assistant", "/assistant/a/b", "/assistants/a", `/c/${chatId}`, "/"]) {
+      expect(parseAssistantEntryPath(pathname)).toBeNull();
+    }
+    expect(isChatRoutePathname("/assistant")).toBe(false);
+    expect(isChatRoutePathname("/assistants/a")).toBe(false);
   });
 
   it("compares routes by chat and Project", () => {

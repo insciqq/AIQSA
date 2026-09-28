@@ -22,7 +22,11 @@ import {
   savedControlDraft,
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
-import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
+import {
+  assistantGovernsControls,
+  boundComposerAssistant,
+  useComposerControlStore
+} from "@/components/app-shell/composerControlStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
@@ -291,12 +295,11 @@ export function useRunControlsActions({
 
   function mergedCurrentControlDraft(
     model: CatalogModel,
-    override: SavedControlDraft = {},
-    options: { excludeCurrentValues?: boolean } = {}
+    override: SavedControlDraft = {}
   ): SavedControlDraft {
     return {
       ...storedDraftForModel(model),
-      ...(options.excludeCurrentValues ? {} : currentControlDraft({}, model)),
+      ...currentControlDraft({}, model),
       ...pendingDraftForModel(model),
       ...override
     };
@@ -425,10 +428,9 @@ export function useRunControlsActions({
   function persistCurrentModelControlDefaultsWithPending(
     model: CatalogModel,
     override: SavedControlDraft = {},
-    defaultUpdate: Partial<Catalog["defaults"]> = {},
-    options: { excludeCurrentValues?: boolean } = {}
+    defaultUpdate: Partial<Catalog["defaults"]> = {}
   ) {
-    const draft = mergedCurrentControlDraft(model, override, options);
+    const draft = mergedCurrentControlDraft(model, override);
     clearPendingModelControlDefaults(model);
     void persistUserDefaults({
       ...defaultUpdate,
@@ -440,11 +442,10 @@ export function useRunControlsActions({
 
   function scheduleCurrentModelControlDefaults(
     model: CatalogModel,
-    override: SavedControlDraft = {},
-    options: { excludeCurrentValues?: boolean } = {}
+    override: SavedControlDraft = {}
   ) {
     pendingControlDefaultsRef.current = {
-      draft: mergedCurrentControlDraft(model, override, options),
+      draft: mergedCurrentControlDraft(model, override),
       model
     };
 
@@ -525,69 +526,6 @@ export function useRunControlsActions({
     });
   }
 
-  /**
-   * Atomically applies one current Assistant definition to the composer without
-   * persisting any user default: Assistant-derived values never replace the
-   * user's ordinary manual draft or saved per-model control values.
-   */
-  function applyAssistantToComposer(input: {
-    assistant: {
-      avatar: import("@/lib/contracts/assistants").AssistantAvatarRecipe;
-      description: string;
-      id: string;
-      includedSkills?: { id: string; name: string; mode?: "pinned" | "available"; instructionApproxTokens?: number }[];
-      skillsMode?: "auto" | "off";
-      knowledgeLabel?: string | null;
-      knowledgeResourceCount?: number;
-      name: string;
-      promptCharacterCount: number;
-      starterPrompts: string[];
-    };
-    content: import("@/lib/contracts/assistants").AssistantContent;
-  }): boolean {
-    const currentCatalog = currentCatalogFromStore();
-    const model = input.content.providerModelId
-      ? currentCatalog?.models.find(
-          (candidate) => candidate.modelId === input.content.providerModelId
-        )
-      : undefined;
-    if (!model) {
-      return false;
-    }
-
-    flushPendingModelControlDefaults();
-    const controls = input.content.runControls;
-    const baseDefaults = resolveModelControlDefaults(model, {});
-    const controlDefaults = {
-      backgroundMode: controls.backgroundMode ?? baseDefaults.backgroundMode,
-      maxOutputTokens:
-        controls.maxOutputTokens !== undefined
-          ? String(controls.maxOutputTokens)
-          : baseDefaults.maxOutputTokens,
-      reasoningEffort: controls.reasoningEffort ?? baseDefaults.reasoningEffort,
-      reasoningMode: controls.reasoningMode ?? baseDefaults.reasoningMode,
-      streamMode: controls.streamMode ?? baseDefaults.streamMode,
-      temperature:
-        controls.temperature !== undefined
-          ? String(controls.temperature)
-          : baseDefaults.temperature
-    };
-    useComposerControlStore.getState().applyAssistantSelection({
-      assistant: input.assistant,
-      controlDefaults,
-      knowledgeSelection: input.content.knowledgeSelection,
-      modelId: model.modelId,
-      provider: model.provider,
-      searchOptionIds: input.content.searchPlan.optionIds,
-      searchPlanMode: input.content.searchPlan.mode
-    });
-    return true;
-  }
-
-  function removeAssistantFromComposer() {
-    useComposerControlStore.getState().removeAssistant();
-  }
-
   function selectSearchStrategy(strategyId: string) {
     const nextSearchStrategy = strategyId === "search-disabled" ||
       currentCatalogFromStore()?.searchStrategies.some((strategy) =>
@@ -606,7 +544,11 @@ export function useRunControlsActions({
       mode,
       currentCatalogFromStore()?.searchStrategies ?? []
     );
+    const assistantChat = Boolean(boundComposerAssistant(useComposerControlStore.getState()));
     useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
+    // With an Assistant the chat's Search is an Assistant row; its chat
+    // update belongs to the composer's Assistant actions.
+    if (assistantChat) return;
     const state = useWorkspaceStore.getState();
     const chat = state.chats.find(item => item.id === state.activeChatId);
     if (chat) {
@@ -651,6 +593,11 @@ export function useRunControlsActions({
     void persistUserDefaults({ knowledgePlan: plan }, { noticeScope: "settings" });
   }
 
+  /** Choosing or clearing the default Assistant also clears its unavailable mark. */
+  function setDefaultAssistant(assistantId: string | null) {
+    void persistUserDefaults({ assistantId, assistantUnavailable: false }, { noticeScope: "settings" });
+  }
+
   // These are account presentation choices even while a Project is open.
   function setAnswerSoundEnabled(value: boolean) {
     if (isSettingsSessionCurrent?.() === false) return;
@@ -668,86 +615,54 @@ export function useRunControlsActions({
     void persistUserDefaults({ sendWithEnter: value }, { noticeScope: "settings" });
   }
 
-  function changeReasoningEffort(value: string) {
-    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
-    useComposerControlStore.getState().setReasoningEffort(value);
+  /**
+   * Parameters the Assistant governs are a chat value of its controls row and
+   * never write the user's saved per-model values. Without an Assistant, or
+   * with a model the user chose instead of the Assistant's, parameters are
+   * ordinary: they persist as the user's values for that model.
+   */
+  function changeRunControl(
+    change: () => void,
+    override: SavedControlDraft,
+    persistence: "immediate" | "scheduled"
+  ) {
+    const governed = assistantGovernsControls(useComposerControlStore.getState());
+    change();
+    if (governed) return;
     const model = selectedModelFromStore();
-    if (model) {
-      persistCurrentModelControlDefaultsWithPending(
-        model,
-        { reasoningEffort: value },
-        {},
-        { excludeCurrentValues: wasAssistantSelected }
-      );
-    }
+    if (!model) return;
+    if (persistence === "scheduled") scheduleCurrentModelControlDefaults(model, override);
+    else persistCurrentModelControlDefaultsWithPending(model, override);
+  }
+
+  function changeReasoningEffort(value: string) {
+    changeRunControl(() => useComposerControlStore.getState().setReasoningEffort(value),
+      { reasoningEffort: value }, "immediate");
   }
 
   function changeReasoningMode(value: string) {
-    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
-    useComposerControlStore.getState().setReasoningMode(value);
-    const model = selectedModelFromStore();
-    if (model) {
-      persistCurrentModelControlDefaultsWithPending(
-        model,
-        { reasoningMode: value },
-        {},
-        { excludeCurrentValues: wasAssistantSelected }
-      );
-    }
+    changeRunControl(() => useComposerControlStore.getState().setReasoningMode(value),
+      { reasoningMode: value }, "immediate");
   }
 
   function changeBackgroundMode(value: boolean) {
-    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
-    useComposerControlStore.getState().setBackgroundMode(value);
-    const model = selectedModelFromStore();
-    if (model) {
-      persistCurrentModelControlDefaultsWithPending(
-        model,
-        { backgroundMode: value },
-        {},
-        { excludeCurrentValues: wasAssistantSelected }
-      );
-    }
+    changeRunControl(() => useComposerControlStore.getState().setBackgroundMode(value),
+      { backgroundMode: value }, "immediate");
   }
 
   function changeStreamMode(value: boolean) {
-    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
-    useComposerControlStore.getState().setStreamMode(value);
-    const model = selectedModelFromStore();
-    if (model) {
-      persistCurrentModelControlDefaultsWithPending(
-        model,
-        { streamMode: value },
-        {},
-        { excludeCurrentValues: wasAssistantSelected }
-      );
-    }
+    changeRunControl(() => useComposerControlStore.getState().setStreamMode(value),
+      { streamMode: value }, "immediate");
   }
 
   function changeMaxOutputTokens(value: string) {
-    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
-    useComposerControlStore.getState().setMaxOutputTokens(value);
-    const model = selectedModelFromStore();
-    if (model) {
-      scheduleCurrentModelControlDefaults(
-        model,
-        { maxOutputTokens: value },
-        { excludeCurrentValues: wasAssistantSelected }
-      );
-    }
+    changeRunControl(() => useComposerControlStore.getState().setMaxOutputTokens(value),
+      { maxOutputTokens: value }, "scheduled");
   }
 
   function changeTemperature(value: string) {
-    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
-    useComposerControlStore.getState().setTemperature(value);
-    const model = selectedModelFromStore();
-    if (model) {
-      scheduleCurrentModelControlDefaults(
-        model,
-        { temperature: value },
-        { excludeCurrentValues: wasAssistantSelected }
-      );
-    }
+    changeRunControl(() => useComposerControlStore.getState().setTemperature(value),
+      { temperature: value }, "scheduled");
   }
 
   function toggleCitationsVisibility() {
@@ -773,7 +688,6 @@ export function useRunControlsActions({
   return {
     setAnswerSoundEnabled,
     setAnswerSoundId,
-    applyAssistantToComposer,
     applyModelControlDefaults,
     buildControlDraft: currentControlDraft,
     buildParams,
@@ -786,11 +700,11 @@ export function useRunControlsActions({
     flushPendingModelControlDefaults,
     makeModelDefault,
     persistUserDefaults,
-    removeAssistantFromComposer,
     selectModel,
     selectSearchPlan,
     selectSearchStrategy,
     setDefaultKnowledgePlan,
+    setDefaultAssistant,
     setDefaultMcpMode,
     setDefaultSkillsMode,
     setDefaultSearchPlan,

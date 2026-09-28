@@ -9,9 +9,12 @@ import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import {
   CHAT_TITLE_MAX_LENGTH,
   PERSONAL_FOLDER_NAME_MAX_LENGTH,
-  codePointLength
+  codePointLength,
+  decodeChatAssistantUpdate
 } from "../../contracts/chats";
 import type {
+  ChatAssistantOverridesPatch,
+  ChatAssistantProjection,
   ChatDetailResponseWire,
   ChatDetailWire,
   ChatBranchesResponseWire,
@@ -38,6 +41,7 @@ import {
   type ChatWorkspaceState
 } from "../../contracts/workspace";
 import { decodeKnowledgeSelection, type KnowledgePlan } from "../../contracts/knowledge";
+import { ChatAssistantUpdateError, type ChatAssistantUpdateErrorCode } from "./assistantUpdateError";
 
 export type {
   ChatUsageStats,
@@ -74,6 +78,8 @@ export type ChatSummaryRecord = {
   titlePending?: boolean;
   hasContinuationSource?: boolean;
   activeLeafMessageId: string | null;
+  /** The chat's bound Assistant; absent reads as none. */
+  assistantId?: string | null;
   createdAt: Date | string;
   defaultKnowledgePlan?: KnowledgePlan | null;
   defaultModelId: string | null;
@@ -89,6 +95,8 @@ export type ChatSummaryRecord = {
 };
 
 export type ChatDetailRecord = ChatSummaryRecord & {
+  /** The bound Assistant as the viewer sees it; absent reads as none. */
+  assistant?: ChatAssistantProjection | null;
   contextStats: ChatContextStats;
   messages: ChatMessageRecord[];
   pageInfo: Omit<ChatMessagePageInfo, "snapshotUpdatedAt"> & {
@@ -166,6 +174,9 @@ export type ChatRepository = {
   updateChat(input: {
     defaultSearchPlan?: SearchPlan | null;
     activeLeafMessageId?: string | null;
+    /** A string binds the Assistant, null removes it; either clears the overrides. */
+    assistantId?: string | null;
+    assistantOverrides?: ChatAssistantOverridesPatch;
     chatId: string;
     defaultKnowledgePlan?: KnowledgePlan | null;
     folderId?: string | null;
@@ -315,6 +326,7 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     ...(chat.hasContinuationSource ? { hasContinuationSource: true } : {}),
     ...(chat.titlePending ? { titlePending: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
+    assistantId: chat.assistantId ?? null,
     createdAt: iso(chat.createdAt),
     defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
     ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),
@@ -334,6 +346,7 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
 export function serializeChatDetail(chat: ChatDetailRecord): ChatDetailWire {
   return {
     ...serializeChatSummary(chat),
+    assistant: chat.assistant ?? null,
     contextStats: chat.contextStats,
     messages: chat.messages.map(serializeMessage),
     pageInfo: {
@@ -371,6 +384,16 @@ function isActiveRunConflictError(error: unknown): boolean {
 
 function activeRunConflictJson(): Response {
   return chatRouteErrorJson({ error: "active_run_in_progress" }, { status: 409 });
+}
+
+function isChatAssistantUpdateError(error: unknown): error is ChatAssistantUpdateError {
+  return error instanceof ChatAssistantUpdateError ||
+    (error instanceof Error && error.name === "ChatAssistantUpdateError" && "code" in error);
+}
+
+/** An Assistant the requester cannot use is neutral 404; a refused override is 400. */
+function chatAssistantErrorJson(code: ChatAssistantUpdateErrorCode): Response {
+  return chatRouteErrorJson({ error: code }, { status: code === "assistant_not_available" ? 404 : 400 });
 }
 
 function chatSummaryJson(data: ChatSummaryResponseWire, init?: ResponseInit): Response {
@@ -583,10 +606,15 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     if (chatTitleTooLong(title)) {
       return chatRouteErrorJson({ error: "chat_title_too_long" }, { status: 400 });
     }
+    const assistant = decodeChatAssistantUpdate(body ?? {});
+    if (!assistant.ok) {
+      return chatAssistantErrorJson(assistant.code);
+    }
     let chat: ChatSummaryRecord | null;
     try {
       chat = await deps.repository.updateChat({
         activeLeafMessageId: activeLeafValue(body),
+        ...assistant.update,
         chatId: params.chatId,
         defaultKnowledgePlan: defaultKnowledgePlan.value,
         ...(body && "defaultSearchPlan" in body ? { defaultSearchPlan: search?.ok ? search.plan : null } : {}),
@@ -599,6 +627,9 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     } catch (error) {
       if (isActiveRunConflictError(error)) {
         return activeRunConflictJson();
+      }
+      if (isChatAssistantUpdateError(error)) {
+        return chatAssistantErrorJson(error.code);
       }
       throw error;
     }

@@ -1,0 +1,485 @@
+/*
+ * Studio › Assistants › Sharing sheet (PRD 10.4, 11): a wide side sheet,
+ * full screen on phones. Options are native radios and checkboxes; what an
+ * option carries (groups, request status, Featured) is indented under it.
+ */
+.v2-assistant-sharing {
+  display: grid;
+  min-width: 0;
+  gap: 1.5rem;
+  font-size: 0.8125rem;
+}
+
+.v2-assistant-sharing-section {
+  display: grid;
+  min-width: 0;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.v2-assistant-sharing-section > h3,
+.v2-assistant-sharing-section > legend {
+  margin: 0 0 0.25rem;
+  padding: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.v2-assistant-sharing-option {
+  display: flex;
+  min-width: 0;
+  min-height: 2.25rem;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.375rem 0;
+  cursor: pointer;
+}
+
+.v2-assistant-sharing-option > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.v2-assistant-sharing-option strong,
+.v2-assistant-sharing-group strong {
+  color: var(--v2-color-text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-sharing-option small {
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.v2-assistant-sharing-option input,
+.v2-assistant-sharing-group input {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  margin: 0.125rem 0 0;
+  accent-color: var(--v2-color-accent);
+}
+
+/*
+ * A disabled group keeps its outline and, when it stays published, a clear
+ * tick: the native disabled checkbox fades both to near nothing in the
+ * light theme.
+ */
+.v2-assistant-sharing-group input:disabled {
+  display: inline-grid;
+  place-content: center;
+  border: 1px solid var(--v2-color-text3);
+  border-radius: 0.1875rem;
+  background: var(--v2-color-surface2);
+  appearance: none;
+}
+
+.v2-assistant-sharing-group input:disabled:checked {
+  border-color: var(--v2-color-text2);
+  background: var(--v2-color-text2);
+}
+
+.v2-assistant-sharing-group input:disabled:checked::before {
+  width: 0.3125rem;
+  height: 0.5625rem;
+  border: solid var(--v2-color-surface);
+  border-width: 0 2px 2px 0;
+  content: "";
+  transform: translateY(-1px) rotate(45deg);
+}
+
+/* A disabled audience radio: the same outline and fill, a dot for the chosen one. */
+.v2-assistant-sharing-option input[type="radio"]:disabled {
+  display: inline-grid;
+  place-content: center;
+  border: 1px solid var(--v2-color-text3);
+  border-radius: 50%;
+  background: var(--v2-color-surface2);
+  appearance: none;
+}
+
+.v2-assistant-sharing-option input[type="radio"]:disabled:checked {
+  border-color: var(--v2-color-text2);
+}
+
+.v2-assistant-sharing-option input[type="radio"]:disabled:checked::before {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--v2-color-text2);
+  content: "";
+}
+
+.v2-assistant-sharing-option:has(input:disabled),
+.v2-assistant-sharing-group:has(input:disabled) > label {
+  cursor: default;
+}
+
+.v2-assistant-sharing-option:has(input:disabled) strong,
+.v2-assistant-sharing-group:has(input:disabled) strong {
+  color: var(--v2-color-text2);
+}
+
+/* Indented under its option: the radio (1rem) and the gap (0.75rem). */
+.v2-assistant-sharing-nested {
+  display: grid;
+  min-width: 0;
+  min-inline-size: 0;
+  gap: 0.375rem;
+  margin: 0 0 0.25rem 1.75rem;
+  padding: 0;
+  border: 0;
+}
+
+.v2-assistant-sharing-nested:empty {
+  display: none;
+}
+
+.v2-assistant-sharing-group {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.v2-assistant-sharing-group > label {
+  display: flex;
+  min-width: 0;
+  min-height: 2rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  cursor: pointer;
+}
+
+.v2-assistant-sharing-group > label > span {
+  color: var(--v2-color-text3);
+}
+
+.v2-assistant-sharing-error {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  color: var(--v2-color-danger);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-sharing-error > p {
+  margin: 0;
+}
+
+.v2-assistant-sharing-status {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.75rem;
+}
+
+.v2-assistant-sharing-status > p {
+  min-width: 0;
+  flex: 1 1 14rem;
+  margin: 0;
+  color: var(--v2-color-text2);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-sharing-status strong {
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+.v2-assistant-sharing-status strong[data-tone="ok"] {
+  color: var(--v2-color-ok);
+}
+
+.v2-assistant-sharing-status strong[data-tone="warn"] {
+  color: var(--v2-color-warn);
+}
+
+.v2-assistant-sharing-status > .v2-assistant-sharing-note {
+  flex-basis: 100%;
+  color: var(--v2-color-text);
+  white-space: pre-line;
+}
+
+.v2-assistant-sharing-status > .v2-assistant-sharing-resend {
+  flex-basis: 100%;
+}
+
+/* Its own name: the editor styles a "Save first" hint in its sharing card. */
+.v2-assistant-sharing-request-hint {
+  margin: 0;
+  color: var(--v2-color-text2);
+  line-height: 1.45;
+}
+
+.v2-assistant-sharing-featured {
+  display: grid;
+  min-width: 0;
+  gap: 0.375rem;
+  margin-top: 0.25rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+}
+
+/* Text at the left, its controls at the right; the text wraps, never the controls. */
+.v2-assistant-sharing-featured-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.v2-assistant-sharing-featured-row > p {
+  min-width: 0;
+  margin: 0;
+  color: var(--v2-color-text2);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-sharing-featured-row > p > strong {
+  display: block;
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+.v2-assistant-sharing-featured-row > p > span {
+  display: block;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+}
+
+.v2-assistant-sharing-featured-row > .v2-switch,
+.v2-assistant-sharing-featured-controls {
+  flex: 0 0 auto;
+}
+
+.v2-assistant-sharing-featured-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.v2-assistant-sharing-move-down .v2-icon {
+  transform: rotate(180deg);
+}
+
+.v2-assistant-sharing-featured-controls [aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.v2-assistant-sharing-consequences {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.25rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid var(--v2-color-warn);
+  color: var(--v2-color-text2);
+  background: color-mix(in srgb, var(--v2-color-warn) 9%, transparent);
+  line-height: 1.45;
+  list-style: none;
+}
+
+.v2-assistant-sharing-summary {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid var(--v2-color-danger);
+  color: var(--v2-color-text);
+  background: color-mix(in srgb, var(--v2-color-danger) 9%, transparent);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-sharing-summary[data-tone="neutral"] {
+  border-left-color: var(--v2-color-border2);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface2);
+}
+
+.v2-assistant-sharing-summary:focus-visible {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 2px;
+}
+
+.v2-assistant-sharing-access {
+  display: grid;
+  min-width: 0;
+  gap: 0.625rem;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+}
+
+.v2-assistant-sharing-access > p {
+  margin: 0;
+  color: var(--v2-color-text2);
+}
+
+.v2-assistant-sharing-chips {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-assistant-sharing-chips > li {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  font-size: 0.78125rem;
+  line-height: 1.4;
+}
+
+.v2-assistant-sharing-chips > li > .v2-icon {
+  flex: 0 0 auto;
+  color: var(--v2-color-text3);
+}
+
+.v2-assistant-sharing-chips > li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-sharing-caption,
+.v2-assistant-sharing-empty {
+  margin: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.v2-assistant-sharing-empty {
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+}
+
+.v2-assistant-sharing-link {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.v2-assistant-sharing-link > input {
+  min-width: 0;
+  min-height: 2.375rem;
+  flex: 1 1 14rem;
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  font: inherit;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+
+.v2-assistant-sharing-link > input:focus-visible {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 1px;
+}
+
+.v2-assistant-sharing-link > .v2-button {
+  min-height: 2.375rem;
+}
+
+/* One Project per line; the ones the owner can't open are counted last. */
+.v2-assistant-sharing-projects {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  color: var(--v2-color-text);
+  line-height: 1.45;
+  list-style: none;
+}
+
+.v2-assistant-sharing-projects > li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistant-sharing-projects > .v2-assistant-sharing-projects-rest {
+  color: var(--v2-color-text2);
+}
+
+/*
+ * Opened from the detail sheet, the Sharing sheet replaces it as the top
+ * layer: the detail sheet stays mounted under it, holding the control that
+ * gets focus back, but is not shown beside or under it. Transparency, not
+ * visibility: an element under `visibility: hidden` cannot take focus, and
+ * focus returns to it in the same moment this rule stops matching.
+ */
+body:has(> [data-testid="assistant-sharing-sheet"]) > [data-testid="assistant-detail-sheet"] {
+  opacity: 0;
+}
+
+/*
+ * On a phone held sideways the sheet's header and footer took about 40 % of
+ * the height. There the description under the title is kept for assistive
+ * technology only, and the header, the top of the body and the footer use
+ * compact paddings, so at least five option rows show at 390 px high.
+ */
+@media (max-height: 30rem) {
+  [data-testid="assistant-sharing-sheet"] > [role="dialog"] > header,
+  [data-testid="assistant-sharing-sheet"] > [role="dialog"] > footer {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+
+  [data-testid="assistant-sharing-sheet"] > [role="dialog"] > header {
+    align-items: center;
+  }
+
+  [data-testid="assistant-sharing-sheet"] > [role="dialog"] > header p {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  [data-testid="assistant-sharing-sheet"] > [role="dialog"] > header + div {
+    padding-top: 0.5rem;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-assistant-sharing-option,
+  .v2-assistant-sharing-group > label,
+  .v2-assistant-sharing .v2-button,
+  .v2-assistant-sharing-link > input {
+    min-height: 2.75rem;
+  }
+
+  .v2-assistant-sharing .v2-icon-button {
+    width: 2.75rem;
+    min-width: 2.75rem;
+    height: 2.75rem;
+  }
+}

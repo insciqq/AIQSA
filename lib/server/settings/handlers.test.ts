@@ -55,6 +55,77 @@ function baseSettingsData(): SettingsHandlerData {
 }
 
 describe("settings handler", () => {
+  it("reports a saved default Assistant as unavailable without naming it until availability is checked", async () => {
+    const data = baseSettingsData();
+    data.settings.defaultAssistantId = "assistant-hidden";
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) => updated({ ...data.settings, ...update })
+    });
+    const response = await PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify({ sendWithEnter: false }), headers: { cookie: authCookie(), "content-type": "application/json" }, method: "PATCH"
+    }));
+    const body = await response.json();
+    expect(body.settings).toMatchObject({ defaultAssistantId: null, defaultAssistantUnavailable: true });
+    expect(JSON.stringify(body)).not.toContain("assistant-hidden");
+  });
+
+  it("saves, clears and reports the default Assistant like a chat binding", async () => {
+    const data = baseSettingsData();
+    const calls: UserSettingsUpdate[] = [];
+    let persistence: (update: UserSettingsUpdate) => UserSettingsUpdateResult = (update) => updated({
+      ...data.settings,
+      ...update,
+      ...(update.defaultAssistantId !== undefined ? { defaultAssistantAvailable: update.defaultAssistantId !== null } : {})
+    });
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) => {
+        calls.push(update);
+        return persistence(update);
+      }
+    });
+    const patch = (body: unknown) => PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify(body), headers: { cookie: authCookie(), "content-type": "application/json" }, method: "PATCH"
+    }));
+
+    const saved = await patch({ defaultAssistantId: "assistant-1" });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).settings).toMatchObject({ defaultAssistantId: "assistant-1", defaultAssistantUnavailable: false });
+    const cleared = await patch({ defaultAssistantId: null });
+    expect((await cleared.json()).settings).toMatchObject({ defaultAssistantId: null, defaultAssistantUnavailable: false });
+    expect(calls).toEqual([{ defaultAssistantId: "assistant-1" }, { defaultAssistantId: null }]);
+
+    // Malformed ids answer like an Assistant the user cannot use, before persistence.
+    calls.length = 0;
+    const malformed = await Promise.all([patch({ defaultAssistantId: "" }), patch({ defaultAssistantId: 7 }),
+      patch({ defaultAssistantId: "two words" })]);
+    expect(malformed.map((response) => response.status)).toEqual([404, 404, 404]);
+    await expect(Promise.all(malformed.map((response) => response.json()))).resolves.toEqual(
+      Array(3).fill({ error: "assistant_not_available" })
+    );
+    expect(calls).toEqual([]);
+
+    persistence = () => ({ kind: "assistant_not_available" });
+    const refused = await patch({ defaultAssistantId: "assistant-foreign" });
+    expect(refused.status).toBe(404);
+    await expect(refused.json()).resolves.toEqual({ error: "assistant_not_available" });
+
+    // An untouched default keeps the availability read with the settings data.
+    data.settings.defaultAssistantId = "assistant-1";
+    data.settings.defaultAssistantAvailable = true;
+    persistence = (update) => updated({ ...data.settings, defaultAssistantAvailable: undefined, ...update });
+    const untouched = await patch({ sendWithEnter: false });
+    expect((await untouched.json()).settings).toMatchObject({ defaultAssistantId: "assistant-1", defaultAssistantUnavailable: false });
+    data.settings.defaultAssistantAvailable = false;
+    const revoked = await patch({ sendWithEnter: true });
+    const revokedBody = await revoked.json();
+    expect(revokedBody.settings).toMatchObject({ defaultAssistantId: null, defaultAssistantUnavailable: true });
+    expect(JSON.stringify(revokedBody)).not.toContain("assistant-1");
+  });
+
   it.each([true, false, null, "true", 1])("validates the personal Workspace default: %j", async (value) => {
     const data = baseSettingsData();
     const calls: Array<{ userId: string; update: UserSettingsUpdate }> = [];
@@ -237,6 +308,8 @@ describe("settings handler", () => {
     expect(Object.keys(responseBody.settings)).toEqual([
       "answerSoundEnabled",
       "answerSoundId",
+      "defaultAssistantId",
+      "defaultAssistantUnavailable",
       "defaultControlValues",
       "defaultKnowledgePlan",
       "defaultMcpMode",

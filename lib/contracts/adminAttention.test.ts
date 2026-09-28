@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeAdminAttentionResponse } from "./adminAttention";
+import { adminAttentionItemSource, decodeAdminAttentionResponse } from "./adminAttention";
 
 const item = {
   action: "Review users",
@@ -24,6 +24,17 @@ describe("decodeAdminAttentionResponse", () => {
     expect(decoded?.attention.items).toHaveLength(2);
     expect(decoded?.attention.items[1]?.target).toEqual({ section: "email" });
     expect(decoded?.attention.unavailable).toEqual(["memory"]);
+  });
+
+  it("accepts pending Assistant listing requests as an Assistants item", () => {
+    const assistants = { ...item, code: "assistants_listing_pending", id: "assistants_listing_pending",
+      target: { filter: "requests", section: "assistants" } };
+    const decoded = decodeAdminAttentionResponse({
+      attention: { checkedAt: "2026-09-07T12:00:00.000Z", items: [assistants], unavailable: ["assistants"] }
+    });
+    expect(decoded?.attention.items[0]?.target).toEqual({ filter: "requests", section: "assistants" });
+    expect(adminAttentionItemSource(decoded!.attention.items[0]!)).toBe("assistants");
+    expect(decoded?.attention.unavailable).toEqual(["assistants"]);
   });
 
   it("rejects unknown codes, sections, sources, control characters and duplicate ids", () => {

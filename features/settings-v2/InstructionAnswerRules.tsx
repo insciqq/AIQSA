@@ -1,14 +1,21 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { UiV2Button } from "@/components/ui-v2";
 import { ANSWER_RULES_MAX_LENGTH } from "@/lib/contracts/instructionPresets";
 import { VISIBLE_ANSWER_CONTRACT } from "@/lib/domain/promptTemplates";
 import { InstructionTemplateEditor } from "./InstructionTemplateEditor";
 
-export function InstructionAnswerRules({ value, onChange, disabled }: Readonly<{
+/** Optional copy for other owners of answer rules (Assistants); presets keep the defaults. */
+export type InstructionAnswerRulesCopy = Readonly<{ description: string; summary: ReactNode }>;
+
+export function InstructionAnswerRules({ value, onChange, disabled, copy, defaultOpen = false }: Readonly<{
   value: string | null; onChange(value: string | null): void; disabled: boolean;
+  copy?: InstructionAnswerRulesCopy;
+  /** Read once on mount: the disclosure starts open. */
+  defaultOpen?: boolean;
 }>) {
+  const [initiallyOpen] = useState(defaultOpen);
   const section = useRef<HTMLDetailsElement>(null);
   const customize = useRef<HTMLButtonElement>(null);
   const inherited = value === null;
@@ -20,9 +27,9 @@ export function InstructionAnswerRules({ value, onChange, disabled }: Readonly<{
       previouslyInherited.current = inherited;
     }
   }, [inherited]);
-  return <details className="v2-instructions-reminder" ref={section}>
-    <summary className="v2-focusable cursor-pointer text-sm font-medium text-ink">Answer rules · {value === null ? "AIQSA standard" : "Custom"}</summary>
-    <p className="my-2 text-xs leading-5 text-ink-muted">These rules guide how replies are written. Custom rules replace the standard rules for this preset, from your next reply.</p>
+  return <details className="v2-instructions-reminder" ref={section} open={initiallyOpen || undefined}>
+    <summary className="v2-focusable cursor-pointer text-sm font-medium text-ink">{copy ? copy.summary : <>Answer rules · {value === null ? "AIQSA standard" : "Custom"}</>}</summary>
+    <p className="my-2 text-xs leading-5 text-ink-muted">{copy ? copy.description : "These rules guide how replies are written. Custom rules replace the standard rules for this preset, from your next reply."}</p>
     {value === null ? <>
       <p className="mb-3 whitespace-pre-wrap text-sm leading-6 text-ink-secondary">{VISIBLE_ANSWER_CONTRACT}</p>
       <UiV2Button ref={customize} type="button" disabled={disabled} onClick={() => onChange(VISIBLE_ANSWER_CONTRACT)}>Customize answer rules</UiV2Button>

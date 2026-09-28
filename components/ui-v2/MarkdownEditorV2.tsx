@@ -11,7 +11,7 @@ export const editorCharacterCount = (value: string, limit: number) =>
   `${value.length.toLocaleString("en-US").replaceAll(",", " ")} / ${limit.toLocaleString("en-US").replaceAll(",", " ")}`;
 
 /** Controlled source text; layout and preview never own or replace the draft. */
-export function MarkdownEditorV2({ value, onChange, label, previewLabel, help, maxLength, disabled = false, variables = [], previewText }: Readonly<{
+export function MarkdownEditorV2({ value, onChange, label, previewLabel, help, maxLength, disabled = false, variables = [], previewText, splitWhenWide = false }: Readonly<{
   value: string;
   onChange(value: string): void;
   label: string;
@@ -21,13 +21,17 @@ export function MarkdownEditorV2({ value, onChange, label, previewLabel, help, m
   disabled?: boolean;
   variables?: readonly Readonly<{ label: string; value: string }>[];
   previewText?: string;
+  /** Opt-in: Split is the initial mode while the editor's own container is wide enough for it. */
+  splitWhenWide?: boolean;
 }>) {
   const id = useId();
   const container = useRef<HTMLDivElement>(null);
   const modeGroup = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [wide, setWide] = useState(false);
-  const [chosenMode, setChosenMode] = useState<Mode>("write");
+  // Null until the user picks a mode; the initial mode follows the width only then.
+  const [pickedMode, setChosenMode] = useState<Mode | null>(null);
+  const chosenMode = pickedMode ?? (splitWhenWide && wide ? "split" : "write");
   const [insertionError, setInsertionError] = useState<string | null>(null);
   const mode = chosenMode === "split" && !wide ? "write" : chosenMode;
   const modes: Mode[] = wide ? ["write", "split", "preview"] : ["write", "preview"];

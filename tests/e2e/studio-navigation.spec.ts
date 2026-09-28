@@ -2,7 +2,6 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
-import { matrixCatalog } from "./shell/catalog";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 
@@ -26,7 +25,8 @@ async function prepare(page: Page) {
       canCreate: true, canPublishInstallation: false, maxUploadBytes: 50_000_000
     } } }) : route.fallback());
   await page.route("**/api/chats/compact?*", route => route.fulfill({ json: {
-    chats: [{ id: "studio-navigation-chat", title: "Navigation destination", folderId: null, activeRun: false, updatedAt: timestamp }],
+    chats: [{ id: "studio-navigation-chat", title: "Navigation destination", folderId: null, activeRun: false, updatedAt: timestamp,
+      assistant: null }],
     folders: [], nextCursor: null
   } }));
   await page.goto("/");
@@ -38,7 +38,13 @@ async function openDraft(page: Page, resource: Resource) {
   const library = page.getByTestId("library-v2");
   if (resource === "Assistants") {
     await library.getByRole("button", { name: "New assistant", exact: true }).first().click();
+    // The New assistant sheet starts on Blank; choosing saves nothing.
+    const sheet = page.getByRole("dialog", { name: "New assistant", exact: true });
+    await expect(sheet.getByRole("radio", { name: "Blank", exact: true })).toBeChecked();
+    await sheet.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(sheet).toHaveCount(0);
     const input = library.getByLabel("Name Required", { exact: true });
+    await expect(input).toBeFocused();
     await input.fill("Unsaved Studio assistant");
     return input;
   }
@@ -88,7 +94,7 @@ for (const width of [1440, 390]) {
         }
         const navigate = async () => {
           if (destination === "tab") await library.getByRole("tab", { name: "Files", exact: true }).click();
-          else if (destination === "back") await library.getByRole("button", { name: resource === "Assistants" ? "Assistants" : resource === "Knowledge" ? "Back to Knowledge" : "Back to chat", exact: true }).click();
+          else if (destination === "back") await library.getByRole("button", { name: resource === "Assistants" ? "Back to Assistants" : resource === "Knowledge" ? "Back to Knowledge" : "Back to chat", exact: true }).click();
           else if (destination === "shortcut") await page.keyboard.press("Control+Shift+O");
           else if (destination === "chat") {
             await openDrawer();
@@ -136,8 +142,7 @@ test("pending resource mutations block all Studio exits without offering Discard
       await route.fulfill({ status: 503, json: { error: { code: "temporarily_unavailable", message: "Try again later." } } });
     });
     if (resource === "Assistants") {
-      await library.getByLabel("Model", { exact: true }).selectOption(matrixCatalog.models[0].modelId);
-      await library.getByLabel("Assistant instructions").fill("Be precise.");
+      await library.getByRole("textbox", { name: "Instructions", exact: true }).fill("Be precise.");
       await library.getByTestId("assistant-editor-save").click();
     } else await library.getByRole("button", { name: resource === "Memory" ? "Save memory" : "Create knowledge base", exact: true }).click();
     await expect.poll(() => requested).toBe(true);

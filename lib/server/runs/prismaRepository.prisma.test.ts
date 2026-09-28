@@ -263,6 +263,60 @@ function createRegenerationInput(
   };
 }
 
+/** An owned Assistant definition for personal admission tests. */
+function createRunAssistant(userId: string, name = "Bound chat Assistant") {
+  return prisma.assistantDefinition.create({
+    data: {
+      avatar: {
+        accents: [0, 4],
+        backgroundShape: "circle",
+        foregroundShape: "diamond",
+        kind: "generated",
+        paletteId: "ocean",
+        recipeVersion: 1,
+        rotations: [0, 2]
+      },
+      name,
+      ownerUserId: userId,
+      providerModelId: providerTemplateIds.fakeModel,
+      runControls: {},
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      systemPrompt: "Answer as the chat's Assistant."
+    }
+  });
+}
+
+function acceptedAssistant(definition: Awaited<ReturnType<typeof createRunAssistant>>) {
+  return {
+    assistantId: definition.id,
+    definitionVersion: definition.version,
+    identity: decodeAssistantIdentity({ avatar: definition.avatar, name: definition.name })!
+  };
+}
+
+/** An Assistant run's input: Assistant runs never carry accepted defaults. */
+function assistantRunInput(
+  definition: Awaited<ReturnType<typeof createRunAssistant>>,
+  chatId: string,
+  userId: string,
+  question = "Assistant run"
+): Parameters<RunRepository["createRun"]>[0] {
+  const { defaults: _defaults, ...input } = createRunInput({
+    assistant: acceptedAssistant(definition),
+    chatId,
+    question,
+    userId
+  });
+  return input;
+}
+
+function chatAssistantState(chatId: string) {
+  return prisma.chat.findUniqueOrThrow({
+    select: { assistantId: true, assistantOverrides: true, defaultProviderModelId: true },
+    where: { id: chatId }
+  });
+}
+
 function chatGraph(chatId: string) {
   return prisma.chat.findUniqueOrThrow({
     select: {
@@ -530,6 +584,127 @@ describe("Prisma-backed run repository", () => {
       await expect(prisma.chat.findUnique({ where: { id: chatId } })).resolves.toBeNull();
       await expect(prisma.message.count({ where: { chatId } })).resolves.toBe(0);
       await expect(prisma.modelRun.count({ where: { chatId } })).resolves.toBe(0);
+    });
+  });
+
+  it("creates a first-send chat already bound to its Assistant with the run's overrides", async () => {
+    await withRunUser(async ({ userId }) => {
+      const definition = await createRunAssistant(userId);
+      const chatId = randomUUID();
+      try {
+        const created = await createPrismaRunRepository(prisma).createRun({
+          ...assistantRunInput(definition, chatId, userId, "Bound first send"),
+          chatAssistant: { assistantId: definition.id, bind: true, overridesPatch: { search: { mode: "off" } } },
+          personalChat: { defaultProviderModelId: null, folderId: null, memoryMode: "NORMAL" }
+        });
+
+        // The Assistant run writes its overrides, never the chat's ordinary
+        // default columns or the user's saved values.
+        await expect(chatAssistantState(chatId)).resolves.toEqual({
+          assistantId: definition.id,
+          assistantOverrides: { search: { mode: "off" } },
+          defaultProviderModelId: null
+        });
+        await expect(prisma.modelRun.findUniqueOrThrow({ select: { assistantId: true }, where: { id: created.runId } }))
+          .resolves.toEqual({ assistantId: definition.id });
+        await expect(storedDefaults(userId)).resolves.toMatchObject({ defaultControlValues: {} });
+        await expect(createPrismaRunRepository(prisma).findOwnedChat(chatId, userId)).resolves.toMatchObject({
+          assistantId: definition.id,
+          assistantOverrides: { search: { mode: "off" } }
+        });
+      } finally {
+        await prisma.assistantDefinition.deleteMany({ where: { id: definition.id } });
+      }
+    });
+  });
+
+  it("applies a bound chat's override change at admission and refuses a changed binding", async () => {
+    await withRunUser(async ({ userId }) => {
+      const definition = await createRunAssistant(userId);
+      const other = await createRunAssistant(userId, "Another Assistant");
+      const repository = createPrismaRunRepository(prisma);
+      const chat = (assistantId: string | null, assistantOverrides: Prisma.InputJsonValue | null) => prisma.chat.create({
+        data: {
+          assistantId,
+          assistantOverrides: assistantOverrides ?? Prisma.DbNull,
+          defaultProviderModelId: providerTemplateIds.fakeModel,
+          title: "Bound chat",
+          userId
+        }
+      });
+      try {
+        const bound = await chat(definition.id, {
+          controls: { temperature: 0.9 },
+          model: { mode: "model", modelId: providerTemplateIds.fakeModel },
+          search: { mode: "off" }
+        });
+        await repository.createRun({
+          ...assistantRunInput(definition, bound.id, userId),
+          chatAssistant: { assistantId: definition.id, bind: false, overridesPatch: { model: null, tools: { mode: "off" } } }
+        });
+        // Clearing the model also clears the controls set for it.
+        await expect(chatAssistantState(bound.id)).resolves.toMatchObject({
+          assistantId: definition.id,
+          assistantOverrides: { search: { mode: "off" }, tools: { mode: "off" } }
+        });
+
+        const unbound = await chat(null, null);
+        await repository.createRun({
+          ...assistantRunInput(definition, unbound.id, userId),
+          chatAssistant: { assistantId: definition.id, bind: true, overridesPatch: {} }
+        });
+        await expect(chatAssistantState(unbound.id)).resolves.toMatchObject({
+          assistantId: definition.id,
+          assistantOverrides: null
+        });
+
+        for (const changed of [await chat(other.id, null), await chat(null, { assistantDeleted: true })]) {
+          await expect(repository.createRun({
+            ...assistantRunInput(definition, changed.id, userId),
+            chatAssistant: { assistantId: definition.id, bind: true, overridesPatch: { search: { mode: "off" } } }
+          })).rejects.toBeInstanceOf(AssistantRunConflictError);
+          await expect(chatGraph(changed.id)).resolves.toMatchObject({ _count: { messages: 0, modelRuns: 0 } });
+        }
+      } finally {
+        await prisma.assistantDefinition.deleteMany({ where: { id: { in: [definition.id, other.id] } } });
+      }
+    });
+  });
+
+  it("regenerates from the chat's binding and stores the regeneration's override change", async () => {
+    await withRunUser(async ({ userId }) => {
+      const definition = await createRunAssistant(userId);
+      const repository = createPrismaRunRepository(prisma);
+      try {
+        const chat = await prisma.chat.create({
+          data: { assistantId: definition.id, defaultProviderModelId: providerTemplateIds.fakeModel, title: "Bound chat", userId }
+        });
+        const prepared = assistantRunInput(definition, chat.id, userId, "Question to regenerate");
+        const created = await repository.createRun({
+          ...prepared,
+          chatAssistant: { assistantId: definition.id, bind: false, overridesPatch: {} }
+        });
+        await expect(repository.completeRun(completionInput({
+          assistantMessageId: created.assistantMessageId, chatId: chat.id, runId: created.runId, userId
+        }))).resolves.toBe(true);
+
+        const source = await repository.findRegenerationSource(created.assistantMessageId, userId);
+        expect(source?.chat).toMatchObject({ assistantId: definition.id, assistantOverrides: null });
+        const regenerated = await repository.createRegenerationRun({
+          ...createRegenerationInput(prepared, created.userMessageId, created.assistantMessageId),
+          assistant: acceptedAssistant(definition),
+          chatAssistant: { assistantId: definition.id, bind: false, overridesPatch: { search: { mode: "off" } } }
+        });
+
+        await expect(prisma.modelRun.findUniqueOrThrow({ select: { assistantId: true }, where: { id: regenerated.runId } }))
+          .resolves.toEqual({ assistantId: definition.id });
+        await expect(chatAssistantState(chat.id)).resolves.toMatchObject({
+          assistantId: definition.id,
+          assistantOverrides: { search: { mode: "off" } }
+        });
+      } finally {
+        await prisma.assistantDefinition.deleteMany({ where: { id: definition.id } });
+      }
     });
   });
 
@@ -1062,6 +1237,159 @@ describe("Prisma-backed run repository", () => {
       } finally {
         await prisma.project.deleteMany({ where: { id: project.id } });
         await prisma.assistantDefinition.deleteMany({ where: { id: definition.id } });
+      }
+    });
+  });
+
+  it("creates a first Project send bound to its Assistant and applies a Project chat's override change", async () => {
+    await withRunUser(async ({ userId }) => {
+      const createdProject = await createPrismaProjectRepository(prisma).create({
+        actorDisplayName: "Run Repository Test User",
+        description: "Project Assistant chat binding",
+        name: `Assistant-bound project ${randomUUID()}`,
+        preferredModelId: providerTemplateIds.fakeModel,
+        userId
+      });
+      if (createdProject.kind !== "ok") throw new Error(`project_create_${createdProject.kind}`);
+      const projectId = createdProject.value.id;
+      const definition = await createRunAssistant(userId, "Project default Assistant");
+      const other = await createRunAssistant(userId, "Another Project Assistant");
+      await prisma.projectAssistantBinding.createMany({
+        data: [definition, other].map(({ id }) => ({ addedByUserId: userId, assistantId: id, projectId }))
+      });
+      const stored = await prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+      const project: ProjectRunAdmission = {
+        accessRevision: stored.accessRevision,
+        assistantBindings: [{ assistantId: definition.id }, { assistantId: other.id }],
+        defaults: { ...createdProject.value.defaults, assistantId: definition.id, providerModelId: providerTemplateIds.fakeModel },
+        instructions: stored.instructions,
+        instructionsRevision: stored.instructionsRevision,
+        knowledgeBaseIds: [],
+        mcpServerIds: [],
+        memoryEnabled: false,
+        memoryItems: [],
+        memoryRevision: stored.memoryRevision,
+        modelIds: [providerTemplateIds.fakeModel],
+        policy: createdProject.value.policy,
+        policyRevision: stored.policyRevision,
+        projectId,
+        role: "OWNER",
+        searchOptionIds: []
+      };
+      const projectRunInput = async (
+        assistant: Awaited<ReturnType<typeof createRunAssistant>>,
+        chatId: string,
+        question: string
+      ): Promise<Parameters<RunRepository["createRun"]>[0]> => {
+        const { defaults: _defaults, ...input } = createRunInput({
+          assistant: acceptedAssistant(assistant),
+          chatId,
+          project,
+          providerAdmissionPlan: await projectProviderAdmission(userId),
+          question,
+          userId
+        });
+        return input;
+      };
+      const repository = createPrismaRunRepository(prisma);
+      const chatId = randomUUID();
+
+      try {
+        // The first message creates the chat bound, with its accepted values.
+        const first = await repository.createRun({
+          ...await projectRunInput(definition, chatId, "Bound Project first send"),
+          chatAssistant: { assistantId: definition.id, bind: true, overridesPatch: { tools: { mode: "off" } } },
+          projectChat: { folderId: null }
+        });
+        await expect(chatAssistantState(chatId)).resolves.toEqual({
+          assistantId: definition.id,
+          assistantOverrides: { tools: { mode: "off" } },
+          defaultProviderModelId: providerTemplateIds.fakeModel
+        });
+        await expect(prisma.modelRun.findUniqueOrThrow({ select: { assistantId: true }, where: { id: first.runId } }))
+          .resolves.toEqual({ assistantId: definition.id });
+        await expect(repository.findOwnedChat(chatId, userId)).resolves.toMatchObject({
+          assistantId: definition.id,
+          assistantOverrides: { tools: { mode: "off" } },
+          project: { projectId }
+        });
+        await expect(repository.completeRun(completionInput({
+          assistantMessageId: first.assistantMessageId, chatId, runId: first.runId, userId
+        }))).resolves.toBe(true);
+
+        // A later message stores its override change under the chat lock.
+        const second = await repository.createRun({
+          ...await projectRunInput(definition, chatId, "Second Project message"),
+          chatAssistant: {
+            assistantId: definition.id,
+            bind: false,
+            overridesPatch: { model: { mode: "model", modelId: providerTemplateIds.fakeModel }, tools: null }
+          },
+          expectedActiveLeafId: first.assistantMessageId
+        });
+        await expect(chatAssistantState(chatId)).resolves.toMatchObject({
+          assistantOverrides: { model: { mode: "model", modelId: providerTemplateIds.fakeModel } }
+        });
+        await expect(repository.completeRun(completionInput({
+          assistantMessageId: second.assistantMessageId, chatId, runId: second.runId, userId
+        }))).resolves.toBe(true);
+
+        // Another Assistant bound to the Project cannot replace the binding at admission.
+        await expect(repository.createRun({
+          ...await projectRunInput(other, chatId, "Changed Assistant"),
+          chatAssistant: { assistantId: other.id, bind: true, overridesPatch: {} },
+          expectedActiveLeafId: second.assistantMessageId
+        })).rejects.toBeInstanceOf(AssistantRunConflictError);
+        await expect(chatGraph(chatId)).resolves.toMatchObject({ _count: { messages: 4, modelRuns: 2 } });
+        await expect(chatAssistantState(chatId)).resolves.toMatchObject({ assistantId: definition.id });
+      } finally {
+        await prisma.modelRun.deleteMany({ where: { chat: { projectId } } });
+        await prisma.project.deleteMany({ where: { id: projectId } });
+        await prisma.assistantDefinition.deleteMany({ where: { id: { in: [definition.id, other.id] } } });
+      }
+    });
+  });
+
+  it("loads a Project chat's Assistant context from the Project alone", async () => {
+    await withRunUser(async ({ userId }) => {
+      const createdProject = await createPrismaProjectRepository(prisma).create({
+        actorDisplayName: "Run Repository Test User",
+        description: "Project Assistant row context",
+        name: `Row context project ${randomUUID()}`,
+        preferredModelId: providerTemplateIds.fakeModel,
+        userId
+      });
+      if (createdProject.kind !== "ok") throw new Error(`project_create_${createdProject.kind}`);
+      const projectId = createdProject.value.id;
+      try {
+        await prisma.project.update({
+          data: {
+            defaults: {
+              ...createdProject.value.defaults,
+              controlValues: { maxOutputTokens: "1024" },
+              mcpMode: "off",
+              providerModelId: providerTemplateIds.fakeModel
+            }
+          },
+          where: { id: projectId }
+        });
+        const context = await createPrismaRunRepository(prisma).loadProjectAssistantRowContext!({ projectId });
+        expect(context).not.toBeNull();
+        expect(context!.available.allMyKnowledge).toBe(false);
+        expect([...context!.available.modelIds]).toEqual([providerTemplateIds.fakeModel]);
+        expect(context!.available.knowledgeBaseIds.size).toBe(0);
+        expect(context!.available.mcpServerIds.size).toBe(0);
+        expect(context!.modelConnections.get(providerTemplateIds.fakeModel)).toBe(providerTemplateIds.fakeConnection);
+        expect(context!.defaults.modelId).toBe(providerTemplateIds.fakeModel);
+        expect(context!.defaults.controlsForModel(providerTemplateIds.fakeModel)).toEqual({ maxOutputTokens: 1024 });
+        expect(context!.defaults.tools).toEqual({ mode: "off" });
+
+        // Project_shape_check: an archived Project carries its archive time.
+        await prisma.project.update({ data: { archivedAt: new Date(), status: "ARCHIVED" }, where: { id: projectId } });
+        await expect(createPrismaRunRepository(prisma).loadProjectAssistantRowContext!({ projectId }))
+          .resolves.toBeNull();
+      } finally {
+        await prisma.project.deleteMany({ where: { id: projectId } });
       }
     });
   });

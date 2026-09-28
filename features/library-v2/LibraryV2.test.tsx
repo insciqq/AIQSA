@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { memoryConsumerItemFixture } from "@/tests/support/memoryFixtures";
 import type { ComponentProps } from "react";
 import {
-  AssistantsPanelV2,
   FilesPanelV2,
   KnowledgePanelV2,
   LibraryV2,
@@ -425,65 +424,6 @@ describe("Library resource panels", () => {
     expect(screen.queryByText("No knowledge bases yet.")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetry).toHaveBeenCalledOnce();
-  });
-
-  it("keeps assistant selection and owned management actions explicit", () => {
-    const onOpen = vi.fn();
-    const onPinToggle = vi.fn();
-    render(
-      <AssistantsPanelV2
-        assistants={[{
-          archived: false,
-          available: true,
-          description: "Checks APIs",
-          id: "assistant",
-          name: "API Reviewer",
-          owned: true,
-          pinned: false
-        }]}
-        onOpen={onOpen}
-        onPinToggle={onPinToggle}
-      />
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "More actions for API Reviewer" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
-    expect(onPinToggle).toHaveBeenCalledWith("assistant", true);
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    expect(onOpen).toHaveBeenCalledWith("assistant");
-  });
-
-  it("shows human availability copy without exposing a raw reason code", () => {
-    const onUnavailableAction = vi.fn();
-    render(
-      <AssistantsPanelV2
-        assistants={[{
-          archived: false,
-          available: false,
-          description: "Checks repositories",
-          id: "assistant",
-          name: "Release helper",
-          owned: true,
-          unavailable: {
-            action: { kind: "mcp-settings", label: "Fix in MCP servers…" },
-            explanation: "GitHub is turned off or needs attention.",
-            headline: "Needs the GitHub tools"
-          }
-        }]}
-        onUnavailableAction={onUnavailableAction}
-      />
-    );
-
-    expect(screen.getByText("Needs the GitHub tools")).toBeVisible();
-    const why = screen.getByRole("button", { name: "Why?" });
-    expect(why).toBeEnabled();
-    expect(screen.queryByText("GitHub is turned off or needs attention.")).not.toBeInTheDocument();
-    fireEvent.click(why);
-    expect(screen.getByText("GitHub is turned off or needs attention.")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Fix in MCP servers…" }));
-    expect(onUnavailableAction).toHaveBeenCalledWith("assistant", "mcp-settings");
-    expect(screen.getByRole("button", { name: "Use Release helper" })).toBeDisabled();
-    expect(screen.queryByText("tools_access")).not.toBeInTheDocument();
   });
 
   it("keeps explicit Memory CRUD reachable when admin recall is disabled", () => {

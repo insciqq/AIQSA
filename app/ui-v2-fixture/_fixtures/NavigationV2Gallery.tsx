@@ -1,6 +1,7 @@
 "use client";
 
 import { UiV2Toast } from "@/components/ui-v2";
+import type { AssistantIdentity } from "@/lib/contracts/assistants";
 import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
 import {
   NavigationSidebar,
@@ -9,9 +10,24 @@ import {
 } from "@/features/navigation-v2/NavigationV2";
 import { useMemo, useState } from "react";
 
+// A chat with an Assistant shows its avatar before the title.
+const researchAssistant: AssistantIdentity = {
+  avatar: {
+    accents: [0, 4],
+    backgroundShape: "circle",
+    foregroundShape: "diamond",
+    kind: "generated",
+    paletteId: "ocean",
+    recipeVersion: 1,
+    rotations: [0, 2]
+  },
+  name: "Research partner"
+};
+
 const baseChats: ChatNavigationSummaryWire[] = [
   {
     activeRun: true,
+    assistant: researchAssistant,
     folderId: "folder-research",
     id: "chat-running",
     title: "Research plan for multilingual recall",
@@ -19,6 +35,7 @@ const baseChats: ChatNavigationSummaryWire[] = [
   },
   {
     activeRun: false,
+    assistant: null,
     folderId: "folder-research",
     id: "chat-evidence",
     title: "Source review notes",
@@ -26,6 +43,7 @@ const baseChats: ChatNavigationSummaryWire[] = [
   },
   {
     activeRun: false,
+    assistant: null,
     folderId: null,
     id: "chat-selected",
     title: "Quarterly product brief",
@@ -33,6 +51,7 @@ const baseChats: ChatNavigationSummaryWire[] = [
   },
   {
     activeRun: false,
+    assistant: researchAssistant,
     folderId: null,
     id: "chat-older",
     title: "Deployment checklist",

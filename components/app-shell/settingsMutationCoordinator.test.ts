@@ -53,6 +53,22 @@ describe("settings mutation coordinator", () => {
     expect(onReconcile).toHaveBeenCalledWith({ skillsMode: "off" }, new Set());
   });
 
+  it("sends the default Assistant, its clearing, and reconciles the saved value and availability", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ settings: settings({ defaultAssistantId: "assistant-1" }) }))
+      .mockResolvedValueOnce(Response.json({ settings: settings({ defaultAssistantId: null }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onReconcile = vi.fn();
+    const coordinator = createSettingsMutationCoordinator({ callbacks: { onReconcile, onFailure: vi.fn(), onRecovered: vi.fn() } });
+    await coordinator.enqueue({ assistantId: "assistant-1", assistantUnavailable: false });
+    expect(onReconcile).toHaveBeenLastCalledWith({ assistantId: "assistant-1", assistantUnavailable: false }, new Set());
+    await coordinator.enqueue({ assistantId: null, assistantUnavailable: false });
+    expect(onReconcile).toHaveBeenLastCalledWith({ assistantId: null, assistantUnavailable: false }, new Set());
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([
+      { defaultAssistantId: "assistant-1" }, { defaultAssistantId: null }
+    ]);
+  });
+
   it("retries a failed Workspace preference and reconciles the server's saved choice", async () => {
     const onReconcile = vi.fn(), onFailure = vi.fn(), onRecovered = vi.fn();
     const fetchMock = vi.fn()
