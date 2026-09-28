@@ -42,3 +42,16 @@ export class MemoryPersistenceError extends Error {
 export function memoryPersistenceFailure(code: MemoryPersistenceErrorCode): never {
   throw new MemoryPersistenceError(code);
 }
+
+// Preserve only the stable persistence reason when a service maps it to its
+// public vocabulary. Weak metadata cannot become a response or private payload.
+const retainedPersistenceCodes = new WeakMap<object, MemoryPersistenceErrorCode>();
+
+export function rememberMemoryPersistenceFailure(error: object, code: MemoryPersistenceErrorCode): void {
+  retainedPersistenceCodes.set(error, code);
+}
+
+export function memoryPersistenceFailureCode(error: unknown): MemoryPersistenceErrorCode | null {
+  return error instanceof MemoryPersistenceError ? error.code :
+    error !== null && typeof error === "object" ? retainedPersistenceCodes.get(error) ?? null : null;
+}

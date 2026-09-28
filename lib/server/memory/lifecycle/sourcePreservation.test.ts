@@ -36,4 +36,12 @@ describe("selective source forget", () => {
     expect(independentForgetEvidence({ ...peer, sourceMessageContentHash: "b".repeat(64) }, [forgotten])).toBe(false);
     expect(independentForgetEvidence(peer, [{ ...forgotten, messageId: "another-source" }])).toBe(false);
   });
+
+  it("preserves exact user testimony beside a retrieval-only echo without relaxing direct-source overlap", () => {
+    expect(independentForgetEvidence(peer, [], true)).toBe(true);
+    expect(independentForgetEvidence({ ...peer, safeExcerpt: first }, [], true)).toBe(false);
+    expect(independentForgetEvidence({ ...peer, sourceMessageContentHash: "b".repeat(64) }, [], true)).toBe(false);
+    expect(independentForgetEvidence(forgotten, [forgotten], true)).toBe(false);
+    expect(independentForgetEvidence(peer, [{ ...forgotten, sourceEndOffset: null }], true)).toBe(false);
+  });
 });

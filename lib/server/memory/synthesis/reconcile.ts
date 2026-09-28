@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { logEvent } from "../../observability";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
@@ -316,7 +317,7 @@ export async function reconcileMemorySynthesisWork(
     if (targetedOwners.has(owner.userId)) continue;
     const admitted = await authorityAvailable(owner.userId).catch(() => false);
     if (!admitted) continue;
-    scheduled += await withLockedMemoryTransaction(
+    const result = await withLockedMemoryTransaction(
       client,
       owner.userId,
       async (tx, settings) => {
@@ -324,7 +325,7 @@ export async function reconcileMemorySynthesisWork(
           !settings.useMemoryFacts || !settings.synthesisEnabled ||
           !settings.synthesisEnabledAt ||
           settings.synthesisPolicyVersion !== MEMORY_SYNTHESIS_POLICY_VERSION
-        ) return 0;
+        ) return { scheduled: 0, noPlanSourceCount: null };
         const boundary = settings.lastSynthesisAt ?? settings.synthesisEnabledAt;
         const activity = await loadActivity(
           tx,
@@ -332,10 +333,18 @@ export async function reconcileMemorySynthesisWork(
           boundary,
           settings.lastSynthesisAt
         );
-        if (!decideMemorySynthesisSchedule(activity, now).due) return 0;
+        if (!decideMemorySynthesisSchedule(activity, now).due) {
+          return { scheduled: 0, noPlanSourceCount: null };
+        }
         const snapshot = await loadMemorySynthesisSnapshot(tx, owner.userId);
         const plan = snapshot?.plan;
-        if (!plan) return 0;
+        if (!plan) {
+          await tx.userMemorySettings.update({
+            data: { lastSynthesisAt: now },
+            where: { userId: owner.userId }
+          });
+          return { scheduled: 0, noPlanSourceCount: activity.eligibleSourceCount };
+        }
         const idempotencyFingerprint = memorySynthesisJobFingerprint({
           sourceSetFingerprint: plan.sourceSetFingerprint,
           userId: owner.userId
@@ -367,9 +376,22 @@ export async function reconcileMemorySynthesisWork(
           kind: "SYNTHESIZE_MEMORIES",
           pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION
         });
-        return result.created || revived.count > 0 ? 1 : 0;
+        return {
+          scheduled: result.created || revived.count > 0 ? 1 : 0,
+          noPlanSourceCount: null
+        };
       }
     );
+    scheduled += result.scheduled;
+    if (result.noPlanSourceCount !== null) {
+      logEvent("runtime_lifecycle", {
+        subsystem: "memory",
+        stage: "reconcile",
+        outcome: "skipped",
+        code: "memory_synthesis_plan_unavailable",
+        count: result.noPlanSourceCount
+      });
+    }
   }
   return Object.freeze({ invalidated, scheduled });
 }

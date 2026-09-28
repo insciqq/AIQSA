@@ -4,6 +4,8 @@ import {
   type PrismaClient
 } from "@prisma/client";
 import { prisma } from "../../../prisma";
+import { textFromContentBlocks } from "../../../../domain/modelRunEvents";
+import { hasExplicitMemoryCommandBoundary } from "../../actions/actionAdmission";
 import { MemoryCoordinatorError } from "../../coordinator/errors";
 import type {
   MemoryJobClaim,
@@ -255,8 +257,41 @@ async function probeWith(
   if (!memoryFactExtractionClaimIsValid(job)) {
     return { errorCode: "memory_fact_job_invalid", status: "CANCELLED" };
   }
+  // Classification owns the command-versus-testimony decision for this exact
+  // message. The queue defers pending commands; a terminal mutation or an
+  // uncertain classifier outcome is a finished exclusion, never a queue wait.
+  // Recheck here for direct execution, recovered work and the final apply.
+  // UNKNOWN/REJECTED alone also represents unsupported LIST/SEARCH/RESET and
+  // uncertain NONE decisions. Only the classifier's content-free, conclusive
+  // NONE receipt releases automatic learning. Missing/extra JSON fails closed.
+  const commandExclusion = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT command.id FROM "MemoryJob" AS command
+    WHERE command."userId" = ${job.userId}
+      AND command."chatId" = ${job.chatId}
+      AND command."sourceMessageId" = ${job.sourceMessageId}
+      AND command.kind = 'MEMORY_COMMAND'::"MemoryJobKind"
+      AND (
+        command.state IS DISTINCT FROM 'SUCCEEDED'::"MemoryJobState"
+        OR command."commandStatus" IS DISTINCT FROM 'REJECTED'::"MemoryCommandStatus"
+        OR command."commandOperation" IS DISTINCT FROM 'UNKNOWN'::"MemoryCommandOperation"
+        OR command."commandResult" IS DISTINCT FROM '{"classification":"NONE"}'::jsonb
+      )
+    LIMIT 1
+  `);
+  if (commandExclusion.length > 0) {
+    return { errorCode: "memory_fact_source_command_excluded", status: "CANCELLED" };
+  }
   const source = await loadBoundSource(tx, job);
   if (!source) return staleDecision;
+  const sourceContent = source.message.content;
+  const sourceBlocks = isRecord(sourceContent) && Array.isArray(sourceContent.blocks)
+    ? sourceContent.blocks : [];
+  // Explicit protocol commands have no asynchronous command job. Their text
+  // never becomes automatic testimony, even if synchronous control times out
+  // or rejects the input before classifying it.
+  if (hasExplicitMemoryCommandBoundary(textFromContentBlocks({ blocks: sourceBlocks }))) {
+    return { errorCode: "memory_fact_source_command_excluded", status: "CANCELLED" };
+  }
   const settings = await tx.userMemorySettings.findUnique({
     select: {
       learnAutomatically: true,
@@ -1004,12 +1039,23 @@ const terminalApplyOutcomes = new Set([
 const stagedRejectionCodes = new Set<MemoryFactCandidateRejection["reasonCode"]>([
   "REJECT_AMBIGUOUS",
   "REJECT_DUPLICATE",
+  "REJECT_EVIDENCE_INVALID",
+  "REJECT_EVIDENCE_NOT_IN_TARGET",
+  "REJECT_ENTITY_UNSUPPORTED",
+  "REJECT_DEPENDENCY_UNSUPPORTED",
+  "REJECT_FRAME_INELIGIBLE",
+  "REJECT_IDENTITY_INVALID",
   "REJECT_LOW_CONFIDENCE",
+  "REJECT_NOT_USEFUL",
   "REJECT_OUTSIDE_PAGE",
   "REJECT_PACKET_OVERFLOW",
   "REJECT_SECRET",
+  "REJECT_PRODUCT_IDENTITY_UNSUPPORTED",
+  "REJECT_RESIDENCE_IDENTITY_UNSUPPORTED",
+  "REJECT_STATE_UNSUPPORTED",
   "REJECT_STALE_SOURCE",
   "REJECT_TEMPORARY",
+  "REJECT_TEMPORAL_UNSUPPORTED",
   "REJECT_UNSUPPORTED"
 ]);
 

@@ -105,6 +105,31 @@ test("administrator-disabled Memory preserves its exact-fact management entry po
 
 for (const theme of ["dark", "light"] as const) {
   for (const mode of modes) {
+    test(`Combined memories expose sources and independent Forget · ${theme} · ${mode.name}`, async ({ context, page }) => {
+      await setTheme(context, theme);
+      await page.setViewportSize(mode);
+      await page.goto("/ui-v2-fixture?fixture=library&state=memory");
+      const panel = page.getByTestId("library-memory-panel");
+      const combined = panel.locator("li.v2-memory-row").filter({
+        hasText: "Combined from 3 memories"
+      });
+      await expect(combined).toHaveCount(1);
+      await expect(combined.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
+      await combined.getByRole("button", { name: "Show source memories" }).focus();
+      await page.keyboard.press("Enter");
+      const sources = combined.locator(".v2-memory-combined-sources > li");
+      await expect(sources).toHaveCount(3);
+      await sources.first().getByRole("button", { name: "Forget", exact: true }).click();
+      await sources.first().getByRole("button", { name: "Cancel", exact: true }).click();
+      await sources.first().getByRole("button", { name: "Forget", exact: true }).click();
+      await sources.first().getByRole("button", { name: "Forget", exact: true }).click();
+      await expect(combined).toHaveCount(0);
+      await expect(panel.getByText("Uses a written release checklist to review tests.", { exact: true })).toHaveCount(0);
+      await expect(panel.getByText("Uses a written release checklist to review migrations.", { exact: true })).toBeVisible();
+      await expect(panel.getByText("Uses a written release checklist to review dependencies.", { exact: true })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    });
+
     test(`Memory owns direct row CRUD and bounded layout · ${theme} · ${mode.name}`, async ({ context, page }) => {
       await setTheme(context, theme);
       await page.setViewportSize(mode);

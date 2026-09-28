@@ -141,7 +141,7 @@ import {
 export type { MemoryLexicalLaneEvidence } from "./lexical/contract";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v49";
+  "memory-local-retrieval-repository-v51";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS = 8;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS_PER_VARIANT = 4;
@@ -534,6 +534,10 @@ function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
   return {
     canonicalKey: row.canonicalKey,
     category: row.category,
+    combinedMemory: row.modality === "PATTERN" &&
+      row.structuredValue !== null && typeof row.structuredValue === "object" &&
+      !Array.isArray(row.structuredValue) &&
+      row.structuredValue.reasonCode === "combined_overlapping_facts",
     confidence: row.confidence,
     conflict: row.conflict,
     coreEligible: row.coreEligible,
@@ -1549,6 +1553,109 @@ function coreSql(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql {
       fact."id", version."id"
     LIMIT ${MEMORY_CORE_MAX_FACTS * 2}
   `;
+}
+
+function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql {
+  return Prisma.sql`
+    /* standing_fact_floor */
+    SELECT ${factColumns(Prisma.sql`NULL::text`)}, version."displayText" AS "safeText",
+      0.0::double precision AS "rawScore"
+    FROM "MemoryFactVersion" AS version
+    INNER JOIN "MemoryFact" AS fact
+      ON fact."userId" = version."userId" AND fact."id" = version."factId"
+      AND fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND fact."currentVersionId" = version."id"
+    INNER JOIN "MemoryFact" AS root_fact
+      ON root_fact."userId" = fact."userId"
+      AND root_fact."id" = ${memoryCanonicalFactRootIdSql(
+        snapshot.userId,
+        Prisma.sql`fact."id"`
+      )}
+      AND root_fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND root_fact."movedToFactId" IS NULL
+      AND root_fact."currentVersionId" = version."id"
+    INNER JOIN "MemoryScope" AS scope
+      ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+      AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+    INNER JOIN "MemoryScope" AS root_scope
+      ON root_scope."userId" = root_fact."userId"
+      AND root_scope."id" = root_fact."scopeId"
+      AND root_scope."state" = 'ACTIVE'::"MemoryScopeState"
+    INNER JOIN "UserMemorySettings" AS settings
+      ON settings."userId" = version."userId"
+      AND settings."useMemoryFacts" = TRUE
+    WHERE version."userId" = ${snapshot.userId}
+      AND EXISTS (
+        SELECT 1 FROM "Chat" AS standing_chat
+        WHERE standing_chat."id" = ${snapshot.chatId}
+          AND standing_chat."userId" = ${snapshot.userId}
+          AND standing_chat."projectId" IS NULL
+          AND standing_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+          AND standing_chat."permanentDeletionAt" IS NULL
+      )
+      AND ${memoryFactScopePredicate(snapshot)}
+      AND ${memoryReusableFactAuthorityPredicate(snapshot.userId, {
+        includePatterns: false,
+        lifecycle: "CURRENT"
+      })}
+      AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
+      AND ${memoryFactConversationFeedbackPredicate(snapshot)}
+    ORDER BY (version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode") DESC,
+      root_fact."lastConfirmedAt" DESC NULLS LAST, root_fact."id", version."id"
+    LIMIT 21
+  `;
+}
+
+async function loadStandingFacts(
+  client: PrismaClient,
+  snapshot: MemoryLocalRetrievalSnapshot
+): Promise<readonly MemoryCoreCandidate[]> {
+  if (snapshot.status !== "READY" || !snapshot.useMemoryFacts ||
+    snapshot.chatId === null || snapshot.chatMemoryMode !== "NORMAL") return [];
+  const rows = await withMemoryReadBudget(
+    client,
+    MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,
+    (tx) => tx.$queryRaw<CoreRow[]>(standingFactsSql(snapshot))
+  );
+  return rows.flatMap((row): readonly MemoryCoreCandidate[] => {
+    const safeText = safeMemoryProjectionText(row.safeText);
+    if (!safeText) return [];
+    const metadata = decodeMetadata(row);
+    const candidate: MemoryRankedCandidate = {
+      entryId: null,
+      featureSnapshot: {
+        authorityRank: metadata.sourceAuthority === "EXPLICIT" ? 3 : 2,
+        directFactAuthority: true,
+        fusionVersion: MEMORY_RETRIEVAL_FUSION_VERSION,
+        laneCount: 0,
+        standingFact: true,
+        temporalFit: 1,
+        tier: "DYNAMIC"
+      },
+      finalScore: 0,
+      itemId: row.itemId,
+      itemType: "FACT_VERSION",
+      laneRanks: {},
+      metadata,
+      rrfScore: 0,
+      selectionReason: row.sourceMode === "EXPLICIT"
+        ? "standing.explicit"
+        : "standing.automatic"
+    };
+    return [{
+      candidate,
+      expansion: {
+        itemId: row.itemId,
+        itemType: "FACT_VERSION",
+        occurredFrom: null,
+        occurredTo: null,
+        projectionKind: "FACT_DISPLAY_TEXT",
+        safeText,
+        sourceChatId: null,
+        supportingItemId: null
+      }
+    }];
+  });
 }
 
 function coreReason(row: CoreRow): string {
@@ -6171,6 +6278,16 @@ export function createPrismaLocalMemoryRetrievalRepository(
       (tx) => tx.$queryRaw<Row[]>(sql)
     );
   const repository = {
+    async loadStandingFacts(
+      snapshot: MemoryLocalRetrievalSnapshot
+    ): Promise<readonly MemoryCoreCandidate[]> {
+      const issued = issuedSnapshots.get(snapshot);
+      if (!issued || issued.authorityFingerprint !== snapshotAuthorityFingerprint(snapshot)) {
+        throw new Error("memory_retrieval_source_snapshot_invalid");
+      }
+      return loadStandingFacts(client, snapshot);
+    },
+
     async expand(
       snapshot: MemoryLocalRetrievalSnapshot,
       plan: MemoryRetrievalPlan,

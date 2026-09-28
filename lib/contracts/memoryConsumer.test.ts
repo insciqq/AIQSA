@@ -96,4 +96,41 @@ describe("Memory consumer contracts", () => {
       })).toEqual({ code: "memory_contract_invalid", ok: false });
     }
   });
+
+  it("accepts bounded combined sources only when count and opaque fields agree", () => {
+    const source = {
+      category: "WORK",
+      createdAt: "2026-08-21T05:00:00.000Z",
+      memoryRef: "opaque-source-1",
+      provenance: "LEARNED",
+      sourceAvailable: true,
+      statement: "I use a checklist for weekly reviews.",
+      updatedAt: "2026-08-21T05:00:00.000Z"
+    };
+    const item = {
+      allowedActions: ["FORGET"],
+      category: "OTHER",
+      combined: {
+        sourceCount: 3,
+        sources: [1, 2, 3].map((index) => ({
+          ...source,
+          memoryRef: `opaque-source-${index}`
+        }))
+      },
+      createdAt: source.createdAt,
+      memoryRef: "opaque-combined",
+      provenance: "LEARNED",
+      sourceAvailable: true,
+      statement: "I use a checklist for weekly reviews.",
+      updatedAt: source.updatedAt
+    };
+    expect(decodeMemoryConsumerItemResponse({ item }).ok).toBe(true);
+    expect(decodeMemoryConsumerItemResponse({
+      item: { ...item, combined: { ...item.combined, sourceCount: 4 } }
+    }).ok).toBe(false);
+    expect(decodeMemoryConsumerItemResponse({
+      item: { ...item, combined: { ...item.combined,
+        sources: [{ ...source, factId: "internal" }, ...item.combined.sources.slice(1)] } }
+    }).ok).toBe(false);
+  });
 });

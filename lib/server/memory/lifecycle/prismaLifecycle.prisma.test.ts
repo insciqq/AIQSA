@@ -1437,6 +1437,59 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
     }
   });
 
+  it("fences chat mutations and independent answer echoes without suppressing quiet standing context", async () => {
+    const userId = await createActiveUser("history-echo-forget");
+    const { explicit, lifecycle } = services(purgeRegistry());
+    const statement = "I prefer amber checklists in my workshop.";
+    try {
+      const created = await saveExplicit(explicit, userId, statement, "echo-save");
+      const versionId = created.memory.currentVersionId!;
+      const reads = [];
+      for (const features of [{}, { standingFact: true },
+        { standingFact: true, standingFactSearchMatched: true }]) {
+        const run = await createUnacceptedAttemptItem({ factVersionId: versionId,
+          statement, userId });
+        const receipt = await createAcceptedReceiptDerivatives({
+          ...run, factVersionId: versionId, modelRunId: run.runId,
+          sourceMessageId: run.messageId, statement, userId
+        });
+        await prisma.modelRunMemoryItem.update({
+          data: { featureSnapshot: features }, where: { id: receipt.memoryItemId }
+        });
+        await prisma.message.update({ data: { content: textMessageContent(statement),
+          status: "complete" }, where: { id: run.assistantMessageId } });
+        reads.push(run);
+      }
+      const origin = await createUnacceptedAttemptItem({ factVersionId: versionId,
+        requestContent: `Remember: ${statement}`, statement, userId });
+      // Declare the actual chat origin of this synthetic explicit-save receipt.
+      expect((await prisma.memoryOperationReceipt.updateMany({
+        data: { modelRunId: origin.runId },
+        where: { operation: "SAVE", targetVersionId: versionId, userId }
+      })).count).toBe(1);
+      const authorization = await explicit.mintAuthorization(userId, {
+        action: "FORGET", confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedTargetVersionId: versionId, requestNonce: "echo-forget",
+        targetFactId: created.memory.id
+      });
+      await lifecycle.forget(userId, created.memory.id, {
+        expectedVersionId: versionId,
+        mutationAuthorizationId: authorization.mutationAuthorizationId
+      });
+      const fenced = await prisma.memorySuppression.findMany({
+        select: { sourceMessageId: true }, where: { scope: "SOURCE_MESSAGE", userId }
+      });
+      expect(new Set(fenced.map((row) => row.sourceMessageId))).toEqual(new Set(
+        [origin, reads[0]!, reads[2]!].flatMap((run) =>
+          [run.messageId, run.assistantMessageId])
+      ));
+      for (const run of reads) {
+        expect(await prisma.message.findUniqueOrThrow({ select: { content: true },
+          where: { id: run.assistantMessageId } })).toEqual({ content: textMessageContent(statement) });
+      }
+    } finally { await cleanupUsers([userId]); }
+  });
+
   it("keeps the fence active during the bounded window and atomically cancels purge on Undo", async () => {
     const registry = purgeRegistry();
     const userId = await createActiveUser("forget-undo");
@@ -1749,13 +1802,17 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         orderBy: { scope: "asc" },
         where: { userId }
       });
-      expect(suppressions).toHaveLength(3);
+      expect(suppressions).toHaveLength(4);
       expect(suppressions).toContainEqual(expect.objectContaining({
         explicitOverrideAllowed: true,
         scope: "SOURCE_MESSAGE",
         sourceBranchGeneration: 0,
         sourceChatId: chat.id,
         sourceMessageId: admitted.userMessageId
+      }));
+      expect(suppressions).toContainEqual(expect.objectContaining({
+        scope: "SOURCE_MESSAGE", sourceChatId: chat.id,
+        sourceMessageId: admitted.assistantMessageId
       }));
       await expect(facts.save(userId, {
         evidence: {
@@ -2229,13 +2286,11 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         state: "SUCCEEDED",
         totalUnits: 10
       });
-      await expect(prisma.memoryCandidate.findUniqueOrThrow({
+      // The independently used source is now suppressed, so the history
+      // contributor removes its candidate rather than retaining a scrubbed row.
+      await expect(prisma.memoryCandidate.findUnique({
         where: { id: candidateId }
-      })).resolves.toMatchObject({
-        contentPurgedAt: expect.any(Date),
-        proposedDisplayText: null,
-        state: "STALE"
-      });
+      })).resolves.toBeNull();
       await expect(prisma.memoryCandidateMessage.count({
         where: { candidateId, userId }
       })).resolves.toBe(0);
@@ -2256,7 +2311,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         memoryFactId: postAdmission.memory.id,
         memoryFactVersionId: postAdmission.memory.currentVersionId
       });
-      await expectAcceptedReceiptDerivatives(receipt, "RETAINED");
+      await expectAcceptedReceiptDerivatives(receipt, "SCRUBBED");
       await expect(auditMemoryDeletion(
         registry,
         status.deletionId,
@@ -2267,7 +2322,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         progress: { complete: true },
         state: "SUCCEEDED"
       });
-      await expectAcceptedReceiptDerivatives(receipt, "RETAINED");
+      await expectAcceptedReceiptDerivatives(receipt, "SCRUBBED");
       await expect(explicit.get(userId, postAdmission.memory.id)).resolves.toMatchObject({
         memory: {
           currentVersionId: postAdmission.memory.currentVersionId,

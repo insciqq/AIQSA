@@ -21,6 +21,7 @@ import {
   type PrismaClient
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { titleFromMessageContent } from "../chats/titlePolicy";
 import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
 import {
@@ -49,8 +50,12 @@ import {
 } from "../memory/execution";
 import {
   decodeMemoryActionAnswerResult,
-  MEMORY_ACTION_NO_COMMIT_RESULT
+  MEMORY_ACTION_NO_COMMIT_RESULT,
+  MEMORY_ACTION_PENDING_RESULT
 } from "../providers/memoryActionAnswer";
+import { admitMemoryAction } from "../memory/actions/actionAdmission";
+import { enqueueMemoryCommand } from "../memory/commands/repository";
+import { memorySha256 } from "../memory/persistence/lexical";
 import {
   decodeMemoryReadOnlyControlReuseProof,
   type MemoryReadOnlyControlReuseProof
@@ -78,6 +83,7 @@ import {
 import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
 import { MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES, MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES } from "../../domain/memory/retrieval/config";
 import { MEMORY_HISTORY_RELEVANCE_VERSION, qualifiedMemoryHistoryDecisionModel } from "../memory/retrieval/historyRelevancePolicy";
+import { MEMORY_CONTROL_SCREEN_VERSION, qualifiedMemoryControlScreenModel } from "../memory/actions/controlScreenPolicy";
 import { scheduleMemoryDecayTouch } from "../memory/retrieval/decayTouch";
 import {
   MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
@@ -173,8 +179,10 @@ import {
 type PreparingSettingsRow = MemoryPreparingSettingsSnapshot & LockedMemorySettings;
 
 const MEMORY_PREPARING_ADMISSION_RESERVE_MS = 1_500;
-const MEMORY_PREPARING_RETRIEVAL_RESERVE_MS = 1_500;
-const MEMORY_PREPARING_COMPLETION_RESERVE_MS = 1_200;
+// A ready standing pack still needs two authoritative transactions before
+// dispatch. Leave each one a bounded window after optional retrieval expires.
+const MEMORY_PREPARING_RETRIEVAL_RESERVE_MS = 4_000;
+const MEMORY_PREPARING_COMPLETION_RESERVE_MS = 2_500;
 const MEMORY_PREPARING_FINALIZATION_RESERVE_MS = 1_000;
 const MEMORY_PREPARING_MAX_ATTEMPTS = 3;
 
@@ -1223,6 +1231,39 @@ export async function admitProjectRunWithClient(
   return result;
 }
 
+async function enqueuePreparingMemoryCommand(
+  tx: Prisma.TransactionClient,
+  input: PreparingRunAdmissionInput,
+  settings: LockedMemorySettings,
+  source: Readonly<{
+    assistantMessageId: string;
+    chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+    memoryBranchGeneration: number;
+    memorySourceRevision: number;
+    userMessageId: string;
+  }>
+): Promise<boolean> {
+  if (input.admissionKind !== "NORMAL_SEND" || input.project ||
+    input.normalizedRequest.agent || source.chatMemoryMode !== "NORMAL" ||
+    !settings.useMemoryFacts ||
+    admitMemoryAction(textFromContentBlocks(input.content)).state !== "SEMANTIC_CANDIDATE") {
+    return false;
+  }
+  if (input.assistant && !await tx.assistantDefinition.findFirst({
+    select: { id: true },
+    where: { archivedAt: null, id: input.assistant.assistantId, ownerUserId: input.userId }
+  })) return false;
+  await enqueueMemoryCommand(tx, settings, {
+    activeLeafMessageId: source.assistantMessageId,
+    branchGeneration: source.memoryBranchGeneration,
+    chatId: input.chatId,
+    sourceHash: memorySha256(input.content),
+    sourceMessageId: source.userMessageId,
+    sourceRevision: source.memorySourceRevision
+  });
+  return true;
+}
+
 export async function admitPreparingRunWithClient(
   prismaClient: PrismaClient,
   input: PreparingRunAdmissionInput,
@@ -1243,6 +1284,12 @@ export async function admitPreparingRunWithClient(
       if (input.workspaceAdmissionPlan) await lockWorkspaceSecretOwner(tx, input.userId);
       else if (input.workspaceFollowup && !await lockPreparingMemoryOwner(tx, input.userId)) {
         throw new WorkspaceFollowupError("workspace_followup_unavailable");
+      }
+      // Command acceptance shares the owner serialization used by every
+      // Memory writer, before any source-chat row is locked.
+      if (!input.normalizedRequest.agent && !options.memoryUnavailableFallback &&
+        !await lockPreparingMemoryOwner(tx, input.userId)) {
+        throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
       }
       if (input.normalizedRequest.instructionPreset) await assertInstructionPresetSelection(
         tx, input.userId, input.normalizedRequest.instructionPreset);
@@ -1602,7 +1649,7 @@ export async function admitPreparingRunWithClient(
       const settings = lockedChat.memoryMode === "TEMPORARY" || input.normalizedRequest.agent ||
           options.memoryUnavailableFallback
         ? TEMPORARY_PREPARING_SETTINGS
-        : await loadPreparingSettings(tx, input.userId);
+        : await loadPreparingSettings(tx, input.userId, true);
 
       const run = await tx.modelRun.create({
         data: {
@@ -1733,12 +1780,21 @@ export async function admitPreparingRunWithClient(
         userMessageId
       });
 
+      const memoryCommandQueued = await enqueuePreparingMemoryCommand(tx, input, settings, {
+        assistantMessageId,
+        chatMemoryMode: lockedChat.memoryMode,
+        memoryBranchGeneration: admittedSourceSnapshot.memoryBranchGeneration,
+        memorySourceRevision: admittedSourceSnapshot.memorySourceRevision,
+        userMessageId
+      });
+
       return {
         assistantMessageId,
         attemptId,
         chatMemoryMode: lockedChat.memoryMode,
         folderId: lockedChat.folderId,
         memoryGeneration: settings.memoryGeneration,
+        ...(memoryCommandQueued ? { memoryCommandQueued: true } : {}),
         memoryRevision: settings.memoryRevision,
         runId: run.id,
         settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
@@ -1814,6 +1870,7 @@ async function lockMemoryAttemptTargets(
 
 const retrievalExecutionRoles = new Set([
   "MEMORY_CONTROL",
+  "MEMORY_CONTROL_SCREEN",
   "MEMORY_QUERY_EMBED",
   "MEMORY_QUERY_RESOLVE",
   "MEMORY_RERANK",
@@ -1833,6 +1890,7 @@ const maximumAggregationRetrievalBindings = 2 + 4 +
   rerankExecutionOrdinalCount;
 const profileRetrievalExecutionPositions = new Set([
   "MEMORY_CONTROL:0",
+  "MEMORY_CONTROL_SCREEN:0",
   ...Array.from(
     { length: MEMORY_RERANK_MAX_ATTEMPTS },
     (_, index) => `MEMORY_RERANK:${2 + index}`
@@ -1841,6 +1899,7 @@ const profileRetrievalExecutionPositions = new Set([
 
 const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
   ["MEMORY_CONTROL", new Set([0, 1])],
+  ["MEMORY_CONTROL_SCREEN", new Set([0])],
   ["MEMORY_QUERY_EMBED", new Set([1, 2, 3, 4])],
   ["MEMORY_QUERY_RESOLVE", new Set([0])],
   ["MEMORY_RERANK", new Set(Array.from(
@@ -1861,6 +1920,9 @@ function dedicatedRerankPosition(binding: MemoryRetrievalExecutionPosition): boo
 }
 
 function validRetrievalExecutionPosition(binding: MemoryRetrievalExecutionPosition): boolean {
+  if (binding.logicalRole === "MEMORY_CONTROL_SCREEN") {
+    return binding.pipelineVersion === MEMORY_CONTROL_SCREEN_VERSION && binding.ordinal === 0;
+  }
   if (binding.logicalRole === "MEMORY_HISTORY_RELEVANCE") {
     return binding.pipelineVersion === MEMORY_HISTORY_RELEVANCE_VERSION && Number.isSafeInteger(binding.ordinal) &&
       binding.ordinal >= 1 && binding.ordinal <= MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES;
@@ -1891,7 +1953,7 @@ export function validMemoryRetrievalExecutionSequence(
   const history = bindings.filter(binding => binding.logicalRole === "MEMORY_HISTORY_RELEVANCE");
   const historyLimit = aggregationRequested ? MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES
     : MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES;
-  if (bindings.length > maximumBindings + history.length || history.length > historyLimit ||
+  if (bindings.length > maximumBindings + 1 + history.length || history.length > historyLimit ||
     history.some(binding => binding.ordinal > historyLimit)) return false;
   const positions = bindings.map((binding) =>
     `${binding.logicalRole}:${binding.ordinal}`);
@@ -2235,7 +2297,7 @@ async function loadPreparingAttemptExecutionEvidence(
       if (
         !actionAnswerResult ||
         memoryPreparingHash(actionAnswerResult) !==
-          memoryPreparingHash(MEMORY_ACTION_NO_COMMIT_RESULT) ||
+          memoryPreparingHash({ ...MEMORY_ACTION_NO_COMMIT_RESULT, version: actionAnswerResult.version }) ||
         budget?.memoryActionResult !== undefined
       ) {
         throw new Error("control_reuse_action_evidence_invalid");
@@ -2310,6 +2372,10 @@ async function loadPreparingAttemptExecutionEvidence(
       ) throw new Error("binding_invalid");
       const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
       assertMemoryExecutionBindingLineage(binding, snapshot);
+      if (binding.logicalRole === "MEMORY_CONTROL_SCREEN" &&
+        !qualifiedMemoryControlScreenModel(snapshot.providerExecutionSnapshot)) {
+        throw new Error("control_screen_snapshot_invalid");
+      }
       if (binding.logicalRole === "MEMORY_HISTORY_RELEVANCE") {
         const hash = memoryPreparingHash(snapshot);
         if (!qualifiedMemoryHistoryDecisionModel(snapshot.providerExecutionSnapshot) ||
@@ -2886,7 +2952,7 @@ function validateFinalPreparingRequest(
   if (
     rawBaseActionAnswerResult !== undefined &&
     (!baseActionAnswerResult || memoryPreparingHash(baseActionAnswerResult) !==
-      memoryPreparingHash(MEMORY_ACTION_NO_COMMIT_RESULT))
+      memoryPreparingHash({ ...MEMORY_ACTION_NO_COMMIT_RESULT, version: baseActionAnswerResult.version }))
   ) {
     throw new MemoryPreparingRunConflictError("memory_base_request_invalid", false);
   }
@@ -3120,7 +3186,9 @@ export async function finalizePreparingRunWithClient(
         ...fallbackBudgetSnapshot,
         ...memoryActionLifecycleBudgetSnapshot(lifecycleSnapshot),
         itemCount: 0,
-        memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+        memoryActionAnswerResult: decodeMemoryActionAnswerResult(
+          fallbackBudgetSnapshot.memoryActionAnswerResult
+        )?.status === "PENDING" ? MEMORY_ACTION_PENDING_RESULT : MEMORY_ACTION_NO_COMMIT_RESULT,
         reason: failedSafeFallback.degradationCode
       };
       assertAttemptUtilityDeclaration(safeBudgetSnapshot, executionEvidence);
@@ -4013,6 +4081,19 @@ async function continuePreparingRunWithClient(
   memorySourceHooks: MemorySourceMutationHooks | undefined,
   memoryAdmissionDeadlineAtMs: number
 ): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
+  const remainingAtStartMs = Math.max(0, memoryAdmissionDeadlineAtMs - Date.now());
+  const retrievalReserveMs = Math.min(
+    MEMORY_PREPARING_RETRIEVAL_RESERVE_MS,
+    Math.floor(remainingAtStartMs / 4)
+  );
+  const completionReserveMs = Math.min(
+    MEMORY_PREPARING_COMPLETION_RESERVE_MS,
+    Math.floor(remainingAtStartMs * 0.18)
+  );
+  const finalizationReserveMs = Math.min(
+    MEMORY_PREPARING_FINALIZATION_RESERVE_MS,
+    Math.floor(remainingAtStartMs / 10)
+  );
   let currentAttemptId = created.attemptId;
   let currentSettings = {
     memoryGeneration: created.memoryGeneration,
@@ -4021,11 +4102,17 @@ async function continuePreparingRunWithClient(
   };
   const memoryControlCache: MemoryRunControlCache = {
     admissionDeadlineAtMs: memoryAdmissionDeadlineAtMs -
-      MEMORY_PREPARING_RETRIEVAL_RESERVE_MS
+      retrievalReserveMs
   };
+  const fallbackMaterializedRequest = created.memoryCommandQueued
+    ? admission.memoryMaterializer?.(null, MEMORY_ACTION_PENDING_RESULT) ?? undefined
+    : undefined;
+  const fallbackAnswerResult = created.memoryCommandQueued && admission.memoryMaterializer
+    ? MEMORY_ACTION_PENDING_RESULT
+    : MEMORY_ACTION_NO_COMMIT_RESULT;
   let deadlineFallbackBudget: Readonly<Record<string, unknown>> = {
     itemCount: 0,
-    memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+    memoryActionAnswerResult: fallbackAnswerResult,
     reason: "memory_admission_deadline_exceeded",
     schemaVersion: 2
   };
@@ -4033,7 +4120,9 @@ async function continuePreparingRunWithClient(
     memoryControlCache.settingsDriftFailedSafeAttemptId === currentAttemptId
       ? memoryControlCache.settingsDriftFailedSafeBudget ?? deadlineFallbackBudget
       : deadlineFallbackBudget;
-  const finalizeDeadlineFallback = async (): Promise<PreparingRunAdmissionResult> => {
+  const finalizeDeadlineFallback = async (): Promise<PreparingRunAdmissionResult & Readonly<{
+    materializedRequest?: PreparingRunMaterializedRequest;
+  }>> => {
     const fallbackFinalized = await finalizePreparingRunWithClient(
       prismaClient,
       {
@@ -4041,15 +4130,15 @@ async function continuePreparingRunWithClient(
         attemptId: currentAttemptId,
         deadlineFallbackBudget: {
           ...currentStageFallbackBudget(),
-          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+          memoryActionAnswerResult: fallbackAnswerResult
         },
         ...(admission.knowledgeAdmissionPlan
           ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
           : {}),
         ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
-        normalizedRequest: admission.normalizedRequest,
+        normalizedRequest: fallbackMaterializedRequest?.normalizedRequest ?? admission.normalizedRequest,
         providerAdmissionPlan: admission.providerAdmissionPlan,
-        providerRequestPreview: admission.providerRequestPreview,
+        providerRequestPreview: fallbackMaterializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
         runId: created.runId,
         ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
         userId: admission.userId
@@ -4064,6 +4153,7 @@ async function continuePreparingRunWithClient(
     }
     return {
       ...created,
+      ...(fallbackMaterializedRequest ? { materializedRequest: fallbackMaterializedRequest } : {}),
       attemptId: currentAttemptId,
       memoryGeneration: currentSettings.memoryGeneration,
       memoryRevision: currentSettings.memoryRevision,
@@ -4072,23 +4162,25 @@ async function continuePreparingRunWithClient(
   };
   const finalizeSettingsDriftFallback = async (
     budgetSnapshot: Readonly<Record<string, unknown>>
-  ): Promise<PreparingRunAdmissionResult> => {
+  ): Promise<PreparingRunAdmissionResult & Readonly<{
+    materializedRequest?: PreparingRunMaterializedRequest;
+  }>> => {
     const fallbackFinalized = await finalizePreparingRunWithClient(
       prismaClient,
       {
         ...(admission.assistant ? { assistant: admission.assistant } : {}),
         attemptId: currentAttemptId,
         failedSafeFallback: {
-          budgetSnapshot,
+          budgetSnapshot: { ...budgetSnapshot, memoryActionAnswerResult: fallbackAnswerResult },
           degradationCode: "memory_admission_settings_changed"
         },
         ...(admission.knowledgeAdmissionPlan
           ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
           : {}),
         ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
-        normalizedRequest: admission.normalizedRequest,
+        normalizedRequest: fallbackMaterializedRequest?.normalizedRequest ?? admission.normalizedRequest,
         providerAdmissionPlan: admission.providerAdmissionPlan,
-        providerRequestPreview: admission.providerRequestPreview,
+        providerRequestPreview: fallbackMaterializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
         runId: created.runId,
         ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
         userId: admission.userId
@@ -4103,6 +4195,7 @@ async function continuePreparingRunWithClient(
     }
     return {
       ...created,
+      ...(fallbackMaterializedRequest ? { materializedRequest: fallbackMaterializedRequest } : {}),
       attemptId: currentAttemptId,
       memoryGeneration: currentSettings.memoryGeneration,
       memoryRevision: currentSettings.memoryRevision,
@@ -4110,16 +4203,25 @@ async function continuePreparingRunWithClient(
     };
   };
   try {
+    // A durable command cannot fall back to a request that denies its pending
+    // work. The accepted no-commit reserve is larger than v3; if a custom
+    // materializer still rejects both, stop before dispatching a false claim.
+    if (created.memoryCommandQueued && admission.memoryMaterializer && !fallbackMaterializedRequest) {
+      throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
+    }
     for (
       let attemptOrdinal = 0;
       attemptOrdinal < MEMORY_PREPARING_MAX_ATTEMPTS;
       attemptOrdinal += 1
     ) {
+      let completedStandingPack = false;
+      let standingFinalization: PreparingRunFinalizationInput | null = null;
+      let standingMaterializedRequest: PreparingRunMaterializedRequest | undefined;
       try {
         const began = await beginPreparingRunAttemptWithClient(prismaClient, {
           attemptId: currentAttemptId,
           deadlineAtMs: memoryAdmissionDeadlineAtMs -
-            MEMORY_PREPARING_RETRIEVAL_RESERVE_MS,
+            retrievalReserveMs,
           now: new Date(),
           runId: created.runId,
           userId: admission.userId
@@ -4144,6 +4246,7 @@ async function continuePreparingRunWithClient(
                 },
                 normalizedRequest: admission.normalizedRequest,
                 modelRunId: created.runId,
+                memoryCommandQueued: created.memoryCommandQueued,
                 now: new Date(),
                 ...(admission.signal ? { signal: admission.signal } : {}),
                 userId: admission.userId
@@ -4193,16 +4296,14 @@ async function continuePreparingRunWithClient(
                 ...attemptResult,
                 budgetSnapshot: {
                   ...attemptResult.budgetSnapshot,
-                  memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+                  memoryActionAnswerResult: fallbackAnswerResult
                 }
               };
-              // The already-admitted ordinary request carries this same
-              // no-commit result. If even a fresh materialization declines,
-              // Phase B safely dispatches that base request instead of making
-              // an optional Memory contract fail the answer.
-              materializedRequest = admission.memoryMaterializer?.(
+              // Pending command truth survives optional read/materialization
+              // failure through the already-budgeted zero-context request.
+              materializedRequest = fallbackMaterializedRequest ?? admission.memoryMaterializer?.(
                 null,
-                MEMORY_ACTION_NO_COMMIT_RESULT
+                fallbackAnswerResult
               ) ?? undefined;
             }
           }
@@ -4211,7 +4312,7 @@ async function continuePreparingRunWithClient(
         const completed = await completePreparingRunAttemptWithClient(prismaClient, {
           attemptId: currentAttemptId,
           deadlineAtMs: memoryAdmissionDeadlineAtMs -
-            MEMORY_PREPARING_COMPLETION_RESERVE_MS,
+            completionReserveMs,
           result: attemptResult,
           runId: created.runId,
           userId: admission.userId
@@ -4219,7 +4320,7 @@ async function continuePreparingRunWithClient(
         if (!completed) {
           throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
         }
-        const finalized = await finalizePreparingRunWithClient(prismaClient, {
+        const finalization: PreparingRunFinalizationInput & Readonly<{ deadlineAtMs: number }> = {
           ...(admission.assistant ? { assistant: admission.assistant } : {}),
           attemptId: currentAttemptId,
           ...(admission.knowledgeAdmissionPlan
@@ -4229,14 +4330,23 @@ async function continuePreparingRunWithClient(
           ...(admission.project ? { project: admission.project } : {}),
           ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
           deadlineAtMs: memoryAdmissionDeadlineAtMs -
-            MEMORY_PREPARING_FINALIZATION_RESERVE_MS,
+            finalizationReserveMs,
           normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
           providerAdmissionPlan: admission.providerAdmissionPlan,
           providerRequestPreview:
             materializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
           runId: created.runId,
           userId: admission.userId
-        }, memoryExecutionAuthority);
+        };
+        completedStandingPack = attemptResult.outcome === "DEGRADED" &&
+          attemptResult.degradationCode === "memory_admission_deadline_standing_only";
+        if (completedStandingPack) {
+          standingFinalization = finalization;
+          standingMaterializedRequest = materializedRequest;
+        }
+        const finalized = await finalizePreparingRunWithClient(
+          prismaClient, finalization, memoryExecutionAuthority
+        );
         if (!finalized) {
           throw new MemoryPreparingRunConflictError("memory_preparing_finalize_conflict", false);
         }
@@ -4250,6 +4360,27 @@ async function continuePreparingRunWithClient(
         };
       } catch (error) {
         if (error instanceof RunTransactionDeadlineError) {
+          if (completedStandingPack && standingFinalization &&
+            Date.now() < memoryAdmissionDeadlineAtMs) {
+            try {
+              const finalized = await finalizePreparingRunWithClient(
+                prismaClient,
+                { ...standingFinalization, deadlineAtMs: memoryAdmissionDeadlineAtMs },
+                memoryExecutionAuthority
+              );
+              if (finalized) return {
+                ...created,
+                attemptId: currentAttemptId,
+                memoryGeneration: currentSettings.memoryGeneration,
+                memoryRevision: currentSettings.memoryRevision,
+                settingsSnapshot: currentSettings.settingsSnapshot,
+                ...(standingMaterializedRequest
+                  ? { materializedRequest: standingMaterializedRequest } : {})
+              };
+            } catch (retryError) {
+              if (!(retryError instanceof RunTransactionDeadlineError)) throw retryError;
+            }
+          }
           return await finalizeDeadlineFallback();
         }
         if (
@@ -4276,7 +4407,7 @@ async function continuePreparingRunWithClient(
           retry = await retryPreparingRunAttemptWithClient(prismaClient, {
             attemptId: currentAttemptId,
             deadlineAtMs: memoryAdmissionDeadlineAtMs -
-              MEMORY_PREPARING_RETRIEVAL_RESERVE_MS,
+              retrievalReserveMs,
             now: new Date(),
             runId: created.runId,
             userId: admission.userId
@@ -4373,6 +4504,14 @@ async function continueDeferredPreparedRunWithClient(
       chat.memorySourceRevision !== source.memorySourceRevision) {
       throw failure("unavailable");
     }
+    const settings = await loadPreparingSettings(tx, admission.userId, true);
+    const memoryCommandQueued = await enqueuePreparingMemoryCommand(tx, admission, settings, {
+      assistantMessageId: created.assistantMessageId,
+      chatMemoryMode: created.chatMemoryMode,
+      memoryBranchGeneration: source.memoryBranchGeneration,
+      memorySourceRevision: source.memorySourceRevision,
+      userMessageId: created.userMessageId
+    });
     const existing = await lockPreparingAttempt(tx, { runId: run.id, userId: admission.userId });
     if (existing) {
       if (!["PENDING", "READY"].includes(existing.state) || existing.expiresAt <= new Date() ||
@@ -4385,12 +4524,11 @@ async function continueDeferredPreparedRunWithClient(
       }
       const settingsSnapshot = decodeMemoryPreparingSettingsSnapshot(existing.settingsSnapshot);
       if (!settingsSnapshot) throw failure("invalid");
-      return { created: { ...created, attemptId: existing.id,
+      return { created: { ...created, memoryCommandQueued, attemptId: existing.id,
         memoryGeneration: existing.memoryGenerationSnapshot,
         memoryRevision: existing.retrievalRevisionSnapshot, settingsSnapshot },
         ready: existing.state === "READY" ? existing : null, complete: false };
     }
-    const settings = await loadPreparingSettings(tx, admission.userId);
     const attemptId = await createPreparingAttempt(tx, {
       admissionKind: admission.admissionKind, assistantIdSnapshot: admission.assistant?.assistantId ?? null,
       assistantMessageId: created.assistantMessageId, attemptOrdinal: 0,
@@ -4400,7 +4538,7 @@ async function continueDeferredPreparedRunWithClient(
       lifecycleSnapshot: source, now: new Date(), preSendActiveLeafMessageId: source.preSendActiveLeafMessageId,
       runId: run.id, settings, userId: admission.userId, userMessageId: created.userMessageId
     });
-    return { created: { ...created, attemptId, memoryGeneration: settings.memoryGeneration,
+    return { created: { ...created, memoryCommandQueued, attemptId, memoryGeneration: settings.memoryGeneration,
       memoryRevision: settings.memoryRevision, settingsSnapshot: memoryPreparingSettingsSnapshot(settings) },
       ready: null, complete: false };
   });

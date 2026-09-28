@@ -187,7 +187,7 @@ export function createMemoryMcpServer(deps: MemoryMcpServerDeps): McpServer {
       category,
       provenance,
       cursor
-    });
+    }, { authority: "DELEGATED_MCP" });
     return projectMemoryMcpList(response);
   }, context.mcpReq.signal, deadlineMs));
 
@@ -202,7 +202,11 @@ export function createMemoryMcpServer(deps: MemoryMcpServerDeps): McpServer {
       openWorldHint: false
     }
   }, ({ memoryRef }, context) => execute(async () => {
-    const response = await deps.service.get(deps.userId, memoryRef);
+    const response = await deps.service.get(
+      deps.userId,
+      memoryRef,
+      { authority: "DELEGATED_MCP" }
+    );
     return { item: projectMemoryMcpItem(response.item) };
   }, context.mcpReq.signal, deadlineMs));
 

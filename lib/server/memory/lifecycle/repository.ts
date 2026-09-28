@@ -520,7 +520,7 @@ async function sourceEvidence(
       userId
     }
   });
-  return rows.flatMap((row) =>
+  const direct = rows.flatMap((row) =>
     row.branchGeneration !== null && row.chatId && row.messageId
       ? [{
           branchGeneration: row.branchGeneration,
@@ -528,6 +528,46 @@ async function sourceEvidence(
           messageId: row.messageId
         }]
       : []);
+  // Explicit chat mutations and answers that independently retrieved this
+  // fact can echo it into history without a MESSAGE evidence row. Fence those
+  // owned messages too; standing-only inclusion is not evidence of use.
+  const materialized = await tx.$queryRaw<SourceEvidenceRow[]>(Prisma.sql`
+    WITH affected_runs AS (
+      SELECT binding."modelRunId", TRUE AS "retrievalOnly"
+      FROM "ModelRunMemoryItem" AS item
+      INNER JOIN "ModelRunMemoryBinding" AS binding
+        ON binding."userId" = item."userId" AND binding."id" = item."bindingId"
+      WHERE item."userId" = ${userId}
+        AND item."factVersionId" IN (${Prisma.join([...versionIds])})
+        AND (
+          item."featureSnapshot"->'standingFact' IS DISTINCT FROM 'true'::jsonb
+          OR item."featureSnapshot"->'standingFactSearchMatched' = 'true'::jsonb
+        )
+      UNION ALL
+      SELECT receipt."modelRunId", FALSE AS "retrievalOnly"
+      FROM "MemoryOperationReceipt" AS receipt
+      WHERE receipt."userId" = ${userId}
+        AND receipt."outcome" = 'APPLIED'::"MemoryOperationOutcome"
+        AND receipt."operation" IN ('SAVE'::"MemoryMutationAction", 'EDIT'::"MemoryMutationAction")
+        AND receipt."targetVersionId" IN (${Prisma.join([...versionIds])})
+    )
+    SELECT chat."memoryBranchGeneration" AS "branchGeneration",
+      chat."id" AS "chatId", message."id" AS "messageId",
+      BOOL_AND(affected_runs."retrievalOnly") AS "retrievalOnly"
+    FROM affected_runs
+    INNER JOIN "ModelRun" AS run
+      ON run."id" = affected_runs."modelRunId" AND run."userId" = ${userId}
+    INNER JOIN "Chat" AS chat
+      ON chat."id" = run."chatId" AND chat."userId" = run."userId"
+      AND chat."projectId" IS NULL AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+      AND chat."permanentDeletionAt" IS NULL
+    INNER JOIN "Message" AS message
+      ON message."chatId" = chat."id"
+      AND message."id" IN (run."userMessageId", run."assistantMessageId")
+      AND message."role" IN ('user', 'assistant')
+    GROUP BY chat."memoryBranchGeneration", chat."id", message."id"
+  `);
+  return [...direct, ...materialized];
 }
 
 function suppressionInputs(
@@ -934,6 +974,9 @@ async function applyAllReusableDeletionFence(
   });
   await tx.memoryJob.updateMany({
     data: {
+      // These private checkpoints have no recovery consumer after reset.
+      commandIntent: Prisma.DbNull,
+      commandResult: Prisma.DbNull,
       completedAt: now,
       errorCode: "memory_all_reusable_deleted",
       errorMessage: null,

@@ -33,6 +33,7 @@ import {
 } from "../persistence/authorizations";
 import {
   MemoryPersistenceError,
+  rememberMemoryPersistenceFailure,
   type MemoryPersistenceErrorCode
 } from "../persistence/errors";
 import type {
@@ -285,7 +286,9 @@ async function persisted<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     if (error instanceof MemoryPersistenceError) {
-      return failure(publicPersistenceCode(error.code));
+      const mapped = new ExplicitMemoryServiceError(publicPersistenceCode(error.code));
+      rememberMemoryPersistenceFailure(mapped, error.code);
+      throw mapped;
     }
     throw error;
   }

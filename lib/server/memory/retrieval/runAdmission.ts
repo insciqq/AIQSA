@@ -40,7 +40,9 @@ import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import { prisma } from "../../prisma";
 import type { NormalizedRunRequest } from "../../providers/types";
 import {
+  MEMORY_ACTION_ANSWER_RESULT_VERSION,
   MEMORY_ACTION_NO_COMMIT_RESULT,
+  MEMORY_ACTION_PENDING_RESULT,
   type MemoryActionAnswerResult
 } from "../../providers/memoryActionAnswer";
 import type {
@@ -100,6 +102,11 @@ import {
 } from "./historyRelevancePolicy";
 import { emptyMemoryHistoryRelevanceDiagnostics } from "./historyRelevanceRuntime";
 import {
+  MEMORY_CONTROL_SCREEN_VERSION,
+  type MemoryControlScreenResult
+} from "../actions/controlScreenPolicy";
+import { emptyMemoryControlScreenDiagnostics } from "../actions/controlScreenRuntime";
+import {
   MEMORY_AGGREGATION_POLICY_VERSION,
   type MemoryAggregationState
 } from "./aggregation";
@@ -134,9 +141,9 @@ import {
 } from "./deadline";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v60";
+  "memory-run-retrieval-admission-v63";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v19";
+  "memory-retrieval-component-metrics-v20";
 const MEMORY_QUERY_EMBEDDING_DEADLINE_REASON =
   "memory_query_embedding_deadline_exceeded";
 
@@ -202,6 +209,8 @@ export type MemoryRunRetrievalInput = Readonly<{
   chatId: string;
   controlCache?: MemoryRunControlCache;
   expected: MemoryRunRetrievalExpectedSnapshot;
+  /** Set only by the acceptance transaction after durable command enqueue. */
+  memoryCommandQueued?: boolean;
   modelRunId: string;
   normalizedRequest: NormalizedRunRequest;
   now: Date;
@@ -267,13 +276,14 @@ type UtilityEvidence = Readonly<{
   providerRequestRoutes?: readonly (string | null)[];
   reason: string | null;
   role: "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" | "MEMORY_QUERY_RESOLVE" |
-    "MEMORY_RERANK" | "MEMORY_HISTORY_RELEVANCE";
+    "MEMORY_RERANK" | "MEMORY_HISTORY_RELEVANCE" | "MEMORY_CONTROL_SCREEN";
   state: "READY" | "SKIPPED" | "UNAVAILABLE";
 }>;
 
 type MemoryPreparationStage =
   | "aggregationProviderMs"
   | "controlMs"
+  | "controlScreenMs"
   | "deterministicAggregationMs"
   | "historyRelevanceMs"
   | "localRetrievalMs"
@@ -300,6 +310,7 @@ function createMemoryPreparationTimings(clock: () => number): MemoryPreparationT
   const stages: Record<MemoryPreparationStage, number> = {
     aggregationProviderMs: 0,
     controlMs: 0,
+    controlScreenMs: 0,
     deterministicAggregationMs: 0,
     historyRelevanceMs: 0,
     localRetrievalMs: 0,
@@ -372,7 +383,8 @@ function withMemoryPreparationEvidence(
   timings: MemoryPreparationTimings,
   queryResolverExecution: MemoryQueryResolverExecution | null = null,
   historyRelevance: Readonly<{ result: MemoryHistoryRelevanceResult; removedCount: number }> | null = null,
-  admissionBudget: MemoryAdmissionBudgetEvidence | null = null
+  admissionBudget: MemoryAdmissionBudgetEvidence | null = null,
+  controlScreen: MemoryControlScreenResult | null = null
 ): MemoryPreparingAttemptResult {
   const latency = timings.finish();
   let budget = result.budgetSnapshot;
@@ -447,6 +459,32 @@ function withMemoryPreparationEvidence(
         ? { componentMetrics: { ...budget.componentMetrics, ...utilityExecutionMetricEvidence(utilityExecutions) } } : {})
     };
   }
+  if (controlScreen) {
+    const utilityExecutions = [
+      ...(Array.isArray(budget.utilityExecutions) ? budget.utilityExecutions : []),
+      { externalCall: controlScreen.diagnostics.externalCallCount > 0,
+        externalCallCount: controlScreen.diagnostics.externalCallCount,
+        reason: controlScreen.reason, role: "MEMORY_CONTROL_SCREEN",
+        state: controlScreen.status }
+    ];
+    budget = {
+      ...budget,
+      controlScreen: {
+        ...controlScreen.diagnostics,
+        reason: controlScreen.reason,
+        state: controlScreen.status,
+        version: MEMORY_CONTROL_SCREEN_VERSION
+      },
+      utilityExecutions,
+      utilityEgressMode: budget.utilityEgressMode === "CONSENTED_EXTERNAL" ||
+        controlScreen.diagnostics.bindingCount > 0
+        ? "CONSENTED_EXTERNAL" : "LOCAL_ONLY",
+      ...(typeof budget.componentMetrics === "object" && budget.componentMetrics !== null &&
+        !Array.isArray(budget.componentMetrics)
+        ? { componentMetrics: { ...budget.componentMetrics,
+            ...utilityExecutionMetricEvidence(utilityExecutions) } } : {})
+    };
+  }
   return {
     ...result,
     budgetSnapshot: {
@@ -456,6 +494,7 @@ function withMemoryPreparationEvidence(
       ...(admissionBudget ?? {}),
       aggregationProviderCalls: budgetUtilityCallCount(budget, "MEMORY_AGGREGATE"),
       controlProviderCalls: budgetUtilityCallCount(budget, "MEMORY_CONTROL"),
+      controlScreenProviderCalls: budgetUtilityCallCount(budget, "MEMORY_CONTROL_SCREEN"),
       historyRelevanceProviderCalls: budgetUtilityCallCount(budget, "MEMORY_HISTORY_RELEVANCE"),
       memoryPrepareLatencyBucket: memoryPreparationLatencyBucket(latency.memoryPrepareMs),
       queryEmbeddingProviderCalls: budgetUtilityCallCount(budget, "MEMORY_QUERY_EMBED"),
@@ -919,22 +958,28 @@ function candidateMap(
 
 function attemptItems(
   pack: MemoryContextPack,
+  standing: readonly MemoryCoreCandidate[],
   core: readonly MemoryCoreCandidate[],
   dynamic: readonly MemoryRankedCandidate[],
   plan: MemoryRetrievalPlan,
   factPlan: MemoryRetrievalPlan
 ): readonly MemoryPreparingItemInput[] {
   const candidates = candidateMap(core, dynamic);
+  const standingCandidates = candidateMap(standing, []);
   return pack.items.map((packed): MemoryPreparingItemInput => {
-    const candidate = candidates.get(`${packed.itemType}:${packed.itemId}`);
+    const key = `${packed.itemType}:${packed.itemId}`;
+    const candidate = packed.section === "STANDING"
+      ? standingCandidates.get(key)
+      : candidates.get(key);
     if (!candidate) throw new Error("memory_retrieval_pack_identity_invalid");
+    const standingFact = packed.section === "STANDING";
     const itemPlan = packed.evidenceType === "pattern" ? factPlan : plan;
     const base = {
       exactItemId: packed.itemId,
       exactSafeText: packed.exactSafeText,
       featureSnapshot: {
         ...candidate.featureSnapshot,
-        aggregationRequested: itemPlan.aggregationRequested,
+        aggregationRequested: standingFact ? false : itemPlan.aggregationRequested,
         derived: packed.derived,
         documentTime: packed.documentTime,
         eventTimeEnd: packed.eventTimeEnd,
@@ -971,12 +1016,12 @@ function attemptItems(
         ...(candidate.historyEvidenceView
           ? { historyEvidenceView: candidate.historyEvidenceView }
           : {}),
-        includePatterns: packed.tier !== "CORE" && itemPlan.includePatterns,
+        includePatterns: !standingFact && packed.tier !== "CORE" && itemPlan.includePatterns,
         lifecycleState: candidate.metadata.lifecycleState,
         matchedSegmentId: candidate.matchedSegmentId ?? null,
         matchedSegmentPosition: candidate.matchedSegmentPosition ?? null,
-        retrievalMode: itemPlan.mode,
-        temporalIntent: itemPlan.temporalIntent,
+        retrievalMode: standingFact ? "TARGETED_CURRENT" : itemPlan.mode,
+        temporalIntent: standingFact ? "CURRENT" : itemPlan.temporalIntent,
         tier: packed.tier,
         ...(packed.tier === "CORE" ? { responsePreferenceCore: true } : {}),
         validFrom: packed.validFrom,
@@ -1489,12 +1534,12 @@ function memoryActionAnswerResult(
   }
   if (control.intent.action === "NONE") return MEMORY_ACTION_NO_COMMIT_RESULT;
   if (!actionResult || actionResult.operation !== control.intent.action) {
-    return { operation: control.intent.action, status: "UNAVAILABLE", version: 1 };
+    return { operation: control.intent.action, status: "UNAVAILABLE", version: MEMORY_ACTION_ANSWER_RESULT_VERSION };
   }
   return {
     operation: actionResult.operation,
     status: actionResult.status,
-    version: 1
+    version: MEMORY_ACTION_ANSWER_RESULT_VERSION
   };
 }
 
@@ -1542,6 +1587,58 @@ function admissionDeadlineAttempt(
     utilityExecutions: results.map(({ result, role }) =>
       utilityEvidence(role, result))
   });
+}
+
+function standingDeadlineAttempt(
+  expected: MemoryRunRetrievalExpectedSnapshot,
+  cache: MemoryRunControlCache,
+  attemptId: string,
+  standing: readonly MemoryCoreCandidate[],
+  plan: MemoryRetrievalPlan,
+  request: NormalizedRunRequest,
+  now: Date,
+  utilities: Parameters<typeof admissionDeadlineAttempt>[3] = []
+): MemoryPreparingAttemptResult {
+  const fallback = admissionDeadlineAttempt(expected, cache, attemptId, utilities);
+  if (standing.length === 0) return fallback;
+  try {
+    const pack = packMemoryPersonalContext({
+      expanded: [],
+      maximumTokens: normalizedRequestPersonalContextTokenLimit(request),
+      now,
+      plan,
+      ranked: [],
+      standing
+    });
+    if (!pack.text || pack.items.length === 0) return {
+      ...fallback,
+      budgetSnapshot: { ...fallback.budgetSnapshot, omissionCounts: pack.omissionCounts }
+    };
+    const items = attemptItems(pack, standing, [], [], plan, plan);
+    return {
+      budgetSnapshot: {
+        ...fallback.budgetSnapshot,
+        budgetProfile: pack.budgetProfile,
+        candidateCount: pack.candidateCount,
+        hardCapTokens: pack.hardCapTokens,
+        itemCount: items.length,
+        omissionCounts: pack.omissionCounts,
+        packedTokens: pack.approxTokens,
+        packerVersion: pack.packerVersion,
+        plan: planEvidence(plan),
+        providerTokenLimit: pack.providerTokenLimit,
+        reason: "memory_admission_deadline_standing_only",
+        targetTokens: pack.targetTokens
+      },
+      degradationCode: "memory_admission_deadline_standing_only",
+      items,
+      outcome: "DEGRADED",
+      preparedContext: { approxTokens: pack.approxTokens, text: pack.text },
+      querySnapshot: plan.originalSanitizedQuery
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 function settingsDriftFailedSafeBudget(
@@ -2429,6 +2526,9 @@ export function createMemoryRunRetrievalService(
       const historyRelevanceState: {
         execution: Readonly<{ result: MemoryHistoryRelevanceResult; removedCount: number }> | null
       } = { execution: null };
+      const controlScreenState: { execution: MemoryControlScreenResult | null } = {
+        execution: null
+      };
       const admissionBudgetState: { evidence: MemoryAdmissionBudgetEvidence | null } = {
         evidence: null
       };
@@ -2483,6 +2583,23 @@ export function createMemoryRunRetrievalService(
         now: input.now,
         timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
       });
+      let standingFacts: readonly MemoryCoreCandidate[] = [];
+      let standingReady = false;
+      let standingSafe = true;
+      const deadlineAttempt = (
+        utilities: Parameters<typeof admissionDeadlineAttempt>[3] = []
+      ): MemoryPreparingAttemptResult => standingReady && standingSafe
+        ? standingDeadlineAttempt(
+            input.expected,
+            controlCache,
+            input.attemptId,
+            standingFacts,
+            provisionalPlan,
+            input.normalizedRequest,
+            input.now,
+            utilities
+          )
+        : admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, utilities);
       if (!provisionalPlan.queryPresent) {
         return emptyAttempt(input.expected, "FAILED_SAFE", querySafety.tooLong
           ? "memory_query_input_too_long"
@@ -2614,6 +2731,25 @@ export function createMemoryRunRetrievalService(
         return emptyAttempt(input.expected, "DISABLED", snapshot.reason, null,
           cachedActionEvidence);
       }
+      const loadStanding = async (): Promise<void> => {
+        if (typeof repository.loadStandingFacts !== "function" ||
+          !input.expected.settings.useMemoryFacts) return;
+        try {
+          standingFacts = await runBoundedMemoryRead(
+            deadline,
+            MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+            (standingSignal) => abortableRead(
+              repository.loadStandingFacts(snapshot),
+              standingSignal
+            )
+          );
+          standingReady = true;
+        } catch {
+          standingFacts = [];
+          standingReady = false;
+        }
+      };
+      const standingRead = loadStanding();
       const baselineReadPlan = deterministicBaseReadPlan(
         input,
         provisionalPlan.originalSanitizedQuery,
@@ -2700,6 +2836,26 @@ export function createMemoryRunRetrievalService(
       });
       let settledControl: MemoryControlResult | null = null;
       let controlBindingId: string | undefined;
+      const screenPromise: Promise<MemoryControlScreenResult | null> =
+        actionControlRequested && !controlCache.control && options.control &&
+        actionAdmission.state === "SEMANTIC_CANDIDATE" && options.utilities?.controlScreen
+          ? timings.measure("controlScreenMs", () =>
+              runOptionalMemoryUtility(deadline, "CONTROL_SCREEN", (utilitySignal) =>
+                options.utilities!.controlScreen!({
+                  attemptId: input.attemptId,
+                  context: memoryControlContext(input, querySafety.safeText, []),
+                  signal: utilitySignal,
+                  userId: input.userId
+                })))
+              .catch((error: unknown): MemoryControlScreenResult => ({
+                status: "UNAVAILABLE",
+                reason: isMemoryDeadlineExhaustion(error)
+                  ? "memory_control_screen_deadline_exceeded"
+                  : "memory_control_screen_unavailable",
+                possibleCommand: true,
+                diagnostics: emptyMemoryControlScreenDiagnostics()
+              }))
+          : Promise.resolve(null);
       const controlPromise = (async (): Promise<MemoryControlResult> => {
         if (!actionControlRequested) {
           return {
@@ -2707,7 +2863,6 @@ export function createMemoryRunRetrievalService(
             status: "UNAVAILABLE"
           };
         }
-        const refs = await controlRefsPromise;
         if (controlCache.control) return controlCache.control;
         if (!options.control) {
           return {
@@ -2715,6 +2870,12 @@ export function createMemoryRunRetrievalService(
             status: "UNAVAILABLE"
           };
         }
+        controlScreenState.execution = await screenPromise;
+        if (controlScreenState.execution?.status === "READY" &&
+          !controlScreenState.execution.possibleCommand) {
+          return { reason: "memory_action_control_screened_out", status: "UNAVAILABLE" };
+        }
+        const refs = await controlRefsPromise;
         const context = memoryControlContext(
           input,
           querySafety.safeText,
@@ -2768,6 +2929,10 @@ export function createMemoryRunRetrievalService(
         speculativeQueryResolutionSettled = false;
         speculativeQueryResolutionPromise = (async () => {
           try {
+            if (controlCache.control?.status === "UNAVAILABLE" &&
+              controlCache.control.reason === "memory_action_control_screened_out") return null;
+            const screen = await screenPromise;
+            if (screen?.status === "READY" && !screen.possibleCommand) return null;
             const [sparse, dense] = await Promise.all([
               speculativeBaselinePromise,
               speculativeDensePromise
@@ -2793,11 +2958,13 @@ export function createMemoryRunRetrievalService(
           speculativeQueryResolutionSettled = true;
         });
       }
-      const [controlRefs, queryEmbedding, control] = await Promise.all([
-        controlRefsPromise,
+      const [queryEmbedding, control] = await Promise.all([
         queryEmbeddingPromise,
         controlPromise
       ]);
+      const controlRefs = control.status === "UNAVAILABLE" &&
+        control.reason === "memory_action_control_screened_out"
+        ? [] : await controlRefsPromise;
       const controlContext = memoryControlContext(
         input,
         querySafety.safeText,
@@ -2810,7 +2977,7 @@ export function createMemoryRunRetrievalService(
         controlCache.controlReuseScopeHash = controlReuseScopeHash;
       }
       if (deadline.expired()) {
-        return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [{
+        return deadlineAttempt([{
           result: queryEmbedding,
           role: "MEMORY_QUERY_EMBED"
         }]);
@@ -2819,6 +2986,8 @@ export function createMemoryRunRetrievalService(
         let resolvedAction: MemoryActionFeedback | null = null;
         if (control.status === "READY" && options.actionExecutor &&
           control.intent.action !== "NONE") {
+          // A mutation can supersede a fact loaded before control settled.
+          standingSafe = false;
           try {
             resolvedAction = await options.actionExecutor.execute({
               admissionDeadlineAtMs: controlCache.admissionDeadlineAtMs!,
@@ -2846,8 +3015,14 @@ export function createMemoryRunRetrievalService(
       const actionResult = actionControlRequested
         ? controlCache.actionResult ?? null
         : null;
+      await standingRead;
+      if (!standingSafe) {
+        standingReady = false;
+        await loadStanding();
+        standingSafe = standingReady;
+      }
       if (deadline.expired()) {
-        return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [{
+        return deadlineAttempt([{
           result: queryEmbedding,
           role: "MEMORY_QUERY_EMBED"
         }]);
@@ -3043,6 +3218,20 @@ export function createMemoryRunRetrievalService(
         admittedSourceKinds.includes("HISTORY");
       const preferencesRequested = input.expected.settings.useMemoryFacts &&
         plan.applyResponsePreferences;
+      let standingSelectedKeys = new Set<string>();
+      if (standingReady && standingSafe && standingFacts.length > 0) {
+        const standingSelection = packMemoryPersonalContext({
+          expanded: [],
+          maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest),
+          now: input.now,
+          plan,
+          questionDirectedTemporalFallback: broadPlannerFallback,
+          ranked: [],
+          standing: standingFacts
+        });
+        standingSelectedKeys = new Set(standingSelection.items.map((item) =>
+          `${item.itemType}:${item.itemId}`));
+      }
 
       let local: MemoryLocalRetrievalResult;
       let broadLexicalFallbackUsed = false;
@@ -3109,7 +3298,7 @@ export function createMemoryRunRetrievalService(
         }
       } catch (error) {
         if (deadline.expired()) {
-          return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [{
+          return deadlineAttempt([{
             result: queryEmbedding,
             role: "MEMORY_QUERY_EMBED"
           }]);
@@ -3147,12 +3336,31 @@ export function createMemoryRunRetrievalService(
       const dynamicAllowed = factsRequested || historyRequested;
       const dynamicLaneResults = dynamicAllowed ? local.laneResults : [];
       const fused = fuseMemoryRetrievalCandidates(plan, dynamicLaneResults, input.now);
+      const searchMatchedKeys = new Set(fused.map((candidate) =>
+        `${candidate.itemType}:${candidate.itemId}`));
+      const selectedStanding = standingFacts.map((entry): MemoryCoreCandidate => {
+        const key = `${entry.candidate.itemType}:${entry.candidate.itemId}`;
+        return {
+          ...entry,
+          candidate: {
+            ...entry.candidate,
+            featureSnapshot: {
+              ...entry.candidate.featureSnapshot,
+              standingFactSearchMatched: standingSelectedKeys.has(key) &&
+                searchMatchedKeys.has(key)
+            }
+          }
+        };
+      });
       const eligibleCore = preferencesRequested
-        ? local.core.filter(isEligibleMemoryResponsePreferenceCore)
+        ? local.core.filter((entry) =>
+            isEligibleMemoryResponsePreferenceCore(entry) &&
+            !standingSelectedKeys.has(`${entry.candidate.itemType}:${entry.candidate.itemId}`))
         : [];
       const coreKeys = new Set(eligibleCore.map(({ candidate }) =>
         `${candidate.itemType}:${candidate.itemId}`));
       const dynamicFused = fused.filter((candidate) =>
+        !standingSelectedKeys.has(`${candidate.itemType}:${candidate.itemId}`) &&
         !coreKeys.has(`${candidate.itemType}:${candidate.itemId}`));
       let dynamicCandidates: readonly MemoryRankedCandidate[] = dynamicFused;
       let navigationExpanded: readonly MemoryExpandedCandidate[] = [];
@@ -3286,7 +3494,7 @@ export function createMemoryRunRetrievalService(
           }
         } catch (error) {
           if (deadline.expired()) {
-            return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [{
+            return deadlineAttempt([{
               result: queryEmbedding,
               role: "MEMORY_QUERY_EMBED"
             }]);
@@ -3364,7 +3572,7 @@ export function createMemoryRunRetrievalService(
       })();
       const initialRelevance = await relevancePromise;
       if (deadline.expired()) {
-        return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+        return deadlineAttempt([
           { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
           {
             result: queryResolverState.execution?.result ?? null,
@@ -3422,7 +3630,7 @@ export function createMemoryRunRetrievalService(
           ));
         } catch (error) {
           if (deadline.expired()) {
-            return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+            return deadlineAttempt([
               { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
               {
                 result: queryResolverState.execution?.result ?? null,
@@ -3541,7 +3749,7 @@ export function createMemoryRunRetrievalService(
         admittedSourceKinds
       );
       if (deadline.expired()) {
-        return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+        return deadlineAttempt([
           { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
           {
             result: queryResolverState.execution?.result ?? null,
@@ -3556,9 +3764,11 @@ export function createMemoryRunRetrievalService(
           expanded: dynamicExpanded,
           factPlan,
           maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest),
+          now: input.now,
           plan,
           questionDirectedTemporalFallback: broadPlannerFallback,
-          ranked: selectedDynamic
+          ranked: selectedDynamic,
+          standing: selectedStanding
         });
         const resolverAtAttach = finalResolverApplicable
           ? queryResolverState.execution
@@ -3606,7 +3816,7 @@ export function createMemoryRunRetrievalService(
         });
       });
       if (deadline.expired()) {
-        return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+        return deadlineAttempt([
           { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
           {
             result: queryScopeDecision.execution?.result ?? null,
@@ -3739,7 +3949,7 @@ export function createMemoryRunRetrievalService(
           commonEvidence
         );
       }
-      const items = attemptItems(pack, selectedCore, selectedDynamic, plan, factPlan);
+      const items = attemptItems(pack, selectedStanding, selectedCore, selectedDynamic, plan, factPlan);
       return {
         budgetSnapshot: {
           admissionVersion: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION,
@@ -3777,8 +3987,18 @@ export function createMemoryRunRetrievalService(
         deadline.dispose();
       }
       })();
-      return withMemoryPreparationEvidence(result, timings, queryResolverState.execution,
-        historyRelevanceState.execution, admissionBudgetState.evidence);
+      const answerResult = input.memoryCommandQueued && deterministicRead
+        ? {
+            ...result,
+            budgetSnapshot: {
+              ...result.budgetSnapshot,
+              memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT
+            }
+          }
+        : result;
+      return withMemoryPreparationEvidence(answerResult, timings, queryResolverState.execution,
+        historyRelevanceState.execution, admissionBudgetState.evidence,
+        controlScreenState.execution);
     }
   });
 }

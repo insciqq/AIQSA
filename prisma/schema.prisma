@@ -548,6 +548,7 @@ enum MemoryPauseScope {
 }
 
 enum MemoryJobKind {
+  MEMORY_COMMAND
   INDEX_HISTORY
   EXTRACT_FACTS
   CONSOLIDATE_CANDIDATE
@@ -559,6 +560,24 @@ enum MemoryJobKind {
   RECLASSIFY_FACTS
   RESOLVE_FACT_RELATIONS
   SYNTHESIZE_MEMORIES
+}
+
+enum MemoryCommandStatus {
+  PENDING
+  RUNNING
+  COMMITTED
+  REJECTED
+  AMBIGUOUS
+  FAILED
+  UNKNOWN
+  STALE
+}
+
+enum MemoryCommandOperation {
+  UNKNOWN
+  SAVE
+  UPDATE
+  FORGET
 }
 
 enum MemoryJobState {
@@ -5364,7 +5383,7 @@ model UserMemorySettings {
   acceptedUtilityEgressAt          DateTime?
   synthesisEnabled                 Boolean                        @default(true)
   synthesisEnabledAt               DateTime?                      @default(now())
-  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v4") @db.VarChar(64)
+  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v5") @db.VarChar(64)
   lastSynthesisAt                  DateTime?
   decayEnabled                     Boolean                        @default(true)
   decayPolicyVersion               String?                        @default("memory-decay-v1") @db.VarChar(64)
@@ -6530,12 +6549,20 @@ model MemoryJob {
   idempotencyFingerprint   String         @db.VarChar(128)
   acceptedResultHash       String?        @db.VarChar(128)
   operationalCounters      Json?
+  commandSequence          Int?
+  commandStatus            MemoryCommandStatus?
+  commandOperation         MemoryCommandOperation?
+  /// Private bounded classifier checkpoint; never a client projection.
+  commandIntent            Json?
+  /// Private action receipt/checkpoint, projected only through an allowlist.
+  commandResult            Json?
   createdAt                DateTime       @default(now())
   updatedAt                DateTime       @default(now()) @updatedAt
   completedAt              DateTime?
 
   @@unique([userId, id])
   @@unique([userId, idempotencyFingerprint])
+  @@unique([userId, commandSequence])
   @@unique([userId, id, chatId, branchGeneration, sourceRevision, sourceHash], map: "MemoryJob_source_identity_key")
   @@index([userId, state, nextAttemptAt, createdAt])
   @@index([userId, chatId, branchGeneration, sourceRevision])

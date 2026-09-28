@@ -6,9 +6,9 @@ import type {
 import { memorySha256 } from "../persistence/lexical";
 
 export const MEMORY_SYNTHESIS_PIPELINE_VERSION = "memory-synthesis-v2";
-export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v4";
-export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v4";
-export const MEMORY_SYNTHESIS_SCHEMA_VERSION = "memory-synthesis-schema-v2";
+export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v5";
+export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v7";
+export const MEMORY_SYNTHESIS_SCHEMA_VERSION = "memory-synthesis-schema-v3";
 export const MEMORY_SYNTHESIS_RETRIEVAL_CONFIG_FINGERPRINT =
   "memory-synthesis-retrieval-none-v1";
 
@@ -157,6 +157,7 @@ export type MemorySynthesisCluster = Readonly<{
   entityRefs: readonly string[];
   key: string;
   sources: readonly MemorySynthesisBoundSource[];
+  subjectKey: string;
 }>;
 
 export type MemorySynthesisPlan = Readonly<{
@@ -239,38 +240,25 @@ export function memorySynthesisJobFingerprint(input: Readonly<{
 
 export function memorySynthesisPatternFingerprint(input: Readonly<{
   canonicalPatternIdentity: string;
-  sourceSetFingerprint: string;
+  sourceEligibilityHashes: readonly string[];
 }>): string {
   return memorySha256({
     canonicalPatternIdentity: input.canonicalPatternIdentity,
     domain: "aiqsa.memory.synthesis-pattern",
     policyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
-    sourceSetFingerprint: input.sourceSetFingerprint,
-    version: 2
+    sourceEligibilityHashes: [...input.sourceEligibilityHashes].sort(),
+    version: 3
   });
 }
 
 function clusterKey(source: MemorySynthesisSource): string {
-  // Self automatic facts may share an owner bucket. Relationship context must
-  // retain its exact grounded subject anchor, otherwise distinct people and
-  // the owner can silently enter one Dream cluster.
-  const entityAnchor = [...source.entityIds].sort()[0] ?? null;
+  // Only a grounded subject can join facts. Mentioned entities alone do not
+  // identify a subject, especially for explicit Saved Memories.
   const subjectEntityAnchor = [...(source.subjectEntityIds ?? [])].sort()[0] ?? null;
-  const subject = source.sourceMode === "AUTOMATIC" &&
-    source.subjectScope !== "USER_RELATIONSHIP_CONTEXT"
-    ? "owner:automatic-current-user"
-    : source.subjectScope === "USER_RELATIONSHIP_CONTEXT" && subjectEntityAnchor
-      ? `subject-entity:${subjectEntityAnchor}`
-    : source.subjectKey
-      ? `subject:${source.subjectKey}`
-      : entityAnchor
-        ? `entity:${entityAnchor}`
-        : `fact:${source.canonicalKey}`;
-  return [
-    subject,
-    `category:${source.category}`,
-    `modality:${source.modality}`
-  ].join("|");
+  if (source.subjectScope === "CURRENT_USER") return "owner:current-user";
+  if (subjectEntityAnchor) return `subject-entity:${subjectEntityAnchor}`;
+  if (source.subjectKey) return `subject:${source.subjectKey}`;
+  return `fact:${source.canonicalKey}`;
 }
 
 function diversityScore(sources: readonly MemorySynthesisBoundSource[]): number {
@@ -279,26 +267,41 @@ function diversityScore(sources: readonly MemorySynthesisBoundSource[]): number 
   return Math.min(messages.size, 8) * 2 + Math.min(chats.size, 8);
 }
 
-/** A Dream source is independent only when it has its own direct evidence
- * root. Automatic facts inherit Message roots; an explicit user-authored
- * version is its own root. This deliberately prevents several facts extracted
- * from one message from satisfying the three-source PATTERN threshold. */
+/** Both automatic and explicit sources need current direct user messages.
+ * A saved version or repeated receipt is never an independent root. */
 export function memorySynthesisSupportRootKeys(
-  source: Pick<MemorySynthesisSource,
-    "sourceMessageIds" | "sourceMode" | "versionId">
+  source: Pick<MemorySynthesisSource, "sourceMessageIds">
 ): readonly string[] {
-  return source.sourceMode === "EXPLICIT"
-    ? Object.freeze([`explicit:${source.versionId}`])
-    : Object.freeze([...new Set(source.sourceMessageIds)]
-        .sort()
-        .map((messageId) => `message:${messageId}`));
+  return Object.freeze([...new Set(source.sourceMessageIds)]
+    .sort()
+    .map((messageId) => `message:${messageId}`));
 }
 
 export function memorySynthesisDistinctSupportRootCount(
   sources: readonly Pick<MemorySynthesisSource,
-    "sourceMessageIds" | "sourceMode" | "versionId">[]
+    "factId" | "sourceMessageIds">[]
 ): number {
-  return new Set(sources.flatMap(memorySynthesisSupportRootKeys)).size;
+  const rootsByFact = new Map<string, Set<string>>();
+  for (const source of sources) {
+    const roots = rootsByFact.get(source.factId) ?? new Set<string>();
+    for (const root of memorySynthesisSupportRootKeys(source)) roots.add(root);
+    rootsByFact.set(source.factId, roots);
+  }
+  const assignedFactByRoot = new Map<string, string>();
+  const assign = (factId: string, seen: Set<string>): boolean => {
+    for (const root of rootsByFact.get(factId) ?? []) {
+      if (seen.has(root)) continue;
+      seen.add(root);
+      const assigned = assignedFactByRoot.get(root);
+      if (assigned === undefined || assign(assigned, seen)) {
+        assignedFactByRoot.set(root, factId);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const factId of rootsByFact.keys()) assign(factId, new Set());
+  return assignedFactByRoot.size;
 }
 
 /** Deterministic, bounded clustering is deliberately conservative. The model
@@ -350,6 +353,7 @@ function buildMemorySynthesisPlanWithMinimum(input: Readonly<{
     anchorMs: number;
     key: string;
     sources: MemorySynthesisBoundSource[];
+    subjectKey: string;
   }>>();
   for (const source of bound) {
     const semanticKey = clusterKey(source);
@@ -360,7 +364,8 @@ function buildMemorySynthesisPlanWithMinimum(input: Readonly<{
       window = {
         anchorMs: source.observedAt.getTime(),
         key: `${semanticKey}|window:${source.observedAt.toISOString()}`,
-        sources: []
+        sources: [],
+        subjectKey: semanticKey
       };
       windows.push(window);
       groups.set(semanticKey, windows);
@@ -372,11 +377,12 @@ function buildMemorySynthesisPlanWithMinimum(input: Readonly<{
       sources.length >= MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES &&
       memorySynthesisDistinctSupportRootCount(sources) >=
         MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES)
-    .map(({ key, sources }) => ({
+    .map(({ key, sources, subjectKey }) => ({
       entityRefs: [...new Set(sources.flatMap(({ entityRefs }) => entityRefs))]
         .sort().slice(0, 8),
       key,
-      sources: Object.freeze(sources)
+      sources: Object.freeze(sources),
+      subjectKey
     }))
     .sort((left, right) =>
       diversityScore(right.sources) - diversityScore(left.sources) ||

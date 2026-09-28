@@ -271,6 +271,27 @@ describe("Independent Memory utility assignment", () => {
     });
   });
 
+  it("keeps the new optional screen outside the policy identity while disabled", async () => {
+    const baseline = await resolve();
+    const explicitlyDisabled = await resolveCurrentMemoryUtilityPolicy(
+      policyDb, "user-1", { embeddingProviderModelId: null }, {
+        resolveMemoryRole: async () => ({ credentialScope: "installation", ok: true,
+          policyVersion: 7, providerModelId: "memory-model",
+          reasoningEffort: "low", role: memoryRole() }),
+        resolveSystemRole: async () => ({ credentialScope: "installation", ok: true,
+          policyVersion: 20, providerModelId: "answer-model",
+          reasoningEffort: "high", role: systemRole() }),
+        resolveRerankerRole: async () => ({ code: "reranker_model_absent", ok: false,
+          selectedProviderModelId: null }),
+        resolveScreenDecisionRole: async () => ({ code: "decision_feature_disabled",
+          ok: false, selectedProviderModelId: "jev" })
+      }
+    );
+    expect(baseline.targets.has("MEMORY_CONTROL_SCREEN")).toBe(false);
+    expect(explicitlyDisabled.targets.has("MEMORY_CONTROL_SCREEN")).toBe(false);
+    expect(explicitlyDisabled.fingerprint).toBe(baseline.fingerprint);
+  });
+
   it("does not activate Memory generation when only the System model is assigned", async () => {
     const policy = await resolve(false);
     expect(policy.targets.has("MEMORY_HISTORY_CLASSIFY")).toBe(false);

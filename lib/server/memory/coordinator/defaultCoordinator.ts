@@ -1,3 +1,4 @@
+import { createPrismaMemoryCommandHandler } from "../commands/worker";
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryEmbeddingHandler } from
@@ -127,6 +128,7 @@ const defaultFactExtractionHandler = createPrismaMemoryFactExtractionHandler(
   defaultMemoryExecutionAuthority,
   prisma
 );
+const defaultMemoryCommandHandler = createPrismaMemoryCommandHandler(prisma);
 const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
 const defaultMemoryReclassificationHandler =
   createPrismaMemoryReclassificationHandler(prisma);
@@ -190,6 +192,7 @@ export function ensureDefaultMemoryCoreHandlersRegistered(): void {
 
 export function ensureDefaultMemoryHandlersRegistered(): void {
   ensureDefaultMemoryCoreHandlersRegistered();
+  ensureJobHandlerRegistered(defaultMemoryCommandHandler, "memory_default_command_handler_conflict");
   ensureDeletionHandlerRegistered(
     memoryHistoryClearDeletionHandler,
     "memory_default_history_clear_handler_conflict"

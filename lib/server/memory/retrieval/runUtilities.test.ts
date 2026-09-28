@@ -853,6 +853,16 @@ describe("Memory run utility execution", () => {
       userId: "user-1"
     });
 
+    const command = await service.embedQuery({
+      jobAttemptCount: 1,
+      owner: { memoryJobId: "command-job-1", type: "JOB" },
+      profile, purpose: "ACTION_TARGET", query: "I prefer concise replies.",
+      signal: new AbortController().signal, userId: "user-1"
+    });
+    expect(command).toMatchObject({ bindingId: "embedding-binding-3", status: "READY" });
+    expect(executionService.admission.bind).toHaveBeenNthCalledWith(3, "user-1",
+      expect.objectContaining({ ordinal: 3, owner: { memoryJobId: "command-job-1", type: "JOB" } }));
+
     expect(first).toMatchObject({ bindingId: "embedding-binding-1", status: "READY" });
     expect(second).toMatchObject({ bindingId: "embedding-binding-2", status: "READY" });
     expect(executionService.admission.bind).toHaveBeenNthCalledWith(

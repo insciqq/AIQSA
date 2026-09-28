@@ -224,6 +224,91 @@ function decode(
 }
 
 describe("Memory v5 semantic-frame decoder", () => {
+  it("admits a durable command preference only through semantic review", () => {
+    const quote = "Always explain architecture to me with a concrete example.";
+    const proposed = observation(quote, {
+      memory_type: "PREFERENCE",
+      semantic_frame: { ...frame, speech_act: "COMMAND" },
+      statement: "The user prefers architecture explanations with a concrete example.",
+      temporary: false
+    });
+    const durable = decode(quote, [proposed]);
+    expect(durable.rejections).toEqual([]);
+    expect(durable.candidates).toHaveLength(1);
+    const candidate = durable.candidates[0]!;
+    expect(memoryCandidateRequiresSemanticAdjudication(candidate)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, null)).toBe(false);
+    const decision = {
+      assertionStatus: "ASSERTED" as const, candidateRef: candidate.candidateRef,
+      confidenceBand: "HIGH" as const, entailment: "ENTAILED" as const,
+      entityRef: null, operation: "NO_RELATION" as const,
+      reasonCode: "durable_response_preference", subjectScope: "CURRENT_USER" as const,
+      targetRef: null, temporalPerspective: "CURRENT" as const
+    };
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, decision)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, {
+      ...decision, entailment: "UNKNOWN"
+    })).toBe(false);
+    const oneOff = decode(quote, [
+      { ...proposed, temporary: true },
+      { ...proposed, candidate_ref: "C2", memory_type: "PLAN" }
+    ]);
+    expect(oneOff.candidates).toEqual([]);
+    expect(oneOff.rejections).toEqual([
+      { candidateOrdinal: 0, reasonCode: "REJECT_FRAME_INELIGIBLE" },
+      { candidateOrdinal: 1, reasonCode: "REJECT_FRAME_INELIGIBLE" }
+    ]);
+  });
+
+  it("accepts exact list spans across lines and tabs but rejects other controls", () => {
+    const quote = "I use these services:\n\tOriole Cloud\n\tCedar Sync";
+    const accepted = decode(quote, [observation(quote, { statement: "I use Oriole Cloud and Cedar Sync." })]);
+    expect(accepted.rejections).toEqual([]);
+    expect(accepted.candidates[0]?.evidence[0]).toMatchObject({
+      quote, startOffset: 0, endOffset: quote.length
+    });
+    const rejected = decode(`${quote}\u000b`, [observation(quote, {
+      evidence: textRef(`${quote}\u000b`)
+    })]);
+    expect(rejected.rejections).toEqual([{
+      candidateOrdinal: 0, reasonCode: "REJECT_EVIDENCE_INVALID"
+    }]);
+  });
+
+  it("assigns bounded content-free reasons to each candidate refusal", () => {
+    const quote = "I own MacBook Air M4.";
+    const product = productObservation(quote);
+    const cases: readonly [string, Record<string, unknown>, string][] = [
+      ["evidence shape", { evidence: textRef("I\u000bown") }, "REJECT_EVIDENCE_INVALID"],
+      ["evidence target", { evidence: textRef("unrelated source") }, "REJECT_EVIDENCE_NOT_IN_TARGET"],
+      ["frame", { semantic_frame: { ...frame, subject_scope: "THIRD_PARTY" } }, "REJECT_FRAME_INELIGIBLE"],
+      ["usefulness", { future_useful: false }, "REJECT_NOT_USEFUL"],
+      ["entity", { entities: [{ aliases: [], canonical_label: "Ari", context_entity_ref: null,
+        entity_type: "PERSON", mention: textRef("Ari"), mention_kind: "NAMED",
+        qualifier_supports: [], role: "OBJECT" }] }, "REJECT_ENTITY_UNSUPPORTED"],
+      ["dependency", { dependency_refs: ["missing"] }, "REJECT_DEPENDENCY_UNSUPPORTED"],
+      ["temporal", { temporal: { expiration_intent: "NONE", normalization: { kind: "NONE" },
+        perspective: "CURRENT", raw_expression: textRef("tomorrow") } }, "REJECT_TEMPORAL_UNSUPPORTED"],
+      ["temporary", { temporal: { expiration_intent: "EXPLICIT", normalization: { kind: "NONE" },
+        perspective: "CURRENT", raw_expression: null } }, "REJECT_TEMPORARY"],
+      ["product identity", { ...product, identity: { ...(product.identity as object),
+        subject: { canonical_label: "Other product", entity_type: "DEVICE",
+          qualifiers: { brand: null, model: "Other product" } } } }, "REJECT_PRODUCT_IDENTITY_UNSUPPORTED"],
+      ["residence identity", { identity: { dimension_key: "primary", mode: "SLOT",
+        predicate_key: "residence", subject: { canonical_label: null, entity_type: "PERSON_SELF",
+          qualifiers: { brand: null, model: null } } }, value: { ...nullValue, kind: "primary",
+          place: "Other place" } }, "REJECT_RESIDENCE_IDENTITY_UNSUPPORTED"],
+      ["state", { ...product, value: { ...nullValue, state: "unknown_state" } }, "REJECT_STATE_UNSUPPORTED"],
+      ["identity", { ...product, value: { ...nullValue, state: null } }, "REJECT_IDENTITY_INVALID"]
+    ];
+    for (const [name, overrides, reasonCode] of cases) {
+      const plan = decode(quote, [observation(quote, overrides)]);
+      expect(plan.candidates, name).toEqual([]);
+      expect(plan.rejections, name).toEqual([{ candidateOrdinal: 0, reasonCode }]);
+      expect(reasonCode, name).toMatch(/^REJECT_[A-Z_]+$/u);
+    }
+  });
+
   describe("optional entity annotations on direct propositions", () => {
     const quote = "My Oriole workshop is on 2027-02-08.";
     const entity = {
@@ -402,7 +487,7 @@ describe("Memory v5 semantic-frame decoder", () => {
 
   it.each([
     ["SECRET", "REJECT_SECRET"],
-    ["UNCERTAIN", "REJECT_UNSUPPORTED"]
+    ["UNCERTAIN", "REJECT_AMBIGUOUS"]
   ])("keeps the %s classification fence", (sensitivity, reasonCode) => {
     const quote = "I use a hearing aid.";
     const plan = decode(quote, [observation(quote, { sensitivity, statement: quote })]);
@@ -926,7 +1011,7 @@ describe("Memory v5 semantic-frame decoder", () => {
         index === 2 ? { ...value, evidence: textRef("not in the source") } : value));
       expect(invalidEvidence.candidateOrdinals).toEqual([0, 1, 3, 4, 5, 6, 7]);
       expect(invalidEvidence.rejections).toEqual([
-        { candidateOrdinal: 2, reasonCode: "REJECT_UNSUPPORTED" },
+        { candidateOrdinal: 2, reasonCode: "REJECT_EVIDENCE_NOT_IN_TARGET" },
         { candidateOrdinal: 8, reasonCode: "REJECT_PACKET_OVERFLOW" }
       ]);
       expect(invalidEvidence.coverageEnd).toBe(text.indexOf(statements[8]!));
@@ -1030,7 +1115,7 @@ describe("Memory v5 semantic-frame decoder", () => {
       );
       // The boundary span starts in read-only preceding text of this page.
       expect(second.rejections).toEqual([
-        { candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }
+        { candidateOrdinal: 0, reasonCode: "REJECT_EVIDENCE_NOT_IN_TARGET" }
       ]);
       expect(second.candidates.map(({ evidence }) => evidence[0]!.startOffset))
         .toEqual([20_500]);
@@ -1118,7 +1203,7 @@ describe("Memory v5 semantic-frame decoder", () => {
     expect(result.candidates).toEqual([]);
     expect(result.rejections).toEqual([
       { candidateOrdinal: 0, reasonCode: "REJECT_LOW_CONFIDENCE" },
-      { candidateOrdinal: 1, reasonCode: "REJECT_UNSUPPORTED" }
+      { candidateOrdinal: 1, reasonCode: "REJECT_FRAME_INELIGIBLE" }
     ]);
   });
 
@@ -1318,7 +1403,7 @@ describe("Memory v5 semantic-frame decoder", () => {
     expect(assistantOnly.candidates).toEqual([]);
     expect(assistantOnly.rejections).toEqual([{
       candidateOrdinal: 0,
-      reasonCode: "REJECT_UNSUPPORTED"
+      reasonCode: "REJECT_EVIDENCE_NOT_IN_TARGET"
     }]);
   });
 
@@ -1615,7 +1700,7 @@ describe("Memory v5 semantic-frame decoder", () => {
     expect(plan.candidates).toEqual([]);
     expect(plan.rejections).toEqual([{
       candidateOrdinal: 0,
-      reasonCode: "REJECT_UNSUPPORTED"
+      reasonCode: "REJECT_ENTITY_UNSUPPORTED"
     }]);
   });
 

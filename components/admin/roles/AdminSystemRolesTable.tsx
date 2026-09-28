@@ -426,7 +426,7 @@ export function AdminSystemRolesTable({
 
       <RoleRow title="Relevance checks" testId="admin-role-decisions" status={roleStatus(policy.decisionModel ?? null)}
         statusLabel={policy.decisionModel ? policy.decisionModel.available ? "Ready" : "Unavailable" : "Off"}
-        description="Optional checks send the query and candidate context to this provider. Chat and retrieval work without them."
+        description="Optional checks can evaluate retrieval relevance and screen the current message for possible Memory commands. Chat and retrieval work without them."
         menu={[{ disabled: !policy.decisionModel || busy, label: "Turn off relevance checks",
           onSelect: () => void controller.assign({ decisionProviderModelId: null }, decisionUndo) }]}>
         <AdminRolePicker busy={busy} items={(catalog.decisionCandidates ?? []).map((model) => ({ group: "ready", id: model.id, label: label(model) }))}

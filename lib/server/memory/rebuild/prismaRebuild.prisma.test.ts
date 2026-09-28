@@ -12,7 +12,9 @@ import type {
   MemoryJobClaim
 } from "../coordinator/types";
 import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
+import { loadMemoryLexicalProjectionCanonicalEntry } from "../searchProjection/repository";
 import {
   MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
   type MemoryItemEmbeddingPin
@@ -946,6 +948,68 @@ async function createHistoryDerivative(input: Readonly<{
   };
 }
 
+async function createToolEventDerivative(input: Readonly<{
+  activeIndexGenerationId: string;
+  userId: string;
+}>) {
+  const source = await createHistoryDerivative({
+    ...input,
+    createdAt: new Date("2026-08-28T12:00:00.000Z"),
+    label: "tool alias",
+    sourceRevision: 1
+  });
+  const run = await prisma.modelRun.create({
+    data: {
+      assistantMessageId: source.assistantMessageId,
+      chatId: source.chatId,
+      modelId: "memory-tool-test-model",
+      normalizedRequest: {},
+      provider: "memory-tool-test-provider",
+      status: "complete",
+      userId: input.userId,
+      userMessageId: source.userMessageId
+    }
+  });
+  const occurredAt = new Date("2026-08-28T12:00:02.000Z");
+  const call = await prisma.modelRunToolCall.create({
+    data: {
+      arguments: {}, completedAt: occurredAt, modelRunId: run.id,
+      ordinal: 0, providerCallId: "tool-alias-call", result: { task: "QX-418" },
+      roundIndex: 0, state: "complete", toolName: "filesystem.write"
+    }
+  });
+  const safeProjectedText = "Created the report.";
+  const normalizedSafeSearchText = "qx 418 created the report";
+  const event = await prisma.memoryToolEvent.create({
+    data: {
+      assistantMessageId: source.assistantMessageId,
+      branchGeneration: 0,
+      chatId: source.chatId,
+      contentHash: memorySha256({ safeProjectedText, structuredIdentifiers: { task: "QX-418" } }),
+      evidenceRootHash: memorySha256({ callId: call.id }),
+      id: randomUUID(),
+      languageCode: "en",
+      modelRunId: run.id,
+      modelRunToolCallId: call.id,
+      normalizedSafeSearchText,
+      occurredAt,
+      operation: "write",
+      outcome: "SUCCESS",
+      projectionVersion: MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+      redactionState: "NOT_NEEDED",
+      safeProjectedText,
+      safetyClass: "NORMAL",
+      sourceCallUpdatedAtAtCreation: call.updatedAt,
+      sourcePayloadHash: memorySha256({ task: "QX-418" }),
+      sourceRevisionAtCreation: 1,
+      structuredIdentifiers: { task: "QX-418" },
+      toolName: "filesystem.write",
+      userId: input.userId
+    }
+  });
+  return { event, source };
+}
+
 type FeedbackFixtureTarget =
   | Readonly<{ factId: string; kind: "FACT_VERSION"; versionId: string }>
   | Readonly<{ chunkId: string; kind: "RECALL_CHUNK" }>;
@@ -1305,6 +1369,149 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
   afterAll(async () => {
     await cleanupClassifierProvider();
     await prisma.$disconnect();
+  });
+
+  it("preserves stored tool aliases across rebuild, canonical loading, and a second full diff", async () => {
+    const userId = await createOwner("tool-text-contract");
+    const rebuild = createPrismaMemoryRebuildRepository(prisma);
+    try {
+      await saveExplicit(services().explicit, userId, "Keep summaries concise.", "tool-text-fact");
+      const initial = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      const initialGenerationId = initial.activeIndexGenerationId;
+      if (!initialGenerationId) throw new Error("active_generation_missing");
+      const { event, source } = await createToolEventDerivative({
+        activeIndexGenerationId: initialGenerationId, userId
+      });
+      const storedChunkText = "bounded stored chunk text";
+      await prisma.memoryRecallChunk.update({
+        data: { normalizedSafeSearchText: storedChunkText },
+        where: { id: source.chunkId }
+      });
+      const admit = async () => {
+        const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+        const admitted = await rebuild.admit(userId, {
+          expectedMemoryRevision: settings.memoryRevision,
+          expectedSettingsRevision: settings.settingsRevision,
+          operation: "REBUILD_SEARCH_INDEX",
+          requestIdentity: { nonce: randomUUID() }
+        });
+        if (admitted.kind !== "ok") throw new Error(admitted.kind);
+        await processRebuildJob(admitted.jobId, rebuild);
+      };
+      await admit();
+      const first = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      const firstEntry = await prisma.memorySearchEntry.findFirstOrThrow({ where: {
+        indexGenerationId: first.activeIndexGenerationId!, itemType: "TOOL_EVENT",
+        toolEventId: event.id, userId
+      } });
+      expect(firstEntry.normalizedSearchText).toBe(event.normalizedSafeSearchText);
+      expect(firstEntry.normalizedSearchText).not.toBe(normalizeMemorySearchText(event.safeProjectedText));
+      const entries = await prisma.memorySearchEntry.findMany({ where: {
+        indexGenerationId: firstEntry.indexGenerationId, userId
+      } });
+      expect(new Set(entries.map((entry) => entry.itemType)))
+        .toEqual(new Set(["FACT_VERSION", "RECALL_CHUNK", "TOOL_EVENT"]));
+      expect(entries.find((entry) => entry.recallChunkId === source.chunkId)
+        ?.normalizedSearchText).toBe(storedChunkText);
+      for (const entry of entries) {
+        const canonical = await loadMemoryLexicalProjectionCanonicalEntry(prisma, {
+          attemptCount: 1, id: randomUUID(), indexGenerationId: entry.indexGenerationId,
+          leaseToken: randomUUID(), memoryRevisionSnapshot: first.memoryRevision,
+          operation: "SYNC_ENTRY", searchEntryId: entry.id, sequence: 1n, userId
+        });
+        expect(canonical?.lexicalText).toBe(entry.normalizedSearchText);
+      }
+      await admit();
+      const second = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      const secondEntry = await prisma.memorySearchEntry.findFirstOrThrow({ where: {
+        indexGenerationId: second.activeIndexGenerationId!, itemType: "TOOL_EVENT",
+        toolEventId: event.id, userId
+      } });
+      expect(secondEntry.normalizedSearchText).toBe(firstEntry.normalizedSearchText);
+      expect(await prisma.memoryLexicalProjectionEvent.count({ where: {
+        indexGenerationId: second.activeIndexGenerationId!, operation: "DELETE_ENTRY", userId
+      } })).toBe(0);
+      expect((await rebuild.inventory(userId)).ready).toBe(true);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("reconciles only an active tool-text mismatch and retries a historical failure once", async () => {
+    const userId = await createOwner("tool-text-repair");
+    const rebuild = createPrismaMemoryRebuildRepository(prisma);
+    const scopedClient = {
+      $queryRaw: async (query: Prisma.Sql) => {
+        const rows = await prisma.$queryRaw<Array<{ userId?: string }>>(query);
+        return query.strings.join("").includes('SELECT settings."userId"')
+          ? rows.filter((row) => row.userId === userId)
+          : rows;
+      },
+      $transaction: prisma.$transaction.bind(prisma),
+      memoryIndexGeneration: prisma.memoryIndexGeneration,
+      memoryJob: prisma.memoryJob,
+      userMemorySettings: prisma.userMemorySettings
+    } as unknown as typeof prisma;
+    const cutover = createPrismaMemoryRetrievalCutoverRepository(scopedClient);
+    try {
+      await saveExplicit(services().explicit, userId, "Use short release notes.", "repair-fact");
+      const initial = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      if (!initial.activeIndexGenerationId) throw new Error("active_generation_missing");
+      const { event } = await createToolEventDerivative({
+        activeIndexGenerationId: initial.activeIndexGenerationId, userId
+      });
+      const first = await rebuild.admit(userId, {
+        expectedMemoryRevision: initial.memoryRevision,
+        expectedSettingsRevision: initial.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX", requestIdentity: { nonce: randomUUID() }
+      });
+      if (first.kind !== "ok") throw new Error(first.kind);
+      await processRebuildJob(first.jobId, rebuild);
+      const ready = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      const activeGenerationId = ready.activeIndexGenerationId!;
+      expect((await cutover.inventory(userId)).ready).toBe(true);
+      expect(await cutover.reconcile({ limit: 100 })).toEqual([]);
+      await prisma.memorySearchEntry.updateMany({
+        data: { normalizedSearchText: normalizeMemorySearchText(event.safeProjectedText) },
+        where: { indexGenerationId: activeGenerationId, toolEventId: event.id, userId }
+      });
+      const stale = await rebuild.admit(userId, {
+        expectedMemoryRevision: ready.memoryRevision,
+        expectedSettingsRevision: ready.settingsRevision,
+        operation: "REBUILD_SEARCH_INDEX", requestIdentity: { nonce: "historical-failure" }
+      });
+      if (stale.kind !== "ok") throw new Error(stale.kind);
+      await rebuild.cancel(userId, stale.jobId);
+      expect((await cutover.inventory(userId)).ready).toBe(false);
+      const selected = await cutover.reconcile({ limit: 100 });
+      expect(selected).toHaveLength(1);
+      expect(selected[0]).toMatchObject({ kind: "queued", jobId: expect.any(String) });
+      expect((await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
+        .activeIndexGenerationId).toBe(activeGenerationId);
+      await processRebuildJob(selected[0]!.jobId!, rebuild);
+      const repaired = await cutover.inventory(userId);
+      expect(repaired.ready).toBe(true);
+      expect(repaired.activeGenerationId).not.toBe(activeGenerationId);
+      expect(await cutover.reconcile({ limit: 100 })).toEqual([]);
+      const repairedEntry = await prisma.memorySearchEntry.findFirstOrThrow({ where: {
+        indexGenerationId: repaired.activeGenerationId!, toolEventId: event.id, userId
+      } });
+      expect(repairedEntry.normalizedSearchText).toBe(event.normalizedSafeSearchText);
+
+      await prisma.memorySearchEntry.update({
+        data: { normalizedSearchText: normalizeMemorySearchText(event.safeProjectedText) },
+        where: { id: repairedEntry.id }
+      });
+      const failedRepair = await cutover.ensure(userId);
+      expect(failedRepair).toMatchObject({ kind: "queued", jobId: expect.any(String) });
+      await rebuild.cancel(userId, failedRepair.jobId!);
+      const generationCount = await prisma.memoryIndexGeneration.count({ where: { userId } });
+      expect(await cutover.ensure(userId)).toMatchObject({ kind: "blocked_failed" });
+      expect(await cutover.reconcile({ limit: 100 })).toEqual([]);
+      expect(await prisma.memoryIndexGeneration.count({ where: { userId } })).toBe(generationCount);
+    } finally {
+      await cleanupOwner(userId);
+    }
   });
 
   it("embedding setup adopts once under races, admits one rebuild, and preserves clears, pauses and entitlement", async () => {
@@ -2371,6 +2578,11 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       const before = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
+      if (!before.activeIndexGenerationId) throw new Error("active_generation_missing");
+      const { event: toolEvent } = await createToolEventDerivative({
+        activeIndexGenerationId: before.activeIndexGenerationId,
+        userId
+      });
       await expect(repository.admit(userId, {
         embeddingDeploymentId: provider.modelId,
         expectedMemoryRevision: before.memoryRevision,
@@ -2397,14 +2609,14 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         orderBy: { id: "asc" },
         where: { indexGenerationId: identity.generationId, userId }
       });
-      expect(initialPending).toHaveLength(2);
+      expect(initialPending).toHaveLength(4);
       expect(initialPending.every(({ embeddingState }) =>
         embeddingState === "PENDING"))
         .toBe(true);
       await expect(repository.status(userId, admitted.jobId)).resolves.toMatchObject({
         completedUnits: 0,
         state: "CATCHING_UP",
-        totalUnits: 2
+        totalUnits: 4
       });
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
@@ -2444,11 +2656,11 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         memoryGeneration: before.memoryGeneration,
         memoryRevision: before.memoryRevision + 1
       });
-      expect(pending).toHaveLength(3);
+      expect(pending).toHaveLength(5);
       expect(pending.every(({ embeddingState }) => embeddingState === "PENDING"))
         .toBe(true);
       expect(embeddingJobCount).toBe(1);
-      expect(embeddingChildCount).toBe(3);
+      expect(embeddingChildCount).toBe(5);
 
       const embeddingRepository = createPrismaMemoryItemEmbeddingRepository(prisma);
       const vector = Array.from(
@@ -2560,21 +2772,33 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       expect(target).toMatchObject({ indexMode: "HYBRID", state: "ACTIVE" });
       expect(source.state).toBe("SUPERSEDED");
-      expect(entries).toHaveLength(3);
+      expect(entries).toHaveLength(5);
       expect(entries.every(({ embeddingState }) => embeddingState === "READY"))
         .toBe(true);
+      expect(entries.find(({ toolEventId }) => toolEventId === toolEvent.id))
+        .toMatchObject({ normalizedSearchText: toolEvent.normalizedSafeSearchText });
+      for (const entry of entries) {
+        const canonical = await loadMemoryLexicalProjectionCanonicalEntry(prisma, {
+          attemptCount: 1, id: randomUUID(), indexGenerationId: identity.generationId,
+          leaseToken: randomUUID(), memoryRevisionSnapshot: after.memoryRevision,
+          operation: "SYNC_ENTRY", searchEntryId: entry.id, sequence: 1n, userId
+        });
+        const vectorTarget = await embeddingRepository.loadTarget(userId, entry.id);
+        expect(canonical?.lexicalText).toBe(entry.normalizedSearchText);
+        expect(vectorTarget?.normalizedSearchText).toBe(entry.normalizedSearchText);
+      }
       await expect(prisma.memorySearchEntry.count({
         where: { indexGenerationId: source.id, userId }
-      })).resolves.toBe(3);
+      })).resolves.toBe(4);
       await expect(repository.status(userId, admitted.jobId)).resolves.toMatchObject({
-        completedUnits: 3,
+        completedUnits: 5,
         state: "SUCCEEDED",
-        totalUnits: 3
+        totalUnits: 5
       });
       await expect(repository.inventory(userId)).resolves.toMatchObject({
         activeGenerationId: identity.generationId,
         activeIndexMode: "HYBRID",
-        eligibleItems: 3,
+        eligibleItems: 5,
         ready: true
       });
     } finally {

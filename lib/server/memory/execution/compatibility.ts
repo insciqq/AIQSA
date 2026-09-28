@@ -70,7 +70,8 @@ export function resolveMemoryExecutionCompatibility(input: Readonly<{
   }
   const embeddingRole = isMemoryEmbeddingRole(input.role);
   const rerankerRole = input.role === "MEMORY_RERANK";
-  const decisionRole = input.role === "MEMORY_HISTORY_RELEVANCE";
+  const decisionRole = input.role === "MEMORY_HISTORY_RELEVANCE" ||
+    input.role === "MEMORY_CONTROL_SCREEN";
   const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(input.target);
   if (
     embeddingRole !== (vectorSpaceFingerprint !== null) ||

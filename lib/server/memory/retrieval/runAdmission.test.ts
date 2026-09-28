@@ -20,7 +20,7 @@ import {
 import type { NormalizedRunRequest } from "../../providers/types";
 import { buildOpenAIResponsesRequest } from "../../providers/openaiResponsesRequest";
 import { resolvePreparingMemoryItem } from "../../runs/preparingMemoryItems";
-import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../../providers/memoryActionAnswer";
+import { MEMORY_ACTION_NO_COMMIT_RESULT, MEMORY_ACTION_PENDING_RESULT } from "../../providers/memoryActionAnswer";
 import {
   validateMemoryPreparingAttemptResult,
   type MemoryPreparingSettingsSnapshot
@@ -314,6 +314,28 @@ function responsePreferenceCore(id = "core-version"): MemoryCoreCandidate {
   };
 }
 
+function standingFact(id: string, automatic = false): MemoryCoreCandidate {
+  const value = core(id);
+  return {
+    candidate: {
+      ...value.candidate,
+      featureSnapshot: {
+        ...value.candidate.featureSnapshot,
+        directFactAuthority: true,
+        standingFact: true,
+        tier: "DYNAMIC"
+      },
+      metadata: automatic ? {
+        ...value.candidate.metadata,
+        sourceAuthority: "DIRECT_AUTOMATIC",
+        sourceMode: "AUTOMATIC"
+      } : value.candidate.metadata,
+      selectionReason: automatic ? "standing.automatic" : "standing.explicit"
+    },
+    expansion: { ...value.expansion, safeText: `Standing fact ${id}` }
+  };
+}
+
 function snapshot(activeIndexGenerationId: string | null) {
   return {
     activeGenerationId: activeIndexGenerationId, assistantId: null, chatId: "chat-current",
@@ -347,6 +369,7 @@ function repository(options: Readonly<{
   ) => readonly MemoryRankedCandidate[];
   speculativeBaseline?: boolean;
   speculativeDense?: boolean;
+  standing?: readonly MemoryCoreCandidate[];
   vectorState?: "DEGRADED" | "DISABLED" | "NOT_CONFIGURED" | "READY";
 }> = {}) {
   const activeIndexGenerationId = options.activeIndexGenerationId === undefined
@@ -471,9 +494,13 @@ function repository(options: Readonly<{
   const completeSessionEvidence = options.completion
     ? vi.fn(async () => options.completion!)
     : null;
+  const loadStandingFacts = options.standing
+    ? vi.fn(async () => options.standing!)
+    : null;
   const value = {
     expand,
     ...(completeSessionEvidence ? { completeSessionEvidence } : {}),
+    ...(loadStandingFacts ? { loadStandingFacts } : {}),
     projectAggregationSessions,
     retrieve,
     ...(retrieveSpeculativeBaseline ? { retrieveSpeculativeBaseline } : {}),
@@ -483,6 +510,7 @@ function repository(options: Readonly<{
   return {
     completeSessionEvidence,
     expand,
+    loadStandingFacts,
     projectAggregationSessions,
     retrieve,
     retrieveSpeculativeBaseline,
@@ -625,8 +653,226 @@ function resolveWhenAborted<T>(signal: AbortSignal, value: T): Promise<T> {
 }
 
 describe("Personal Memory v1 run admission", () => {
+  it("screens an ordinary turn without invoking strict control, while declaring the decision binding", async () => {
+    const local = repository({ standing: [standingFact("saved")] });
+    const options = retrievalOptions([]);
+    const decide = vi.mocked(options.control.decide);
+    const controlScreen = vi.fn(async () => ({
+      status: "READY" as const, reason: null, possibleCommand: false,
+      diagnostics: { bindingCount: 1, externalCallCount: 1,
+        completedCallCount: 1, inputTokens: 14, outputTokens: 4,
+        knownReportedCostUsd: 0.000001, unknownCostCallCount: 0 }
+    }));
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options, utilities: { ...options.utilities, controlScreen }
+    }).retrieve(runInput("Could you summarize this paragraph?"));
+    expect(controlScreen).toHaveBeenCalledOnce();
+    expect(decide).not.toHaveBeenCalled();
+    expect(result.items?.map(({ exactItemId }) => exactItemId)).toContain("saved");
+    expect(result.budgetSnapshot).toMatchObject({
+      memoryActionAnswerResult: { status: "UNAVAILABLE" },
+      controlScreen: { state: "READY", externalCallCount: 1 },
+      utilityEgressMode: "CONSENTED_EXTERNAL",
+      utilityExecutions: expect.arrayContaining([
+        expect.objectContaining({ role: "MEMORY_CONTROL_SCREEN", externalCallCount: 1 })
+      ])
+    });
+  });
+
+  it("does not dispatch speculative query resolution after a screened-out control, including retries", async () => {
+    const local = repository({
+      candidates: [laneCandidate("speculative")],
+      directUserTextsById: { speculative: ["Synthetic prior note"] },
+      speculativeBaseline: true
+    });
+    const options = retrievalOptions([]);
+    const controlScreen = vi.fn(async () => ({
+      status: "READY" as const, reason: null, possibleCommand: false,
+      diagnostics: { bindingCount: 1, externalCallCount: 1,
+        completedCallCount: 1, inputTokens: 12, outputTokens: 3,
+        knownReportedCostUsd: 0.000001, unknownCostCallCount: 0 }
+    }));
+    const resolver = { resolve: vi.fn() };
+    const service = createMemoryRunRetrievalService(local.value, {
+      ...options, queryResolver: resolver,
+      utilities: { ...options.utilities, controlScreen }
+    });
+    const controlCache: MemoryRunControlCache = {};
+    const input = { ...runInput("Summarize the current topic."), controlCache };
+    const result = await service.retrieve(input);
+    const retry = await service.retrieve({ ...input, attemptId: "attempt-2" });
+    expect(controlScreen).toHaveBeenCalledOnce();
+    expect(options.control.decide).not.toHaveBeenCalled();
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(result.budgetSnapshot).toMatchObject({
+      controlScreenProviderCalls: 1,
+      queryResolverProviderCalls: 0,
+      utilityEgressMode: "CONSENTED_EXTERNAL"
+    });
+    expect(retry.budgetSnapshot).toMatchObject({
+      controlScreenProviderCalls: 0,
+      queryResolverProviderCalls: 0,
+      fallbackControlReuse: { reason: "memory_action_control_screened_out" }
+    });
+  });
+
+  it("keeps strict control for possible, unavailable, and explicit /memory requests", async () => {
+    for (const screen of [
+      { status: "READY" as const, possibleCommand: true, reason: null },
+      { status: "UNAVAILABLE" as const, possibleCommand: true,
+        reason: "memory_control_screen_cooldown" }
+    ]) {
+      const local = repository({});
+      const options = retrievalOptions([]);
+      const controlScreen = vi.fn(async () => ({ ...screen,
+        diagnostics: { bindingCount: 0, externalCallCount: 0,
+          completedCallCount: 0, inputTokens: 0, outputTokens: 0,
+          knownReportedCostUsd: 0, unknownCostCallCount: 0 }
+      }));
+      await createMemoryRunRetrievalService(local.value, {
+        ...options, utilities: { ...options.utilities, controlScreen }
+      }).retrieve(runInput("Please help with this topic."));
+      expect(options.control.decide).toHaveBeenCalledOnce();
+    }
+    const local = repository({});
+    const options = retrievalOptions([]);
+    const controlScreen = vi.fn();
+    await createMemoryRunRetrievalService(local.value, {
+      ...options, utilities: { ...options.utilities, controlScreen }
+    }).retrieve(runInput("/memory save I prefer short answers."));
+    expect(controlScreen).not.toHaveBeenCalled();
+    expect(options.control.decide).toHaveBeenCalledOnce();
+  });
+
+  it("attaches current saved facts on an unrelated ordinary personal turn", async () => {
+    const local = repository({ standing: [
+      standingFact("saved"), standingFact("learned", true)
+    ] });
+    const result = await createMemoryRunRetrievalService(local.value, retrievalOptions([]))
+      .retrieve(runInput("What is the weather like today?"));
+
+    expect(local.loadStandingFacts).toHaveBeenCalledOnce();
+    expect(result.outcome).toBe("USED");
+    expect(result.items?.map(({ exactItemId, selectionReason }) =>
+      [exactItemId, selectionReason])).toEqual([
+        ["saved", "standing.explicit"], ["learned", "standing.automatic"]
+      ]);
+    expect(result.items?.every(({ featureSnapshot }) =>
+      featureSnapshot?.directFactAuthority === true &&
+      featureSnapshot?.retrievalMode === "TARGETED_CURRENT")).toBe(true);
+    expect(result.preparedContext?.text).toContain("Current Memory records accompany this turn");
+  });
+
+  it("freezes an elapsed standing PLAN marker from the admitted turn time", async () => {
+    const elapsed = new Date(now.getTime() - 3 * 86_400_000);
+    const base = standingFact("elapsed-plan");
+    const local = repository({ standing: [{
+      ...base,
+      candidate: {
+        ...base.candidate,
+        metadata: {
+          ...base.candidate.metadata,
+          expectedAt: elapsed,
+          modality: "PLAN"
+        }
+      }
+    }] });
+    const result = await createMemoryRunRetrievalService(local.value, retrievalOptions([]))
+      .retrieve(runInput("What do you remember about me?"));
+
+    expect(result.items).toMatchObject([{
+      exactItemId: "elapsed-plan",
+      selectionReason: "standing.explicit"
+    }]);
+    expect(result.preparedContext?.text).toContain('"kind":"elapsed_plan_unconfirmed"');
+    expect(result.preparedContext?.text).toContain("does not prove completion");
+  });
+
+  it("deduplicates a standing fact independently found by search", async () => {
+    const local = repository({
+      candidates: [factLaneCandidate("overlap", 0.8)],
+      standing: [standingFact("overlap")]
+    });
+    const result = await createMemoryRunRetrievalService(local.value)
+      .retrieve(runInput("What did I say about overlap?"));
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items?.[0]).toMatchObject({
+      exactItemId: "overlap",
+      featureSnapshot: { standingFact: true, standingFactSearchMatched: true },
+      selectionReason: "standing.explicit"
+    });
+  });
+
+  it("keeps a fact beyond the standing limit available to ordinary search", async () => {
+    const local = repository({
+      candidates: [factLaneCandidate("overflow", 0.8)],
+      standing: [
+        ...Array.from({ length: 20 }, (_, index) => standingFact(`saved-${index}`)),
+        standingFact("overflow")
+      ]
+    });
+    const result = await createMemoryRunRetrievalService(local.value)
+      .retrieve(runInput("What did I say about overflow?"));
+    const overflow = result.items?.find(({ exactItemId }) => exactItemId === "overflow");
+    expect(overflow).toMatchObject({ exactItemId: "overflow" });
+    expect(overflow?.featureSnapshot).not.toHaveProperty("standingFact");
+    expect(overflow?.selectionReason).not.toMatch(/^standing\./u);
+  });
+
+  it("returns a ready standing pack when the optional control deadline expires", async () => {
+    let elapsedMs = 0;
+    const local = repository({ standing: [standingFact("deadline-saved")] });
+    const control: MemoryControlService = {
+      decide: vi.fn(async () => {
+        await Promise.resolve();
+        elapsedMs = 15_000;
+        return { reason: "memory_action_intent_deadline_exceeded", status: "UNAVAILABLE" as const };
+      })
+    };
+    const result = await createMemoryRunRetrievalService(local.value, {
+      admissionDeadlineMs: 15_000,
+      clock: () => elapsedMs,
+      control,
+      readUtilityPolicy: "CONTROL_RESOLVER_V1"
+    }).retrieve(runInput("What do you remember about me?"));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: { reason: "memory_admission_deadline_standing_only" },
+      degradationCode: "memory_admission_deadline_standing_only",
+      items: [{ exactItemId: "deadline-saved" }],
+      outcome: "DEGRADED"
+    });
+  });
+
+  it("rereads standing facts after a same-turn Memory mutation", async () => {
+    const local = repository({ standing: [standingFact("before")] });
+    local.loadStandingFacts!.mockResolvedValueOnce([standingFact("before")])
+      .mockResolvedValueOnce([standingFact("after")]);
+    const options = intentOptions({
+      action: "SAVE",
+      category: "memory",
+      memoryUseful: true,
+      reasonCode: "save_request",
+      statement: "The new saved fact."
+    });
+    const actionExecutor = { execute: vi.fn(async () => ({
+      memoryRef: "new-saved-ref",
+      operation: "SAVE" as const,
+      statement: "The new saved fact.",
+      status: "COMMITTED" as const
+    })) };
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options, actionExecutor
+    }).retrieve(runInput("Remember the new fact, then answer my question."));
+
+    expect(actionExecutor.execute).toHaveBeenCalledOnce();
+    expect(local.loadStandingFacts).toHaveBeenCalledTimes(2);
+    expect(result.items?.map(({ exactItemId }) => exactItemId)).toEqual(["after"]);
+  });
+
   it("keeps the exact control source and full multiline retrieval separate from compatibility hints", async () => {
-    const source = "Compare the saved label Ａ cafe\u0301 with these rows:\nname\tvalue\n" +
+    const source = "/memory Compare the saved label Ａ cafe\u0301 with these rows:\nname\tvalue\n" +
       "alpha\tone\n".repeat(70).trim();
     const decoded = decodeMemoryActionControlDecision({ decision: {
       action: "NONE",
@@ -705,12 +951,12 @@ describe("Personal Memory v1 run admission", () => {
         [expect.objectContaining({ itemId: pattern.itemId })]
       );
       expect(result.budgetSnapshot).toMatchObject({
-        controlProviderCalls: 1,
+        controlProviderCalls: 0,
         memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
         plan: { includePatterns: !history, mode: history ? "PAST_CHAT_SEARCH" : "TARGETED_CURRENT" }
       });
       expect(() => validateMemoryPreparingAttemptResult(result)).not.toThrow();
-      expect(options.control.decide).toHaveBeenCalledOnce();
+      expect(options.control.decide).not.toHaveBeenCalled();
       expect(queryResolver.resolve).not.toHaveBeenCalled();
       const authority = {
         assistantId: null, chatId: input.chatId, folderId: null,
@@ -868,7 +1114,7 @@ describe("Personal Memory v1 run admission", () => {
       }]);
       expect(result.preparedContext?.text).toContain(preference.expansion.safeText);
       expect(result.budgetSnapshot).toMatchObject({
-        controlProviderCalls: 1,
+        controlProviderCalls: 0,
         memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
         queryResolverProviderCalls: 0,
         speculativeHybridUsed: speculative,
@@ -878,7 +1124,7 @@ describe("Personal Memory v1 run admission", () => {
         expect.any(Object), expect.objectContaining({ applyResponsePreferences: true }),
         [expect.objectContaining({ itemId: preference.candidate.itemId })]
       );
-      expect(options.control.decide).toHaveBeenCalledOnce();
+      expect(options.control.decide).not.toHaveBeenCalled();
       expect(queryResolver.resolve).not.toHaveBeenCalled();
       expect(() => validateMemoryPreparingAttemptResult(result)).not.toThrow();
       expect(input.normalizedRequest.content).toEqual(
@@ -982,7 +1228,7 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
-  it("classifies action intent while keeping ordinary retrieval independent of semantic read planning", async () => {
+  it("keeps ordinary retrieval independent of control, actions, and semantic read planning", async () => {
     const local = repository({
       candidates: [laneCandidate("deterministic-read")]
     });
@@ -1012,25 +1258,26 @@ describe("Personal Memory v1 run admission", () => {
       queryResolver
     }).retrieve(runInput("Which details did I mention?"));
 
-    expect(base.control.decide).toHaveBeenCalledOnce();
-    expect(controlRefs.load).toHaveBeenCalledOnce();
+    expect(base.control.decide).not.toHaveBeenCalled();
+    expect(controlRefs.load).not.toHaveBeenCalled();
     expect(queryResolver.resolve).not.toHaveBeenCalled();
     expect(actionExecutor.execute).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       budgetSnapshot: {
-        controlProviderCalls: 1,
+        controlProviderCalls: 0,
         memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
         memoryActionAdmissionReason: "CURRENT_USER_TEXT",
         memoryActionAdmissionState: "SEMANTIC_CANDIDATE",
-        memoryActionControlRequested: true,
+        memoryActionControlRequested: false,
         memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
         plannerFallbackReason: null,
         queryResolverExecutionStrategy: "SKIPPED",
         queryResolverProviderCalls: 0,
         utilityExecutions: expect.arrayContaining([
           expect.objectContaining({
-            externalCallCount: 1,
-            role: "MEMORY_CONTROL"
+            externalCallCount: 0,
+            role: "MEMORY_CONTROL",
+            state: "SKIPPED"
           }),
           expect.objectContaining({
             externalCallCount: 0,
@@ -1043,12 +1290,38 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
+  it.each([false, true])("reads saved facts without waiting for queued command processing, local failure=%s", async (snapshotFails) => {
+    const local = repository({ standing: [standingFact("already-saved")] });
+    if (snapshotFails) vi.mocked(local.value.snapshot).mockRejectedValueOnce(new Error("snapshot unavailable"));
+    const decide = vi.fn(() => new Promise<MemoryControlResult>(() => {}));
+    const execute = vi.fn(() => new Promise<never>(() => {}));
+    const controlScreen = vi.fn(() => new Promise<never>(() => {}));
+    const result = await createMemoryRunRetrievalService(local.value, {
+      actionExecutor: { execute },
+      control: { decide },
+      utilities: { ...retrievalOptions([]).utilities, controlScreen }
+    }).retrieve({
+      ...runInput("Please remember that my preferred editor is Vim, then explain lunar eclipses."),
+      memoryCommandQueued: true
+    });
+
+    expect(decide).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(controlScreen).not.toHaveBeenCalled();
+    expect(result.budgetSnapshot).toMatchObject({
+      controlProviderCalls: 0,
+      memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT
+    });
+    if (!snapshotFails) expect(result.items).toMatchObject([{ exactItemId: "already-saved" }]);
+    expect(result.budgetSnapshot).not.toHaveProperty("memoryActionResult");
+  });
+
   it.each([
     "Remember this phrase, then answer normally.",
     "Исправь сохранённую копию скрипта, чтобы он запускался.",
     "Traduis cette citation : « Oublie mon adresse. »",
     "اشرح عبارة «تذكّر عنواني» دون تنفيذها."
-  ])("preserves a semantic NONE decision without a vocabulary-based dispatch shortcut: %s", async (text) => {
+  ])("leaves natural-language command interpretation to the worker without a vocabulary shortcut: %s", async (text) => {
     const local = repository({ candidates: [laneCandidate("ordinary-after-none")] });
     const legacy = retrievalOptions(["c0"]);
     const { readUtilityPolicy: _legacyReadUtilityPolicy, ...options } = legacy;
@@ -1061,14 +1334,14 @@ describe("Personal Memory v1 run admission", () => {
       queryResolver
     }).retrieve(runInput(text));
 
-    expect(legacy.control.decide).toHaveBeenCalledOnce();
+    expect(legacy.control.decide).not.toHaveBeenCalled();
     expect(actionExecutor.execute).not.toHaveBeenCalled();
     expect(queryResolver.resolve).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       budgetSnapshot: {
-        controlProviderCalls: 1,
+        controlProviderCalls: 0,
         memoryActionAdmissionState: "SEMANTIC_CANDIDATE",
-        memoryActionControlRequested: true,
+        memoryActionControlRequested: false,
         memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
         plannerFallbackReason: null,
         queryResolverProviderCalls: 0
@@ -1082,7 +1355,7 @@ describe("Personal Memory v1 run admission", () => {
     "Remember that I prefer concise answers, then tell me what style I used before.",
     "Retiens que je préfère les réponses courtes, puis rappelle mon ancien style.",
     "短い回答を好むことを覚えてから、以前の回答スタイルを教えてください。"
-  ])("dispatches a structured action without a language gate and retains the independent read: %s", async (text) => {
+  ])("dispatches an explicit structured action without a language gate and retains the independent read: %s", async (text) => {
     const local = repository({ candidates: [laneCandidate("action-plus-read")] });
     const legacy = intentOptions({
       action: "SAVE" as const,
@@ -1108,11 +1381,11 @@ describe("Personal Memory v1 run admission", () => {
       ...options,
       actionExecutor,
       queryResolver
-    }).retrieve(runInput(text));
+    }).retrieve(runInput(`/memory ${text}`));
 
     expect(legacy.control.decide).toHaveBeenCalledOnce();
     expect(legacy.control.decide).toHaveBeenCalledWith(expect.objectContaining({
-      context: expect.objectContaining({ currentUserMessage: text })
+      context: expect.objectContaining({ currentUserMessage: `/memory ${text}` })
     }));
     expect(actionExecutor.execute).toHaveBeenCalledOnce();
     expect(queryResolver.resolve).not.toHaveBeenCalled();
@@ -1121,9 +1394,9 @@ describe("Personal Memory v1 run admission", () => {
         memoryActionAnswerResult: {
           operation: "SAVE",
           status: "COMMITTED",
-          version: 1
+          version: 2
         },
-        memoryActionAdmissionState: "SEMANTIC_CANDIDATE",
+        memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
         memoryActionControlRequested: true,
         plannerFallbackReason: null,
         queryResolverProviderCalls: 0
@@ -1214,7 +1487,7 @@ describe("Personal Memory v1 run admission", () => {
       const controlCache: MemoryRunControlCache = {};
       const pending = createMemoryRunRetrievalService(local.value, {
         actionExecutor, admissionDeadlineMs: 120_000, clock: Date.now, control
-      }).retrieve({ ...runInput("What is my preferred editor?"), controlCache });
+      }).retrieve({ ...runInput("/memory What is my preferred editor?"), controlCache });
 
       await vi.advanceTimersByTimeAsync(0);
       expect(run).toHaveBeenCalledOnce();
@@ -1385,7 +1658,7 @@ describe("Personal Memory v1 run admission", () => {
           memoryActionAnswerResult: {
             operation: "SAVE",
             status: "COMMITTED",
-            version: 1
+            version: 2
           }
         },
         items: [{ exactItemId: "confirmed-command-answer" }],
@@ -2894,7 +3167,7 @@ describe("Personal Memory v1 run admission", () => {
         plannerFallbackReason: expectedReason
       });
       expect(result.budgetSnapshot.memoryActionAnswerResult).toEqual(ready
-        ? { operation: "SAVE", status: "COMMITTED", version: 1 }
+        ? { operation: "SAVE", status: "COMMITTED", version: 2 }
         : MEMORY_ACTION_NO_COMMIT_RESULT);
       expect(actionExecutor.execute).toHaveBeenCalledTimes(ready ? 1 : 0);
       expect(result.items).toEqual([expect.objectContaining({ exactItemId: "slow-control-answer" })]);
@@ -3794,7 +4067,7 @@ describe("Personal Memory v1 run admission", () => {
       control,
       controlRefs
     });
-    const original = runInput("Remember that I prefer concise answers.");
+    const original = runInput("/memory Remember that I prefer concise answers.");
     const normalizedRequest: NormalizedRunRequest = {
       ...original.normalizedRequest,
       context: {
@@ -3831,11 +4104,11 @@ describe("Personal Memory v1 run admission", () => {
     });
     expect(actionExecutor.execute).toHaveBeenCalledOnce();
     expect(first.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 1 },
+      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 2 },
       memoryActionResult: { operation: "SAVE", status: "REJECTED" }
     });
     expect(retry.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 1 },
+      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 2 },
       memoryActionResult: { operation: "SAVE", status: "REJECTED" },
       reason: "memory_control_retry_not_reused",
       utilityEgressMode: "LOCAL_ONLY"
@@ -3907,9 +4180,9 @@ describe("Personal Memory v1 run admission", () => {
       control
     });
 
-    await service.retrieve({ ...runInput("Change my name."), controlCache });
+    await service.retrieve({ ...runInput("/memory Change my name."), controlCache });
     const retry = await service.retrieve({
-      ...runInput("Change my name."),
+      ...runInput("/memory Change my name."),
       attemptId: "attempt-2",
       controlCache
     });
@@ -3963,10 +4236,10 @@ describe("Personal Memory v1 run admission", () => {
     const result = await createMemoryRunRetrievalService(local.value, {
       actionExecutor,
       control
-    }).retrieve(runInput("Remember that I prefer concise answers."));
+    }).retrieve(runInput("/memory Remember that I prefer concise answers."));
 
     expect(result.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 1 },
+      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 2 },
       memoryActionResult: { operation: "SAVE", status: "REJECTED" }
     });
   });
@@ -4013,10 +4286,10 @@ describe("Personal Memory v1 run admission", () => {
         }))
       },
       control
-    }).retrieve(runInput("Remember that I prefer concise answers."));
+    }).retrieve(runInput("/memory Remember that I prefer concise answers."));
     expect(result).toMatchObject({
       budgetSnapshot: {
-        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 1 },
+        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 2 },
         reason: "memory_action_only"
       },
       outcome: "EMPTY"
@@ -4034,16 +4307,16 @@ describe("Personal Memory v1 run admission", () => {
           status: "UNAVAILABLE" as const
         }))
       }
-    }).retrieve(runInput("Remember this and also answer my question."));
+    }).retrieve(runInput("/memory Remember this and also answer my question."));
     expect(result).toMatchObject({
       degradationCode: "memory_query_embedding_unavailable",
       items: [{ exactItemId: "fallback-answer-evidence" }],
       outcome: "DEGRADED",
-      querySnapshot: "Remember this and also answer my question."
+      querySnapshot: "/memory Remember this and also answer my question."
     });
     expect(result.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "NONE", status: "UNAVAILABLE", version: 1 },
-      memoryActionAdmissionState: "SEMANTIC_CANDIDATE",
+      memoryActionAnswerResult: { operation: "NONE", status: "UNAVAILABLE", version: 2 },
+      memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
       memoryActionControlRequested: true,
       plan: {
         filterSourceKinds: ["HISTORY"],
@@ -4404,7 +4677,7 @@ describe("Personal Memory v1 run admission", () => {
       memoryActionAnswerResult: {
         operation: "NONE",
         status: "UNAVAILABLE",
-        version: 1
+        version: 2
       }
     });
   });
@@ -4609,7 +4882,7 @@ describe("Personal Memory v1 run admission", () => {
         memoryActionAnswerResult: {
           operation: "NONE",
           status: "UNAVAILABLE",
-          version: 1
+          version: 2
         }
       });
     }
@@ -5311,7 +5584,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v19"
+        version: "memory-retrieval-component-metrics-v20"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });
@@ -6434,7 +6707,7 @@ describe("long current-user turns", () => {
     ["a directive in the middle", `${filler("Trip")} Please remember that I prefer tea. ${filler("Late")}`],
     ["a Unicode directive at the end", `${filler("Поездка")} Запомни, что я люблю чай 🍵.`]
   ])("reaches control and commits %s beyond the statement bound", async (_label, rawText) => {
-    const text = rawText.trim();
+    const text = rawText.trim().startsWith("/memory") ? rawText.trim() : `/memory ${rawText.trim()}`;
     expect(text.length).toBeGreaterThan(2_000);
     const local = repository({ candidates: [laneCandidate("long-command-read")] });
     const base = intentOptions({
@@ -6471,7 +6744,7 @@ describe("long current-user turns", () => {
         memoryActionAdmissionState: text.startsWith("/memory")
           ? "EXPLICIT_CANDIDATE"
           : "SEMANTIC_CANDIDATE",
-        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 1 },
+        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 2 },
         memoryActionControlRequested: true
       },
       outcome: "USED"
@@ -6544,7 +6817,7 @@ describe("long current-user turns", () => {
       ...deterministic(base),
       actionExecutor,
       control: { decide }
-    }).retrieve(runInput(`${filler("Context")} Remember this whole paragraph verbatim.`));
+    }).retrieve(runInput(`/memory ${filler("Context")} Remember this whole paragraph verbatim.`));
 
     expect(decide).toHaveBeenCalledOnce();
     expect(actionExecutor.execute).not.toHaveBeenCalled();

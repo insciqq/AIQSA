@@ -1,8 +1,8 @@
 import { MEMORY_ANSWER_SOURCE_MAX_ITEMS } from "../../../contracts/memoryClient";
 
-export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v69";
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-personal-retrieval-v70";
 export const MEMORY_RETRIEVAL_FUSION_VERSION = "memory-retrieval-rrf-v17";
-export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v45";
+export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v47";
 export const MEMORY_QUERY_SCOPE_CONSTRAINT_MAX_TOKENS = 384;
 
 export const MEMORY_RETRIEVAL_RRF_K = 60;
@@ -70,6 +70,8 @@ export const MEMORY_RETRIEVAL_LANE_WEIGHTS = Object.freeze({
 } as const);
 
 export const MEMORY_CORE_CONTEXT_TARGET_TOKENS = 512;
+export const MEMORY_STANDING_MAX_FACTS = 20;
+export const MEMORY_STANDING_CONTEXT_TARGET_TOKENS = 2_000;
 // Adaptive reader-pack profiles. The legacy targeted/aggregation names remain
 // aliases for their executable owners while the packer selects among all
 // three profiles from the admitted retrieval semantics.

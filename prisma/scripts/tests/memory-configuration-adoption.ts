@@ -22,7 +22,8 @@ export const memoryConfigurationAdoptionProofSql = `
 DO $$ BEGIN
   IF (SELECT count(*) FROM "MemoryConfigurationAdoptionFixture" AS original
       JOIN "MemoryJob" AS job USING (id)
-      WHERE original.snapshot = to_jsonb(job) - ARRAY['progressAt', 'recoveryCount', 'lastRecoveryAt', 'recoveryErrorCode']) <> 4 THEN
+      WHERE original.snapshot = to_jsonb(job) - ARRAY['progressAt', 'recoveryCount', 'lastRecoveryAt', 'recoveryErrorCode',
+        'commandSequence', 'commandStatus', 'commandOperation', 'commandIntent', 'commandResult']) <> 4 THEN
     RAISE EXCEPTION 'memory_wait_migration_changed_existing_work';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM "UserMemorySettings" WHERE "userId" = 'memory-configuration-owner'

@@ -81,13 +81,13 @@ function providerDecision(intent: MemoryActionIntent): MemoryActionControlDecisi
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v30");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v33");
     expect(MEMORY_CONTROL_REASONING_POLICY).toBe("accepted-system-model-parameters");
     expect(MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR).toBe(2_048);
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v30",
-      policyVersion: "memory-control-policy-v28",
-      promptVersion: "memory-control-prompt-v33",
+      pipelineVersion: "memory-control-v33",
+      policyVersion: "memory-control-policy-v30",
+      promptVersion: "memory-control-prompt-v36",
       schemaVersion: "memory-action-intent-v13"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(8);
@@ -185,6 +185,73 @@ describe("Memory control runtime contract", () => {
     expect(withAuthorizedResultCommit).toHaveBeenCalledWith(
       "user-1", { acceptedOutputHash, bindingId: "control-binding" }, expect.any(Function)
     );
+  });
+
+  it.each([
+    { offeredRefs: [], expectedRef: null },
+    { offeredRefs: ["different-offered-ref"], expectedRef: null },
+    { offeredRefs: ["opaque-memory-ref"], expectedRef: "opaque-memory-ref" }
+  ])("accepts only offered references before hashing a FORGET decision: $offeredRefs", async ({ offeredRefs, expectedRef }) => {
+    const targetQuery = "предпочтение редактора для проекта";
+    const context = {
+      capabilities: { automaticLearning: true, historyRecall: true, memoryEnabled: true },
+      currentUserMessage: "Забудь моё предпочтение редактора для проекта.",
+      memoryRefs: offeredRefs
+    };
+    const settle = vi.fn(async () => undefined);
+    const withAuthorizedResultCommit = vi.fn(async (
+      _userId: string, _input: unknown, apply: () => Promise<unknown>
+    ) => apply());
+    const run = vi.fn(async (): Promise<MemoryLearningProviderResult> => ({
+      providerResponseId: "provider-response-1",
+      toolCalls: [{
+        arguments: { decision: {
+          action: "FORGET", answerRequested: false, confidenceBand: "HIGH",
+          patternExclusionRequested: false, reasonCode: "forget_request",
+          referencedMemoryRef: "opaque-memory-ref", targetQuery, thisChatOnly: false
+        } },
+        id: "call-1", name: MEMORY_ACTION_INTENT_NAME
+      }],
+      usage: {}
+    }));
+    const service = createMemoryControlService({
+      execution: {
+        admission: {
+          bind: vi.fn(async () => ({ id: "control-binding" })),
+          start: vi.fn(async () => ({ snapshot: {
+            logicalRole: "MEMORY_CONTROL", requiresStrictStructuredOutput: true,
+            providerExecutionSnapshot: {
+              connectionId: "connection-1", credentialId: "credential-1",
+              credentialVersionId: "credential-version-1", providerModelId: "model-1"
+            }
+          } }))
+        },
+        lifecycle: { settle, withAuthorizedResultCommit }
+      } as never,
+      provider: { run }
+    });
+    const result = await service.decide({
+      attemptId: "command-1", owner: { type: "JOB", memoryJobId: "command-1" },
+      context, signal: new AbortController().signal, userId: "user-1"
+    });
+    expect(result).toMatchObject({ status: "READY", intent: {
+      action: "FORGET", confidenceBand: "HIGH", referencedMemoryRef: expectedRef, targetQuery
+    } });
+    if (result.status !== "READY") throw new Error("expected_control_ready");
+    const acceptedOutputHash = memoryControlAcceptedOutputHash(
+      memoryControlInputHash(context), memoryControlIntentHash(result.intent)
+    );
+    expect(settle).toHaveBeenCalledWith("user-1", "control-binding", expect.objectContaining({
+      acceptedOutputHash, state: "SUCCEEDED"
+    }));
+    expect(withAuthorizedResultCommit).toHaveBeenCalledWith(
+      "user-1", { acceptedOutputHash, bindingId: "control-binding" }, expect.any(Function)
+    );
+    if (expectedRef === null) expect(acceptedOutputHash).not.toBe(memoryControlAcceptedOutputHash(
+      memoryControlInputHash(context), memoryControlIntentHash({
+        ...result.intent, referencedMemoryRef: "opaque-memory-ref"
+      })
+    ));
   });
 
   it.each([

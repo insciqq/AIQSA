@@ -12,6 +12,7 @@ export type MemoryForgetSource = Readonly<{
   chatId: string;
   messageId: string;
   preservedEvidenceIds?: readonly string[];
+  retrievalOnly?: boolean;
 }>;
 
 type Evidence = Readonly<{
@@ -38,9 +39,14 @@ function sourceKey(source: MemoryForgetSource): string {
  * Unknown/overlapping support needs a narrower command, never a broader delete. */
 export function independentForgetEvidence(
   peer: Evidence,
-  forgotten: readonly Evidence[]
+  forgotten: readonly Evidence[],
+  retrievalOnly = false
 ): boolean {
   const sameSource = forgotten.filter((item) => sourceKey(item) === sourceKey(peer));
+  // A retrieved fact was not testimony from this user message. Its history
+  // echo still needs fencing, while independently admitted exact testimony in
+  // that message remains valid. Direct/explicit origins keep the span proof.
+  if (sameSource.length === 0 && retrievalOnly) return memoryExactMessageEvidenceIsCurrent(peer);
   return sameSource.length > 0 && memoryExactMessageEvidenceIsCurrent(peer) &&
     sameSource.every((item) => memoryExactMessageEvidenceIsCurrent(item) &&
       item.sourceMessageContentHash === peer.sourceMessageContentHash &&
@@ -103,7 +109,8 @@ export async function prepareMemoryForgetSourcePreservation(
     tx, userId, peers.map(({ factVersionId }) => factVersionId)
   );
   const retained = peers.filter((peer) => eligible.has(peer.factVersionId) && unique.has(sourceKey(peer)));
-  if (retained.some((peer) => !independentForgetEvidence(peer, forgotten))) {
+  if (retained.some((peer) => !independentForgetEvidence(peer, forgotten,
+    unique.get(sourceKey(peer))?.retrievalOnly === true))) {
     return memoryPersistenceFailure("memory_partial_forget_ambiguous");
   }
   return {

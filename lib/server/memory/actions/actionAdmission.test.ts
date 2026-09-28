@@ -6,6 +6,7 @@ import {
 import {
   MEMORY_ACTION_ADMISSION_VERSION,
   admitMemoryAction,
+  hasExplicitMemoryCommandBoundary,
   memoryActionControlAdmitted
 } from "./actionAdmission";
 
@@ -39,6 +40,7 @@ describe("Memory action admission", () => {
         state: "EXPLICIT_CANDIDATE",
         version: MEMORY_ACTION_ADMISSION_VERSION
       });
+      expect(hasExplicitMemoryCommandBoundary(text)).toBe(true);
     }
   );
 
@@ -63,7 +65,8 @@ describe("Memory action admission", () => {
       state: "SEMANTIC_CANDIDATE",
       version: MEMORY_ACTION_ADMISSION_VERSION
     });
-    expect(memoryActionControlAdmitted(admitMemoryAction(text), true)).toBe(true);
+    expect(memoryActionControlAdmitted(admitMemoryAction(text), true)).toBe(false);
+    expect(memoryActionControlAdmitted(admitMemoryAction(text), false)).toBe(true);
   });
 
   it("keeps a long explicit command at its protocol boundary", () => {
@@ -72,12 +75,14 @@ describe("Memory action admission", () => {
       reason: "MEMORY_COMMAND",
       state: "EXPLICIT_CANDIDATE"
     });
+    expect(memoryActionControlAdmitted(admitMemoryAction(text), true)).toBe(true);
   });
 
   it("reports a turn beyond the source budget as too long without classifying a prefix", () => {
     const text = "x".repeat(MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH);
     expect(admitMemoryAction(text).state).toBe("SEMANTIC_CANDIDATE");
     const tooLong = admitMemoryAction(`/memory ${text}`);
+    expect(hasExplicitMemoryCommandBoundary(`/memory ${text}`)).toBe(true);
     expect(tooLong).toEqual({
       reason: "INPUT_TOO_LONG",
       state: "INPUT_TOO_LONG",

@@ -162,6 +162,8 @@ export type MemoryRetrievalSourceAuthority =
 export type MemoryCandidateMetadata = Readonly<{
   canonicalKey: string | null;
   category: string | null;
+  /** A display-only Dream combination; its direct sources remain answer evidence. */
+  combinedMemory?: boolean;
   confidence: number;
   conflict: boolean;
   coreEligible: boolean;
@@ -239,6 +241,8 @@ export type MemoryRetrievalFeatureSnapshot = Readonly<{
   decayPolicyVersion?: string;
   deterministicMatches?: readonly MemoryDeterministicMatch[];
   directFactAuthority?: boolean;
+  standingFact?: boolean;
+  standingFactSearchMatched?: boolean;
   fusionVersion: string;
   laneCount: number;
   temporalFit: number;
@@ -308,6 +312,12 @@ export type MemoryPackedSpeakerScope =
 
 export type MemoryPackedStatus = "current" | "historical" | "superseded";
 
+export type MemoryPackedTemporalPresentation = Readonly<{
+  date: string;
+  kind: "elapsed_plan_unconfirmed" | "past_event" | "stale_unconfirmed";
+  statementDate?: string;
+}>;
+
 export type MemoryContextBudgetProfile = "COMPLEX" | "PAST_CHAT" | "SIMPLE";
 
 export type MemoryPackedQueryScopeConstraint = Readonly<{
@@ -376,7 +386,7 @@ export type MemoryPackedItem = Readonly<{
   rawSafeText: string;
   retrievalHint?: string | null;
   retrievalReason: "exact" | "fused" | "profile" | "semantic_sort";
-  section: "CORE" | "FACT" | "HISTORICAL_FACT" | "HISTORY" | "PATTERN";
+  section: "CORE" | "FACT" | "HISTORICAL_FACT" | "HISTORY" | "PATTERN" | "STANDING";
   sourceAuthority: MemoryPackedSourceAuthority;
   sourceChatId: string | null;
   sourceSessionHandle: string | null;
@@ -389,6 +399,7 @@ export type MemoryPackedItem = Readonly<{
     sourceSessionHandle: string;
   }>[];
   supportingItemId: string | null;
+  temporalPresentation?: MemoryPackedTemporalPresentation;
   temporalReason: "any" | "as_of" | "between" | "current" | "historical";
   tier: "CORE" | "DYNAMIC";
   validFrom: string | null;

@@ -126,6 +126,45 @@ function core(id: string, text?: string): MemoryCoreCandidate {
   return { candidate: ranked(id, false, "CORE"), expansion: expansion(id, false, text) };
 }
 
+function standing(id: string, automatic = false): MemoryCoreCandidate {
+  const candidate = ranked(id);
+  return {
+    candidate: {
+      ...candidate,
+      entryId: null,
+      featureSnapshot: {
+        ...candidate.featureSnapshot,
+        directFactAuthority: true,
+        laneCount: 0,
+        standingFact: true
+      },
+      finalScore: 0,
+      laneRanks: {},
+      metadata: automatic ? {
+        ...candidate.metadata,
+        sourceAuthority: "DIRECT_AUTOMATIC",
+        sourceMode: "AUTOMATIC"
+      } : candidate.metadata,
+      rrfScore: 0,
+      selectionReason: automatic ? "standing.automatic" : "standing.explicit"
+    },
+    expansion: expansion(id)
+  };
+}
+
+function timedFact(
+  id: string,
+  modality: "EVENT" | "INTENTION" | "PLAN" | "PREFERENCE" | "STATE",
+  dates: Partial<Pick<MemoryCandidateMetadata,
+    "expectedAt" | "lastConfirmedAt" | "observedAt" | "occurredAt" | "systemFrom">> = {}
+): MemoryRankedCandidate {
+  const candidate = ranked(id);
+  return {
+    ...candidate,
+    metadata: { ...candidate.metadata, ...dates, modality }
+  };
+}
+
 function supportedPattern(supportCount = 3) {
   const candidate = ranked("pattern");
   const pattern: MemoryRankedCandidate = { ...candidate, metadata: {
@@ -358,7 +397,147 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v45");
+    expect(pack.packerVersion).toBe("memory-context-packer-v47");
+  });
+
+  it("packs standing facts first, once, without consuming dynamic fact capacity", () => {
+    const pack = packMemoryPersonalContext({
+      core: [core("saved")],
+      expanded: [expansion("saved"), expansion("searched")],
+      plan,
+      ranked: [ranked("saved"), ranked("searched")],
+      standing: [standing("saved"), standing("automatic", true)]
+    });
+    expect(pack.items.map(({ itemId, section }) => [itemId, section])).toEqual([
+      ["saved", "STANDING"], ["automatic", "STANDING"], ["searched", "FACT"]
+    ]);
+    expect(pack.text).toContain("Current Memory records accompany this turn");
+    expect(renderedEvidence(pack).map(({ source_authority }) => source_authority))
+      .toEqual(["user_saved", "learned_from_user", "user_saved"]);
+  });
+
+  it("bounds the standing lane to twenty facts and two thousand evidence tokens", () => {
+    const pack = packMemoryPersonalContext({
+      expanded: [],
+      plan,
+      ranked: [],
+      standing: Array.from({ length: 21 }, (_, index) => standing(`saved-${index}`))
+    });
+    expect(pack.items.length).toBeLessThanOrEqual(20);
+    expect(pack.omissionCounts.standing_item_limit).toBe(1);
+    expect(estimateApproxTokens(renderedEvidence(pack).map((entry) =>
+      JSON.stringify(entry)).join("\n"))).toBeLessThanOrEqual(2_000);
+
+    const small = packMemoryPersonalContext({
+      expanded: [], maximumTokens: 1, plan, ranked: [], standing: [standing("saved")]
+    });
+    expect(small.items).toEqual([]);
+    expect(small.omissionCounts.token_budget).toBe(1);
+  });
+
+  it("marks an elapsed PLAN or INTENTION without claiming it happened", () => {
+    const past = new Date(now.getTime() - 2 * 86_400_000);
+    const nearPast = new Date(now.getTime() - 23 * 3_600_000);
+    const future = new Date(now.getTime() + 2 * 86_400_000);
+    const pack = (modality: "INTENTION" | "PLAN", expectedAt: Date) =>
+      packMemoryPersonalContext({
+        expanded: [expansion("plan")], now, plan,
+        ranked: [timedFact("plan", modality, { expectedAt })]
+      });
+
+    for (const modality of ["PLAN", "INTENTION"] as const) {
+      const elapsed = pack(modality, past);
+      expect(elapsed.items[0]).toMatchObject({
+        evidenceType: "current_fact", recordStatus: "current",
+        temporalPresentation: { date: past.toISOString(), kind: "elapsed_plan_unconfirmed" }
+      });
+      expect(renderedEvidence(elapsed)[0]).toMatchObject({
+        claim_state: "current",
+        time_status: {
+          date: past.toISOString(),
+          kind: "elapsed_plan_unconfirmed",
+          meaning: expect.stringContaining("not an upcoming or current plan")
+        }
+      });
+      expect(elapsed.text).toContain("does not prove completion");
+      expect(renderedEvidence(pack(modality, nearPast))[0]).not.toHaveProperty("time_status");
+      expect(renderedEvidence(pack(modality, future))[0]).not.toHaveProperty("time_status");
+    }
+  });
+
+  it("dates a stale undated plan but keeps a recent confirmation current", () => {
+    const old = new Date(now.getTime() - 31 * 86_400_000);
+    const recent = new Date(now.getTime() - 29 * 86_400_000);
+    const pack = (lastConfirmedAt: Date | null) => packMemoryPersonalContext({
+      expanded: [expansion("undated")], now, plan,
+      ranked: [timedFact("undated", "PLAN", {
+        lastConfirmedAt, observedAt: old, systemFrom: old
+      })]
+    });
+    expect(renderedEvidence(pack(null))[0]).toMatchObject({
+      time_status: {
+        date: old.toISOString(), kind: "stale_unconfirmed",
+        statementDate: old.toISOString()
+      }
+    });
+    expect(renderedEvidence(pack(recent))[0]).not.toHaveProperty("time_status");
+    expect(renderedEvidence(packMemoryPersonalContext({
+      expanded: [expansion("fresh")], now, plan,
+      ranked: [timedFact("fresh", "PLAN", { observedAt: recent, systemFrom: recent })]
+    }))[0]).not.toHaveProperty("time_status");
+    expect(renderedEvidence(packMemoryPersonalContext({
+      expanded: [expansion("new-observation")], now, plan,
+      ranked: [timedFact("new-observation", "PLAN", {
+        lastConfirmedAt: old, observedAt: recent, systemFrom: old
+      })]
+    }))[0]).not.toHaveProperty("time_status");
+  });
+
+  it("marks a past EVENT while leaving STATE, PREFERENCE and historical reads unchanged", () => {
+    const past = new Date(now.getTime() - 2 * 86_400_000);
+    const pastEvent = packMemoryPersonalContext({
+      expanded: [expansion("event")], now, plan,
+      ranked: [timedFact("event", "EVENT", { occurredAt: past })]
+    });
+    expect(renderedEvidence(pastEvent)[0]).toMatchObject({
+      time_status: { date: past.toISOString(), kind: "past_event" }
+    });
+    for (const modality of ["STATE", "PREFERENCE"] as const) {
+      const pack = packMemoryPersonalContext({
+        expanded: [expansion(modality)], now, plan,
+        ranked: [timedFact(modality, modality, { expectedAt: past, observedAt: past })]
+      });
+      expect(renderedEvidence(pack)[0]).not.toHaveProperty("time_status");
+      expect(pack.text).not.toContain("time_status is about temporal meaning");
+    }
+    const historical = packMemoryPersonalContext({
+      expanded: [expansion("plan")], now, plan: historicalPlan,
+      ranked: [timedFact("plan", "PLAN", { expectedAt: past })]
+    });
+    expect(renderedEvidence(historical)[0]).not.toHaveProperty("time_status");
+  });
+
+  it("annotates a standing PLAN and still obeys the exact context budget", () => {
+    const past = new Date(now.getTime() - 3 * 86_400_000);
+    const base = standing("saved-plan");
+    const input = {
+      expanded: [], now, plan, ranked: [], standing: [{
+        ...base,
+        candidate: {
+          ...base.candidate,
+          metadata: { ...base.candidate.metadata, modality: "PLAN" as const, expectedAt: past }
+        }
+      }]
+    };
+    const pack = packMemoryPersonalContext(input);
+    expect(pack.items[0]).toMatchObject({
+      section: "STANDING",
+      temporalPresentation: { kind: "elapsed_plan_unconfirmed" }
+    });
+    expect(packMemoryPersonalContext({ ...input, maximumTokens: pack.approxTokens }).items)
+      .toHaveLength(1);
+    expect(packMemoryPersonalContext({ ...input, maximumTokens: pack.approxTokens - 1 }))
+      .toMatchObject({ items: [], omissionCounts: { token_budget: 1 } });
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
@@ -896,6 +1075,20 @@ describe("Personal Memory context pack", () => {
 
     expect(pack.items).toEqual([]);
     expect(pack.omissionCounts).toMatchObject({ pattern_support_missing: 1 });
+  });
+
+  it("keeps generalizations as evidence but leaves combined memories in the list", () => {
+    const fixture = supportedPattern();
+    expect(packMemoryPersonalContext(fixture).items).toHaveLength(1);
+    const pack = packMemoryPersonalContext({
+      ...fixture,
+      ranked: fixture.ranked.map((candidate) => ({
+        ...candidate,
+        metadata: { ...candidate.metadata, combinedMemory: true }
+      }))
+    });
+    expect(pack.items).toEqual([]);
+    expect(pack.omissionCounts.combined_memory_display_only).toBe(1);
   });
 
   it.each([0, 2, 3, 8, 9])("keeps pattern support cardinality bounded: %i", (count) => {

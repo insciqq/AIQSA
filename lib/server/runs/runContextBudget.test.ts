@@ -194,7 +194,7 @@ describe("provider request context budget", () => {
     const committed = {
       operation: "SAVE",
       status: "COMMITTED",
-      version: 1
+      version: 2
     } as const;
     const text = "ordinary-answer-canary";
     const estimate = contextTokenEstimator(request());

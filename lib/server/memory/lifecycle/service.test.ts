@@ -1,3 +1,4 @@
+import { MemoryPersistenceError, memoryPersistenceFailureCode } from "../persistence/errors";
 import { describe, expect, it, vi } from "vitest";
 import type {
   MemoryDeletionStatus,
@@ -105,6 +106,19 @@ function mutations(): MemoryLifecycleMutationRepository {
 }
 
 describe("Memory lifecycle service", () => {
+  it("retains a precise persistence failure for server diagnostics after public mapping", async () => {
+    const mutationRepository = mutations();
+    vi.mocked(mutationRepository.forget).mockRejectedValueOnce(new MemoryPersistenceError("memory_partial_forget_ambiguous"));
+    const service = createMemoryLifecycleService({ authorizationRepository: authorizations(), mutationRepository,
+      readRepository: { get: vi.fn(async () => forgottenSummary) } });
+    const error = await service.forget("user-1", "fact-1", {
+      expectedVersionId: "version-1", mutationAuthorizationId: "authorization-1"
+    }).catch((error: unknown) => error);
+    expect(error).toEqual(new MemoryLifecycleServiceError("memory_action_failed"));
+    expect(memoryPersistenceFailureCode(error)).toBe("memory_partial_forget_ambiguous");
+    expect(JSON.stringify(error)).not.toContain("memory_partial_forget_ambiguous");
+  });
+
   it("forgets only through the exact target authorization and wakes durable purge", async () => {
     const authorizationRepository = authorizations();
     const mutationRepository = mutations();

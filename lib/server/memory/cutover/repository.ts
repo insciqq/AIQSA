@@ -20,6 +20,7 @@ import {
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
   "../history/segments";
 import { memoryOrphanShadowPredicate, memoryShadowCancelledByPausePredicate } from "../rebuild/lifecycle";
+import { memoryShadowRebuildJobFingerprint } from "../rebuild/contract";
 
 export const MEMORY_RETRIEVAL_CUTOVER_VERSION =
   "memory-vnext-retrieval-cutover-v1";
@@ -31,6 +32,55 @@ const nonterminalStates: readonly MemoryJobState[] = [
   "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT"
 ];
+
+const TOOL_EVENT_TEXT_REPAIR_VERSION = "memory-tool-event-text-repair-v1";
+
+function toolEventTextMismatch(userId: Prisma.Sql, generationId: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM "MemorySearchEntry" AS entry
+    INNER JOIN "MemoryToolEvent" AS tool_event
+      ON tool_event."userId" = entry."userId"
+      AND tool_event."id" = entry."toolEventId"
+    WHERE entry."userId" = ${userId}
+      AND entry."indexGenerationId" = ${generationId}
+      AND entry."itemType" = 'TOOL_EVENT'::"MemorySearchItemType"
+      AND entry."normalizedSearchText" <> tool_event."normalizedSafeSearchText"
+  )`;
+}
+
+function repairRequestIdentity(activeGenerationId: string) {
+  return {
+    activeGenerationId,
+    domain: TOOL_EVENT_TEXT_REPAIR_VERSION,
+    version: 1
+  };
+}
+
+function failedToolEventRepairPredicate(): Prisma.Sql {
+  // The JSON key order matches memorySha256's canonical request fingerprint.
+  // Generation IDs are UUIDs, so interpolation cannot change JSON quoting.
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM "MemoryIndexGeneration" AS repair
+    INNER JOIN "MemoryJob" AS job
+      ON job."userId" = repair."userId"
+      AND job."kind" = 'REBUILD_INDEX'::"MemoryJobKind"
+      AND job."idempotencyFingerprint" =
+        'memory-shadow-rebuild-v2:r:' || repair.id || ':' ||
+        encode(digest(
+          '{"domain":"aiqsa.memory.shadow-rebuild-request","generationId":"' ||
+          repair.id ||
+          '","operation":"REBUILD_SEARCH_INDEX","requestIdentity":{"activeGenerationId":"' ||
+          active.id || '","domain":"' || ${TOOL_EVENT_TEXT_REPAIR_VERSION} ||
+          '","version":1},"version":"v1"}', 'sha256'), 'hex')
+    WHERE repair."userId" = settings."userId"
+      AND repair."sourceIndexGenerationId" = active.id
+      AND repair.state IN (
+        'FAILED'::"MemoryIndexGenerationState",
+        'CANCELLED'::"MemoryIndexGenerationState"
+      )
+      AND NOT (${memoryShadowCancelledByPausePredicate(Prisma.sql`repair`)})
+  )`;
+}
 
 export type MemoryRetrievalCutoverResult = Readonly<{
   generationId: string | null;
@@ -112,9 +162,22 @@ export function createPrismaMemoryRetrievalCutoverRepository(
         kind: "in_progress"
       };
     }
-    const [failed] = inventory.activeGenerationId
-      ? await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT failed.id FROM "MemoryIndexGeneration" failed
+    const repairNeeded = inventory.activeGenerationId
+      ? (await client.$queryRaw<Array<{ present: boolean }>>(Prisma.sql`
+          SELECT ${toolEventTextMismatch(
+            Prisma.sql`${userId}`,
+            Prisma.sql`${inventory.activeGenerationId}`
+          )} AS present
+        `))[0]?.present === true
+      : false;
+    const failed = inventory.activeGenerationId
+      ? await client.$queryRaw<Array<{ id: string; idempotencyFingerprint: string | null }>>(Prisma.sql`
+          SELECT failed.id, job."idempotencyFingerprint" FROM "MemoryIndexGeneration" failed
+          LEFT JOIN "MemoryJob" job
+            ON job."userId" = failed."userId"
+            AND job."kind" = 'REBUILD_INDEX'::"MemoryJobKind"
+            AND job."idempotencyFingerprint" LIKE
+              ('memory-shadow-rebuild-v2:r:' || failed.id || ':%')
           WHERE failed."userId" = ${userId}
             AND failed."sourceIndexGenerationId" = ${inventory.activeGenerationId}
             AND failed.state IN ('CANCELLED', 'FAILED')
@@ -122,12 +185,19 @@ export function createPrismaMemoryRetrievalCutoverRepository(
               WHEN 'HYBRID' THEN ${MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION}
               ELSE ${MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION} END
             AND NOT (${memoryShadowCancelledByPausePredicate(Prisma.sql`failed`)})
-          ORDER BY failed.generation DESC, failed.id DESC LIMIT 1
+          ORDER BY failed.generation DESC, failed.id DESC
         `)
       : [];
-    if (failed) {
+    const repairAttemptFailed = repairNeeded && inventory.activeGenerationId !== null &&
+      failed.some((row) => row.idempotencyFingerprint ===
+        memoryShadowRebuildJobFingerprint({
+          generationId: row.id,
+          operation: "REBUILD_SEARCH_INDEX",
+          requestIdentity: repairRequestIdentity(inventory.activeGenerationId!)
+        }));
+    if (failed.length > 0 && (!repairNeeded || repairAttemptFailed)) {
       return {
-        generationId: failed.id,
+        generationId: failed[0]!.id,
         inventory,
         jobId: null,
         kind: "blocked_failed"
@@ -137,13 +207,15 @@ export function createPrismaMemoryRetrievalCutoverRepository(
       expectedMemoryRevision: settings.memoryRevision,
       expectedSettingsRevision: settings.settingsRevision,
       operation: "REBUILD_SEARCH_INDEX",
-      requestIdentity: {
-        activeGenerationId: inventory.activeGenerationId,
-        domain: MEMORY_RETRIEVAL_CUTOVER_VERSION,
-        eligibleIdentityFingerprint: inventory.eligibleIdentityFingerprint,
-        memoryRevision: inventory.memoryRevision,
-        version: 1
-      }
+      requestIdentity: repairNeeded && inventory.activeGenerationId
+        ? repairRequestIdentity(inventory.activeGenerationId)
+        : {
+            activeGenerationId: inventory.activeGenerationId,
+            domain: MEMORY_RETRIEVAL_CUTOVER_VERSION,
+            eligibleIdentityFingerprint: inventory.eligibleIdentityFingerprint,
+            memoryRevision: inventory.memoryRevision,
+            version: 1
+          }
     });
     if (admitted.kind === "ok") {
       return {
@@ -237,6 +309,9 @@ export function createPrismaMemoryRetrievalCutoverRepository(
                 THEN ${MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION}
               ELSE ${MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION}
             END
+            OR ${toolEventTextMismatch(
+              Prisma.sql`settings."userId"`, Prisma.sql`active."id"`
+            )}
           )
           AND NOT EXISTS (
             SELECT 1 FROM "MemoryJob" AS running
@@ -250,7 +325,7 @@ export function createPrismaMemoryRetrievalCutoverRepository(
                 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
               )
           )
-          AND NOT EXISTS (
+          AND (NOT EXISTS (
             SELECT 1 FROM "MemoryIndexGeneration" AS failed
             WHERE failed."userId" = settings."userId"
               AND failed."sourceIndexGenerationId" = active."id"
@@ -264,7 +339,11 @@ export function createPrismaMemoryRetrievalCutoverRepository(
                   THEN ${MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION}
                 ELSE ${MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION}
               END
-          ))
+          ) OR ${toolEventTextMismatch(
+            Prisma.sql`settings."userId"`, Prisma.sql`active."id"`
+          )})
+          AND NOT (${failedToolEventRepairPredicate()})
+        )
         ORDER BY settings."userId"
         LIMIT ${limit}
       `);

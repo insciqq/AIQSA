@@ -187,6 +187,7 @@ function mockClient(
   options: Readonly<{
     completionRows?: readonly Record<string, unknown>[];
     coreRows?: readonly Record<string, unknown>[];
+    standingRows?: readonly Record<string, unknown>[];
     expansionRows?: readonly Record<string, unknown>[];
     failLaneQueries?: boolean;
     laneFailure?: unknown;
@@ -224,6 +225,7 @@ function mockClient(
       return rows;
     }
     if (sql.includes('version."coreEligible" = TRUE')) return options.coreRows ?? [];
+    if (sql.includes("standing_fact_floor")) return options.standingRows ?? [];
     if (sql.includes("RECALL_ROUND_RAW_SAFE_TEXT")) return options.expansionRows ?? [];
     if (options.laneFailure !== undefined) throw options.laneFailure;
     if (options.failLaneQueries === true) {
@@ -633,7 +635,12 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('settings."synthesisEnabledAt" IS NOT NULL');
     expect(sql).not.toContain('settings."synthesisEnabled" = TRUE');
     expect(sql).toContain('relation."executionId" IS NOT NULL');
-    expect(sql).toContain('COUNT(DISTINCT source_root."rootKey")');
+    expect(sql).toContain('COUNT(DISTINCT relation_source_fact."id")');
+    expect(sql).toContain('WITH root_support AS');
+    expect(sql).toContain('evidence_message."role" = \'user\'');
+    expect(sql).toContain('second."messageId" <> first."messageId"');
+    expect(sql).toContain('third."messageId" <> first."messageId"');
+    expect(sql).toContain('third."messageId" <> second."messageId"');
   });
 
   it("recovers planner-excluded families through bounded original-query lanes", () => {
@@ -2339,6 +2346,93 @@ describe("local Memory retrieval repository", () => {
     expect(await repository.expand(result.snapshot, plan, candidates)).toEqual([]);
     expect(await repository.expand(result.snapshot,
       { ...plan, applyResponsePreferences: false }, candidates)).toEqual([]);
+  });
+
+  it("loads current standing facts independently of search and preference filters", async () => {
+    const standingRow = (itemId: string, sourceMode: "EXPLICIT" | "AUTOMATIC") => ({
+      ...floorMetadata(itemId, "FACT"),
+      displayText: `Saved ${itemId}`,
+      entryId: null,
+      itemId,
+      itemType: "FACT_VERSION",
+      matchedSegmentId: null,
+      matchedSegmentPosition: null,
+      parentChunkId: null,
+      rawScore: 0,
+      safeContentHash: null,
+      safeText: `Saved ${itemId}`,
+      sourceAuthority: sourceMode === "EXPLICIT" ? "EXPLICIT" : "DIRECT_AUTOMATIC",
+      sourceMode,
+      structuredValue: { statement: `Saved ${itemId}` }
+    });
+    const mocked = mockClient(snapshotRow(), {
+      standingRows: [standingRow("explicit", "EXPLICIT"), standingRow("automatic", "AUTOMATIC")]
+    });
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({ currentUserText: "Explain a lunar eclipse.", now });
+    const snapshot = await repository.snapshot({
+      assistantId: null, chatId: "chat-1", now, plan, userId: "user-1"
+    });
+
+    const standing = await repository.loadStandingFacts(snapshot);
+    expect(standing.map(({ candidate }) => ({
+      id: candidate.itemId,
+      reason: candidate.selectionReason,
+      tier: candidate.featureSnapshot.tier,
+      direct: candidate.featureSnapshot.directFactAuthority,
+      standingFact: candidate.featureSnapshot.standingFact,
+      score: candidate.finalScore,
+      ranks: candidate.laneRanks
+    }))).toEqual([
+      { id: "explicit", reason: "standing.explicit", tier: "DYNAMIC",
+        direct: true, standingFact: true, score: 0, ranks: {} },
+      { id: "automatic", reason: "standing.automatic", tier: "DYNAMIC",
+        direct: true, standingFact: true, score: 0, ranks: {} }
+    ]);
+    expect(standing.map(({ expansion }) => expansion.safeText))
+      .toEqual(["Saved explicit", "Saved automatic"]);
+    const sql = mocked.laneSql.find((value) => value.includes("standing_fact_floor"))!;
+    expect(sql).toContain('root_fact."state" = \'ACTIVE\'');
+    expect(sql).toContain('root_fact."movedToFactId" IS NULL');
+    expect(sql).toContain('root_fact."currentVersionId" = version."id"');
+    expect(sql).toContain('standing_chat."projectId" IS NULL');
+    expect(sql).toContain('version."safetyClassificationState"');
+    expect(sql).toContain('version."modality" <> \'PATTERN\'');
+    expect(sql).toContain('FROM "MemorySuppression"');
+    expect(sql).toContain('FROM "MemoryFeedback"');
+    expect(sql).toContain('root_fact."lastConfirmedAt" DESC NULLS LAST');
+    expect(sql).toContain("LIMIT 21");
+    expect(sql).not.toContain('version."coreEligible" = TRUE');
+  });
+
+  it("requires an issued personal snapshot before reading standing facts", async () => {
+    const mocked = mockClient();
+    const first = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const second = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    const plan = planMemoryRetrieval({ currentUserText: "hello", now });
+    const snapshot = await first.snapshot({
+      assistantId: null, chatId: "chat-1", now, plan, userId: "user-1"
+    });
+    await expect(first.loadStandingFacts({ ...snapshot }))
+      .rejects.toThrow("memory_retrieval_source_snapshot_invalid");
+    await expect(second.loadStandingFacts(snapshot))
+      .rejects.toThrow("memory_retrieval_source_snapshot_invalid");
+    for (const chatMemoryMode of ["TEMPORARY", "EXCLUDED"] as const) {
+      const disabledMocked = mockClient(snapshotRow({ chatMemoryMode }));
+      const disabled = createPrismaLocalMemoryRetrievalRepository(disabledMocked.client);
+      const disabledSnapshot = await disabled.snapshot({
+        assistantId: null, chatId: "chat-1", now, plan, userId: "user-1"
+      });
+      await expect(disabled.loadStandingFacts(disabledSnapshot)).resolves.toEqual([]);
+      expect(disabledMocked.laneSql).toEqual([]);
+    }
+    const pausedMocked = mockClient(snapshotRow({ useMemoryFacts: false }));
+    const paused = createPrismaLocalMemoryRetrievalRepository(pausedMocked.client);
+    const pausedSnapshot = await paused.snapshot({
+      assistantId: null, chatId: "chat-1", now, plan, userId: "user-1"
+    });
+    await expect(paused.loadStandingFacts(pausedSnapshot)).resolves.toEqual([]);
+    expect(pausedMocked.laneSql).toEqual([]);
   });
 
   it("rejects an empty dynamic-lane plan without response-preference admission", async () => {

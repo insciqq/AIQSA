@@ -111,6 +111,8 @@ import {
   previousVisibleAnswersV2
 } from "@/features/answer-outputs-v2/AnswerIdentityV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
+import { MemoryCommandStatusV2 } from "@/features/answer-outputs-v2/MemoryCommandStatusV2";
+import { useMemoryCommands } from "@/components/app-shell/useMemoryCommands";
 import {
   ReadingRoomShellV2,
   type NavigationChatRowState,
@@ -563,6 +565,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const projectContext = Boolean(
     activeChatSummary?.projectId || (!activeChatSummary && workspace.projects.selectedProjectId)
   );
+  const memoryCommands = useMemoryCommands({
+    accountId: session.accountId,
+    chatId: session.activeChatId,
+    enabled: !projectContext && composer.memory.mode === "NORMAL",
+    messageKey: thread.visibleMessages.filter((message) => message.role === "user")
+      .map((message) => message.id).join(",")
+  });
   const artifactPanelAllowed = !projectContext && composer.memory.mode !== "TEMPORARY" && !libraryOpen && !projectsSurfaceOpen && !settings.settings.open;
   const visibleArtifactPanel = artifactPanelAllowed && artifactPanel?.chatId === session.activeChatId ? artifactPanel : null;
   useEffect(() => {
@@ -1224,7 +1233,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       <a className="v2-chat-continuation-source v2-focusable"
         href={`/api/chats/${encodeURIComponent(activeChatSummary.id)}/continuation-source`}>Previous chat</a>
     ) : identity ? <AnswerIdentityChipV2 identity={identity} /> : null;
-    const noticeSlot = settled && artifact?.memoryAction ? (
+    const command = source.parentMessageId ? memoryCommands.get(source.parentMessageId) : undefined;
+    const noticeSlot = command && (command.operation !== "UNKNOWN" ||
+      ["FAILED", "UNKNOWN", "STALE"].includes(command.status)) ? (
+      <MemoryCommandStatusV2 command={command} onOpenMemory={settings.openMemory} />
+    ) : settled && artifact?.memoryAction ? (
       <MemoryActionConfirmationV2
         action={artifact.memoryAction}
         onOpenMemoryReset={settings.openMemory}

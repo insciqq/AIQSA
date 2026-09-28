@@ -55,7 +55,7 @@ describe("Dream synthesis policy", () => {
   it("binds per-pattern ingestion to canonical identity instead of model wording", () => {
     const input = {
       canonicalPatternIdentity: `prop:v1:${"a".repeat(64)}`,
-      sourceSetFingerprint: "b".repeat(64)
+      sourceEligibilityHashes: ["b".repeat(64), "c".repeat(64), "d".repeat(64)]
     };
     const fingerprint = memorySynthesisPatternFingerprint(input);
 
@@ -65,6 +65,10 @@ describe("Dream synthesis policy", () => {
       ...input,
       canonicalPatternIdentity: `prop:v1:${"c".repeat(64)}`
     })).not.toBe(fingerprint);
+    expect(memorySynthesisPatternFingerprint({
+      ...input,
+      sourceEligibilityHashes: [...input.sourceEligibilityHashes].reverse()
+    })).toBe(fingerprint);
   });
 
   it("requires three distinct eligible direct facts after the forward boundary", () => {
@@ -116,6 +120,34 @@ describe("Dream synthesis policy", () => {
       generation: 3,
       sources: Array.from({ length: 3 }, (_, index) => source(index, {
         sourceChatIds: ["chat-shared"],
+        sourceMessageIds: [`message-${index}`]
+      }))
+    })?.clusters).toHaveLength(1);
+  });
+
+  it("requires a distinct current message for each fact, including explicit facts", () => {
+    const explicit = Array.from({ length: 3 }, (_, index) => source(index, {
+      sourceMode: "EXPLICIT",
+      sourceMessageIds: ["shared-message"],
+      subjectScope: "CURRENT_USER"
+    }));
+    expect(buildMemorySynthesisPlan({ boundary, generation: 3, sources: explicit }))
+      .toBeNull();
+    expect(buildMemorySynthesisPlan({
+      boundary,
+      generation: 3,
+      sources: explicit.map((entry, index) => ({
+        ...entry,
+        sourceMessageIds: index === 0
+          ? ["message-a", "message-b", "message-c"]
+          : ["message-a"]
+      }))
+    })).toBeNull();
+    expect(buildMemorySynthesisPlan({
+      boundary,
+      generation: 3,
+      sources: explicit.map((entry, index) => ({
+        ...entry,
         sourceMessageIds: [`message-${index}`]
       }))
     })?.clusters).toHaveLength(1);
@@ -204,13 +236,28 @@ describe("Dream synthesis policy", () => {
       generation: 3,
       sources: Array.from({ length: 3 }, (_, index) => source(index, {
         entityIds: [`entity-${index}`],
+        category: index === 0 ? "work" : index === 1 ? "habits" : "preferences",
+        modality: index === 0 ? "WORKFLOW" : index === 1 ? "HABIT" : "PREFERENCE",
         predicateKey: `predicate-${index}`,
-        subjectKey: null
+        subjectKey: null,
+        subjectScope: "CURRENT_USER"
       }))
     });
 
     expect(plan?.clusters).toHaveLength(1);
     expect(plan?.clusters[0]?.sources).toHaveLength(3);
+  });
+
+  it("does not infer the owner from an explicit fact without a grounded subject", () => {
+    const sources = Array.from({ length: 3 }, (_, index) => source(index, {
+      sourceMode: "EXPLICIT",
+      subjectKey: null,
+      subjectScope: null,
+      subjectEntityIds: [],
+      entityIds: ["same-mentioned-entity"]
+    }));
+    expect(buildMemorySynthesisPlan({ boundary, generation: 3, sources }))
+      .toBeNull();
   });
 
   it("isolates automatic relationship facts by their grounded subject", () => {

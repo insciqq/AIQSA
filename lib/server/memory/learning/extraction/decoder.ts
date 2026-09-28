@@ -7,6 +7,7 @@ import {
 } from "../../explicit/safety";
 import { memorySha256 } from "../../persistence/lexical";
 import {
+  MemoryIdentityError,
   resolveMemoryIdentity,
   type MemoryIdentityEntityType,
   type MemoryIdentityProposal,
@@ -163,9 +164,41 @@ function enumValue<T extends string>(
 }
 
 function rejectionCode(error: unknown): MemoryFactCandidateRejection["reasonCode"] {
+  if (error instanceof MemoryIdentityError) {
+    return error.code === "memory_fact_state_unsupported"
+      ? "REJECT_STATE_UNSUPPORTED"
+      : "REJECT_IDENTITY_INVALID";
+  }
+  if (error instanceof Error && error.message === "memory_fact_temporal_invalid") {
+    return "REJECT_TEMPORAL_UNSUPPORTED";
+  }
   if (!(error instanceof MemoryFactDecodeError)) return "REJECT_UNSUPPORTED";
   if (error.code === "memory_fact_evidence_ambiguous" ||
-    error.code === "memory_fact_semantic_unknown") return "REJECT_AMBIGUOUS";
+    error.code === "memory_fact_semantic_unknown" ||
+    error.code === "memory_fact_sensitivity_ambiguous") return "REJECT_AMBIGUOUS";
+  if (error.code === "memory_fact_evidence_invalid") return "REJECT_EVIDENCE_INVALID";
+  if (error.code === "memory_fact_evidence_not_in_target") {
+    return "REJECT_EVIDENCE_NOT_IN_TARGET";
+  }
+  if (error.code === "memory_fact_subject_unsupported" ||
+    error.code === "memory_fact_unsupported") return "REJECT_FRAME_INELIGIBLE";
+  if (error.code === "memory_fact_not_useful") return "REJECT_NOT_USEFUL";
+  if (error.code === "memory_fact_entity_unsupported") return "REJECT_ENTITY_UNSUPPORTED";
+  if (error.code === "memory_fact_dependency_unsupported") {
+    return "REJECT_DEPENDENCY_UNSUPPORTED";
+  }
+  if (error.code === "memory_fact_temporal_invalid") {
+    return "REJECT_TEMPORAL_UNSUPPORTED";
+  }
+  if (error.code === "memory_fact_product_identity_unsupported") {
+    return "REJECT_PRODUCT_IDENTITY_UNSUPPORTED";
+  }
+  if (error.code === "memory_fact_residence_identity_unsupported") {
+    return "REJECT_RESIDENCE_IDENTITY_UNSUPPORTED";
+  }
+  if (error.code === "memory_fact_expiration_evidence_invalid") {
+    return "REJECT_TEMPORARY";
+  }
   if (error.code === "memory_fact_source_stale") return "REJECT_STALE_SOURCE";
   if (error.code === "memory_fact_confidence_low") return "REJECT_LOW_CONFIDENCE";
   if (error.code === "memory_fact_secret") return "REJECT_SECRET";
@@ -190,7 +223,7 @@ function exactEvidence(
 ): MemoryExtractedCandidate["evidence"] {
   const source = targetSource(input);
   const span = projectMemoryExactTextRef(source.text, ref);
-  if (!span) fail("memory_fact_evidence_invalid");
+  if (!span) fail("memory_fact_evidence_not_in_target");
   if ((source.redactionSpans ?? []).some((redacted) =>
     span.startOffset < redacted.endOffset && span.endOffset > redacted.startOffset)) {
     fail("memory_fact_secret");
@@ -600,7 +633,11 @@ function parseDependencies(input: Readonly<{
   });
 }
 
-function frameCanEnterPacket(frame: MemorySemanticFrame): boolean {
+function frameCanEnterPacket(
+  frame: MemorySemanticFrame,
+  memoryType: string,
+  temporary: boolean
+): boolean {
   if (frame.subjectScope !== "CURRENT_USER" &&
     frame.subjectScope !== "USER_RELATIONSHIP_CONTEXT" &&
     frame.subjectScope !== "UNKNOWN") {
@@ -609,9 +646,13 @@ function frameCanEnterPacket(frame: MemorySemanticFrame): boolean {
   if (frame.assertionStatus !== "ASSERTED" && frame.assertionStatus !== "UNKNOWN") {
     return false;
   }
+  const durablePreferenceCommand = frame.speechAct === "COMMAND" &&
+    frame.memoryDirective === "NONE" && frame.assertionStatus === "ASSERTED" &&
+    frame.subjectScope === "CURRENT_USER" && frame.changeIntent === "NONE" &&
+    frame.polarity === "AFFIRMED" && memoryType === "PREFERENCE" && !temporary;
   if (frame.speechAct !== "ASSERTION" && frame.speechAct !== "UNKNOWN" && !(
     frame.speechAct === "COMMAND" && frame.memoryDirective === "EXPLICIT_REMEMBER"
-  )) return false;
+  ) && !durablePreferenceCommand) return false;
   return frame.polarity === "AFFIRMED" || frame.polarity === "CORRECTION" ||
     frame.polarity === "NEGATED" || frame.polarity === "RETRACTION" ||
     frame.polarity === "UNKNOWN";
@@ -663,29 +704,33 @@ function decodeObservation(
   const evidenceRef = decodeMemoryExactTextRef(
     value.evidence,
     MEMORY_FACT_MAX_EVIDENCE_CHARACTERS
-  ) ?? fail();
+  ) ?? fail("memory_fact_evidence_invalid");
   const evidence = exactEvidence(input, evidenceRef);
   const quote = evidence[0]!.quote!;
   if (memoryExplicitStatementContainsSecret(source.text) ||
     memoryExplicitStatementContainsSecret(statement) ||
     memoryExplicitStatementContainsSecret(quote)) fail("memory_fact_secret");
   const frame = parseSemanticFrame(value.semantic_frame);
-  if (!frameCanEnterPacket(frame)) fail("memory_fact_subject_unsupported");
+  const temporary = requiredBoolean(value.temporary);
+  const memoryType = boundedString(value.memory_type, 32);
+  if (!frameCanEnterPacket(frame, memoryType, temporary)) {
+    fail("memory_fact_subject_unsupported");
+  }
   const confidenceBand = enumValue<NonNullable<
     MemoryExtractedCandidate["confidenceBand"]
   >>(value.confidence_band, confidenceBands, 16);
   if (confidenceBand === "LOW") fail("memory_fact_confidence_low");
+  if (frame.speechAct === "COMMAND" && frame.memoryDirective === "NONE" &&
+    confidenceBand !== "HIGH") fail("memory_fact_confidence_low");
   const sensitivity = enumValue(value.sensitivity, sensitivities, 16);
   if (sensitivity === "SECRET") fail("memory_fact_secret");
   // Direct personal testimony remains eligible independently of topic
   // sensitivity. Exact-source admission and local secret checks still apply.
   if (sensitivity !== "NORMAL" && sensitivity !== "SENSITIVE") {
-    fail("memory_fact_unsupported");
+    fail("memory_fact_sensitivity_ambiguous");
   }
-  if (!requiredBoolean(value.future_useful)) fail("memory_fact_unsupported");
-  const temporary = requiredBoolean(value.temporary);
+  if (!requiredBoolean(value.future_useful)) fail("memory_fact_not_useful");
   boundedString(value.reason_code, 64);
-  const memoryType = boundedString(value.memory_type, 32);
   const rawIdentity = parseIdentity(value.identity);
   const valueProposal = parseValue(value.value);
   if (memoryValueContainsRecognizedSecret(valueProposal)) {

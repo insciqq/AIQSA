@@ -1150,6 +1150,9 @@ export function createPrismaAssistantRepository(
       archived: boolean
     ): Promise<AssistantWriteResult> {
       return client.$transaction(async (tx) => {
+        // Memory admission holds the owner before the definition. Keep the
+        // same order before the availability hook acquires Memory settings.
+        await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
         const locked = await tx.$queryRaw<
           Array<{ archivedAt: Date | null; id: string; version: number }>
         >`

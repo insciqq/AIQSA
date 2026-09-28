@@ -80,6 +80,10 @@ type HistoryTargetRow = Readonly<{
   sourceContentHash: string;
 }>;
 
+type StoredSearchTextTargetRow = Omit<HistoryTargetRow, "safeText"> & Readonly<{
+  normalizedSafeSearchText: string;
+}>;
+
 export type MemoryItemEmbeddingBinding = Readonly<{
   acceptedOutputHash: string | null;
   id: string;
@@ -289,10 +293,10 @@ async function loadRecallChunkTarget(
     row.recallRoundId || row.recallRoundSegmentId || row.toolEventId) {
     return null;
   }
-  const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
+  const rows = await store.$queryRaw<StoredSearchTextTargetRow[]>(Prisma.sql`
     SELECT
       chunk."id" AS "itemId",
-      chunk."safeProjectedText" AS "safeText",
+      chunk."normalizedSafeSearchText",
       chunk."contentHash" AS "sourceContentHash"
     FROM "MemoryRecallChunk" AS chunk
     INNER JOIN "Chat" AS chat
@@ -344,7 +348,7 @@ async function loadRecallChunkTarget(
   `);
   const current = rows[0];
   if (!current) return null;
-  const normalizedSearchText = normalizeMemorySearchText(current.safeText);
+  const normalizedSearchText = current.normalizedSafeSearchText;
   if (
     normalizedSearchText !== row.normalizedSearchText ||
     current.sourceContentHash !== row.safeContentHash
@@ -580,9 +584,9 @@ async function loadToolEventTarget(
 ): Promise<MemoryItemEmbeddingTarget | null> {
   if (!row.referenceChatHistory || !row.toolEventId || row.factVersionId ||
     row.recallChunkId || row.recallRoundId || row.recallRoundSegmentId) return null;
-  const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
+  const rows = await store.$queryRaw<StoredSearchTextTargetRow[]>(Prisma.sql`
     SELECT tool_event."id" AS "itemId",
-      tool_event."safeProjectedText" AS "safeText",
+      tool_event."normalizedSafeSearchText",
       tool_event."contentHash" AS "sourceContentHash"
     FROM "MemoryToolEvent" AS tool_event
     INNER JOIN "Chat" AS chat
@@ -642,7 +646,7 @@ async function loadToolEventTarget(
   `);
   const current = rows[0];
   if (!current) return null;
-  const normalizedSearchText = normalizeMemorySearchText(current.safeText);
+  const normalizedSearchText = current.normalizedSafeSearchText;
   if (normalizedSearchText !== row.normalizedSearchText ||
     current.sourceContentHash !== row.safeContentHash) return null;
   return {

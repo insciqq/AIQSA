@@ -398,6 +398,8 @@ export function createPrismaMemorySettingsRepository(
           await tx.$executeRaw(Prisma.sql`
             UPDATE "MemoryJob" AS job
             SET
+              "commandIntent" = NULL,
+              "commandResult" = NULL,
               "completedAt" = ${cutoff},
               "errorCode" = 'memory_master_paused',
               "errorMessage" = NULL,

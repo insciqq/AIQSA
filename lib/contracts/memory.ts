@@ -376,6 +376,7 @@ export function decodeMemoryCreateInput(
 const memoryListSearchInputSchema = z.strictObject({
   category: categorySchema.optional(),
   cursor: cursorSchema.optional(),
+  includePatterns: z.boolean().optional(),
   pageSize: positiveInteger.max(MEMORY_PAGE_SIZE_MAX).optional(),
   query: safeText(MEMORY_QUERY_MAX_LENGTH),
   scope: memoryScopeSelectionSchema.optional(),
@@ -386,6 +387,7 @@ const memoryListSearchInputSchema = z.strictObject({
 const memoryListInputSchema = z.strictObject({
   category: categorySchema.optional(),
   cursor: cursorSchema.optional(),
+  includePatterns: z.boolean().optional(),
   pageSize: positiveInteger.max(MEMORY_PAGE_SIZE_MAX).optional(),
   scope: memoryScopeSelectionSchema.optional(),
   sourceMode: z.enum(MEMORY_SOURCE_MODES).optional(),
@@ -598,9 +600,20 @@ export function decodeMemorySettingsResponse(
   return decode(memorySettingsResponseSchema, value);
 }
 
+const combinedSourceSchema = z.strictObject({
+  category: categorySchema,
+  createdAt: isoTimestampSchema,
+  factId: idSchema,
+  sourceMode: z.enum(MEMORY_SOURCE_MODES),
+  versionId: idSchema,
+  statement: safeText(MEMORY_STATEMENT_MAX_LENGTH),
+  updatedAt: isoTimestampSchema
+});
+
 const memorySummarySchema = z.strictObject({
   actionVersionId: idSchema.nullable().optional(),
   category: categorySchema,
+  combinedSources: z.array(combinedSourceSchema).min(3).max(40).optional(),
   createdAt: isoTimestampSchema,
   currentVersionId: idSchema.nullable(),
   deferredCandidateCount: safeInteger.optional(),

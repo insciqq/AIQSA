@@ -21,7 +21,9 @@ END $$;
 export const memoryHistoryBudgetProofSql = `
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "MemoryBudgetAdoptionFixture" AS original
-      JOIN "MemoryJob" AS job ON job.id = 'memory-budget-job' WHERE original.snapshot = to_jsonb(job)) THEN
+      JOIN "MemoryJob" AS job ON job.id = 'memory-budget-job'
+      WHERE original.snapshot = to_jsonb(job) - ARRAY[
+        'commandSequence', 'commandStatus', 'commandOperation', 'commandIntent', 'commandResult']) THEN
     RAISE EXCEPTION 'memory_budget_migration_changed_existing_job';
   END IF;
   IF NOT public.aiqsa_memory_operational_counters_valid('{"contextualFallbackProviderOutputLimit":1}')

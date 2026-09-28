@@ -75,6 +75,12 @@ function updateDecision(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Memory control without model read planning", () => {
+  it("reserves thisChatOnly for an explicit current-conversation limit", () => {
+    const prompt = buildMemoryActionIntentRequest(context).systemPrompt;
+    expect(prompt).toContain("Set thisChatOnly only when the current user explicitly limits this action to the current conversation");
+    expect(prompt).toContain("work or project material in a personal chat is a normal persistent SAVE");
+  });
+
   it("accepts a pure command without requesting a generated search plan", async () => {
     const execute = vi.fn(async (_request: ReturnType<typeof buildMemoryActionIntentRequest>) =>
       ({ decision: controlDecision }));

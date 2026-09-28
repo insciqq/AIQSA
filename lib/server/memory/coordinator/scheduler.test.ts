@@ -7,6 +7,13 @@ function scheduler(): MemoryScheduler {
 }
 
 describe("Memory scheduler", () => {
+  it("gives pending commands bounded priority without starving ordinary jobs", () => {
+    const service = scheduler();
+    const kinds = ["EXTRACT_FACTS", "MEMORY_COMMAND"] as const;
+    expect(service.claimWaves(kinds)[0]).toEqual(["MEMORY_COMMAND"]);
+    expect(service.claimWaves(kinds)[0]).toEqual(["MEMORY_COMMAND"]);
+    expect(service.claimWaves(kinds)[0]).toEqual(["EXTRACT_FACTS"]);
+  });
   it("does not prioritize retired source reconciliation work", () => {
     const service = scheduler();
     const kinds = ["REBUILD_INDEX", "INDEX_HISTORY"] as const;

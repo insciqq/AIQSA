@@ -129,6 +129,19 @@ const memoryConsumerItemSchema = z.strictObject({
   allowedActions: z.array(z.enum(MEMORY_CONSUMER_ITEM_ACTIONS)).max(2)
     .refine((values) => new Set(values).size === values.length, "duplicate action"),
   category: z.enum(MEMORY_CONSUMER_CATEGORIES),
+  combined: z.strictObject({
+    sourceCount: safeInteger.min(3).max(40),
+    sources: z.array(z.strictObject({
+      category: z.enum(MEMORY_CONSUMER_CATEGORIES),
+      createdAt: isoTimestampSchema,
+      memoryRef: opaqueRefSchema,
+      provenance: z.enum(MEMORY_CONSUMER_PROVENANCES),
+      sourceAvailable: z.boolean(),
+      statement: safeText(MEMORY_CONSUMER_STATEMENT_MAX_LENGTH),
+      updatedAt: isoTimestampSchema
+    })).min(3).max(40)
+  }).refine((value) => value.sourceCount === value.sources.length,
+    "combined source count mismatch").optional(),
   createdAt: isoTimestampSchema,
   memoryRef: opaqueRefSchema,
   provenance: z.enum(["LEARNED", "SAVED"]),

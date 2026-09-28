@@ -92,6 +92,7 @@ export type MemoryUtilityPolicyDependencies = Readonly<{
   resolveSystemRole?: () => Promise<SystemModelRoleResolution>;
   resolveMemoryRole?: () => Promise<SystemModelRoleResolution>;
   resolveDecisionRole?: () => Promise<DecisionModelRoleResolution>;
+  resolveScreenDecisionRole?: () => Promise<DecisionModelRoleResolution>;
 }>;
 
 function exactAuthority(value: SearchProbeBinding | null | undefined): SafeTargetAuthority | null {
@@ -248,14 +249,19 @@ export async function resolveCurrentMemoryUtilityPolicy(
   settings: Pick<LockedMemorySettings, "embeddingProviderModelId">,
   dependencies: MemoryUtilityPolicyDependencies = {}
 ): Promise<ResolvedMemoryUtilityPolicy> {
-  const [memoryResolution, systemResolution, rerankerResolution, decisionResolution] = await Promise.all([
+  const [memoryResolution, systemResolution, rerankerResolution, decisionResolution,
+    screenDecisionResolution] = await Promise.all([
     dependencies.resolveMemoryRole?.() ??
       createMemoryUtilityModelRoleResolver(db).resolve(),
     dependencies.resolveSystemRole?.() ??
       createSystemModelRoleResolver(db).resolve(),
     dependencies.resolveRerankerRole?.() ??
       createRerankerModelRoleResolver(db).resolve(),
-    dependencies.resolveDecisionRole?.() ?? createDecisionModelRoleResolver(db).resolve("memoryRelevance")
+    dependencies.resolveDecisionRole?.() ?? createDecisionModelRoleResolver(db).resolve("memoryRelevance"),
+    dependencies.resolveScreenDecisionRole?.() ?? (dependencies.resolveDecisionRole
+      ? Promise.resolve({ ok: false as const, code: "decision_feature_disabled" as const,
+          selectedProviderModelId: null })
+      : createDecisionModelRoleResolver(db).resolve("memoryControlScreen"))
   ]);
   let embedding: EmbeddingProviderAdmissionRole | null = null;
   let embeddingUnavailable = false;
@@ -275,16 +281,18 @@ export async function resolveCurrentMemoryUtilityPolicy(
   const targets = new Map<MemoryExecutionRole, ResolvedMemoryExecutionTarget>();
   let rerankerTargets: readonly ResolvedMemoryExecutionTarget[] = Object.freeze([]);
   const destinations: MemoryPolicyDestination[] = MEMORY_EXECUTABLE_ROLES.map((role) => {
-    if (role === "MEMORY_HISTORY_RELEVANCE") {
-      const target = decisionResolution.ok
-        ? targetFor(role, decisionResolution.role, decisionResolution.policyVersion) : null;
+    if (role === "MEMORY_HISTORY_RELEVANCE" || role === "MEMORY_CONTROL_SCREEN") {
+      const resolution = role === "MEMORY_CONTROL_SCREEN"
+        ? screenDecisionResolution : decisionResolution;
+      const target = resolution.ok
+        ? targetFor(role, resolution.role, resolution.policyVersion) : null;
       if (target) {
         targets.set(role, target);
         return { kind: "AVAILABLE" as const, role, target };
       }
       return { kind: "UNAVAILABLE" as const, role,
-        code: decisionResolution.ok ? "decision_model_unavailable" as const : decisionResolution.code,
-        selectedProviderModelId: decisionResolution.ok ? decisionResolution.providerModelId : decisionResolution.selectedProviderModelId };
+        code: resolution.ok ? "decision_model_unavailable" as const : resolution.code,
+        selectedProviderModelId: resolution.ok ? resolution.providerModelId : resolution.selectedProviderModelId };
     }
     if (isMemoryEmbeddingRole(role)) {
       const target = embedding ? targetFor(role, embedding, null) : null;
@@ -384,7 +392,12 @@ export async function resolveCurrentMemoryUtilityPolicy(
     };
   });
 
-  const safeDestinations = destinations.map((destination) => destination.kind === "AVAILABLE"
+  // An unavailable optional screen has no egress destination. Excluding it
+  // preserves the policy fingerprint of existing accepted Memory runs while
+  // the new feature is off or unconfigured.
+  const safeDestinations = destinations.filter((destination) =>
+    destination.role !== "MEMORY_CONTROL_SCREEN" ||
+    destination.kind === "AVAILABLE").map((destination) => destination.kind === "AVAILABLE"
     ? {
         destinationFingerprint: destination.target.destinationFingerprint,
         kind: destination.kind,

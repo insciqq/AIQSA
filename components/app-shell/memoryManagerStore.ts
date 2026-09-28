@@ -254,9 +254,16 @@ export function beginEditMemory(): void {
 export function requestForgetMemory(memoryRef: string): void {
   if (useMemoryManagerStore.getState().resetPending) return;
   if (useMemoryManagerStore.getState().mutationOutcomeUnknown) return;
-  const memory = useMemoryManagerStore.getState().memories.find(
+  const memories = useMemoryManagerStore.getState().memories;
+  const direct = memories.find(
     (item) => item.memoryRef === memoryRef
   );
+  const source = direct ? null : memories.flatMap((item) =>
+    item.combined?.sources ?? []).find((item) => item.memoryRef === memoryRef);
+  const memory: MemoryConsumerItem | null = direct ?? (source ? {
+    ...source,
+    allowedActions: ["FORGET"]
+  } : null);
   if (!memory?.allowedActions.includes("FORGET")) return;
   retainDraftList();
   useMemoryManagerStore.setState({
@@ -272,12 +279,14 @@ export function requestForgetMemory(memoryRef: string): void {
 
 export function cancelMemoryDraft(): void {
   const { activeMemory: memory, mutationError, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
+  const topLevel = memory && useMemoryManagerStore.getState().memories.some(
+    (item) => item.memoryRef === memory.memoryRef);
   useMemoryManagerStore.setState({
     draft: memory ? draftFromMemory(memory) : emptyDraft,
     draftDirty: false,
     draftStale: false,
     mutationError: mutationOutcomeUnknown ? mutationError : null,
-    screen: memory ? "detail" : "list"
+    screen: topLevel ? "detail" : "list"
   });
   if (mutationOutcomeUnknown) void refreshMemoryList().catch(() => undefined);
 }
@@ -372,7 +381,9 @@ export async function forgetCurrentMemory(): Promise<void> {
       activeMemory: null,
       draft: emptyDraft,
       draftDirty: false,
-      memories: state.memories.filter((item) => item.memoryRef !== memory.memoryRef),
+      memories: state.memories.filter((item) =>
+        item.memoryRef !== memory.memoryRef &&
+        !item.combined?.sources.some((source) => source.memoryRef === memory.memoryRef)),
       mutationError: null,
       mutationState: null,
       notice: "forgotten",

@@ -24,7 +24,8 @@ export const memoryWorkerRecoveryProofSql = `
 DO $$ BEGIN
   IF (SELECT count(*) FROM "MemoryWorkerRecoveryFixture" AS original
       JOIN "MemoryJob" AS job USING (id)
-      WHERE original.snapshot = to_jsonb(job) - ARRAY['progressAt', 'recoveryCount', 'lastRecoveryAt', 'recoveryErrorCode']
+      WHERE original.snapshot = to_jsonb(job) - ARRAY['progressAt', 'recoveryCount', 'lastRecoveryAt', 'recoveryErrorCode',
+        'commandSequence', 'commandStatus', 'commandOperation', 'commandIntent', 'commandResult']
         AND job."recoveryCount" = 0 AND job."lastRecoveryAt" IS NULL AND job."recoveryErrorCode" IS NULL
         AND job."progressAt" IS NOT DISTINCT FROM job."completedAt") <> 3 THEN
     RAISE EXCEPTION 'memory_worker_recovery_changed_predecessor_work';

@@ -84,7 +84,7 @@ export async function loadMemoryRunSources(
   });
   if (bindings.length === 0) return new Map();
   const runByBindingId = new Map(bindings.map((binding) => [binding.id, binding.modelRunId]));
-  const items = await client.modelRunMemoryItem.findMany({
+  const frozenItems = await client.modelRunMemoryItem.findMany({
     orderBy: [{ bindingId: "asc" }, { ordinal: "asc" }],
     select: {
       bindingId: true,
@@ -94,6 +94,7 @@ export async function loadMemoryRunSources(
       itemType: true,
       recallChunkId: true,
       recallRoundId: true,
+      selectionReason: true,
       sourceBranchGenerationSnapshot: true,
       sourceChatIdSnapshot: true,
       sourceContentHashSnapshot: true,
@@ -101,6 +102,12 @@ export async function loadMemoryRunSources(
       sourceRevisionSnapshot: true
     },
     where: { bindingId: { in: bindings.map(({ id }) => id) }, userId: input.userId }
+  });
+  const items = frozenItems.filter((item) => {
+    if (!item.selectionReason?.startsWith("standing.")) return true;
+    const feature = item.featureSnapshot;
+    return typeof feature === "object" && feature !== null && !Array.isArray(feature) &&
+      feature.standingFactSearchMatched === true;
   });
   const factVersionIds = items.flatMap((item) => item.factVersionId ? [item.factVersionId] : []);
   const chunkIds = items.flatMap((item) => item.recallChunkId ? [item.recallChunkId] : []);

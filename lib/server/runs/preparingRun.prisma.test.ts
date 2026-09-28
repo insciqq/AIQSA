@@ -9,8 +9,7 @@ import {
 } from "../../contracts/memory";
 import type { MemoryActionIntent } from "../../contracts/memoryActionIntent";
 import {
-  calculateContextBudgetLimits,
-  estimateApproxTokens
+  calculateContextBudgetLimits
 } from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
 import {
@@ -22,7 +21,7 @@ import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import {
   MEMORY_ACTION_NO_COMMIT_RESULT,
-  memoryActionAnswerContract
+  MEMORY_ACTION_PENDING_RESULT
 } from "../providers/memoryActionAnswer";
 import type { NormalizedRunRequest } from "../providers/types";
 import { MemorySuppressionKeyring } from "../memory/suppressionKeyring";
@@ -84,7 +83,7 @@ import {
 import { loadMemoryRunSources } from "../memory/sources/runProjection";
 import { applyMemoryScopeTargetDeletion } from "../memory/scopeLifecycle";
 import { createPrismaRunRepository } from "./prismaRepository";
-import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { applyProviderRequestContextBudget, providerRequestTokenEstimate } from "./runContextBudget";
 import {
   MemoryPreparingRunConflictError,
   dormantMemoryAttemptResult
@@ -299,6 +298,9 @@ async function withPreparingUser<T>(
       await tx.memoryOperationReceipt.deleteMany({ where: { userId } });
       await tx.memoryMutationAuthorization.deleteMany({ where: { userId } });
       await tx.chatMemoryCheckpointMessage.deleteMany({ where: { userId } });
+      // Job-owned execution bindings cascade after their usage/authorizations
+      // are gone; jobs retain a restrictive source-chat foreign key.
+      await tx.memoryJob.deleteMany({ where: { userId } });
       await tx.chat.deleteMany({ where: { userId } });
       await tx.assistantDefinition.deleteMany({ where: { ownerUserId: userId } });
       await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
@@ -857,7 +859,50 @@ describe("PREPARING run orchestration", () => {
     await prisma.$disconnect();
   });
 
-  it("admits a nullable-predecessor send and atomically consumes one dormant attempt", async () => {
+  it.each([
+    { mode: "NORMAL" as const, enabled: true, text: "Please remember that I use Vim.", queued: true },
+    { mode: "NORMAL" as const, enabled: true, text: "/memory remember that I use Vim.", queued: false },
+    { mode: "EXCLUDED" as const, enabled: true, text: "Please remember that I use Vim.", queued: false },
+    { mode: "TEMPORARY" as const, enabled: true, text: "Please remember that I use Vim.", queued: false },
+    { mode: "NORMAL" as const, enabled: false, text: "Please remember that I use Vim.", queued: false }
+  ])("atomically admits the async command only for its eligible source: $mode, enabled=$enabled, queued=$queued", async (scenario) => {
+    await withPreparingUser(async ({ userId }) => {
+      await prisma.userMemorySettings.update({
+        data: { referenceChatHistory: false, useMemoryFacts: scenario.enabled },
+        where: { userId }
+      });
+      const chat = await prisma.chat.create({
+        data: {
+          memoryMode: scenario.mode === "TEMPORARY" ? "NORMAL" : scenario.mode,
+          title: "Async command acceptance", userId
+        }
+      });
+      const request = normalizedRequest(chat.id, scenario.text);
+      const admitted = await createPrismaRunRepository(prisma).admitPreparingRun({
+        admissionKind: "NORMAL_SEND", chatId: chat.id, content: request.content,
+        expectedActiveLeafId: null, modelId: request.modelId, normalizedRequest: request,
+        ...(scenario.mode === "TEMPORARY" ? { initialChatMode: {
+          chatMode: "TEMPORARY" as const,
+          temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+        } } : {}),
+        provider: request.provider, providerRequestPreview: {}, userId
+      });
+      const commands = await prisma.memoryJob.findMany({
+        where: { kind: "MEMORY_COMMAND", userId }
+      });
+      expect(admitted.memoryCommandQueued === true).toBe(scenario.queued);
+      expect(commands).toHaveLength(scenario.queued ? 1 : 0);
+      if (scenario.queued) expect(commands[0]).toMatchObject({
+        activeLeafMessageId: admitted.assistantMessageId,
+        chatId: chat.id, commandOperation: "UNKNOWN", commandSequence: 1,
+        commandStatus: "PENDING", sourceHash: memorySha256(request.content),
+        sourceMessageId: admitted.userMessageId, state: "QUEUED", userId
+      });
+      expect(await prisma.memoryExecutionBinding.count({ where: { userId } })).toBe(0);
+    });
+  });
+
+  it.each([1, 2] as const)("recovers a frozen v%s no-commit result after atomic dormant admission", async (version) => {
     await withPreparingUser(async ({ userId }) => {
       await prisma.userMemorySettings.update({
         data: { referenceChatHistory: false, useMemoryFacts: false },
@@ -871,11 +916,12 @@ describe("PREPARING run orchestration", () => {
         }
       });
       const baseRequest = normalizedRequest(chat.id);
+      const noCommitResult = { ...MEMORY_ACTION_NO_COMMIT_RESULT, version };
       const request: NormalizedRunRequest = {
         ...baseRequest,
         prompt: {
           ...baseRequest.prompt,
-          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+          memoryActionAnswerResult: noCommitResult
         }
       };
       const repository = createPrismaRunRepository(prisma);
@@ -919,9 +965,16 @@ describe("PREPARING run orchestration", () => {
         runId: admitted.runId,
         userId
       })).resolves.toBe(true);
+      const dormantResult = dormantMemoryAttemptResult(admitted.settingsSnapshot);
       await expect(repository.completePreparingRunAttempt({
         attemptId: admitted.attemptId,
-        result: dormantMemoryAttemptResult(admitted.settingsSnapshot),
+        result: {
+          ...dormantResult,
+          budgetSnapshot: {
+            ...dormantResult.budgetSnapshot,
+            memoryActionAnswerResult: noCommitResult
+          }
+        },
         runId: admitted.runId,
         userId
       })).resolves.toBe(true);
@@ -968,7 +1021,14 @@ describe("PREPARING run orchestration", () => {
         retrievalRevisionSnapshot: 0
       });
       expect(finalRun.normalizedRequest).toMatchObject({
-        prompt: { memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT }
+        prompt: { memoryActionAnswerResult: noCommitResult }
+      });
+      await expect(repository.recoverPreparingRun({
+        now: new Date(), runId: admitted.runId, userId
+      })).resolves.toBe("finalized");
+      const recovered = await prisma.modelRun.findUniqueOrThrow({ where: { id: admitted.runId } });
+      expect(recovered.normalizedRequest).toMatchObject({
+        prompt: { memoryActionAnswerResult: noCommitResult }
       });
     });
   });
@@ -1786,6 +1846,7 @@ describe("PREPARING run orchestration", () => {
         const retrieve = vi.fn(async (input: Readonly<{
           attemptId: string;
           controlCache?: {
+            admissionDeadlineAtMs?: number;
             settingsDriftFailedSafeAttemptId?: string;
             settingsDriftFailedSafeBudget?: Readonly<Record<string, unknown>>;
           };
@@ -1838,7 +1899,11 @@ describe("PREPARING run orchestration", () => {
             await release;
           }, { timeout: 10_000 });
           await locked;
-          releaseTimer = setTimeout(releaseRunLock, 2_000);
+          const cutoff = input.controlCache?.admissionDeadlineAtMs;
+          if (cutoff === undefined) throw new Error("control_deadline_missing");
+          // Hold beyond the actual optional cutoff, so SQL lock timeout rolls
+          // back the retry before release, regardless of admission overhead.
+          releaseTimer = setTimeout(releaseRunLock, Math.max(1, cutoff - Date.now() + 250));
           if (!input.controlCache) throw new Error("control_cache_missing");
           input.controlCache.settingsDriftFailedSafeAttemptId = input.attemptId;
           input.controlCache.settingsDriftFailedSafeBudget = {
@@ -1908,7 +1973,9 @@ describe("PREPARING run orchestration", () => {
             })
           ]);
         expect(retrieve).toHaveBeenCalledOnce();
-        expect(run).toMatchObject({ normalizedRequest: request, status: "streaming" });
+        expect(run).toMatchObject({ normalizedRequest: {
+          ...request, prompt: { ...request.prompt, memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT }
+        }, status: "streaming" });
         expect(attempts).toHaveLength(1);
         expect(attempts[0]).toMatchObject({
           degradationCode: "memory_admission_deadline_exceeded",
@@ -1918,7 +1985,7 @@ describe("PREPARING run orchestration", () => {
           utilityEgressMode: "CONSENTED_EXTERNAL"
         });
         expect(attempts[0]?.budgetSnapshot).toMatchObject({
-          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT,
           reason: "memory_admission_deadline_exceeded",
           utilityEgressMode: "CONSENTED_EXTERNAL"
         });
@@ -2231,7 +2298,7 @@ describe("PREPARING run orchestration", () => {
     });
   }, 10_000);
 
-  it("abandons a timed-out READY finalization and dispatches the admitted base request", async () => {
+  it("abandons a timed-out READY finalization while preserving its pending command", async () => {
     await withPreparingUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
@@ -2322,14 +2389,16 @@ describe("PREPARING run orchestration", () => {
             where: { modelRunId: created.runId }
           })
         ]);
-        expect(run).toMatchObject({ normalizedRequest: request, status: "streaming" });
+        expect(run).toMatchObject({ normalizedRequest: {
+          ...request, prompt: { ...request.prompt, memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT }
+        }, status: "streaming" });
         expect(attempt).toMatchObject({
           degradationCode: "memory_admission_deadline_exceeded",
           outcome: "FAILED_SAFE",
           state: "CONSUMED"
         });
         expect(attempt.budgetSnapshot).toMatchObject({
-          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT,
           reason: "memory_admission_deadline_exceeded"
         });
         expect(binding).toMatchObject({
@@ -2344,7 +2413,7 @@ describe("PREPARING run orchestration", () => {
     });
   }, 10_000);
 
-  it("falls back to the near-budget no-commit reserve when result materialization declines", async () => {
+  it.each([false, true])("preserves the near-budget answer contract when result materialization declines, command queued=%s", async (queued) => {
     await withPreparingUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
@@ -2353,15 +2422,18 @@ describe("PREPARING run orchestration", () => {
           userId
         }
       });
-      const text = "ordinary-answer-canary";
-      const requiredTokens = estimateApproxTokens(memoryActionAnswerContract(
-        MEMORY_ACTION_NO_COMMIT_RESULT
-      )) + estimateApproxTokens(text) + 2 * estimateApproxTokens([]);
+      const text = queued ? "ordinary-answer-canary" : "/memory ordinary-answer-canary";
+      const expectedAnswerResult = queued ? MEMORY_ACTION_PENDING_RESULT : MEMORY_ACTION_NO_COMMIT_RESULT;
+      const initialRequest = normalizedRequest(chat.id, text);
+      const requiredTokens = providerRequestTokenEstimate({
+        ...initialRequest,
+        attachments: [],
+        prompt: { ...initialRequest.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT }
+      });
       let contextWindow = 1;
       while (calculateContextBudgetLimits({ contextWindow }).budgetTokens < requiredTokens) {
         contextWindow += 1;
       }
-      const initialRequest = normalizedRequest(chat.id, text);
       const reservedRequest: NormalizedRunRequest = {
         ...initialRequest,
         modelCapabilities: {
@@ -2448,13 +2520,13 @@ describe("PREPARING run orchestration", () => {
       });
 
       expect(created.materializedRequest?.normalizedRequest.prompt.memoryActionAnswerResult)
-        .toEqual(MEMORY_ACTION_NO_COMMIT_RESULT);
+        .toEqual(expectedAnswerResult);
       await expect(prisma.modelRun.findUniqueOrThrow({
         select: { normalizedRequest: true, status: true },
         where: { id: created.runId }
       })).resolves.toMatchObject({
         normalizedRequest: {
-          prompt: { memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT }
+          prompt: { memoryActionAnswerResult: expectedAnswerResult }
         },
         status: "streaming"
       });
@@ -2463,7 +2535,7 @@ describe("PREPARING run orchestration", () => {
         where: { modelRunId: created.runId }
       })).resolves.toMatchObject({
         budgetSnapshot: {
-          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          memoryActionAnswerResult: expectedAnswerResult,
           reason: "final_context_budget_unavailable"
         },
         outcome: "FAILED_SAFE",
@@ -3103,11 +3175,7 @@ describe("PREPARING run orchestration", () => {
           text: expect.stringContaining("Vim")
         },
         prompt: {
-          memoryActionAnswerResult: {
-            operation: "NONE",
-            status: "UNAVAILABLE",
-            version: 1
-          }
+          memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT
         }
       });
       expect(run).toMatchObject({ status: "streaming" });
@@ -3117,11 +3185,7 @@ describe("PREPARING run orchestration", () => {
           text: expect.stringContaining("Vim")
         },
         prompt: {
-          memoryActionAnswerResult: {
-            operation: "NONE",
-            status: "UNAVAILABLE",
-            version: 1
-          }
+          memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT
         }
       });
       expect(attempt).toMatchObject({
@@ -3207,6 +3271,218 @@ describe("PREPARING run orchestration", () => {
           where: { id: fact.factId }
         });
       });
+    });
+  });
+
+  it("keeps standing-only use quiet, but touches an independently found fact", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+        decayEnabled: true,
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0,
+        useMemoryFacts: true
+      });
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const fact = await saveExplicitFact(userId, scope.id, "My preferred editor is Vim.");
+      await classifyExplicitFact(userId, fact.versionId);
+      const refs = createMemoryClientRefService({
+        encryptionKey: () => Buffer.alloc(32, 43)
+      });
+      const repository = createPrismaRunRepository(prisma, {
+        memoryExecutionAuthority: {},
+        memoryRetrieval: createMemoryRunRetrievalService(
+          createPrismaLocalMemoryRetrievalRepository(prisma)
+        )
+      });
+      const send = async (text: string) => {
+        const chat = await prisma.chat.create({ data: { title: "Standing fact", userId } });
+        const request = normalizedRequest(chat.id, text);
+        return repository.createRun({
+          chatId: chat.id,
+          content: request.content,
+          expectedActiveLeafId: null,
+          memoryMaterializer(personalContext, memoryActionAnswerResult) {
+            const finalRequest: NormalizedRunRequest = {
+              ...request,
+              ...(personalContext ? { personalContext } : {}),
+              prompt: {
+                ...request.prompt,
+                ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
+              }
+            };
+            return {
+              contextTruncation: null,
+              normalizedRequest: finalRequest,
+              providerRequest: { ...finalRequest, attachments: [] },
+              providerRequestPreview: { personalContext: personalContext?.text ?? null }
+            };
+          },
+          modelId: request.modelId,
+          normalizedRequest: request,
+          provider: request.provider,
+          providerRequestPreview: {},
+          userId
+        });
+      };
+      const created = await send("What is the weather?");
+      const binding = await prisma.modelRunMemoryBinding.findUniqueOrThrow({
+        where: { modelRunId: created.runId }
+      });
+      const [item] = await prisma.modelRunMemoryItem.findMany({
+        where: { bindingId: binding.id }
+      });
+      expect(item).toMatchObject({
+        factVersionId: fact.versionId,
+        selectionReason: "standing.explicit"
+      });
+      expect(created.materializedRequest?.normalizedRequest.personalContext?.text)
+        .toContain("My preferred editor is Vim.");
+      await expect(repository.recoverPreparingRun({
+        now: new Date(), runId: created.runId, userId
+      })).resolves.toBe("finalized");
+      await touchFrozenMemoryPack(prisma, { bindingId: binding.id, userId });
+      expect((await prisma.memoryFact.findUniqueOrThrow({ where: { id: fact.factId } })).lastUsedAt)
+        .toBeNull();
+      expect((await loadMemoryRunSources(prisma, {
+        clientRefs: refs, runIds: [created.runId], userId
+      }))
+        .get(created.runId)).toBeUndefined();
+
+      const found = await send("My preferred editor is Vim.");
+      const foundBinding = await prisma.modelRunMemoryBinding.findUniqueOrThrow({
+        where: { modelRunId: found.runId }
+      });
+      const [foundItem] = await prisma.modelRunMemoryItem.findMany({
+        where: { bindingId: foundBinding.id }
+      });
+      expect(foundItem).toMatchObject({
+        factVersionId: fact.versionId,
+        featureSnapshot: { standingFactSearchMatched: true },
+        selectionReason: "standing.explicit"
+      });
+      await touchFrozenMemoryPack(prisma, { bindingId: foundBinding.id, userId });
+      expect((await prisma.memoryFact.findUniqueOrThrow({ where: { id: fact.factId } })).lastUsedAt)
+        .toEqual(expect.any(Date));
+      expect((await loadMemoryRunSources(prisma, {
+        clientRefs: refs, runIds: [found.runId], userId
+      }))
+        .get(found.runId)).toHaveLength(1);
+    });
+  });
+
+  it("finalizes a standing-only degraded pack near the reserved completion boundary", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0,
+        useMemoryFacts: true
+      });
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const fact = await saveExplicitFact(userId, scope.id, "My preferred editor is Vim.");
+      await classifyExplicitFact(userId, fact.versionId);
+      const chat = await prisma.chat.create({ data: { title: "Standing deadline", userId } });
+      const request = normalizedRequest(chat.id, "What do you remember about me?");
+      let virtualTimeMs = Date.now();
+      let optionalDeadlineAtMs = 0;
+      let reportStandingLoaded!: () => void;
+      const standingLoaded = new Promise<void>((resolve) => {
+        reportStandingLoaded = resolve;
+      });
+      const local = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const retrieval = createMemoryRunRetrievalService(
+        {
+          ...local,
+          async loadStandingFacts(snapshot: Parameters<typeof local.loadStandingFacts>[0]) {
+            try {
+              return await local.loadStandingFacts(snapshot);
+            } finally {
+              setTimeout(reportStandingLoaded, 0);
+            }
+          }
+        },
+        {
+          clock: () => virtualTimeMs,
+          control: { decide: vi.fn(async () => {
+            await standingLoaded;
+            virtualTimeMs = optionalDeadlineAtMs;
+            return { reason: "memory_action_intent_deadline_exceeded", status: "UNAVAILABLE" as const };
+          }) },
+          readUtilityPolicy: "CONTROL_RESOLVER_V1"
+        }
+      );
+      const realNow = Date.now.bind(Date);
+      let timeShiftMs = 0;
+      let remainingAtDispatchMs: number | null = null;
+      const repository = createPrismaRunRepository(prisma, {
+        memoryAdmissionDeadlineMs: 30_000,
+        memoryExecutionAuthority: {},
+        memoryRetrieval: {
+          async retrieve(input) {
+            const cutoff = input.controlCache?.admissionDeadlineAtMs;
+            if (cutoff === undefined) throw new Error("standing_deadline_cutoff_missing");
+            optionalDeadlineAtMs = cutoff;
+            virtualTimeMs = realNow();
+            const result = await retrieval.retrieve(input);
+            expect(input.controlCache?.admissionDeadlineAtMs).toBe(cutoff);
+            // Simulate a scheduler delay after retrieval, leaving only the
+            // reserved completion/finalization window without a 26 s sleep.
+            timeShiftMs = cutoff + 300 - realNow();
+            remainingAtDispatchMs = cutoff + 4_000 - (realNow() + timeShiftMs);
+            return result;
+          }
+        }
+      });
+      const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + timeShiftMs);
+      let created: Awaited<ReturnType<typeof repository.createRun>>;
+      try {
+        created = await repository.createRun({
+          chatId: chat.id,
+          content: request.content,
+          expectedActiveLeafId: null,
+          memoryMaterializer(personalContext, memoryActionAnswerResult) {
+            const finalRequest: NormalizedRunRequest = {
+              ...request,
+              ...(personalContext ? { personalContext } : {}),
+              prompt: {
+                ...request.prompt,
+                ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {})
+              }
+            };
+            return {
+              contextTruncation: null,
+              normalizedRequest: finalRequest,
+              providerRequest: { ...finalRequest, attachments: [] },
+              providerRequestPreview: { personalContext: personalContext?.text ?? null }
+            };
+          },
+          modelId: request.modelId,
+          normalizedRequest: request,
+          provider: request.provider,
+          providerRequestPreview: {},
+          userId
+        });
+      } finally {
+        nowSpy.mockRestore();
+      }
+      expect(remainingAtDispatchMs).toBeGreaterThan(2_500);
+      expect(remainingAtDispatchMs).toBeLessThan(4_000);
+      const binding = await prisma.modelRunMemoryBinding.findUniqueOrThrow({
+        where: { modelRunId: created.runId }
+      });
+      const attempt = await prisma.memoryRetrievalAttempt.findFirstOrThrow({
+        where: { modelRunId: created.runId }
+      });
+      expect(attempt).toMatchObject({
+        degradationCode: "memory_admission_deadline_standing_only",
+        outcome: "DEGRADED",
+        state: "CONSUMED"
+      });
+      expect(binding).toMatchObject({ outcome: "DEGRADED" });
+      expect(created.materializedRequest?.providerRequest.personalContext?.text)
+        .toContain("My preferred editor is Vim.");
+      await expect(repository.recoverPreparingRun({
+        now: new Date(), runId: created.runId, userId
+      })).resolves.toBe("finalized");
     });
   });
 

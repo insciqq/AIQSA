@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { MemorySummary } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
+import type { MemoryExecutionOwner } from "../execution/owner";
 import type { ExplicitMemoryService } from "../explicit/service";
 import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import {
@@ -35,6 +36,7 @@ export type MemoryActionTargetSearchService = Readonly<{
   }>): Promise<MemoryActionTargetSearchResult>;
   semantic(input: Readonly<{
     attemptId: string;
+    owner?: Extract<MemoryExecutionOwner, { type: "JOB" }>;
     fallbackText?: string;
     query: string;
     signal: AbortSignal;
@@ -297,7 +299,7 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
           return { reason: resolved.reason, status: "UNAVAILABLE" };
         }
         const embedded = await input.utilities.embedQuery({
-          attemptId: request.attemptId,
+          ...(request.owner ? { owner: request.owner, jobAttemptCount: 1 as const } : { attemptId: request.attemptId }),
           profile: resolved.profile,
           purpose: "ACTION_TARGET",
           query: normalized,

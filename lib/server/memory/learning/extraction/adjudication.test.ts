@@ -232,6 +232,9 @@ describe("batched Memory semantic adjudication", () => {
       context_ref: null, entity_type: "PERSON", mention: "Nerin",
       mention_kind: "NAMED", role: "SUBJECT"
     }]);
+    expect(JSON.parse(payload).candidates[0]).toMatchObject({
+      memory_type: "STATE", temporary: false
+    });
     expect(payload).not.toContain("private-entity-id");
     expect(payload).not.toContain("private-version-id");
   });
@@ -347,7 +350,7 @@ describe("batched Memory semantic adjudication", () => {
 
   it("makes new-fact ref nullability explicit without weakening the decoder", () => {
     expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
-      .toBe("memory-semantic-adjudication-prompt-v18");
+      .toBe("memory-semantic-adjudication-prompt-v20");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A candidate_ref is never an entity_ref or target_ref");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
@@ -362,6 +365,16 @@ describe("batched Memory semantic adjudication", () => {
       .toContain("including a paraphrase");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A withdrawal closes the target's current applicability");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("short answer to the immediately preceding assistant question");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("A bare confirmation or a value present only in assistant text is not entailed");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("A durable communication preference can be an imperative");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("the requested work is not a fact");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("preparing documents for a change does not establish a lasting plan");
   });
 
   it("routes plausible cross-key paraphrases through governed comparison", () => {
@@ -893,6 +906,10 @@ describe("batched Memory semantic adjudication", () => {
     expect(memorySemanticAuthorityAdmitsCandidate(
       input.plan.candidates[0]!, packet.decisions[0]!, input.plan.input.contextRefs
     )).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(
+      input.plan.candidates[0]!, { ...packet.decisions[0]!, entailment: "UNKNOWN" },
+      input.plan.input.contextRefs
+    )).toBe(false);
     expect(input.plan.candidates[0]!.dependencies[0]!.source.messageId).toBe("older-message");
   });
 

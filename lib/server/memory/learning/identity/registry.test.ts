@@ -185,7 +185,7 @@ describe("language-neutral Memory identity registry", () => {
       semanticFrame: frame,
       statement: "opaque",
       value: { ...emptyValue, state: "maybe_owned" }
-    })).toThrowError(new MemoryIdentityError("memory_fact_identity_invalid"));
+    })).toThrowError(new MemoryIdentityError("memory_fact_state_unsupported"));
   });
 
   it("moves colliding legacy SLOT components into distinct Unicode identities", () => {

@@ -312,7 +312,8 @@ export async function materializeMemoryCandidateEntityIdentity(
 
   const subjects = candidate.entities.filter((entity) =>
     entity.role === "SUBJECT" &&
-    (entity.entityType === "PRODUCT" || entity.entityType === "DEVICE"));
+    (entity.entityType === "PRODUCT" || entity.entityType === "DEVICE" ||
+      entity.entityType === "SERVICE"));
   if (subjects.length !== 1) throw new Error("memory_fact_candidate_invalid");
   const subject = subjects[0]!;
   const resolvedEntityId = await resolveOrCreate(
