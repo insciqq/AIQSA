@@ -56,17 +56,31 @@ describe("native OpenRouter defaults", () => {
   });
 
   it("refuses a route that loses a previously verified Memory capability", async () => {
-    const proof = { adapterKind: "openrouter_chat_completions" as const, probeVersion: 1 as const, upstreamModelId: model.upstreamModelId, verified: true as const };
-    const previous: AdminProviderTestEvidence = { method: "tiny_generation", detail: "ok", selectedProviders: [], upstreamModelId: model.upstreamModelId,
+    const supportedModel = normalizeProviderModelConfiguration({ ...model, upstreamModelId: "anthropic/claude-opus-5", capabilities: { ...model.capabilities, nativeForcedToolChoice: true } });
+    const proof = { adapterKind: "openrouter_chat_completions" as const, upstreamModelId: supportedModel.upstreamModelId, verified: true as const };
+    const previous: AdminProviderTestEvidence = { method: "tiny_generation", detail: "ok", selectedProviders: [], upstreamModelId: supportedModel.upstreamModelId,
       compatibility: { probeVersion: 1, modelAccess: "verified", structuredOutput: "verified", forcedToolCall: "verified",
         streaming: "not_supported", directPdf: "not_supported", usage: "not_supported" },
-      structuredOutput: { ...proof, probeVersion: 2 }, forcedToolCall: proof };
+      structuredOutput: { ...proof, probeVersion: 2 }, forcedToolCall: { ...proof, probeVersion: 2, verifiedModes: ["native"] } };
     const fresh = { ...previous, selectedProviders: ["anthropic"] };
-    expect(nativeRoutePreservesCapabilities(model, previous, fresh)).toBe(true);
-    expect(nativeRoutePreservesCapabilities(model, previous, { ...fresh, forcedToolCall: undefined,
+    expect(nativeRoutePreservesCapabilities(supportedModel, previous, fresh)).toBe(true);
+    expect(nativeRoutePreservesCapabilities(supportedModel, previous, { ...fresh, forcedToolCall: undefined,
       compatibility: { ...fresh.compatibility!, forcedToolCall: "not_supported" } })).toBe(false);
     await expect(discoverNativeRoute({ listModelEndpoints: async () => [{ tag: "anthropic", name: "Anthropic", providerName: "Anthropic",
-      supportedParameters: ["tools"], supportsToolChoice: { required: false, function: false } }] }, model, undefined, previous))
+      supportedParameters: ["tools"], supportsToolChoice: { required: false, function: false } }] }, supportedModel, undefined, previous))
       .resolves.toMatchObject({ available: false, reason: "native_incompatible", diagnostic: { missing: ["forcedToolCall"] } });
+  });
+
+  it("allows an auto-only model route to qualify required tool results through fresh validation", async () => {
+    const autoModel = normalizeProviderModelConfiguration({ ...model, upstreamModelId: "anthropic/claude-opus-5.5" });
+    const previous: AdminProviderTestEvidence = { method: "tiny_generation", detail: "ok", selectedProviders: [], upstreamModelId: autoModel.upstreamModelId,
+      compatibility: { probeVersion: 1, modelAccess: "verified", structuredOutput: "not_supported", forcedToolCall: "verified",
+        streaming: "not_supported", directPdf: "not_supported", usage: "not_supported" },
+      forcedToolCall: { adapterKind: "openrouter_chat_completions", probeVersion: 2, upstreamModelId: autoModel.upstreamModelId,
+        verified: true, verifiedModes: ["validated_auto"] } };
+    const route = await discoverNativeRoute({ listModelEndpoints: async () => [{ tag: "anthropic", name: "Anthropic", providerName: "Anthropic",
+      supportedParameters: ["tools"], supportsToolChoice: { required: false, function: false } }] }, autoModel, undefined, previous);
+    expect(route).toMatchObject({ available: true, provider: "anthropic" });
+    expect(nativeRouteMissingCapabilities(autoModel, previous, { ...previous, forcedToolCall: undefined })).toContain("forcedToolCall");
   });
 });

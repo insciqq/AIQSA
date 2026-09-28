@@ -167,7 +167,7 @@ export function modelChipsFromEvidence(
     chips.push({ key: "memoryActions", tone: forcedReceipt === "unsupported" ? "muted" : "warn",
       label: forcedReceipt === "unsupported" ? "Memory actions: unsupported" : "Memory actions: check incomplete",
       help: `${attemptHelp(forcedStatus, forcedReceipt, evidence.capabilitySetup?.attempts?.forcedToolCall)} ` +
-        "Memory actions require strict forced tool calls. Other Memory features have separate requirements. Retry checks to verify support." });
+        "Memory actions require a validated tool result. Other Memory features have separate requirements. Retry checks to verify support." });
   }
   return chips.filter((entry): entry is ModelChip => entry !== null).map((entry) => entry.key !== "tools" ? entry : {
     ...entry,

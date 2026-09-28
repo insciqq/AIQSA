@@ -1,4 +1,5 @@
 import { withResponseReminder } from "./responseReminder";
+import { resolveProviderToolChoice } from "./providerToolChoice";
 import { normalizeOpenAIResponsesParams, type OpenAIResponsesParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { openAIResponsesToolBridge } from "../tools/bridges";
@@ -362,7 +363,7 @@ function buildOpenAIResponsesBody(
   }
 
   if (tools.length > 0) {
-    body.tool_choice = request.toolChoice ?? "auto";
+    body.tool_choice = resolveProviderToolChoice({ ...request, adapterKind: "openai_responses_native" }).wireToolChoice;
     body.tools = tools;
   }
 

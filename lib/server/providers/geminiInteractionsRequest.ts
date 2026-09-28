@@ -1,4 +1,5 @@
 import { withResponseReminder } from "./responseReminder";
+import { resolveProviderToolChoice } from "./providerToolChoice";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { geminiInteractionsToolBridge } from "../tools/bridges";
@@ -467,9 +468,10 @@ function buildGeminiInteractionsBody(
     thinking_summaries: "none"
   };
   if (tools.length > 0) {
-    generationConfig.tool_choice = request.toolChoice === "required"
+    const { wireToolChoice } = resolveProviderToolChoice({ ...request, adapterKind: "gemini_interactions_native" });
+    generationConfig.tool_choice = wireToolChoice === "required"
       ? forcedToolChoice(request)
-      : request.toolChoice ?? "auto";
+      : wireToolChoice;
   }
 
   const body: GeminiInteractionsRequestBody = {

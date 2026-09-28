@@ -234,6 +234,7 @@ function providerEvidence(
       snapshot.version === 3 ? { memorySnapshotVersion: 3 as const } : {}),
     credentialId: provider.credentialId,
     credentialVersionId: provider.credentialVersionId,
+    ...(snapshot.requiredToolModes ? { requiredToolModes: snapshot.requiredToolModes } : {}),
     executionSnapshot: provider,
     providerModelId: provider.providerModelId
   };

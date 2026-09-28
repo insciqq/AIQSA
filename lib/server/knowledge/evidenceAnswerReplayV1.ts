@@ -1,5 +1,6 @@
 import { knowledgeAnswerCanonicalJson, knowledgeAnswerHash } from "./answerGroundingV5";
-import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1, type KnowledgeEvidenceAnswerExecutionV1Result } from "./evidenceAnswerExecutionV1";
+import { decodeKnowledgeEvidenceAnswerFailureV1, executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1,
+  KnowledgeAnswerProviderError, type KnowledgeEvidenceAnswerExecutionV1Result } from "./evidenceAnswerExecutionV1";
 import { decodeKnowledgeEvidenceAnswerSnapshot, isKnowledgeEvidenceComposeOperation } from "./evidenceAnswerSnapshot";
 import type { StoredKnowledgeEvidenceDispatch } from "./evidenceDispatchRepository";
 import type { KnowledgeProviderDispatchLifecycle } from "./providerDispatchLifecycle";
@@ -14,7 +15,9 @@ export async function replayKnowledgeEvidenceAnswerV1(input: Readonly<{
 }>): Promise<KnowledgeEvidenceAnswerExecutionV1Result> {
   const first = input.dispatches[0];
   const snapshot = decodeKnowledgeEvidenceAnswerSnapshot(first?.attempt.acceptedRequest);
-  if (!first || !snapshot || !isKnowledgeEvidenceComposeOperation(snapshot.operation) || input.dispatches.length < 2 || input.dispatches.length > (snapshot.workflowVersion !== undefined ? 8 : 4)) {
+  if (!first || !snapshot || !isKnowledgeEvidenceComposeOperation(snapshot.operation) ||
+    input.dispatches.length === 1 && decodeKnowledgeEvidenceAnswerFailureV1(first.attempt.acceptedResult)?.kind !== "failed" ||
+    input.dispatches.length > (snapshot.workflowVersion !== undefined ? 8 : 4)) {
     throw Error("knowledge_evidence_answer_replay_invalid");
   }
   let request: unknown;
@@ -51,11 +54,19 @@ export async function replayKnowledgeEvidenceAnswerV1(input: Readonly<{
     lifecycle, modelRunId: input.modelRunId, request, shouldAbort: () => true, transport: snapshot.transport,
     generationBudget: "generationBudget" in snapshot ? snapshot.generationBudget : undefined,
     repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined };
-  const result = snapshot.workflowVersion !== undefined
-    ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...executionInput,
-        ...(snapshot.workflowVersion === 10 || snapshot.workflowVersion === 11 ? { workflowVersion: snapshot.workflowVersion } : {}),
-        refineEvidence: async () => input.dispatches[consumed]?.draft ?? null })
-    : await executeKnowledgeEvidenceAnswerV1(executionInput);
+  let result: KnowledgeEvidenceAnswerExecutionV1Result;
+  try {
+    result = snapshot.workflowVersion !== undefined
+      ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...executionInput,
+          ...(snapshot.workflowVersion === 10 || snapshot.workflowVersion === 11 ? { workflowVersion: snapshot.workflowVersion } : {}),
+          refineEvidence: async () => input.dispatches[consumed]?.draft ?? null })
+      : await executeKnowledgeEvidenceAnswerV1(executionInput);
+  } catch (error) {
+    // A provider failure is replayable only if it consumes the complete settled
+    // history. Extra operations cannot be hidden behind an earlier failure.
+    if (error instanceof KnowledgeAnswerProviderError && consumed !== input.dispatches.length) throw Error("knowledge_evidence_answer_replay_incomplete");
+    throw error;
+  }
   if (consumed !== input.dispatches.length || result.operations.length !== consumed) throw Error("knowledge_evidence_answer_replay_incomplete");
   return result;
 }

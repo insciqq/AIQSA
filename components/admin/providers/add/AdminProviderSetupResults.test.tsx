@@ -42,7 +42,7 @@ describe("compact setup results", () => {
     expect(summary.querySelectorAll("p")).toHaveLength(1);
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(summary).not.toHaveTextContent(/Model 0|Forced tool calls|attention/);
+    expect(summary).not.toHaveTextContent(/Model 0|Required tool results|attention/);
     expect(summary.querySelector(".text-critical")).toBeNull();
     expect(providerSetupNeedsRecovery(run)).toBe(false);
   });

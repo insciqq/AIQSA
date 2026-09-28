@@ -72,6 +72,12 @@ export type ProviderModelCapabilities = {
    * model/credential/route tuple. Configuration normalization never trusts
    * this field directly. */
   forcedToolCalling?: boolean;
+  /** Verified strict tool result using automatic wire choice. This proves the
+   * validated application contract, never provider-forced selection. */
+  validatedAutoToolCalling?: boolean;
+  /** Model/route restriction only. False disables native forced selection;
+   * true or absence never grants a verified tool capability. */
+  nativeForcedToolChoice?: boolean;
   /** Opts a compatible Chat endpoint into `stream_options.include_usage`. */
   streamUsage?: boolean;
   toolCalling?: boolean;
@@ -342,7 +348,8 @@ export type ProviderRunRequest = NormalizedRunRequest & {
   /** Ephemeral server-owned name of the advertised tool a `required` round
    * exists to obtain. Only `toolChoice: "required"` rounds carry it. Adapters
    * that can restrict a forced choice narrow it to this tool; others keep
-   * their ordinary `required` mapping over every advertised tool. */
+   * their ordinary `required` mapping over every advertised tool. Incompatible
+   * models use wire `auto` while the application retains this obligation. */
   forcedToolName?: string;
   parallelToolCalls?: boolean;
   previousProviderResponseId?: string;

@@ -1,4 +1,6 @@
 import { admittedOutputAllowance } from "./modelOutputAllowance";
+import { resolveProviderToolChoice } from "./providerToolChoice";
+import { anthropicToolSchemas } from "./anthropicStrictSchema";
 import { withResponseReminder } from "./responseReminder";
 import {
   normalizeOpenRouterParams,
@@ -387,10 +389,14 @@ function buildOpenRouterBody(input: {
   parallelToolCalls?: boolean;
   params: OpenRouterParams;
   stream: boolean;
+  strictToolParameters?: boolean;
   toolChoice?: "auto" | "none" | "required";
   tools?: Record<string, unknown>[];
 }): OpenRouterChatRequestBody {
-  const strictTools = input.toolChoice !== "none" && input.tools?.some((tool) => {
+  // The strict schemas remain in synthesis requests with choice `none`.
+  // Keep their compatible parameter surface throughout the continuation;
+  // adding parallel_tool_calls here can exclude the already selected route.
+  const strictTools = input.strictToolParameters ?? input.tools?.some((tool) => {
     const fn = tool.function;
     return fn && typeof fn === "object" && !Array.isArray(fn) &&
       (fn as Record<string, unknown>).strict === true;
@@ -449,7 +455,9 @@ function buildOpenRouterChatBody(
   options: PrivateBuildOptions
 ): OpenRouterChatRequestBody {
   const params = normalizeOpenRouterParams(request.params);
-  const serializedTools = (request.tools ?? []).map((tool) => openRouterChatToolBridge.serializeTool(tool).tool);
+  const canonicalTools = request.tools ?? [];
+  const tools = request.modelId.startsWith("anthropic/") ? anthropicToolSchemas(canonicalTools) : canonicalTools;
+  const serializedTools = tools.map((tool) => openRouterChatToolBridge.serializeTool(tool).tool);
   const nativePdfInput =
     request.modelCapabilities.nativePdfInput && request.attachments.some((attachment) =>
       attachment.kind === "pdf" && (options.preview || Boolean(attachment.base64Data))
@@ -473,7 +481,8 @@ function buildOpenRouterChatBody(
     parallelToolCalls: request.parallelToolCalls,
     params,
     stream: request.forceNonStreaming ? false : params.stream,
-    toolChoice: request.toolChoice,
+    strictToolParameters: canonicalTools.some(tool => tool.strict === true),
+    toolChoice: resolveProviderToolChoice({ ...request, adapterKind: "openrouter_chat_completions", params }).wireToolChoice,
     tools: serializedTools
   });
 }

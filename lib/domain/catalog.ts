@@ -11,6 +11,7 @@ import {
 } from "./providerParams";
 import type { ModelParameterControls } from "../contracts/catalog";
 import type { SearchAdapterKind, SearchPlanMode, SearchProtocol } from "./search";
+import { catalogNativeForcedToolChoice } from "./toolChoiceCompatibility";
 
 export type { ModelParameterControls } from "../contracts/catalog";
 
@@ -43,6 +44,7 @@ export type ProviderModelCatalogEntry = {
     pdf: boolean;
     reasoning: boolean;
     nativeSearch: boolean;
+    nativeForcedToolChoice?: boolean;
     parallelToolCalls?: boolean;
     streaming: boolean;
     toolCalling?: boolean;
@@ -203,6 +205,8 @@ function anthropicClaude5Model(modelId: string, displayName: string): ProviderMo
     inputTokenPriceMicros: 0,
     outputTokenPriceMicros: 0,
     capabilities: {
+      ...(catalogNativeForcedToolChoice("anthropic_messages", modelId) === false
+        ? { nativeForcedToolChoice: false } : {}),
       backgroundStreaming: false,
       nativeBackground: false,
       nativePdfInput: true,

@@ -1,6 +1,8 @@
 import type { CatalogAdapterKind } from "../../domain/catalog";
+import { resolveProviderToolChoice } from "./providerToolChoice";
 
-export const FORCED_TOOL_CALL_PROBE_VERSION = 1 as const;
+export const FORCED_TOOL_CALL_PROBE_VERSION = 2 as const;
+export type VerifiedToolChoiceMode = "native" | "validated_auto";
 
 const supportedAdapterKinds = [
   "anthropic_messages",
@@ -21,6 +23,7 @@ export type ForcedToolCallVerificationEvidence = Readonly<{
   probeVersion: typeof FORCED_TOOL_CALL_PROBE_VERSION;
   upstreamModelId: string;
   verified: true;
+  verifiedModes: readonly VerifiedToolChoiceMode[];
 }>;
 
 export type ForcedToolCallVerificationStatus =
@@ -40,14 +43,18 @@ export function supportsForcedToolCallProbe(
 
 export function forcedToolCallVerificationEvidence(
   adapterKind: CatalogAdapterKind | string,
-  upstreamModelId: string
+  upstreamModelId: string,
+  verifiedModes: readonly VerifiedToolChoiceMode[] = ["native"]
 ): ForcedToolCallVerificationEvidence | null {
-  return supportsForcedToolCallProbe(adapterKind) && upstreamModelId.trim()
+  return supportsForcedToolCallProbe(adapterKind) && upstreamModelId.trim() &&
+    verifiedModes.length > 0 && new Set(verifiedModes).size === verifiedModes.length &&
+    verifiedModes.every((mode) => mode === "native" || mode === "validated_auto")
     ? {
         adapterKind,
         probeVersion: FORCED_TOOL_CALL_PROBE_VERSION,
         upstreamModelId: upstreamModelId.trim(),
-        verified: true
+        verified: true,
+        verifiedModes: [...verifiedModes]
       }
     : null;
 }
@@ -58,19 +65,38 @@ export function decodeForcedToolCallVerificationEvidence(
   if (
     !isRecord(value) ||
     value.verified !== true ||
-    value.probeVersion !== FORCED_TOOL_CALL_PROBE_VERSION ||
+    value.probeVersion !== 1 && value.probeVersion !== FORCED_TOOL_CALL_PROBE_VERSION ||
     typeof value.adapterKind !== "string" ||
     !supportsForcedToolCallProbe(value.adapterKind) ||
     typeof value.upstreamModelId !== "string" ||
     !value.upstreamModelId.trim() ||
-    value.upstreamModelId.length > 512
+    value.upstreamModelId.length > 512 ||
+    (value.probeVersion === 1
+      ? value.verifiedModes !== undefined
+      : !Array.isArray(value.verifiedModes) || value.verifiedModes.length < 1 ||
+        value.verifiedModes.length > 2 ||
+        new Set(value.verifiedModes).size !== value.verifiedModes.length ||
+        value.verifiedModes.some((mode) => mode !== "native" && mode !== "validated_auto"))
   ) return null;
   return {
     adapterKind: value.adapterKind,
     probeVersion: FORCED_TOOL_CALL_PROBE_VERSION,
     upstreamModelId: value.upstreamModelId,
-    verified: true
+    verified: true,
+    verifiedModes: value.probeVersion === 1 ? ["native"] : [...value.verifiedModes as VerifiedToolChoiceMode[]]
   };
+}
+
+export function hasVerifiedToolChoiceMode(
+  evidence: unknown,
+  model: Readonly<{ adapterKind: CatalogAdapterKind | string; upstreamModelId: string }>,
+  mode: VerifiedToolChoiceMode
+): boolean {
+  if (!isRecord(evidence)) return false;
+  const verification = decodeForcedToolCallVerificationEvidence(evidence.forcedToolCall);
+  return verification?.adapterKind === model.adapterKind &&
+    verification.upstreamModelId === model.upstreamModelId &&
+    verification.verifiedModes.includes(mode);
 }
 
 export function hasVerifiedForcedToolCall(
@@ -92,7 +118,8 @@ export function forcedToolCallVerificationStatus(
   evidence: unknown,
   model: Readonly<{
     adapterKind: CatalogAdapterKind | string;
-    capabilities: Readonly<{ toolCalling?: boolean }>;
+    capabilities: Readonly<{ toolCalling?: boolean; nativeForcedToolChoice?: boolean }>;
+    defaultParams?: Record<string, unknown>;
     upstreamModelId: string;
   }>
 ): ForcedToolCallVerificationStatus {
@@ -100,7 +127,12 @@ export function forcedToolCallVerificationStatus(
     model.capabilities.toolCalling !== true ||
     !supportsForcedToolCallProbe(model.adapterKind)
   ) return "unsupported";
-  if (hasVerifiedForcedToolCall(evidence, model)) return "verified";
+  const mode = resolveProviderToolChoice({ adapterKind: model.adapterKind, modelId: model.upstreamModelId,
+    modelCapabilities: model.capabilities, params: model.defaultParams ?? {}, toolChoice: "required" }).requirementMode;
+  if (hasVerifiedToolChoiceMode(evidence, model, mode)) return "verified";
+  // A legacy native-only result (positive or negative) cannot qualify the
+  // automatic route. Explicit rechecks must be allowed to obtain its proof.
+  if (mode === "validated_auto" || hasVerifiedForcedToolCall(evidence, model)) return "not_verified";
   if (
     isRecord(evidence) &&
     isRecord(evidence.compatibility) &&

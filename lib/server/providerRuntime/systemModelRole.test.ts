@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { ProviderAdmissionError, type ProviderAdmissionRole } from "./admission";
 import {
+  applySystemModelReasoningEffort,
   createSystemModelRoleResolver,
   SYSTEM_MODEL_ABSENT,
   SYSTEM_MODEL_UNAVAILABLE
@@ -31,6 +32,21 @@ function database(policy: unknown) {
 }
 
 describe("system model role resolver", () => {
+  it("maps an Anthropic Memory effort to thinking and output configuration", () => {
+    const snapshot = { model: { adapterKind: "anthropic_messages", defaultParams: {
+      thinking: { enabled: true, type: "adaptive", budgetTokens: 0 },
+      outputConfig: { effort: "high" }
+    } } } as unknown as ProviderAdmissionRole["snapshot"];
+    const off = applySystemModelReasoningEffort(snapshot, "none");
+    expect(off.model.defaultParams).toMatchObject({
+      thinking: { enabled: false, type: "adaptive" }, outputConfig: { effort: "high" }
+    });
+    const low = applySystemModelReasoningEffort(snapshot, "low");
+    expect(low.model.defaultParams).toMatchObject({
+      thinking: { enabled: true, type: "adaptive" }, outputConfig: { effort: "low" }
+    });
+    expect(low.model.defaultParams).not.toHaveProperty("reasoning");
+  });
   it("returns the stable absent code for a missing or empty installation role", async () => {
     const loadRole = vi.fn();
     await expect(createSystemModelRoleResolver(database(null), { loadRole }).resolve())

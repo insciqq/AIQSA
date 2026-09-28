@@ -11,10 +11,11 @@ import { decodeHostedSearchVerificationEvidence, shouldProbeHostedSearch } from 
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
-import { hasVerifiedForcedToolCall } from "../../providers/forcedToolCallEvidence";
+import { forcedToolCallVerificationStatus, hasVerifiedForcedToolCall } from "../../providers/forcedToolCallEvidence";
 import { hasVerifiedStructuredOutput } from "../../providers/structuredOutputEvidence";
 import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
+import { resolveProviderToolChoice } from "../../providers/providerToolChoice";
 
 export const INITIAL_CAPABILITY_SETUP_POLICY_VERSION = 2 as const;
 export const INITIAL_CAPABILITY_MODEL_TIMEOUT_MS = 180_000;
@@ -154,6 +155,17 @@ export function reusableCapabilitySetupEvidence(
       delete retained[key];
       if (retained.compatibility) retained.compatibility[key] = "not_supported";
     }
+  }
+  const requiredMode = resolveProviderToolChoice({ adapterKind: model.adapterKind,
+    modelId: model.upstreamModelId, modelCapabilities: model.capabilities,
+    params: model.defaultParams, toolChoice: "required" }).requirementMode;
+  if ((requiredMode === "validated_auto" || hasVerifiedForcedToolCall(evidence, model)) &&
+    forcedToolCallVerificationStatus(evidence, { ...model,
+    capabilities: { ...model.capabilities, toolCalling: true }
+  }) === "not_verified") {
+    // Retain independently proven modes, but do not skip the current mode's
+    // probe merely because an earlier native forcing check had settled.
+    checks.forcedToolCall = "not_checked";
   }
   for (const [check, proof] of [
     ["vision", decodeVisionInputVerificationEvidence(evidence.visionInput)],

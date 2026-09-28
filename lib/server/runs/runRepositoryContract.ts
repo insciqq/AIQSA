@@ -568,6 +568,8 @@ export type RunRepository = {
   ): Promise<void>;
   appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<RunOutputArtifactEvent>;
   beginToolLoopProviderRound(input: {
+    /** Claim a single corrective request after a terminal no-tool response. */
+    requiredToolCorrectionOfRound?: number;
     contextCompaction?: ContextCompactionCheckpoint;
     providerContinuation: ToolLoopJsonValue | null;
     providerCursor?: number | string | null;

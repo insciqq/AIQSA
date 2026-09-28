@@ -4,11 +4,11 @@ import { textFromContentBlocks, type ModelRunSseEvent, type ModelRunUsage } from
 import { createReasoningFragmentBuffer, type ReasoningRecord } from "../../domain/answerReasoning";
 import { normalizeTokenUsage } from "../../domain/usage";
 import {
-  defaultAnthropicMessagesParams,
-  maxOutputTokensFromParams,
-  type AnthropicEffort,
+  normalizeAnthropicMessagesParams,
   type AnthropicMessagesParams
 } from "../../domain/providerParams";
+import { resolveProviderToolChoice } from "./providerToolChoice";
+import { anthropicToolSchemas } from "./anthropicStrictSchema";
 import { anthropicMessagesToolBridge } from "../tools/bridges";
 import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
 import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
@@ -24,6 +24,7 @@ import {
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
+  providerResponseMaxBytes,
   providerStreamTimingLimits,
   readBoundedResponseText,
   resolveProviderStreamLimits,
@@ -134,29 +135,6 @@ function stringValue(value: unknown): string | undefined {
 
 function objectValue(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-function anthropicEffort(value: unknown, fallback: AnthropicEffort): AnthropicEffort {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-function normalizeAnthropicMessagesParams(params: Record<string, unknown>): AnthropicMessagesParams {
-  const defaults = defaultAnthropicMessagesParams();
-  const thinking = objectValue(params.thinking);
-  const outputConfig = objectValue(params.outputConfig) ?? objectValue(params.output_config);
-
-  return {
-    maxTokens: maxOutputTokensFromParams(params) ?? defaults.maxTokens,
-    temperature: typeof params.temperature === "number" ? params.temperature : defaults.temperature,
-    thinking: {
-      budgetTokens: numberValue(thinking?.budgetTokens) || defaults.thinking.budgetTokens,
-      enabled: typeof thinking?.enabled === "boolean" ? thinking.enabled : defaults.thinking.enabled,
-      type: thinking?.type === "enabled" || thinking?.type === "adaptive" ? thinking.type : defaults.thinking.type
-    },
-    outputConfig: {
-      effort: anthropicEffort(outputConfig?.effort, defaults.outputConfig.effort)
-    }
-  };
 }
 
 function combineSystem(request: ProviderRunRequest, preview = false): string | undefined {
@@ -475,7 +453,7 @@ export function buildAnthropicMessagesRequest(
       )
     ]
   );
-  const clientTools = (request.tools ?? []).map((tool) =>
+  const clientTools = anthropicToolSchemas(request.tools ?? []).map((tool) =>
     anthropicMessagesToolBridge.serializeTool(tool).tool);
   const hostedTools = anthropicMessagesToolBridge.serializeHostedTools?.(request) ?? [];
   const hasClientToolContinuation = (request.providerToolMessages ?? []).some(value => {
@@ -509,9 +487,10 @@ export function buildAnthropicMessagesRequest(
   }
 
   if (clientTools.length > 0) {
+    const { wireToolChoice } = resolveProviderToolChoice({ ...request, adapterKind: "anthropic_messages" });
     body.tool_choice = {
-      type: request.toolChoice === "required" ? "any" : request.toolChoice ?? "auto",
-      ...(request.toolChoice !== "none" && request.parallelToolCalls !== true
+      type: wireToolChoice === "required" ? "any" : wireToolChoice,
+      ...(wireToolChoice !== "none" && request.parallelToolCalls !== true
         ? { disable_parallel_tool_use: true }
         : {})
     };
@@ -1246,7 +1225,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             usage
           }),
           finalText: rawFinalText,
-          ...(!hostedSearch && toolCalls.length > 0 ? { providerToolCallMessage } : {}),
+          ...(!hostedSearch ? { providerToolCallMessage } : {}),
           providerResponseId: messageId,
           toolCalls: hostedSearch ? [] : toolCalls,
           usage
@@ -1258,13 +1237,15 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
 
 async function throwAnthropicHttpError(response: Response, signal: AbortSignal): Promise<never> {
   let forcedToolUseUnsupported = false;
+  let invalidRequest = false;
   let contextLength: ProviderContextLengthCounts | null = null;
   try {
-    const text = await readBoundedResponseText(response, { signal });
+    const text = await readBoundedResponseText(response, { maxBytes: Math.min(providerResponseMaxBytes(), 64 * 1024), signal });
     if (response.status === 400) {
       let body: unknown;
       try { body = observeJsonParse(response, () => JSON.parse(text)); } catch { body = null; }
       const error = objectValue(objectValue(body)?.error);
+      invalidRequest = error?.type === "invalid_request_error";
       forcedToolUseUnsupported = error?.type === "invalid_request_error" &&
         error.message === 'tool_choice: type "tool" and "any" are not supported for this model.';
       // "prompt is too long: P tokens > M maximum": only the identity and counts leave.
@@ -1285,7 +1266,10 @@ async function throwAnthropicHttpError(response: Response, signal: AbortSignal):
       code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, httpStatus: response.status, ...contextLength
     });
   }
-  throw new Error(providerHttpErrorMessage("Anthropic", response.status));
+  throw Object.assign(new Error(providerHttpErrorMessage("Anthropic", response.status)), {
+    httpStatus: response.status,
+    ...(invalidRequest ? { code: "provider_http_invalid_request" } : {})
+  });
 }
 
 export function createFetchAnthropicMessagesClient(input: {

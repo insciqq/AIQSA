@@ -2,6 +2,7 @@ import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { structuredOutputInput } from "./modelOutputAllowance";
 import { declaredModelOutputTokenLimit } from "./providerModelCapabilities";
+import { anthropicServerValidatedSchemaConstraint } from "./anthropicStrictSchema";
 import type { JsonSchemaType } from "@modelcontextprotocol/client";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 import { buildAnthropicMessagesOutputParams } from "./anthropicMessages";
@@ -122,13 +123,6 @@ const ANTHROPIC_SCHEMA_KEYS = new Set([
   "items", "maximum", "maxItems", "maxLength", "minimum", "minItems", "minLength", "multipleOf",
   "exclusiveMinimum", "exclusiveMaximum", "oneOf", "pattern", "properties", "required", "title", "type", "uniqueItems"
 ]);
-const ANTHROPIC_SERVER_VALIDATED_SCHEMA_KEYS = new Set([
-  "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength",
-  "maxItems", "uniqueItems", "pattern"
-]);
-const ANTHROPIC_SCHEMA_FORMATS = new Set([
-  "date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"
-]);
 type StructuredOutputSchemaProvider = "portable" | "gemini" | "anthropic";
 
 type ProviderSchemaProjection = Readonly<{
@@ -185,7 +179,7 @@ function schemaForProvider(
   value: Readonly<Record<string, unknown>>,
   provider: StructuredOutputSchemaProvider = "portable"
 ): ProviderSchemaProjection {
-  const visit = (node: unknown, depth = 0): unknown => {
+  const visit = (node: unknown, depth = 0, arrayAncestor = false): unknown => {
     if (provider !== "portable" && (!isRecord(node) || depth > 64)) {
       throw new Error("structured_output_schema_unsupported");
     }
@@ -197,21 +191,25 @@ function schemaForProvider(
       (node.type === "object" || isRecord(node.properties)) && node.additionalProperties !== false)) {
       throw new Error("structured_output_schema_unsupported");
     }
-    const visitChild = (child: unknown) => visit(child, depth + 1);
+    const arrayNode = node.type === "array" || Array.isArray(node.type) && node.type.includes("array");
+    const visitChild = (child: unknown) => visit(child, depth + 1, arrayAncestor);
+    const visitArrayItem = (child: unknown) => visit(child, depth + 1, arrayAncestor || arrayNode);
     const mapped: Record<string, unknown> = {};
     const serverConstraints: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(node)) {
-      if (provider === "anthropic" && (ANTHROPIC_SERVER_VALIDATED_SCHEMA_KEYS.has(key) ||
-        key === "minItems" && child !== 0 && child !== 1 ||
-        key === "format" && (typeof child !== "string" || !ANTHROPIC_SCHEMA_FORMATS.has(child)))) {
+      if (provider === "anthropic" && anthropicServerValidatedSchemaConstraint(key, child)) {
         serverConstraints[key] = child;
         continue;
       }
       if (key === "uniqueItems") continue;
       if (provider === "gemini") {
-        // Gemini's documented subset omits these constraints. Existing
-        // consumers still validate the unmodified canonical schema/value.
+        // Gemini's documented subset omits these constraints. Owning
+        // consumers validate their canonical contract after decode.
         if (GEMINI_SERVER_VALIDATED_SCHEMA_KEYS.has(key)) continue;
+        // Gemini rejects bounded arrays nested inside other bounded arrays in
+        // current Knowledge and routing contracts. Keep the outer bound while
+        // owning consumers enforce canonical limits after decode.
+        if (key === "maxItems" && arrayAncestor && arrayNode) continue;
         if (key === "const") {
           if (scalarConstKey(child) === null ||
             Object.hasOwn(node, "enum") &&
@@ -246,9 +244,9 @@ function schemaForProvider(
           ])
         );
       } else if (SCHEMA_CHILD_KEYS.has(key) && isRecord(child)) {
-        mapped[key] = visitChild(child);
+        mapped[key] = key === "items" || key === "contains" ? visitArrayItem(child) : visitChild(child);
       } else if (SCHEMA_CHILD_ARRAY_KEYS.has(key) && Array.isArray(child)) {
-        mapped[key] = child.map(visitChild);
+        mapped[key] = child.map(key === "prefixItems" ? visitArrayItem : visitChild);
       } else {
         mapped[key] = child;
       }
@@ -298,23 +296,7 @@ function decodeProviderStructuredOutput(
 }
 
 function geminiRequestSchema(request: ProviderStructuredOutputRequest): Record<string, unknown> {
-  const { schema } = schemaForProvider(request.schema, "gemini");
-  if (request.name !== "mcp_tool_routing" && request.name !== "mcp_tool_routing_retry") {
-    return schema;
-  }
-  // This nested routing shape is rejected with Gemini invalid_request when
-  // these two array bounds are on the wire. Other Gemini maxItems stay intact.
-  // The router still validates its original canonical limits and allowed IDs.
-  const requirements = isRecord(schema.properties) ? schema.properties.requirements : null;
-  if (isRecord(requirements) && requirements.type === "array" &&
-    isRecord(requirements.items) && isRecord(requirements.items.properties)) {
-    const toolIds = requirements.items.properties.tool_ids;
-    if (isRecord(toolIds) && toolIds.type === "array") {
-      delete requirements.maxItems;
-      delete toolIds.maxItems;
-    }
-  }
-  return schema;
+  return schemaForProvider(request.schema, "gemini").schema;
 }
 
 function normalizeRequest(

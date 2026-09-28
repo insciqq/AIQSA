@@ -243,6 +243,10 @@ function createOpenRouterStreamExtension() {
   const messageCitations: unknown[] = [];
   const annotations: unknown[] = [];
   const reasoningParts: unknown[] = [];
+  const reasoningDetails: unknown[] = [];
+  let reasoningDetailCharacters = 0;
+  const originalReasoning: string[] = [];
+  let originalReasoningCharacters = 0;
   let reasoningCharacters = 0;
   let reasoningUsesArray = false;
   let citationCharacters = 0;
@@ -270,6 +274,42 @@ function createOpenRouterStreamExtension() {
       );
 
       if (firstOpenAIChatChoice(record)) {
+        const original = delta.reasoning ?? message.reasoning;
+        if (typeof original === "string") {
+          originalReasoningCharacters = assertBoundedTextLength({ currentChars: originalReasoningCharacters,
+            fragment: original, maxChars: maxOutputChars, retainedTextKind: "reasoning", snapshot });
+          originalReasoning.push(original);
+        }
+        const details = delta.reasoning_details ?? message.reasoning_details ?? record.reasoning_details;
+        if (Array.isArray(details)) {
+          reasoningDetailCharacters = assertBoundedStructuredTextLength({ currentChars: reasoningDetailCharacters,
+            value: details, maxChars: maxOutputChars, retainedTextKind: "reasoning", snapshot });
+          for (const detail of details) {
+            const previous = reasoningDetails.at(-1);
+            const field = isOpenAIChatRecord(detail) && detail.type === "reasoning.text" ? "text"
+              : isOpenAIChatRecord(detail) && detail.type === "reasoning.summary" ? "summary" : null;
+            // Text/summary deltas extend their consecutive block. Encrypted
+            // entries remain discrete opaque blobs. A repeated index alone
+            // cannot prove identity, but an explicit index/signature change
+            // proves a boundary and must never combine signed blocks.
+            if (field && isOpenAIChatRecord(detail) && isOpenAIChatRecord(previous) &&
+              previous.type === detail.type &&
+              (previous[field] == null || typeof previous[field] === "string") &&
+              (detail[field] == null || typeof detail[field] === "string") &&
+              (previous.index == null || detail.index == null || previous.index === detail.index) &&
+              (previous.signature == null || detail.signature == null || previous.signature === detail.signature) &&
+              (!previous.id || !detail.id || previous.id === detail.id) &&
+              (!previous.format || !detail.format || previous.format === detail.format)) {
+              reasoningDetails[reasoningDetails.length - 1] = {
+                ...previous,
+                ...detail,
+                [field]: `${previous[field] ?? ""}${detail[field] ?? ""}`,
+                ...(previous.signature !== undefined || detail.signature !== undefined
+                  ? { signature: previous.signature ?? detail.signature } : {})
+              };
+            } else reasoningDetails.push(detail);
+          }
+        }
         const reasoning =
           delta.reasoning ??
           delta.reasoning_details ??
@@ -343,6 +383,10 @@ function createOpenRouterStreamExtension() {
             ? reasoningParts.join("")
             : reasoningParts;
       return {
+        ...(reasoningDetails.length ? { continuationFields: {
+          reasoning_details: reasoningDetails,
+          reasoning: originalReasoning.length ? originalReasoning.join("") : undefined
+        } } : {}),
         messageFields: {
           annotations,
           citations: messageCitations,

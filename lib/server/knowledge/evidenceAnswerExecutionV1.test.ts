@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1, knowledgeEvidenceRefinementAddsEvidence } from "./evidenceAnswerExecutionV1";
+import { decodeKnowledgeEvidenceAnswerFailureV1, executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1,
+  KnowledgeAnswerProviderError, knowledgeEvidenceRefinementAddsEvidence } from "./evidenceAnswerExecutionV1";
+import { KnowledgeAnswerOperationDeferredError } from "./answerGroundingExecutionV5";
 import { replayKnowledgeEvidenceAnswerV1 } from "./evidenceAnswerReplayV1";
 import { decodeKnowledgeEvidenceAnswerSnapshot } from "./evidenceAnswerSnapshot";
 import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
@@ -7,6 +9,7 @@ import { knowledgeAnswerHash } from "./answerGroundingV5";
 import { resolveKnowledgeGroundingExecutionPolicyV1 } from "./groundingExecutionPolicy";
 import type { StoredKnowledgeEvidenceDispatch } from "./evidenceDispatchRepository";
 import type { KnowledgeProviderDispatchLifecycle, PreparedKnowledgeProviderDispatch } from "./providerDispatchLifecycle";
+import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 
 const usage = { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 10, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 };
 const request = "Calculate the combined mass of Alpha and Beta.";
@@ -347,19 +350,20 @@ describe("evidence answer execution and recovery", () => {
     expect(fixture.execute).toHaveBeenCalledTimes(8);
   });
 
-  it.each(["provider_failure", "empty_publication"] as const)("retains a successful revision after a later %s", async failure => {
+  it.each(["provider_compose_failure", "provider_review_failure", "empty_publication"] as const)("retains a successful revision after a later %s", async failure => {
     const beta = { version: 1, blocks: [{ kind: "paragraph", text: "Alpha and Beta total 10 kg.", evidenceHandles: ["K1", "K2"] }] };
     const needsGamma = { ...review(), missingInformation: ["The mass of Gamma."], followUps: [{ query: "Gamma mass", sourceAliases: [] }],
       blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1", "K2"] }] };
-    const fixture = execution([compose(), review(), beta, needsGamma, ...(failure === "provider_failure"
-      ? [new TypeError("fetch failed")]
+    const fixture = execution([compose(), review(), beta, needsGamma, ...(failure === "provider_compose_failure"
+      ? [new GeminiHttpError(400, "invalid_request")]
+      : failure === "provider_review_failure" ? [beta, new GeminiHttpError(400, "invalid_request")]
       : [{ version: 1, blocks: [] }, { ...needsGamma, blocks: [], coverage: "none" }])]);
     let count = 0;
     const result = await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...fixture.input, workflowVersion: 10,
       request: "Calculate the combined mass of Alpha, Beta and Gamma.", refineEvidence: async () => manifest(true, count++) });
     expect(result.publication.blocks).toMatchObject([{ text: "Alpha and Beta total 10 kg." }]);
     expect(result.evidenceReceiptHash).toBe(manifest(true).manifestHash);
-    expect(result.operations).toHaveLength(failure === "provider_failure" ? 5 : 6);
+    expect(result.operations).toHaveLength(failure === "provider_compose_failure" ? 5 : 6);
     expect(count).toBe(2);
     expect(await replayKnowledgeEvidenceAnswerV1({ dispatches: fixture.store.stored(), forbiddenIdentityFragments: [], modelRunId: "fixture-run" })).toEqual(result);
     expect(fixture.execute).toHaveBeenCalledTimes(result.operations.length);
@@ -405,12 +409,15 @@ describe("evidence answer execution and recovery", () => {
   });
 
   it("preserves the first verified partial answer after a settled optional provider failure and includes its charge", async () => {
-    const fixture = execution([compose(), review(), new TypeError("fetch failed")]);
+    const fixture = execution([compose(), review(), new GeminiHttpError(400, "invalid_request")]);
     const accepted = vi.fn();
     const result = await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...fixture.input, onOperationAccepted: accepted, refineEvidence: async () => manifest(true) });
     expect(result.publication.blocks).toMatchObject([{ text: "Alpha has a mass of 4 kg." }]);
     expect(result.operations).toHaveLength(3);
     expect(accepted).toHaveBeenCalledTimes(3);
+    expect(fixture.store.stored()[2]?.attempt.acceptedResult).toEqual({
+      version: 2, kind: "failed", reason: "provider_error", providerCode: "provider_http_invalid_request", httpStatus: 400
+    });
     expect(await replayKnowledgeEvidenceAnswerV1({ dispatches: fixture.store.stored(), forbiddenIdentityFragments: [], modelRunId: "fixture-run" })).toEqual(result);
   });
 
@@ -456,10 +463,103 @@ describe("evidence answer execution and recovery", () => {
   });
 
   it("does not repeat a paid transport failure", async () => {
-    const fixture = execution([new TypeError("fetch failed")]);
-    await expect(executeKnowledgeEvidenceAnswerV1(fixture.input)).rejects.toMatchObject({ code: "knowledge_answer_contract_failed" });
+    const fixture = execution([Object.assign(new TypeError("fetch failed"), { code: "provider_http_request_failed" })]);
+    await expect(executeKnowledgeEvidenceAnswerV1(fixture.input)).rejects.toMatchObject({ code: "knowledge_answer_failed" });
     expect(fixture.execute).toHaveBeenCalledTimes(1);
-    expect(fixture.store.stored()[0]?.attempt.acceptedResult).toEqual({ version: 1, kind: "failed", reason: "transport" });
+    expect(fixture.store.stored()[0]?.attempt.acceptedResult).toEqual({
+      version: 2, kind: "failed", reason: "transport", providerCode: "provider_http_request_failed"
+    });
+  });
+
+  it.each(["compose", "review"] as const)("preserves bounded Gemini HTTP failure on %s and replay", async stage => {
+    const fixture = execution(stage === "compose"
+      ? [new GeminiHttpError(400, "invalid_request")]
+      : [compose(), new GeminiHttpError(400, "invalid_request")]);
+    await expect(executeKnowledgeEvidenceAnswerWithRefinementV1({ ...fixture.input,
+      workflowVersion: 11, refineEvidence: async () => null })).rejects.toMatchObject({
+        code: "knowledge_answer_failed", providerCode: "provider_http_invalid_request", httpStatus: 400
+      });
+    const stored = fixture.store.stored();
+    expect(stored.at(-1)?.attempt.acceptedResult).toEqual({
+      version: 2, kind: "failed", reason: "provider_error", providerCode: "provider_http_invalid_request", httpStatus: 400
+    });
+    expect(JSON.stringify(stored)).not.toContain("Gemini request failed");
+    await expect(replayKnowledgeEvidenceAnswerV1({ dispatches: stored, forbiddenIdentityFragments: [],
+      modelRunId: "fixture-run" })).rejects.toMatchObject({
+        code: "knowledge_answer_failed", providerCode: "provider_http_invalid_request", httpStatus: 400
+      });
+    expect(fixture.execute).toHaveBeenCalledTimes(stage === "compose" ? 1 : 2);
+  });
+
+  it.each([
+    { error: Object.assign(new Error("SYNTHETIC_PRIVATE: refusal network timeout"), { name: "TimeoutError" }), code: "unknown", reason: "provider_error" },
+    { error: Object.assign(new TypeError("SYNTHETIC_PRIVATE: fetch failed"), { code: "provider_http_private_value" }), code: "unknown", reason: "provider_error" },
+    { error: Object.assign(new Error("SYNTHETIC_PRIVATE"), { code: "provider_request_timed_out" }), code: "provider_request_timed_out", reason: "timeout" },
+    { error: Object.assign(new Error("SYNTHETIC_PRIVATE"), { capabilityFailureReason: "refusal" }), code: "provider_refused", reason: "refusal" }
+  ])("classifies settled failures from safe evidence only ($code, $reason)", async ({ error, code, reason }) => {
+    const fixture = execution([error]);
+    const expected = { code: "knowledge_answer_failed", providerCode: code, message: "Knowledge evidence answer provider failed." };
+    await expect(executeKnowledgeEvidenceAnswerV1(fixture.input)).rejects.toMatchObject(expected);
+    const dispatches = fixture.store.stored();
+    expect(dispatches[0]?.attempt.acceptedResult).toEqual({ version: 2, kind: "failed", reason, providerCode: code });
+    expect(JSON.stringify(dispatches)).not.toContain("SYNTHETIC_PRIVATE");
+    await expect(replayKnowledgeEvidenceAnswerV1({ dispatches, forbiddenIdentityFragments: [], modelRunId: "fixture-run" }))
+      .rejects.toMatchObject(expected);
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(fixture.input.authorize).toHaveBeenCalledOnce();
+  });
+
+  it.each(["compose", "review", "revision"] as const)("replays a legacy settled provider failure at %s without changing its record", async stage => {
+    const fixture = execution(stage === "compose" ? [new Error("failure")]
+      : stage === "review" ? [compose(), new Error("failure")] : [compose(), review(), new Error("failure")]);
+    const pending = executeKnowledgeEvidenceAnswerWithRefinementV1({ ...fixture.input, refineEvidence: async () => manifest(true) });
+    const result = stage === "revision" ? await pending : await pending.catch(error => error as KnowledgeAnswerProviderError);
+    const dispatches = fixture.store.stored();
+    const attempt = dispatches.at(-1)!.attempt;
+    attempt.acceptedResult = { version: 1, kind: "failed", reason: "transport" };
+    attempt.resultHash = knowledgeAnswerHash(attempt.acceptedResult);
+    const frozen = JSON.stringify(dispatches);
+    const replay = replayKnowledgeEvidenceAnswerV1({ dispatches, forbiddenIdentityFragments: [], modelRunId: "fixture-run" });
+    if (stage === "revision") expect(await replay).toEqual(result);
+    else await expect(replay).rejects.toMatchObject({ code: "knowledge_answer_failed", providerCode: undefined });
+    expect(JSON.stringify(dispatches)).toBe(frozen);
+    expect(fixture.execute).toHaveBeenCalledTimes(dispatches.length);
+  });
+
+  it("rejects extra settled history after a terminal provider failure on replay", async () => {
+    const fixture = execution([compose(), review()]);
+    await executeKnowledgeEvidenceAnswerV1(fixture.input);
+    const dispatches = fixture.store.stored();
+    const attempt = dispatches[0]!.attempt;
+    attempt.acceptedResult = { version: 2, kind: "failed", reason: "provider_error", providerCode: "provider_http_invalid_request", httpStatus: 400 };
+    attempt.resultHash = knowledgeAnswerHash(attempt.acceptedResult);
+    await expect(replayKnowledgeEvidenceAnswerV1({ dispatches, forbiddenIdentityFragments: [], modelRunId: "fixture-run" }))
+      .rejects.toThrow("knowledge_evidence_answer_replay_incomplete");
+    expect(fixture.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects unbounded or malformed persisted failure diagnostics", () => {
+    const valid = { version: 2, kind: "failed", reason: "provider_error", providerCode: "provider_http_invalid_request", httpStatus: 400 };
+    expect(decodeKnowledgeEvidenceAnswerFailureV1(valid)).toEqual(valid);
+    for (const invalid of [
+      { ...valid, providerCode: "provider_http_private_value" }, { ...valid, httpStatus: 600 },
+      { ...valid, httpStatus: 400.5 }, { ...valid, reason: "private_value" }, { ...valid, providerMessage: "private_value" },
+      { ...valid, version: 1 }, { ...valid, version: 3 }
+    ]) expect(decodeKnowledgeEvidenceAnswerFailureV1(invalid)).toBeNull();
+    expect(new KnowledgeAnswerProviderError("provider_http_private_value", 600)).toMatchObject({ providerCode: "unknown", httpStatus: undefined });
+  });
+
+  it.each(["cancelled", "ambiguous", "deferred", "authority"] as const)("does not fall back to a partial answer after optional %s work", async kind => {
+    const error = kind === "deferred" ? new KnowledgeAnswerOperationDeferredError()
+      : Object.assign(new Error("SYNTHETIC_PRIVATE"), { code: kind === "cancelled" ? "provider_response_cancelled"
+        : kind === "ambiguous" ? "provider_request_outcome_unknown" : "model_not_available" });
+    const fixture = execution([compose(), review(), error]);
+    if (kind === "authority") fixture.input.authorize.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined).mockRejectedValueOnce(error);
+    await expect(executeKnowledgeEvidenceAnswerWithRefinementV1({ ...fixture.input, refineEvidence: async () => manifest(true) })).rejects.toBe(error);
+    expect(fixture.store.lifecycle.settle).toHaveBeenCalledTimes(2);
+    expect(fixture.execute).toHaveBeenCalledTimes(kind === "authority" ? 2 : 3);
+    if (kind === "cancelled" || kind === "ambiguous") expect(fixture.store.lifecycle.markAmbiguous).toHaveBeenCalledOnce();
+    else expect(fixture.store.lifecycle.markAmbiguous).not.toHaveBeenCalled();
   });
 
   it("rejects a second invalid review instead of publishing an unchecked draft", async () => {

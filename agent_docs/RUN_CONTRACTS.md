@@ -61,7 +61,9 @@ Publication is deterministic and provider-free, revalidating exact excerpts and 
 
 ## MCP And Workspace
 
-MCP Auto/Load all/Off require explicit user action. Auto freezes authorized capabilities/System Model; answer models see only bounded JSON administrator-defined server names. An admitted optional route may select one sufficient capability; uncertainty/unavailability preserves the full route. Never substitute destinations. Discovery fails closed without lexical fallback. Reauthorize and checkpoint selection before exposing schemas; recovery never reroutes. Only relevant servers and exact Load all/Assistant allowlists are dependencies. Persist batches before execution; preserve provider order and accepted budgets. Exhaustion disables tools for final synthesis.
+MCP Auto/Load all/Off require user action. Auto freezes authorized capabilities/System Model; answer models see bounded JSON administrator-defined server names. Optional routing may select one sufficient capability; uncertainty preserves the full route without destination substitution. Discovery fails closed without lexical fallback. Reauthorize/checkpoint before exposing schemas; recovery never reroutes. Dependencies are relevant servers and exact Load all/Assistant allowlists. Persist batches before effects, preserving provider order/budgets; exhaustion disables tools for synthesis.
+
+Required rounds permit one correction after known no-call success. Keep premature text private; persist usage, provider continuation and claim before dispatch. Repeated omissions/wrong-tool-only batches fail before effects. Recovery preserves this limit; unknown outcomes never retry.
 
 Normalize only proven whole-result duplicates before provider projection; preserve unique content, ambiguity, errors, Hub results and receipts.
 
@@ -81,7 +83,7 @@ Every terminal path retires guest execution authority: stop registered processes
 
 ## Settlement And Outputs
 
-Completion requires provider-specific terminal proof. Failure/truncation/timeout/cancellation preserve accepted partial text and reported usage without false success. Guarded transactional settlement has one winner. Cancellation promptly stops later work/durable stream writes; stale reconciliation cannot sweep newer live runs. Recovery uses exact accepted checkpoints/bindings, never browser truth or reconstructed prose.
+Completion requires provider terminal proof. Failures preserve accepted partial text/reported usage without false success; guarded settlement has one winner. Cancellation stops later work/writes; stale reconciliation cannot sweep newer runs. Recovery uses accepted checkpoints/bindings, never browser claims or reconstructed prose.
 
 Unknown command exit, confirmed environment stop and durable cleanup are distinct. Local publication/accounting failures preserve reported usage without authorizing replay or proving provider failure. Never infer causes from exception prose.
 
@@ -89,6 +91,6 @@ Client/Project streams expose lifecycle, answers, semantic activity, safe source
 
 Artifact edits never rebase; reads/hints stay private. Agent bundles grant no host-path authority. Context changes invalidate continuation. Atomic settlement respects revocation/resource ceilings. Received images retain accounting after Stop; verified Workspace staging grants no paid replay.
 
-Accounting uses provider-reported categories with exact stage/model attribution. Missing usage or price stays null; recovery enriches the same outcome without double counting. Shares use [Backend](BACKEND.md)'s positive snapshot schema. Gemini-grounded answer text survives ordinary settlement and sharing, while Suggestions, citations and structured artifacts stay private; discarded legacy answers cannot be reconstructed, and unfinished legacy work is fenced before removing replay-critical provenance.
+Accounting uses provider-reported categories and exact stage/model attribution; missing usage/prices stay null. Recovery enriches without double counting. Shares use [Backend](BACKEND.md)'s positive schema. Gemini answer text survives settlement/sharing; Suggestions, citations and structured artifacts stay private. Never reconstruct discarded legacy answers; fence unfinished work before removing replay provenance.
 
-Optional titles never delay answers. Freeze excerpt/destination; never replay ambiguous dispatch. Renames/chat lifecycle fence results; retain reported usage when unapplied.
+Optional titles never delay answers. Freeze excerpt/destination; never replay ambiguous dispatch. Renames/lifecycle fence results; retain usage when unapplied.

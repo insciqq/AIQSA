@@ -90,7 +90,7 @@ import {
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
-import type { ToolExecutionResult } from "../tools/types";
+import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import {
   packKnowledgeEvidenceDispatchManifest,
@@ -579,6 +579,7 @@ function createHarness(options: Readonly<{
       ? { groundKnowledgeAnswerV21: options.groundKnowledgeAnswerV21 }
       : {}),
     loadAttachments: async () => [],
+    beginToolLoopProviderRound: async () => "conflict",
     loadCheckpointedToolLoopRun: async () => null,
     ...(options.knowledgeFullContextDispatchRecovery
       ? {
@@ -1551,6 +1552,13 @@ function installCheckpointState(
     return { calls: created, kind: "persisted" };
   };
   harness.repository.resetToolLoopAssistantDraft = async () => true;
+  harness.repository.beginToolLoopProviderRound = async (input) => {
+    if (input.requiredToolCorrectionOfRound !== currentCheckpoint.roundIndex || input.roundIndex !== 2 ||
+      !currentCheckpoint.answerRoundUsage.some(entry => entry.roundIndex === 1 && entry.completeness === "terminal")) return "conflict";
+    currentCheckpoint = checkpoint("provider_running", input.roundIndex, input.providerContinuation!, currentCheckpoint.answerRoundUsage);
+    harness.setStoredRun({ providerResponseId: null });
+    return "started";
+  };
   harness.repository.advanceToolLoopCallBatch = async ({ roundIndex }) => {
     const current = calls.filter((call) => call.roundIndex === roundIndex);
     if (current.some((call) => call.state !== "complete" && call.state !== "error")) {
@@ -8906,6 +8914,57 @@ describe("run recovery", () => {
       roundIndex: 2,
       version: 2
     });
+  });
+
+  it.each(["success", "miss", "wrong", "corrected_miss", "unknown"] as const)("recovers the required Knowledge obligation without replaying ambiguous corrections: %s", async mode => {
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const requests: ProviderRunRequest[] = [];
+    const execute = vi.fn(async (call: ModelToolCall) => ({ ...focusedKnowledgeZeroCandidateResult(), callId: call.id, name: call.name }));
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({ events: [], status: "completed", terminal: true,
+      result: { ...providerResult, finalText: "unverified draft", providerResponseId: "saved-response",
+        providerToolCallMessage: [{ type: "reasoning", reasoning_text: "saved original reasoning" }, { role: "assistant", content: "unverified draft" }],
+        ...(mode === "wrong" ? { toolCalls: [{ id: "wrong", name: "get_session_status", arguments: {} }] } : {}) } }));
+    const harness = createHarness({
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: { authorizeSnapshot: vi.fn(async () => true), load: vi.fn(async () => authorization.admitted) },
+      knowledgeExecutor: { accepts: name => name === KNOWLEDGE_SEARCH_TOOL_NAME, capability: "knowledge", execute,
+        preflight: vi.fn(async () => ({ kind: "admitted" as const })), tool: knowledgeRetrievalTool, tools: [knowledgeRetrievalTool] },
+      providers: { openai: { buildRequestPreview: () => ({}), refresh, async *stream(request) {
+        requests.push(request);
+        return { ...providerResult, ...(mode === "success" && requests.length === 1
+          ? { toolCalls: [{ id: "required-search", name: KNOWLEDGE_SEARCH_TOOL_NAME, arguments: { query: "synthetic", sourceAliases: [] } }] } : {}) };
+      } } }
+    });
+    const corrected = mode === "corrected_miss" || mode === "unknown";
+    const base = checkpointedRun({ phase: "provider_running", providerResponseId: mode === "unknown" ? null : "saved-response",
+      roundIndex: corrected ? 2 : 1, providerToolMessages: [],
+      ...(corrected ? { answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: normalizeTokenUsage(providerResult.usage) }] } : {}) });
+    const savedCheckpoint = corrected ? { ...base.checkpoint, providerContinuation: {
+      providerResponseId: "first-response", providerToolMessages: [], requiredToolCorrection: true
+    } } : base.checkpoint;
+    const installed = installCheckpointState(harness, { ...base, checkpoint: savedCheckpoint,
+      knowledgeScope: { bindings: authorization.admitted.bindings, budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY, exclusions: [],
+        knowledgePlan: authorization.scope.knowledgePlan, resolvedSourceCount: 1 },
+      normalizedRequest: { ...normalizedKnowledgeRequest(), sessionStatusTool: true } });
+    const correction = vi.spyOn(harness.repository, "beginToolLoopProviderRound");
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.assistantTexts).toEqual([]);
+    expect(correction).toHaveBeenCalledTimes(mode === "success" || mode === "miss" ? 1 : 0);
+    expect(execute).toHaveBeenCalledTimes(mode === "success" ? 1 : 0);
+    expect(requests).toHaveLength(mode === "success" ? 2 : mode === "miss" ? 1 : 0);
+    if (mode === "success" || mode === "miss") {
+      expect(requests[0]?.toolChoice).toBe("auto");
+      expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("saved original reasoning");
+      expect(installed.checkpoint().answerRoundUsage.map(entry => entry.roundIndex)).toEqual(mode === "success" ? [1, 2, 3] : [1, 2]);
+    }
+    if (mode === "success") {
+      expect(installed.calls()).toMatchObject([{ roundIndex: 2, state: "complete", toolName: KNOWLEDGE_SEARCH_TOOL_NAME }]);
+      expect(harness.state.completed?.finalText).toBe(KNOWLEDGE_INSUFFICIENT_MESSAGE);
+    } else {
+      expect(harness.state.recoveredErrors).toMatchObject([{ error: { code: mode === "unknown"
+        ? "tool_loop_provider_round_outcome_unknown" : "required_tool_call_missing" } }]);
+      expect(installed.calls()).toHaveLength(0);
+    }
   });
 
   it("replaces partial later-round usage without dropping same-model tool usage", async () => {

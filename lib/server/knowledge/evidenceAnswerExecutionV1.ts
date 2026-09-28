@@ -23,19 +23,48 @@ import { buildKnowledgeEvidenceAnswerPublicationV2, decodeKnowledgeEvidenceAnswe
   type KnowledgeEvidenceAnswerReviewV2, type KnowledgeEvidenceReviewRepairHintV1 } from "./evidenceAnswerReviewV2";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from "./groundingExecutionPolicy";
 import { EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1 } from "./searchFailure";
+import { observedFailure, observedFailureCode } from "../providers/providerObservability";
 
 type OperationInput = Parameters<typeof acceptedOperation>[0];
 type OperationRecord = Readonly<Record<string, unknown>>;
 type RejectionReason = Extract<KnowledgeEvidenceAnswerValidationV1<unknown>, { kind: "rejected" }>["reason"];
+type ProviderFailureReason = "timeout" | "refusal" | "transport" | "provider_error";
 type Failure = Readonly<{ kind: "rejected"; reason: RejectionReason; version: 1 }> |
-  Readonly<{ kind: "failed"; reason: "timeout" | "refusal" | "transport" | "provider_error"; version: 1 }>;
+  Readonly<{ kind: "failed"; reason: ProviderFailureReason; version: 1 }> |
+  Readonly<{ kind: "failed"; reason: ProviderFailureReason; version: 2; providerCode: string; httpStatus?: number }>;
+
+/** The public Knowledge failure identity and its optional content-free HTTP
+ * diagnostic survive settled-operation replay without retaining provider text.
+ * Legacy accepted failures keep their original shape and hash. */
+export class KnowledgeAnswerProviderError extends Error {
+  readonly code = "knowledge_answer_failed";
+  readonly providerCode: string | undefined;
+  readonly httpStatus: number | undefined;
+
+  constructor(providerCode?: string, httpStatus?: number) {
+    super("Knowledge evidence answer provider failed.");
+    this.name = "KnowledgeAnswerProviderError";
+    this.providerCode = providerCode === undefined ? undefined : observedFailureCode({ code: providerCode });
+    this.httpStatus = validHttpStatus(httpStatus) ? httpStatus : undefined;
+  }
+}
+
+function validHttpStatus(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599;
+}
 
 export function decodeKnowledgeEvidenceAnswerFailureV1(value: unknown): Failure | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== 3 || record.version !== 1) return null;
-  if (record.kind === "rejected" && ["shape_invalid", "text_invalid", "capacity_exceeded", "evidence_invalid", "coverage_invalid"].includes(String(record.reason)) ||
-    record.kind === "failed" && ["timeout", "refusal", "transport", "provider_error"].includes(String(record.reason))) return record as Failure;
+  if (typeof record.reason !== "string") return null;
+  if (record.version === 1 && Object.keys(record).length === 3 && (
+    record.kind === "rejected" && ["shape_invalid", "text_invalid", "capacity_exceeded", "evidence_invalid", "coverage_invalid"].includes(record.reason) ||
+    record.kind === "failed" && ["timeout", "refusal", "transport", "provider_error"].includes(record.reason))) return record as Failure;
+  if (record.version === 2 && record.kind === "failed" &&
+    Object.keys(record).length === (record.httpStatus === undefined ? 4 : 5) &&
+    ["timeout", "refusal", "transport", "provider_error"].includes(record.reason) &&
+    typeof record.providerCode === "string" && observedFailureCode({ code: record.providerCode }) === record.providerCode &&
+    (record.httpStatus === undefined || validHttpStatus(record.httpStatus))) return record as Failure;
   return null;
 }
 function decodeReviewFailure(value: OperationRecord, repairFeedbackVersion: 1 | undefined): Failure | Readonly<{
@@ -49,14 +78,18 @@ function decodeReviewFailure(value: OperationRecord, repairFeedbackVersion: 1 | 
   return repairHint ? Object.freeze({ kind: "rejected", reason: "text_invalid", version: 2, repairHint }) : null;
 }
 function providerFailure(error: unknown): Failure {
-  const name = error instanceof Error ? error.name : "";
-  const message = error instanceof Error ? error.message : "";
-  return Object.freeze({ version: 1, kind: "failed", reason:
-    name === "TimeoutError" || /timeout|deadline/iu.test(message) ? "timeout" :
-    /refusal|refused/iu.test(message) ? "refusal" : error instanceof TypeError || /network|transport|fetch/iu.test(message) ? "transport" : "provider_error" });
+  const failure = observedFailure(error);
+  return Object.freeze({ version: 2, kind: "failed", reason:
+    failure.reason === "deadline" ? "timeout" : failure.code === "provider_refused" ? "refusal" :
+    failure.reason === "network" ? "transport" : "provider_error",
+    providerCode: failure.code, ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }) });
 }
 function failed(reason: string): never {
   throw new KnowledgeAnswerContractError("knowledge_answer_contract_failed", `Knowledge evidence answer failed: ${reason}`);
+}
+function providerFailed(failure: Extract<Failure, { kind: "failed" }>): never {
+  throw new KnowledgeAnswerProviderError(failure.version === 2 ? failure.providerCode : undefined,
+    failure.version === 2 ? failure.httpStatus : undefined);
 }
 
 export type KnowledgeEvidenceAnswerExecutionV1Result = Readonly<{
@@ -160,7 +193,8 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
     draft = decodeKnowledgeEvidenceAnswerDraftV1(result, context);
     if (draft) break;
     const failure = decodeKnowledgeEvidenceAnswerFailureV1(result);
-    if (failure?.kind !== "rejected") failed(failure?.reason ?? "accepted_draft_invalid");
+    if (failure?.kind === "failed") providerFailed(failure);
+    if (failure?.kind !== "rejected") failed("accepted_draft_invalid");
     repairReason = failure.reason;
   }
   if (!draft) failed(repairReason ?? "draft_invalid");
@@ -185,7 +219,8 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
     }
     if (review) break;
     const failure = decodeReviewFailure(result, input.repairFeedbackVersion);
-    if (failure?.kind !== "rejected") failed(failure?.reason ?? "accepted_review_invalid");
+    if (failure?.kind === "failed") providerFailed(failure);
+    if (failure?.kind !== "rejected") failed("accepted_review_invalid");
     repairReason = failure.reason;
     repairHint = "repairHint" in failure ? failure.repairHint : undefined;
   }
@@ -256,7 +291,8 @@ export async function executeKnowledgeEvidenceAnswerWithRefinementV1(input: Know
     } catch (error) {
       // Only an accepted closed failure/rejection can fall back. Authority,
       // cancellation and ambiguous I/O still stop the run.
-      if (!(error instanceof KnowledgeAnswerContractError) || !error.message.startsWith("Knowledge evidence answer failed:")) throw error;
+      if (!(error instanceof KnowledgeAnswerProviderError) &&
+        (!(error instanceof KnowledgeAnswerContractError) || !error.message.startsWith("Knowledge evidence answer failed:"))) throw error;
       break;
     } finally {
       const cycleOperations = operations.slice(operationOffset);

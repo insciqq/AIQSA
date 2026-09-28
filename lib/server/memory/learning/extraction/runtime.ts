@@ -21,6 +21,7 @@ import { memoryFactExtractionProviderTool } from "./providerSchema";
 export type MemoryFactProviderEvidence = Readonly<{
   memorySnapshotVersion?: 3 | 4;
   generationBudget?: import("../../../providers/modelOutputAllowance").ModelGenerationBudget | null;
+  requiredToolModes?: readonly ("native" | "validated_auto")[];
   connectionId: string;
   credentialId: string;
   credentialVersionId: string;
@@ -118,6 +119,7 @@ export function memoryFactProviderEvidence(
       snapshot.version === 3 ? { memorySnapshotVersion: 3 as const } : {}),
     credentialId: provider.credentialId,
     credentialVersionId: provider.credentialVersionId,
+    ...(snapshot.requiredToolModes ? { requiredToolModes: snapshot.requiredToolModes } : {}),
     executionSnapshot: provider,
     providerModelId: provider.providerModelId
   };

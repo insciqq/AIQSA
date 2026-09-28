@@ -167,6 +167,15 @@ describe("bounded observability runtime", () => {
     expect(record("process.failure", { stage: "uncaught_exception", outcome: "terminated" }).level).toBe("fatal");
   });
 
+  it("keeps the bounded provider cause separately from the public run failure", () => {
+    const fields = { run_id: "run-1", stage: "execution", outcome: "failed", code: "knowledge_answer_failed" } as const;
+    expect(record("run_execution", { ...fields, provider_code: "provider_http_invalid_request" }))
+      .toMatchObject({ code: "knowledge_answer_failed", provider_code: "provider_http_invalid_request" });
+    const unsafe = record("run_execution", { ...fields, provider_code: "private-provider-error-body" });
+    expect(unsafe.provider_code).toBe("unknown");
+    expect(JSON.stringify(unsafe)).not.toContain("private-provider");
+  });
+
   it("uses the current event schema after HMR while preserving the singleton sink and context", () => {
     const runtimeUrl = new URL("./runtime.cjs", import.meta.url);
     const source = readFileSync(runtimeUrl, "utf8");

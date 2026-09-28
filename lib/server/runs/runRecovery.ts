@@ -187,6 +187,9 @@ import {
 import {
   beforeAnswerDispatch,
   providerToolLoopContinuationAfterResult,
+  missingRequiredToolCall,
+  requiredToolCorrectionContinuation,
+  REQUIRED_TOOL_CALL_FAILURE,
   runProviderToolLoop,
   withRoundForcedTool,
   type ProviderToolLoopContinuation
@@ -273,6 +276,7 @@ export type RunRecoveryRegistry = Readonly<{
 export type RunRecoveryRepository = Pick<
   RunRepository,
   | "advanceToolLoopCallBatch"
+  | "beginToolLoopProviderRound"
   | "appendMcpDiscoveryEpoch"
   | "appendAssistantText"
   | "appendRunOutputEvent"
@@ -550,7 +554,8 @@ function modelToolCall(call: PersistedToolLoopCall): ModelToolCall {
 function parseProviderToolLoopContinuation(value: ToolLoopJsonValue | null): ProviderToolLoopContinuation {
   if (!isRecord(value) ||
     !(value.providerResponseId === null || typeof value.providerResponseId === "string") ||
-    !Array.isArray(value.providerToolMessages)) {
+    !Array.isArray(value.providerToolMessages) ||
+    value.requiredToolCorrection !== undefined && value.requiredToolCorrection !== true) {
     throw new ToolLoopRecoveryError(
       "tool_loop_checkpoint_invalid",
       "The saved tool-loop continuation is invalid. Retry the run."
@@ -559,7 +564,8 @@ function parseProviderToolLoopContinuation(value: ToolLoopJsonValue | null): Pro
 
   return {
     providerResponseId: value.providerResponseId,
-    providerToolMessages: value.providerToolMessages
+    providerToolMessages: value.providerToolMessages,
+    ...(value.requiredToolCorrection === true ? { requiredToolCorrection: true } : {})
   };
 }
 
@@ -2379,6 +2385,15 @@ async function recoverCheckpointedToolLoop(
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : []),
       ...workspaceTools
     ];
+    if (recoveredKnowledgeEnabled && run.normalizedRequest.knowledgeAnswering?.route !== KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT) {
+      // Admission adds this ephemeral obligation to the provider request;
+      // recovery reconstructs it from the accepted Knowledge route.
+      providerRequest = {
+        ...providerRequest,
+        toolChoice: "required",
+        forcedToolName: tools.find(tool => tool.capability === "knowledge")?.name
+      };
+    }
     if (tools.length === 0) {
       throw new ToolLoopRecoveryError(
         "tool_configuration_empty",
@@ -2988,12 +3003,14 @@ async function recoverCheckpointedToolLoop(
           return bridge.appendToolResult(undefined, projectObservationForProvider(result));
         })
       ];
-      const completedToolRounds = Math.max(0, round - 1);
+      const completedToolRounds = new Set(run.calls.filter(call => call.roundIndex > 0 && call.roundIndex < round)
+        .map(call => call.roundIndex)).size;
       const priorToolCalls = run.calls.filter((call) => call.roundIndex > 0).length;
       const toolChoice = completedToolRounds >= toolBudgets.maxToolRounds ||
         priorToolCalls >= toolBudgets.maxToolCalls || providerRequest.toolChoice === "none"
         ? "none"
-        : completedToolRounds === 0 && providerRequest.toolChoice === "required" ? "required" : "auto";
+        : completedToolRounds === 0 && providerRequest.toolChoice === "required" &&
+          !savedContinuation.requiredToolCorrection ? "required" : "auto";
       const prepared = await prepareRecoveredProviderRequest(withRoundForcedTool({
         ...providerRequest,
         parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
@@ -3006,6 +3023,19 @@ async function recoverCheckpointedToolLoop(
 
     let continuation = parseProviderToolLoopContinuation(run.checkpoint.providerContinuation);
     let currentCalls: readonly PersistedToolLoopCall[];
+    let correctedNoToolRound = false;
+    const persistRequiredToolCorrection = async (nextContinuation: ProviderToolLoopContinuation, round: number) => {
+      const started = await deps.repository.beginToolLoopProviderRound({
+        requiredToolCorrectionOfRound: round,
+        providerContinuation: toolLoopJson(nextContinuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+        roundIndex: round + 1,
+        runId: run.id,
+        userId: run.userId
+      });
+      if (started === "cancelled") throw new ToolLoopRecoveryStopped();
+      if (started !== "started") throw new ToolLoopRecoveryError("tool_loop_checkpoint_conflict", "Required tool correction could not start.");
+      currentProviderResponseId = null;
+    };
 
     if (run.checkpoint.phase === "provider_running") {
       const round = run.checkpoint.roundIndex;
@@ -3111,7 +3141,23 @@ async function recoverCheckpointedToolLoop(
         }
         throw new ToolLoopRecoveryError(TOOL_SYNTHESIS_FAILURE.code, TOOL_SYNTHESIS_FAILURE.message);
       }
-      if ((refreshed.result.toolCalls?.length ?? 0) === 0) {
+      const advertisedToolNames = new Set(roundRequest.tools?.map(tool => tool.name));
+      const refreshedCalls = (refreshed.result.toolCalls ?? []).map(call => ({
+        ...call,
+        name: workspaceTools.length > 0 ? normalizeWorkspaceProviderToolName(call.name, advertisedToolNames) : call.name
+      }));
+      refreshed.result = { ...refreshed.result, toolCalls: refreshedCalls };
+      const required = !run.calls.some(call => call.roundIndex > 0) &&
+        missingRequiredToolCall(providerRequest, refreshedCalls);
+      if (required) {
+        if (refreshedCalls.length > 0 || continuation.requiredToolCorrection || roundRequest.toolChoice === "none") {
+          throw new ToolLoopRecoveryError(REQUIRED_TOOL_CALL_FAILURE.code, REQUIRED_TOOL_CALL_FAILURE.message);
+        }
+        continuation = requiredToolCorrectionContinuation(bridge, continuation, refreshed.result, providerRequest.forcedToolName);
+        await persistRequiredToolCorrection(continuation, round);
+        correctedNoToolRound = true;
+        currentCalls = [];
+      } else if (refreshedCalls.length === 0) {
         if (recoveredKnowledgeEnabled) {
           await finalizeRecoveredKnowledgeToolLoop();
           return;
@@ -3148,18 +3194,11 @@ async function recoverCheckpointedToolLoop(
           );
         }
         return;
+      } else {
+        for (const event of refreshed.events) await appendEvent(event);
+        continuation = providerToolLoopContinuationAfterResult(bridge, continuation, refreshed.result);
+        currentCalls = await persistToolBatch(refreshedCalls, continuation, run.checkpoint.roundIndex);
       }
-      for (const event of refreshed.events) await appendEvent(event);
-      continuation = providerToolLoopContinuationAfterResult(
-        bridge,
-        continuation,
-        refreshed.result
-      );
-      currentCalls = await persistToolBatch(
-        refreshed.result.toolCalls ?? [],
-        continuation,
-        run.checkpoint.roundIndex
-      );
     } else {
       currentCalls = run.calls.filter((call) => call.roundIndex === run.checkpoint.roundIndex);
       if (currentCalls.length === 0) {
@@ -3194,36 +3233,39 @@ async function recoverCheckpointedToolLoop(
       }
     }
 
-    await tokenBuffer.flush();
-    const reset = await deps.repository.resetToolLoopAssistantDraft({
-      roundIndex: run.checkpoint.roundIndex,
-      runId: run.id,
-      userId: run.userId
-    });
-    if (!reset) {
-      throw new ToolLoopRecoveryError(
-        "tool_loop_reset_conflict",
-        "The recovered assistant draft could not be reset."
-      );
-    }
-    tokenBuffer.resetLocal();
+    let previousToolResults: readonly ToolLoopSettledCall<ToolExecutionResult>[] = [];
+    if (!correctedNoToolRound) {
+      await tokenBuffer.flush();
+      const reset = await deps.repository.resetToolLoopAssistantDraft({
+        roundIndex: run.checkpoint.roundIndex,
+        runId: run.id,
+        userId: run.userId
+      });
+      if (!reset) {
+        throw new ToolLoopRecoveryError(
+          "tool_loop_reset_conflict",
+          "The recovered assistant draft could not be reset."
+        );
+      }
+      tokenBuffer.resetLocal();
 
-    const previousToolResults = await executePersistedToolBatch(currentCalls, context, signal);
-    await appendToolResults(previousToolResults);
-    await persistCumulativeUsage();
-    const advanced = await deps.repository.advanceToolLoopCallBatch({
-      roundIndex: run.checkpoint.roundIndex,
-      runId: run.id,
-      userId: run.userId
-    });
-    if (advanced === "cancelled") throw new ToolLoopRecoveryStopped();
-    if (advanced !== "advanced") {
-      throw new ToolLoopRecoveryError(
-        "tool_loop_checkpoint_conflict",
-        "The recovered tool batch could not advance."
-      );
+      previousToolResults = await executePersistedToolBatch(currentCalls, context, signal);
+      await appendToolResults(previousToolResults);
+      await persistCumulativeUsage();
+      const advanced = await deps.repository.advanceToolLoopCallBatch({
+        roundIndex: run.checkpoint.roundIndex,
+        runId: run.id,
+        userId: run.userId
+      });
+      if (advanced === "cancelled") throw new ToolLoopRecoveryStopped();
+      if (advanced !== "advanced") {
+        throw new ToolLoopRecoveryError(
+          "tool_loop_checkpoint_conflict",
+          "The recovered tool batch could not advance."
+        );
+      }
+      currentProviderResponseId = null;
     }
-    currentProviderResponseId = null;
 
     const outcome = await runProviderToolLoop({
       deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
@@ -3304,6 +3346,9 @@ async function recoverCheckpointedToolLoop(
       onProviderResult: async ({ result }) => {
         await publishProviderResponseId(result.providerResponseId);
       },
+      onRequiredToolCorrection: async ({ continuation: nextContinuation, round }) => {
+        await persistRequiredToolCorrection(nextContinuation, round);
+      },
       onSignal: async (signal) => {
         if (signal.type === "text_delta") {
           if (recoveredKnowledgeEnabled) return;
@@ -3356,9 +3401,9 @@ async function recoverCheckpointedToolLoop(
         previousToolResults,
         progress: {
           providerRounds: run.checkpoint.roundIndex,
-          toolCalls: run.calls.filter((call) => call.roundIndex > 0).length +
-            (run.checkpoint.phase === "provider_running" ? currentCalls.length : 0),
-          toolRounds: run.checkpoint.roundIndex
+          toolCalls: [...persistedCalls.values()].filter(call => call.roundIndex > 0).length,
+          toolRounds: new Set([...persistedCalls.values()].filter(call => call.roundIndex > 0)
+            .map(call => call.roundIndex)).size
         },
         seenCallIds: [...persistedCalls.keys()]
       },
@@ -4249,7 +4294,7 @@ async function recoverKnowledgeAnswerGrounding(
       : { reasoningEffort: seed.reasoningEffort }),
     request: seed.request,
     routeInstruction: seed.routeInstruction,
-    shouldAbort: () => input.signal.aborted,
+    shouldAbort: (error: unknown) => input.signal.aborted || error instanceof ToolLoopRecoveryStopped,
     transport: seed.transport
   } as const;
   const operationResult = await (async () => {

@@ -636,6 +636,8 @@ function validCapabilities(value: unknown): boolean {
     "defaultReasoningEffort",
     "defaultReasoningMode",
     "forcedToolCalling",
+    "validatedAutoToolCalling",
+    "nativeForcedToolChoice",
     "imageEditing",
     "imageGeneration",
     "imageInputLimits",
@@ -661,6 +663,8 @@ function validCapabilities(value: unknown): boolean {
   for (const key of [
     "backgroundStreaming",
     "forcedToolCalling",
+    "validatedAutoToolCalling",
+    "nativeForcedToolChoice",
     "imageEditing",
     "imageGeneration",
     "nativeBackground",
@@ -1167,6 +1171,27 @@ export function createPrismaRunToolLoopOperations(
         let next = checkpoint;
         if (run.toolLoopState !== null) {
           const current = parseToolLoopCheckpoint(run.toolLoopState);
+          if (input.requiredToolCorrectionOfRound !== undefined) {
+            // No settled tool batch is fabricated for a no-call response.
+            // Terminal accounting proves a known successful prior response;
+            // the durable marker bounds the correction across executor loss.
+            if (!current || input.requiredToolCorrectionOfRound !== 1 ||
+              input.roundIndex !== 2 || current.phase !== "provider_running" ||
+              current.roundIndex !== 1 ||
+              !current.answerRoundUsage.some(entry => entry.roundIndex === 1 && entry.completeness === "terminal") ||
+              !isRecord(current.providerContinuation) || current.providerContinuation.requiredToolCorrection !== undefined ||
+              !isRecord(input.providerContinuation) || input.providerContinuation.requiredToolCorrection !== true) return "conflict" as const;
+            const correction = toolLoopCheckpoint({
+              answerRoundUsage: current.answerRoundUsage,
+              ...(current.contextCompaction ? { contextCompaction: current.contextCompaction } : {}),
+              phase: "provider_running",
+              providerContinuation: input.providerContinuation,
+              roundIndex: input.roundIndex
+            });
+            if (!correction) return "conflict" as const;
+            await tx.modelRun.update({ data: { providerResponseId: null, toolLoopState: json(correction) }, where: { id: input.runId } });
+            return "started" as const;
+          }
           if (current && sameCheckpoint(current, checkpoint)) return "reused" as const;
           // The round's own compaction may have written summary receipts
           // before this begin; they are kept, never replaced.
@@ -1174,7 +1199,7 @@ export function createPrismaRunToolLoopOperations(
             ? checkpointAdoptingSummaryReceipts(current, checkpoint) : null;
           if (!adopted) return "conflict" as const;
           next = adopted;
-        }
+        } else if (input.requiredToolCorrectionOfRound !== undefined) return "conflict" as const;
         await tx.modelRun.update({
           data: {
             providerResponseId: null,

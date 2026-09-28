@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
+import { resolveProviderToolChoice } from "../../providers/providerToolChoice";
 import type { MemorySettingsResponse } from "../../../contracts/memory";
 import {
   type ResolvedMemoryExecutionTarget,
@@ -40,13 +41,19 @@ function strictSystemTargetAvailable(
 ): boolean {
   const resolved = target(policy, role);
   const model = resolved?.snapshot.model;
+  const requiredMode = model && memoryRoleRequiresForcedToolCall(role)
+    ? resolveProviderToolChoice({ adapterKind: model.adapterKind, modelId: model.upstreamModelId,
+      modelCapabilities: model.capabilities, params: model.defaultParams, toolChoice: "required" }).requirementMode
+    : null;
   return Boolean(
     model &&
     "modelClass" in model &&
     model.modelClass === "answer" &&
     model.capabilities.toolCalling === true &&
     (memoryRoleRequiresForcedToolCall(role)
-      ? model.capabilities.forcedToolCalling === true
+      ? requiredMode === "native"
+        ? model.capabilities.forcedToolCalling === true
+        : model.capabilities.validatedAutoToolCalling === true
       : model.capabilities.structuredOutput === true)
   );
 }

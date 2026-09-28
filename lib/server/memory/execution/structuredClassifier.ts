@@ -9,6 +9,7 @@ import type {
   ProviderStructuredOutputRequest
 } from "../../providers/structuredOutput";
 import { StructuredOutputDecodeError, supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
+import { resolveProviderToolChoice } from "../../providers/providerToolChoice";
 import { memoryRoleRequiresForcedToolCall } from "./roles";
 import {
   memoryExecutionNow,
@@ -293,11 +294,17 @@ export async function probeMemoryStructuredOutputAuthority(input: Readonly<{
         versions: input.versions
       });
       const model = resolved.target.snapshot.model;
+      const requiredMode = memoryRoleRequiresForcedToolCall(input.role)
+        ? resolveProviderToolChoice({ adapterKind: model.adapterKind, modelId: model.upstreamModelId,
+          modelCapabilities: model.capabilities, params: model.defaultParams, toolChoice: "required" }).requirementMode
+        : null;
       if (
         model.adapterKind === "fake" ||
         model.modelClass !== "answer" ||
         (memoryRoleRequiresForcedToolCall(input.role)
-          ? model.capabilities.forcedToolCalling !== true
+          ? requiredMode === "native"
+            ? model.capabilities.forcedToolCalling !== true
+            : model.capabilities.validatedAutoToolCalling !== true
           : model.capabilities.structuredOutput !== true ||
             !supportsStructuredOutputAdapter(model.adapterKind))
       ) {
