@@ -36,6 +36,7 @@ const adminSections = [
   { id: "announcements", label: "Announcements" },
   { id: "mcp", label: "MCP servers" },
   { id: "skills", label: "Skills" },
+  { id: "assistants", label: "Assistants" },
   { id: "workspace", label: "Workspace" },
   { id: "email", label: "Email" },
   { id: "usage", label: "Usage" }

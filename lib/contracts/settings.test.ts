@@ -28,6 +28,19 @@ function validResponse(): UpdateSettingsResponse {
 }
 
 describe("settings wire contract", () => {
+  it("reports the default Assistant by id only while available", () => {
+    const response = validResponse();
+    expect(decodeUpdateSettingsResponse(response)?.settings)
+      .toMatchObject({ defaultAssistantId: null, defaultAssistantUnavailable: false });
+    expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, defaultAssistantId: "assistant-1" } })?.settings)
+      .toMatchObject({ defaultAssistantId: "assistant-1", defaultAssistantUnavailable: false });
+    expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, defaultAssistantUnavailable: true } })?.settings)
+      .toMatchObject({ defaultAssistantId: null, defaultAssistantUnavailable: true });
+    expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, defaultAssistantId: "assistant-1",
+      defaultAssistantUnavailable: true } })).toBeNull();
+    expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, defaultAssistantId: 7 } })).toBeNull();
+  });
+
   it("defaults Skills to Auto and accepts only explicit Auto or Off", () => {
     const response = validResponse();
     expect(decodeUpdateSettingsResponse(response)?.settings.defaultSkillsMode).toBe("auto");

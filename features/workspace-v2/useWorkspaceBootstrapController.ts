@@ -35,12 +35,12 @@ type WorkspaceState = ReturnType<typeof useWorkspaceStore.getState>;
 
 export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapshot): string {
   return JSON.stringify({
+    assistant: state.assistant?.state === "bound" ? state.assistant.id : state.assistant?.state ?? null,
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
     knowledgePlanSource: state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,
-    selectedAssistantId: state.selectedAssistant?.id ?? null,
     selectedKnowledgeBaseIds: state.selectedKnowledgeBaseIds,
     selectedModelId: state.selectedModelId,
     selectedProvider: state.selectedProvider,

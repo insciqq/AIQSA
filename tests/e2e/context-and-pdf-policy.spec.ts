@@ -23,6 +23,7 @@ for (const viewport of [
     model.defaultParams = { ...model.defaultParams, maxTokens: 1024, maxOutputTokens: 1024 };
     const timestamp = "2026-09-12T00:00:00.000Z";
     const chat: ChatDetailWire = {
+      assistant: null,
       id: "context-fixture", title: "Context estimate", createdAt: timestamp, updatedAt: timestamp,
       activeLeafMessageId: "context-answer", defaultModelId: model.modelId, defaultProvider: model.provider,
       folderId: null, pinned: false, messageCount: 1, usageStats: null,

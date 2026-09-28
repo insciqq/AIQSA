@@ -17,7 +17,7 @@ describe("chat title metadata reconciliation", () => {
     vi.useFakeTimers();
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     useWorkspaceStore.setState({ ...initialWorkspaceSnapshot, activeChatId: "another-chat", chats: [chat],
-      navigationChats: [{ activeRun: true, folderId: null, id: chat.id, title: chat.title, updatedAt: chat.updatedAt }] });
+      navigationChats: [{ activeRun: true, assistant: null, folderId: null, id: chat.id, title: chat.title, updatedAt: chat.updatedAt }] });
   });
   afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); useWorkspaceStore.setState(initialWorkspaceSnapshot); });
 

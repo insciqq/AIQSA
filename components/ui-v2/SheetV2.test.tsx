@@ -73,4 +73,26 @@ describe("UiV2Sheet", () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
   });
+
+  it("goes full screen on short phone viewports only when the consumer opts in", async () => {
+    const view = render(
+      <UiV2Sheet onClose={vi.fn()} open testId="sheet" title="Details" width="wide">
+        <p>Body</p>
+      </UiV2Sheet>
+    );
+    const ordinary = await screen.findByRole("dialog", { name: "Details" });
+    expect(ordinary).not.toHaveAttribute("data-phone-full-screen");
+    expect(ordinary.className).not.toContain("max-height:32rem");
+    expect(ordinary.className).toContain("sm:w-[37.5rem]");
+
+    view.rerender(
+      <UiV2Sheet onClose={vi.fn()} open phoneFullScreen testId="sheet" title="Details" width="wide">
+        <p>Body</p>
+      </UiV2Sheet>
+    );
+    const fullScreen = await screen.findByRole("dialog", { name: "Details" });
+    expect(fullScreen).toHaveAttribute("data-phone-full-screen", "true");
+    expect(fullScreen.className).toContain("[@media(max-height:32rem)]:!w-full");
+    expect(fullScreen.className).toContain("sm:w-[37.5rem]");
+  });
 });

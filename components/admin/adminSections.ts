@@ -1,6 +1,7 @@
 import {
   BarChart3,
   BookOpenText,
+  Bot,
   Boxes,
   Home,
   Layers,
@@ -17,6 +18,7 @@ import {
 
 export type AdminSectionId =
   | "announcements"
+  | "assistants"
   | "access-rules"
   | "email"
   | "groups"
@@ -60,6 +62,7 @@ export const adminSections = [
   { Icon: Megaphone, group: "people", id: "announcements", label: "Announcements" },
   { Icon: Wrench, group: "platform", id: "mcp", label: "MCP servers" },
   { Icon: BookOpenText, group: "platform", id: "skills", label: "Skills" },
+  { Icon: Bot, group: "platform", id: "assistants", label: "Assistants" },
   { Icon: SquareTerminal, group: "platform", id: "workspace", label: "Workspace" },
   { Icon: Mail, group: "platform", id: "email", label: "Email" },
   { Icon: BarChart3, group: "platform", id: "usage", label: "Usage" }

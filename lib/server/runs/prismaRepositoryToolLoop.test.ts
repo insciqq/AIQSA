@@ -469,6 +469,24 @@ describe("provider dispatch recovery request loading", () => {
       .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
   });
 
+  it("accepts standard and Assistant baseline evidence only", async () => {
+    let accepted: unknown = normalizedRequest;
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    for (const source of ["standard_chat", "assistant_chat"]) {
+      accepted = { ...normalizedRequest, prompt: { ...normalizedRequest.prompt,
+        baseline: { source, timeZone: "Europe/Berlin", timeZoneSource: "client" } } };
+      await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+        .resolves.toEqual(accepted);
+    }
+    accepted = { ...normalizedRequest, prompt: { ...normalizedRequest.prompt,
+      baseline: { source: "client", timeZone: "UTC", timeZoneSource: "client" } } };
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+      .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
   it("restores legacy pinned arrays and frozen v2 catalogs without consulting the current library", async () => {
     const reference = { skillId: "skill", revisionId: "revision", name: "review", description: "Review text", fileCount: 1 };
     const { manifest } = freezeSkillManifest({ mode: "auto", pinned: [], available: [reference], toolsSupported: true });

@@ -147,6 +147,7 @@ import { resolveProjectAccess } from "../projects/access";
 import { acceptWorkspaceBrowserSequence, bindWorkspaceSecrets, lockWorkspaceSecretOwner } from "../workspace/secrets/store";
 import { notifyProjectEvent } from "../projects/events";
 import {
+  applyAcceptedChatAssistant,
   assertAssistantRunProvenance,
   assertProjectAssistantRunProvenance,
   assertCurrentSkillRunBindings,
@@ -948,7 +949,10 @@ export async function admitProjectRunWithClient(
             projectId: project.projectId,
             title: "New Chat",
             userId: null,
-            workspaceEnabled: input.workspaceEnabled === true
+            workspaceEnabled: input.workspaceEnabled === true,
+            // A first message with an Assistant, the Project's default
+            // included, creates the chat bound.
+            ...(input.chatAssistant?.bind ? { assistantId: input.chatAssistant.assistantId } : {})
           }
         });
         await tx.projectAuditEvent.create({
@@ -979,6 +983,7 @@ export async function admitProjectRunWithClient(
       `);
       const lockedChat = lockedChats[0];
       if (!lockedChat || lockedChat.archived) throw new ActiveLeafConflictError();
+      if (input.chatAssistant) await applyAcceptedChatAssistant(tx, input.chatId, input.chatAssistant);
       const workspaceFollowup = await prepareWorkspaceFollowupAdmission(tx, input, false);
 
       let assistantMessageId: string;
@@ -1241,6 +1246,17 @@ export async function admitPreparingRunWithClient(
       }
       if (input.normalizedRequest.instructionPreset) await assertInstructionPresetSelection(
         tx, input.userId, input.normalizedRequest.instructionPreset);
+      // The definition is locked before the chat, in the order Assistant
+      // deletion uses (definition, then its bound chats), so a send racing a
+      // deletion waits instead of deadlocking; a remaining serialization
+      // failure retries and then ends as the neutral conflict.
+      if (input.assistant) {
+        await assertAssistantRunProvenance(tx, {
+          assistantId: input.assistant.assistantId,
+          definitionVersion: input.assistant.definitionVersion,
+          userId: input.userId
+        });
+      }
       const admissionNow = new Date();
       if (input.admissionKind === "NORMAL_SEND" && input.personalChat) {
         const defaults = await loadChatCreationDefaults(tx, input.userId);
@@ -1265,7 +1281,9 @@ export async function admitPreparingRunWithClient(
                 : input.personalChat.memoryMode,
               title: "New Chat",
               userId: input.userId,
-              workspaceEnabled: input.workspaceEnabled === true
+              workspaceEnabled: input.workspaceEnabled === true,
+              // A first message with an Assistant creates the chat bound.
+              ...(input.chatAssistant?.bind ? { assistantId: input.chatAssistant.assistantId } : {})
             }
           });
         } catch (error) {
@@ -1290,15 +1308,8 @@ export async function admitPreparingRunWithClient(
       if (!lockedChat || lockedChat.archived) {
         throw new ActiveLeafConflictError();
       }
+      if (input.chatAssistant) await applyAcceptedChatAssistant(tx, input.chatId, input.chatAssistant);
       const workspaceFollowup = await prepareWorkspaceFollowupAdmission(tx, input, lockedChat.memoryMode !== "TEMPORARY");
-
-      if (input.assistant) {
-        await assertAssistantRunProvenance(tx, {
-          assistantId: input.assistant.assistantId,
-          definitionVersion: input.assistant.definitionVersion,
-          userId: input.userId
-        });
-      }
 
       let assistantMessageId: string;
       let admittedSourceSnapshot: MemorySourceSnapshot;

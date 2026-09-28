@@ -459,10 +459,21 @@ export function contextCompactionCopyV2(
   }
 }
 
+/**
+ * The announcer's input: a run projection with, when the caller knows it, the
+ * id of the tail answer it belongs to. Without it the announcer cannot tell an
+ * older settled answer returning to the tail from the followed one settling.
+ */
+export type AnnouncedRunPresentationV2 = RunPresentationV2 & Readonly<{ answerId?: string }>;
+
 /** What the run announcer remembers about the one answer it follows. */
 export type RunAnnouncerMemoryV2 = Readonly<{
   chatId: string;
   runId: string | null;
+  /** The observed tail answer, when the caller names it. */
+  answerId: string | null;
+  /** The settled tail answer a followed run started after, when named. */
+  priorAnswerId: string | null;
   /** Settled when first observed: history is never announced. */
   historical: boolean;
   started: boolean;
@@ -485,6 +496,10 @@ export type RunAnnouncementStepV2 = Readonly<{
   terminal: string | null;
   /** True when `terminal` is first observed for this run. */
   terminalFirst: boolean;
+  /** The followed answer left without settling (a refused send rolled back to
+   * no answer or to the earlier one): its spoken phase and pending speech are
+   * stale, and nothing replaces them. */
+  withdrawn: boolean;
 }>;
 
 const RUN_ANNOUNCEMENT_WORKING_V2 = "Working on the answer…";
@@ -514,22 +529,31 @@ function connectionLostAnnouncement(presentation: RunPresentationV2): string {
  * most once; the terminal sentence with its reason once. A compaction
  * settlement after the terminal sentence folds into it. A run already settled
  * when first observed (chat switch, history load) stays silent; an answer
- * without a run id continues the followed one only after it had started.
+ * without a run id continues the followed one only after it had started. A
+ * started answer that leaves the tail unsettled (an answer tail is never idle,
+ * or the settled answer it started after is the tail again) withdraws its
+ * phase silently: the refusal that removed it speaks for itself, and the next
+ * answer is a new run.
  */
 export function stepRunAnnouncementV2(
   previous: RunAnnouncerMemoryV2 | null,
   chatId: string,
-  presentation: RunPresentationV2
+  presentation: AnnouncedRunPresentationV2
 ): RunAnnouncementStepV2 {
   const chatChanged = !previous || previous.chatId !== chatId;
   const compaction = presentation.compaction;
   const settled = settledRunPresentationV2(presentation);
   const previousSettled = Boolean(previous && (previous.historical || previous.terminal !== null));
+  const answerId = presentation.answerId ?? null;
+  // An answer settled in place keeps its id, so the prior answer only returns
+  // under an id the followed answer no longer has.
+  const withdrawn = Boolean(!chatChanged && previous?.started && !previousSettled && (presentation.kind === "idle" ||
+    (settled && answerId !== null && answerId === previous.priorAnswerId && answerId !== previous.answerId)));
   // A settled run never becomes live again; an unsettled answer adopts its
   // durable run id without becoming a new run.
   // Two missing run ids are no evidence of one answer: an empty or loading
   // chat followed by a settled tail without a run id is history.
-  const sameRun = !chatChanged && !(previousSettled && !settled) && (
+  const sameRun = !chatChanged && !withdrawn && !(previousSettled && !settled) && (
     (previous.runId === presentation.runId && (presentation.runId !== null || previous.started)) ||
     (previous.runId === null && previous.started && !previousSettled));
   const failures = presentation.compactionFailures ?? [];
@@ -539,37 +563,46 @@ export function stepRunAnnouncementV2(
       ...failures.map((status) => status.cycle)
     );
     const base = {
+      answerId,
       chatId,
       compactionStarted: Boolean(compaction) || failures.length > 0,
       compactionSucceeded: compaction?.state === "complete",
       connectionLost: false,
       historical: settled,
+      priorAnswerId: null,
       runId: presentation.runId,
       settledCycle,
       started: false,
       terminal: settled ? terminalAnnouncement(presentation) : null
     };
     if (settled || presentation.kind === "idle") {
-      return { chatChanged, memory: base, parts: [], terminal: null, terminalFirst: false };
+      return { chatChanged, memory: base, parts: [], terminal: null, terminalFirst: false, withdrawn };
     }
     const lost = presentation.kind === "connection_lost";
     const compacting = !lost && compaction?.state === "running";
     return {
       chatChanged,
-      memory: { ...base, connectionLost: lost, started: true },
+      memory: {
+        ...base,
+        connectionLost: lost,
+        priorAnswerId: !chatChanged && previousSettled ? previous.answerId : null,
+        started: true
+      },
       parts: [lost ? connectionLostAnnouncement(presentation)
         : compacting ? contextCompactionCopyV2(compaction).label : RUN_ANNOUNCEMENT_WORKING_V2],
       terminal: null,
-      terminalFirst: false
+      terminalFirst: false,
+      withdrawn: false
     };
   }
 
   const memory: { -readonly [Key in keyof RunAnnouncerMemoryV2]: RunAnnouncerMemoryV2[Key] } = {
     ...previous,
+    answerId,
     runId: presentation.runId
   };
   if (memory.historical) {
-    return { chatChanged: false, memory, parts: [], terminal: null, terminalFirst: false };
+    return { chatChanged: false, memory, parts: [], terminal: null, terminalFirst: false, withdrawn: false };
   }
   const parts: string[] = [];
   if (!settled && presentation.kind !== "idle") {
@@ -602,14 +635,15 @@ export function stepRunAnnouncementV2(
   }
   if (settled && memory.terminal === null) {
     memory.terminal = terminalAnnouncement(presentation);
-    return { chatChanged: false, memory, parts, terminal: memory.terminal, terminalFirst: true };
+    return { chatChanged: false, memory, parts, terminal: memory.terminal, terminalFirst: true, withdrawn: false };
   }
   return {
     chatChanged: false,
     memory,
     parts,
     terminal: memory.terminal !== null && parts.length > 0 ? memory.terminal : null,
-    terminalFirst: false
+    terminalFirst: false,
+    withdrawn: false
   };
 }
 

@@ -1,7 +1,55 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import { ChatDefaultsPanelV2 } from "./ChatDefaultsPanelV2";
+import type { AssistantSummary } from "@/lib/contracts/assistants";
+import type { ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
+
+type DefaultAssistantView = NonNullable<NonNullable<ShellComposerView["chatDefaults"]>["assistant"]>;
+
+function assistantSummary(id: string, name: string, overrides: Partial<AssistantSummary> = {}): AssistantSummary {
+  return {
+    archived: false,
+    audience: { everyone: false, groupNames: [] },
+    availability: { ok: true },
+    avatar: { accents: [0], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated", paletteId: "ocean", recipeVersion: 1, rotations: [0, 1] },
+    category: null,
+    description: "",
+    featured: false,
+    featuredOrder: null,
+    fingerprint: { knowledgeLabel: null, knowledgeResourceCount: 0, mcpServerCount: 0, modelLabel: null, reasoningEffort: null, searchOptionCount: 0 },
+    id,
+    name,
+    owned: true,
+    ownerDisplayName: "Owner",
+    pinned: false,
+    published: false,
+    rowAvailability: {},
+    scope: { kind: "owner" },
+    skillLinkCount: 0,
+    starterPrompts: [],
+    updatedAt: "2026-09-28T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function renderDefaults(assistant: Partial<DefaultAssistantView>) {
+  const view: DefaultAssistantView = {
+    assistantId: null,
+    assistants: [],
+    assistantsState: "ready",
+    loadAssistants: vi.fn(),
+    set: vi.fn(),
+    unavailable: false,
+    ...assistant
+  };
+  render(<ChatDefaultsPanelV2 onNavigate={vi.fn()} composer={{
+    catalog: composerGalleryConfig.catalog, knowledge: { bases: [] },
+    chatDefaults: { assistant: view, knowledgePlan: null, mcpMode: "auto", skillsMode: "auto",
+      searchPlan: { mode: "all_selected", optionIds: [] }, setKnowledgePlan: vi.fn(), setSearchPlan: vi.fn(), setMcpMode: vi.fn() }
+  }} />);
+  return view;
+}
 
 describe("Studio Chat defaults", () => {
   it("keeps the model row and explains unavailable defaults while the catalog is absent", () => {
@@ -44,5 +92,55 @@ describe("Studio Chat defaults", () => {
     expect(onNavigate.mock.calls).toEqual([["mcp"], ["skills"]]);
     expect(setMcpMode).not.toHaveBeenCalled();
     expect(setSkillsMode).not.toHaveBeenCalled();
+  });
+
+  it("offers None and the Assistants available to the user, pinned first, and saves an explicit choice", () => {
+    const view = renderDefaults({ assistants: [
+      assistantSummary("zeta", "Zeta"),
+      assistantSummary("alpha", "Alpha"),
+      assistantSummary("pinned", "Pinned helper", { pinned: true }),
+      assistantSummary("archived", "Archived", { archived: true }),
+      assistantSummary("blocked", "Blocked", { availability: { ok: false, reason: "model_access" } })
+    ] });
+    const row = screen.getByTestId("settings-default-assistant");
+    expect(row).toHaveTextContent("Assistant");
+    expect(row).toHaveTextContent("Starts every new personal chat. Projects use their own.");
+    const select = screen.getByRole("button", { name: "Default Assistant" });
+    expect(select).toHaveTextContent("None");
+    fireEvent.click(select);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["None", "Pinned helper", "Alpha", "Zeta"]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Alpha" }));
+    expect(view.set).toHaveBeenCalledWith("alpha");
+    expect(view.loadAssistants).not.toHaveBeenCalled();
+  });
+
+  it("shows the saved default, clears it with None, and loads the list the first time it is missing", () => {
+    const view = renderDefaults({ assistantId: "alpha", assistants: [assistantSummary("alpha", "Alpha")] });
+    const select = screen.getByRole("button", { name: "Default Assistant" });
+    expect(select).toHaveTextContent("Alpha");
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole("menuitem", { name: "None" }));
+    expect(view.set).toHaveBeenCalledWith(null);
+    cleanup();
+
+    const loading = renderDefaults({ assistantId: "alpha", assistants: null, assistantsState: "loading" });
+    expect(loading.loadAssistants).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Default Assistant" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Default Assistant" })).toHaveTextContent("Loading…");
+    cleanup();
+
+    const failed = renderDefaults({ assistants: null, assistantsState: "error" });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(failed.loadAssistants).toHaveBeenCalledTimes(2);
+  });
+
+  it("names a saved default that is no longer available and clears it only on request", () => {
+    const view = renderDefaults({ assistantId: null, assistants: [assistantSummary("alpha", "Alpha")], unavailable: true });
+    const row = screen.getByTestId("settings-default-assistant");
+    expect(within(row).getByRole("status")).toHaveTextContent("No longer available");
+    expect(within(row).queryByRole("button", { name: "Default Assistant" })).toBeNull();
+    expect(view.set).not.toHaveBeenCalled();
+    fireEvent.click(within(row).getByRole("button", { name: "Clear" }));
+    expect(view.set).toHaveBeenCalledWith(null);
   });
 });

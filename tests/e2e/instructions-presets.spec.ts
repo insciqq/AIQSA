@@ -27,6 +27,8 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
     await prisma.$transaction(tx => provisionActiveUser(tx, { userId }));
     await prisma.accessGrant.create({ data: { userId, providerModelId: providerTemplateIds.fakeModel } });
     await prisma.userMemorySettings.update({ where: { userId }, data: { useMemoryFacts: false, referenceChatHistory: false, learnAutomatically: false } });
+    // The Fake QSA window cannot hold the Workspace context a Workspace default adds to the first message.
+    await prisma.userSettings.update({ where: { userId }, data: { defaultWorkspaceEnabled: false } });
     let pageErrors = 0; page.on("pageerror", () => pageErrors++);
     try {
       await page.setViewportSize(viewport);
@@ -91,34 +93,43 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await runAccountMenuAction(page, "Assistants");
       const library = page.getByTestId("library-v2");
       await library.getByRole("button", { name: "New assistant", exact: true }).first().click();
+      await page.getByRole("dialog", { name: "New assistant", exact: true }).getByRole("button", { name: "Continue", exact: true }).click();
       const assistant = library.getByTestId("assistant-editor");
       await assistant.getByLabel("Name Required", { exact: true }).fill("Reminder assistant");
+      await assistant.getByRole("button", { name: "Model", exact: true }).click();
       await assistant.getByLabel("Model", { exact: true }).selectOption(model.modelId);
-      await assistant.getByLabel("Assistant instructions").fill("Use the Assistant style.");
-      await assistant.getByText("Response reminder (optional)", { exact: true }).click();
+      await assistant.getByRole("textbox", { name: "Instructions", exact: true }).fill("Use the Assistant style.");
+      await assistant.getByText("Response reminder (optional)").click();
       await assistant.getByLabel("Response reminder", { exact: true }).fill("End with the Assistant next step.");
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: testInfo.outputPath("assistant-reminder.png") });
-      await assistant.getByText("Starter prompts", { exact: true }).click();
       await assistant.getByRole("button", { name: "Add starter" }).click();
-      await assistant.getByLabel("Starter prompt 1", { exact: true }).fill("Say hello");
+      await assistant.getByRole("textbox", { name: "Conversation starter 1", exact: true }).fill("Say hello");
       await assistant.getByTestId("assistant-editor-save").click();
-      await expect(assistant.getByRole("status")).toContainText("Assistant created");
+      await expect(assistant.getByTestId("assistant-library-notice")).toContainText("Assistant created");
       const definition = await prisma.assistantDefinition.findFirstOrThrow({ where: { ownerUserId: userId } });
       const copied = await page.request.post(`/api/me/assistants/${definition.id}/duplicate`);
       expect(copied.status()).toBe(201);
       expect(await copied.json()).toMatchObject({ assistant: { content: { responseReminder: "End with the Assistant next step." } } });
-      await assistant.getByRole("button", { name: "Use in chat", exact: true }).click();
+      // The editor has no "Use in chat"; the saved Assistant starts an ordinary chat from its card.
+      await library.getByRole("button", { name: "Back to Assistants", exact: true }).click();
+      await library.getByRole("button", { name: "Start chat with Reminder assistant", exact: true }).click();
       await page.getByTestId("assistant-starter-prompts").getByRole("button", { name: "Say hello" }).click();
       await expect(assistantContentWithText(page, "Fake answer: Say hello")).toBeVisible({ timeout: 30_000 });
       await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
       const run = await prisma.modelRun.findFirstOrThrow({ where: { userId }, orderBy: { createdAt: "desc" } });
+      // An Assistant run starts with the date line, then the Assistant's own instructions;
+      // nothing of the active preset reaches it.
       expect(run.normalizedRequest).toMatchObject({ prompt: {
-        system: expect.stringMatching(/^Use the Assistant style\./u),
+        system: expect.stringMatching(/^Today is [^\n]+, local time is [^\n]+\.\n\nUse the Assistant style\./u),
         responseReminder: "End with the Assistant next step."
       } });
+      const system = (run.normalizedRequest as unknown as { prompt: { system: string } }).prompt.system;
+      expect(system).not.toContain("# Writing instructions");
+      expect(system).not.toContain("Кратко🙂");
       expect(run.normalizedRequest).not.toHaveProperty("instructionPreset");
       expect(JSON.stringify(run.normalizedRequest)).not.toContain(longText);
+      expect(JSON.stringify(run.normalizedRequest)).not.toContain(reminderText);
       expect(await prisma.message.count({ where: { chatId: run.chatId } })).toBe(2);
       await page.reload(); await openInstructions(page);
 

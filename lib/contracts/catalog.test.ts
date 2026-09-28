@@ -145,6 +145,22 @@ describe("catalog wire contract", () => {
     expect(decodeCatalogResponse(response)).toBeNull();
   });
 
+  it("names the default Assistant only while it is available", () => {
+    expect(decodeCatalogResponse(validResponse())?.defaults).toMatchObject({ assistantId: null, assistantUnavailable: false });
+    const response = validResponse() as unknown as { catalog: { defaults: Record<string, unknown> } };
+    response.catalog.defaults.assistantId = "assistant-1";
+    response.catalog.defaults.assistantUnavailable = false;
+    expect(decodeCatalogResponse(response)?.defaults).toMatchObject({ assistantId: "assistant-1", assistantUnavailable: false });
+    response.catalog.defaults.assistantId = null;
+    response.catalog.defaults.assistantUnavailable = true;
+    expect(decodeCatalogResponse(response)?.defaults).toMatchObject({ assistantId: null, assistantUnavailable: true });
+    for (const [assistantId, assistantUnavailable] of [["assistant-1", true], ["", false], [7, false], [null, "yes"]]) {
+      response.catalog.defaults.assistantId = assistantId;
+      response.catalog.defaults.assistantUnavailable = assistantUnavailable;
+      expect(decodeCatalogResponse(response)).toBeNull();
+    }
+  });
+
   it("represents an unknown context window as null", () => {
     const response = validResponse();
     response.catalog.models[0]!.contextWindow = null;

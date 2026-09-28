@@ -331,4 +331,63 @@ describe("Prisma-backed settings repository", () => {
       ).rejects.toThrow();
     });
   });
+
+  it("saves only an available default Assistant and keeps a saved one when it becomes unavailable", async () => {
+    await withSettingsUser(async ({ fakeModel, userId, validationModels }) => {
+      await withSettingsUser(async ({ userId: ownerId }) => {
+        const repository = createTestSettingsRepository(validationModels);
+        const define = (ownerUserId: string, name: string) => prisma.assistantDefinition.create({
+          data: {
+            avatar: {
+              accents: [0, 4], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated",
+              paletteId: "ocean", recipeVersion: 1, rotations: [0, 2]
+            },
+            name,
+            ownerUserId,
+            providerModelId: fakeModel.id,
+            searchPlan: { mode: "off" },
+            systemPrompt: "Answer directly."
+          }
+        });
+        const own = await define(userId, "Own default");
+        const shared = await define(ownerId, "Shared default");
+        const foreign = await define(ownerId, "Foreign default");
+        try {
+          await prisma.assistantPublication.create({
+            data: { assistantId: shared.id, publishedByUserId: ownerId, scope: "installation" }
+          });
+          const stored = async () => (await prisma.userSettings.findUniqueOrThrow({
+            select: { defaultAssistantId: true }, where: { userId }
+          })).defaultAssistantId;
+
+          for (const assistantId of [foreign.id, randomUUID()]) {
+            await expect(repository.updateSettings(userId, { defaultAssistantId: assistantId }))
+              .resolves.toEqual({ kind: "assistant_not_available" });
+          }
+          expect(await stored()).toBeNull();
+          await expect(repository.updateSettings(userId, { defaultAssistantId: own.id })).resolves.toMatchObject({
+            kind: "updated", settings: { defaultAssistantAvailable: true, defaultAssistantId: own.id }
+          });
+          await expect(repository.updateSettings(userId, { defaultAssistantId: shared.id })).resolves.toMatchObject({
+            kind: "updated", settings: { defaultAssistantAvailable: true, defaultAssistantId: shared.id }
+          });
+
+          // Revoking the publication is reported by readers, never applied as a silent clear.
+          await prisma.assistantPublication.deleteMany({ where: { assistantId: shared.id } });
+          await expect(repository.updateSettings(userId, { sendWithEnter: false })).resolves.toMatchObject({
+            kind: "updated", settings: { defaultAssistantId: shared.id }
+          });
+          expect(await stored()).toBe(shared.id);
+          await expect(repository.updateSettings(userId, { defaultAssistantId: null })).resolves.toMatchObject({
+            kind: "updated", settings: { defaultAssistantAvailable: false, defaultAssistantId: null }
+          });
+          expect(await stored()).toBeNull();
+        } finally {
+          await prisma.userSettings.updateMany({ data: { defaultAssistantId: null }, where: { userId } });
+          await prisma.assistantPublication.deleteMany({ where: { assistantId: shared.id } });
+          await prisma.assistantDefinition.deleteMany({ where: { id: { in: [own.id, shared.id, foreign.id] } } });
+        }
+      });
+    });
+  });
 });

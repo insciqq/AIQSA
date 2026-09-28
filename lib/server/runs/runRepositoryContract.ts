@@ -1,7 +1,9 @@
-import type { AssistantIdentity } from "../../contracts/assistants";
+import type { AssistantIdentity, AssistantRunRowProvenance } from "../../contracts/assistants";
+import type { AssistantRowContext, AssistantRowResourceIds } from "../assistants/rowContext";
 import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
 import type { ChatPdfAttachmentAdmission } from "../uploads/chatPdfAdmission";
 import type {
+  ChatAssistantOverridesPatch,
   ChatMessageWire,
   ChatContextStats,
   ChatUsageStats,
@@ -289,6 +291,21 @@ export type AcceptedAssistantRun = {
   assistantId: string;
   definitionVersion: number;
   identity: AssistantIdentity;
+  /** Where each row's value came from; absent in snapshots frozen before rows existed. */
+  rows?: AssistantRunRowProvenance;
+};
+
+/**
+ * An Assistant run's chat binding, in a personal or Project chat. Admission
+ * rechecks that the chat is still bound as prepared, binds it when `bind` is
+ * set (a first message creates the chat bound), and applies the override
+ * change (stored controls follow their model) in the same transaction.
+ */
+export type AcceptedChatAssistant = {
+  assistantId: string;
+  /** The chat had no binding when the run was prepared. */
+  bind: boolean;
+  overridesPatch: ChatAssistantOverridesPatch;
 };
 
 export type AcceptedSkillRun = {
@@ -359,6 +376,7 @@ export type CreateRunInput = {
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
   deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
   assistant?: AcceptedAssistantRun;
+  chatAssistant?: AcceptedChatAssistant;
   chatId: string;
   content: { blocks: unknown[] };
   defaults?: AcceptedRunDefaults;
@@ -396,6 +414,7 @@ export type CreateRegenerationRunInput = {
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
   deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
   assistant?: AcceptedAssistantRun;
+  chatAssistant?: AcceptedChatAssistant;
   chatId: string;
   defaults?: AcceptedRunDefaults;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
@@ -489,6 +508,10 @@ export type PreparingRunRecoveryResult =
 
 export type RunOwnedChatRecord = Readonly<{
   activeLeafMessageId: string | null;
+  /** The chat's Assistant binding (`Chat.assistantId`); personal chats run with it. */
+  assistantId?: string | null;
+  /** Raw `Chat.assistantOverrides`, decoded by admission. */
+  assistantOverrides?: unknown;
   defaultKnowledgePlan?: unknown;
   defaultModelId: string;
   defaultProvider: string;
@@ -624,6 +647,13 @@ export type RunRepository = {
     options?: Readonly<{ recoveryTerminal?: boolean; workspaceClaimToken?: string }>
   ): Promise<boolean>;
   findOwnedChat(chatId: string, userId: string): Promise<RunOwnedChatRecord | null>;
+  /** Chain inputs of a personal Assistant run: the user's Chat defaults and usable resources. */
+  loadAssistantRowContext?(input: Readonly<{
+    ids: AssistantRowResourceIds;
+    userId: string;
+  }>): Promise<AssistantRowContext | null>;
+  /** Chain inputs of a Project chat's Assistant: the Project's defaults and resources only. */
+  loadProjectAssistantRowContext?(input: Readonly<{ projectId: string }>): Promise<AssistantRowContext | null>;
   loadProjectFirstSend?(input: Readonly<{
     chatId: string;
     folderId: string | null;
@@ -661,6 +691,8 @@ export type RunRepository = {
       provider: string | null;
     } | null;
     chat: {
+      assistantId?: string | null;
+      assistantOverrides?: unknown;
       defaultKnowledgePlan?: unknown;
       defaultModelId: string;
       defaultProvider: string;

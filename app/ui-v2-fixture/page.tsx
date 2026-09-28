@@ -54,7 +54,12 @@ async function renderFixture(query: UiV2FixtureQuery) {
       [
         "add",
         "assistant",
+        "assistant-changed",
+        "assistant-fallback",
+        "assistant-fixed",
+        "assistant-fixed-model",
         "assistant-knowledge",
+        "assistant-project-fallback",
         "attachments",
         "capabilities",
         "chips-wide",
@@ -74,6 +79,41 @@ async function renderFixture(query: UiV2FixtureQuery) {
     );
     const { ComposerV2Gallery } = await import("./_fixtures/ComposerV2Gallery");
     return <ComposerV2Gallery state={state} />;
+  }
+  if (query.fixture === "chat-header") {
+    const state = fixtureState(
+      query.state,
+      [
+        "archived-consumer",
+        "archived-owner",
+        "changed",
+        "chosen",
+        "deleted",
+        "empty",
+        "fixed",
+        "menu",
+        "picker",
+        "picker-project",
+        "project-chosen",
+        "project-fallback",
+        "project-menu",
+        "project-unavailable",
+        "unavailable-consumer",
+        "unavailable-owner"
+      ] as const,
+      "chosen"
+    );
+    const { ChatHeaderV2Gallery } = await import("./_fixtures/ChatHeaderV2Gallery");
+    return <ChatHeaderV2Gallery state={state} />;
+  }
+  if (query.fixture === "chat-intro") {
+    const state = fixtureState(
+      query.state,
+      ["identity", "intro", "intro-long", "no-strip", "strip"] as const,
+      "strip"
+    );
+    const { ChatIntroV2Gallery } = await import("./_fixtures/ChatIntroV2Gallery");
+    return <ChatIntroV2Gallery state={state} />;
   }
   if (query.fixture === "answer-outputs") {
     const state = fixtureState(
@@ -115,7 +155,40 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "assistants") {
     const state = fixtureState(
       query.state,
-      ["advanced", "dirty", "editor", "empty", "error", "list", "loading"] as const,
+      [
+        "delete-dialog",
+        "delete-loading",
+        "detail-consumer",
+        "detail-instructions",
+        "detail-owner",
+        "dirty",
+        "editor",
+        "editor-conflict",
+        "editor-errors",
+        "editor-new",
+        "editor-setup-open",
+        "editor-skills",
+        "empty",
+        "empty-search",
+        "error",
+        "list",
+        "list-archived",
+        "list-filtered",
+        "loading",
+        "new-sheet",
+        "sharing-admin-everyone",
+        "sharing-dirty-confirm",
+        "sharing-error",
+        "sharing-failure",
+        "sharing-groups",
+        "sharing-listed",
+        "sharing-loading",
+        "sharing-owner-private",
+        "sharing-request-none",
+        "sharing-request-outdated",
+        "sharing-request-pending",
+        "sharing-request-rejected"
+      ] as const,
       "list"
     );
     const { AssistantsV2Gallery } = await import("./_fixtures/AssistantsV2Gallery");

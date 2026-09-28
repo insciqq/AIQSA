@@ -126,7 +126,7 @@ html[data-motion="off"] *::after {
 
 :where(button, summary, [role="button"], [role="menuitem"], [role="menuitemradio"],
   [role="menuitemcheckbox"], [role="tab"], [role="radio"], [role="switch"],
-  [role="treeitem"], [role="option"], .v2-assistant-avatar, .v2-navigation-account-avatar, .v2-monogram) {
+  [role="treeitem"], [role="option"], .v2-navigation-account-avatar, .v2-monogram) {
   user-select: none;
 }
 

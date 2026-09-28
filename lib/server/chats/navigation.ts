@@ -10,6 +10,7 @@ import {
   type ChatNavigationPageWire,
   type ChatNavigationSummaryWire
 } from "../../contracts/chats";
+import { availableAssistantIdentities } from "../assistants/bindingAccess";
 import type { AuthenticatedSession, RequestAuthResolver } from "../auth/requestAuth";
 import { prisma } from "../prisma";
 
@@ -150,6 +151,7 @@ async function page(
     prismaClient.chat.findMany({
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       select: {
+        assistantId: true,
         folderId: true,
         id: true,
         modelRuns: {
@@ -174,11 +176,17 @@ async function page(
   const hasMore = rows.length > input.limit;
   const visible = hasMore ? rows.slice(0, input.limit) : rows;
   const final = visible.at(-1);
+  // One lookup per page; an Assistant the viewer can no longer use shows nothing.
+  const identities = await availableAssistantIdentities(prismaClient, {
+    assistantIds: visible.flatMap((row) => row.assistantId ? [row.assistantId] : []),
+    userId: input.userId
+  });
   return {
     kind: "ok",
     page: {
       chats: visible.map((row) => ({
         activeRun: row.modelRuns.length > 0,
+        assistant: row.assistantId ? identities.get(row.assistantId) ?? null : null,
         folderId: row.folderId,
         id: row.id,
         title: row.title,

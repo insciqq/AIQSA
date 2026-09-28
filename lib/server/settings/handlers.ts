@@ -11,6 +11,7 @@ import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
 import {
   decodeChatDefaultMcpMode,
+  isAssistantReferenceId,
   type ChatDefaultMcpMode
 } from "../../contracts/chatDefaults";
 import {
@@ -18,6 +19,7 @@ import {
   type KnowledgeSelection
 } from "../../contracts/knowledge";
 import {
+  catalogDefaultAssistant,
   resolveChatDefaults,
   resolveCurrentUserCatalogSelection,
   resolveCurrentUserControlValues,
@@ -33,6 +35,8 @@ export type SettingsHandlerData = CatalogSelectionData & {
 };
 
 export type UserSettingsUpdate = Partial<AnswerSoundPreferences & {
+  /** Null clears the default; an id must be available to the user. */
+  defaultAssistantId: string | null;
   defaultControlValues: Record<string, unknown>;
   defaultKnowledgePlan: KnowledgeSelection | null;
   defaultMcpMode: ChatDefaultMcpMode;
@@ -51,6 +55,10 @@ export type SettingsValidationModel = Pick<
 >;
 
 export type UserSettingsUpdateResult =
+  | {
+      /** The default Assistant is missing, foreign or archived; answered like a chat binding. */
+      kind: "assistant_not_available";
+    }
   | {
       kind: "invalid";
       error: "default_model_unavailable" | "default_search_unavailable";
@@ -186,6 +194,7 @@ function buildSettingsUpdate(
   const supportedKeys = new Set([
     "answerSoundEnabled",
     "answerSoundId",
+    "defaultAssistantId",
     "defaultControlValues",
     "defaultKnowledgePlan",
     "defaultMcpMode",
@@ -203,6 +212,13 @@ function buildSettingsUpdate(
 
   const { models } = resolveCurrentUserCatalogSelection(data);
   const update: UserSettingsUpdate = {};
+
+  if ("defaultAssistantId" in body) {
+    if (body.defaultAssistantId !== null && !isAssistantReferenceId(body.defaultAssistantId)) {
+      return { error: "assistant_not_available" };
+    }
+    update.defaultAssistantId = body.defaultAssistantId;
+  }
 
   if ("defaultProviderModelId" in body) {
     if (body.defaultProviderModelId === null) {
@@ -317,9 +333,12 @@ function serializeSettings(
     strategies: selection.entitledStrategies
   });
   const chatDefaults = resolveChatDefaults(settings);
+  const defaultAssistant = catalogDefaultAssistant(settings);
   return {
     answerSoundEnabled: settings.answerSoundEnabled ?? DEFAULT_ANSWER_SOUND.answerSoundEnabled,
     answerSoundId: settings.answerSoundId ?? DEFAULT_ANSWER_SOUND.answerSoundId,
+    defaultAssistantId: defaultAssistant.assistantId,
+    defaultAssistantUnavailable: defaultAssistant.assistantUnavailable,
     defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),
     defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
@@ -356,7 +375,8 @@ export function createUpdateSettingsHandler(deps: SettingsHandlerDeps) {
     }
     const result = buildSettingsUpdate(body, data);
     if (!result.update) {
-      return Response.json({ error: result.error ?? "settings_update_required" }, { status: 400 });
+      const error = result.error ?? "settings_update_required";
+      return Response.json({ error }, { status: error === "assistant_not_available" ? 404 : 400 });
     }
 
     const persistence = await deps.updateSettings(
@@ -364,6 +384,9 @@ export function createUpdateSettingsHandler(deps: SettingsHandlerDeps) {
       result.update,
       result.validationModels ?? []
     );
+    if (persistence.kind === "assistant_not_available") {
+      return Response.json({ error: "assistant_not_available" }, { status: 404 });
+    }
     if (persistence.kind === "invalid") {
       return Response.json({ error: persistence.error }, { status: 400 });
     }
@@ -372,8 +395,16 @@ export function createUpdateSettingsHandler(deps: SettingsHandlerDeps) {
       return Response.json({ error: "settings_not_found" }, { status: 404 });
     }
 
+    // An untouched default keeps the availability read with the settings data.
+    const settings = persistence.settings.defaultAssistantAvailable !== undefined
+      ? persistence.settings
+      : {
+          ...persistence.settings,
+          defaultAssistantAvailable: persistence.settings.defaultAssistantId ===
+            data.settings.defaultAssistantId && data.settings.defaultAssistantAvailable === true
+        };
     return Response.json({
-      settings: serializeSettings(persistence.settings, data)
+      settings: serializeSettings(settings, data)
     });
   };
 }

@@ -145,3 +145,49 @@ describe("stacked modal layers", () => {
     expect(isolation(main)).toEqual({ ariaHidden: "false", inert: true });
   });
 });
+
+function FallbackLayer({ fallback }: { fallback: HTMLElement }) {
+  const { dialogRef, initialFocusRef, onDialogKeyDown, portalReady } = useModalLayerV2({
+    onClose: () => undefined,
+    restoreFocus: () => fallback
+  });
+  return portalReady ? createPortal(<div><section aria-label="Parameters" aria-modal="true"
+    onKeyDown={onDialogKeyDown} ref={dialogRef} role="dialog">
+    <button ref={initialFocusRef}>Close parameters</button>
+  </section></div>, document.body) : null;
+}
+
+describe("a layer with a focus fallback", () => {
+  let opener: HTMLButtonElement;
+  let fallback: HTMLButtonElement;
+  beforeEach(() => {
+    opener = document.createElement("button");
+    fallback = document.createElement("button");
+    document.body.append(opener, fallback);
+  });
+  afterEach(() => {
+    opener.remove();
+    fallback.remove();
+  });
+
+  it("returns focus to its opener while that is still reachable", async () => {
+    opener.focus();
+    render(<FallbackLayer fallback={fallback} />).unmount();
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  const changes: [string, (element: HTMLButtonElement) => void][] = [
+    ["was removed", (element) => element.remove()],
+    ["was disabled", (element) => { element.disabled = true; }],
+    ["was the page itself", () => undefined]
+  ];
+  it.each(changes)("returns focus to the fallback when its opener %s", async (way, change) => {
+    if (way === "was the page itself") (document.activeElement as HTMLElement | null)?.blur();
+    else opener.focus();
+    const { unmount } = render(<FallbackLayer fallback={fallback} />);
+    expect(screen.getByRole("button", { name: "Close parameters" })).toHaveFocus();
+    change(opener);
+    unmount();
+    await waitFor(() => expect(fallback).toHaveFocus());
+  });
+});

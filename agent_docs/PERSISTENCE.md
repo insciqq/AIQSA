@@ -5,13 +5,13 @@ Scope: Durable ownership, migrations, retention, backup, restore, and deletion.
 
 ## Authority And Shape
 
-[`prisma/schema.prisma`](../prisma/schema.prisma), [migrations](../prisma/migrations/), repositories, and stateful tests own exact storage and lifecycle mechanics. PostgreSQL is the coordination authority; private object bytes retain relational ownership/lifecycle references. OpenSearch and guest disks are not backup authorities.
+PostgreSQL is the coordination authority; private object bytes retain relational ownership/lifecycle references. OpenSearch and guest disks are not backup authorities.
 
-Enforce tenant-consistent parents/children in the database wherever representable. Accepted revisions, bindings, generations, and recovery evidence stay immutable and restrictive while referenced. Preferences and drafts grant no entitlement; null, explicit Off, and a concrete choice remain distinct. Subject semantics belong to [Critical invariants](CRITICAL_INVARIANTS.md), [Run contracts](RUN_CONTRACTS.md), and [Memory](MEMORY.md).
+Enforce tenant-consistent parents/children in the database wherever representable. Accepted revisions, bindings, generations, and recovery evidence stay immutable and restrictive while referenced. Null, explicit Off, and a concrete choice remain distinct.
 
 Persist run/tool data only for execution, recovery, side-effect prevention, security, deletion, citations/outputs, retention or accounting. Before dropping storage, remove projections, prove recovery consumers, stop writes, then migrate forward. Retired shapes serve required historical read/recovery only; current admission never writes them.
 
-Personal and Project principals are disjoint. Account deletion removes membership, not shared content; nullable actors and bounded attribution preserve history. Unrecoverable historical authority fails closed before external I/O; terminal records remain readable. Skill publication grants future use; accepted revisions survive unpublication/deletion. Revisions and bundle objects are append-only, including private incomplete imports. Removing a personal saved file preserves admitted chat copies; Project/Temporary attachments never implicitly become personal files.
+Personal and Project principals are disjoint. Account deletion removes membership, not shared content; nullable actors and bounded attribution preserve history. Unrecoverable historical authority fails closed before external I/O; terminal records remain readable. Skill publication grants future use; accepted revisions survive unpublication/deletion. Assistant deletion nulls run/chat references, keeping snapshots. Revisions and bundle objects are append-only, including private incomplete imports. Removing a personal saved file preserves admitted chat copies; Project/Temporary attachments never implicitly become personal files.
 
 The protected `Full access` group's explicit members receive all current/future active provider connections, answer models, and Search sources. Its name/lifecycle are immutable. MCP remains explicitly materialized per server and grants no personal identity or secret authority.
 
@@ -51,7 +51,7 @@ The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains 
 
 ## Retention And Deletion
 
-`npm run prune -- --dry-run` is read-only and precedes any explicitly authorized `--execute`. Never prune active sessions/runs, retrieval-visible evidence without a proven cutoff, or referenced objects. All destructive verification targets only the disposable topology in [Testing](TESTING.md), never the default persistent installation or operator data.
+`npm run prune -- --dry-run` is read-only and precedes any explicitly authorized `--execute`. Never prune active sessions/runs, retrieval-visible evidence without a proven cutoff, or referenced objects.
 
 Deletion first fences future admission/recall/sharing and creates a durable obligation before acknowledgment. Handlers reauthorize the exact aggregate, settle active work, and retry idempotently; administrator-blocked obligations are not abandoned. Object staging locks/rechecks every reference, deletion uses leased per-key jobs, and concurrent attachment linking has one transactional winner. Failures retain value-free retry evidence.
 

@@ -703,6 +703,27 @@ describe("Run lifecycle v2 announcer", () => {
     expect(summary.text()).toBe("");
   });
 
+  it("clears the working sentence of a refused send and speaks the next send again", () => {
+    const idle = presentation({ kind: "idle", runId: null });
+    const announcer = followAnnouncer(idle);
+    announcer.show(activity("Thinking…", { runId: null }), 2_000);
+    expect(announcer.text()).toBe(WORKING);
+    announcer.show(idle, 2_000);
+    expect(announcer.text()).toBe("");
+    announcer.show(activity("Thinking…", { runId: null }), 100);
+    expect(announcer.text()).toBe(WORKING);
+    // The terminal sentence is spoken one window after completion.
+    announcer.show(presentation({ kind: "complete", runId: "run-b" }), 1_200);
+    expect(announcer.spoken).toEqual([WORKING, WORKING, READY]);
+
+    // A refusal while the working sentence still waits in the window drops it.
+    announcer.show(activity("Thinking…", { runId: null }), 100);
+    expect(announcer.text()).toBe(READY);
+    announcer.show(idle, 2_000);
+    expect(announcer.text()).toBe("");
+    expect(announcer.spoken).toEqual([WORKING, WORKING, READY]);
+  });
+
   it("follows an optimistic answer into its durable run id and then a new run", () => {
     const announcer = followAnnouncer(activity("Thinking…", { runId: null }));
     announcer.show(activity("Thinking…"), 2_000);

@@ -8,6 +8,7 @@ import {
 const page = {
   chats: [{
     activeRun: false,
+    assistant: null,
     folderId: null,
     id: "chat-1",
     title: "Notes",

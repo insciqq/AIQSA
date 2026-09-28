@@ -218,6 +218,7 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     ...(chat.hasContinuationSource ? { hasContinuationSource: true } : {}),
     ...(chat.titlePending ? { titlePending: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
+    ...(chat.assistantId !== undefined ? { assistantId: chat.assistantId } : {}),
     createdAt: chat.createdAt,
     defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
     ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),

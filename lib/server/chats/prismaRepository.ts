@@ -50,6 +50,10 @@ import {
   CHAT_HISTORY_PAGE_SIZE,
   THREAD_SEARCH_SOURCE_MAX_ITEMS,
   boundedChatBranchPreview,
+  decodeStoredChatAssistantOverrides,
+  storedChatAssistantOverrides,
+  type ChatAssistantOverrides,
+  type ChatAssistantOverridesPatch,
   type ChatContextStats
 } from "../../contracts/chats";
 import {
@@ -71,8 +75,12 @@ import {
   type MemoryRunPresentationStatus
 } from "../memory/retrieval/runProjection";
 import { prisma } from "../prisma";
+import { isAssistantAvailable, type AssistantBindingScope } from "../assistants/bindingAccess";
+import type { CatalogData } from "../catalog/currentUserCatalog";
+import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { resolveChatAccess } from "../projects/access";
+import { loadProjectAssistantAuthority } from "../projects/prismaRepository";
 import {
   loadProjectChatDefaultAuthority,
   projectChatDefaultsProjection,
@@ -95,6 +103,23 @@ import type {
   ChatLifecycleMutationResult,
   ChatLifecycleRepository
 } from "./lifecycleHandlers";
+import {
+  chatAssistantOverrideCatalog,
+  chatAssistantOverridesIssue,
+  knowledgeOverrideAvailable,
+  loadAssistantRows,
+  nextChatAssistantOverrides,
+  overridesNeedCatalog,
+  projectKnowledgeOverrideAvailable,
+  projectOverridesNeedAuthority,
+  type ChatAssistantOverrideCatalog
+} from "./assistantOverrides";
+import {
+  loadChatAssistantProjection,
+  loadProjectChatAssistant,
+  type ProjectChatAssistantLoader
+} from "./assistantProjection";
+import { ChatAssistantUpdateError } from "./assistantUpdateError";
 import { loadChatCreationDefaults } from "./chatCreationDefaults";
 import { defaultChatTitle } from "./titlePolicy";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
@@ -289,6 +314,7 @@ const chatSummarySelect = {
     }
   },
   activeLeafMessageId: true,
+  assistantId: true,
   createdAt: true,
   defaultSearchPlan: true,
   defaultKnowledgePlan: true,
@@ -819,6 +845,7 @@ function serializeChatDetail(input: {
     : null;
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
+    assistantId: chat.assistantId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: projectDefaults
       ? projectDefaults.defaultKnowledgePlan
@@ -899,6 +926,7 @@ function serializeChatSummary(
   return {
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
+    assistantId: chat.assistantId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
     defaultSearchPlan: storedSearchPlan(chat.defaultSearchPlan),
@@ -1434,9 +1462,88 @@ export async function loadChatBranchSnapshotStats(
   };
 }
 
+/**
+ * Locks and checks an Assistant being bound before any chat, Project or
+ * folder row, in the order Assistant deletion takes them. Every refusal is
+ * the same neutral error.
+ */
+async function lockBindableAssistant(
+  tx: Prisma.TransactionClient,
+  assistantId: string | null | undefined,
+  scope: AssistantBindingScope
+): Promise<void> {
+  if (typeof assistantId !== "string") return;
+  if (!await isAssistantAvailable(tx, { assistantId, lock: true, scope })) {
+    throw new ChatAssistantUpdateError("assistant_not_available");
+  }
+}
+
+/**
+ * The binding and override columns a chat update writes. Changing the
+ * binding (including removing it) starts from no overrides and drops the
+ * deleted marker; a patch applies on top and needs a binding. Values are
+ * checked against the chat's catalog and Knowledge: the requester's own in a
+ * personal chat, the Project's in a Project chat.
+ */
+async function assistantUpdateData(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    assistantId: string | null | undefined;
+    catalog: ChatAssistantOverrideCatalog | null;
+    chatId: string;
+    knowledgeAvailable: (value: NonNullable<ChatAssistantOverridesPatch["knowledge"]>) => Promise<boolean> | boolean;
+    patch: ChatAssistantOverridesPatch | undefined;
+    scope: AssistantBindingScope;
+  }>
+): Promise<{ assistantId?: string | null; assistantOverrides?: Prisma.InputJsonObject | Prisma.NullTypes.DbNull }> {
+  if (input.assistantId === undefined && input.patch === undefined) return {};
+  let binding = input.assistantId ?? null;
+  let overrides: ChatAssistantOverrides = {};
+  if (input.assistantId === undefined) {
+    const current = await tx.chat.findUniqueOrThrow({
+      select: { assistantId: true, assistantOverrides: true },
+      where: { id: input.chatId }
+    });
+    binding = current.assistantId;
+    const stored = decodeStoredChatAssistantOverrides(current.assistantOverrides);
+    overrides = stored?.kind === "overrides" ? stored.overrides : {};
+  }
+  if (input.patch !== undefined) {
+    if (!binding) throw new ChatAssistantUpdateError("assistant_overrides_not_allowed");
+    // A binding set in this request was checked under lock already.
+    if (input.assistantId === undefined && !await isAssistantAvailable(tx, {
+      assistantId: binding,
+      scope: input.scope
+    })) {
+      throw new ChatAssistantUpdateError("assistant_not_available");
+    }
+    const next = nextChatAssistantOverrides(overrides, input.patch);
+    const issue = chatAssistantOverridesIssue({
+      catalog: input.catalog,
+      next,
+      patch: input.patch,
+      rows: await loadAssistantRows(tx, binding)
+    });
+    if (issue) throw new ChatAssistantUpdateError(issue);
+    if (input.patch.knowledge && !await input.knowledgeAvailable(input.patch.knowledge)) {
+      throw new ChatAssistantUpdateError("assistant_overrides_invalid");
+    }
+    overrides = next;
+  }
+  const stored = storedChatAssistantOverrides(overrides);
+  return {
+    ...(input.assistantId !== undefined ? { assistantId: input.assistantId } : {}),
+    assistantOverrides: stored ? stored as Prisma.InputJsonObject : Prisma.DbNull
+  };
+}
+
 export function createPrismaChatRepository(
   prismaClient = prisma,
   options: Readonly<{
+    /** Catalog that chat Assistant overrides are validated and projected against. */
+    loadCatalogData?: (userId: string) => Promise<CatalogData | null>;
+    /** The Assistant of a Project chat, resolved through the Project; the application's by default. */
+    loadProjectChatAssistant?: ProjectChatAssistantLoader;
     memorySourceHooks?: MemorySourceMutationHooks;
     resumeSuppressionPreflight?: (
       tx: Prisma.TransactionClient,
@@ -1450,6 +1557,8 @@ export function createPrismaChatRepository(
     defaultResumeSuppressionPreflight;
   const workspaceAvailability = options.workspaceAvailability ??
     defaultWorkspaceAvailabilityService;
+  const loadCatalogData = options.loadCatalogData ??
+    createPrismaCatalogDataLoader({ prisma: prismaClient });
   return {
     archiveChat: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
@@ -1775,11 +1884,11 @@ export function createPrismaChatRepository(
     },
     getChat: async ({ chatId, userId }) => {
       const workspaceSnapshot = await workspaceAvailability.snapshot();
-      return prismaClient.$transaction(async (tx) => {
+      const read = await prismaClient.$transaction(async (tx) => {
         const access = await resolveChatAccess(tx, { chatId, userId });
         if (!access) return null;
         const chat = await tx.chat.findFirst({
-          select: chatSummarySelect,
+          select: { ...chatSummarySelect, assistantOverrides: true },
           where: {
             archived: false,
             id: chatId,
@@ -1800,17 +1909,29 @@ export function createPrismaChatRepository(
         const projectDefaultAuthority = access.kind === "project"
           ? await loadProjectChatDefaultAuthority(tx, access.project.projectId)
           : undefined;
-        return serializeChatDetail({
-          availability: workspaceAvailability,
-          chat,
-          contextInputTokens,
-          hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
-          lightweightMessages,
-          messages,
-          ...(projectDefaultAuthority ? { projectDefaultAuthority } : {}),
-          workspaceSnapshot
-        });
+        return {
+          binding: chat,
+          detail: serializeChatDetail({
+            availability: workspaceAvailability,
+            chat,
+            contextInputTokens,
+            hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
+            lightweightMessages,
+            messages,
+            ...(projectDefaultAuthority ? { projectDefaultAuthority } : {}),
+            workspaceSnapshot
+          })
+        };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+      if (!read) return null;
+      // Outside the read transaction: an unbound chat reads nothing more, and
+      // the catalog read of a bound one does not hold the history snapshot open.
+      // The projection's own catalog read shares its group read.
+      const assistant = await loadChatAssistantProjection(prismaClient, { chat: read.binding, userId }, {
+        ...(options.loadCatalogData ? { loadCatalogData: options.loadCatalogData } : {}),
+        loadProjectChatAssistant: options.loadProjectChatAssistant ?? loadProjectChatAssistant
+      });
+      return { ...read.detail, assistant };
     },
     getChatMemoryState: async ({ chatId, userId }) => {
       const chat = await prismaClient.chat.findFirst({
@@ -2276,6 +2397,8 @@ export function createPrismaChatRepository(
     },
     updateChat: async ({
       activeLeafMessageId,
+      assistantId,
+      assistantOverrides,
       chatId,
       defaultKnowledgePlan,
       defaultSearchPlan,
@@ -2293,8 +2416,21 @@ export function createPrismaChatRepository(
         userId
       });
       if (!access) return null;
+      // Like the other fields that shape the next run, the binding waits for
+      // an active run to settle.
+      const changesNextRun = activeLeafMessageId !== undefined || workspaceEnabled !== undefined ||
+        assistantId !== undefined || assistantOverrides !== undefined;
       if (access.kind === "project") {
+        // Chat values in a Project chat are checked against the Project's
+        // own catalog and resources, never the member's personal ones.
+        const authority = assistantOverrides !== undefined && projectOverridesNeedAuthority(assistantOverrides)
+          ? await loadProjectAssistantAuthority(prismaClient, access.project.projectId)
+          : null;
         return prismaClient.$transaction(async (tx) => {
+          await lockBindableAssistant(tx, assistantId, {
+            kind: "project",
+            projectId: access.project.projectId
+          });
           await tx.$queryRaw(Prisma.sql`
             SELECT "id" FROM "Project"
             WHERE "id" = ${access.project.projectId}
@@ -2345,7 +2481,7 @@ export function createPrismaChatRepository(
             });
             if (!message) return null;
           }
-          if (activeLeafMessageId !== undefined || workspaceEnabled !== undefined) {
+          if (changesNextRun) {
             const activeRun = await tx.modelRun.findFirst({
               select: { id: true },
               where: {
@@ -2355,9 +2491,21 @@ export function createPrismaChatRepository(
             });
             if (activeRun) throw new ActiveRunConflictError();
           }
+          // Validated before the write, so a refusal changes nothing. The
+          // binding and its values never change the Project's defaults.
+          const assistantData = await assistantUpdateData(tx, {
+            assistantId,
+            catalog: authority?.catalog ?? null,
+            chatId,
+            knowledgeAvailable: (value) => authority !== null &&
+              projectKnowledgeOverrideAvailable(authority.available, value),
+            patch: assistantOverrides,
+            scope: { kind: "project", projectId: current.projectId }
+          });
           const updated = await tx.chat.update({
             data: {
               ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
+              ...assistantData,
               ...(defaultKnowledgePlan !== undefined
                 ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
                 : {}),
@@ -2373,7 +2521,11 @@ export function createPrismaChatRepository(
           return serializeChatSummary(updated, workspaceAvailability, workspaceSnapshot);
         });
       }
+      const catalog = assistantOverrides !== undefined && overridesNeedCatalog(assistantOverrides)
+        ? await loadCatalogData(userId)
+        : null;
       return prismaClient.$transaction(async (tx) => {
+        await lockBindableAssistant(tx, assistantId, { kind: "personal", userId });
         if (folderId) {
           const folders = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT "id"
@@ -2415,7 +2567,7 @@ export function createPrismaChatRepository(
           }
         }
 
-        if (activeLeafMessageId !== undefined || workspaceEnabled !== undefined) {
+        if (changesNextRun) {
           const activeRun = await tx.modelRun.findFirst({
             select: {
               id: true
@@ -2431,6 +2583,16 @@ export function createPrismaChatRepository(
             throw new ActiveRunConflictError();
           }
         }
+
+        // Validated before any other write, so a refusal changes nothing.
+        const assistantData = await assistantUpdateData(tx, {
+          assistantId,
+          catalog: catalog ? chatAssistantOverrideCatalog(catalog) : null,
+          chatId,
+          knowledgeAvailable: (value) => knowledgeOverrideAvailable(tx, userId, value),
+          patch: assistantOverrides,
+          scope: { kind: "personal", userId }
+        });
 
         const mutations: MemorySourceMutation[] = [];
         if (
@@ -2455,10 +2617,12 @@ export function createPrismaChatRepository(
         }
 
         const hasMetadataUpdate = defaultSearchPlan !== undefined || defaultKnowledgePlan !== undefined ||
-          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined;
+          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined ||
+          Object.keys(assistantData).length > 0;
         const updated = hasMetadataUpdate
           ? await tx.chat.update({
               data: {
+                ...assistantData,
                 ...(defaultKnowledgePlan !== undefined
                   ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
                   : {}),

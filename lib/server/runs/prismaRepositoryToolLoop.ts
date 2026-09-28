@@ -995,7 +995,8 @@ function decodeProviderDispatchRecoveryRequest(
     (value.toolMode !== "auto" && value.toolMode !== "none")) return null;
   if (value.prompt.baseline !== undefined && (!isRecord(value.prompt.baseline) ||
     !onlyKnownKeys(value.prompt.baseline, new Set(["source", "timeZone", "timeZoneSource"])) ||
-    value.prompt.baseline.source !== "standard_chat" ||
+    (value.prompt.baseline.source !== "standard_chat" &&
+      value.prompt.baseline.source !== "assistant_chat") ||
     typeof value.prompt.baseline.timeZone !== "string" ||
     (value.prompt.baseline.timeZoneSource !== "client" &&
       value.prompt.baseline.timeZoneSource !== "utc_fallback"))) return null;

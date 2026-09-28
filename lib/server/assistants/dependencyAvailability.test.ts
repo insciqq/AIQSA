@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { KnowledgeRunAdmissionError, loadKnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import { withAssistantDependencyAvailability } from "./dependencyAvailability";
 import type { AssistantAccessEntry } from "./prismaRepository";
+import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 
 vi.mock("../knowledge/runAdmission", async (importOriginal) => ({
@@ -11,11 +12,15 @@ const loadKnowledge = vi.mocked(loadKnowledgeRunAdmissionPlan);
 
 function entry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAccessEntry {
   return {
-    id: "assistant", archived: false, owned: true, pinned: false, published: false, installationScope: false,
-    memberGroupNames: [], ownerDisplayName: "Owner", updatedAt: new Date(), version: 1,
-    content: { id: "assistant", avatar: {}, category: null, description: "", developerPrompt: null,
+    id: "assistant", archived: false, audience: { everyone: false, groupNames: [] }, featured: false, featuredOrder: null, owned: true, pinned: false, published: false,
+    installationScope: false, memberGroupNames: [], ownerDisplayName: "Owner", updatedAt: new Date(), version: 1,
+    content: { answerRules: null, id: "assistant", avatar: {}, category: null, description: "",
       mcpServerIds: [], name: "Reviewer", providerModelId: "model", runControls: {}, searchPlan: {}, skillIds: [],
       knowledgeSelection: { version: 1, mode: "explicit", baseIds: ["selected-base"], sourceIds: [] },
+      rows: assistantRowsFromLegacyFields({
+        knowledgeSelection: { version: 1, mode: "explicit", baseIds: ["selected-base"], sourceIds: [] },
+        mcpServerIds: [], providerModelId: "model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: []
+      }),
       starterPrompts: [], systemPrompt: "Review the task." },
     ...overrides
   };

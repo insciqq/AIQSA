@@ -914,6 +914,132 @@ describe("Prisma-backed Project repository", () => {
     });
   });
 
+  it("reads an inherited Knowledge row as no Knowledge requirement and projects the real Project scope", async () => {
+    await withAssistantSourceFixture(async ({ createAssistant, ownerId, projectId, readySourceId }) => {
+      const repository = createPrismaProjectRepository(prisma);
+      const assistant = await createAssistant(readySourceId);
+      const initial = (await repository.getDetail(ownerId, projectId))!;
+      expect(await repository.addResource({ actorDisplayName: "Owner", projectId, userId: ownerId,
+        expectedPolicyRevision: initial.policyRevision, type: "assistant", resourceId: assistant.assistantId,
+        expectedAssistantVersion: assistant.assistantVersion })).toMatchObject({ kind: "ok" });
+      await prisma.assistantDefinition.update({ where: { id: assistant.assistantId }, data: {
+        knowledgePolicy: "adjustable", knowledgeSelection: { mode: "inherit" }
+      } });
+
+      const detail = (await repository.getDetail(ownerId, projectId))!;
+      expect(detail.resources.find((resource) => resource.type === "assistant")).toMatchObject({ available: true });
+      expect(detail.composer?.assistants).toEqual([expect.objectContaining({
+        content: expect.objectContaining({
+          knowledgeSelection: expect.objectContaining({ mode: "none" }),
+          rows: expect.objectContaining({ knowledge: { policy: "adjustable", value: { mode: "inherit" } } })
+        }),
+        summary: expect.objectContaining({ scope: { kind: "project", projectName: detail.name } })
+      })]);
+      const preview = await repository.previewResourceChange({ action: "add", projectId, userId: ownerId,
+        expectedPolicyRevision: detail.policyRevision, type: "assistant", resourceId: assistant.assistantId });
+      expect(preview).toMatchObject({ kind: "ok", value: { canCommit: true } });
+      if (preview.kind !== "ok") throw new Error("assistant_inherit_preview_failed");
+      expect(preview.value.dependencies.some((dependency) => dependency.type === "knowledge")).toBe(false);
+    });
+  });
+
+  it("plans, previews and counts consequences only for fixed rows and Skill links", async () => {
+    await withAssistantSourceFixture(async ({ createAssistant, foreignSourceId, ownerId, projectId, readySourceId }) => {
+      const repository = createPrismaProjectRepository(prisma);
+      // Its only unavailable resources belong to adjustable rows: a foreign
+      // document and a Search source the installation does not offer.
+      const adjustable = await createAssistant(foreignSourceId);
+      const adjusted = await prisma.assistantDefinition.update({
+        data: {
+          knowledgePolicy: "adjustable",
+          modelPolicy: "adjustable",
+          searchPlan: { mode: "all_selected", optionIds: [`missing-search-${randomUUID()}`] },
+          searchPolicy: "adjustable",
+          systemPrompt: "Plan releases for the Project."
+        },
+        select: { version: true },
+        where: { id: adjustable.assistantId }
+      });
+      const fixed = await createAssistant(readySourceId);
+      const initial = (await repository.getDetail(ownerId, projectId))!;
+
+      const preview = await repository.previewResourceChange({ action: "add", projectId, userId: ownerId,
+        expectedPolicyRevision: initial.policyRevision, type: "assistant", resourceId: adjustable.assistantId });
+      if (preview.kind !== "ok") throw new Error("adjustable_assistant_preview_failed");
+      expect(preview.value.canCommit).toBe(true);
+      expect(preview.value.dependencies.filter((dependency) =>
+        ["knowledge", "model", "search"].includes(dependency.type))).toEqual([]);
+      expect(await repository.addResource({ actorDisplayName: "Owner", projectId, userId: ownerId,
+        expectedPolicyRevision: initial.policyRevision, type: "assistant", resourceId: adjustable.assistantId,
+        expectedAssistantVersion: adjusted.version })).toMatchObject({ kind: "ok" });
+      await expect(prisma.projectKnowledgeSourceBinding.count({ where: { projectId, sourceId: foreignSourceId } }))
+        .resolves.toBe(0);
+      await expect(prisma.projectSearchBinding.count({ where: { projectId } })).resolves.toBe(0);
+
+      const bound = (await repository.getDetail(ownerId, projectId))!;
+      expect(await repository.addResource({ actorDisplayName: "Owner", projectId, userId: ownerId,
+        expectedPolicyRevision: bound.policyRevision, type: "assistant", resourceId: fixed.assistantId,
+        expectedAssistantVersion: fixed.assistantVersion })).toMatchObject({ kind: "ok" });
+      const detail = (await repository.getDetail(ownerId, projectId))!;
+      expect(detail.resources.filter((resource) => resource.type === "assistant"))
+        .toEqual([expect.objectContaining({ available: true }), expect.objectContaining({ available: true })]);
+      // Members read the instructions and see which rows run with the Project's defaults.
+      expect(detail.composer?.assistants.find((entry) => entry.summary.id === adjustable.assistantId)).toMatchObject({
+        content: { systemPrompt: "Plan releases for the Project." },
+        summary: {
+          availability: { ok: true },
+          rowAvailability: { knowledge: { reason: "knowledge_access" }, search: { reason: "search_access" } },
+          scope: { kind: "project", projectName: detail.name }
+        }
+      });
+      // The foreign document and the missing Search source are counted, never identified.
+      const adjustableEntry = detail.composer?.assistants.find((entry) => entry.summary.id === adjustable.assistantId);
+      expect(adjustableEntry?.content.rows.knowledge.value).toEqual({
+        baseIds: [], hiddenCount: 1, mode: "explicit", sourceIds: []
+      });
+      expect(adjustableEntry?.content.rows.search.value).toMatchObject({ hiddenCount: 1, optionIds: [] });
+      expect(JSON.stringify(detail.composer)).not.toContain(foreignSourceId);
+      expect(detail.composer?.assistants.find((entry) => entry.summary.id === fixed.assistantId)).toMatchObject({
+        summary: { availability: { ok: true }, rowAvailability: {} }
+      });
+
+      // Removing the model only affects the Assistant that fixes it.
+      const model = detail.resources.find((resource) =>
+        resource.type === "model" && resource.resourceId === providerTemplateIds.fakeModel)!;
+      const removal = await repository.previewResourceChange({ action: "remove", bindingId: model.id, projectId,
+        userId: ownerId, expectedPolicyRevision: detail.policyRevision });
+      if (removal.kind !== "ok") throw new Error("model_removal_preview_failed");
+      expect(removal.value.consequences.dependentAssistants).toEqual(["Direct Source Assistant 2"]);
+    });
+  });
+
+  it("starts a new Project chat with the Project's default Assistant while the Project can run it", async () => {
+    await withAssistantSourceFixture(async ({ createAssistant, ownerId, projectId, readySourceId }) => {
+      const repository = createPrismaProjectRepository(prisma);
+      const content = createPrismaProjectContentRepository(prisma);
+      const assistant = await createAssistant(readySourceId);
+      const initial = (await repository.getDetail(ownerId, projectId))!;
+      expect(await repository.addResource({ actorDisplayName: "Owner", projectId, userId: ownerId,
+        expectedPolicyRevision: initial.policyRevision, type: "assistant", resourceId: assistant.assistantId,
+        expectedAssistantVersion: assistant.assistantVersion })).toMatchObject({ kind: "ok" });
+      const bound = (await repository.getDetail(ownerId, projectId))!;
+      expect(await repository.update({ actorDisplayName: "Owner", projectId, userId: ownerId,
+        defaults: { ...bound.defaults, assistantId: assistant.assistantId },
+        expectedPolicyRevision: bound.policyRevision })).toMatchObject({ kind: "ok" });
+      const binding = async (title: string) => {
+        const created = await content.createChat({ actorDisplayName: "Owner", projectId, title, userId: ownerId });
+        if (created.kind !== "ok") throw new Error(`project_chat_${created.kind}`);
+        return (await prisma.chat.findUniqueOrThrow({ select: { assistantId: true }, where: { id: created.value.id } }))
+          .assistantId;
+      };
+
+      await expect(binding("With the default")).resolves.toBe(assistant.assistantId);
+      await prisma.assistantDefinition.update({ data: { archivedAt: new Date() }, where: { id: assistant.assistantId } });
+      // An archived default is skipped; the chat is still created.
+      await expect(binding("Archived default")).resolves.toBeNull();
+    });
+  });
+
   it("rolls back stale unlink and atomically clears Project and chat defaults on commit", async () => {
     await withProjectFixture(async ({ ownerId, projectId }) => {
       const repository = createPrismaProjectRepository(prisma);

@@ -22,7 +22,13 @@ import {
   decodeChatSourceResolutionResponse,
   decodeChatSummaryResponse,
   decodeChatUpdateData,
-  decodeWorkspaceChatsResponse
+  decodeWorkspaceChatsResponse,
+  applyChatAssistantOverridesPatch,
+  CHAT_ASSISTANT_DELETED_MARKER,
+  decodeChatAssistantProjection,
+  decodeChatAssistantUpdate,
+  decodeStoredChatAssistantOverrides,
+  storedChatAssistantOverrides
 } from "./chats";
 
 const summary = {
@@ -80,7 +86,7 @@ const pageInfo = {
 };
 
 function detailChat(overrides: Record<string, unknown> = {}) {
-  return { ...summary, contextStats, pageInfo, ...overrides };
+  return { ...summary, assistant: null, contextStats, pageInfo, ...overrides };
 }
 
 describe("chat wire contracts", () => {
@@ -116,6 +122,7 @@ describe("chat wire contracts", () => {
     const page = {
       chats: [{
         activeRun: true,
+        assistant: null,
         folderId: "folder-1",
         id: "chat-1",
         title: "Quarterly review",
@@ -131,6 +138,15 @@ describe("chat wire contracts", () => {
       chats: [{ ...page.chats[0], messageCount: 10 }]
     })).toBeNull();
     expect(decodeChatNavigationPage({ ...page, nextCursor: "bad!" })).toBeNull();
+    const identity = { avatar: { accents: [1], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+      paletteId: "ember", recipeVersion: 1, rotations: [0, 0] }, name: "Analyst" };
+    const withAssistant = { ...page, chats: [{ ...page.chats[0], assistant: identity }] };
+    expect(decodeChatNavigationPage(withAssistant)).toEqual(withAssistant);
+    const { assistant: _assistant, ...withoutAssistant } = page.chats[0];
+    expect(decodeChatNavigationPage({ ...page, chats: [withoutAssistant] })).toBeNull();
+    for (const assistant of [{ ...identity, id: "assistant-1" }, { name: "Analyst" }, "Analyst"]) {
+      expect(decodeChatNavigationPage({ ...page, chats: [{ ...page.chats[0], assistant }] })).toBeNull();
+    }
     expect(decodeChatNavigationPage({
       ...page,
       chats: [...page.chats, page.chats[0]]
@@ -155,6 +171,22 @@ describe("chat wire contracts", () => {
     expect(mutation).toEqual(summary);
     expect(mutation).not.toHaveProperty("messages");
     expect(mutation).not.toHaveProperty("usageStats");
+  });
+
+  it("carries the chat's Assistant id on summaries and rejects a malformed one", () => {
+    for (const assistantId of ["assistant-1", null]) {
+      const bound = { ...summary, assistantId };
+      expect(decodeChatSummaryResponse({ chat: bound })).toEqual(bound);
+      expect(decodeWorkspaceChatsResponse({ chats: [bound], contentMatches: [], folders: [] })?.chats)
+        .toEqual([bound]);
+      const archived = { ...bound, archived: true, lastMessageAt: null, memoryMode: "NORMAL", sourceRevision: 1 };
+      expect(decodeArchivedChatsResponse({ chats: [archived], nextCursor: null })?.chats).toEqual([archived]);
+    }
+    // Stale caches without the field read as no Assistant.
+    expect(decodeChatSummaryResponse({ chat: summary })).not.toHaveProperty("assistantId");
+    for (const assistantId of ["", 42, { id: "assistant-1" }]) {
+      expect(decodeChatSummaryResponse({ chat: { ...summary, assistantId } })).toBeNull();
+    }
   });
 
   it("keeps a paired absent chat default readable across every chat response", () => {
@@ -850,4 +882,154 @@ it("reloads failed answers with same-name immutable checkpoints and retains sepa
   expect(kept([final, { ...final, attachmentId: "another-final" }])).toEqual([final]);
   expect(kept([...files, { ...files[0], attachmentId: "excess", checkpoint: { ...files[0]!.checkpoint, id: "cp-17" } }]))
     .toEqual(files);
+});
+
+const assistantAvatar = { accents: [1], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+  paletteId: "ember", recipeVersion: 1, rotations: [0, 0] };
+
+function chatRow(overrides: Record<string, unknown> = {}) {
+  return {
+    assistantValue: { mode: "model", modelId: "model-1" },
+    deviation: null,
+    policy: "adjustable",
+    provenance: "assistant",
+    value: { mode: "model", modelId: "model-1" },
+    ...overrides
+  };
+}
+
+function boundProjection(rowOverrides: Record<string, unknown> = {}, overrides: Record<string, unknown> = {}) {
+  return {
+    availability: { ok: true },
+    avatar: assistantAvatar,
+    id: "assistant-1",
+    name: "Analyst",
+    owned: false,
+    ownerDisplayName: "Alex",
+    rows: {
+      controls: chatRow({ assistantValue: {}, provenance: "default", value: { temperature: 0.4 } }),
+      knowledge: chatRow({ assistantValue: { mode: "inherit" }, provenance: "default", value: { mode: "all_my_knowledge" } }),
+      model: chatRow(),
+      search: chatRow({ assistantValue: { hiddenCount: 1, mode: "all_selected", optionIds: [] }, provenance: "chat", value: { mode: "off" } }),
+      skills: chatRow({ assistantValue: { links: [], mode: "auto" }, policy: "fixed", value: { links: [], mode: "auto" } }),
+      tools: chatRow({ assistantValue: { mode: "exact", serverIds: ["jira"] }, deviation: { reason: "tools_access" },
+        provenance: "fallback", value: { mode: "auto" } }),
+      ...rowOverrides
+    },
+    state: "bound",
+    ...overrides
+  };
+}
+
+describe("chat Assistant projection", () => {
+  it("decodes a bound Assistant with per-row provenance, the deleted and the unavailable state", () => {
+    expect(decodeChatAssistantProjection(boundProjection())).toEqual(boundProjection());
+    expect(decodeChatAssistantProjection({ state: "deleted" })).toEqual({ state: "deleted" });
+    expect(decodeChatAssistantProjection({ state: "unavailable" })).toEqual({ state: "unavailable" });
+    expect(decodeChatAssistantProjection({ name: "Analyst", state: "deleted" })).toBeNull();
+    expect(decodeChatAssistantProjection({ id: "assistant-1", state: "unavailable" })).toBeNull();
+    // A consumer learns that its owner archived the Assistant, and nothing else.
+    expect(decodeChatAssistantProjection({ reason: "archived", state: "unavailable" }))
+      .toEqual({ reason: "archived", state: "unavailable" });
+    expect(decodeChatAssistantProjection({ reason: "tools_access", state: "unavailable" })).toBeNull();
+    expect(decodeChatAssistantProjection({ name: "Analyst", reason: "archived", state: "unavailable" })).toBeNull();
+    expect(decodeChatAssistantProjection({ reason: "archived", state: "deleted" })).toBeNull();
+    expect(decodeChatDetailResponse({ chat: detailChat({ assistant: boundProjection(), messages: [message], usageStats }) })
+      ?.assistant).toEqual(boundProjection());
+    expect(decodeChatDetailResponse({ chat: detailChat({ assistant: { state: "detached" }, messages: [message], usageStats }) }))
+      .toBeNull();
+  });
+
+  it("rejects provenance a row policy cannot produce and values that leak or inherit", () => {
+    const invalid: Array<Record<string, unknown>> = [
+      { model: chatRow({ policy: "fixed", provenance: "chat" }) },
+      { model: chatRow({ policy: "fixed", provenance: "fallback", deviation: { reason: "model_access" } }) },
+      { model: chatRow({ provenance: "fallback" }) },
+      { model: chatRow({ deviation: { reason: "model_access" } }) },
+      { model: chatRow({ provenance: "default" }) },
+      { model: chatRow({ assistantValue: { mode: "inherit" } }) },
+      { model: chatRow({ value: { mode: "inherit" } }) },
+      { model: chatRow({ deviation: { dependencies: [{ kind: "model", name: "Private" }], reason: "model_access" },
+        provenance: "fallback" }) },
+      { controls: chatRow({ assistantValue: {}, deviation: { reason: "model_access" }, provenance: "fallback", value: {} }) },
+      { tools: chatRow({ assistantValue: { mode: "exact", serverIds: ["jira"] }, value: { mode: "load_all", serverIds: [] } }) },
+      { model: { ...chatRow(), extra: true } }
+    ];
+    for (const rows of invalid) {
+      expect(decodeChatAssistantProjection(boundProjection(rows)), JSON.stringify(rows)).toBeNull();
+    }
+    expect(decodeChatAssistantProjection(boundProjection({}, { availability: { dependencies: [{ kind: "mcp", name: "Jira" }],
+      ok: false, reason: "tools_access" } }))).toBeNull();
+    expect(decodeChatAssistantProjection(boundProjection({
+      model: chatRow({ deviation: { dependencies: [{ kind: "model", name: "Gemini" }], reason: "model_access" },
+        provenance: "fallback", value: { mode: "model", modelId: "model-2" } })
+    }, { owned: true }))).not.toBeNull();
+    const { skills: _skills, ...fiveRows } = boundProjection().rows;
+    expect(decodeChatAssistantProjection({ ...boundProjection(), rows: fiveRows })).toBeNull();
+  });
+
+  it("keeps an archived preview free of Assistant state", () => {
+    const archived = {
+      chat: { ...detailChat({ messages: [message], usageStats }), archived: true, memoryMode: "NORMAL", sourceRevision: 7 }
+    };
+    expect(decodeArchivedChatDetailResponse(archived)?.chat.assistant).toBeNull();
+    expect(decodeArchivedChatDetailResponse({ chat: { ...archived.chat, assistant: { state: "deleted" } } })).toBeNull();
+  });
+});
+
+describe("chat Assistant overrides", () => {
+  const overrides = {
+    controls: { temperature: 0.2 },
+    knowledge: { mode: "all_my_knowledge" },
+    model: { mode: "model", modelId: "model-2" },
+    search: { mode: "off" },
+    skills: { mode: "off" },
+    tools: { mode: "load_all" }
+  };
+
+  it("decodes stored overrides, the deleted marker and an empty column", () => {
+    expect(decodeStoredChatAssistantOverrides(null)).toEqual({ kind: "overrides", overrides: {} });
+    expect(decodeStoredChatAssistantOverrides(overrides)).toEqual({ kind: "overrides", overrides });
+    expect(decodeStoredChatAssistantOverrides({ search: { mode: "all_selected", optionIds: ["web"] } }))
+      .toEqual({ kind: "overrides", overrides: { search: { mode: "all_selected", optionIds: ["web"] } } });
+    expect(decodeStoredChatAssistantOverrides(JSON.parse(JSON.stringify(CHAT_ASSISTANT_DELETED_MARKER))))
+      .toEqual({ kind: "deleted" });
+    for (const invalid of [
+      { assistantDeleted: true, search: { mode: "off" } },
+      { assistantDeleted: false },
+      { search: null },
+      { search: { mode: "inherit" } },
+      { model: { mode: "model", modelId: null } },
+      { tools: { mode: "exact", serverIds: ["jira"] } },
+      { knowledge: { mode: "inherit" } },
+      { skills: { links: [], mode: "auto" } },
+      { prompt: "x" },
+      ["search"]
+    ]) {
+      expect(decodeStoredChatAssistantOverrides(invalid), JSON.stringify(invalid)).toBeNull();
+    }
+    expect(storedChatAssistantOverrides({})).toBeNull();
+    expect(storedChatAssistantOverrides({ search: { mode: "off" } })).toEqual({ search: { mode: "off" } });
+  });
+
+  it("decodes the chat update fields and applies a patch in which null clears a row", () => {
+    expect(decodeChatAssistantUpdate({ title: "ignored" })).toEqual({ ok: true, update: {} });
+    expect(decodeChatAssistantUpdate({ assistantId: null })).toEqual({ ok: true, update: { assistantId: null } });
+    expect(decodeChatAssistantUpdate({ assistantId: "assistant-1", assistantOverrides: { model: null, search: { mode: "off" } } }))
+      .toEqual({ ok: true, update: { assistantId: "assistant-1", assistantOverrides: { model: null, search: { mode: "off" } } } });
+    for (const assistantId of ["", 7, "a b", "x".repeat(257)]) {
+      expect(decodeChatAssistantUpdate({ assistantId })).toEqual({ code: "assistant_not_available", ok: false });
+    }
+    expect(decodeChatAssistantUpdate({ assistantOverrides: { search: { mode: "inherit" } } }))
+      .toEqual({ code: "assistant_overrides_invalid", ok: false, row: "search" });
+    expect(decodeChatAssistantUpdate({ assistantOverrides: { prompt: "x" } }))
+      .toEqual({ code: "assistant_overrides_invalid", ok: false });
+    expect(decodeChatAssistantUpdate({ assistantOverrides: null }))
+      .toEqual({ code: "assistant_overrides_invalid", ok: false });
+
+    expect(applyChatAssistantOverridesPatch(
+      { model: { mode: "model", modelId: "model-2" }, search: { mode: "off" } },
+      { model: null, tools: { mode: "off" } }
+    )).toEqual({ search: { mode: "off" }, tools: { mode: "off" } });
+  });
 });

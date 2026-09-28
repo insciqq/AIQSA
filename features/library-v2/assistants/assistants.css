@@ -1,0 +1,1052 @@
+/*
+ * Studio › Assistants gallery, detail sheet and delete dialog (PRD 10.1,
+ * 10.2, 11). The gallery is its own container: three columns from 900 px of
+ * content width, two from 600 px, one below. Phones (below 640 px wide or
+ * 32rem high) drop the card's capability line; the sheet shows it as rows.
+ */
+.v2-assistants-gallery {
+  container: assistants-gallery / inline-size;
+  min-width: 0;
+}
+
+/*
+ * The notice stays in view wherever its scroll container (the gallery page
+ * or the detail sheet's body) is scrolled to: in the flow under the heading
+ * at the top, stuck to the container's top edge further down. Its tint is
+ * mixed into the container's own background, so nothing shows through, and
+ * it lies above the page's positioned pieces; sheets and dialogs are layers
+ * of their own above the page.
+ */
+.v2-assistants-notice {
+  --v2-assistants-notice-under: var(--v2-color-canvas);
+  position: sticky;
+  z-index: 6;
+  top: 0;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding: 0.375rem 0.375rem 0.375rem 0.75rem;
+  border-left: 2px solid var(--v2-color-ok);
+  color: var(--v2-color-text2);
+  background: color-mix(in srgb, var(--v2-color-ok) 9%, var(--v2-assistants-notice-under));
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+[role="dialog"] .v2-assistants-notice {
+  --v2-assistants-notice-under: var(--v2-color-surface);
+}
+
+.v2-assistants-notice > span {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-notice[data-tone="error"] {
+  border-left-color: var(--v2-color-warn);
+  background: color-mix(in srgb, var(--v2-color-warn) 9%, var(--v2-assistants-notice-under));
+}
+
+/* In the detail sheet, as in the gallery (the toolbar's 1rem), the notice keeps a gap to what follows. */
+.v2-assistants-notice + :is(.v2-assistants-detail, .v2-assistants-sheet-loading, .v2-assistants-sheet-message) {
+  margin-top: 1rem;
+}
+
+.v2-assistants-copy-status:empty {
+  display: none;
+}
+
+.v2-assistants-copy-status {
+  margin: 0.75rem 0 0;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+}
+
+/* ===== Toolbar: chips, category, search ===== */
+.v2-assistants-toolbar {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-top: 1rem;
+}
+
+.v2-assistants-toolbar .v2-resource-filters {
+  min-width: 0;
+  margin-top: 0;
+}
+
+.v2-assistants-toolbar-end {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.v2-assistants-category {
+  position: relative;
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.5rem 0 0.625rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface);
+  font-size: 0.8125rem;
+}
+
+.v2-assistants-category:focus-within {
+  border-color: var(--v2-color-accent);
+}
+
+.v2-assistants-category:has(select:focus-visible) {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 2px;
+}
+
+/* Every label in one cell: only the current one shows, the widest sets the width. */
+.v2-assistants-category-value {
+  display: inline-grid;
+  padding-right: 1.25rem;
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+.v2-assistants-category-value > span {
+  grid-area: 1 / 1;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+.v2-assistants-category-value > [data-current] {
+  visibility: visible;
+}
+
+/* The real control covers the whole box, border included (44 px tall on touch). */
+.v2-assistants-category select {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: calc(100% + 2px);
+  height: calc(100% + 2px);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  font: inherit;
+  appearance: none;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.v2-assistants-category select option {
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+}
+
+.v2-assistants-category > .v2-icon {
+  position: absolute;
+  right: 0.5rem;
+  color: var(--v2-color-text3);
+  pointer-events: none;
+}
+
+.v2-assistants-search input {
+  width: 13.75rem;
+}
+
+/* ===== Groups and grid ===== */
+.v2-assistants-group {
+  margin-top: 1.25rem;
+}
+
+.v2-assistants-group-head {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.625rem;
+}
+
+.v2-assistants-group-head h3 {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.v2-assistants-group-head > span {
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+}
+
+/* The loading skeleton takes the grid's columns, so the list arrives without a jump. */
+.v2-assistants-grid,
+.v2-assistants-skeletons {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+@container assistants-gallery (min-width: 37.5rem) {
+  .v2-assistants-grid,
+  .v2-assistants-skeletons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container assistants-gallery (min-width: 56.25rem) {
+  .v2-assistants-grid,
+  .v2-assistants-skeletons {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* ===== Card ===== */
+.v2-assistants-card {
+  display: flex;
+  min-width: 0;
+  min-height: 10.5rem;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 1rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface);
+  cursor: pointer;
+  transition: border-color var(--v2-motion-fast);
+}
+
+.v2-assistants-card:hover {
+  border-color: var(--v2-color-border2);
+}
+
+/* The muted background and the status line mark the card; its text keeps full contrast. */
+.v2-assistants-card[data-state="unavailable"],
+.v2-assistants-card[data-state="archived"] {
+  background: color-mix(in srgb, var(--v2-color-surface) 62%, var(--v2-color-canvas));
+}
+
+.v2-assistants-card-head {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.v2-assistants-avatar {
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.v2-assistants-card-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.v2-assistants-card-title h3,
+.v2-assistants-card-title h4 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.v2-assistants-card-open {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-assistants-card-open:hover {
+  color: var(--v2-color-accent-text);
+}
+
+/*
+ * At most two lines: owner and audience share the first and never wrap, the
+ * owner giving way with an ellipsis long before the audience; the model sits
+ * beside them or alone on the second line, cut with an ellipsis only when it
+ * is longer than a line. The gaps stand in for the spaces around each "·".
+ */
+.v2-assistants-card-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  column-gap: 0.25em;
+  margin: 0.125rem 0 0;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.v2-assistants-card-meta-lead {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  column-gap: 0.25em;
+  white-space: nowrap;
+}
+
+.v2-assistants-card-meta-lead > span,
+.v2-assistants-card-meta-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-assistants-card-meta-lead > .v2-assistants-card-meta-owner {
+  flex-shrink: 100;
+}
+
+.v2-assistants-card-meta-model {
+  max-width: 100%;
+}
+
+.v2-assistants-featured-mark {
+  flex: 0 0 auto;
+  margin-top: 0.5rem;
+  color: var(--v2-color-warn);
+}
+
+.v2-assistants-menu {
+  flex: 0 0 auto;
+  margin: -0.25rem -0.375rem 0 0;
+}
+
+.v2-assistants-card-description {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.v2-assistants-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+  padding: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  list-style: none;
+}
+
+.v2-assistants-capabilities > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.v2-assistants-card-status {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-card-status::before {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+  transform: translateY(-0.0625rem);
+}
+
+.v2-assistants-card-status[data-tone="warn"] {
+  color: var(--v2-color-warn);
+}
+
+.v2-assistants-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: auto;
+}
+
+.v2-assistants-pin {
+  margin-left: auto;
+}
+
+.v2-assistants-pin[aria-pressed="true"] {
+  color: var(--v2-color-accent-text);
+}
+
+/* ===== Loading, empty and error ===== */
+.v2-assistants-skeletons {
+  margin-top: 1.25rem;
+}
+
+.v2-assistants-skeleton {
+  display: grid;
+  min-height: 10.5rem;
+  align-content: start;
+  padding: 1rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  gap: 0.75rem;
+  background: var(--v2-color-surface);
+}
+
+.v2-assistants-skeleton > span,
+.v2-assistants-skeleton-line {
+  display: block;
+  height: 0.625rem;
+  border-radius: 999px;
+  background: var(--v2-color-surface2);
+  animation: v2-skeleton 1.4s ease-in-out infinite;
+}
+
+.v2-assistants-skeleton > span:first-child {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.v2-assistants-skeleton > span:nth-child(2) { width: 58%; }
+.v2-assistants-skeleton > span:nth-child(3) { width: 86%; }
+.v2-assistants-skeleton > span:last-child { width: 38%; margin-top: auto; }
+
+.v2-assistants-empty {
+  display: grid;
+  max-width: 32rem;
+  min-height: 16rem;
+  margin: 2rem auto 0;
+  place-content: center;
+  justify-items: center;
+  padding: 2rem 1rem;
+  text-align: center;
+}
+
+.v2-assistants-empty-icon {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  place-items: center;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: 50%;
+  color: var(--v2-color-accent);
+  background: var(--v2-color-accent-dim);
+}
+
+.v2-assistants-empty[data-state="error"] .v2-assistants-empty-icon {
+  color: var(--v2-color-danger);
+  background: color-mix(in srgb, var(--v2-color-danger) 9%, transparent);
+}
+
+.v2-assistants-empty h3 {
+  margin: 1rem 0 0;
+  font-size: 1rem;
+}
+
+.v2-assistants-empty p {
+  margin: 0.5rem 0 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-empty > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.v2-assistants-empty > .v2-button {
+  margin-top: 1.25rem;
+}
+
+.v2-assistants-nothing {
+  display: grid;
+  justify-items: center;
+  gap: 0.5rem;
+  margin: 2rem 0 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+/* ===== Detail sheet ===== */
+.v2-assistants-detail {
+  container: assistants-detail / inline-size;
+  display: grid;
+  min-width: 0;
+  gap: 1.25rem;
+}
+
+.v2-assistants-detail-head {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.v2-assistants-detail-head > div {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 0.375rem;
+}
+
+.v2-assistants-detail-description {
+  margin: 0;
+  color: var(--v2-color-text);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-detail-meta {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+/* The line breaks between its "·" segments; only a segment longer than the line breaks inside. */
+.v2-assistants-detail-meta > span {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+}
+
+.v2-assistants-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: 999px;
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface2);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.v2-assistants-pill[data-tone="featured"] {
+  color: var(--v2-color-warn);
+}
+
+.v2-assistants-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.v2-assistants-detail-section {
+  display: grid;
+  min-width: 0;
+  gap: 0.5rem;
+}
+
+.v2-assistants-detail-section > h3 {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.v2-assistants-starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.v2-assistants-starter {
+  max-width: 100%;
+  min-height: 1.875rem;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: 999px;
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface2);
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.v2-assistants-starter:hover:not(:disabled) {
+  border-color: var(--v2-color-border2);
+  background: var(--v2-color-hover);
+}
+
+.v2-assistants-starter:disabled {
+  color: var(--v2-color-text3);
+  cursor: default;
+}
+
+.v2-assistants-setup {
+  width: 100%;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.8125rem;
+  table-layout: fixed;
+}
+
+.v2-assistants-setup tr + tr > * {
+  border-top: 1px solid var(--v2-color-border);
+}
+
+/* Label, value and policy share the row's first baseline. */
+.v2-assistants-setup th,
+.v2-assistants-setup td {
+  padding: 0.625rem 0.75rem;
+  vertical-align: baseline;
+  text-align: left;
+}
+
+/* The row icon hangs before its label: a wrapped label continues under its
+   first word, not under the icon. */
+.v2-assistants-setup th {
+  width: 11rem;
+  padding-left: 2.25rem;
+  color: var(--v2-color-text2);
+  font-weight: 500;
+  text-indent: -1.5rem;
+}
+
+/* The preflight makes every svg a block; these icons sit on their word's line. */
+.v2-assistants-setup th > .v2-icon,
+.v2-assistants-setup-policy > .v2-icon {
+  display: inline-block;
+  vertical-align: -0.1875rem;
+}
+
+.v2-assistants-setup th > .v2-icon {
+  margin-right: 0.5rem;
+  color: var(--v2-color-text3);
+}
+
+.v2-assistants-setup-value {
+  color: var(--v2-color-text);
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-setup-value > span {
+  display: block;
+}
+
+.v2-assistants-setup-deviation {
+  margin-top: 0.25rem;
+  color: var(--v2-color-warn);
+  font-size: 0.75rem;
+}
+
+.v2-assistants-setup-policy {
+  width: 7.5rem;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.v2-assistants-setup-policy > .v2-icon {
+  margin-right: 0.25rem;
+}
+
+@container assistants-detail (max-width: 30rem) {
+  .v2-assistants-setup tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+  }
+
+  .v2-assistants-setup th {
+    width: auto;
+  }
+
+  .v2-assistants-setup-value {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-top: 0 !important;
+  }
+
+  /* A stacked row draws its own separator across the table's inner width;
+     on its cells it would end where the policy cell starts, and that cell's
+     width differs per row ("Fixed" or "Adjustable"). */
+  .v2-assistants-setup tr + tr {
+    border-top: 1px solid var(--v2-color-border);
+  }
+
+  .v2-assistants-setup tr + tr > * {
+    border-top: 0;
+  }
+
+  .v2-assistants-setup-policy {
+    width: auto;
+  }
+}
+
+.v2-assistants-instructions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+}
+
+.v2-assistants-instructions > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.v2-assistants-instructions-line {
+  margin: 0;
+  overflow: hidden;
+  color: var(--v2-color-text);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-assistants-instructions-note {
+  margin: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.v2-assistants-instructions-line + .v2-assistants-instructions-note {
+  margin-top: 0.25rem;
+}
+
+.v2-assistants-instructions-preview {
+  max-height: min(24rem, 50dvh);
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text);
+  background: var(--v2-color-canvas);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.v2-assistants-instructions-preview:focus-visible {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 2px;
+}
+
+.v2-assistants-sharing {
+  display: grid;
+  min-width: 0;
+  gap: 0.375rem;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  font-size: 0.8125rem;
+}
+
+.v2-assistants-sharing > p {
+  margin: 0;
+  color: var(--v2-color-text2);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-sharing > .v2-assistants-sharing-audience {
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+.v2-assistants-sharing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.v2-assistants-usage {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+}
+
+.v2-assistants-sheet-message {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.v2-assistants-sheet-message > p {
+  margin: 0;
+}
+
+/* The only content of the sheet reads as body text, not as a hint. */
+.v2-assistants-sheet-message[data-state="unavailable"] {
+  color: var(--v2-color-text);
+}
+
+.v2-assistants-sheet-loading {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.v2-assistants-skeleton-line:nth-of-type(2) { width: 72%; }
+.v2-assistants-skeleton-line:nth-of-type(3) { width: 48%; }
+
+.v2-assistants-detail .v2-assistants-card-status {
+  margin-top: -0.5rem;
+}
+
+/* ===== Delete dialog ===== */
+.v2-assistants-dialog-layer {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding:
+    max(0.75rem, env(safe-area-inset-top)) env(safe-area-inset-right)
+    0 env(safe-area-inset-left);
+}
+
+.v2-assistants-dialog-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--v2-color-scrim) 70%, transparent);
+}
+
+.v2-assistants-dialog {
+  position: relative;
+  display: grid;
+  width: 100%;
+  max-width: 32rem;
+  max-height: calc(100dvh - max(0.75rem, env(safe-area-inset-top)));
+  gap: 0.75rem;
+  padding: 1rem 1rem max(1rem, env(safe-area-inset-bottom));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--v2-color-border);
+  border-bottom: 0;
+  border-radius: var(--v2-radius-l) var(--v2-radius-l) 0 0;
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  box-shadow: var(--v2-shadow-overlay);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.v2-assistants-dialog > p {
+  margin: 0;
+  color: var(--v2-color-text2);
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-dialog-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.v2-assistants-dialog-head h2 {
+  min-width: 0;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-dialog-icon {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--v2-color-danger) 35%, transparent);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-danger);
+  background: color-mix(in srgb, var(--v2-color-danger) 10%, transparent);
+}
+
+.v2-assistants-dialog > .v2-assistants-dialog-label {
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+/* One bullet per consequence, in the list's colour; wrapped lines hang under their first line. */
+.v2-assistants-dialog-consequences {
+  display: grid;
+  gap: 0.375rem;
+  margin: -0.375rem 0 0;
+  padding-left: 1.25rem;
+  color: var(--v2-color-text2);
+  list-style: disc outside;
+  overflow-wrap: anywhere;
+}
+
+.v2-assistants-dialog > .v2-assistants-dialog-error {
+  color: var(--v2-color-warn);
+}
+
+.v2-assistants-dialog-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.v2-assistants-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+@media (min-width: 640px) {
+  .v2-assistants-dialog-layer {
+    align-items: center;
+    padding: max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right))
+      max(0.75rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+  }
+
+  .v2-assistants-dialog {
+    max-height: calc(100dvh - 1.5rem);
+    padding: 1.25rem;
+    border-bottom: 1px solid var(--v2-color-border);
+    border-radius: var(--v2-radius-l);
+  }
+}
+
+/* ===== Phones and narrow containers ===== */
+@container assistants-gallery (max-width: 42rem) {
+  .v2-assistants-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .v2-assistants-toolbar-end,
+  .v2-assistants-search,
+  .v2-assistants-search input {
+    width: 100%;
+  }
+
+  .v2-assistants-search {
+    flex: 1 1 12rem;
+  }
+
+  .v2-assistants-card .v2-icon-button {
+    width: 2.75rem;
+    min-width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .v2-assistants-card .v2-button,
+  .v2-assistants-toolbar .v2-resource-filter,
+  .v2-assistants-category,
+  .v2-assistants-search input {
+    min-height: 2.75rem;
+  }
+}
+
+@container assistants-detail (max-width: 30rem) {
+  .v2-assistants-detail .v2-icon-button {
+    width: 2.75rem;
+    min-width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .v2-assistants-detail .v2-button,
+  .v2-assistants-starter {
+    min-height: 2.75rem;
+  }
+}
+
+@media (max-width: 639px), (max-height: 32rem) {
+  .v2-assistants-capabilities {
+    display: none;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-assistants-category,
+  .v2-assistants-starter {
+    min-height: 2.75rem;
+  }
+
+  .v2-assistants-card .v2-icon-button,
+  .v2-assistants-detail .v2-icon-button {
+    width: 2.75rem;
+    min-width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .v2-assistants-card .v2-button,
+  .v2-assistants-detail .v2-button,
+  .v2-assistants-dialog .v2-button {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-assistants-card {
+    transition: none;
+  }
+
+  .v2-assistants-skeleton > span,
+  .v2-assistants-skeleton-line {
+    animation: none;
+  }
+}

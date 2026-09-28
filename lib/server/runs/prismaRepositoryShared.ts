@@ -22,6 +22,22 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A rollback-safe PostgreSQL serialization failure (40001) or deadlock
+ * (40P01) in any form Prisma surfaces it; the whole transaction may retry. */
+export function isPrismaSerializationConflict(error: unknown): boolean {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return error.code === "P2034" ||
+      (error.code === "P2010" &&
+        isRecord(error.meta) &&
+        (error.meta.code === "40001" || error.meta.code === "40P01"));
+  }
+  // Prisma createMany can surface rollback-safe PostgreSQL conflicts as an
+  // UnknownRequestError instead of P2010. Match the structured connector code,
+  // never arbitrary query text, so unrelated database failures still escape.
+  return error instanceof Prisma.PrismaClientUnknownRequestError &&
+    /PostgresError\s*\{\s*code:\s*"(?:40001|40P01)"/u.test(error.message);
+}
+
 /** A successor can now be admitted during predecessor cleanup. Match its
  * Project/owner -> chat -> run order before any terminal writer locks a run. */
 export async function lockRunSettlementScope(tx: Prisma.TransactionClient, runId: string): Promise<void> {

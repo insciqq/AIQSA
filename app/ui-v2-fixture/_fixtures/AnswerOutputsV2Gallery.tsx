@@ -49,6 +49,7 @@ function citationSurface(state: AnswerOutputsGalleryState) {
 
 const navigationChats: ChatNavigationSummaryWire[] = [{
   activeRun: false,
+  assistant: null,
   folderId: null,
   id: "answer-outputs-fixture",
   title: "Answer outputs",

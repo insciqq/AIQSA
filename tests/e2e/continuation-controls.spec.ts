@@ -10,6 +10,7 @@ test("background continuation shows progress and cancels without losing the curr
   test.setTimeout(120_000);
   const timestamp = "2026-09-18T00:00:00.000Z";
   const source: ChatDetailWire = {
+    assistant: null,
     id: "source", title: "Source conversation", createdAt: timestamp, updatedAt: timestamp,
     activeLeafMessageId: "source-answer", defaultModelId: matrixCatalog.models[0]!.modelId,
     defaultProvider: matrixCatalog.models[0]!.provider, folderId: null, pinned: false, messageCount: 1, usageStats: null,
@@ -75,7 +76,7 @@ for (const width of [1440, 390]) {
     catalog.models.push(chosen);
     const timestamp = "2026-09-15T00:00:00.000Z";
     function chat(id: string, text: string): ChatDetailWire {
-      return { id, title: id === "source" ? "Source conversation" : "Continued conversation", createdAt: timestamp, updatedAt: timestamp,
+      return { assistant: null, id, title: id === "source" ? "Source conversation" : "Continued conversation", createdAt: timestamp, updatedAt: timestamp,
         activeLeafMessageId: `${id}-answer`, defaultModelId: id === "source" ? catalog.models[0]!.modelId : chosen.modelId,
         defaultProvider: chosen.provider, folderId: null, pinned: false, messageCount: 1, usageStats: null,
         hasContinuationSource: id !== "source", workspace: { available: true, enabled: true, internetEnabled: false, sessionState: null },

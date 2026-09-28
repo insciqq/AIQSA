@@ -9,9 +9,39 @@ import type {
   SessionErrorCode
 } from "./http";
 import {
+  ASSISTANT_ROW_KEYS,
+  decodeAssistantAvailability,
+  decodeAssistantAvatarRecipe,
   decodeAssistantIdentity,
-  type AssistantIdentity
+  decodeAssistantKnowledgeValue,
+  decodeAssistantModelValue,
+  decodeAssistantRowDeviation,
+  decodeAssistantRowKey,
+  decodeAssistantRowPolicy,
+  decodeAssistantRowProvenance,
+  decodeAssistantRunControls,
+  decodeAssistantSearchValue,
+  decodeAssistantSkillsValue,
+  decodeAssistantToolsValue,
+  type AssistantAvailability,
+  type AssistantAvatarRecipe,
+  type AssistantIdentity,
+  type AssistantKnowledgeValue,
+  type AssistantModelValue,
+  type AssistantRowDeviation,
+  type AssistantRowKey,
+  type AssistantRowPolicy,
+  type AssistantRowProvenance,
+  type AssistantRowValues,
+  type AssistantRunControls,
+  type AssistantSearchValue,
+  type AssistantSkillsValue,
+  type AssistantToolsValue
 } from "./assistants";
+import { isAssistantReferenceId } from "./chatDefaults";
+import { decodeMcpRunSelection, type McpRunSelection } from "./mcp";
+import type { SearchPlanMode } from "./search";
+import { decodeSkillsSelection, type SkillsSelection } from "./skills";
 import {
   decodeThreadSearchSource,
   type ThreadSearchSource
@@ -281,6 +311,8 @@ export type WorkspaceChatSummary = {
   titlePending?: boolean;
   hasContinuationSource?: boolean;
   activeLeafMessageId: string | null;
+  /** The Assistant bound for the next messages; absent on unsaved local drafts. */
+  assistantId?: string | null;
   createdAt: string;
   defaultModelId: string;
   defaultSearchPlan?: SearchPlan | null;
@@ -380,6 +412,8 @@ export type WorkspaceChatSummaryWire = Omit<
   | "temporaryRetentionDeadline"
   | "workspace"
 > & {
+  /** Present on current responses; absent (stale caches, fixtures) means none. */
+  assistantId?: string | null;
   defaultModelId: string | null;
   defaultProvider: string | null;
   pinned: boolean;
@@ -389,6 +423,8 @@ export type WorkspaceChatSummaryWire = Omit<
 };
 
 export type ChatDetailWire = WorkspaceChatSummaryWire & {
+  /** The chat's Assistant as the viewer may see it; null for a chat without one. */
+  assistant: ChatAssistantProjection | null;
   contextStats: ChatContextStats;
   messages: ChatMessageWire[];
   pageInfo: ChatMessagePageInfo;
@@ -500,6 +536,9 @@ export type CreateChatRequestWire = {
 };
 
 export type UpdateChatRequestWire = {
+  /** Binds the Assistant for the next messages; null removes it. Either clears the overrides. */
+  assistantId?: string | null;
+  assistantOverrides?: ChatAssistantOverridesPatch;
   defaultSearchPlan?: SearchPlan | null;
   activeLeafMessageId?: string | null;
   defaultKnowledgePlan?: KnowledgePlan | null;
@@ -509,9 +548,17 @@ export type UpdateChatRequestWire = {
   workspaceEnabled?: boolean;
 };
 
+/** Assistant errors of chat updates and message sends; only a send reports a binding conflict. */
+export type ChatAssistantErrorCode =
+  | "assistant_binding_conflict"
+  | "assistant_not_available"
+  | "assistant_overrides_invalid"
+  | "assistant_overrides_not_allowed";
+
 export type ChatRouteServerErrorCode =
   | SessionErrorCode
   | MutationOriginErrorCode
+  | ChatAssistantErrorCode
   | "active_run_in_progress"
   | "archived_chat_cursor_invalid"
   | "chat_page_cursor_invalid"
@@ -558,10 +605,13 @@ export type WorkspaceChatsResponseWire = {
 
 /**
  * Content-free sidebar projection. Message counts, model identities, defaults,
- * prompts, and message snippets deliberately do not cross this boundary.
+ * prompts, and message snippets deliberately do not cross this boundary. The
+ * one exception is the display identity of the chat's Assistant, present only
+ * while that Assistant is available to the viewer.
  */
 export type ChatNavigationSummaryWire = {
   activeRun: boolean;
+  assistant: AssistantIdentity | null;
   folderId: string | null;
   id: string;
   title: string;
@@ -1155,6 +1205,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   }
 
   const activeLeafMessageId = nullableId(value.activeLeafMessageId);
+  const assistantId = value.assistantId === undefined ? undefined : nullableId(value.assistantId);
   const id = requiredString(value.id);
   const createdAt = requiredString(value.createdAt);
   const defaultSelection = decodeChatDefaultSelection(
@@ -1174,6 +1225,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     : decodeChatWorkspaceState(value.workspace);
   if (
     activeLeafMessageId === undefined ||
+    (value.assistantId !== undefined && assistantId === undefined) ||
     !id ||
     !createdAt ||
     defaultKnowledgePlan === undefined ||
@@ -1191,6 +1243,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
 
   return {
     activeLeafMessageId,
+    ...(assistantId !== undefined ? { assistantId } : {}),
     createdAt,
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
     ...(value.titlePending === true ? { titlePending: true } : {}),
@@ -1252,16 +1305,18 @@ function decodeChatNavigationSummaryWire(
 ): ChatNavigationSummaryWire | null {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["activeRun", "folderId", "id", "title", "updatedAt"])
+    !hasExactKeys(value, ["activeRun", "assistant", "folderId", "id", "title", "updatedAt"])
   ) {
     return null;
   }
+  const assistant = value.assistant === null ? null : decodeAssistantIdentity(value.assistant);
   const folderId = nullableId(value.folderId);
   const id = requiredString(value.id);
   const title = requiredString(value.title);
   const updatedAt = isoTimestamp(value.updatedAt);
   if (
     typeof value.activeRun !== "boolean" ||
+    (value.assistant !== null && !assistant) ||
     folderId === undefined ||
     !id ||
     !title ||
@@ -1271,6 +1326,7 @@ function decodeChatNavigationSummaryWire(
   }
   return {
     activeRun: value.activeRun,
+    assistant,
     folderId,
     id,
     title,
@@ -1394,6 +1450,10 @@ export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null 
   }
 
   const chat = decodeWorkspaceChatSummaryWire(value.chat);
+  // Absent only in fixtures that predate the projection.
+  const assistant = value.chat.assistant === undefined || value.chat.assistant === null
+    ? null
+    : decodeChatAssistantProjection(value.chat.assistant);
   const contextStats = decodeContextStats(value.chat.contextStats);
   const usageStats = decodeUsageStats(value.chat.usageStats);
   const page = decodeMessagePage(value.chat.messages, value.chat.pageInfo, {
@@ -1401,6 +1461,7 @@ export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null 
   });
   if (
     !chat ||
+    (value.chat.assistant != null && !assistant) ||
     !contextStats ||
     usageStats === undefined ||
     !page ||
@@ -1412,6 +1473,7 @@ export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null 
 
   return {
     ...chat,
+    assistant,
     contextStats,
     messages: page.messages,
     pageInfo: page.pageInfo,
@@ -1543,6 +1605,7 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "sourceRevision",
       "title",
       "updatedAt",
+      ...(Object.hasOwn(value, "assistantId") ? ["assistantId"] : []),
       ...(Object.hasOwn(value, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
       ...(Object.hasOwn(value, "workspace") ? ["workspace"] : [])
     ])
@@ -1588,7 +1651,9 @@ export function decodeArchivedChatDetailResponse(
   value: unknown
 ): ArchivedChatDetailResponseWire | null {
   const detail = decodeChatDetailResponse(value);
-  if (!detail || !isRecord(value) || !isRecord(value.chat) || value.chat.archived !== true) {
+  // A read-only archived preview never carries Assistant state.
+  if (!detail || !isRecord(value) || !isRecord(value.chat) || value.chat.archived !== true ||
+    detail.assistant !== null) {
     return null;
   }
   if (!hasExactKeys(value, ["chat"]) || !hasExactKeys(value.chat, [
@@ -1611,6 +1676,8 @@ export function decodeArchivedChatDetailResponse(
     "title",
     "updatedAt",
     "usageStats",
+    ...(Object.hasOwn(value.chat, "assistant") ? ["assistant"] : []),
+    ...(Object.hasOwn(value.chat, "assistantId") ? ["assistantId"] : []),
     ...(Object.hasOwn(value.chat, "hasContinuationSource") ? ["hasContinuationSource"] : []),
     ...(Object.hasOwn(value.chat, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
     ...(Object.hasOwn(value.chat, "workspace") ? ["workspace"] : [])
@@ -1742,5 +1809,299 @@ export function decodeChatUpdateData(value: unknown): ChatUpdateDataWire | null 
     messages: decodedMessages.filter(
       (message): message is ChatMessageWire => message !== null
     )
+  };
+}
+
+/*
+ * Chat Assistant binding. A chat stores the rows the user changed for it in
+ * the vocabulary of an ordinary chat; a present key means "changed for this
+ * chat". Only adjustable rows can be changed.
+ */
+export type ChatAssistantOverrideValues = {
+  controls: AssistantRunControls;
+  knowledge:
+    | { mode: "all_my_knowledge" }
+    | { mode: "none" }
+    | { baseIds: string[]; mode: "explicit"; sourceIds: string[] };
+  model: { mode: "model"; modelId: string };
+  search: { mode: "off" } | { mode: SearchPlanMode; optionIds: string[] };
+  skills: SkillsSelection;
+  tools: McpRunSelection;
+};
+
+export type ChatAssistantOverrides = Partial<ChatAssistantOverrideValues>;
+
+/** A value changes the row for this chat; null returns the row to the Assistant. */
+export type ChatAssistantOverridesPatch = {
+  [Key in AssistantRowKey]?: ChatAssistantOverrideValues[Key] | null;
+};
+
+/**
+ * Stored in place of the overrides when the chat's Assistant was deleted;
+ * the chat then projects the `deleted` state. No other key accompanies it.
+ */
+export const CHAT_ASSISTANT_DELETED_MARKER: Readonly<{ assistantDeleted: true }> =
+  Object.freeze({ assistantDeleted: true });
+
+export type StoredChatAssistantOverrides =
+  | { kind: "deleted" }
+  | { kind: "overrides"; overrides: ChatAssistantOverrides };
+
+/** Effective values may also be the user's own defaults, in ordinary chat vocabulary. */
+export type ChatAssistantRowValues = {
+  controls: AssistantRunControls;
+  knowledge: Exclude<AssistantKnowledgeValue, { mode: "inherit" }> | { mode: "all_my_knowledge" };
+  model: Exclude<AssistantModelValue, { mode: "inherit" }>;
+  search: Exclude<AssistantSearchValue, { mode: "inherit" }>;
+  skills: AssistantSkillsValue;
+  tools: Exclude<AssistantToolsValue, { mode: "inherit" }> | McpRunSelection;
+};
+
+export type ChatAssistantRow<Key extends AssistantRowKey> = {
+  /** The Assistant's own value, for "Reset to Assistant"; redacted like Assistant content. */
+  assistantValue: AssistantRowValues[Key];
+  /** Set when the Assistant's adjustable value is unavailable to the viewer. */
+  deviation: AssistantRowDeviation | null;
+  policy: AssistantRowPolicy;
+  provenance: AssistantRowProvenance;
+  /** The value the next message uses. */
+  value: ChatAssistantRowValues[Key];
+};
+
+export type ChatAssistantRows = { [Key in AssistantRowKey]: ChatAssistantRow<Key> };
+
+export type ChatAssistantProjection =
+  | {
+      availability: AssistantAvailability;
+      avatar: AssistantAvatarRecipe;
+      id: string;
+      name: string;
+      owned: boolean;
+      ownerDisplayName: string;
+      rows: ChatAssistantRows;
+      state: "bound";
+    }
+  /**
+   * Bound to an Assistant the viewer can no longer use; nothing about it is
+   * disclosed beyond `archived` when its owner archived one the viewer still has.
+   */
+  | { reason?: "archived"; state: "unavailable" }
+  /** The bound Assistant was deleted; answers keep their identity snapshots. */
+  | { state: "deleted" };
+
+export type ChatAssistantUpdate = {
+  assistantId?: string | null;
+  assistantOverrides?: ChatAssistantOverridesPatch;
+};
+
+function withoutInherit<T extends { mode: string }>(value: T | null): Exclude<T, { mode: "inherit" }> | null {
+  return value && value.mode !== "inherit" ? value as Exclude<T, { mode: "inherit" }> : null;
+}
+
+function allMyKnowledge(value: unknown): { mode: "all_my_knowledge" } | null {
+  return isRecord(value) && value.mode === "all_my_knowledge" && Object.keys(value).length === 1
+    ? { mode: "all_my_knowledge" }
+    : null;
+}
+
+function decodeChatAssistantOverrideValue<Key extends AssistantRowKey>(
+  key: Key,
+  value: unknown
+): ChatAssistantOverrideValues[Key] | null {
+  const decoded: ChatAssistantOverrideValues[AssistantRowKey] | null =
+    key === "controls" ? decodeAssistantRunControls(value)
+      : key === "model" ? withoutInherit(decodeAssistantModelValue(value)) as ChatAssistantOverrideValues["model"] | null
+        : key === "search" ? withoutInherit(decodeAssistantSearchValue(value))
+          : key === "tools" ? decodeMcpRunSelection(value)
+            : key === "knowledge" ? allMyKnowledge(value) ?? withoutInherit(decodeAssistantKnowledgeValue(value))
+              : isRecord(value) ? decodeSkillsSelection(value) : null;
+  return decoded as ChatAssistantOverrideValues[Key] | null;
+}
+
+function decodeOverrideEntries(
+  value: Record<string, unknown>,
+  allowNull: boolean
+): { ok: true; value: ChatAssistantOverridesPatch } | { ok: false; row?: AssistantRowKey } {
+  const decoded: Record<string, unknown> = {};
+  for (const [name, entry] of Object.entries(value)) {
+    const key = decodeAssistantRowKey(name);
+    if (!key) return { ok: false };
+    if (entry === null && allowNull) {
+      decoded[key] = null;
+      continue;
+    }
+    const override = decodeChatAssistantOverrideValue(key, entry);
+    if (!override) return { ok: false, row: key };
+    decoded[key] = override;
+  }
+  return { ok: true, value: decoded as ChatAssistantOverridesPatch };
+}
+
+/** Reads `Chat.assistantOverrides`; null means the stored value is not a valid shape. */
+export function decodeStoredChatAssistantOverrides(value: unknown): StoredChatAssistantOverrides | null {
+  if (value === null || value === undefined) return { kind: "overrides", overrides: {} };
+  if (!isRecord(value)) return null;
+  if ("assistantDeleted" in value) {
+    return Object.keys(value).length === 1 && value.assistantDeleted === true ? { kind: "deleted" } : null;
+  }
+  const decoded = decodeOverrideEntries(value, false);
+  return decoded.ok ? { kind: "overrides", overrides: decoded.value as ChatAssistantOverrides } : null;
+}
+
+/** The column value for a set of overrides: null when no row was changed. */
+export function storedChatAssistantOverrides(overrides: ChatAssistantOverrides): ChatAssistantOverrides | null {
+  return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+/** Applies a PATCH: values replace rows, null removes them. */
+export function applyChatAssistantOverridesPatch(
+  current: ChatAssistantOverrides,
+  patch: ChatAssistantOverridesPatch
+): ChatAssistantOverrides {
+  const next: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete next[key];
+    else if (value !== undefined) next[key] = value;
+  }
+  return next as ChatAssistantOverrides;
+}
+
+/**
+ * Decodes the two Assistant fields of a chat update when present. A malformed
+ * id gets the same neutral code as an Assistant the requester cannot use.
+ */
+export function decodeChatAssistantUpdate(
+  body: Readonly<Record<string, unknown>>
+):
+  | { ok: true; update: ChatAssistantUpdate }
+  | { code: "assistant_not_available" | "assistant_overrides_invalid"; ok: false; row?: AssistantRowKey } {
+  const update: ChatAssistantUpdate = {};
+  if ("assistantId" in body && body.assistantId !== undefined) {
+    if (body.assistantId !== null && !isAssistantReferenceId(body.assistantId)) {
+      return { code: "assistant_not_available", ok: false };
+    }
+    update.assistantId = body.assistantId;
+  }
+  if ("assistantOverrides" in body && body.assistantOverrides !== undefined) {
+    const patch = isRecord(body.assistantOverrides)
+      ? decodeOverrideEntries(body.assistantOverrides, true)
+      : { ok: false as const };
+    if (!patch.ok) {
+      return { code: "assistant_overrides_invalid", ok: false, ...(patch.row ? { row: patch.row } : {}) };
+    }
+    update.assistantOverrides = patch.value;
+  }
+  return { ok: true, update };
+}
+
+function decodeChatEffectiveValue<Key extends AssistantRowKey>(
+  key: Key,
+  value: unknown
+): ChatAssistantRowValues[Key] | null {
+  const decoded: ChatAssistantRowValues[AssistantRowKey] | null =
+    key === "controls" ? decodeAssistantRunControls(value)
+      : key === "model" ? withoutInherit(decodeAssistantModelValue(value, "projection"))
+        : key === "search" ? withoutInherit(decodeAssistantSearchValue(value, "projection"))
+          : key === "tools" ? decodeMcpRunSelection(value) ??
+            withoutInherit(decodeAssistantToolsValue(value, "projection"))
+            : key === "knowledge" ? allMyKnowledge(value) ??
+              withoutInherit(decodeAssistantKnowledgeValue(value, "projection"))
+              : decodeAssistantSkillsValue(value, "projection");
+  return decoded as ChatAssistantRowValues[Key] | null;
+}
+
+function decodeAssistantOwnValue<Key extends AssistantRowKey>(
+  key: Key,
+  value: unknown
+): AssistantRowValues[Key] | null {
+  const decoded: AssistantRowValues[AssistantRowKey] | null =
+    key === "controls" ? decodeAssistantRunControls(value)
+      : key === "model" ? decodeAssistantModelValue(value, "projection")
+        : key === "search" ? decodeAssistantSearchValue(value, "projection")
+          : key === "tools" ? decodeAssistantToolsValue(value, "projection")
+            : key === "knowledge" ? decodeAssistantKnowledgeValue(value, "projection")
+              : decodeAssistantSkillsValue(value, "projection");
+  return decoded as AssistantRowValues[Key] | null;
+}
+
+function decodeChatAssistantRow<Key extends AssistantRowKey>(
+  key: Key,
+  value: unknown,
+  owned: boolean
+): ChatAssistantRow<Key> | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["assistantValue", "deviation", "policy", "provenance", "value"])
+  ) {
+    return null;
+  }
+  const assistantValue = decodeAssistantOwnValue(key, value.assistantValue);
+  const deviation = value.deviation === null ? null : decodeAssistantRowDeviation(key, value.deviation, owned);
+  const policy = decodeAssistantRowPolicy(value.policy);
+  const provenance = decodeAssistantRowProvenance(value.provenance);
+  const effective = decodeChatEffectiveValue(key, value.value);
+  if (!assistantValue || (value.deviation !== null && !deviation) || !policy || !provenance || !effective) {
+    return null;
+  }
+  const inherits = "mode" in assistantValue && assistantValue.mode === "inherit";
+  const hasMode = key !== "controls" && key !== "skills";
+  if (
+    // Only adjustable rows can be changed for a chat or fall back.
+    (policy === "fixed" && (provenance === "chat" || provenance === "fallback" || deviation !== null)) ||
+    (provenance === "fallback") !== (deviation !== null && provenance !== "chat") ||
+    (hasMode && provenance === "default" && !inherits) ||
+    (hasMode && provenance === "assistant" && inherits)
+  ) {
+    return null;
+  }
+  return { assistantValue, deviation, policy, provenance, value: effective };
+}
+
+export function decodeChatAssistantProjection(value: unknown): ChatAssistantProjection | null {
+  if (!isRecord(value)) return null;
+  if (value.state === "unavailable" && value.reason === "archived") {
+    return Object.keys(value).length === 2 ? { reason: "archived", state: "unavailable" } : null;
+  }
+  if (value.state === "deleted" || value.state === "unavailable") {
+    return Object.keys(value).length === 1 ? { state: value.state } : null;
+  }
+  if (
+    value.state !== "bound" ||
+    !hasExactKeys(value, ["availability", "avatar", "id", "name", "owned", "ownerDisplayName", "rows", "state"]) ||
+    typeof value.owned !== "boolean" ||
+    !isRecord(value.rows) ||
+    !hasExactKeys(value.rows, ASSISTANT_ROW_KEYS)
+  ) {
+    return null;
+  }
+  const availability = decodeAssistantAvailability(value.availability);
+  const avatar = decodeAssistantAvatarRecipe(value.avatar);
+  const id = requiredString(value.id);
+  const name = requiredString(value.name);
+  if (
+    !availability ||
+    (!value.owned && !availability.ok && availability.dependencies !== undefined) ||
+    !avatar ||
+    !id ||
+    !name ||
+    typeof value.ownerDisplayName !== "string"
+  ) {
+    return null;
+  }
+  const rows: Partial<Record<AssistantRowKey, unknown>> = {};
+  for (const key of ASSISTANT_ROW_KEYS) {
+    const row = decodeChatAssistantRow(key, value.rows[key], value.owned);
+    if (!row) return null;
+    rows[key] = row;
+  }
+  return {
+    availability,
+    avatar,
+    id,
+    name,
+    owned: value.owned,
+    ownerDisplayName: value.ownerDisplayName,
+    rows: rows as ChatAssistantRows,
+    state: "bound"
   };
 }

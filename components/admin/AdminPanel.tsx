@@ -2,6 +2,11 @@
 
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
 import { AdminAnnouncementsSection } from "@/components/admin/AdminAnnouncementsSection";
+import { AdminAssistantsSection } from "@/components/admin/assistants/AdminAssistantsSection";
+import {
+  useAdminAssistantsPendingCount,
+  type AdminAssistantsPendingCount
+} from "@/components/admin/assistants/useAdminAssistantsPendingCount";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
 import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
@@ -80,6 +85,7 @@ function AdminSectionContent({
   accessRules,
   activeSection,
   adminEmail,
+  assistantsPending,
   attention,
   dashboard,
   feedback,
@@ -98,6 +104,7 @@ function AdminSectionContent({
   accessRules: AdminAccessRulesController;
   activeSection: AdminSectionId;
   adminEmail: string;
+  assistantsPending: AdminAssistantsPendingCount;
   attention: ReturnType<typeof useAdminAttention>;
   dashboard: AdminDashboard;
   feedback: Pick<AdminFeedbackController, "reportError" | "reportNotice">;
@@ -116,6 +123,19 @@ function AdminSectionContent({
   switch (activeSection) {
     case "overview":
       return <AdminOverviewSection controller={attention} onJump={onJump} />;
+    case "assistants":
+      return (
+        <AdminAssistantsSection
+          feedback={feedback}
+          filter={navigation.activeFilter}
+          onPendingCount={assistantsPending.report}
+          onSelectFilter={navigation.selectFilter}
+          onSelectResource={navigation.selectResource}
+          pendingCount={assistantsPending.count}
+          requestConfirmation={requestConfirmation}
+          resource={navigation.activeResource}
+        />
+      );
     case "announcements":
       return <AdminAnnouncementsSection resource={navigation.activeResource} onSelectResource={navigation.selectResource} />;
     case "providers":
@@ -321,13 +341,27 @@ export function AdminPanel({ adminEmail, adminUserId, returnPath = "/" }: AdminP
   const jumpToTarget = useCallback((target: AdminAttentionTarget) => {
     // Resource pages and role rows preserve the attention item's exact target.
     const hasResourcePages = target.section === "providers" || target.section === "search" ||
-      target.section === "users" || target.section === "groups" || target.section === "mcp" || target.section === "roles" || target.section === "skills";
+      target.section === "users" || target.section === "groups" || target.section === "mcp" || target.section === "roles" ||
+      target.section === "skills" || target.section === "assistants";
     selectSection(
       target.section,
       hasResourcePages ? target.resource ?? null : null,
-      target.section === "users" || target.section === "skills" ? target.filter ?? null : null
+      target.section === "users" || target.section === "skills" || target.section === "assistants" ? target.filter ?? null : null
     );
   }, [selectSection]);
+
+  const assistantsPending = useAdminAssistantsPendingCount({
+    enabled: resource.dashboard !== null,
+    refreshKey: lastLoadedMs
+  });
+  const reportAssistantsPending = assistantsPending.report;
+  useEffect(() => {
+    // The Overview's attention list is fresher whenever it has read the Assistants source.
+    const current = attention.attention;
+    if (!current || current.unavailable.includes("assistants")) return;
+    const item = current.items.find((candidate) => candidate.code === "assistants_listing_pending");
+    reportAssistantsPending(item?.count ?? 0);
+  }, [attention.attention, reportAssistantsPending]);
 
   const [sectionTopbar, setSectionTopbar] = useState<AdminShellTopbar | null>(null);
   const dashboardAttention = resource.dashboard?.navigation.attention ?? null;
@@ -349,7 +383,7 @@ export function AdminPanel({ adminEmail, adminUserId, returnPath = "/" }: AdminP
       >
         <AdminShell
           accountLabel={adminEmail}
-          attentionCounts={{ users: usersAttention }}
+          attentionCounts={{ assistants: assistantsPending.count, users: usersAttention }}
           navigation={navigation}
           navigationBlocked={navigationLocked}
           onReturnToChat={requestReturnToChat}
@@ -376,6 +410,7 @@ export function AdminPanel({ adminEmail, adminUserId, returnPath = "/" }: AdminP
                 accessRules={accessRules}
                 activeSection={navigation.activeSection}
                 adminEmail={adminEmail}
+                assistantsPending={assistantsPending}
                 attention={attention}
                 dashboard={resource.dashboard}
                 feedback={feedback}

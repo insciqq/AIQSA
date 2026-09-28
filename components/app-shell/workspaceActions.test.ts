@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { useWorkspaceOutputReconciliation } from "./useWorkspaceOutputReconciliation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  resetChatAssistantProjectionStoreForTest,
   resetComposerSessionStoreForTest,
   resetComposerControlStoreForTest,
   resetRunSurfaceStoreForTest,
@@ -18,9 +19,15 @@ import {
   type ComposerSessionKey
 } from "./composerSessionStore";
 import { useComposerControlStore } from "./composerControlStore";
+import { useChatAssistantProjectionStore } from "./chatAssistantProjectionStore";
+import {
+  assistantAvatarFixture,
+  boundComposerAssistantFixture
+} from "@/tests/support/composerAssistantFixtures";
+import type { ChatAssistantProjection } from "@/lib/contracts/chats";
 import { useKnowledgeLibraryStore } from "./knowledgeLibraryStore";
 import { useRunSurfaceStore } from "./runSurfaceStore";
-import { chatExportMarkdown, useWorkspaceActions } from "./workspaceActions";
+import { chatExportMarkdown, useWorkspaceActions, type BlankDefaultAssistant } from "./workspaceActions";
 import {
   useThreadStore,
   type ThreadHistoryState
@@ -58,8 +65,7 @@ describe("opening a continuation", () => {
       knowledgePlanSource: "explicit", knowledgeSelection: { version: 1, mode: "explicit", baseIds: ["base"], sourceIds: ["source"] },
       selectedKnowledgeBaseIds: ["base"], mcpSelection: { mode: "load_all" },
       selectedSkills: [{ id: "skill", name: "Skill", description: "", promptCharacterCount: 10 }],
-      selectedAssistant: { id: "assistant", name: "Assistant", description: "", promptCharacterCount: 10, starterPrompts: [],
-        avatar: { accents: [0, 2], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated", paletteId: "ocean", recipeVersion: 1, rotations: [0, 1] } }
+      assistant: boundComposerAssistantFixture({ id: "assistant", name: "Assistant" })
     });
     const controls = useComposerControlStore.getState();
     const opening = setup.actions.openContinuedChat(continuationDetail(), source);
@@ -311,6 +317,7 @@ function threadHistory(
 function useWorkspaceActionsForTest(input: {
   activeChatId?: string | null;
   attachments: ComposerAttachment[];
+  chooseDefaultAssistant?(assistantId: string, isCurrent: () => boolean): Promise<boolean>;
   draft: string;
   editingTitle?: string;
   includeConcurrentChat?: boolean;
@@ -346,6 +353,9 @@ function useWorkspaceActionsForTest(input: {
   resetRunSurfaceStoreForTest();
   resetThreadStoreForTest();
   resetWorkspaceStoreForTest();
+  resetChatAssistantProjectionStoreForTest();
+  // The test chats were read before; none has an Assistant.
+  for (const known of initialChats) useChatAssistantProjectionStore.getState().setProjection(known.id, null);
   useWorkspaceStore.setState({
     activeChatId,
     catalog,
@@ -377,9 +387,13 @@ function useWorkspaceActionsForTest(input: {
   const workspaceRefreshPromiseRef = { current: null } as {
     current: Promise<ChatDetail | null> | null;
   };
+  const blankDefaultAssistantRef = { current: null as BlankDefaultAssistant | null };
   const actions = useWorkspaceActions({
     activeChatIdRef,
     applyModelControlDefaults,
+    ...(input.chooseDefaultAssistant
+      ? { blankDefaultAssistantRef, chooseDefaultAssistant: input.chooseDefaultAssistant }
+      : {}),
     chatDetailRequestsRef,
     chatHasActiveStream,
     chatHasPendingThreadMutation,
@@ -430,6 +444,317 @@ function useWorkspaceActionsForTest(input: {
     }
   };
 }
+
+function boundProjection(): ChatAssistantProjection {
+  const row = <T,>(assistantValue: T, value: unknown, provenance: "assistant" | "chat" | "default" = "assistant") => ({
+    assistantValue, deviation: null, policy: "adjustable" as const, provenance, value
+  });
+  return {
+    availability: { ok: true },
+    avatar: assistantAvatarFixture,
+    id: "assistant-1",
+    name: "Reviewer",
+    owned: true,
+    ownerDisplayName: "Owner",
+    rows: {
+      controls: row({}, {}, "default"),
+      knowledge: row({ mode: "none" }, { mode: "none" }),
+      model: row({ mode: "model", modelId: "assistant-model" }, { mode: "model", modelId: "assistant-model" }),
+      search: row({ mode: "off" }, { mode: "all_selected", optionIds: ["web"] }, "chat"),
+      skills: row({ links: [], mode: "off" }, { links: [], mode: "off" }),
+      tools: row({ mode: "exact", serverIds: ["server-1"] }, { mode: "exact", serverIds: ["server-1"] })
+    },
+    state: "bound"
+  } as ChatAssistantProjection;
+}
+
+describe("restoring a chat's Assistant", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetComposerControlStoreForTest();
+    resetChatAssistantProjectionStoreForTest();
+  });
+
+  it("restores the Assistant, rows and origins the server projects on a cold open, and none for an unbound chat", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    resetChatAssistantProjectionStoreForTest();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats/chat-a"
+      ? Response.json({ chat: { ...apiChatDetail(state.chatA, []), assistant: boundProjection() } })
+      : Response.json({ chat: { ...apiChatDetail(state.chatB, []), assistant: null } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await state.actions.activateChat(state.chatA, { resumeRuns: false });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a");
+    const restored = useComposerControlStore.getState();
+    expect(restored).toMatchObject({
+      assistant: {
+        id: "assistant-1",
+        rows: {
+          controls: { origin: "default" },
+          model: { origin: "assistant" },
+          search: { origin: "chat" },
+          tools: { origin: "assistant" }
+        },
+        state: "bound"
+      },
+      mcpSelection: { mode: "exact", serverIds: ["server-1"] },
+      searchPlanMode: "all_selected",
+      selectedModelId: "assistant-model",
+      selectedSearchOptionIds: ["web"],
+      skillsMode: "off"
+    });
+
+    await state.actions.activateChat(state.chatB, { resumeRuns: false });
+    expect(useComposerControlStore.getState()).toMatchObject({
+      assistant: null,
+      mcpSelection: { mode: "auto" },
+      skillsMode: "auto"
+    });
+
+    // Reopening the bound chat restores it from the projection it read.
+    await state.actions.activateChat(state.chatA, { resumeRuns: false });
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads an unknown projection for a caller that keeps its controls but asks for the Assistant", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    resetChatAssistantProjectionStoreForTest();
+    const cached = {
+      activeLeafId: null,
+      history: threadHistory(state.chatA),
+      messages: [],
+      sourceUpdatedAt: state.chatA.updatedAt,
+      usageStats: null
+    };
+    useThreadStore.getState().replaceThread(state.chatA.id, cached);
+    const fetchMock = vi.fn(async () => Response.json({ chat: { ...apiChatDetail(state.chatA, []), assistant: boundProjection() } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Preserved controls alone trust the composer and read nothing.
+    await state.actions.activateChat(state.chatA, { preserveControls: true, resumeRuns: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await state.actions.activateChat(state.chatA, { preserveControls: true, readAssistant: true, resumeRuns: false });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/chats/chat-a");
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1", state: "bound" });
+
+    // Once read, the projection is known and nothing is read again.
+    await state.actions.activateChat(state.chatA, { preserveControls: true, readAssistant: true, resumeRuns: false });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a deleted binding visible instead of substituting anything", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    useChatAssistantProjectionStore.getState().setProjection(state.chatA.id, { state: "deleted" });
+    useThreadStore.getState().replaceThread(state.chatA.id, {
+      activeLeafId: null,
+      history: threadHistory(state.chatA),
+      messages: [],
+      sourceUpdatedAt: state.chatA.updatedAt,
+      usageStats: null
+    });
+
+    await state.actions.activateChat(state.chatA, { resumeRuns: false });
+
+    expect(useComposerControlStore.getState().assistant).toEqual({ state: "deleted" });
+  });
+
+  it("keeps the archived reason a consumer's chat reads for its Assistant", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    resetChatAssistantProjectionStoreForTest();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      chat: { ...apiChatDetail(state.chatA, []), assistant: { reason: "archived", state: "unavailable" } }
+    })));
+
+    await state.actions.activateChat(state.chatA, { resumeRuns: false });
+
+    expect(useComposerControlStore.getState().assistant).toEqual({ reason: "archived", state: "unavailable" });
+  });
+
+  it("leaves a chat's Assistant with the chat and keeps one chosen for the blank chat", () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    useComposerControlStore.setState({ assistant: boundComposerAssistantFixture(), mcpSelection: { mode: "exact", serverIds: ["s"] } });
+
+    state.actions.activateBlankWorkspace();
+    expect(useComposerControlStore.getState()).toMatchObject({ assistant: null, mcpSelection: { mode: "auto" } });
+
+    useComposerControlStore.setState({ assistant: boundComposerAssistantFixture({ id: "blank-choice" }) });
+    state.actions.activateBlankWorkspace();
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "blank-choice" });
+  });
+
+  it("re-reads a chat after an Assistant change and applies it only while the chat is open", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      chat: { ...apiChatDetail(state.chatA, []), assistant: boundProjection() }
+    })));
+
+    await expect(state.actions.refreshChatAssistant("chat-a", () => false)).resolves.toBe(true);
+    expect(useComposerControlStore.getState().assistant).toBeNull();
+
+    await expect(state.actions.refreshChatAssistant("chat-a")).resolves.toBe(true);
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1" });
+  });
+});
+
+describe("starting a new personal chat with the default Assistant", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetComposerControlStoreForTest();
+  });
+
+  /** Chooses like the composer's Assistant actions: only while the blank chat is current. */
+  function defaultChooser() {
+    const pending: Array<() => void> = [];
+    const choose = vi.fn((assistantId: string, isCurrent: () => boolean) => new Promise<boolean>((resolve) => {
+      pending.push(() => {
+        if (!isCurrent()) return resolve(false);
+        useComposerControlStore.setState({ assistant: boundComposerAssistantFixture({ id: assistantId, name: "Daily co-pilot" }) });
+        resolve(true);
+      });
+    }));
+    const settle = async () => {
+      for (const next of pending.splice(0)) next();
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+    return { choose, settle };
+  }
+
+  function withDefaultAssistant(assistantId: string | null, assistantUnavailable = false) {
+    useWorkspaceStore.getState().setCatalog((current) => current
+      ? { ...current, defaults: { ...current.defaults, assistantId, assistantUnavailable } }
+      : current);
+  }
+
+  it("starts a new personal chat with it, keeps a removal for that blank chat, and starts the next one with it again", async () => {
+    const chooser = defaultChooser();
+    const state = useWorkspaceActionsForTest({ attachments: [], chooseDefaultAssistant: chooser.choose, draft: "" });
+    withDefaultAssistant("assistant-1");
+
+    state.actions.activateBlankWorkspace();
+    expect(chooser.choose).toHaveBeenCalledWith("assistant-1", expect.any(Function));
+    await chooser.settle();
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1", state: "bound" });
+
+    // "Remove for this chat" returns the blank chat to its defaults without an Assistant.
+    state.actions.applyPersonalBlankDefaults();
+    expect(useComposerControlStore.getState().assistant).toBeNull();
+    state.actions.activateBlankWorkspace();
+    await chooser.settle();
+    expect(chooser.choose).toHaveBeenCalledOnce();
+    expect(useComposerControlStore.getState().assistant).toBeNull();
+    expect(useWorkspaceStore.getState().catalog?.defaults.assistantId).toBe("assistant-1");
+
+    await state.actions.activateChat(state.chatB, { resumeRuns: false });
+    state.actions.activateBlankWorkspace();
+    await chooser.settle();
+    expect(chooser.choose).toHaveBeenCalledTimes(2);
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1" });
+
+    // New chat follows a changed setting even from the blank chat.
+    withDefaultAssistant(null);
+    state.actions.activateBlankWorkspace();
+    expect(useComposerControlStore.getState().assistant).toBeNull();
+    withDefaultAssistant("assistant-2");
+    state.actions.activateBlankWorkspace();
+    await chooser.settle();
+    expect(chooser.choose).toHaveBeenLastCalledWith("assistant-2", expect.any(Function));
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-2" });
+  });
+
+  it("never starts Temporary or Project chats with it and drops it when the blank chat turns Temporary", async () => {
+    const chooser = defaultChooser();
+    const state = useWorkspaceActionsForTest({ attachments: [], chooseDefaultAssistant: chooser.choose, draft: "" });
+    withDefaultAssistant("assistant-1");
+
+    state.actions.activateBlankWorkspace(null, "TEMPORARY");
+    state.actions.activateBlankWorkspace(null, "NORMAL", "project-1");
+    expect(chooser.choose).not.toHaveBeenCalled();
+
+    state.actions.activateBlankWorkspace();
+    await chooser.settle();
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1" });
+    // The composer's Temporary switch changes only the blank chat's session.
+    useComposerSessionStore.getState().activateSession(composerSessionKey(null, null, "TEMPORARY"));
+    state.actions.reconcileBlankDefaultAssistant();
+    expect(useComposerControlStore.getState().assistant).toBeNull();
+    useComposerSessionStore.getState().activateSession(composerSessionKey(null, null, "NORMAL"));
+    state.actions.reconcileBlankDefaultAssistant();
+    await chooser.settle();
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1" });
+
+    // One the user chose for the blank chat stays theirs.
+    useComposerControlStore.setState({ assistant: boundComposerAssistantFixture({ id: "chosen" }) });
+    state.actions.activateBlankWorkspace(null, "TEMPORARY");
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "chosen" });
+  });
+
+  it("does not apply an unavailable default or a result that arrives after the user moved on", async () => {
+    const chooser = defaultChooser();
+    const state = useWorkspaceActionsForTest({ attachments: [], chooseDefaultAssistant: chooser.choose, draft: "" });
+    withDefaultAssistant(null, true);
+    state.actions.activateBlankWorkspace();
+    expect(chooser.choose).not.toHaveBeenCalled();
+
+    withDefaultAssistant("assistant-1");
+    await state.actions.activateChat(state.chatA, { resumeRuns: false });
+    state.actions.activateBlankWorkspace();
+    await state.actions.activateChat(state.chatB, { resumeRuns: false });
+    await chooser.settle();
+    expect(useComposerControlStore.getState().assistant).toBeNull();
+  });
+
+  it("lets an Assistant entry link decide the blank chat instead of the default, until the next new chat", async () => {
+    const chooser = defaultChooser();
+    const state = useWorkspaceActionsForTest({ attachments: [], chooseDefaultAssistant: chooser.choose, draft: "" });
+    withDefaultAssistant("assistant-1");
+
+    // The default was still loading when the link took over the blank chat.
+    await state.actions.activateChat(state.chatA, { resumeRuns: false });
+    state.actions.activateBlankWorkspace();
+    expect(chooser.choose).toHaveBeenCalledOnce();
+    state.actions.skipBlankDefaultAssistant();
+    await chooser.settle();
+    expect(useComposerControlStore.getState().assistant).toBeNull();
+
+    // The blank chat stays without the default, whether or not the link resolved.
+    useComposerControlStore.setState({ assistant: boundComposerAssistantFixture({ id: "linked" }) });
+    state.actions.reconcileBlankDefaultAssistant();
+    useComposerSessionStore.getState().activateSession(composerSessionKey(null, null, "TEMPORARY"));
+    state.actions.reconcileBlankDefaultAssistant();
+    useComposerSessionStore.getState().activateSession(composerSessionKey(null, null, "NORMAL"));
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "linked" });
+    state.actions.applyPersonalBlankDefaults();
+    state.actions.reconcileBlankDefaultAssistant();
+    expect(chooser.choose).toHaveBeenCalledOnce();
+
+    await state.actions.activateChat(state.chatB, { resumeRuns: false });
+    state.actions.activateBlankWorkspace();
+    await chooser.settle();
+    expect(chooser.choose).toHaveBeenCalledTimes(2);
+    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1" });
+  });
+
+  it("shows the Assistant of a first message in the chat list before the server's next page", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    useWorkspaceStore.getState().applyNavigationPage({ chats: [], folders: [], nextCursor: null }, false);
+    const sourceKey = composerSessionKey(null);
+    state.actions.activateBlankWorkspace();
+    useComposerControlStore.setState({ assistant: boundComposerAssistantFixture({ id: "assistant-1", name: "Daily co-pilot" }) });
+    useComposerSessionStore.getState().updateSession(sourceKey, { draft: "Hello" });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const created = await state.actions.createPersonalChatForSend(null, sourceKey);
+
+    expect(useWorkspaceStore.getState().navigationChats).toEqual([expect.objectContaining({
+      assistant: { avatar: assistantAvatarFixture, name: "Daily co-pilot" },
+      id: created?.id
+    })]);
+  });
+});
 
 describe("workspace actions", () => {
   beforeEach(() => {
@@ -910,6 +1235,7 @@ describe("workspace actions", () => {
       chats: [
         {
           activeRun: false,
+          assistant: null,
           folderId: null,
           id: "chat-a",
           title: "Chat A",
@@ -917,6 +1243,7 @@ describe("workspace actions", () => {
         },
         {
           activeRun: false,
+          assistant: null,
           folderId: null,
           id: "chat-b",
           title: "Chat B",
@@ -2389,6 +2716,7 @@ describe("workspace actions", () => {
     useWorkspaceStore.getState().applyNavigationPage({
       chats: [{
         activeRun: true,
+        assistant: null,
         folderId: state.chatA.folderId,
         id: state.chatA.id,
         title: state.chatA.title,

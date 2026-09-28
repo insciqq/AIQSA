@@ -6,6 +6,8 @@ import {
 import { chooseReasoningEffort } from "./shell/composer";
 import { runAccountMenuAction } from "./shell/page";
 import { assistantContentWithText } from "./shell/thread";
+import { e2eAssistantRows } from "./support/assistants";
+import { setWorkspaceDefault } from "./support/chatDefaults";
 import { activeChatId } from "./support/workspace";
 
 test.describe.configure({ mode: "serial" });
@@ -104,13 +106,10 @@ async function createAssistantViaApi(
       avatar: assistantAvatar,
       category: null,
       description: "",
-      developerPrompt: null,
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      mcpServerIds: [],
       name: input.name,
-      providerModelId: input.providerModelId,
-      runControls: { reasoningEffort: "medium" },
-      searchPlan: { mode: "all_selected", optionIds: [] },
+      rows: e2eAssistantRows(input.providerModelId, {
+        controls: { policy: "fixed", value: { reasoningEffort: "medium" } }
+      }),
       starterPrompts: input.starterPrompts ?? [],
       systemPrompt: input.systemPrompt ?? "You are terse."
     }
@@ -154,6 +153,16 @@ async function deleteChat(page: Page, chatId: string | null): Promise<void> {
   }
 }
 
+/**
+ * Sets the personal Workspace default and reloads so the next new chat uses
+ * it: the Fake QSA window cannot hold the Workspace context the seeded default adds.
+ */
+async function setWorkspaceDefaultAndReload(page: Page, enabled: boolean): Promise<void> {
+  await setWorkspaceDefault(page.request, enabled);
+  await page.goto("/");
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+}
+
 async function openAssistantsLibrary(page: Page): Promise<Locator> {
   await runAccountMenuAction(page, "Assistants");
   const library = page.getByTestId("library-v2");
@@ -165,17 +174,16 @@ async function openAssistantsLibrary(page: Page): Promise<Locator> {
   return library;
 }
 
+/** The header selector opens the picker of a chat without an Assistant (the "+" entry is gone). */
 async function selectAssistantFromPicker(page: Page, assistantId: string): Promise<void> {
-  await page.getByRole("button", { name: "Add" }).click();
-  await page
-    .getByRole("menu", { name: "Add" })
-    .getByRole("menuitem", { name: /Use an Assistant/ })
-    .click();
+  const selector = page.getByTestId("header-assistant-selector");
+  await expect(selector).toHaveAttribute("data-state", "empty");
+  await selector.click();
   const picker = page.getByTestId("assistant-picker");
   await expect(picker).toBeVisible();
   await picker.getByTestId(`assistant-picker-row-${assistantId}`).click();
   await expect(picker).toHaveCount(0);
-  await expect(page.getByTestId("composer-v2-assistant-lock")).toBeVisible();
+  await expect(selector).toHaveAttribute("data-state", "chosen");
 }
 
 test.beforeEach(async ({ page }) => {
@@ -195,33 +203,34 @@ test("creates an assistant through the Library editor", async ({ page }) => {
   const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
   await library.getByRole("button", { exact: true, name: "New assistant" }).first().click();
+  await page.getByRole("dialog", { name: "New assistant" }).getByRole("button", { name: "Continue" }).click();
 
   const editor = library.getByTestId("assistant-editor");
   await expect(editor).toBeVisible();
   await expect(editor.getByRole("heading", { name: "New assistant", exact: true })).toBeVisible();
   const save = editor.getByTestId("assistant-editor-save");
-  await expect(save).toHaveText("Create assistant");
-  await expect(save).toBeDisabled();
+  await expect(save).toHaveText("Create");
+  await expect(editor.getByRole("button", { name: "Adjustable", exact: true })).toHaveCount(6);
 
   await editor.getByLabel("Name Required", { exact: true }).fill(name);
+  await editor.getByRole("button", { name: "Model", exact: true }).click();
   await editor.getByLabel("Model", { exact: true }).selectOption(modelId);
-  await editor.getByLabel("Assistant instructions").fill("You are terse.");
-  await editor.getByText("Starter prompts", { exact: true }).click();
+  await editor.getByRole("textbox", { name: "Instructions", exact: true }).fill("You are terse.");
   await editor.getByRole("button", { name: "Add starter" }).click();
-  await editor.getByLabel("Starter prompt 1", { exact: true }).fill("Say hello");
+  await editor.getByLabel("Conversation starter 1", { exact: true }).fill("Say hello");
 
-  await expect(save).toBeEnabled();
   await save.click();
 
-  await expect(editor.getByRole("status")).toContainText(
-    "Assistant created. It is private until you share it"
+  await expect(editor.getByTestId("assistant-library-notice")).toContainText(
+    "Assistant created. It stays private until you share it."
   );
   await expect(editor.getByRole("button", { exact: true, name: "Revision 1" })).toHaveCount(0);
   await expect(editor.getByRole("heading", { name })).toBeVisible();
-  await expect(save).toHaveText("Save changes");
-  await expect(editor.getByRole("button", { name: "Use in chat" })).toBeVisible();
+  await expect(save).toHaveText("Save");
+  await expect(editor.getByText("Saved", { exact: true })).toBeVisible();
+  await expect(editor.getByRole("button", { name: "Manage sharing…" })).toBeEnabled();
 
-  await library.getByRole("button", { exact: true, name: "Assistants" }).click();
+  await library.getByRole("button", { exact: true, name: "Back to Assistants" }).click();
   await expect(editor).toHaveCount(0);
   await expect(library.getByRole("heading", { name })).toBeVisible();
   await library.getByRole("button", { name: "Back to chat" }).click();
@@ -248,21 +257,20 @@ test("uses an assistant from the Library and completes an identified run", async
     }
   });
 
+  await setWorkspaceDefaultAndReload(page, false);
+
   try {
     const library = await openAssistantsLibrary(page);
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
     await expect(card).toContainText(name);
-    await card.getByRole("button", { name: `Use ${name}` }).click();
+    await card.getByRole("button", { name: `Start chat with ${name}` }).click();
     await expect(library).toHaveCount(0);
 
-    const intro = page.getByTestId("assistant-blank-intro");
-    await expect(intro).toBeVisible();
-    await expect(intro).toContainText(name);
-    const starter = intro
+    const starter = page
       .getByTestId("assistant-starter-prompts")
       .getByRole("button", { name: "Say hello" });
     await expect(starter).toBeVisible();
-    await expect(page.getByTestId("composer-v2-assistant-lock")).toContainText(name);
+    await expect(page.getByTestId("header-assistant-selector")).toHaveAttribute("data-state", "chosen");
 
     await starter.click();
     chatId = await activeChatId(page);
@@ -277,7 +285,10 @@ test("uses an assistant from the Library and completes an identified run", async
     const sendBody = sendBodies[0]!;
     expect(sendBody.assistantId).toBe(assistant.id);
     expect(sendBody.content).toBeTruthy();
-    for (const forbiddenKey of ["modelId", "params", "prompt", "provider", "timeZone"]) {
+    // An Assistant run renders its date and time in the user's zone.
+    expect(typeof sendBody.timeZone).toBe("string");
+    // No ordinary composer payload travels with an unchanged Assistant.
+    for (const forbiddenKey of ["modelId", "params", "prompt", "provider"]) {
       expect(sendBody, forbiddenKey).not.toHaveProperty(forbiddenKey);
     }
 
@@ -293,31 +304,43 @@ test("uses an assistant from the Library and completes an identified run", async
   } finally {
     await deleteChat(page, chatId);
     await archiveAssistantById(page, assistant.id);
+    await setWorkspaceDefaultAndReload(page, true);
   }
 });
 
-test("requires explicit removal before a governed Assistant control changes", async ({ page }) => {
+test("requires removing the Assistant before a fixed Assistant control changes", async ({ page }) => {
   const name = `${assistantNamePrefix} Strict ${Date.now()}`;
   const modelId = await fakeProviderModelId(page);
   const assistant = await createAssistantViaApi(page, { name, providerModelId: modelId });
 
   try {
     await selectAssistantFromPicker(page, assistant.id);
-    const chip = page.getByTestId("composer-v2-assistant-lock");
-    await expect(chip).toContainText(name);
-    await expect(page.getByTestId("composer-assistant-removed-notice")).toHaveCount(0);
+    const selector = page.getByTestId("header-assistant-selector");
+    await expect(selector).toHaveAccessibleName(`Assistant: ${name}`);
 
-    // Model parameters live behind the model chip, which the Assistant locks.
+    // The fixed model is locked with the Assistant's mark: its picker offers no model to choose.
     const modelTrigger = page.getByTestId("header-model-trigger");
-    await expect(modelTrigger).toBeDisabled();
-    await expect(modelTrigger).toHaveAttribute("title", "Managed by the Assistant");
+    await expect(modelTrigger).toBeEnabled();
+    await expect(modelTrigger).toHaveAttribute("data-locked", "true");
+    await expect(modelTrigger).toHaveAttribute("data-provenance", "assistant");
+    await expect(modelTrigger).toHaveAttribute("title", `Fake QSA · fixed by ${name}`);
+    await modelTrigger.click();
+    const modelPicker = page.getByRole("dialog", { name: "Choose model" });
+    await expect(modelPicker.getByTestId("composer-v2-model-fixed")).toBeVisible();
+    await expect(modelPicker.getByRole("option")).toHaveCount(0);
+    await expect(modelPicker.getByRole("searchbox")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(modelPicker).toHaveCount(0);
 
-    await chip.getByRole("button", { name: "Remove" }).click();
+    await selector.click();
+    await page.getByRole("menu", { name: "Assistant" }).getByRole("menuitem", { name: /^Remove for this chat/ }).click();
 
-    await expect(chip).toHaveCount(0);
-    await expect(page.getByTestId("composer-assistant-removed-notice")).toHaveCount(0);
+    // Removal is explicit and nothing else changes silently: the model is the user's own again.
+    await expect(selector).toHaveAttribute("data-state", "empty");
+    await expect(modelTrigger).not.toHaveAttribute("data-locked", "true");
+    await expect(modelTrigger).not.toHaveAttribute("data-provenance", "assistant");
     await chooseReasoningEffort(page, "high");
-    await expect(page.getByTestId("composer-v2-assistant-lock")).toHaveCount(0);
+    await expect(selector).toHaveAttribute("data-state", "empty");
   } finally {
     await archiveAssistantById(page, assistant.id);
   }
@@ -331,6 +354,7 @@ test("keeps accepted answers on their historical identity after an edit", async 
   const modelId = await fakeProviderModelId(page);
   const assistant = await createAssistantViaApi(page, { name, providerModelId: modelId });
   let chatId: string | null = null;
+  await setWorkspaceDefaultAndReload(page, false);
 
   try {
     await selectAssistantFromPicker(page, assistant.id);
@@ -348,7 +372,8 @@ test("keeps accepted answers on their historical identity after an edit", async 
 
     const library = await openAssistantsLibrary(page);
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
-    await card.getByRole("button", { exact: true, name: "Edit" }).click();
+    await card.getByRole("button", { name: `More actions for ${name}` }).click();
+    await page.getByRole("menuitem", { exact: true, name: "Edit" }).click();
 
     const editor = library.getByTestId("assistant-editor");
     await expect(editor.getByRole("button", { exact: true, name: "Revision 1" })).toHaveCount(0);
@@ -359,7 +384,7 @@ test("keeps accepted answers on their historical identity after an edit", async 
     await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved. Future runs use these changes.");
     await expect(editor.getByRole("button", { exact: true, name: "Revision 2" })).toHaveCount(0);
 
-    await library.getByRole("button", { exact: true, name: "Assistants" }).click();
+    await library.getByRole("button", { exact: true, name: "Back to Assistants" }).click();
     await expect(editor).toHaveCount(0);
     await library.getByRole("button", { name: "Back to chat" }).click();
     await expect(library).toHaveCount(0);
@@ -372,6 +397,7 @@ test("keeps accepted answers on their historical identity after an edit", async 
   } finally {
     await deleteChat(page, chatId);
     await archiveAssistantById(page, assistant.id);
+    await setWorkspaceDefaultAndReload(page, true);
   }
 });
 
@@ -383,20 +409,15 @@ test("pins an assistant from the Library card and groups it in the quick picker"
   try {
     const library = await openAssistantsLibrary(page);
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
-    await card.getByRole("button", { name: `More actions for ${name}` }).click();
-    await card.getByRole("menuitem", { exact: true, name: "Pin" }).click();
-    await expect(card.locator(".v2-assistant-pin")).toBeVisible();
-    await card.getByRole("button", { name: `More actions for ${name}` }).click();
-    await expect(card.getByRole("menuitem", { exact: true, name: "Unpin" })).toBeVisible();
-    await page.keyboard.press("Escape");
+    const pin = card.getByRole("button", { exact: true, name: `Pin ${name}` });
+    await expect(pin).toHaveAttribute("aria-pressed", "false");
+    await pin.click();
+    await expect(pin).toHaveAttribute("aria-pressed", "true");
+    await expect(library.getByRole("region", { name: "Pinned" }).getByTestId(`assistant-card-${assistant.id}`)).toBeVisible();
     await library.getByRole("button", { name: "Back to chat" }).click();
     await expect(library).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Add" }).click();
-    await page
-      .getByRole("menu", { name: "Add" })
-      .getByRole("menuitem", { name: /Use an Assistant/ })
-      .click();
+    await page.getByTestId("header-assistant-selector").click();
     const picker = page.getByTestId("assistant-picker");
     await expect(picker).toBeVisible();
     const pinnedGroup = picker.locator('section[aria-label="Pinned"]');
@@ -409,28 +430,100 @@ test("pins an assistant from the Library card and groups it in the quick picker"
   }
 });
 
+test("archives, restores and deletes an assistant from the gallery", async ({ page }) => {
+  const name = `${assistantNamePrefix} Lifecycle ${Date.now()}`;
+  const modelId = await fakeProviderModelId(page);
+  const assistant = await createAssistantViaApi(page, { name, providerModelId: modelId });
+
+  try {
+    const library = await openAssistantsLibrary(page);
+    const gallery = library.getByTestId("assistant-gallery");
+    const card = gallery.getByTestId(`assistant-card-${assistant.id}`);
+    await card.getByRole("button", { name: `More actions for ${name}` }).click();
+    await page.getByRole("menuitem", { exact: true, name: "Archive" }).click();
+    await expect(gallery.getByTestId("assistant-gallery-notice")).toContainText(`Archived ${name}.`);
+    await expect(card).toHaveCount(0);
+
+    await gallery.getByRole("button", { name: /^Archived \d+$/u }).click();
+    await expect(card).toContainText("Archived");
+    await expect(card.getByRole("button", { name: /^Start chat/u })).toHaveCount(0);
+    await card.getByRole("button", { name: `Restore ${name}` }).click();
+    await expect(gallery.getByTestId("assistant-gallery-notice")).toContainText(`Restored ${name}.`);
+    await expect(card).toHaveCount(0);
+
+    await gallery.getByRole("button", { name: /^All \d+$/u }).click();
+    await card.getByRole("button", { exact: true, name }).click();
+    const sheet = page.getByRole("dialog", { exact: true, name });
+    await expect(sheet.getByRole("region", { name: "Setup" }).getByRole("row")).toHaveCount(6);
+    await sheet.getByRole("button", { name: `More actions for ${name}` }).click();
+    await page.getByRole("menuitem", { exact: true, name: "Delete" }).click();
+    const confirm = page.getByRole("dialog", { name: `Delete “${name}”?` });
+    await expect(confirm).toContainText("It isn't shared, used by a Project or bound to a chat.");
+    await confirm.getByRole("button", { exact: true, name: "Delete" }).click();
+
+    await expect(confirm).toHaveCount(0);
+    await expect(sheet).toHaveCount(0);
+    await expect(gallery.getByTestId("assistant-gallery-notice")).toContainText(`Deleted ${name}.`);
+    await expect(card).toHaveCount(0);
+    expect((await page.request.get(`/api/me/assistants/${assistant.id}`)).status()).toBe(404);
+  } finally {
+    await archiveAssistantById(page, assistant.id);
+  }
+});
+
 test("keeps the Library one-task and reachable at 390x844", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
 
   await runAccountMenuAction(page, "Assistants");
   const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
-  await expect(library.getByRole("heading", { name: "Assistants" })).toBeVisible();
+  await expect(library.getByRole("heading", { exact: true, name: "Assistants" })).toBeVisible();
   await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
   await expect(library.getByRole("button", { name: "New assistant", exact: true }).first()).toBeInViewport();
   await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
 
   await library.getByRole("button", { exact: true, name: "New assistant" }).first().click();
+  const sheet = page.getByRole("dialog", { name: "New assistant" });
+  await expectWithinViewport(page, sheet);
+  await sheet.getByRole("button", { name: "Continue" }).click();
   const editor = library.getByTestId("assistant-editor");
   await expect(editor).toBeVisible();
-  await expect(library.getByRole("button", { exact: true, name: "Assistants" })).toBeInViewport();
+  await expect(library.getByRole("button", { exact: true, name: "Back to Assistants" })).toBeInViewport();
   await expect(editor.getByTestId("assistant-editor-save")).toBeInViewport();
+  const starters = editor.getByRole("heading", { name: "Conversation starters" });
+  const setup = editor.getByRole("complementary", { name: "Setup" });
+  expect((await setup.boundingBox())!.y).toBeGreaterThan((await starters.boundingBox())!.y);
   await expectNoHorizontalOverflow(page);
 
-  await library.getByRole("button", { exact: true, name: "Assistants" }).click();
+  await library.getByRole("button", { exact: true, name: "Back to Assistants" }).click();
   await expect(editor).toHaveCount(0);
   await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
   await library.getByRole("button", { name: "Back to chat" }).click();
   await expect(library).toHaveCount(0);
+});
+
+test("Save & try opens a Temporary chat and Edit Assistant returns to the editor", async ({ page }) => {
+  const name = `${assistantNamePrefix} Try ${Date.now()}`;
+
+  await runAccountMenuAction(page, "Assistants");
+  const library = page.getByTestId("library-v2");
+  await library.getByRole("button", { exact: true, name: "New assistant" }).first().click();
+  await page.getByRole("dialog", { name: "New assistant" }).getByRole("button", { name: "Continue" }).click();
+  const editor = library.getByTestId("assistant-editor");
+  await editor.getByLabel("Name Required", { exact: true }).fill(name);
+  await editor.getByLabel("Description", { exact: true }).fill("Tried from the editor.");
+  await editor.getByRole("button", { name: "Save & try" }).click();
+
+  await expect(library).toHaveCount(0);
+  await expect(page.getByTestId("header-temporary-indicator")).toBeVisible();
+  const selector = page.getByRole("button", { name: `Assistant: ${name}` });
+  await expect(selector).toBeVisible();
+  await selector.click();
+  await page.getByRole("menu", { name: "Assistant" }).getByRole("menuitem", { name: "Edit Assistant" }).click();
+
+  const reopened = page.getByTestId("library-v2").getByTestId("assistant-editor");
+  await expect(reopened.getByLabel("Name Required", { exact: true })).toHaveValue(name);
+  await expect(reopened.getByLabel("Description", { exact: true })).toHaveValue("Tried from the editor.");
+  await expect(reopened.getByText("Saved", { exact: true })).toBeVisible();
 });

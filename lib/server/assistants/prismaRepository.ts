@@ -1,26 +1,25 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import type { AssistantListingStatus } from "../../contracts/assistantListing";
 import {
+  ASSISTANT_MAX_RECENT,
+  assistantSkillModeForDelivery,
   decodeAssistantAvatarRecipe,
   decodeAssistantRunControls,
-  type AssistantDraft
+  type AssistantDraft,
+  type AssistantDuplicateReport,
+  type AssistantOwnerAudience,
+  type AssistantProjectUsage,
+  type AssistantPublishableGroup,
+  type AssistantRows
 } from "../../contracts/assistants";
-import {
-  decodeKnowledgePlan,
-  type KnowledgeSelection
-} from "../../contracts/knowledge";
+import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
 import type { AssistantSkillMode, SkillsSelection } from "../../contracts/skills";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
-import {
-  isMcpRunPlanRecordRunnable,
-  projectMcpRunPlanStartability
-} from "../mcp/runPlan";
-import {
-  loadMcpRunPlanRecords,
-  loadMcpRunPlanRecordsForServers
-} from "../mcp/runPlanRepository";
+import { projectMcpRunPlanStartability } from "../mcp/runPlan";
+import { loadMcpRunPlanRecordsForServers } from "../mcp/runPlanRepository";
 import { lockMemorySettings } from "../memory/persistence/transaction";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import {
@@ -28,9 +27,11 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { prisma } from "../prisma";
+import { resolveProjectAccess } from "../projects/access";
 import { revokeOwnedProjectResourcePublication } from "../projects/prismaRepository";
 import {
-  validateAssistantConfigurationAgainstCatalog,
+  assistantRowsForCopier,
+  emptyAssistantCatalogView,
   type AssistantCatalogView
 } from "./catalogValidation";
 import type {
@@ -39,18 +40,31 @@ import type {
   AssistantRunResolver
 } from "./runMaterialization";
 import { withAssistantDependencyAvailability } from "./dependencyAvailability";
+import { loadAssistantRecentChatCounts, loadFeaturedAssistantOrders } from "./listedAssistants";
+import { loadAssistantListingStatus } from "./listingRequests";
+import {
+  assistantRowsFromStoredColumns,
+  legacyValuesFromAssistantRows,
+  storedColumnsFromAssistantRows
+} from "./storedContent";
 
 export type AssistantContentRow = {
+  answerRules: string | null;
   avatar: unknown;
   category: string | null;
   description: string;
-  developerPrompt: string | null;
   responseReminder?: string;
   id: string;
+  /** None or explicit; an inherited Knowledge row reads as None here. */
   knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
+  /** The stored model's name, for the owner's missing-dependency copy only. */
+  modelDisplayName?: string | null;
   name: string;
-  providerModelId: string;
+  /** Null is an inherited model, which no current path can run. */
+  providerModelId: string | null;
+  /** Authoritative row values and policies; the flat fields above read them as today. */
+  rows: AssistantRows;
   runControls: unknown;
   searchPlan: unknown;
   skillSummaries?: { id: string; name: string; available?: boolean; mode?: AssistantSkillMode; instructionApproxTokens?: number }[];
@@ -71,12 +85,19 @@ export type AssistantPublicationRow = {
 
 export type AssistantAccessEntry = {
   archived: boolean;
+  /** Owner only: whom the owner shared it with; null for every other viewer. */
+  audience: AssistantOwnerAudience | null;
+  featured: boolean;
+  /** Position of the installation publication among Featured Assistants. */
+  featuredOrder: number | null;
   id: string;
   installationScope: boolean;
   memberGroupNames: string[];
   owned: boolean;
   ownerDisplayName: string;
   pinned: boolean;
+  /** Set only when a Project member reads it through that Project. */
+  projectName?: string;
   published: boolean;
   /** One complete live definition for future admission. */
   content: AssistantContentRow;
@@ -89,7 +110,18 @@ export type AssistantAccessEntry = {
 };
 
 export type AssistantDetailData = AssistantAccessEntry & {
+  /** Owner only: the latest listing request and whether one can be made. */
+  listingRequest?: AssistantListingStatus | null;
+  /** Owner only. */
+  projects?: AssistantProjectUsage;
   publications: AssistantPublicationRow[] | null;
+  /** Owner only. */
+  recentChatCount?: number;
+  /**
+   * Non-owners only: the Knowledge resources of the Assistant the viewer can
+   * open; the others are counted, never identified.
+   */
+  visibleKnowledge?: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>;
 };
 
 export type AssistantWriteResult =
@@ -116,33 +148,35 @@ export type AssistantPublishResult =
   | { kind: "forbidden" }
   | { kind: "invalid" }
   | { kind: "not_found" }
-  | { kind: "skill_audience_mismatch" }
+  | { kind: "skill_audience_mismatch"; skillNames?: string[] }
   | { kind: "ok"; publication: AssistantPublicationRow };
 
 export type AssistantDuplicateResult =
-  | { assistantId: string; kind: "ok" }
-  | { kind: "knowledge_not_available" }
-  | { kind: "model_not_available" }
-  | { kind: "not_found" }
-  | { kind: "run_controls_invalid" }
-  | { kind: "search_not_available" }
-  | { kind: "skills_not_available" }
-  | { kind: "tools_not_available" };
+  | { assistantId: string; kind: "ok"; report: AssistantDuplicateReport }
+  | { kind: "not_found" };
 
 const contentSelect = {
+  answerRules: true,
   avatar: true,
   category: true,
+  controlsPolicy: true,
   description: true,
-  developerPrompt: true,
   responseReminder: true,
   skillsMode: true,
+  skillsPolicy: true,
   id: true,
+  knowledgePolicy: true,
   knowledgeSelection: true,
+  mcpMode: true,
   mcpServerIds: true,
+  modelPolicy: true,
   name: true,
+  providerModel: { select: { displayName: true } },
   providerModelId: true,
   runControls: true,
   searchPlan: true,
+  searchPolicy: true,
+  toolsPolicy: true,
   skillLinks: {
     orderBy: { ordinal: "asc" },
     select: {
@@ -157,27 +191,27 @@ const contentSelect = {
 
 type ContentRecord = Prisma.AssistantDefinitionGetPayload<{ select: typeof contentSelect }>;
 
-function contentRow(record: ContentRecord, userId?: string): AssistantContentRow {
-  const knowledge = decodeKnowledgePlan(record.knowledgeSelection);
-  if (!knowledge.ok || knowledge.plan.mode === "all_my_knowledge" ||
-    knowledge.plan.mode === "inherited") {
-    throw new Error("assistant_definition_integrity_invalid");
-  }
+/** Run resolution selects the model's connection instead and passes no name. */
+type ContentRecordInput = Omit<ContentRecord, "providerModel"> & {
+  providerModel: { displayName: string } | null;
+};
+
+function contentRow(record: ContentRecordInput, userId?: string): AssistantContentRow {
+  const rows = assistantRowsFromStoredColumns(record);
+  if (!rows) throw new Error("assistant_definition_integrity_invalid");
   return {
+    answerRules: record.answerRules,
     avatar: record.avatar,
     category: record.category,
     description: record.description,
-    developerPrompt: record.developerPrompt,
     responseReminder: record.responseReminder ?? "",
     skills: { mode: record.skillsMode },
     skillModes: Object.fromEntries(record.skillLinks.map((link) => [link.skillId, link.mode])),
     id: record.id,
-    knowledgeSelection: knowledge.plan,
-    mcpServerIds: [...record.mcpServerIds],
+    ...legacyValuesFromAssistantRows(rows),
+    modelDisplayName: record.providerModel?.displayName ?? null,
     name: record.name,
-    providerModelId: record.providerModelId,
-    runControls: record.runControls,
-    searchPlan: record.searchPlan,
+    rows,
     skillSummaries: record.skillLinks.flatMap((link) => {
       const revision = link.skill.ownerUserId === userId ? link.skill.currentRevision : link.skill.sharedRevision;
       return revision ? [{ id: link.skillId, name: revision.name, mode: link.mode }] : [];
@@ -204,25 +238,41 @@ function publicationRow(record: {
   };
 }
 
+function rowColumnsData(rows: AssistantRows) {
+  const { skillLinks: _skillLinks, ...columns } = storedColumnsFromAssistantRows(rows);
+  return {
+    ...columns,
+    knowledgeSelection: columns.knowledgeSelection as unknown as Prisma.InputJsonValue,
+    runControls: columns.runControls as Prisma.InputJsonValue,
+    searchPlan: columns.searchPlan as Prisma.InputJsonValue
+  };
+}
+
+function rowSkillLinks(rows: AssistantRows): {
+  skillIds: string[];
+  skillModes: Record<string, AssistantSkillMode>;
+} {
+  const links = rows.skills.value.links;
+  return {
+    skillIds: links.map((link) => link.skillId),
+    skillModes: Object.fromEntries(links.map((link) =>
+      [link.skillId, assistantSkillModeForDelivery(link.delivery)]))
+  };
+}
+
 function contentDraftData(draft: AssistantDraft): Omit<
   Prisma.AssistantDefinitionUncheckedCreateInput, "ownerUserId"
 > {
+  // The retired developer prompt is neither stored nor cleared: the migration
+  // merged it into the system prompt and current readers ignore the column.
   return {
+    ...rowColumnsData(draft.rows),
+    answerRules: draft.answerRules,
     avatar: draft.avatar as unknown as Prisma.InputJsonValue,
     category: draft.category,
     description: draft.description,
-    developerPrompt: draft.developerPrompt,
-    responseReminder: draft.responseReminder ?? "",
-    skillsMode: draft.skills?.mode ?? "auto",
-    knowledgeSelection: draft.knowledgeSelection as unknown as Prisma.InputJsonValue,
-    mcpServerIds: [...draft.mcpServerIds],
+    responseReminder: draft.responseReminder,
     name: draft.name,
-    providerModelId: draft.providerModelId,
-    runControls: draft.runControls as Prisma.InputJsonValue,
-    searchPlan: {
-      mode: draft.searchPlan.mode,
-      optionIds: [...draft.searchPlan.optionIds]
-    } as Prisma.InputJsonValue,
     starterPrompts: [...draft.starterPrompts],
     systemPrompt: draft.systemPrompt
   };
@@ -263,11 +313,13 @@ type AssistantReadClient = Pick<
 
 type AssistantMcpAccessClient = Pick<PrismaClient, "mcpGrant" | "userGroup">;
 
-async function loadUserAccessibleMcpServerIdsWith(
+/** `activeGroupIds`: the user's memberships of groups that are not archived, when already read. */
+export async function loadUserAccessibleMcpServerIdsWith(
   readClient: AssistantMcpAccessClient,
-  userId: string
+  userId: string,
+  options: Readonly<{ activeGroupIds?: readonly string[] }> = {}
 ): Promise<Set<string>> {
-  const memberGroupIds = await activeMemberGroupIds(readClient, userId);
+  const memberGroupIds = options.activeGroupIds ?? await activeMemberGroupIds(readClient, userId);
   const grants = await readClient.mcpGrant.findMany({
     select: { serverId: true },
     where: {
@@ -275,7 +327,7 @@ async function loadUserAccessibleMcpServerIdsWith(
       server: { archivedAt: null, enabled: true, activeRevisionId: { not: null } },
       OR: [
         { userId },
-        ...(memberGroupIds.length > 0 ? [{ groupId: { in: memberGroupIds } }] : [])
+        ...(memberGroupIds.length > 0 ? [{ groupId: { in: [...memberGroupIds] } }] : [])
       ]
     }
   });
@@ -373,6 +425,34 @@ async function lockSkillDefinitionRows(
   return rows.length === ids.length;
 }
 
+function usableSkillWhere(userId: string): Prisma.SkillDefinitionWhereInput {
+  return {
+    archivedAt: null,
+    currentRevisionId: { not: null },
+    deletedAt: null,
+    OR: [
+      { ownerUserId: userId },
+      {
+        sharedRevisionId: { not: null },
+        publications: {
+          some: {
+            OR: [
+              { scope: "installation" },
+              {
+                group: {
+                  archivedAt: null,
+                  users: { some: { userId } }
+                },
+                scope: "group"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  };
+}
+
 async function skillDependenciesAvailable(
   tx: Prisma.TransactionClient,
   userId: string,
@@ -381,32 +461,7 @@ async function skillDependenciesAvailable(
   const ids = distinctSortedSkillIds(skillIds);
   if (ids.length === 0) return true;
   const available = await tx.skillDefinition.count({
-    where: {
-      archivedAt: null,
-      currentRevisionId: { not: null },
-      deletedAt: null,
-      id: { in: ids },
-      OR: [
-        { ownerUserId: userId },
-        {
-          sharedRevisionId: { not: null },
-          publications: {
-            some: {
-              OR: [
-                { scope: "installation" },
-                {
-                  group: {
-                    archivedAt: null,
-                    users: { some: { userId } }
-                  },
-                  scope: "group"
-                }
-              ]
-            }
-          }
-        }
-      ]
-    }
+    where: { ...usableSkillWhere(userId), id: { in: ids } }
   });
   return available === ids.length;
 }
@@ -449,6 +504,28 @@ async function skillsReachPublicationAudience(
     }
   });
   return available === ids.length;
+}
+
+/** Names of linked Skills that keep the audience from being reached; empty when all reach it. */
+export async function unreachedPublicationSkillNames(
+  tx: Prisma.TransactionClient,
+  definition: Readonly<{ id: string; ownerUserId: string }>,
+  audience: Readonly<{ groupId: string | null; scope: "group" | "installation" }>
+): Promise<string[]> {
+  const links = await tx.assistantSkill.findMany({
+    orderBy: { ordinal: "asc" },
+    select: { skillId: true, skill: { select: { ownerUserId: true, currentRevision: { select: { name: true } }, sharedRevision: { select: { name: true } } } } },
+    where: { assistantId: definition.id }
+  });
+  if (await skillsReachPublicationAudience(tx, links.map((link) => link.skillId), audience)) return [];
+  const names: string[] = [];
+  for (const link of links) {
+    if (await skillsReachPublicationAudience(tx, [link.skillId], audience)) continue;
+    // Only the owner's own unapproved Skill names are shown; others stay neutral.
+    names.push(link.skill.sharedRevision?.name ??
+      (link.skill.ownerUserId === definition.ownerUserId ? link.skill.currentRevision?.name : undefined) ?? "Unavailable Skill");
+  }
+  return names.length > 0 ? names : ["Unavailable Skill"];
 }
 
 function distinctKnowledgeBaseIds(knowledgeBaseIds: readonly string[]): string[] {
@@ -508,62 +585,118 @@ async function lockKnowledgePublicationRowsForDuplicate(
   `);
 }
 
+type KnowledgeAccessClient = Pick<PrismaClient, "knowledgeBase" | "knowledgeSource" | "userGroup">;
+
+/** Knowledge bases the user may open: their own, or published to everyone or to one of their groups. */
+function accessibleKnowledgeBaseWhere(
+  userId: string,
+  groupIds: readonly string[]
+): Prisma.KnowledgeBaseWhereInput {
+  return {
+    archivedAt: null,
+    deletionRequestedAt: null,
+    trashedAt: null,
+    OR: [
+      { ownerUserId: userId },
+      {
+        publications: {
+          some: {
+            OR: [
+              { scope: "installation" },
+              ...(groupIds.length > 0
+                ? [{
+                    group: { archivedAt: null },
+                    groupId: { in: [...groupIds] },
+                    scope: "group" as const
+                  }]
+                : [])
+            ]
+          }
+        }
+      }
+    ]
+  };
+}
+
+/**
+ * The selected Knowledge resources the user may open themselves, with their
+ * names: a base they can access, and a Source they own or that belongs to a
+ * base they can access. Administrator status grants nothing here. Only the
+ * selected ids are read. `activeGroupIds`: the user's memberships of groups
+ * that are not archived, when already read.
+ */
+export async function openableKnowledgeResources(
+  client: KnowledgeAccessClient,
+  userId: string,
+  selection: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>,
+  options: Readonly<{ activeGroupIds?: readonly string[] }> = {}
+): Promise<{ bases: Map<string, string>; sources: Map<string, string> }> {
+  if (selection.baseIds.length + selection.sourceIds.length === 0) return { bases: new Map(), sources: new Map() };
+  const groupIds = options.activeGroupIds ?? await activeMemberGroupIds(client, userId);
+  const accessibleBase = accessibleKnowledgeBaseWhere(userId, groupIds);
+  // One read after the other: a caller's parallel reads each hold one connection.
+  const bases = selection.baseIds.length > 0
+    ? await client.knowledgeBase.findMany({
+        select: { id: true, name: true },
+        where: { ...accessibleBase, id: { in: [...selection.baseIds] } }
+      })
+    : [];
+  const sources = selection.sourceIds.length > 0
+    ? await client.knowledgeSource.findMany({
+        select: { id: true, name: true },
+        where: {
+          deletionRequestedAt: null,
+          id: { in: [...selection.sourceIds] },
+          OR: [
+            { ownerUserId: userId },
+            { baseMemberships: { some: { knowledgeBase: accessibleBase, removedAt: null } } }
+          ],
+          trashedAt: null
+        }
+      })
+    : [];
+  return {
+    bases: new Map(bases.map(({ id, name }) => [id, name])),
+    sources: new Map(sources.map(({ id, name }) => [id, name]))
+  };
+}
+
+/** The ids of `openableKnowledgeResources`, in selection order. */
+export async function accessibleKnowledgeResources(
+  client: KnowledgeAccessClient,
+  userId: string,
+  selection: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>,
+  options: Readonly<{ activeGroupIds?: readonly string[] }> = {}
+): Promise<{ baseIds: string[]; sourceIds: string[] }> {
+  const { bases, sources } = await openableKnowledgeResources(client, userId, selection, options);
+  return {
+    baseIds: selection.baseIds.filter((id) => bases.has(id)),
+    sourceIds: selection.sourceIds.filter((id) => sources.has(id))
+  };
+}
+
 async function allKnowledgeDependenciesAvailable(
   tx: Prisma.TransactionClient,
   userId: string,
-  selection: KnowledgeSelection
+  selection: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>
 ): Promise<boolean> {
-  const groupIds = await activeMemberGroupIds(tx, userId);
-  const accessible = await tx.knowledgeBase.findMany({
+  const accessible = await accessibleKnowledgeResources(tx, userId, selection);
+  return accessible.baseIds.length === selection.baseIds.length &&
+    accessible.sourceIds.length === selection.sourceIds.length;
+}
+
+/** Skills among `skillIds` the user can link: their own, or shared with them. */
+export async function usableSkillIds(
+  tx: Pick<Prisma.TransactionClient, "skillDefinition">,
+  userId: string,
+  skillIds: readonly string[]
+): Promise<Set<string>> {
+  if (skillIds.length === 0) return new Set();
+  const usable = await tx.skillDefinition.findMany({
     select: { id: true },
-    where: {
-      archivedAt: null,
-      deletionRequestedAt: null,
-      trashedAt: null,
-      OR: [
-        { ownerUserId: userId },
-        {
-          publications: {
-            some: {
-              OR: [
-                { scope: "installation" },
-                ...(groupIds.length > 0
-                  ? [{
-                      group: { archivedAt: null },
-                      groupId: { in: groupIds },
-                      scope: "group" as const
-                    }]
-                  : [])
-              ]
-            }
-          }
-        }
-      ]
-    }
+    where: { ...usableSkillWhere(userId), id: { in: [...skillIds] } }
   });
-  const accessibleIds = new Set(accessible.map(({ id }) => id));
-  if (selection.baseIds.some((id) => !accessibleIds.has(id))) return false;
-  if (selection.sourceIds.length === 0) return true;
-  const sources = await tx.knowledgeSource.findMany({
-    select: { id: true },
-    where: {
-      deletionRequestedAt: null,
-      id: { in: [...selection.sourceIds] },
-      OR: [
-        { ownerUserId: userId },
-        {
-          baseMemberships: {
-            some: {
-              knowledgeBaseId: { in: [...accessibleIds] },
-              removedAt: null
-            }
-          }
-        }
-      ],
-      trashedAt: null
-    }
-  });
-  return sources.length === selection.sourceIds.length;
+  return new Set(usable.map(({ id }) => id));
 }
 
 export function createPrismaAssistantRepository(
@@ -604,6 +737,7 @@ export function createPrismaAssistantRepository(
   const accessInclude = {
     skillLinks: contentSelect.skillLinks,
     owner: { select: { displayName: true } },
+    providerModel: contentSelect.providerModel,
     publications: { include: { group: { select: { archivedAt: true, name: true } } } },
     projectBindings: { select: { id: true } }
   } satisfies Prisma.AssistantDefinitionInclude;
@@ -629,11 +763,51 @@ export function createPrismaAssistantRepository(
     return projectAccessEntry(definition, userId, memberGroupIds, Boolean(pin));
   }
 
+  /**
+   * Read access through a Project the user belongs to. It serves the detail
+   * read only: Project membership never adds the Assistant to personal lists,
+   * pins, copies or runs.
+   */
+  async function loadProjectMemberEntry(
+    userId: string,
+    assistantId: string
+  ): Promise<AssistantAccessEntry | null> {
+    const memberGroupIds = await activeMemberGroupIds(client, userId);
+    // With several such Projects, the first by name names the scope.
+    const binding = await client.projectAssistantBinding.findFirst({
+      orderBy: [{ project: { name: "asc" } }, { projectId: "asc" }],
+      select: { project: { select: { name: true } } },
+      where: {
+        assistant: { archivedAt: null },
+        assistantId,
+        project: {
+          grants: { some: { OR: [
+            { userId },
+            ...(memberGroupIds.length > 0 ? [{ groupId: { in: memberGroupIds } }] : [])
+          ] } },
+          status: { not: "DELETING" }
+        }
+      }
+    });
+    if (!binding) return null;
+    const [definition, pin] = await Promise.all([
+      client.assistantDefinition.findUnique({ include: accessInclude, where: { id: assistantId } }),
+      client.assistantPin.findUnique({
+        select: { userId: true },
+        where: { userId_assistantId: { assistantId, userId } }
+      })
+    ]);
+    return definition
+      ? projectAccessEntry(definition, userId, memberGroupIds, Boolean(pin), { projectName: binding.project.name })
+      : null;
+  }
+
   function projectAccessEntry(
     definition: Prisma.AssistantDefinitionGetPayload<{ include: typeof accessInclude }>,
     userId: string,
     memberGroupIds: readonly string[],
-    pinned: boolean
+    pinned: boolean,
+    options: { projectName?: string } = {}
   ): AssistantAccessEntry | null {
     const owned = definition.ownerUserId === userId;
     const memberGroups = new Set(memberGroupIds);
@@ -645,14 +819,32 @@ export function createPrismaAssistantRepository(
           publication.group?.archivedAt === null)
     );
 
-    if (!owned && (definition.archivedAt || accessiblePublications.length === 0)) {
+    if (!owned && (definition.archivedAt || (accessiblePublications.length === 0 && options.projectName === undefined))) {
       return null;
     }
 
     const selectedPublications = owned ? definition.publications : accessiblePublications;
+    // Archived Assistants keep a stored position but are never Featured.
+    const featuredOrder = definition.archivedAt ? null : definition.publications.find((publication) =>
+      publication.scope === "installation")?.featuredOrder ?? null;
 
     return {
       archived: definition.archivedAt !== null,
+      // From the stored publications, which archiving the Assistant keeps; a
+      // publication to an archived group reaches no one and is left out.
+      audience: owned
+        ? {
+            everyone: definition.publications.some((publication) => publication.scope === "installation"),
+            groupNames: definition.publications
+              .flatMap((publication) =>
+                publication.scope === "group" && publication.group && publication.group.archivedAt === null
+                  ? [publication.group.name]
+                  : [])
+              .sort((left, right) => left.localeCompare(right))
+          }
+        : null,
+      featured: featuredOrder !== null,
+      featuredOrder,
       id: definition.id,
       installationScope: selectedPublications.some(
         (publication) => publication.scope === "installation"
@@ -665,11 +857,18 @@ export function createPrismaAssistantRepository(
       owned,
       ownerDisplayName: definition.owner.displayName,
       pinned,
+      ...(!owned && options.projectName !== undefined ? { projectName: options.projectName } : {}),
       published: definition.publications.length > 0 || (owned && definition.projectBindings.length > 0),
       content: contentRow(definition, userId),
       updatedAt: definition.updatedAt,
       version: definition.version
     };
+  }
+
+  /** Dense Featured positions replace stored ones, which may have gaps after an unlist. */
+  function withFeaturedOrder<T extends AssistantAccessEntry>(entry: T, orders: ReadonlyMap<string, number>): T {
+    const featuredOrder = orders.get(entry.id) ?? null;
+    return { ...entry, featured: featuredOrder !== null, featuredOrder };
   }
 
   const loadAccessEntry = (userId: string, assistantId: string) =>
@@ -678,13 +877,14 @@ export function createPrismaAssistantRepository(
   const repository = {
     async create(userId: string, draft: AssistantDraft): Promise<AssistantCreateResult> {
       return client.$transaction(async (tx) => {
-        if (!await lockAndCheckSkillDependencies(tx, userId, draft.skillIds)) {
+        const links = rowSkillLinks(draft.rows);
+        if (!await lockAndCheckSkillDependencies(tx, userId, links.skillIds)) {
           return { kind: "skills_not_available" as const };
         }
         const definition = await tx.assistantDefinition.create({
           data: { ...contentDraftData(draft), ownerUserId: userId }
         });
-        await createAssistantSkillLinks(tx, definition.id, draft.skillIds, draft.skillModes);
+        await createAssistantSkillLinks(tx, definition.id, links.skillIds, links.skillModes);
         return { assistantId: definition.id, kind: "ok" as const };
       });
     },
@@ -714,80 +914,51 @@ export function createPrismaAssistantRepository(
             await lockAssistantPublicationRowsForDuplicate(tx, assistantId);
             const provisionalSource = await loadAccessEntryWith(tx, userId, assistantId);
             if (!provisionalSource) return { kind: "not_found" as const };
-            const knowledgeSelection = provisionalSource.content.knowledgeSelection;
-            const knowledgeBaseIds = distinctKnowledgeBaseIds(knowledgeSelection.baseIds);
-            const knowledgeSourceIds = distinctKnowledgeSourceIds(knowledgeSelection.sourceIds);
+            const knowledge = provisionalSource.content.rows.knowledge.value;
+            const knowledgeBaseIds = knowledge.mode === "explicit" ? distinctKnowledgeBaseIds(knowledge.baseIds) : [];
+            const knowledgeSourceIds = knowledge.mode === "explicit" ? distinctKnowledgeSourceIds(knowledge.sourceIds) : [];
             const skillIds = distinctSortedSkillIds(provisionalSource.content.skillIds);
-            if (!await lockKnowledgeBaseRowsForDuplicate(tx, knowledgeBaseIds)) {
-              return { kind: "knowledge_not_available" as const };
-            }
-            if (!await lockKnowledgeSourceRowsForDuplicate(tx, knowledgeSourceIds)) {
-              return { kind: "knowledge_not_available" as const };
-            }
-            if (!await lockSkillDefinitionRows(tx, skillIds)) {
-              return { kind: "skills_not_available" as const };
-            }
+            // A missing resource is one the copier cannot use: its row is
+            // downgraded below instead of failing the copy.
+            const knowledgeRowsExist = await lockKnowledgeBaseRowsForDuplicate(tx, knowledgeBaseIds) &&
+              await lockKnowledgeSourceRowsForDuplicate(tx, knowledgeSourceIds);
+            await lockSkillDefinitionRows(tx, skillIds);
             await lockActiveMemberGroupRows(tx, userId);
             await lockKnowledgePublicationRowsForDuplicate(tx, knowledgeBaseIds);
             const source = await loadAccessEntryWith(tx, userId, assistantId);
             if (!source || source.version !== provisionalSource.version) {
               return { kind: "not_found" as const };
             }
-            if (!catalogView) return { kind: "model_not_available" as const };
-            const runControls = decodeAssistantRunControls(source.content.runControls ?? {});
-            const searchPlan = decodeSearchPlan(source.content.searchPlan);
-            if (!runControls || !searchPlan.ok) {
-              throw new Error("assistant_definition_integrity_invalid");
-            }
-            if (!await allKnowledgeDependenciesAvailable(
-              tx,
-              userId,
-              knowledgeSelection
-            )) {
-              return { kind: "knowledge_not_available" as const };
-            }
-            if (!await skillDependenciesAvailable(tx, userId, skillIds)) {
-              return { kind: "skills_not_available" as const };
-            }
-            const invalid = validateAssistantConfigurationAgainstCatalog(
-              {
-                mcpServerIds: source.content.mcpServerIds,
-                providerModelId: source.content.providerModelId,
-                runControls,
-                searchPlan: searchPlan.plan
-              },
-              catalogView,
-              { mcpRunnability: "accessible" }
-            );
-            if (invalid === "model") return { kind: "model_not_available" as const };
-            if (invalid !== null && typeof invalid === "object") {
-              return { kind: "run_controls_invalid" as const };
-            }
-            if (invalid === "search") return { kind: "search_not_available" as const };
-            if (invalid === "tools") return { kind: "tools_not_available" as const };
+            // Without a catalog the copier can use no catalog resource: the
+            // copy keeps inherit values and downgrades every concrete one.
+            const copied = assistantRowsForCopier(source.content.rows,
+              catalogView ?? emptyAssistantCatalogView(options.now?.() ?? new Date()), {
+              knowledge: knowledgeRowsExist && await allKnowledgeDependenciesAvailable(tx, userId, {
+                baseIds: knowledgeBaseIds,
+                sourceIds: knowledgeSourceIds
+              }),
+              skillIds: await usableSkillIds(tx, userId, skillIds)
+            });
 
             const copyName = `Copy of ${source.content.name}`.slice(0, 80);
             const definition = await tx.assistantDefinition.create({
               data: {
                 ownerUserId: userId,
+                // Rows the copier can use keep their value and policy.
+                ...rowColumnsData(copied.rows),
+                answerRules: source.content.answerRules,
                 avatar: source.content.avatar as Prisma.InputJsonValue,
                 category: source.content.category,
                 description: source.content.description,
-                developerPrompt: source.content.developerPrompt,
                 responseReminder: source.content.responseReminder ?? "",
-                skillsMode: source.content.skills?.mode ?? "auto",
-                knowledgeSelection: source.content.knowledgeSelection as unknown as Prisma.InputJsonValue,
-                mcpServerIds: [...source.content.mcpServerIds],
                 name: copyName,
-                providerModelId: source.content.providerModelId,
-                runControls: source.content.runControls as Prisma.InputJsonValue,
-                searchPlan: source.content.searchPlan as Prisma.InputJsonValue,
                 starterPrompts: [...source.content.starterPrompts],
                 systemPrompt: source.content.systemPrompt
               }
             });
-            await createAssistantSkillLinks(tx, definition.id, source.content.skillIds, source.content.skillModes);
-            return { assistantId: definition.id, kind: "ok" as const };
+            const links = rowSkillLinks(copied.rows);
+            await createAssistantSkillLinks(tx, definition.id, links.skillIds, links.skillModes);
+            return { assistantId: definition.id, kind: "ok" as const, report: copied.report };
           }, {
             isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
             maxWait: 10_000,
@@ -805,15 +976,31 @@ export function createPrismaAssistantRepository(
       return { kind: "not_found" as const };
     },
 
-    async getDetail(userId: string, assistantId: string): Promise<AssistantDetailData | null> {
-      const loaded = await loadAccessEntry(userId, assistantId);
+    async getDetail(
+      userId: string,
+      assistantId: string,
+      options: { isAdmin?: boolean } = {}
+    ): Promise<AssistantDetailData | null> {
+      const loaded = await loadAccessEntry(userId, assistantId) ??
+        await loadProjectMemberEntry(userId, assistantId);
       if (!loaded) return null;
-      const [entry] = await withAssistantDependencyAvailability(client, userId, [loaded]);
-      if (!entry) return null;
+      const [[available], featuredOrders] = await Promise.all([
+        withAssistantDependencyAvailability(client, userId, [loaded]),
+        loadFeaturedAssistantOrders(client)
+      ]);
+      if (!available) return null;
+      const entry = withFeaturedOrder(available, featuredOrders);
       if (!entry.owned) {
-        return { ...entry, publications: null };
+        const knowledge = entry.content.rows.knowledge.value;
+        return {
+          ...entry,
+          publications: null,
+          ...(knowledge.mode === "explicit"
+            ? { visibleKnowledge: await accessibleKnowledgeResources(client, userId, knowledge) }
+            : {})
+        };
       }
-      const [publications, projectBindings] = await Promise.all([
+      const [publications, projectBindings, listingRequest, chatCounts] = await Promise.all([
         client.assistantPublication.findMany({
           include: {
             group: { select: { name: true } }
@@ -822,12 +1009,27 @@ export function createPrismaAssistantRepository(
           where: { assistantId }
         }),
         client.projectAssistantBinding.findMany({
+          include: { project: { select: { name: true } } },
           orderBy: { createdAt: "asc" },
           where: { assistantId }
-        })
+        }),
+        loadAssistantListingStatus(client, { assistantId, isAdmin: options.isAdmin === true, userId }),
+        loadAssistantRecentChatCounts(client, [assistantId])
       ]);
+      // Projects the owner can still open are named; the rest are counted.
+      const projects: AssistantProjectUsage = { otherProjectCount: 0, projects: [] };
+      for (const binding of projectBindings) {
+        if (await resolveProjectAccess(client, { projectId: binding.projectId, userId })) {
+          projects.projects.push({ id: binding.projectId, name: binding.project.name });
+        } else {
+          projects.otherProjectCount += 1;
+        }
+      }
+      projects.projects.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
       return {
         ...entry,
+        listingRequest,
+        projects,
         publications: [
           ...publications.map(publicationRow),
           ...projectBindings.map((binding) => ({
@@ -837,33 +1039,61 @@ export function createPrismaAssistantRepository(
             scope: "project" as const,
             updatedAt: binding.createdAt
           }))
-        ]
+        ],
+        recentChatCount: chatCounts.get(assistantId) ?? 0
       };
     },
 
     async listForUser(userId: string): Promise<AssistantAccessEntry[]> {
       const memberGroupIds = await activeMemberGroupIds(client, userId);
-      const definitions = await client.assistantDefinition.findMany({
-        include: { ...accessInclude, pins: { select: { userId: true }, where: { userId } } },
-        where: {
-          OR: [
-            { ownerUserId: userId },
-            {
-              archivedAt: null,
-              publications: { some: { OR: [
-                { scope: "installation" },
-                { scope: "group", groupId: { in: memberGroupIds }, group: { archivedAt: null } }
-              ] } }
-            }
-          ]
-        }
-      });
+      const [definitions, featuredOrders] = await Promise.all([
+        client.assistantDefinition.findMany({
+          include: { ...accessInclude, pins: { select: { userId: true }, where: { userId } } },
+          where: {
+            OR: [
+              { ownerUserId: userId },
+              {
+                archivedAt: null,
+                publications: { some: { OR: [
+                  { scope: "installation" },
+                  { scope: "group", groupId: { in: memberGroupIds }, group: { archivedAt: null } }
+                ] } }
+              }
+            ]
+          }
+        }),
+        loadFeaturedAssistantOrders(client)
+      ]);
       const entries = definitions.map((definition) =>
         projectAccessEntry(definition, userId, memberGroupIds, definition.pins.length > 0)
-      ).filter((entry): entry is AssistantAccessEntry => entry !== null);
+      ).filter((entry): entry is AssistantAccessEntry => entry !== null)
+        .map((entry) => withFeaturedOrder(entry, featuredOrders));
       const available = await withAssistantDependencyAvailability(client, userId, entries);
       return available.sort((left, right) =>
         left.content.name.localeCompare(right.content.name) || left.id.localeCompare(right.id));
+    },
+
+    /**
+     * Assistants of the user's latest personal chats, newest first, limited
+     * to `candidateIds` (the Assistants the list returns).
+     */
+    async loadRecentAssistantIds(userId: string, candidateIds: readonly string[]): Promise<string[]> {
+      const ids = [...new Set(candidateIds)];
+      if (ids.length === 0) return [];
+      const rows = await client.$queryRaw<Array<{ assistantId: string }>>(Prisma.sql`
+        SELECT chat."assistantId"
+        FROM "Chat" AS chat
+        WHERE chat."userId" = ${userId}
+          AND chat."projectId" IS NULL
+          AND chat."assistantId" IN (${Prisma.join(ids)})
+          AND chat."archived" = false
+          AND chat."permanentDeletionAt" IS NULL
+          AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+        GROUP BY chat."assistantId"
+        ORDER BY MAX(chat."updatedAt") DESC, chat."assistantId"
+        LIMIT ${ASSISTANT_MAX_RECENT}
+      `);
+      return rows.map((row) => row.assistantId);
     },
 
     async update(
@@ -886,7 +1116,8 @@ export function createPrismaAssistantRepository(
           if (!definition) return { kind: "not_found" as const };
           if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
           if (definition.archivedAt) return { kind: "archived" as const };
-          if (!await lockAndCheckSkillDependencies(tx, userId, draft.skillIds)) {
+          const links = rowSkillLinks(draft.rows);
+          if (!await lockAndCheckSkillDependencies(tx, userId, links.skillIds)) {
             return { kind: "skills_not_available" as const };
           }
 
@@ -894,7 +1125,7 @@ export function createPrismaAssistantRepository(
             select: { groupId: true, scope: true }, where: { assistantId }
           });
           for (const audience of publications) {
-            if (!await skillsReachPublicationAudience(tx, draft.skillIds, audience)) {
+            if (!await skillsReachPublicationAudience(tx, links.skillIds, audience)) {
               return { kind: "skill_audience_mismatch" as const };
             }
           }
@@ -903,7 +1134,7 @@ export function createPrismaAssistantRepository(
             where: { id: assistantId }
           });
           await tx.assistantSkill.deleteMany({ where: { assistantId } });
-          await createAssistantSkillLinks(tx, assistantId, draft.skillIds, draft.skillModes);
+          await createAssistantSkillLinks(tx, assistantId, links.skillIds, links.skillModes);
           return { assistantId, kind: "ok" as const };
         });
       } catch (error) {
@@ -943,6 +1174,15 @@ export function createPrismaAssistantRepository(
           },
           where: { id: assistantId }
         });
+        if (archived) {
+          // Archiving withdraws the owner's pending listing request. The
+          // definition row lock above is the one the listing service takes, so
+          // a concurrent decision either sees the withdrawal or wins first.
+          await tx.assistantListingRequest.updateMany({
+            data: { state: "withdrawn" },
+            where: { assistantId, state: "pending" }
+          });
+        }
         if (availabilityChanged) {
           await applyMemoryScopedTargetOwnerLifecycle(tx, memorySourceHooks, {
             kind: "ASSISTANT_ACCESS_CHANGE",
@@ -1002,7 +1242,14 @@ export function createPrismaAssistantRepository(
           content.skillLinks.map((link) => link.skillId),
           { groupId: input.groupId, scope: input.scope }
         )) {
-          return { kind: "skill_audience_mismatch" as const };
+          return {
+            kind: "skill_audience_mismatch" as const,
+            skillNames: await unreachedPublicationSkillNames(
+              tx,
+              { id: input.assistantId, ownerUserId: input.userId },
+              { groupId: input.groupId, scope: input.scope }
+            )
+          };
         }
 
         const existing = await tx.assistantPublication.findFirst({
@@ -1044,7 +1291,7 @@ export function createPrismaAssistantRepository(
       assistantId: string;
       publicationId: string;
       userId: string;
-    }): Promise<"not_found" | "revoked"> {
+    }, transaction?: Prisma.TransactionClient): Promise<"not_found" | "revoked"> {
       if (input.publicationId.startsWith("project:")) {
         const bindingId = input.publicationId.slice("project:".length);
         if (!bindingId) return "not_found";
@@ -1055,7 +1302,8 @@ export function createPrismaAssistantRepository(
           userId: input.userId
         }) ? "revoked" : "not_found";
       }
-      return client.$transaction(async (tx) => {
+      // A caller's transaction (administrator unlist) keeps its own recheck.
+      const revoke = async (tx: Prisma.TransactionClient) => {
         const publication = await tx.assistantPublication.findFirst({
           select: {
             assistant: { select: { id: true, ownerUserId: true } },
@@ -1085,7 +1333,8 @@ export function createPrismaAssistantRepository(
           }
         });
         return deleted.count === 1 ? "revoked" as const : "not_found" as const;
-      });
+      };
+      return transaction ? revoke(transaction) : client.$transaction(revoke);
     },
 
     async setPinned(userId: string, assistantId: string, pinned: boolean): Promise<boolean> {
@@ -1105,31 +1354,30 @@ export function createPrismaAssistantRepository(
 
     loadAccessEntry,
 
-    async listPublishableGroups(userId: string): Promise<Array<{ id: string; name: string }>> {
+    async listPublishableGroups(userId: string): Promise<AssistantPublishableGroup[]> {
+      // One statement for any number of groups; members count while their account is active.
       const memberships = await client.userGroup.findMany({
-        select: { group: { select: { id: true, name: true } } },
+        select: { group: { select: {
+          _count: { select: { users: { where: { user: { status: "active" } } } } }, id: true, name: true
+        } } },
         where: { group: { archivedAt: null }, userId }
       });
       return memberships
-        .map((membership) => membership.group)
+        .map(({ group }) => ({ id: group.id, memberCount: group._count.users, name: group.name }))
         .sort((left, right) => left.name.localeCompare(right.name));
+    },
+
+    /** The stored personal default, before any visibility check. */
+    async loadDefaultAssistantId(userId: string): Promise<string | null> {
+      const settings = await client.userSettings.findUnique({
+        select: { defaultAssistantId: true },
+        where: { userId }
+      });
+      return settings?.defaultAssistantId ?? null;
     },
 
     async loadUserAccessibleMcpServerIds(userId: string): Promise<Set<string>> {
       return loadUserAccessibleMcpServerIdsWith(client, userId);
-    },
-
-    async loadUserRunnableMcpServerIds(userId: string): Promise<Set<string>> {
-      const now = options.now?.() ?? new Date();
-      const isGenerationLive = options.isMcpGenerationLive ?? (() => false);
-      const records = await loadMcpRunPlanRecords(userId, client);
-      return new Set(
-        records
-          .filter((record) =>
-            isMcpRunPlanRecordRunnable({ isGenerationLive, now, record })
-          )
-          .map((record) => record.serverId)
-      );
     },
 
     async loadUserMcpRunPlanView(userId: string) {
@@ -1181,15 +1429,16 @@ export function createPrismaAssistantRepository(
           } } },
           where: { projectId_assistantId: { assistantId, projectId } }
         });
-        if (!binding || binding.assistant.archivedAt || binding.assistant.providerModel.modelClass !== "answer") {
+        if (!binding || binding.assistant.archivedAt) {
           return { code: "assistant_not_available", ok: false, status: 404 };
         }
-        const skillIds = binding.assistant.skillLinks.map((link) => link.skillId);
-        if (skillIds.length && await tx.projectSkillBinding.count({ where: {
-          projectId, skillId: { in: skillIds }, skill: { archivedAt: null, deletedAt: null, sharedRevisionId: { not: null } }
-        } }) !== skillIds.length) return { code: "assistant_not_available", ok: false, status: 404 };
-        return materialize(contentRow(binding.assistant), binding.assistant.version,
-          binding.assistant.providerModel.connectionId);
+        // The binding is the Project's authority. Admission resolves every
+        // row through the chain against the Project's own resources, so
+        // inherit, a model, Search, Tools or Knowledge value the Project lacks
+        // and each Skill link are decided there, not here.
+        const model = binding.assistant.providerModel;
+        return materialize(contentRow({ ...binding.assistant, providerModel: null }), binding.assistant.version,
+          model?.modelClass === "answer" ? model.connectionId : null);
       });
     },
     async resolveForRun(userId, assistantId): Promise<AssistantRunResolution> {
@@ -1200,22 +1449,23 @@ export function createPrismaAssistantRepository(
         if (!entry || entry.archived) {
           return { code: "assistant_not_available", ok: false, status: 404 };
         }
-        if (!await skillDependenciesAvailable(tx, userId, entry.content.skillIds)) {
-          return { code: "assistant_not_available", ok: false, status: 404 };
-        }
-        const model = await tx.providerModel.findUnique({
-          select: { connectionId: true, modelClass: true },
-          where: { id: entry.content.providerModelId }
-        });
-        if (!model || model.modelClass !== "answer") {
-          return { code: "assistant_not_available", ok: false, status: 404 };
-        }
-        return materialize(entry.content, entry.version, model.connectionId);
+        // Admission resolves every row through the chain against the
+        // runner's catalog: inherit, an unusable model, Search, Tools or
+        // Knowledge value and each Skill link are decided there, so a
+        // dependency failure is the neutral conflict, not "not found".
+        const model = entry.content.providerModelId === null
+          ? null
+          : await tx.providerModel.findUnique({
+              select: { connectionId: true, modelClass: true },
+              where: { id: entry.content.providerModelId }
+            });
+        return materialize(entry.content, entry.version,
+          model?.modelClass === "answer" ? model.connectionId : null);
       });
     }
   };
 
-  function materialize(content: AssistantContentRow, version: number, provider: string): AssistantRunResolution {
+  function materialize(content: AssistantContentRow, version: number, provider: string | null): AssistantRunResolution {
     const runControls = decodeAssistantRunControls(content.runControls ?? {});
     const searchPlan = decodeSearchPlan(content.searchPlan);
     const avatar = decodeAssistantAvatarRecipe(content.avatar);
@@ -1226,13 +1476,14 @@ export function createPrismaAssistantRepository(
       assistantId: content.id,
       definitionVersion: version,
       identity: { avatar, name: content.name },
-      developerPrompt: content.developerPrompt,
       responseReminder: content.responseReminder ?? "",
+      answerRules: content.answerRules ?? null,
       knowledgeSelection: content.knowledgeSelection,
       mcpServerIds: [...content.mcpServerIds],
       name: content.name,
       provider,
       providerModelId: content.providerModelId,
+      rows: content.rows,
       runControls,
       searchPlan: searchPlan.plan,
       skillIds: [...content.skillIds],

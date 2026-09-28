@@ -15,6 +15,7 @@ import {
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { UiV2RovingTree } from "@/components/ui-v2/RovingTreeV2";
+import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { AccountMenuV2 } from "./AccountMenuV2";
 import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
 import { useAnnouncements } from "@/components/announcements/AnnouncementsProvider";
@@ -286,7 +287,13 @@ function ChatRow({
         type="button"
         onClick={() => onSelect(chat)}
       >
-        {chat.activeRun ? (
+        {chat.assistant ? (
+          // The Assistant's avatar marks the chat; its name stays out so the title leads.
+          <span className="v2-chat-lead">
+            {chat.activeRun ? <span className="v2-chat-pulse" aria-label="Answer in progress" /> : null}
+            <AssistantAvatarV2 className="v2-chat-avatar" recipe={chat.assistant.avatar} size={16} />
+          </span>
+        ) : chat.activeRun ? (
           <span className="v2-chat-pulse" aria-label="Answer in progress" />
         ) : <span aria-hidden="true" />}
         <span className="v2-chat-title">{displayTitle}</span>

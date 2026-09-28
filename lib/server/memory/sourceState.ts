@@ -86,7 +86,7 @@ export type MemoryScopedTargetLifecycleEvent = Readonly<{
 }>;
 
 export type MemoryScopedTargetOwnerLifecycleEvent = Readonly<{
-  kind: "ASSISTANT_ACCESS_CHANGE" | "CHAT_DELETE" | "FOLDER_DELETE";
+  kind: "ASSISTANT_ACCESS_CHANGE" | "ASSISTANT_DELETE" | "CHAT_DELETE" | "FOLDER_DELETE";
   sourceSnapshots: readonly MemorySourceSnapshot[];
   targetId: string;
   userId: string;

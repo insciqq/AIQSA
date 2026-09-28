@@ -20,6 +20,9 @@ import {
 } from "../providerRuntime/admission";
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
 import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
+import type { AssistantRunResolution } from "../assistants/runMaterialization";
+import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
+import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import type { ProjectRunAdmission, RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import { materializePreparedRunData, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
@@ -1393,6 +1396,48 @@ describe("run preparation", () => {
     expect(prepared.defaults).toBeNull();
   });
 
+  it("appends Project instructions after the rendered Project Assistant prompt", async () => {
+    const harness = createHarness();
+    const instructions = { resolveForRun: vi.fn() };
+    const resolveForProject = vi.fn(async (): Promise<AssistantRunResolution> => ({ ok: true, assistant: {
+      answerRules: "Cite the ticket.", assistantId: "assistant-1", definitionVersion: 1,
+      identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring",
+        kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+      knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [], name: "Helper", provider: "fake",
+      providerModelId: "fake-qsa", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] },
+      rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+        providerModelId: "fake-qsa", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
+      skillIds: [], systemPrompt: "Triage issues filed by {local_date}."
+    } }));
+    const project = projectAdmission({
+      assistantBindings: [{ assistantId: "assistant-1" }],
+      defaults: { ...projectAdmission().defaults, assistantId: "assistant-1" }
+    });
+    const projectContext = assistantRowContextLoader({ defaultModelId: "fake-qsa", models: { "fake-qsa": "fake" } });
+    const prompt = preparedFrom(await prepareRun(
+      {
+        ...harness.deps,
+        assistants: { resolveForRun: vi.fn(), resolveForProject },
+        instructions,
+        repository: {
+          ...harness.deps.repository,
+          loadProjectAssistantRowContext: () => projectContext({ ids: { knowledgeBaseIds: [], knowledgeSourceIds: [], skillIds: [] }, userId: "user-1" })
+        }
+      },
+      sendInput({ content: textMessageContent("Next issue"), timeZone: "Europe/Berlin" }, { assistantId: "assistant-1", project })
+    )).normalizedRequest.prompt;
+
+    expect(resolveForProject).toHaveBeenCalledWith("project-1", "assistant-1");
+    expect(instructions.resolveForRun).not.toHaveBeenCalled();
+    expect(prompt.baseline).toEqual({ source: "assistant_chat", timeZone: "Europe/Berlin", timeZoneSource: "client" });
+    expect(prompt.system).toMatch(new RegExp(
+      "^Today is .+, local time is .+\\.\\n\\nTriage issues filed by [A-Z][a-z]+ \\d{1,2}, \\d{4}\\." +
+      "\\n\\nProject Instructions:\\nUse the shared project context\\.$", "u"
+    ));
+    expect(prompt.developer).toBe("Cite the ticket.");
+    expect(prompt.personalInstructions).toBeUndefined();
+  });
+
   it("keeps Project Knowledge scope while requiring a client Search coexistence route", async () => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(
       "gemini_interactions_native"
@@ -2595,15 +2640,20 @@ describe("run preparation", () => {
     const assistants: NonNullable<RunPreparationDeps["assistants"]> = {
       async resolveForRun() {
         return { ok: true as const, assistant: {
-          assistantId: "assistant-1", definitionVersion: 1, developerPrompt: "", knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
+          assistantId: "assistant-1", definitionVersion: 1, knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
           identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
+          rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+            providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
       }
     };
-    const assistantRun = preparedFrom(await prepareRun({ ...deps, assistants }, sendInput({
+    const assistantRun = preparedFrom(await prepareRun({ ...deps, assistants, repository: { ...deps.repository,
+      loadAssistantRowContext: assistantRowContextLoader({
+        defaultModelId: "openai-tool-model", models: { "openai-tool-model": "openai" }
+      }) } }, sendInput({
       assistantId: "assistant-1", content: textMessageContent("Read my GitLab issue"), timeZone: "Europe/Berlin"
     })));
     expect(assistantRun.normalizedRequest.prompt.system).not.toContain(hint);
@@ -3548,7 +3598,6 @@ describe("run preparation", () => {
             return {
               assistant: {
                 assistantId: "assistant-1",
-                developerPrompt: "Use the selected private Knowledge.",
                 knowledgeSelection: knowledgeSelection(["knowledge-base-1"]),
                 mcpServerIds: [],
                 name: "Knowledge Assistant",
@@ -3556,6 +3605,11 @@ describe("run preparation", () => {
                 providerModelId: hosted.selection.providerModelId,
                 definitionVersion: 1,
                 identity: { name: "Knowledge Assistant", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+                rows: assistantRowsFromLegacyFields({
+                  knowledgeSelection: knowledgeSelection(["knowledge-base-1"]), mcpServerIds: [],
+                  providerModelId: hosted.selection.providerModelId, runControls: { maxOutputTokens: 512 },
+                  searchPlan: { mode: "model_choice", optionIds: [optionId] }, skillIds: []
+                }),
                 runControls: { maxOutputTokens: 512 },
                 searchPlan: { mode: "model_choice" as const, optionIds: [optionId] },
                 skillIds: [],
@@ -3564,6 +3618,13 @@ describe("run preparation", () => {
               ok: true as const
             };
           }
+        },
+        repository: {
+          ...harness.deps.repository,
+          loadAssistantRowContext: assistantRowContextLoader({
+            defaultModelId: hosted.selection.providerModelId,
+            models: { [hosted.selection.providerModelId]: hosted.selection.providerConnectionId }
+          })
         },
         knowledgeAdmission: {
           async load(input) {
@@ -3585,7 +3646,8 @@ describe("run preparation", () => {
     expect(prepared.assistant).toEqual({
       assistantId: "assistant-1",
       definitionVersion: 1,
-      identity: { name: "Knowledge Assistant", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } }
+      identity: { name: "Knowledge Assistant", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+      rows: { controls: "assistant", knowledge: "assistant", model: "assistant", search: "assistant", skills: "assistant", tools: "assistant" }
     });
     expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
     expect(prepared.normalizedRequest.searchPlan.options).toEqual([

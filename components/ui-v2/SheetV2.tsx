@@ -13,11 +13,22 @@ export type UiV2SheetProps = Readonly<{
   footer?: ReactNode;
   onClose(): void;
   open: boolean;
+  /**
+   * Opt-in: full screen on phones in both orientations, below 640 px wide
+   * (as every sheet) and also below 32rem high, with safe-area padding.
+   */
+  phoneFullScreen?: boolean;
   testId: string;
   title: string;
   /** 520 px by default; `wide` is the 600 px editor sheet. */
   width?: "narrow" | "wide";
 }>;
+
+const PHONE_FULL_SCREEN_CLASSES =
+  " max-sm:border-l-0 max-sm:pb-[env(safe-area-inset-bottom)] max-sm:pt-[env(safe-area-inset-top)]" +
+  " [@media(max-height:32rem)]:!w-full [@media(max-height:32rem)]:border-l-0" +
+  " [@media(max-height:32rem)]:pb-[env(safe-area-inset-bottom)] [@media(max-height:32rem)]:pt-[env(safe-area-inset-top)]" +
+  " [@media(max-height:32rem)]:pl-[env(safe-area-inset-left)] [@media(max-height:32rem)]:pr-[env(safe-area-inset-right)]";
 
 function UiV2SheetLayer({
   children,
@@ -25,6 +36,7 @@ function UiV2SheetLayer({
   description,
   footer,
   onClose,
+  phoneFullScreen = false,
   testId,
   title,
   width = "narrow"
@@ -50,7 +62,8 @@ function UiV2SheetLayer({
         aria-modal="true"
         className={`relative flex h-full w-full flex-col border-l border-trace-strong bg-answer-paper text-ink shadow-overlay ${
           width === "wide" ? "sm:w-[37.5rem]" : "sm:w-[32.5rem]"
-        }`}
+        }${phoneFullScreen ? PHONE_FULL_SCREEN_CLASSES : ""}`}
+        data-phone-full-screen={phoneFullScreen || undefined}
         onKeyDown={onDialogKeyDown}
         ref={dialogRef as React.RefObject<HTMLElement>}
         role="dialog"

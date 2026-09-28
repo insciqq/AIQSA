@@ -15,7 +15,7 @@ import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { chatMenuActionsV2 } from "@/features/navigation-v2/chatMenuActions";
 import { NameFieldFormV2, type NameSaveOutcome } from "@/features/navigation-v2/NameFieldFormV2";
 import { CHAT_TITLE_MAX_LENGTH } from "@/lib/contracts/chats";
-import { useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode, type RefObject } from "react";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { ChatContextIndicatorV2 } from "./ChatContextIndicatorV2";
 import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
@@ -160,12 +160,19 @@ export type WorkspaceHeaderModelSelectorV2 = Readonly<{
   family: string | null;
   /** Monogram source (the provider name) when the family has no mark. */
   label: string;
-  /** An Assistant governs the model: the trigger shows a lock and cannot open. */
+  /** The model is the chat Assistant's: the provenance dot (PRD 10.6). */
+  fromAssistant?: boolean;
+  /**
+   * The Assistant fixes the model: the trigger shows a lock instead of the
+   * chevron and opens the picker in its fixed state (the Parameters row).
+   */
   locked?: boolean;
   lockedReason?: string;
-  /** "Claude Opus 5", or "Assistant · model" while locked. */
+  /** The model name only; provenance lives in the dot and the tooltip. */
   name: string;
   onToggle(anchor: HTMLButtonElement): void;
+  /** Tooltip; defaults to "Choose model", or `lockedReason` while locked. */
+  title?: string;
 }>;
 
 /**
@@ -175,8 +182,10 @@ export type WorkspaceHeaderModelSelectorV2 = Readonly<{
  * contract, search, and Parameters row are unchanged. On phones it is the
  * centre island between the menu and the action islands.
  */
-export function HeaderModelSelectorV2({ selector }: Readonly<{
+export function HeaderModelSelectorV2({ selector, triggerRef }: Readonly<{
   selector: WorkspaceHeaderModelSelectorV2;
+  /** The rendered button, for layers that return focus to it. */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }>) {
   const locked = Boolean(selector.locked);
   return (
@@ -185,12 +194,15 @@ export function HeaderModelSelectorV2({ selector }: Readonly<{
       aria-haspopup="dialog"
       className="v2-live-model v2-focusable"
       data-locked={locked || undefined}
+      data-provenance={selector.fromAssistant ? "assistant" : undefined}
       data-testid="header-model-trigger"
-      disabled={selector.disabled || locked}
-      title={locked ? selector.lockedReason ?? "Managed by the Assistant" : "Choose model"}
+      disabled={selector.disabled}
+      ref={triggerRef}
+      title={selector.title ?? (locked ? selector.lockedReason ?? "Managed by the Assistant" : "Choose model")}
       type="button"
       onClick={(event) => selector.onToggle(event.currentTarget)}
     >
+      {selector.fromAssistant ? <span aria-hidden="true" className="v2-live-model-dot" /> : null}
       <UiV2ProviderMark family={selector.family} label={selector.label} />
       <span className="v2-live-model-name">{selector.name}</span>
       <UiV2Icon name={locked ? "lock" : "chevron-down"} />
@@ -206,6 +218,7 @@ export type WorkspaceHeaderFolderV2 = Readonly<{
 
 export function WorkspaceHeaderV2({
   active,
+  assistantSelector = null,
   contextStats,
   continuation,
   continuationFiles,
@@ -218,6 +231,7 @@ export function WorkspaceHeaderV2({
   leadingSlot = null,
   memoryUsed = null,
   modelSelector = null,
+  modelTriggerRef,
   moveDisabled = false,
   moveRootLabel,
   onArchive,
@@ -241,6 +255,11 @@ export function WorkspaceHeaderV2({
   title
 }: Readonly<{
   active: boolean;
+  /**
+   * The Assistant selector, right after the model selector; on phones both
+   * share the centre island.
+   */
+  assistantSelector?: ReactNode;
   contextStats?: ComposerContextStats | null;
   continuation?: ChatContinuationControl | null;
   continuationFiles?: ChatWorkspaceState["continuationFiles"];
@@ -269,6 +288,8 @@ export function WorkspaceHeaderV2({
    * on the blank chat too, where it is the only header content.
    */
   modelSelector?: WorkspaceHeaderModelSelectorV2 | null;
+  /** The model selector's button, for layers that return focus to it. */
+  modelTriggerRef?: RefObject<HTMLButtonElement | null>;
   moveDisabled?: boolean;
   /** Project chats call the top-level Move to… destination "Project root". */
   moveRootLabel?: string;
@@ -327,7 +348,12 @@ export function WorkspaceHeaderV2({
 
   return (
     <header className="v2-live-header">
-      {modelSelector ? <HeaderModelSelectorV2 selector={modelSelector} /> : null}
+      {modelSelector || assistantSelector ? (
+        <div className="v2-live-header-island">
+          {modelSelector ? <HeaderModelSelectorV2 selector={modelSelector} triggerRef={modelTriggerRef} /> : null}
+          {assistantSelector}
+        </div>
+      ) : null}
       <div className="v2-live-title">
         {leadingSlot}
         {/* The welcome screen keeps a quiet empty header: actions only. */}

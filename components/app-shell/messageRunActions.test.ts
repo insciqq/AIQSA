@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetMemorySettingsStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
+import { resetAssistantLibraryStoreForTest, resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetMemorySettingsStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { useComposerControlStore } from "./composerControlStore";
 import { composerContextConfigurationKey } from "./composerContextConfiguration";
 import {
@@ -9,7 +9,7 @@ import {
   type ComposerSessionKey
 } from "./composerSessionStore";
 import type { ConsumeMessageRunStream } from "./messageRunLifecycle";
-import { useMessageRunActions } from "./messageRunActions";
+import { assistantControlDefaults, useMessageRunActions } from "./messageRunActions";
 import { chatRouteForState } from "./chatRoute";
 import { useRunLifecycleStore } from "./runLifecycleStore";
 import {
@@ -23,6 +23,16 @@ import type { Catalog, CatalogModel, ChatDetail, WorkspaceChatSummary } from "./
 import type { SavedControlDraft } from "./powerAppShellData";
 import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
 import { useMemorySettingsStore } from "./memorySettingsStore";
+import { boundComposerAssistantFixture } from "@/tests/support/composerAssistantFixtures";
+import { createChatAssistantActions } from "./chatAssistantActions";
+import { createAssistantLibraryActions } from "./assistantLibraryController";
+import {
+  assistantContent,
+  assistantControllerInput,
+  assistantDetail,
+  installAssistantEditor
+} from "@/tests/support/assistantLibraryFixtures";
+import type { ComposerAssistantDefinition } from "./composerAssistantState";
 
 const hostedSearchOptionId = "hosted-openai-search";
 const clientSearchOptionId = "client-openai-search";
@@ -219,6 +229,7 @@ function useMessageRunActionsForTest(input: {
   attachments: ComposerAttachment[];
   buildControlDraft?: () => SavedControlDraft;
   buildParams?: () => Record<string, unknown>;
+  chatAssistantUpdates?: Parameters<typeof useMessageRunActions>[0]["chatAssistantUpdates"];
   consumeRunStream?: ConsumeMessageRunStream;
   createChat?: (
     folderId?: string | null,
@@ -275,7 +286,7 @@ function useMessageRunActionsForTest(input: {
     );
   }
   useComposerControlStore.setState({
-    selectedAssistant: null,
+    assistant: null,
     selectedModelId: "gpt-5.5",
     selectedProvider: "openai",
     selectedSearchOptionIds: [],
@@ -307,6 +318,7 @@ function useMessageRunActionsForTest(input: {
         temperature: "1"
       })),
     buildParams: input.buildParams ?? (() => ({})),
+    chatAssistantUpdates: input.chatAssistantUpdates,
     consumeRunStream:
       input.consumeRunStream ??
       (async () => {
@@ -446,12 +458,12 @@ describe("message run actions", () => {
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({ attachments: [], draft: "Keep this draft" });
     useComposerControlStore.setState({
-      selectedAssistant: {
-        id: "assistant", name: "Reviewer", description: "", promptCharacterCount: 0, starterPrompts: [],
-        avatar: { kind: "generated", recipeVersion: 1, paletteId: "ocean", backgroundShape: "circle",
-          foregroundShape: "diamond", accents: [0, 2], rotations: [0, 1] },
-        includedSkills: Array.from({ length: 30 }, (_, index) => ({ id: `included-${index}`, name: `Included ${index}` }))
-      },
+      assistant: boundComposerAssistantFixture({
+        id: "assistant",
+        includedSkills: Array.from({ length: 30 }, (_, index) => ({
+          id: `included-${index}`, mode: "pinned" as const, name: `Included ${index}`
+        }))
+      }),
       selectedSkills: Array.from({ length: 3 }, (_, index) => ({ id: `manual-${index}`, name: `Manual ${index}`,
         description: "", promptCharacterCount: 0 }))
     });
@@ -676,6 +688,74 @@ describe("message run actions", () => {
     });
     expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === pending.id)
       ?.pendingProjectDraft).toBeUndefined();
+  });
+
+  it("says explicitly that a new Project chat has no Assistant, and only on its first message", async () => {
+    const pending = {
+      ...chat(),
+      pendingProjectDraft: { folderId: null, projectId: "project-1" },
+      projectId: "project-1"
+    };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: pending,
+      attachments: [],
+      draft: "First shared question",
+      consumeRunStream: async () => ({
+        failed: false,
+        receivedChatUpdate: false,
+        runId: "run-project",
+        terminalStatus: "complete"
+      })
+    });
+
+    await actions.submitComposer();
+    useComposerSessionStore.getState().setDraft("Follow-up");
+    await actions.submitComposer();
+
+    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+    expect(bodies[0]).toMatchObject({
+      assistantId: null,
+      controlDefaults: expect.any(Object),
+      modelId: expect.any(String),
+      projectDraft: { folderId: null, projectId: "project-1" },
+      provider: expect.any(String),
+      searchPlan: expect.any(Object)
+    });
+    expect(bodies[0]).not.toHaveProperty("searchPreferencePlan");
+    expect(bodies[0]).not.toHaveProperty("searchPreferenceSource");
+    expect(bodies[1]).not.toHaveProperty("assistantId");
+  });
+
+  it("starts a new Project chat from a starter without an Assistant as explicitly none", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: { ...chat(), pendingProjectDraft: { folderId: null, projectId: "project-1" }, projectId: "project-1" },
+      attachments: [],
+      draft: ""
+    });
+
+    await actions.sendStarterPrompt("Summarize our launch plan");
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({ assistantId: null });
+  });
+
+  it("never names an Assistant for a new personal chat without one", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: { ...chat(), pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" } },
+      attachments: [],
+      draft: "First personal question"
+    });
+
+    await actions.submitComposer();
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).not.toHaveProperty("assistantId");
   });
 
   it.each([
@@ -1008,53 +1088,704 @@ describe("message run actions", () => {
     expect(optimisticUserMessage?.content).toEqual(expectedContent);
   });
 
-  it("sends the assistant identity and independently selected manual Skills", async () => {
-    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({
-      attachments: [],
-      draft: "Question for the assistant"
+  describe("with an Assistant", () => {
+    const manualSkill = {
+      description: "Finish with actions",
+      id: "skill-actions",
+      name: "Action closer",
+      promptCharacterCount: 60
+    };
+
+    function useAssistantChat(input: Parameters<typeof useMessageRunActionsForTest>[0]) {
+      const actions = useMessageRunActionsForTest(input);
+      useComposerControlStore.setState({
+        assistant: boundComposerAssistantFixture({ id: "assistant-selected" }),
+        knowledgePlanSource: "assistant",
+        mcpSelection: { mode: "exact", serverIds: ["server-1"] },
+        selectedSkills: [manualSkill],
+        skillsMode: "off"
+      });
+      return actions;
+    }
+
+    function requestBody(fetchMock: ReturnType<typeof vi.fn>, index = 0): Record<string, unknown> {
+      const [, init] = fetchMock.mock.calls[index] as unknown as [string, RequestInit];
+      return JSON.parse(String(init.body)) as Record<string, unknown>;
+    }
+
+    it("sends no row keys and no Assistant id for an untouched Assistant chat", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({ attachments: [], draft: "Question for the assistant" });
+
+      await actions.submitComposer();
+
+      expect(requestBody(fetchMock)).toEqual({
+        admissionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        content: { blocks: [{ text: "Question for the assistant", type: "text" }] },
+        expectedActiveLeafId: null,
+        skillIds: ["skill-actions"],
+        timeZone: expect.any(String),
+        workspace: { enabled: false }
+      });
     });
-    useComposerControlStore.setState({
-      knowledgePlanSource: "assistant",
-      skillsMode: "off",
-      selectedAssistant: {
-        avatar: {
-          accents: [0],
-          backgroundShape: "circle",
-          foregroundShape: "diamond",
-          kind: "generated",
-          paletteId: "ocean",
-          recipeVersion: 1,
-          rotations: [0, 1]
+
+    it("sends exactly the key of the one row changed for this chat", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({ attachments: [], draft: "Without web search" });
+      useComposerControlStore.getState().setSelectedSearchPlan(["search-disabled"], "all_selected");
+
+      await actions.submitComposer();
+
+      const body = requestBody(fetchMock);
+      expect(Object.keys(body).sort()).toEqual([
+        "admissionId", "content", "expectedActiveLeafId", "searchPlan", "skillIds", "timeZone", "workspace"
+      ]);
+      expect(body.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
+    });
+
+    it("sends each changed row with its ordinary key", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({
+        attachments: [],
+        buildParams: () => ({ temperature: 0.9 }),
+        draft: "Changed rows"
+      });
+      useComposerControlStore.setState({ selectedModelId: "assistant-model", selectedProvider: "assistant-provider" });
+      useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
+      useComposerControlStore.getState().setSkillsMode("auto");
+      useComposerControlStore.getState().setSelectedKnowledgePlan(["base-1"]);
+      useComposerControlStore.getState().applyModelSelection({
+        controlDefaults: {
+          backgroundMode: true,
+          maxOutputTokens: "128000",
+          reasoningEffort: "medium",
+          reasoningMode: "standard",
+          streamMode: false,
+          temperature: "1"
         },
-        description: "Focused helper",
-        id: "assistant-selected",
-        name: "Researcher",
-        promptCharacterCount: 42,
-        starterPrompts: []
-      },
-      selectedKnowledgeBaseIds: ["assistant-base-private"],
-      selectedSkills: [{
-        description: "Finish with actions",
-        id: "skill-actions",
-        name: "Action closer",
-        promptCharacterCount: 60
-      }]
+        modelId: "gpt-5.5",
+        provider: "openai"
+      });
+      useComposerControlStore.getState().setTemperature("0.9");
+
+      await actions.submitComposer();
+
+      expect(requestBody(fetchMock)).toMatchObject({
+        knowledgePlan: { baseIds: ["base-1"], mode: "explicit" },
+        mcp: { mode: "load_all" },
+        modelId: "gpt-5.5",
+        provider: "openai",
+        skills: { mode: "auto" }
+      });
+      // Parameters follow the model the user chose; they are not a changed row.
+      expect(requestBody(fetchMock)).not.toHaveProperty("params");
+      expect(requestBody(fetchMock)).not.toHaveProperty("controlDefaults");
+      expect(requestBody(fetchMock)).not.toHaveProperty("assistantId");
     });
 
-    await actions.submitComposer();
+    function changeAssistantTemperature() {
+      const assistant = boundComposerAssistantFixture({ id: "assistant-selected" });
+      assistant.rows.model = { ...assistant.rows.model, assistantValue: { mode: "model", modelId: "gpt-5.5" } };
+      useComposerControlStore.setState({ assistant });
+      useComposerControlStore.getState().setTemperature("0.9");
+    }
 
-    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(requestInit.body))).toEqual({
-      admissionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
-      assistantId: "assistant-selected",
-      content: {
-        blocks: [{ text: "Question for the assistant", type: "text" }]
-      },
-      expectedActiveLeafId: null,
-      skillIds: ["skill-actions"],
-      workspace: { enabled: false }
+    const warmerDraft = () => ({
+      backgroundMode: true,
+      maxOutputTokens: "128000",
+      reasoningEffort: "medium",
+      // The model has no reasoning modes: the field never reaches admission.
+      reasoningMode: "standard",
+      streamMode: false,
+      temperature: "0.9"
+    });
+
+    it("sends parameters changed for the chat as controlDefaults, never params", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({
+        attachments: [],
+        buildControlDraft: warmerDraft,
+        buildParams: () => ({ temperature: 0.9 }),
+        draft: "Warmer"
+      });
+      changeAssistantTemperature();
+
+      await actions.submitComposer();
+
+      const body = requestBody(fetchMock);
+      expect(body.controlDefaults).toEqual({
+        backgroundMode: true,
+        maxOutputTokens: "128000",
+        reasoningEffort: "medium",
+        streamMode: false,
+        temperature: "0.9"
+      });
+      expect(body).not.toHaveProperty("params");
+      expect(body).not.toHaveProperty("modelId");
+    });
+
+    it("regenerates and starts with the changed parameters as controlDefaults", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({
+        attachments: [],
+        buildControlDraft: warmerDraft,
+        buildParams: () => ({ temperature: 0.9 }),
+        draft: ""
+      });
+      changeAssistantTemperature();
+      prepareRegenerationThread();
+
+      await actions.regenerateMessage("assistant-original");
+      await actions.sendStarterPrompt("Review a diff");
+
+      for (const index of [0, 1]) {
+        expect(requestBody(fetchMock, index)).toMatchObject({ controlDefaults: { temperature: "0.9" } });
+        expect(requestBody(fetchMock, index)).not.toHaveProperty("params");
+      }
+    });
+
+    it("names the Assistant only on the first message of a new chat", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({
+        activeChat: { ...chat(), pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" } },
+        attachments: [],
+        draft: "First question"
+      });
+
+      await actions.submitComposer();
+
+      expect(requestBody(fetchMock)).toMatchObject({
+        assistantId: "assistant-selected",
+        personalDraft: { folderId: null, memoryMode: "NORMAL" },
+        skillIds: ["skill-actions"],
+        timeZone: expect.any(String)
+      });
+      expect(requestBody(fetchMock)).not.toHaveProperty("modelId");
+    });
+
+    it("names the Project Assistant on the first message of a new Project chat, with the bound-chat payload", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({
+        activeChat: {
+          ...chat(),
+          pendingProjectDraft: { folderId: null, projectId: "project-1" },
+          projectId: "project-1"
+        },
+        attachments: [],
+        draft: "First shared question"
+      });
+      useComposerControlStore.getState().setSelectedSearchPlan(["search-disabled"], "all_selected");
+
+      await actions.submitComposer();
+      await actions.sendStarterPrompt("A later starter");
+
+      expect(Object.keys(requestBody(fetchMock)).sort()).toEqual([
+        "admissionId", "assistantId", "content", "expectedActiveLeafId", "projectDraft", "searchPlan",
+        "skillIds", "timeZone", "workspace"
+      ]);
+      expect(requestBody(fetchMock)).toMatchObject({ assistantId: "assistant-selected" });
+      // The chat exists now: later messages carry its binding implicitly.
+      expect(Object.keys(requestBody(fetchMock, 1)).sort()).toEqual([
+        "admissionId", "content", "expectedActiveLeafId", "searchPlan", "skillIds", "timeZone", "workspace"
+      ]);
+    });
+
+    it("sends a starter of a new chat with the Assistant and one of an existing chat without it", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const fresh = useAssistantChat({
+        activeChat: { ...chat(), pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" } },
+        attachments: [],
+        draft: ""
+      });
+      await fresh.sendStarterPrompt("Review a diff");
+      expect(requestBody(fetchMock)).toMatchObject({ assistantId: "assistant-selected" });
+
+      const existing = useAssistantChat({ attachments: [], draft: "" });
+      await existing.sendStarterPrompt("Review a diff");
+      expect(requestBody(fetchMock, 1)).not.toHaveProperty("assistantId");
+      expect(requestBody(fetchMock, 1)).toMatchObject({ content: { blocks: [{ text: "Review a diff", type: "text" }] } });
+    });
+
+    it("sends a starter from an earlier render into the new chat opened since, not the chat left", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const created = { ...chat(), id: "chat-new", pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" as const } };
+      const createChat = vi.fn(async () => {
+        useWorkspaceStore.setState({ chats: [chat(), created] });
+        return created;
+      });
+      // Rendered while chat-a was open, as a Studio starter chip's callback was.
+      const actions = useAssistantChat({ attachments: [], createChat, draft: "" });
+
+      // Start chat opens a new personal chat and chooses the Assistant for it.
+      actions.activeChatIdRef.current = null;
+      useWorkspaceStore.getState().setActiveChatId(null);
+      useComposerSessionStore.getState().activateSession(composerSessionKey(null, null));
+      await actions.sendStarterPrompt("Review a diff");
+
+      expect(createChat).toHaveBeenCalledOnce();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url] = fetchMock.mock.calls[0] as unknown as [string];
+      expect(url).toBe("/api/chats/chat-new/messages");
+      expect(requestBody(fetchMock)).toMatchObject({
+        assistantId: "assistant-selected",
+        content: { blocks: [{ text: "Review a diff", type: "text" }] }
+      });
+    });
+
+    it("regenerates with the chat's binding and only the changed rows", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({ attachments: [], draft: "" });
+      useComposerControlStore.getState().setSkillsMode("auto");
+      prepareRegenerationThread();
+
+      await actions.regenerateMessage("assistant-original");
+
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/messages/assistant-original/regenerate");
+      expect(requestBody(fetchMock)).toEqual({
+        admissionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        skillIds: ["skill-actions"],
+        skills: { mode: "auto" },
+        timeZone: expect.any(String),
+        workspace: { enabled: false }
+      });
+    });
+
+    it("branches an edit with the chat's binding and no row keys", async () => {
+      const fetchMock = vi
+        .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+        .mockImplementationOnce(async () => editResponse("Edited question"));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useAssistantChat({ attachments: [], draft: "Edited question", editingMessageId: "message-1" });
+
+      await actions.submitMessageEdit();
+
+      expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/messages/message-edited/regenerate");
+      expect(requestBody(fetchMock, 1)).toEqual({
+        admissionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        skillIds: ["skill-actions"],
+        timeZone: expect.any(String),
+        workspace: { enabled: false }
+      });
+    });
+
+    function recordLiveAnswerIdentities(fetchMock: ReturnType<typeof vi.fn>, identities: unknown[]) {
+      fetchMock.mockImplementation(async () => {
+        const live = (useThreadStore.getState().threadsByChatId["chat-a"]?.messages ?? [])
+          .filter((message) => message.role === "assistant" && message.status === "streaming");
+        identities.push(live.at(-1) ? live.at(-1)?.assistantIdentity : "no live answer");
+        return new Response("", { status: 200 });
+      });
+    }
+
+    it.each([
+      ["a send", "Send", async (actions: ReturnType<typeof useMessageRunActionsForTest>) => actions.submitComposer()],
+      ["a regeneration", "", async (actions: ReturnType<typeof useMessageRunActionsForTest>) => {
+        prepareRegenerationThread();
+        await actions.regenerateMessage("assistant-original");
+      }],
+      ["a starter", "", async (actions: ReturnType<typeof useMessageRunActionsForTest>) => actions.sendStarterPrompt("Review a diff")]
+    ])("gives the live answer of %s the identity it runs with before any read", async (_name, draft, run) => {
+      const identities: unknown[] = [];
+      const fetchMock = vi.fn();
+      recordLiveAnswerIdentities(fetchMock, identities);
+      vi.stubGlobal("fetch", fetchMock);
+      const bound = boundComposerAssistantFixture({ id: "assistant-selected" });
+
+      await run(useAssistantChat({ attachments: [], draft }));
+
+      expect(identities).toEqual([{ avatar: bound.avatar, name: bound.name }]);
+    });
+
+    it("gives the live answer of an edited branch the identity it runs with", async () => {
+      const identities: unknown[] = [];
+      const fetchMock = vi.fn();
+      recordLiveAnswerIdentities(fetchMock, identities);
+      fetchMock.mockImplementationOnce(async () => editResponse("Edited question"));
+      vi.stubGlobal("fetch", fetchMock);
+      const bound = boundComposerAssistantFixture({ id: "assistant-selected" });
+
+      await useAssistantChat({ attachments: [], draft: "Edited question", editingMessageId: "message-1" }).submitMessageEdit();
+
+      expect(identities).toEqual([{ avatar: bound.avatar, name: bound.name }]);
+    });
+
+    it("marks the live answer of a chat without an Assistant as running without one", async () => {
+      const identities: unknown[] = [];
+      const fetchMock = vi.fn();
+      recordLiveAnswerIdentities(fetchMock, identities);
+      vi.stubGlobal("fetch", fetchMock);
+
+      await useMessageRunActionsForTest({ attachments: [], draft: "Without the Assistant" }).submitComposer();
+
+      expect(identities).toEqual([null]);
+    });
+
+    /**
+     * A change of the chat's Assistant in flight: `settle` resolves once
+     * `finish` is called, after the chat's re-read applied `next`.
+     */
+    function assistantChangeInFlight(next: ReturnType<typeof boundComposerAssistantFixture> | null, succeeds = true) {
+      let pending = true;
+      let finish!: () => void;
+      const gate = new Promise<void>((resolve) => { finish = resolve; });
+      const updates = {
+        hasPendingUpdate: vi.fn(() => pending),
+        resync: vi.fn(async () => true),
+        settle: vi.fn(async () => {
+          await gate;
+          pending = false;
+          if (succeeds) useComposerControlStore.setState({ assistant: next });
+          return succeeds;
+        })
+      };
+      return { finish: () => finish(), updates };
+    }
+
+    type RunPath = (actions: ReturnType<typeof useMessageRunActionsForTest>) => Promise<void>;
+    const runPaths: [string, string, RunPath][] = [
+      ["a send", "Send", (actions) => actions.submitComposer()],
+      ["a regeneration", "", async (actions) => {
+        prepareRegenerationThread();
+        await actions.regenerateMessage("assistant-original");
+      }],
+      ["a starter", "", (actions) => actions.sendStarterPrompt("Review a diff")],
+      ["an edited branch", "Edited question", (actions) => actions.submitMessageEdit()]
+    ];
+
+    it.each(runPaths)("starts %s only after a change of the Assistant settled, with the new Assistant", async (name, draft, run) => {
+      const identities: unknown[] = [];
+      const fetchMock = vi.fn();
+      recordLiveAnswerIdentities(fetchMock, identities);
+      if (name === "an edited branch") fetchMock.mockImplementationOnce(async () => editResponse("Edited question"));
+      vi.stubGlobal("fetch", fetchMock);
+      const next = boundComposerAssistantFixture({ id: "assistant-next", name: "Next Assistant" });
+      const change = assistantChangeInFlight(next);
+      const actions = useAssistantChat({
+        attachments: [],
+        chatAssistantUpdates: change.updates,
+        draft,
+        ...(name === "an edited branch" ? { editingMessageId: "message-1" } : {})
+      });
+
+      const started = run(actions);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      change.finish();
+      await started;
+      expect(change.updates.settle).toHaveBeenCalledWith("chat-a");
+      expect(identities).toEqual([{ avatar: next.avatar, name: "Next Assistant" }]);
+    });
+
+    it.each(runPaths)("sends nothing for %s when the change of the Assistant failed", async (name, draft, run) => {
+      const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const change = assistantChangeInFlight(null, false);
+      const actions = useAssistantChat({
+        attachments: [],
+        chatAssistantUpdates: change.updates,
+        draft,
+        ...(name === "an edited branch" ? { editingMessageId: "message-1" } : {})
+      });
+
+      change.finish();
+      await run(actions);
+      expect(fetchMock).not.toHaveBeenCalled();
+      if (name === "a send") {
+        expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a")).draft).toBe("Send");
+      }
+    });
+
+    it("flushes a queued row change of the chat before the run's request", async () => {
+      const calls: string[] = [];
+      const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+        calls.push(`${init?.method ?? "GET"} ${String(url)}`);
+        return new Response("", { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const chatAssistant = createChatAssistantActions({
+        chooseScope: () => null,
+        refreshChatAssistant: async () => true,
+        setNotice: vi.fn(),
+        syncDelayMs: 60_000
+      });
+      const actions = useAssistantChat({ attachments: [], chatAssistantUpdates: chatAssistant, draft: "After the change" });
+      useComposerControlStore.getState().setSkillsMode("auto");
+      chatAssistant.syncChangedRows();
+      expect(chatAssistant.hasPendingUpdate("chat-a")).toBe(true);
+
+      await actions.submitComposer();
+
+      expect(calls).toEqual(["PATCH /api/chats/chat-a", "POST /api/chats/chat-a/messages"]);
+      expect(chatAssistant.hasPendingUpdate("chat-a")).toBe(false);
+    });
+
+    describe("while a choice of the chat's Assistant is still reading its detail", () => {
+      const next = boundComposerAssistantFixture({ id: "assistant-next", name: "Next Assistant" });
+      const nextDefinition: ComposerAssistantDefinition = {
+        availability: { ok: true },
+        avatar: next.avatar,
+        description: "",
+        id: "assistant-next",
+        name: "Next Assistant",
+        owned: true,
+        ownerDisplayName: "Owner",
+        promptCharacterCount: null,
+        rowAvailability: {},
+        rows: {
+          controls: { policy: "adjustable", value: {} },
+          knowledge: { policy: "adjustable", value: { mode: "none" } },
+          model: { policy: "adjustable", value: { mode: "model", modelId: "gpt-5.5" } },
+          search: { policy: "adjustable", value: { mode: "off" } },
+          skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
+          tools: { policy: "adjustable", value: { mode: "off" } }
+        },
+        starterPrompts: []
+      };
+
+      /**
+       * The shell's choice in an existing chat: a detail read (held open
+       * until `release`), then the chat update and the chat's re-read, which
+       * applies the new Assistant. Requests are logged in order.
+       */
+      function heldChoice(log: string[], detailRead: "fails" | "succeeds" = "succeeds") {
+        const notices: string[] = [];
+        const chatAssistant = createChatAssistantActions({
+          chooseScope: () => null,
+          refreshChatAssistant: async () => {
+            log.push("re-read");
+            useComposerControlStore.setState({ assistant: next });
+            return true;
+          },
+          setNotice: (notice) => notices.push(notice.text),
+          syncDelayMs: 60_000
+        });
+        let release!: () => void;
+        const read = new Promise<void>((resolve) => { release = resolve; });
+        const choose = () => {
+          void chatAssistant.trackOpenChat(async () => {
+            log.push("GET detail");
+            await read;
+            if (detailRead === "fails") {
+              notices.push("This assistant needs access you do not currently have.");
+              return false;
+            }
+            return await chatAssistant.chooseDefinition(nextDefinition) === null;
+          }, (chosen) => chosen);
+        };
+        return { chatAssistant, choose, notices, release: () => release() };
+      }
+
+      function logRequests(log: string[], identities: unknown[]) {
+        const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+          const method = init?.method ?? "GET";
+          log.push(`${method} ${String(url)}`);
+          if (String(url) === "/api/messages/message-1") return editResponse("Edited question");
+          if (method === "POST") {
+            const live = (useThreadStore.getState().threadsByChatId["chat-a"]?.messages ?? [])
+              .filter((message) => message.role === "assistant" && message.status === "streaming");
+            identities.push(live.at(-1)?.assistantIdentity);
+          }
+          return new Response("", { status: 200 });
+        });
+        vi.stubGlobal("fetch", fetchMock);
+      }
+
+      it.each(runPaths)("starts %s after the chat update and its re-read, with the new Assistant", async (name, draft, run) => {
+        const log: string[] = [];
+        const identities: unknown[] = [];
+        logRequests(log, identities);
+        const held = heldChoice(log);
+        const actions = useAssistantChat({
+          attachments: [],
+          chatAssistantUpdates: held.chatAssistant,
+          draft,
+          ...(name === "an edited branch" ? { editingMessageId: "message-1" } : {})
+        });
+
+        held.choose();
+        const started = run(actions);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(log).toEqual(["GET detail"]);
+
+        held.release();
+        await started;
+        expect(log.slice(0, 3)).toEqual(["GET detail", "PATCH /api/chats/chat-a", "re-read"]);
+        expect(log.length).toBeGreaterThan(3);
+        expect(identities.at(-1)).toEqual({ avatar: next.avatar, name: "Next Assistant" });
+      });
+
+      it("keeps the draft and sends nothing when the detail read fails", async () => {
+        const log: string[] = [];
+        logRequests(log, []);
+        const held = heldChoice(log, "fails");
+        const actions = useAssistantChat({ attachments: [], chatAssistantUpdates: held.chatAssistant, draft: "Keep me" });
+
+        held.choose();
+        const started = actions.submitComposer();
+        held.release();
+        await started;
+
+        expect(log).toEqual(["GET detail"]);
+        expect(held.notices).toEqual(["This assistant needs access you do not currently have."]);
+        expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a")).draft).toBe("Keep me");
+      });
+    });
+
+    describe("when the Assistant library refuses a choice without a notice", () => {
+      const next = boundComposerAssistantFixture({ id: "assistant-next", name: "Next Assistant" });
+
+      /**
+       * The real library and chat actions and their stores, wired as the
+       * shell's `chooseComposerAssistant` does in an existing chat: a pick is
+       * tracked from the library's detail read to the chat's re-read and
+       * counts as settled only when chosen. Requests are logged in order; the
+       * detail read answers only when `release` is called.
+       */
+      function libraryChoices(log: string[]) {
+        let release!: () => void;
+        const read = new Promise<void>((resolve) => { release = resolve; });
+        vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+          const method = init?.method ?? "GET";
+          log.push(`${method} ${String(url)}`);
+          if (String(url) === "/api/me/assistants/assistant-next") {
+            await read;
+            return new Response(JSON.stringify({
+              assistant: assistantDetail(3, {
+                content: { ...assistantContent(), avatar: next.avatar, name: "Next Assistant" },
+                id: "assistant-next"
+              })
+            }), { headers: { "content-type": "application/json" } });
+          }
+          return new Response("", { status: 200 });
+        }));
+        const notices: string[] = [];
+        const chatAssistant = createChatAssistantActions({
+          chooseScope: () => null,
+          refreshChatAssistant: async () => {
+            log.push("re-read");
+            useComposerControlStore.setState({ assistant: next });
+            return true;
+          },
+          setNotice: (notice) => notices.push(notice.text),
+          syncDelayMs: 60_000
+        });
+        const library = createAssistantLibraryActions({
+          ...assistantControllerInput(),
+          chooseAssistant: chatAssistant.chooseAssistant,
+          setShellNotice: (notice) => notices.push(notice.text)
+        });
+        const pick = (assistantId: string) => chatAssistant.trackOpenChat(
+          () => library.useAssistant(assistantId, { navigate: false }),
+          (chosen) => chosen
+        );
+        return { chatAssistant, notices, pick, release: () => release() };
+      }
+
+      beforeEach(() => {
+        resetAssistantLibraryStoreForTest();
+      });
+
+      it("sends after the pick in flight, with the Assistant it chose, when a second pick was refused as busy", async () => {
+        const log: string[] = [];
+        const choices = libraryChoices(log);
+        const actions = useAssistantChat({ attachments: [], chatAssistantUpdates: choices.chatAssistant, draft: "Hello" });
+
+        const first = choices.pick("assistant-next");
+        // The library is busy with the first pick: the second changes nothing and says nothing.
+        await expect(choices.pick("assistant-other")).resolves.toBe(false);
+        const started = actions.submitComposer();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(log).toEqual(["GET /api/me/assistants/assistant-next"]);
+
+        choices.release();
+        await started;
+        await expect(first).resolves.toBe(true);
+        expect(log).toEqual([
+          "GET /api/me/assistants/assistant-next",
+          "PATCH /api/chats/chat-a",
+          "re-read",
+          "POST /api/chats/chat-a/messages"
+        ]);
+        expect(choices.notices).toEqual([]);
+        expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a")).draft).toBe("");
+      });
+
+      it("sends with the chat as it is after a pick was refused for an unsaved Studio draft", async () => {
+        const log: string[] = [];
+        const choices = libraryChoices(log);
+        // Studio replaces the chat while it holds an editor, so a pick from
+        // the chat never meets this refusal; even then nothing is dropped.
+        installAssistantEditor({ editor: { baseline: "saved before the change" } });
+        const actions = useAssistantChat({ attachments: [], chatAssistantUpdates: choices.chatAssistant, draft: "Hello" });
+
+        await expect(choices.pick("assistant-next")).resolves.toBe(false);
+        await actions.submitComposer();
+
+        expect(log).toEqual(["POST /api/chats/chat-a/messages"]);
+        expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-selected" });
+        expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a")).draft).toBe("");
+      });
+    });
+
+    it("tells the user to send again and re-reads the Assistant when admission says it changed", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "assistant_not_available" }, { status: 409 })));
+      const resync = vi.fn(async () => true);
+      const actions = useAssistantChat({
+        attachments: [],
+        chatAssistantUpdates: { hasPendingUpdate: () => false, resync, settle: async () => true },
+        draft: "Send me again"
+      });
+
+      await actions.submitComposer();
+
+      const session = selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a"));
+      expect(session.draft).toBe("Send me again");
+      expect(JSON.stringify(session)).toContain("The chat's Assistant changed before your message was sent.");
+      expect(JSON.stringify(session)).not.toContain("assistant_not_available");
+      expect(resync).toHaveBeenCalledWith("chat-a");
+    });
+
+    it("never waits in a blank chat, whose Assistant is composer state", async () => {
+      const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const change = assistantChangeInFlight(null);
+      const actions = useAssistantChat({ activeChat: null, attachments: [], chatAssistantUpdates: change.updates, draft: "" });
+
+      await actions.sendStarterPrompt("Review a diff");
+      await actions.submitComposer();
+
+      expect(change.updates.settle).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["deleted", { state: "deleted" as const }],
+      ["unavailable", { state: "unavailable" as const }],
+      ["archived", boundComposerAssistantFixture({ availability: { ok: false, reason: "archived" }, owned: false })]
+    ])("blocks every run while the Assistant is %s", async (_name, assistant) => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({ attachments: [], draft: "Keep this draft" });
+      useComposerControlStore.setState({ assistant });
+      prepareRegenerationThread();
+
+      await actions.submitComposer();
+      await actions.sendStarterPrompt("Starter");
+      await actions.regenerateMessage("assistant-original");
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(actions.setNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
+      expect(actions.session(actions.sourceSessionKey).draft).toBe("Keep this draft");
     });
   });
 
@@ -3551,5 +4282,30 @@ describe("message run actions", () => {
     expect(actions.surface("chat-b").events).toEqual([
       { data: { runId: "run-b" }, type: "start" }
     ]);
+  });
+});
+
+describe("assistantControlDefaults", () => {
+  it("keeps only the saved fields the effective model supports and drops empty or unparsable values", () => {
+    const plainModel: CatalogModel = {
+      ...model,
+      capabilities: { ...model.capabilities, reasoning: false, streaming: false },
+      parameterControls: {
+        ...model.parameterControls!,
+        background: { defaultValue: false, supported: false },
+        reasoningEffort: { defaultValue: "none", options: ["none"], supported: false },
+        stream: { defaultValue: false, supported: false }
+      }
+    };
+    expect(assistantControlDefaults({
+      backgroundMode: true,
+      maxOutputTokens: "4096",
+      reasoningEffort: "high",
+      reasoningMode: "standard",
+      streamMode: true,
+      temperature: "0.4"
+    }, plainModel)).toEqual({ maxOutputTokens: "4096", temperature: "0.4" });
+    expect(assistantControlDefaults({ maxOutputTokens: "0", temperature: " " }, model)).toEqual({});
+    expect(assistantControlDefaults({ maxOutputTokens: "12.5", temperature: "warm" }, model)).toEqual({});
   });
 });

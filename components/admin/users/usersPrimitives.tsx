@@ -79,7 +79,7 @@ export function UserStatusPill({ status }: Readonly<{ status: "active" | "denied
   );
 }
 
-/** Toolbar filter pill: `Pending · 3`; selected pills take the accent, states keep their dot. */
+/** Toolbar filter pill: `Pending · 3` (or a bare label); selected pills take the accent, states keep their dot. */
 export function FilterPill({
   count,
   label,
@@ -87,13 +87,13 @@ export function FilterPill({
   selected,
   tone = "neutral"
 }: Readonly<{
-  count: number;
+  count?: number;
   label: string;
   onSelect(): void;
   selected: boolean;
   tone?: "caution" | "neutral";
 }>) {
-  const dot = tone === "caution" && count > 0;
+  const dot = tone === "caution" && (count ?? 0) > 0;
   return (
     <button
       aria-pressed={selected}
@@ -104,7 +104,7 @@ export function FilterPill({
       type="button"
     >
       {dot ? <span aria-hidden="true" className="size-1.5 rounded-full bg-current" /> : null}
-      {label} · {count}
+      {count === undefined ? label : `${label} · ${count}`}
     </button>
   );
 }

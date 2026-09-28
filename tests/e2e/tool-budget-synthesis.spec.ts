@@ -29,7 +29,7 @@ for (const viewport of [
     await stream.install(page, chatId);
     const emit = (event: ModelRunSseEvent) => stream.emit(page, event.type, event.data);
     const chat: ChatDetailWire = {
-      activeLeafMessageId: null, contextStats: { approximateActiveBranchInputTokens: 0 },
+      activeLeafMessageId: null, assistant: null, contextStats: { approximateActiveBranchInputTokens: 0 },
       createdAt: timestamp, defaultModelId: "gpt-5.5", defaultProvider: "openai", folderId: null,
       id: chatId, messageCount: 0, messages: [], pinned: false, title: "Bounded tool answer", updatedAt: timestamp,
       pageInfo: { activeLeafMessageId: null, beforeCursor: null, hasOlder: false, snapshotUpdatedAt: timestamp },

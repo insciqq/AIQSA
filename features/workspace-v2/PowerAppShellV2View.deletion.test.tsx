@@ -20,7 +20,7 @@ function shellProps(deletionStatus: "failed" | "pending"): PowerAppShellV2Props 
     session: { accountId: "owner", accountDisplayName: "Owner", accountEmail: null, activeChatId: null, notice: null },
     composer: {
       attachments: [], catalog: null, draft: "", currentParameterControls: defaultParameterControls(),
-      assistant: { selected: null, pickerItems: [], recentIds: [], openPicker: false },
+      assistant: { current: null, pickerItems: [], recentIds: [], openPicker: false },
       knowledge: { bases: [], sources: [], documentTotal: null },
       memory: { mode: "NORMAL" }, workspace: { available: false, enabled: false },
       composerActions: {}, selectedSearchOptionIds: []

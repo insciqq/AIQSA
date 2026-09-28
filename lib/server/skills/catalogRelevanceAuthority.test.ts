@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
 import type { AssistantRunMaterialization } from "../assistants/runMaterialization";
 import { skillCatalogAuthorization } from "./catalogRelevanceAuthority";
 import type { SkillRunResolver } from "./runMaterialization";
@@ -6,11 +7,14 @@ import type { SkillRunResolver } from "./runMaterialization";
 const pinned = { skillId: "p", revisionId: "p-r", name: "Pinned", instructions: "Pinned body" };
 const available = { skillId: "a", revisionId: "a-r", name: "Available", description: "A procedure", instructions: "Available body" };
 const assistant: AssistantRunMaterialization = {
-  assistantId: "assistant", definitionVersion: 1, name: "Reviewer", developerPrompt: null, systemPrompt: "Review",
+  assistantId: "assistant", definitionVersion: 1, name: "Reviewer", systemPrompt: "Review",
   identity: { name: "Reviewer", avatar: { kind: "generated", recipeVersion: 1, paletteId: "ember", backgroundShape: "circle", foregroundShape: "ring", accents: [], rotations: [0, 0] } },
   provider: "provider", providerModelId: "model", runControls: {}, mcpServerIds: [],
   knowledgeSelection: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
-  searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: ["p", "a"], skillModes: { p: "pinned", a: "available" }
+  searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: ["p", "a"], skillModes: { p: "pinned", a: "available" },
+  rows: assistantRowsFromLegacyFields({ knowledgeSelection: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
+    mcpServerIds: [], providerModelId: "model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] },
+    skillIds: ["p", "a"], skillModes: { p: "pinned", a: "available" } })
 };
 
 function setup(projectId?: string) {

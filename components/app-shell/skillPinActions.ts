@@ -25,7 +25,8 @@ export async function pinSkillForNextTurn(input: Readonly<{
   if (!input.isCurrentScope()) return;
   const controls = useComposerControlStore.getState();
   const pinnedIds = resolveEffectiveSkillIds(
-    (controls.selectedAssistant?.includedSkills ?? []).filter(skill => skill.mode !== "available").map(skill => skill.id),
+    (controls.assistant?.state === "bound" ? controls.assistant.includedSkills : [])
+      .filter(skill => skill.mode !== "available").map(skill => skill.id),
     controls.selectedSkills.map(skill => skill.id)
   );
   if (pinnedIds.includes(selected.id)) return;

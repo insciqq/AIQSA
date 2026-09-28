@@ -6,9 +6,20 @@ import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
 import type { KnowledgeLibraryView } from "@/components/knowledge/libraryViewContracts";
 import type {
-  ComposerAssistantSelection,
+  ComposerAssistantRow,
+  ComposerAssistantSkill,
   ComposerKnowledgePlanSource
 } from "@/components/app-shell/composerControlStore";
+import type {
+  AssistantAvailability,
+  AssistantAvatarRecipe,
+  AssistantRowKey,
+  AssistantSummary
+} from "@/lib/contracts/assistants";
+import type {
+  ChatAssistantOverrideValues,
+  ChatAssistantRowValues
+} from "@/lib/contracts/chats";
 import type {
   ComposerConfigKnowledgeBase,
   ComposerConfigKnowledgeSource
@@ -199,6 +210,48 @@ export type ShellComposerActions = {
   retryAttachment?(attachmentId: string): void;
 };
 
+/** A row of the chat's Assistant with its effective value, as the composer holds it. */
+export type ShellComposerAssistantRow<Key extends AssistantRowKey = AssistantRowKey> =
+  ComposerAssistantRow<Key> & { value: ChatAssistantRowValues[Key] };
+
+/**
+ * The chat's Assistant. `scope` says where a change goes: `composer` until the
+ * first message of a new chat carries it, `chat` for an existing chat.
+ */
+export type ShellComposerAssistant =
+  | {
+      availability: AssistantAvailability;
+      avatar: AssistantAvatarRecipe;
+      /** Send stays blocked while this is set (archived, a missing fixed dependency). */
+      blockReason: string | null;
+      /** Rows changed for this chat, in row order. */
+      changedRows: AssistantRowKey[];
+      description: string;
+      id: string;
+      includedSkills: ComposerAssistantSkill[];
+      name: string;
+      owned: boolean;
+      ownerDisplayName: string;
+      /**
+       * True in a Project chat: the Assistant is the Project's, and inherit
+       * and fallback rows use the Project's defaults, never personal ones.
+       */
+      project?: true;
+      /** In a Project chat, the Project's name when known: the Assistant's byline. */
+      projectName?: string;
+      rows: { [Key in AssistantRowKey]: ShellComposerAssistantRow<Key> };
+      scope: "chat" | "composer";
+      starterPrompts: string[];
+      state: "bound";
+    }
+  | {
+      blockReason: string;
+      /** A consumer's Assistant its owner archived; nothing else about it is known. */
+      reason?: "archived";
+      scope: "chat" | "composer";
+      state: "deleted" | "unavailable";
+    };
+
 export type ShellComposerView = {
   agent?: Readonly<{ enabled: boolean; unavailableReason?: string; setEnabled(value: boolean): void }>;
   attachments: ComposerAttachment[];
@@ -215,23 +268,59 @@ export type ShellComposerView = {
   composerContextStats: ComposerContextStats | null;
   composerDisabledHint: string | null;
   assistant: {
-    clearRemovedNotice(): void;
+    /** Personal: pinned, Featured, Yours, Shared; Project: the Project's Assistants. */
+    pickerItems: AssistantSummary[];
+    pickerLoading: boolean;
+    /** Assistants of the latest personal chats, newest first (from the list response). */
+    recentIds: string[];
+    /**
+     * The blank personal chat's strip: pinned (up to five), then Featured, all
+     * usable now. Empty inside a Project and until the list has loaded.
+     */
+    stripItems: readonly AssistantSummary[];
+    /** The chat's Assistant; null without one. */
+    current: ShellComposerAssistant | null;
+    /** A chat update of the Assistant is in flight for the open chat. */
+    pending: boolean;
+    /** Owner only, with at least one row changed for an existing chat. */
+    canSaveChatSetup: boolean;
+    /** Chooses (or changes to) an Assistant; the picker, strip and header call it. */
+    choose(assistantId: string): void;
+    /** Returns an unavailable or deleted binding to an ordinary chat. */
+    continueWithout(): void;
+    /** Copies the Assistant's entry link ("Copy link" in the header selector). */
+    copyLink(assistantId: string): void;
     editById(assistantId: string): void;
     openLibrary(): void;
     openPicker: boolean;
-    pickerItems: import("@/lib/contracts/assistants").AssistantSummary[];
-    pickerLoading: boolean;
-    recentIds: string[];
+    /** "Remove for this chat": the next messages go without the Assistant. */
     remove(): void;
-    removedNotice: boolean;
-    selectById(assistantId: string): void;
-    selected: ComposerAssistantSelection | null;
+    /** "Reset to Assistant" for one adjustable row. */
+    resetRow(row: AssistantRowKey): void;
+    /** Owner: restores an archived Assistant and re-reads it; absent inside a Project. */
+    restore?(assistantId: string): void;
+    /** "Save chat setup to Assistant" (owner). */
+    saveChatSetup(): void;
     sendStarter(prompt: string): void;
     setPickerOpen(open: boolean): void;
+    /** Changes one adjustable row for this chat; false when the row is fixed. */
+    setRow<Key extends AssistantRowKey>(row: Key, value: ChatAssistantOverrideValues[Key]): boolean;
     startFromCurrentSetup(): void;
   };
   /** Personal Chat defaults in Studio; absent inside a Project. */
   chatDefaults?: {
+    /** The Assistant every new personal chat starts with. */
+    assistant?: {
+      /** The saved default while it is available; null when none is saved or it is unavailable. */
+      assistantId: string | null;
+      /** Null until the user's Assistants list loads. */
+      assistants: readonly AssistantSummary[] | null;
+      assistantsState: "error" | "loading" | "ready";
+      loadAssistants(): void;
+      set(assistantId: string | null): void;
+      /** A saved default that is no longer available; it is never applied. */
+      unavailable: boolean;
+    };
     knowledgePlan: KnowledgeSelection | null;
     mcpMode: ChatDefaultMcpMode;
     skillsMode?: "auto" | "off";

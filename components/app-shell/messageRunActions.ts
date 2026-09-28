@@ -23,6 +23,7 @@ import { loadChatMemoryState } from "@/components/app-shell/chatLifecycleApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import { editMessageBranchAction } from "@/components/app-shell/messageEditAction";
 import { shellFetch } from "@/components/app-shell/shellApi";
+import type { ChatAssistantActions } from "@/components/app-shell/chatAssistantActions";
 import {
   executeMessageRunLifecycle,
   type ConsumeMessageRunStream,
@@ -46,14 +47,21 @@ import {
 } from "@/components/app-shell/memorySettingsStore";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
+import { defaultParameterControls } from "@/components/app-shell/controlDefaults";
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { reconcileModelSearchPlan } from "@/lib/domain/catalogMatrix";
-import type {
-  ComposerKnowledgePlanSource,
-  ComposerMcpSelection
+import {
+  boundComposerAssistant,
+  type ComposerKnowledgePlanSource,
+  type ComposerMcpSelection
 } from "@/components/app-shell/composerControlStore";
+import {
+  composerAssistantChangedRows,
+  composerAssistantSendBlockReason
+} from "@/components/app-shell/composerAssistantState";
+import type { AssistantIdentity, AssistantRowKey } from "@/lib/contracts/assistants";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
 import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 
@@ -62,7 +70,16 @@ type MutableRef<T> = { current: T };
 type MessageRunControlSnapshot = {
   agentEnabled: boolean;
   contextConfigurationKey: string;
-  assistantId: string | null;
+  /**
+   * The chat's Assistant at capture: its id and `{name, avatar}` (null without
+   * identity), the rows changed for this chat, and why it blocks sending.
+   */
+  assistant: Readonly<{
+    blockReason: string | null;
+    changedRows: readonly AssistantRowKey[];
+    id: string | null;
+    identity: AssistantIdentity | null;
+  }> | null;
   controlDefaults: SavedControlDraft;
   model: CatalogModel | undefined;
   modelId: string;
@@ -91,6 +108,8 @@ type MessageRunActionsInput = {
   activeStreamAbortRef: MutableRef<Map<string, AbortController>>;
   buildControlDraft(): SavedControlDraft;
   buildParams(): Record<string, unknown>;
+  /** Pending changes of a chat's Assistant or of its values, which every run of the chat waits for. */
+  chatAssistantUpdates?: Pick<ChatAssistantActions, "hasPendingUpdate" | "resync" | "settle">;
   consumeRunStream: ConsumeMessageRunStream;
   createChat(
     folderId?: string | null,
@@ -117,6 +136,43 @@ type MessageRunActionsInput = {
   activeChatStreaming: boolean;
 };
 
+function savedNumber(value: string | undefined, integer: boolean): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && (!integer || (Number.isInteger(parsed) && parsed >= 1)) ? value : undefined;
+}
+
+/**
+ * A Controls row changed for an Assistant chat travels as `controlDefaults`
+ * in saved-value format: only the six parameter fields, only those the
+ * effective model supports, and no empty or unparsable value. The server
+ * never reads `params` in an Assistant chat.
+ */
+export function assistantControlDefaults(
+  draft: SavedControlDraft,
+  model: CatalogModel | undefined
+): SavedControlDraft {
+  const controls = defaultParameterControls(model);
+  const maxOutputTokens = savedNumber(draft.maxOutputTokens, true);
+  const temperature = controls.temperature.supported ? savedNumber(draft.temperature, false) : undefined;
+  return {
+    ...(controls.background.supported && typeof draft.backgroundMode === "boolean"
+      ? { backgroundMode: draft.backgroundMode }
+      : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(controls.reasoningEffort.supported && draft.reasoningEffort
+      ? { reasoningEffort: draft.reasoningEffort }
+      : {}),
+    ...(controls.reasoningMode?.supported && draft.reasoningMode
+      ? { reasoningMode: draft.reasoningMode }
+      : {}),
+    ...(controls.stream.supported && typeof draft.streamMode === "boolean"
+      ? { streamMode: draft.streamMode }
+      : {}),
+    ...(temperature !== undefined ? { temperature } : {})
+  };
+}
+
 function toolsOverride(model: CatalogModel | undefined): { tools: "none" } | Record<string, never> {
   return model && !model.capabilities.toolCalling ? { tools: "none" } : {};
 }
@@ -134,6 +190,36 @@ function modelForCurrentSelection(
   return catalog?.models.find((model) => model.provider === provider && model.modelId === modelId);
 }
 
+function runAssistantIdentity(
+  assistant: Readonly<{ avatar: AssistantIdentity["avatar"]; name: string }> | null
+): AssistantIdentity | null {
+  return assistant ? { avatar: structuredClone(assistant.avatar), name: assistant.name } : null;
+}
+
+/**
+ * A live answer carries the identity it runs with from the moment it starts,
+ * so the answer's identity chip follows the Assistant without waiting for a
+ * chat re-read; the server's snapshot replaces it with the settled message.
+ */
+function optimisticAnswerIdentity(
+  snapshot: Pick<MessageRunControlSnapshot, "assistant">
+): Pick<ThreadMessage, "assistantIdentity"> {
+  return { assistantIdentity: snapshot.assistant?.identity ?? null };
+}
+
+/**
+ * Admission refusals that mean the chat's Assistant changed or went away
+ * between the payload and the run's commit (for example in another tab).
+ */
+const ASSISTANT_CHANGED_CODES: ReadonlySet<string> = new Set(["assistant_binding_conflict", "assistant_not_available"]);
+const ASSISTANT_CHANGED_SEND_COPY =
+  "The chat's Assistant changed before your message was sent. Your draft is back in the composer; check the Assistant and send it again.";
+const ASSISTANT_CHANGED_RUN_COPY =
+  "The chat's Assistant changed before this could start. Check the Assistant and try again.";
+
+/** Chats whose run is waiting for a change of the chat's Assistant to settle. */
+const runsAwaitingAssistant = new Set<string>();
+
 export function useMessageRunActions({
   activeChat,
   activeChatDetailLoading,
@@ -143,6 +229,7 @@ export function useMessageRunActions({
   activeStreamAbortRef,
   buildControlDraft,
   buildParams,
+  chatAssistantUpdates,
   consumeRunStream,
   createChat,
   createStreamTokenBuffer,
@@ -178,7 +265,6 @@ export function useMessageRunActions({
   function captureRunControlSnapshot(): MessageRunControlSnapshot {
     const controls = useComposerControlStore.getState();
     const {
-      selectedAssistant,
       knowledgeSelection,
       selectedModelId,
       selectedProvider,
@@ -229,7 +315,14 @@ export function useMessageRunActions({
         memoryMode: chat?.pendingInitialMemoryMode ?? chat?.memoryMode ?? composerSessionModeFromKey(sessionKey), workspaceEnabled
       }),
       agentEnabled: session.agentEnabled === true,
-      assistantId: selectedAssistant?.id ?? null,
+      assistant: controls.assistant
+        ? {
+            blockReason: composerAssistantSendBlockReason(controls),
+            changedRows: composerAssistantChangedRows(controls),
+            id: boundComposerAssistant(controls)?.id ?? null,
+            identity: runAssistantIdentity(boundComposerAssistant(controls))
+          }
+        : null,
       controlDefaults: { ...buildControlDraft() },
       knowledgeSelection: {
         ...knowledgeSelection,
@@ -314,19 +407,21 @@ export function useMessageRunActions({
     );
   }
 
-  function runControlPayload(snapshot: MessageRunControlSnapshot, projectScoped: boolean) {
-    if (snapshot.assistantId) {
-      // The server resolves the currently authorized revision at admission;
-      // the request carries only the Assistant identity plus user content and
-      // never an expanded client copy of the governed controls.
-      return {
-        ...(snapshot.agentEnabled ? { agentEnabled: true } : {}),
-        assistantId: snapshot.assistantId,
-        ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
-        workspace: { enabled: snapshot.workspaceEnabled }
-      };
-    }
-
+  /**
+   * `newChat` marks the first message of a chat the server creates with it.
+   * With an Assistant the server resolves every row from the definition and
+   * the chat's binding: the request names the Assistant only when the chat
+   * is created, and carries the ordinary keys only for rows changed for this
+   * chat. Regenerate, edit-and-branch and starters follow the same rule.
+   * The first message of a new Project chat always names its Assistant,
+   * `null` without one, so the server never applies the Project default
+   * implicitly.
+   */
+  function runControlPayload(
+    snapshot: MessageRunControlSnapshot,
+    projectScoped: boolean,
+    newChat = false
+  ) {
     const effectiveSearchPlan = reconcileModelSearchPlan(
       snapshot.model,
       snapshot.searchPreferencePlan.optionIds,
@@ -335,15 +430,39 @@ export function useMessageRunActions({
     );
     const timeZone = clientTimeZone();
 
+    if (snapshot.assistant) {
+      const changed = new Set(snapshot.assistant.changedRows);
+      return {
+        ...(snapshot.agentEnabled ? { agentEnabled: true } : {}),
+        ...(newChat && snapshot.assistant.id ? { assistantId: snapshot.assistant.id } : {}),
+        ...(changed.has("knowledge") ? { knowledgePlan: snapshot.knowledgeSelection } : {}),
+        ...(changed.has("tools") && snapshot.mcpSelection.mode !== "exact"
+          ? { mcp: { mode: snapshot.mcpSelection.mode } }
+          : {}),
+        ...(changed.has("model") ? { modelId: snapshot.modelId, provider: snapshot.provider } : {}),
+        ...(changed.has("controls")
+          ? { controlDefaults: assistantControlDefaults(snapshot.controlDefaults, snapshot.model) }
+          : {}),
+        ...(changed.has("search") ? { searchPlan: effectiveSearchPlan } : {}),
+        ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
+        ...(changed.has("skills") ? { skills: { mode: snapshot.skillsMode } } : {}),
+        ...(timeZone ? { timeZone } : {}),
+        workspace: { enabled: snapshot.workspaceEnabled }
+      };
+    }
+
     return {
       ...(snapshot.agentEnabled ? { agentEnabled: true } : {}),
+      ...(newChat && projectScoped ? { assistantId: null } : {}),
       controlDefaults: snapshot.controlDefaults,
       modelId: snapshot.modelId,
       ...(snapshot.knowledgePlanSource === "explicit"
         ? { knowledgePlan: snapshot.knowledgeSelection }
         : {}),
       params: snapshot.params,
-      ...(snapshot.mcpSelection.mode === "auto" ? {} : { mcp: snapshot.mcpSelection }),
+      ...(snapshot.mcpSelection.mode === "auto" || snapshot.mcpSelection.mode === "exact"
+        ? {}
+        : { mcp: snapshot.mcpSelection }),
       ...(snapshot.skillsMode === "off" ? { skills: { mode: "off" } } : {}),
       provider: snapshot.provider,
       searchPlan: effectiveSearchPlan,
@@ -360,13 +479,51 @@ export function useMessageRunActions({
     };
   }
 
+  /** A change of the chat's Assistant or of its values is queued or in flight. */
+  function assistantUpdatePending(chatId: string | null): chatId is string {
+    return Boolean(chatId && chatAssistantUpdates?.hasPendingUpdate(chatId));
+  }
+
+  /**
+   * A run of an existing chat starts only after a change of the chat's
+   * Assistant or of its values has settled, so its payload and its answer's
+   * identity follow the chat's state; the composer stays editable meanwhile.
+   * Callers await it only while `assistantUpdatePending` holds, so an idle
+   * chat starts its run without a pause. False when that change failed (its
+   * notice is shown and nothing is sent), another run of the chat is already
+   * waiting, or the chat was left.
+   */
+  async function settleAssistantBeforeRun(chatId: string): Promise<boolean> {
+    if (!chatAssistantUpdates || runsAwaitingAssistant.has(chatId)) return false;
+    runsAwaitingAssistant.add(chatId);
+    try {
+      return await chatAssistantUpdates.settle(chatId) && activeChatIdRef.current === chatId;
+    } finally {
+      runsAwaitingAssistant.delete(chatId);
+    }
+  }
+
+  /** An unavailable, archived or deleted Assistant waits for the user's choice. */
+  function assistantBlocksRun(snapshot: MessageRunControlSnapshot): boolean {
+    const reason = snapshot.assistant?.blockReason;
+    if (!reason) return false;
+    setNotice({ kind: "error", text: reason });
+    return true;
+  }
+
   async function editMessageBranch() {
     const sourceSessionKey = useComposerSessionStore.getState().activeSessionKey;
     const sourceChatId = chatIdFromComposerSessionKey(sourceSessionKey);
     if (!sourceChatId || sourceChatId !== activeChatId) {
       return;
     }
+    if (assistantUpdatePending(sourceChatId) && !(await settleAssistantBeforeRun(sourceChatId))) {
+      return;
+    }
     const runControlSnapshot = captureRunControlSnapshot();
+    if (assistantBlocksRun(runControlSnapshot)) {
+      return;
+    }
 
     const committed = await editMessageBranchAction({
       activeChatIdRef,
@@ -399,6 +556,7 @@ export function useMessageRunActions({
       modelId: runControlSnapshot.modelId,
       parentMessageId: editedUserMessageId,
       provider: runControlSnapshot.provider,
+      ...optimisticAnswerIdentity(runControlSnapshot),
       role: "assistant",
       status: "streaming"
     };
@@ -547,8 +705,20 @@ export function useMessageRunActions({
    */
   function noticeRejectedRun(chatId: string, result: MessageRunLifecycleResult) {
     if (!result.failed || result.cancelled || activeChatIdRef.current !== chatId) return;
-    const reason = result.rejectionMessage ?? result.failureMessage;
+    const reason = assistantChangedRefusal(chatId, result)
+      ? ASSISTANT_CHANGED_RUN_COPY
+      : result.rejectionMessage ?? result.failureMessage;
     if (reason) setNotice({ kind: "error", text: reason });
+  }
+
+  /**
+   * A run the server refused because the chat's Assistant changed meanwhile:
+   * the chat's Assistant is read again so the composer shows the current one.
+   */
+  function assistantChangedRefusal(chatId: string, result: MessageRunLifecycleResult): boolean {
+    if (!result.rejectionMessage || !result.failureCode || !ASSISTANT_CHANGED_CODES.has(result.failureCode)) return false;
+    void chatAssistantUpdates?.resync(chatId);
+    return true;
   }
 
   async function refreshInterruptedRun(chatId = activeChatId): Promise<boolean> {
@@ -613,6 +783,14 @@ export function useMessageRunActions({
   }
 
   async function sendMessage() {
+    const settleSessionKey = useComposerSessionStore.getState().activeSessionKey;
+    const settleChatId = chatIdFromComposerSessionKey(settleSessionKey);
+    if (assistantUpdatePending(settleChatId) && (
+      !(await settleAssistantBeforeRun(settleChatId)) ||
+      useComposerSessionStore.getState().activeSessionKey !== settleSessionKey
+    )) {
+      return;
+    }
     const sourceSessionKey = useComposerSessionStore.getState().activeSessionKey;
     const sourceSession = selectComposerSession(
       useComposerSessionStore.getState(),
@@ -626,7 +804,7 @@ export function useMessageRunActions({
     }
     const runControlSnapshot = captureRunControlSnapshot();
     const modelForSend = runControlSnapshot.model;
-    if (!modelForSend) {
+    if (!modelForSend || assistantBlocksRun(runControlSnapshot)) {
       return;
     }
     const artifactBlockReason = artifactUnavailableReason({
@@ -641,7 +819,10 @@ export function useMessageRunActions({
     // A Search engine the model cannot run is never kept silently (UX audit
     // 2026-09-02 A6): the message goes out without it, the composer choice
     // becomes Off, and a short notice says so.
-    const unavailableSearchOptionId = runControlSnapshot.searchPreferencePlan.optionIds.find(
+    // An Assistant's own Search row is resolved by admission, not sent.
+    const searchSent = !runControlSnapshot.assistant ||
+      runControlSnapshot.assistant.changedRows.includes("search");
+    const unavailableSearchOptionId = !searchSent ? undefined : runControlSnapshot.searchPreferencePlan.optionIds.find(
       (optionId) => optionId !== "search-disabled" && !modelForSend.searchStrategyIds.includes(optionId)
     );
     if (unavailableSearchOptionId) {
@@ -792,7 +973,8 @@ export function useMessageRunActions({
       startedFromBlankWorkspace = startedFromBlankWorkspace || Boolean(projectDraftForSend);
       const sendControlPayload = runControlPayload(
         runControlSnapshot,
-        Boolean(currentChatSummary?.projectId)
+        Boolean(currentChatSummary?.projectId),
+        Boolean(personalDraftForSend || projectDraftForSend)
       );
 
       const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
@@ -825,6 +1007,7 @@ export function useMessageRunActions({
         modelId: runControlSnapshot.modelId,
         parentMessageId: userMessage.id,
         provider: runControlSnapshot.provider,
+        ...optimisticAnswerIdentity(runControlSnapshot),
         role: "assistant",
         status: "streaming"
       };
@@ -953,7 +1136,9 @@ export function useMessageRunActions({
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
       sendContextTooLarge = result.failureCode === "context_too_large";
       sendFailureMessage = result.failureMessage ?? null;
-      sendRejectionMessage = result.rejectionMessage ?? null;
+      sendRejectionMessage = assistantChangedRefusal(chatIdForSend, result)
+        ? ASSISTANT_CHANGED_SEND_COPY
+        : result.rejectionMessage ?? null;
       sendRunId = result.runId;
       if (
         refreshProjectWorkspace &&
@@ -1005,7 +1190,14 @@ export function useMessageRunActions({
    */
   async function sendStarterPrompt(promptText: string) {
     const text = promptText.trim();
-    if (!text || activeChatDetailLoading) {
+    const settleChatId = useWorkspaceStore.getState().activeChatId;
+    if (assistantUpdatePending(settleChatId) && !(await settleAssistantBeforeRun(settleChatId))) {
+      return;
+    }
+    // The open chat is read at call time: a starter sent right after a
+    // navigation (a Studio starter chip) must follow the chat now open.
+    const current = useWorkspaceStore.getState();
+    if (!text || current.activeChatDetailLoading) {
       return;
     }
     const sourceSessionKey = useComposerSessionStore.getState().activeSessionKey;
@@ -1022,7 +1214,7 @@ export function useMessageRunActions({
       return;
     }
     const runControlSnapshot = captureRunControlSnapshot();
-    if (!runControlSnapshot.model) {
+    if (!runControlSnapshot.model || assistantBlocksRun(runControlSnapshot)) {
       return;
     }
     const sourceComposerChatId = chatIdFromComposerSessionKey(sourceSessionKey);
@@ -1035,7 +1227,7 @@ export function useMessageRunActions({
         (chat) => chat.id === sourceComposerChatId
       )?.memoryMode === "TEMPORARY"
     );
-    if (sourceComposerChatId !== activeChatId) {
+    if (sourceComposerChatId !== current.activeChatId) {
       return;
     }
     if (
@@ -1077,7 +1269,8 @@ export function useMessageRunActions({
       const personalDraftForSend = currentChatSummary?.pendingPersonalDraft ?? null;
       const starterControlPayload = runControlPayload(
         runControlSnapshot,
-        Boolean(currentChatSummary?.projectId)
+        Boolean(currentChatSummary?.projectId),
+        Boolean(personalDraftForSend || projectDraftForSend)
       );
 
       const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
@@ -1110,6 +1303,7 @@ export function useMessageRunActions({
         modelId: runControlSnapshot.modelId,
         parentMessageId: userMessage.id,
         provider: runControlSnapshot.provider,
+        ...optimisticAnswerIdentity(runControlSnapshot),
         role: "assistant",
         status: "streaming"
       };
@@ -1222,10 +1416,16 @@ export function useMessageRunActions({
       return;
     }
 
-    if (useRunLifecycleStore.getState().activeStreams[chatIdForRegenerate]) {
+    if (
+      useRunLifecycleStore.getState().activeStreams[chatIdForRegenerate] ||
+      assistantUpdatePending(chatIdForRegenerate) && !(await settleAssistantBeforeRun(chatIdForRegenerate))
+    ) {
       return;
     }
     const runControlSnapshot = captureRunControlSnapshot();
+    if (assistantBlocksRun(runControlSnapshot)) {
+      return;
+    }
     if (
       hasUnreconciledOptimisticLeaf(chatIdForRegenerate) &&
       !(await reconcileBeforeRunMutation(chatIdForRegenerate))
@@ -1258,6 +1458,7 @@ export function useMessageRunActions({
       modelId: runControlSnapshot.modelId,
       parentMessageId: regenerationParentMessageId,
       provider: runControlSnapshot.provider,
+      ...optimisticAnswerIdentity(runControlSnapshot),
       role: "assistant",
       status: "streaming"
     };

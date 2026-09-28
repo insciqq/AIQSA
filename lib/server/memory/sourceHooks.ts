@@ -31,7 +31,8 @@ export const defaultMemorySourceMutationHooks: MemorySourceMutationHooks =
         return;
       }
       await applyMemoryScopeTargetDeletion(tx, {
-        scopeType: event.kind === "FOLDER_DELETE" ? "FOLDER" : "CHAT",
+        scopeType: event.kind === "FOLDER_DELETE" ? "FOLDER"
+          : event.kind === "ASSISTANT_DELETE" ? "ASSISTANT" : "CHAT",
         targetId: event.targetId,
         userId: event.userId
       });

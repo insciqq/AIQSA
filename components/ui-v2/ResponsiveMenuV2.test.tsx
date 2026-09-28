@@ -13,7 +13,7 @@ function matchMedia(mobile: boolean) {
   } as unknown as MediaQueryList));
 }
 
-function ResponsiveMenuHarness() {
+function ResponsiveMenuHarness({ align }: Readonly<{ align?: "end" | "start" }>) {
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: close, open });
@@ -22,6 +22,7 @@ function ResponsiveMenuHarness() {
       <button ref={triggerRef} type="button" onClick={() => setOpen(true)}>Open actions</button>
       {open ? (
         <UiV2ResponsiveMenu
+          align={align}
           anchorRef={triggerRef}
           label="Test actions"
           menuRef={menuRef}
@@ -64,12 +65,28 @@ describe("UiV2ResponsiveMenu", () => {
     const last = screen.getByRole("menuitem", { name: "Last action" });
     expect(menu.parentElement).toBe(document.body);
     expect(menu).toHaveAttribute("data-side", "top");
+    expect(menu.style.left).toBe("8px");
     await waitFor(() => expect(first).toHaveFocus());
     fireEvent.keyDown(first, { key: "ArrowDown" });
     expect(last).toHaveFocus();
     fireEvent.keyDown(last, { key: "Escape" });
     expect(menu).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it("opts into sharing the anchor's start edge on desktop", () => {
+    vi.stubGlobal("matchMedia", matchMedia(false));
+    render(<ResponsiveMenuHarness align="start" />);
+    const trigger = screen.getByRole("button", { name: "Open actions" });
+    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue({
+      bottom: 40, height: 32, left: 80, right: 112, top: 8, width: 32, x: 80, y: 8, toJSON: () => ({})
+    });
+
+    fireEvent.click(trigger);
+    const menu = screen.getByRole("menu", { name: "Test actions" });
+    expect(menu).toHaveAttribute("data-side", "bottom");
+    expect(menu.style.left).toBe("80px");
+    expect(menu.style.top).toBe("46px");
   });
 
   it("uses a modal mobile sheet, traps focus, and restores the opener after scrim close", async () => {

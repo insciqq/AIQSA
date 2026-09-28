@@ -27,7 +27,8 @@ async function prepare(page: Page) {
     defaultKnowledgePlan: null, defaultModelId: "gpt-5.5", defaultProvider: "openai", messages: []
   }] });
   await page.route("**/api/chats/compact?*", route => route.fulfill({ json: { chats: [{
-    id: "migration-chat", title: "Migration destination", folderId: null, activeRun: false, updatedAt: timestamp
+    id: "migration-chat", title: "Migration destination", folderId: null, activeRun: false, updatedAt: timestamp,
+    assistant: null
   }], folders: [], nextCursor: null } }));
   await page.route("**/api/me/instructions", route => route.fulfill({ json: {
     instructions: { activePresetId: null, selectionVersion: 1, presets: [] }

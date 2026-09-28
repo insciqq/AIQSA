@@ -30,6 +30,7 @@ import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYS
 import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
 import { SKILLS_SHARING_MIGRATION, skillsSharingFixtureSql, skillsSharingProofSql } from "./skills-sharing-adoption";
 import { SKILLS_PROGRESSIVE_MIGRATION, skillsProgressiveFixtureSql, skillsProgressiveProofSql } from "./skills-progressive-adoption";
+import { ASSISTANTS_V2_MIGRATION, assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql } from "./assistants-v2-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7505,6 +7506,8 @@ function main(
     skillsSharingFixtureSql, skillsSharingProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_PROGRESSIVE_MIGRATION,
     skillsProgressiveFixtureSql, skillsProgressiveProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANTS_V2_MIGRATION,
+    assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, ARTIFACT_VERSIONED_MIGRATION,
     artifactVersionedFixtureSql, artifactVersionedProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, RUN_FOLLOWUPS_MIGRATION,
@@ -7611,7 +7614,7 @@ function main(
     ? ` catalog_sha256=${catalogDigests[0]}`
     : "";
   process.stdout.write(
-    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, Knowledge search outage/heartbeat guards, Memory vNext legacy-job retirement/retrieval indexes, live Assistant adoption/history/authority/immutability, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, Knowledge profile backfill/immutability, content-free Knowledge Source bridging/immutability, legacy Knowledge read receipt preservation/constraint, H2 exact receipt/state/manifest/cascade constraints, historical H4 strategy migration proof, H5 strict immutable passage-context constraints, historical H6 semantic-shadow compatibility and Basic cleanup removal, Basic strategy cleanup/fixed query constraints, Knowledge tool coexistence receipt capacity/guards, Knowledge search outage/heartbeat guards, Memory vNext legacy-job retirement/retrieval indexes, live Assistant adoption/history/authority/immutability, Assistants v2 row policies/chat binding/detaching delete, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 

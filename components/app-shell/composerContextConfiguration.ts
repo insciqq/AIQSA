@@ -13,15 +13,15 @@ export function composerContextConfigurationKey(
 ): string {
   return JSON.stringify({
     ...(chat.agentEnabled ? { agentEnabled: true } : {}),
-    assistant: controls.selectedAssistant
-      ? { id: controls.selectedAssistant.id, promptCharacterCount: controls.selectedAssistant.promptCharacterCount }
-      : null,
+    assistant: controls.assistant?.state === "bound"
+      ? { id: controls.assistant.id, promptCharacterCount: controls.assistant.promptCharacterCount }
+      : controls.assistant ? { state: controls.assistant.state } : null,
     backgroundMode: controls.backgroundMode,
     knowledgeSelection: controls.knowledgeSelection,
     knowledgePlanSource: controls.knowledgePlanSource,
     maxOutputTokens: controls.maxOutputTokens,
     mcpSelection: controls.mcpSelection,
-    skillsMode: controls.selectedAssistant?.skillsMode ?? controls.skillsMode,
+    skillsMode: controls.skillsMode,
     memoryMode: chat.memoryMode,
     modelId: controls.selectedModelId,
     provider: controls.selectedProvider,

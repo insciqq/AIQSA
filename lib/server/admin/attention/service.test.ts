@@ -1,6 +1,7 @@
 import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "../../../contracts/admin";
+import { adminAttentionItemSource } from "../../../contracts/adminAttention";
 import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 import type { AdminProviderConnection, AdminProviderModel } from "../../../contracts/adminProviders";
 import type { AdminSearchCatalog, AdminSearchIntegration } from "../../../contracts/adminSearch";
@@ -706,5 +707,17 @@ describe("createAdminAttentionService", () => {
       target: { section: "skills", filter: "pending" } })]);
     skills.mockRejectedValueOnce(new Error("unavailable"));
     expect(await service.list("admin-1")).toMatchObject({ items: [], unavailable: ["skills"] });
+  });
+
+  it("links reviewable Assistant listing requests to the Assistants request filter", async () => {
+    const assistants = vi.fn().mockResolvedValue(1);
+    const service = createAdminAttentionService({ now: () => new Date(at), sources: sources({ assistants }) });
+    const result = await service.list("admin-1");
+    expect(assistants).toHaveBeenCalledWith("admin-1");
+    expect(result.items).toEqual([expect.objectContaining({ code: "assistants_listing_pending", count: 1,
+      detail: "1 Assistant waiting to be listed for everyone", target: { section: "assistants", filter: "requests" } })]);
+    expect(adminAttentionItemSource(result.items[0]!)).toBe("assistants");
+    assistants.mockRejectedValueOnce(new Error("unavailable"));
+    expect(await service.list("admin-1")).toMatchObject({ items: [], unavailable: ["assistants"] });
   });
 });

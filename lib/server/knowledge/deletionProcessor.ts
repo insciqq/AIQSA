@@ -3,7 +3,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   decodeKnowledgeCitationHandle,
   decodeKnowledgePlan,
-  explicitKnowledgeSelection
+  explicitKnowledgeSelection,
+  type KnowledgeSelection
 } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
@@ -1018,6 +1019,27 @@ function selectionWithoutResource(
   });
 }
 
+/**
+ * An Assistant's explicit Knowledge row without the deleted resource, or null
+ * when the stored value does not name it. Inherit and None name no resource
+ * and are never rewritten, so an unrelated deletion leaves the definition and
+ * its version untouched; the row policy is kept.
+ */
+export function assistantKnowledgeWithoutResource(
+  value: unknown,
+  resourceId: string,
+  resourceType: "base" | "source"
+): KnowledgeSelection | null {
+  const decoded = decodeKnowledgePlan(value);
+  if (!decoded.ok || decoded.plan.mode !== "explicit") return null;
+  const { baseIds, sourceIds } = decoded.plan;
+  if (!(resourceType === "base" ? baseIds : sourceIds).includes(resourceId)) return null;
+  return explicitKnowledgeSelection({
+    baseIds: resourceType === "base" ? baseIds.filter((id) => id !== resourceId) : baseIds,
+    sourceIds: resourceType === "source" ? sourceIds.filter((id) => id !== resourceId) : sourceIds
+  });
+}
+
 async function scrubConfigurationReferences(
   tx: Prisma.TransactionClient,
   resourceId: string,
@@ -1029,8 +1051,8 @@ async function scrubConfigurationReferences(
     SELECT "id", "knowledgeSelection" FROM "AssistantDefinition" ORDER BY "id" FOR UPDATE
   `;
   for (const definition of definitions) {
-    const scrubbed = selectionWithoutResource(definition.knowledgeSelection, resourceId, resourceType);
-    if (JSON.stringify(scrubbed) === JSON.stringify(definition.knowledgeSelection)) continue;
+    const scrubbed = assistantKnowledgeWithoutResource(definition.knowledgeSelection, resourceId, resourceType);
+    if (!scrubbed) continue;
     await tx.assistantDefinition.update({
       data: { knowledgeSelection: json(scrubbed), version: { increment: 1 } },
       where: { id: definition.id }

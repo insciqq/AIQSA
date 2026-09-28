@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   renderLocalPromptTemplate,
+  resolveAssistantChatBaseline,
   resolveStandardChatBaseline,
   validateIanaTimeZone
 } from "./promptTemplates";
@@ -56,5 +57,22 @@ describe("standard chat baseline resolution", () => {
         timeZoneSource: "utc_fallback"
       });
     }
+  });
+});
+
+describe("assistant chat baseline resolution", () => {
+  const now = new Date("2026-06-07T12:34:00Z");
+
+  it("renders only the date and time sentence with the same zone evidence", () => {
+    expect(resolveAssistantChatBaseline({ now, timeZone: "Europe/Berlin" })).toEqual({
+      renderedSystemPrompt: "Today is June 7, 2026, local time is 02:34 PM GMT+2.",
+      timeZone: "Europe/Berlin",
+      timeZoneSource: "client"
+    });
+    expect(resolveAssistantChatBaseline({ now, timeZone: "Invalid/Zone" })).toEqual({
+      renderedSystemPrompt: "Today is June 7, 2026, local time is 12:34 PM UTC.",
+      timeZone: "UTC",
+      timeZoneSource: "utc_fallback"
+    });
   });
 });

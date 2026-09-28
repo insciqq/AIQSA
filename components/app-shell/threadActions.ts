@@ -175,6 +175,7 @@ export function createThreadActions({
       if (useWorkspaceStore.getState().navigationReady) {
         useWorkspaceStore.getState().upsertNavigationChat({
           activeRun: false,
+          assistant: null,
           folderId: chat.folderId,
           id: chat.id,
           title: chat.title,

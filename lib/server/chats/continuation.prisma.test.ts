@@ -24,6 +24,7 @@ import { createPrismaRetentionRepository } from "../retention/prune";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createArtifactService } from "../artifacts/service";
 import type { ArtifactOperation } from "../../contracts/artifacts";
+import { CHAT_ASSISTANT_DELETED_MARKER } from "../../contracts/chats";
 
 afterAll(() => prisma.$disconnect());
 
@@ -324,6 +325,38 @@ it.each(["PROJECT", "TEMPORARY"] as const)("cleans a transferred seed with its %
   expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: seed.storageKey } })).toBe(1);
   await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: seed.storageKey } });
 });
+
+it.each(["bound", "deleted"] as const)("continues a chat with its Assistant and changed rows, never a deleted Assistant's marker (%s)", (state) => fixture(async ({ userId, chatId, leafId }) => {
+  const assistant = await prisma.assistantDefinition.create({ data: {
+    avatar: { accents: [0, 4], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated",
+      paletteId: "ocean", recipeVersion: 1, rotations: [0, 2] },
+    name: "Continued Assistant", ownerUserId: userId, providerModelId: providerTemplateIds.fakeModel,
+    searchPlan: { mode: "off" }, systemPrompt: "Answer directly.", toolsPolicy: "adjustable"
+  } });
+  try {
+    const overrides = { tools: { mode: "load_all" } };
+    await prisma.chat.update({ where: { id: chatId }, data: state === "bound"
+      ? { assistantId: assistant.id, assistantOverrides: overrides }
+      : { assistantId: null, assistantOverrides: CHAT_ASSISTANT_DELETED_MARKER } });
+    const f = service();
+    const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() };
+    const source = await f.repository.loadSource(input);
+    const claimed = await f.repository.claim(source, input.requestId);
+    if (claimed.kind !== "claimed") throw new Error("claim missing");
+    const result = await f.repository.complete(source, claimed.claim, "Conversation summary");
+    if (result.status !== "complete") throw new Error("summary missing");
+    await expect(prisma.chat.findUniqueOrThrow({
+      select: { assistantId: true, assistantOverrides: true }, where: { id: result.chatId }
+    })).resolves.toEqual(state === "bound"
+      ? { assistantId: assistant.id, assistantOverrides: overrides }
+      : { assistantId: null, assistantOverrides: null });
+    await expect(createPrismaChatRepository(prisma).getChat({ chatId: result.chatId, userId }))
+      .resolves.toMatchObject({ assistantId: state === "bound" ? assistant.id : null });
+  } finally {
+    // The foreign key detaches the chats; the fixture removes them.
+    await prisma.assistantDefinition.deleteMany({ where: { id: assistant.id } });
+  }
+}));
 
 it("serves one visible summary from the active branch, preserving source, scope, usage and authorized source navigation", () => fixture(async ({ userId, chatId, leafId }) => {
   const before = await prisma.chat.findUniqueOrThrow({ where: { id: chatId } });

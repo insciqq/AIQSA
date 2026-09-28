@@ -43,6 +43,30 @@ describe("controlled Markdown editor", () => {
     expect(source).toHaveValue("# Heading");
   });
 
+  it("starts in Split only when opted in and wide, until the user picks a mode", () => {
+    let width = 880;
+    let resize!: () => void;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({ width } as DOMRect));
+    vi.stubGlobal("ResizeObserver", class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect() {} });
+    function Wide() {
+      const [value, setValue] = useState("# Heading");
+      return <MarkdownEditorV2 label="Source" previewLabel="Rendered text" value={value} onChange={setValue} maxLength={100} splitWhenWide />;
+    }
+    const { unmount } = render(<Wide />);
+    expect(screen.getByRole("radio", { name: "Split" })).toBeChecked();
+    act(() => { width = 879; resize(); });
+    expect(screen.getByRole("radio", { name: "Write" })).toBeChecked();
+    act(() => { width = 1200; resize(); });
+    expect(screen.getByRole("radio", { name: "Split" })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: "Preview" }));
+    act(() => { width = 1300; resize(); });
+    expect(screen.getByRole("radio", { name: "Preview" })).toBeChecked();
+    unmount();
+
+    render(<Editor initial="# Heading" />);
+    expect(screen.getByRole("radio", { name: "Write" })).toBeChecked();
+  });
+
   it("inserts a variable at the source selection and keeps the template separate from preview", async () => {
     function Template() {
       const [value, setValue] = useState("Today is selected.");

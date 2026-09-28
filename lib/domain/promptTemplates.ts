@@ -5,13 +5,20 @@ export type LocalPromptTemplateOptions = {
 };
 
 /**
+ * The code-owned date and time baseline for Assistant runs: the ordinary
+ * baseline without its generic persona, which would contradict the Assistant's
+ * own instructions.
+ */
+export const ASSISTANT_CHAT_BASELINE_TEMPLATE = "Today is {local_date}, local time is {local_time}.";
+
+/**
  * The code-owned platform baseline for ordinary no-Assistant runs. It is not a
  * database object: it cannot be edited, shared, versioned, or deleted,
  * and the browser has no authority to replace it or to supply the rendered
  * date/time as arbitrary prompt text.
  */
 export const STANDARD_CHAT_BASELINE_TEMPLATE =
-  "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.";
+  `You are a helpful AI assistant. ${ASSISTANT_CHAT_BASELINE_TEMPLATE}`;
 
 export const STANDARD_CHAT_FALLBACK_TIME_ZONE = "UTC";
 
@@ -59,11 +66,24 @@ export function resolveStandardChatBaseline(input: {
   now?: Date;
   timeZone?: unknown;
 }): StandardChatBaseline {
+  return resolveBaseline(STANDARD_CHAT_BASELINE_TEMPLATE, input);
+}
+
+/** Same clock and zone resolution as the ordinary baseline, so Memory and the
+ * rendered Assistant text agree on the user's zone. */
+export function resolveAssistantChatBaseline(input: {
+  now?: Date;
+  timeZone?: unknown;
+}): StandardChatBaseline {
+  return resolveBaseline(ASSISTANT_CHAT_BASELINE_TEMPLATE, input);
+}
+
+function resolveBaseline(template: string, input: { now?: Date; timeZone?: unknown }): StandardChatBaseline {
   const validated = validateIanaTimeZone(input.timeZone);
   const timeZone = validated ?? STANDARD_CHAT_FALLBACK_TIME_ZONE;
 
   return {
-    renderedSystemPrompt: renderLocalPromptTemplate(STANDARD_CHAT_BASELINE_TEMPLATE, {
+    renderedSystemPrompt: renderLocalPromptTemplate(template, {
       locale: "en-US",
       ...(input.now ? { now: input.now } : {}),
       timeZone

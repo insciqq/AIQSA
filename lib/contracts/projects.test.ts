@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  assistantContent,
+  assistantSummary,
+  catalog
+} from "@/tests/support/assistantLibraryFixtures";
+import {
   decodeProjectDeletionResponse,
   decodeProjectDefaults,
   decodeProjectDefaultsInput,
@@ -125,6 +130,46 @@ describe("Project wire contracts", () => {
         updatedAt: "2026-08-17T00:00:00.000Z"
       }]
     })?.projects[0]?.name).toBe("Research");
+  });
+
+  it("decodes Project Assistant entries whose model the Project does not provide", () => {
+    const rows = assistantContent().rows;
+    const entry = {
+      content: assistantContent({
+        providerModelId: null,
+        rows: {
+          ...rows,
+          knowledge: { policy: "adjustable", value: { baseIds: [], hiddenCount: 2, mode: "explicit", sourceIds: [] } },
+          model: { policy: "adjustable", value: { mode: "model", modelId: null } }
+        }
+      }),
+      promptCharacterCount: 17,
+      summary: assistantSummary({
+        owned: false,
+        ownerDisplayName: "Project",
+        rowAvailability: { knowledge: { reason: "knowledge_access" }, model: { reason: "model_access" } },
+        scope: { kind: "project", projectName: "Launch" }
+      })
+    };
+    const composer = {
+      assistants: [entry],
+      catalog: { ...catalog([]), providers: [] },
+      knowledgeBases: [],
+      knowledgeDocumentTotal: 0,
+      knowledgeSources: [],
+      mcpServers: []
+    };
+    const decoded = decodeProjectResponse({ project: { ...projectResponse().project, composer } })
+      ?.project.composer?.assistants[0];
+
+    expect(decoded?.summary).toMatchObject({ ownerDisplayName: "Project", scope: { kind: "project", projectName: "Launch" } });
+    expect(decoded?.content.providerModelId).toBeNull();
+    expect(decoded?.content.rows.model.value).toEqual({ mode: "model", modelId: null });
+    expect(decoded?.content.rows.knowledge.value).toMatchObject({ hiddenCount: 2 });
+    // An entry whose name disagrees with its summary is still malformed.
+    expect(decodeProjectResponse({
+      project: { ...projectResponse().project, composer: { ...composer, assistants: [{ ...entry, content: { ...entry.content, name: "Other" } }] } }
+    })).toBeNull();
   });
 
   it("decodes only bounded privacy-safe unavailable default categories", () => {

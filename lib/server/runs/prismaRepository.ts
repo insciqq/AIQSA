@@ -37,6 +37,7 @@ import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import { loadMemoryRunSources } from "../memory/sources/runProjection";
 import { loadMemoryRunPresentationStatuses } from "../memory/retrieval/runProjection";
 import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
+import { loadPersonalAssistantRowContext, loadProjectAssistantRowContext } from "../assistants/rowContext";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import {
@@ -964,6 +965,8 @@ export function createPrismaRunRepository(
         select: {
           _count: { select: { messages: true } },
           activeLeafMessageId: true,
+          assistantId: true,
+          assistantOverrides: true,
           defaultKnowledgePlan: true,
           defaultProviderModel: { select: { connectionId: true, id: true } },
           folder: { select: { defaultKnowledgePlan: true, projectMemory: true } },
@@ -992,6 +995,8 @@ export function createPrismaRunRepository(
       if (chat.projectId && !project) return null;
       return {
         activeLeafMessageId: chat.activeLeafMessageId,
+        assistantId: chat.assistantId,
+        assistantOverrides: chat.assistantOverrides,
         defaultKnowledgePlan: chat.defaultKnowledgePlan,
         defaultModelId: chat.defaultProviderModel?.id ?? "",
         defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
@@ -1007,6 +1012,10 @@ export function createPrismaRunRepository(
         workspaceEnabled: chat.workspaceEnabled
       };
     },
+    loadAssistantRowContext: (input) =>
+      loadPersonalAssistantRowContext(prismaClient, input).catch(retainRunPrismaCode),
+    loadProjectAssistantRowContext: (input) =>
+      loadProjectAssistantRowContext(prismaClient, input).catch(retainRunPrismaCode),
     loadProjectFirstSend: async ({ chatId, folderId, projectId, userId }) => {
       const [existing, project] = await Promise.all([
         prismaClient.chat.findUnique({ select: { id: true }, where: { id: chatId } }).catch(retainRunPrismaCode),
@@ -1166,6 +1175,8 @@ export function createPrismaRunRepository(
         include: {
           chat: {
             select: {
+              assistantId: true,
+              assistantOverrides: true,
               defaultKnowledgePlan: true,
               defaultProviderModel: {
                 select: {
@@ -1220,6 +1231,9 @@ export function createPrismaRunRepository(
       if (sourceMessage.chat.projectId && !project) return null;
 
       const chat = {
+        // Regeneration and edited branches run with the chat's binding, never the composer's.
+        assistantId: sourceMessage.chat.assistantId,
+        assistantOverrides: sourceMessage.chat.assistantOverrides,
         defaultKnowledgePlan: sourceMessage.chat.defaultKnowledgePlan,
         defaultModelId: sourceMessage.chat.defaultProviderModel?.id ?? "",
         defaultProvider: sourceMessage.chat.defaultProviderModel?.connectionId ?? "",

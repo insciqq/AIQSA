@@ -38,6 +38,7 @@ export type BranchesGalleryState =
 
 const navigationChats: ChatNavigationSummaryWire[] = [{
   activeRun: false,
+  assistant: null,
   folderId: null,
   id: "branches-fixture",
   title: "Версии исследования",

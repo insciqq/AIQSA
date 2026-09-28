@@ -946,6 +946,69 @@ describe("prisma catalog data loader", () => {
     expect(loadEntitlements).not.toHaveBeenCalled();
   });
 
+  it("uses the active memberships a caller read, can leave the default Assistant unchecked and reads one at a time", async () => {
+    const model = providerModel({
+      credentials: [
+        credential("credential-default"),
+        credential("credential-disabled", { enabled: false, groupIds: ["group-a"] })
+      ]
+    });
+    const load = async (activeGroupIds: string[]) => {
+      // Every read stays in flight for a tick; `peak` is the most reads in flight at once.
+      let inFlight = 0;
+      let peak = 0;
+      const read = <T>(value: T) => vi.fn(async (_query?: unknown) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        inFlight -= 1;
+        return value;
+      });
+      const prisma = {
+        $queryRaw: read([{ id: "assistant-1" }]),
+        modelPolicy: { findUnique: read(null) },
+        providerModel: { findMany: read([model]) },
+        searchOption: { findMany: read([]) },
+        searchPolicy: { findUnique: read(null) },
+        user: { findUnique: vi.fn() },
+        userSettings: {
+          findUnique: read({
+            defaultAssistantId: "assistant-1",
+            defaultControlValues: {},
+            defaultProviderModelId: null,
+            defaultSearchPlan: null,
+            showCitations: true,
+            showReasoningBlocks: false
+          })
+        }
+      };
+      const loadActiveGroupIds = vi.fn(async () => activeGroupIds);
+      const data = await createPrismaCatalogDataLoader({
+        checkDefaultAssistant: false,
+        concurrentReads: false,
+        env: {},
+        loadActiveGroupIds,
+        loadEntitlements: read(entitlements({ models: [["connection-openai", "deployment-answer"]] })),
+        prisma: prisma as never
+      })("user-1");
+      expect(peak).toBe(1);
+      expect(loadActiveGroupIds).toHaveBeenCalledWith("user-1");
+      // Only the settings row: no user row and no memberships of its own.
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+      expect(prisma.userSettings.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: "user-1" } }));
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      return data;
+    };
+
+    const unassigned = await load([]);
+    expect(unassigned).not.toBeNull();
+    expect(unassigned?.models.map((entry) => entry.modelId)).toEqual(["deployment-answer"]);
+    expect(unassigned?.settings).not.toHaveProperty("defaultAssistantAvailable");
+    expect(unassigned?.settings.defaultAssistantId).toBe("assistant-1");
+    // The group's disabled credential is the one in effect for its member.
+    await expect(load(["group-a"])).resolves.toMatchObject({ models: [] });
+  });
+
   it("loads only entitled available deployments and preserves the stable saved default", async () => {
     const answer = providerModel({
       model: { connectionId: "connection-answer", id: "deployment-answer" }

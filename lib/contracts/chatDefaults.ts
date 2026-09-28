@@ -58,3 +58,38 @@ export function decodeOptionalChatDefaults(input: Readonly<{
     sendWithEnter: input.sendWithEnter ?? INSTALLATION_CHAT_DEFAULTS.sendWithEnter
   };
 }
+
+/**
+ * A bounded Assistant id without whitespace or control characters. Writers
+ * answer anything else like an Assistant the requester cannot use.
+ */
+export function isAssistantReferenceId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 &&
+    !/[\u0000- \u007f]/u.test(value);
+}
+
+/**
+ * The personal default Assistant for new personal chats. Its id is exposed
+ * only while the Assistant is available to the user; a saved default that is
+ * no longer available is reported without naming it, so the user can clear it.
+ */
+export type ChatDefaultAssistant = Readonly<{
+  assistantId: string | null;
+  assistantUnavailable: boolean;
+}>;
+
+export function decodeOptionalDefaultAssistant(input: Readonly<{
+  assistantId: unknown;
+  assistantUnavailable: unknown;
+}>): ChatDefaultAssistant | null {
+  const assistantId = input.assistantId ?? null;
+  const assistantUnavailable = input.assistantUnavailable ?? false;
+  if (
+    (assistantId !== null && (typeof assistantId !== "string" || !assistantId || assistantId.length > 256)) ||
+    typeof assistantUnavailable !== "boolean" ||
+    (assistantId !== null && assistantUnavailable)
+  ) {
+    return null;
+  }
+  return { assistantId, assistantUnavailable };
+}

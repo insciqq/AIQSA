@@ -210,15 +210,24 @@ test("v2 Knowledge picker keeps exact mixed selections and explicit inherited ov
   await expect(picker.getByRole("menuitemcheckbox", { name: /Governance appendix/ }))
     .toBeVisible();
 
+  // An adjustable Assistant Knowledge row: its provenance, a direct change for
+  // this chat and Reset to Assistant, with no lock block above the input.
   await page.goto("/ui-v2-fixture?fixture=composer&state=assistant-knowledge");
   picker = page.getByRole("menu", { name: "Knowledge" });
-  await expect(page.getByRole("button", { name: "Choose Knowledge" }))
-    .toHaveAccessibleDescription("Knowledge: 2 from Assistant");
-  await expect(picker.getByText("Research editor controls Knowledge.", { exact: false }))
-    .toBeVisible();
-  await expect(picker.getByRole("menuitemradio", { name: /^Off/ })).toBeDisabled();
-  await picker.getByRole("menuitem", { name: "Override for this chat" }).click();
+  const knowledgeChip = page.getByRole("button", { name: "Choose Knowledge" });
+  await expect(knowledgeChip).toHaveAccessibleDescription("Knowledge: 2 resources · From Research editor");
+  await expect(knowledgeChip).toHaveAttribute("data-provenance", "assistant");
+  await expect(picker.getByTestId("assistant-row-provenance"))
+    .toHaveText("From Research editor · adjustable for this chat");
+  await expect(picker.getByRole("menuitem", { name: /^Reset to Assistant/ })).toBeDisabled();
   await expect(picker.getByRole("menuitemradio", { name: /^Off/ })).toBeEnabled();
+  await picker.getByRole("menuitemradio", { name: /^Off/ }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(knowledgeChip).toHaveAccessibleDescription("Knowledge: Off · Changed for this chat");
+  await expect(knowledgeChip).not.toHaveAttribute("data-provenance", "assistant");
+  await knowledgeChip.click();
+  await picker.getByRole("menuitem", { name: /^Reset to Assistant/ }).click();
+  await expect(knowledgeChip).toHaveAccessibleDescription("Knowledge: 2 resources · From Research editor");
   await expect(page.getByTestId("composer-v2-assistant-lock")).toHaveCount(0);
 
   await page.setViewportSize({ height: 900, width: 820 });

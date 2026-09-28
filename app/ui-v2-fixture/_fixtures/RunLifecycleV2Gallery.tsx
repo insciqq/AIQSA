@@ -22,6 +22,7 @@ import {
 const chats: ChatNavigationSummaryWire[] = [
   {
     activeRun: true,
+    assistant: null,
     folderId: null,
     id: "run-lifecycle",
     title: "Run lifecycle states",
@@ -29,6 +30,7 @@ const chats: ChatNavigationSummaryWire[] = [
   },
   {
     activeRun: false,
+    assistant: null,
     folderId: null,
     id: "settled-run",
     title: "Settled answer",

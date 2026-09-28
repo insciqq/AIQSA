@@ -69,55 +69,6 @@
   cursor: not-allowed;
 }
 
-.v2-composer-assistant {
-  display: flex;
-  min-width: 0;
-  min-height: 1.75rem;
-  align-items: center;
-  gap: 0.4375rem;
-  flex-wrap: wrap;
-  margin: -0.125rem 0 0.375rem;
-  color: var(--v2-color-text2);
-  font-size: 0.75rem;
-  line-height: 1.4;
-}
-
-.v2-composer-assistant-chip {
-  display: inline-flex;
-  min-width: 0;
-  min-height: 1.75rem;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0 0.25rem 0 0.5rem;
-  border-radius: 999px;
-  color: var(--v2-color-accent-text);
-  background: var(--v2-color-accent-dim);
-}
-
-.v2-composer-assistant-chip > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.v2-composer-assistant strong {
-  color: inherit;
-  font-weight: 500;
-}
-
-.v2-composer-assistant-chip > .v2-icon-button {
-  width: 1.5rem;
-  min-width: 1.5rem;
-  height: 1.5rem;
-  min-height: 1.5rem;
-  padding: 0;
-  color: inherit;
-}
-
-.v2-composer-assistant-help {
-  color: var(--v2-color-text3);
-}
-
 .v2-composer-status button,
 .v2-composer-text-action {
   padding: 0.25rem 0.375rem;
@@ -129,7 +80,6 @@
   cursor: pointer;
 }
 
-.v2-composer-assistant-chip > .v2-icon-button:hover,
 .v2-composer-status button:hover,
 .v2-composer-text-action:hover {
   background: var(--v2-color-hover);
@@ -276,6 +226,19 @@
   background: var(--v2-color-accent);
 }
 .v2-composer-indicator-signal[data-signal="attention"] { background: var(--v2-color-warn); }
+/* One quiet marker for "set by the Assistant", whatever the policy; the menu's
+   first line says it in words. The chip's own ::after is its tooltip. */
+.v2-composer-indicator[data-provenance="assistant"] > .v2-composer-indicator-face::after {
+  position: absolute;
+  top: -0.1875rem;
+  right: -0.125rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--v2-color-accent);
+  box-shadow: 0 0 0 2px var(--v2-color-surface);
+  content: "";
+}
 .v2-composer-workspace-toggle[data-workspace-state="failed"] {
   --v2-chip-border: var(--v2-color-danger);
   color: var(--v2-color-danger);
@@ -564,6 +527,119 @@
   line-height: 1.2;
 }
 
+/* A menu's first line: the Assistant's part in the row (fixed, adjustable,
+   fallback), with an optional trailing action. */
+.v2-composer-provenance {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem 0.375rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+/* In the chip menus and the model picker the first control below the line
+   keeps its focus ring (2px outline at a 2px offset, primitives.css) clear of
+   it: the same 0.375rem everywhere. The block menus collapse this with the
+   control's own top margin; the model picker is a flex column, so its search
+   field drops its own. */
+.v2-composer-layer .v2-composer-provenance {
+  margin-bottom: 0.375rem;
+}
+
+.v2-composer-layer .v2-composer-provenance + .v2-composer-model-search-wrap {
+  margin-top: 0;
+}
+
+.v2-composer-provenance > .v2-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex: 0 0 auto;
+  color: var(--v2-color-accent);
+}
+
+.v2-composer-provenance[data-kind="fallback"] > .v2-icon {
+  color: var(--v2-color-warn);
+}
+
+.v2-composer-provenance > span:first-of-type {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.v2-composer-provenance-action {
+  flex: 0 0 auto;
+  min-height: 1.75rem;
+  padding: 0 0.375rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-accent);
+  background: transparent;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-composer-provenance-action:hover {
+  background: var(--v2-color-accent-dim);
+}
+
+/* A line that carries a menu link (the Knowledge fallback in a Project chat
+   and its override) sets the link under its text, like the lock box. */
+.v2-composer-provenance:has(> .v2-composer-layer-link) {
+  display: grid;
+  grid-template-columns: 0.875rem minmax(0, 1fr);
+  align-items: start;
+  row-gap: 0.25rem;
+}
+
+.v2-composer-provenance:has(> .v2-composer-layer-link) > .v2-icon {
+  margin-top: 0.125rem;
+}
+
+.v2-composer-provenance > .v2-composer-layer-link {
+  grid-column: 2;
+  justify-self: start;
+  margin-left: -0.375rem;
+}
+
+.v2-composer-provenance-state {
+  flex: 0 0 auto;
+  color: var(--v2-color-text3);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+/* The Assistant's own Skills or MCP servers: listed, not selectable. */
+.v2-composer-included {
+  display: grid;
+  padding-bottom: 0.25rem;
+}
+
+.v2-composer-included-row {
+  display: grid;
+  min-width: 0;
+  gap: 0.0625rem;
+  margin: 0;
+  padding: 0.3125rem 0.625rem;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.v2-composer-included-row > span:first-child {
+  overflow-wrap: anywhere;
+}
+
+.v2-composer-included-row > span + span {
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+}
+
 .v2-composer-layer-divider {
   height: 1px;
   margin: 0.375rem 0.5rem;
@@ -587,8 +663,15 @@
   cursor: pointer;
 }
 
-.v2-composer-capability-row:hover:not(:disabled) {
+.v2-composer-capability-row:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--v2-color-hover);
+}
+
+/* The value in force that the menu cannot change keeps full strength and
+   its mark, without press feedback; the dimmed style below stays for what
+   really cannot be used. */
+.v2-composer-capability-row[aria-disabled="true"] {
+  cursor: default;
 }
 
 .v2-composer-capability-row:disabled {
@@ -1051,243 +1134,6 @@
   z-index: 60;
 }
 
-.v2-assistant-picker-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: grid;
-  place-items: center;
-  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
-    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
-  /* Scrim token, not a text-derived mix: text-based scrims turn into a light
-     wash in dark theme instead of dimming the workspace. */
-  background: var(--v2-color-scrim);
-  animation: v2-scrim-enter var(--v2-motion-fast) both;
-}
-
-.v2-assistant-picker {
-  display: grid;
-  width: min(28rem, 100%);
-  max-height: min(36rem, calc(100dvh - 2rem));
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  overflow: hidden;
-  border: 1px solid var(--v2-color-border2);
-  border-radius: var(--v2-radius-l);
-  color: var(--v2-color-text);
-  background: var(--v2-color-surface);
-  box-shadow: var(--v2-shadow-overlay);
-  animation: v2-overlay-enter var(--v2-motion-fast) both;
-}
-
-.v2-assistant-picker-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border-bottom: 1px solid var(--v2-color-border);
-}
-
-.v2-assistant-picker-header label {
-  min-width: 0;
-  flex: 1;
-}
-
-.v2-assistant-picker-header input {
-  width: 100%;
-  min-height: 2.25rem;
-  padding: 0.4375rem 0.625rem;
-  border: 1px solid var(--v2-color-border2);
-  border-radius: var(--v2-radius-s);
-  outline: 0;
-  color: var(--v2-color-text);
-  background: var(--v2-color-surface2);
-  font: inherit;
-}
-
-.v2-assistant-picker-header input:focus {
-  border-color: var(--v2-color-accent);
-}
-
-.v2-assistant-picker-list {
-  min-height: 0;
-  padding: 0.375rem 0.375rem 2rem;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
-  mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
-}
-
-.v2-assistant-picker-create {
-  display: grid;
-  width: 100%;
-  min-height: 3.25rem;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 0.625rem;
-  margin-bottom: 0.375rem;
-  padding: 0.5rem 0.625rem;
-  border: 1px solid color-mix(in srgb, var(--v2-color-accent) 24%, var(--v2-color-border));
-  border-radius: var(--v2-radius-s);
-  color: var(--v2-color-accent-text);
-  background: var(--v2-color-accent-dim);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.v2-assistant-picker-create > span {
-  display: grid;
-  min-width: 0;
-  gap: 0.125rem;
-}
-
-.v2-assistant-picker-create strong {
-  font-size: 0.8125rem;
-  font-weight: 600;
-}
-
-.v2-assistant-picker-create small {
-  color: var(--v2-color-text2);
-  font-size: 0.6875rem;
-  line-height: 1.4;
-}
-
-.v2-assistant-picker-list > p {
-  margin: 0;
-  padding: 1rem 0.75rem;
-  color: var(--v2-color-text2);
-  font-size: 0.8125rem;
-}
-
-.v2-assistant-picker-list section + section {
-  margin-top: 0.25rem;
-}
-
-.v2-assistant-picker-list h3 {
-  margin: 0;
-  padding: 0.5rem 0.625rem 0.25rem;
-  color: var(--v2-color-text3);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.v2-assistant-picker-list ul {
-  display: grid;
-  gap: 0.125rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.v2-assistant-picker-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.v2-assistant-picker-row {
-  display: flex;
-  width: 100%;
-  min-height: 3rem;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 0.4375rem 0.625rem;
-  border: 0;
-  border-radius: var(--v2-radius-s);
-  color: var(--v2-color-text);
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.v2-assistant-picker-row:hover:not(:disabled),
-.v2-assistant-picker-row[aria-current="true"] {
-  background: var(--v2-color-hover);
-}
-
-.v2-assistant-picker-row:disabled {
-  color: var(--v2-color-text3);
-  cursor: not-allowed;
-}
-
-.v2-assistant-picker-row > span {
-  display: grid;
-  min-width: 0;
-  flex: 1;
-  gap: 0.125rem;
-}
-
-.v2-assistant-picker-row strong,
-.v2-assistant-picker-row small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.v2-assistant-picker-row strong {
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
-
-.v2-assistant-picker-row small,
-.v2-assistant-picker-row em {
-  color: var(--v2-color-text3);
-  font-size: 0.6875rem;
-  font-style: normal;
-}
-
-.v2-assistant-picker-row small[data-tone="warn"] {
-  color: var(--v2-color-warn);
-}
-
-.v2-assistant-picker-current {
-  flex: 0 0 auto;
-  color: var(--v2-color-accent);
-}
-
-.v2-assistant-picker-fix {
-  white-space: nowrap;
-}
-
-.v2-assistant-picker-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.375rem 0.5rem;
-  border-top: 1px solid var(--v2-color-border);
-}
-
-.v2-assistant-picker-actions p {
-  margin: 0;
-  padding-left: 0.375rem;
-  color: var(--v2-color-text3);
-  font-size: 0.6875rem;
-  line-height: 1.4;
-}
-
-.v2-assistant-picker-actions button {
-  min-height: 2.25rem;
-  padding: 0.4375rem 0.625rem;
-  border: 0;
-  border-radius: var(--v2-radius-s);
-  color: var(--v2-color-text2);
-  background: transparent;
-  font: inherit;
-  font-size: 0.8125rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.v2-assistant-picker-actions button:hover {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
-}
-
 /* Full labels fit the widest state only near the full reading measure.
    Container width also covers a desktop narrowed by an artifact panel. */
 @container composer (max-width: 46rem) {
@@ -1297,6 +1143,10 @@
   .v2-composer-indicator-glyph { width: 1rem; height: 1rem; }
   .v2-composer-indicator-count { position: absolute; top: -0.25rem; right: -0.25rem; }
   .v2-composer-indicator-signal { top: -0.0625rem; right: -0.0625rem; }
+  .v2-composer-indicator[data-provenance="assistant"] > .v2-composer-indicator-face::after {
+    top: auto;
+    bottom: -0.125rem;
+  }
 }
 
 @container composer (max-width: 26rem) {
@@ -1395,33 +1245,34 @@
   .v2-composer-model-glyphs {
     visibility: hidden;
   }
+}
 
-  .v2-assistant-picker-scrim {
-    align-items: end;
-    padding: max(2.75rem, calc(env(safe-area-inset-top) + 1.75rem)) 0 0;
+/* On a screen no taller than 30rem (a phone held sideways) a pinned
+   Parameters footer leaves room for one model row: the model sheet scrolls
+   as one column instead (first line, search, list, Parameters) under its
+   header, which stays with Close. */
+@media (max-height: 30rem) {
+  .v2-composer-layer[data-kind="model"] {
+    padding-top: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
-  .v2-assistant-picker {
-    width: 100%;
-    max-height: 100%;
-    padding-right: env(safe-area-inset-right);
-    padding-bottom: env(safe-area-inset-bottom);
-    padding-left: env(safe-area-inset-left);
-    border-right: 0;
-    border-bottom: 0;
-    border-left: 0;
-    border-radius: var(--v2-radius-l) var(--v2-radius-l) 0 0;
-    animation: v2-sheet-enter var(--v2-motion-base) both;
+  .v2-composer-layer[data-kind="model"] > .v2-composer-layer-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding-top: 0.5rem;
+    background: var(--v2-color-surface);
   }
 
-  .v2-assistant-picker-item {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .v2-assistant-picker-fix {
-    min-height: 2.75rem;
-    justify-self: start;
-    margin: 0 0 0.375rem 2.875rem;
+  .v2-composer-layer[data-kind="model"] > .v2-composer-layer-scroll {
+    flex: 0 0 auto;
+    padding-bottom: 0;
+    overflow: visible;
+    -webkit-mask-image: none;
+    mask-image: none;
   }
 }
 
@@ -1436,6 +1287,8 @@
   /* Touch targets stay ≥44px (interaction contract) even though the chips
      read as 28px pills on fine pointers. */
   .v2-composer-indicator { min-height: 2.75rem; }
+
+  .v2-composer-provenance > .v2-composer-layer-link { min-height: 2.75rem; }
 
   .v2-composer-indicator[data-glyph] {
     width: auto;

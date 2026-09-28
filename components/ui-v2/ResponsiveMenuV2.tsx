@@ -37,7 +37,14 @@ function subscribeToMobileMenu(change: () => void): () => void {
   return () => media.removeEventListener?.("change", change);
 }
 
+/** Whether shell overlays use their phone composition (below 768px). */
+export function useMobileLayoutV2(): boolean {
+  return useSyncExternalStore(subscribeToMobileMenu, mobileSnapshot, () => false);
+}
+
 type ResponsiveMenuProps = Readonly<{
+  /** Desktop edge shared with the anchor: `end` (default) or `start`. */
+  align?: "end" | "start";
   anchorRef: RefObject<HTMLElement | null>;
   children: ReactNode;
   className?: string;
@@ -56,6 +63,7 @@ function firstEnabledItem(menu: HTMLElement | null): HTMLElement | null {
  * that flips above its trigger when the lower viewport has less room.
  */
 export function UiV2ResponsiveMenu({
+  align = "end",
   anchorRef,
   children,
   className = "",
@@ -68,11 +76,7 @@ export function UiV2ResponsiveMenu({
     browserSnapshot,
     serverSnapshot
   );
-  const mobile = useSyncExternalStore(
-    subscribeToMobileMenu,
-    mobileSnapshot,
-    () => false
-  );
+  const mobile = useMobileLayoutV2();
 
   if (!browserReady) return null;
   if (mobile) {
@@ -89,6 +93,7 @@ export function UiV2ResponsiveMenu({
   }
   return createPortal(
     <AnchoredMenuPopover
+      align={align}
       anchorRef={anchorRef}
       className={className}
       label={label}
@@ -102,6 +107,7 @@ export function UiV2ResponsiveMenu({
 }
 
 function AnchoredMenuPopover({
+  align,
   anchorRef,
   children,
   className,
@@ -132,7 +138,7 @@ function AnchoredMenuPopover({
     const maxHeight = Math.max(1, available);
     const renderedHeight = Math.min(wantedHeight, maxHeight);
     const left = Math.min(
-      Math.max(VIEWPORT_GUTTER_PX, anchorBounds.right - width),
+      Math.max(VIEWPORT_GUTTER_PX, align === "start" ? anchorBounds.left : anchorBounds.right - width),
       Math.max(VIEWPORT_GUTTER_PX, window.innerWidth - width - VIEWPORT_GUTTER_PX)
     );
     const top = side === "bottom"
@@ -148,7 +154,7 @@ function AnchoredMenuPopover({
       width: `${width}px`,
       zIndex: "100"
     });
-  }, [anchorRef, menuRef]);
+  }, [align, anchorRef, menuRef]);
 
   useLayoutEffect(() => {
     updatePlacement();
@@ -188,7 +194,7 @@ function MobileMenuSheet({
   label,
   menuRef,
   onClose
-}: Omit<ResponsiveMenuProps, "anchorRef">) {
+}: Omit<ResponsiveMenuProps, "align" | "anchorRef">) {
   const { dialogRef, onDialogKeyDown, portalReady } = useModalLayerV2({ onClose });
 
   useLayoutEffect(() => {

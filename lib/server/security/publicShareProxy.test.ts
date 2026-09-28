@@ -74,7 +74,7 @@ describe("public share proxy policy", () => {
     vi.stubEnv("NODE_ENV", mode);
     vi.stubEnv("AIQSA_APP_BASE_URL", "https://aiqsa.example");
     vi.stubEnv("AIQSA_COOKIE_SECURE", "true");
-    for (const pathname of ["/", "/c/chat-id", "/p/project-id", "/p/project-id/c/chat-id", "/artifacts", "/a/example-token", "/artifacts/artifact/versions/version"]) {
+    for (const pathname of ["/", "/c/chat-id", "/p/project-id", "/p/project-id/c/chat-id", "/assistant/assistant-id", "/artifacts", "/a/example-token", "/artifacts/artifact/versions/version"]) {
       const response = await proxy(new NextRequest(`https://aiqsa.example${pathname}`, {
         headers: { cookie: `${SESSION_COOKIE_NAME}=test-session` }
       }));
@@ -83,7 +83,7 @@ describe("public share proxy policy", () => {
     }
     const unrelated = await proxy(new NextRequest("https://aiqsa.example/login"));
     expect(unrelated.headers.get("Content-Security-Policy") ?? "").not.toContain("frame-src 'none'");
-    for (const pathname of ["/admin", "/chat/chat-id", "/projects"]) {
+    for (const pathname of ["/admin", "/chat/chat-id", "/projects", "/assistants/assistant-id"]) {
       const authenticated = await proxy(new NextRequest(`https://aiqsa.example${pathname}`, {
         headers: { cookie: `${SESSION_COOKIE_NAME}=test-session` }
       }));
@@ -92,7 +92,7 @@ describe("public share proxy policy", () => {
   });
 
   it("returns an unauthenticated chat address to itself after sign-in", async () => {
-    for (const address of ["/c/chat-id", "/p/project-id/c/chat-id?message=message-id"]) {
+    for (const address of ["/c/chat-id", "/p/project-id/c/chat-id?message=message-id", "/assistant/assistant-id"]) {
       const response = await proxy(new NextRequest(`https://aiqsa.example${address}`));
       const location = new URL(response.headers.get("location")!);
       expect(location.pathname).toBe("/login");

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
+import { e2eAssistantRows } from "./support/assistants";
+import { setWorkspaceDefault } from "./support/chatDefaults";
 import { signInWithLocalToken } from "./support/localAuth";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 
@@ -95,6 +97,8 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
 test("Assistant selection preserves manual Skills and permits recovery from the combined limit", async ({ page }) => {
   test.setTimeout(180_000);
   await signInWithLocalToken(page);
+  // A renamed control fails its own step in seconds instead of the whole test.
+  page.setDefaultTimeout(15_000);
   const catalog = (await (await page.request.get("/api/me/catalog")).json()).catalog;
   const model = catalog.models.find((value: { providerFamily: string; upstreamModelId: string }) =>
     value.providerFamily === "fake" && value.upstreamModelId === "fake-qsa");
@@ -103,7 +107,13 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
   const skills: Array<{ id: string; name: string }> = [];
   let assistantId: string | undefined;
   let chatId: string | null = null;
+  // The Fake QSA window cannot hold Workspace's context; the blank chat takes
+  // the default when the page loads, so it is set before the page is reloaded.
+  const workspaceDefault = catalog.defaults.workspaceEnabled ?? false;
   try {
+    await setWorkspaceDefault(page.request, false);
+    await page.goto("/");
+    await expect(page.getByTestId("app-shell")).toBeVisible();
     for (let index = 0; index < 33; index += 1) {
       const response = await page.request.post("/api/me/skills", {
         data: { name: `Limit ${suffix} ${index + 1}`, description: "Synthetic limit fixture", instructions: "Keep the response concise." }
@@ -116,11 +126,12 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     const created = await page.request.post("/api/me/assistants", { data: {
       avatar: { accents: [0, 2], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated",
         paletteId: "ocean", recipeVersion: 1, rotations: [0, 1] },
-      category: null, description: "", developerPrompt: null,
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      mcpServerIds: [], name: `Skill limit ${suffix}`, providerModelId: model.modelId,
-      runControls: { reasoningEffort: "medium" }, searchPlan: { mode: "all_selected", optionIds: [] },
-      skillIds: included.map(({ id }) => id), starterPrompts: [], systemPrompt: "You are terse."
+      category: null, description: "", name: `Skill limit ${suffix}`,
+      rows: e2eAssistantRows(model.modelId, {
+        controls: { policy: "fixed", value: { reasoningEffort: "medium" } },
+        skills: { policy: "fixed", value: { links: included.map(({ id }) => ({ delivery: "always", skillId: id })), mode: "auto" } }
+      }),
+      starterPrompts: [], systemPrompt: "You are terse."
     } });
     expect(created.status()).toBe(201);
     assistantId = (await created.json()).assistant.id;
@@ -141,10 +152,15 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     }
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 3 pinned \(always loaded\)/);
-    await page.getByRole("button", { name: "Add", exact: true }).click();
-    await page.getByRole("menuitem", { name: /Use an Assistant/ }).click();
+    // The Assistant is chosen from the chat header's selector.
+    const selector = page.getByTestId("header-assistant-selector");
+    await selector.click();
+    if (await selector.getAttribute("data-state") !== "empty") {
+      await page.getByRole("menu", { name: "Assistant" }).getByRole("menuitem", { name: "Change…" }).click();
+    }
     await page.getByTestId(`assistant-picker-row-${assistantId}`).click();
     await expect(page.getByTestId("assistant-picker")).toHaveCount(0);
+    await expect(selector).toHaveAttribute("data-state", "chosen");
     await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 33 pinned \(always loaded\)/);
     await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
     const rejection = page.waitForResponse(response => response.request().method() === "POST" && /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname));
@@ -158,7 +174,9 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     await expect(message).toHaveValue("Keep this draft while fixing the selection.");
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("button", { name: "Change Skills mode" }).click();
-    await page.getByRole("menuitem", { name: /^Skills…/ }).click();
+    // With an Assistant the Skills menu shows its Skills read-only and pins the user's on top.
+    await expect(page.getByRole("group", { name: "Included by the Assistant" })).toBeVisible();
+    await page.getByRole("menuitem", { name: /Pin your Skills…/ }).click();
     await expectWithinViewport(page, picker);
     const selection = picker.getByRole("region", { name: "Selected Skills" });
     await expect(selection).toContainText("Always from Assistant");
@@ -170,7 +188,17 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     await expect(selection).toContainText("instruction tokens");
     await expect(selection).toContainText("Skill limit reached. Unpin a Skill to add another.");
     await expect(selection.getByRole("button", { name: /^Remove manual/ })).toHaveCount(2);
+    // At the limit the unpinned Skill cannot be pinned again.
+    const unpinnedResult = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === "GET" && url.pathname === "/api/me/skills" &&
+        url.searchParams.get("q") === manual[2]!.name;
+    });
+    await picker.getByRole("searchbox", { name: "Search Skills" }).fill(manual[2]!.name);
+    expect((await unpinnedResult).ok()).toBe(true);
     await expect(picker.getByRole("button", { name: `Always use ${manual[2]!.name}`, exact: true })).toBeDisabled();
+    // Escape in the search field belongs to the field; close from the selection.
+    await selection.getByRole("button", { name: `Remove manual ${manual[1]!.name}` }).focus();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Change Skills mode" })).toBeFocused();
     await expect(message).toHaveValue("Keep this draft while fixing the selection.");
@@ -184,6 +212,7 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     expect(admitted.request().postDataJSON().skillIds).toEqual(manual.slice(0, 2).map(({ id }) => id));
     await expect(page.getByRole("button", { name: "Send message" })).toBeVisible({ timeout: 30_000 });
   } finally {
+    await setWorkspaceDefault(page.request, workspaceDefault);
     if (chatId) { const deleted = await page.request.delete(`/api/chats/${chatId}`); expect(deleted.ok() || deleted.status() === 404).toBe(true); }
     if (assistantId) {
       const response = await page.request.get(`/api/me/assistants/${assistantId}`);
