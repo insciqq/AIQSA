@@ -10,7 +10,7 @@ import {
   ATTACHMENT_POLL_TIMEOUT_ERROR_CODE,
   ATTACHMENT_UNAVAILABLE_ERROR_CODE
 } from "@/components/app-shell/attachmentLifecycle";
-import { shellFetch } from "@/components/app-shell/shellApi";
+import { shellFetch, shellReadJson } from "@/components/app-shell/shellApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import { latestResumableRunId } from "@/components/app-shell/threadPath";
@@ -94,6 +94,7 @@ function createResumeWake(chatId: string): ResumeWake {
   if (hasWindow) {
     window.addEventListener("focus", wake);
     window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
   }
   if (hasDocument) document.addEventListener("visibilitychange", onVisibility);
   resumeWakers.set(chatId, wake);
@@ -103,6 +104,7 @@ function createResumeWake(chatId: string): ResumeWake {
       if (hasWindow) {
         window.removeEventListener("focus", wake);
         window.removeEventListener("online", wake);
+        window.removeEventListener("pageshow", wake);
       }
       if (hasDocument) document.removeEventListener("visibilitychange", onVisibility);
       if (resumeWakers.get(chatId) === wake) resumeWakers.delete(chatId);
@@ -439,12 +441,12 @@ export function useRunLifecycleActions({
 
   async function requestRunOutcome(runId: string, chatId: string): Promise<RunFetchOutcome> {
     try {
-      const response = await shellFetch(`/api/model-runs/${runId}`);
+      const { response, body } = await shellReadJson(`/api/model-runs/${runId}`);
       if (!response.ok) {
         return response.status === 404 ? { kind: "not_found" } : { kind: "unknown" };
       }
 
-      const run = decodeRunOutcomeResponse(await response.json());
+      const run = decodeRunOutcomeResponse(body);
       if (!run || run.id !== runId) {
         throw new Error("run_malformed");
       }

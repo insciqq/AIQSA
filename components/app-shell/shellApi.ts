@@ -62,6 +62,33 @@ export async function shellFetch(
   return response;
 }
 
+/** Bound status/detail reads, including the body, so a suspended connection cannot hold recovery forever. */
+export async function shellReadJson(input: string, signal?: AbortSignal): Promise<{ response: Response; body: unknown }> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  let rejectAbort: () => void = () => undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    rejectAbort = () => reject(new DOMException("Status request interrupted", "AbortError"));
+    controller.signal.addEventListener("abort", rejectAbort, { once: true });
+  });
+  const timeout = setTimeout(abort, 15_000);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  try {
+    return await Promise.race([aborted, (async () => {
+      controller.signal.throwIfAborted();
+      const response = await shellFetch(input, { cache: "no-store", signal: controller.signal });
+      const body: unknown = response.ok ? await response.json() : null;
+      controller.signal.throwIfAborted();
+      return { response, body };
+    })()]);
+  } finally {
+    clearTimeout(timeout);
+    controller.signal.removeEventListener("abort", rejectAbort);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
 export function sessionExpiredLoginHref(destination: string): string {
   const query = new URLSearchParams({
     next: safeInternalPath(destination),

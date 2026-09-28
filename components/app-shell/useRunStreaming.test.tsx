@@ -26,6 +26,28 @@ function chat(id: string, title: string): WorkspaceChatSummary {
 }
 
 describe("run streaming", () => {
+  it.each(["visibility", "resume", "pageshow"])("detaches a suspended stream on %s without reporting a cancelled run", async (event) => {
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
+    const cancel = vi.fn();
+    const pending = result.current.consumeRunStream({
+      chatId: "chat-a", failurePrefix: "send_failed", onRunId: vi.fn(), onMessageIds: vi.fn(),
+      tokenBuffer: { flush: vi.fn(), push: vi.fn() },
+      response: new Response(new ReadableStream({ cancel }))
+    });
+    const interrupted = expect(pending).rejects.toThrow("stream_connection_lost");
+    if (event === "visibility") {
+      const state = vi.spyOn(document, "visibilityState", "get");
+      state.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(cancel).not.toHaveBeenCalled();
+      state.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+    } else if (event === "pageshow") {
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    } else document.dispatchEvent(new Event("resume"));
+    await interrupted;
+    expect(cancel).toHaveBeenCalledOnce();
+  });
   it.each(["streaming", "complete"])("applies %s updates and only trusts settled reconciliation", async status => {
     const applyChatUpdate = vi.fn(event => event.type === "chat_update");
     const { result } = renderHook(() => useRunStreaming({ applyChatUpdate }));

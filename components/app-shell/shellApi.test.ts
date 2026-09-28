@@ -9,6 +9,7 @@ import {
   runIdFromEvent,
   sessionExpiredLoginHref,
   shellFetch,
+  shellReadJson,
   sseParseWarningEvent,
   subscribeToSessionExpired,
   tokenDeltaFromEvent
@@ -23,6 +24,25 @@ function subscribe(listener: Parameters<typeof subscribeToSessionExpired>[0]): v
 afterEach(() => {
   for (const cleanup of sessionListenerCleanups.splice(0)) cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe("bounded recovery reads", () => {
+  it.each(["headers", "body"])("releases a stalled %s read and allows a fresh read", async (phase) => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(async (_input, init) => {
+      signal = init?.signal ?? undefined;
+      if (phase === "headers") return new Promise<Response>(() => undefined);
+      return new Response(new ReadableStream(), { headers: { "content-type": "application/json" } });
+    }).mockResolvedValueOnce(Response.json({ complete: true }));
+    const pending = shellReadJson("/api/chats/chat");
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await rejected;
+    expect(signal?.aborted).toBe(true);
+    await expect(shellReadJson("/api/chats/chat")).resolves.toMatchObject({ body: { complete: true } });
+  });
 });
 
 describe("shell HTTP session handling", () => {
