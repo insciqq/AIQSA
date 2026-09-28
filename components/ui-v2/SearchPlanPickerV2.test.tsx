@@ -24,7 +24,14 @@ describe("Search source selection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use organization Search default" }));
     expect(reset).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Turn off search" }));
-    expect(screen.getByText("0 of 3 sources")).toBeVisible();
+    expect(screen.getByText("0 selected · up to 3")).toBeVisible();
+  });
+
+  it("counts the selection without implying more sources than are listed", () => {
+    render(<SearchPlanPickerV2 options={options.slice(0, 2)} plan={{ mode: "all_selected", optionIds: ["One"] }}
+      onChange={vi.fn()} scope="chat" />);
+    expect(screen.getByText("1 selected")).toBeVisible();
+    expect(screen.queryByText(/of 3|up to 3/)).toBeNull();
   });
 
   it("explains incompatible combinations and retains unavailable choices until removed", () => {

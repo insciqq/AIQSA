@@ -60,12 +60,17 @@ export type McpSafeFetchErrorCode =
   | "mcp_http_url_credentials_forbidden"
   | "mcp_http_url_fragment_forbidden";
 
-export class McpSafeFetchError extends Error {
-  readonly code: McpSafeFetchErrorCode;
+// Type-only marker merged into the class: it declares no class field, so the
+// property stays absent until the constructor proves it.
+export interface McpSafeFetchError {
   /** Present only when the transport proves that no request byte left this
    * process: the pinned connection (and its TLS session) was never
    * established. Absence means the request may have reached the server. */
-  declare readonly requestNotSent?: true;
+  readonly requestNotSent?: true;
+}
+
+export class McpSafeFetchError extends Error {
+  readonly code: McpSafeFetchErrorCode;
 
   constructor(code: McpSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean }>) {
     super(code);

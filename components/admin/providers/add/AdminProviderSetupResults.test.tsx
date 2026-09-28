@@ -2,7 +2,9 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { AdminProviderCheckRun } from "@/lib/contracts/adminProviders";
 import { fixtureCheckRun } from "../providerFixtures";
-import { AdminProviderSetupResults, capabilityAttemptDescription, providerSetupNeedsRecovery } from "./AdminProviderSetupResults";
+import {
+  AdminProviderSetupMemoryHint, AdminProviderSetupResults, capabilityAttemptDescription, providerSetupNeedsMemory, providerSetupNeedsRecovery
+} from "./AdminProviderSetupResults";
 
 function completed(overrides: Partial<AdminProviderCheckRun> = {}) {
   return fixtureCheckRun({ id: "run", credentialId: "key", done: 1, total: 1, state: "completed", ...overrides });
@@ -58,6 +60,32 @@ describe("compact setup results", () => {
     { setup: { state: "partial" as const, search: "ready" as const, defaults: [] } }
   ])("keeps incomplete model or automatic setup recoverable: %j", (overrides) => {
     expect(providerSetupNeedsRecovery(completed(overrides))).toBe(true);
+  });
+
+  it("treats Memory needing a model as finished setup, not recovery", () => {
+    const setup = { state: "completed" as const, search: "ready" as const, defaults: [], needsConfiguration: ["memory" as const] };
+    const memoryOnly = completed({ results: [{ providerModelId: "m", state: "saved" }], setup });
+    expect(providerSetupNeedsRecovery(memoryOnly)).toBe(false);
+    expect(providerSetupNeedsMemory(memoryOnly)).toBe(true);
+    const withFailure = { ...memoryOnly, setup: { ...setup, state: "partial" as const, search: "failed" as const } };
+    expect(providerSetupNeedsRecovery(withFailure)).toBe(true);
+    expect(providerSetupNeedsMemory(withFailure)).toBe(true);
+    expect(providerSetupNeedsRecovery(completed({ results: [{ providerModelId: "m", state: "save_failed" }], setup }))).toBe(true);
+    expect(providerSetupNeedsMemory(completed({ setup: { state: "completed", search: "ready", defaults: [] } }))).toBe(false);
+    expect(providerSetupNeedsMemory(completed({ setup: { state: "running" } }))).toBe(false);
+    expect(providerSetupNeedsMemory({ ...memoryOnly, state: "running" })).toBe(false);
+    expect(providerSetupNeedsMemory(null)).toBe(false);
+  });
+
+  it("renders the Memory hint only for the marker with a Defaults & roles link", () => {
+    const { container, rerender } = render(<AdminProviderSetupMemoryHint run={completed({
+      setup: { state: "completed", search: "skipped", defaults: [] } })} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<AdminProviderSetupMemoryHint run={completed({
+      setup: { state: "completed", search: "skipped", defaults: [], needsConfiguration: ["memory"] } })} />);
+    expect(screen.getByTestId("provider-setup-memory-hint")).toHaveTextContent("Memory needs a model. Choose one in Defaults & roles");
+    const link = screen.getByRole("link", { name: "Choose one in Defaults & roles" });
+    expect(link.getAttribute("href")).toMatch(/\?section=roles&resource=memory$/u);
   });
 
   it("does not ask to retry settled unsupported access but preserves unknown access failures", () => {

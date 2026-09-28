@@ -128,8 +128,18 @@ test("Search defaults and saved personal and Project choices survive navigation,
     expect((await page.request.patch(`/api/chats/${projectChats[0]}`, {
       data: { defaultSearchPlan: google }
     })).ok()).toBe(true);
-    await page.goto("/");
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
+    // `/` always opens a new blank chat. After the reset it follows the
+    // organization default, and neither saved chat choice leaks into it: the
+    // Off pass rules out the Project chat's Google, the Google pass the
+    // personal chat's Off. The Project part then runs with the organization
+    // default Google.
+    for (const [plan, label] of [[off, "Off"], [google, "Google"]] as const) {
+      await prisma.searchPolicy.update({ where: { id: "installation" }, data: { defaultPlan: plan } });
+      await page.goto("/");
+      expect((await catalog()).defaults, `new blank chat after the reset, organization Search default ${label}`)
+        .toMatchObject({ organizationSearchPlan: plan, searchPlan: plan, searchPreferenceSource: "organization" });
+      await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription(`Search: ${label}`);
+    }
     await page.getByRole("button", { name: "Projects", exact: true }).click();
     const shared = page.locator('section[aria-label="Shared projects"]');
     await expect(shared).toBeVisible();

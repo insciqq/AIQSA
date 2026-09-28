@@ -68,21 +68,20 @@ function UiV2SheetLayer({
         ref={dialogRef as React.RefObject<HTMLElement>}
         role="dialog"
       >
-        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-trace-subtle px-6 py-4">
-          <div className="min-w-0">
-            <h2 className="break-words text-base font-semibold [overflow-wrap:anywhere]" id={titleId}>{title}</h2>
-            {description ? (
-              <p className="mt-1 text-xs leading-5 text-ink-muted" id={descriptionId}>{description}</p>
-            ) : null}
-          </div>
+        {/* Title and Close share the first row and its centre line (Close is
+            32px, 44px on touch); the description sits under the title. */}
+        <header className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-b border-trace-subtle px-6 py-4">
+          <h2 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]" id={titleId}>{title}</h2>
           <UiV2IconButton
-            className="shrink-0"
             disabled={closeBlocked}
             icon="close"
             label="Close"
             onClick={onClose}
             ref={initialFocusRef}
           />
+          {description ? (
+            <p className="mt-1 text-xs leading-5 text-ink-muted" id={descriptionId}>{description}</p>
+          ) : null}
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5">{children}</div>
         {footer ? (

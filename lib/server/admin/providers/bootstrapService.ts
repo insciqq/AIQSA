@@ -113,7 +113,9 @@ export function createAdminProviderBootstrap(input: {
           recommendationId: memory.id, assignmentSource: "BOOTSTRAP", userId: value.userId });
         result.defaults.push(`Memory: ${memory.displayName}`);
       } else if (roles.memoryPolicy.assignmentSource === "unassigned") {
-        result.state = "partial";
+        // Nothing failed and a retry cannot qualify a model: the operator
+        // chooses Memory in Defaults & roles.
+        result.needsConfiguration = ["memory"];
       }
     } catch {
       value.signal.throwIfAborted();

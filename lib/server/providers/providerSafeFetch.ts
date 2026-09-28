@@ -26,10 +26,14 @@ export type ProviderSafeFetchErrorCode =
 // smaller MCP JSON-RPC request ceiling reused by the pinned-fetch primitive.
 const PROVIDER_HTTP_REQUEST_MAX_BYTES = 512 * 1_024 * 1_024;
 
+// Type-only marker merged into the class, as for `McpSafeFetchError`.
+export interface ProviderSafeFetchError {
+  /** See `McpSafeFetchError.requestNotSent`: set only on proof. */
+  readonly requestNotSent?: true;
+}
+
 export class ProviderSafeFetchError extends Error {
   readonly code: ProviderSafeFetchErrorCode;
-  /** See `McpSafeFetchError.requestNotSent`: set only on proof. */
-  declare readonly requestNotSent?: true;
 
   constructor(code: ProviderSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean }>) {
     super(code);

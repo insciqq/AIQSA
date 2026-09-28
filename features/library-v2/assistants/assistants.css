@@ -1040,6 +1040,82 @@
   }
 }
 
+/*
+ * A short screen (a phone held sideways) keeps the toolbar to one row, so
+ * the first cards, the empty state or the error show on the first screen:
+ * the filter chips scroll sideways under an end fade (their padding keeps
+ * the focus ring and the last chip clear of it), Category and search keep
+ * their own width. The empty state drops its decorative icon.
+ */
+@media (max-height: 30rem) {
+  .v2-assistants-toolbar {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    margin-top: 0.75rem;
+  }
+
+  .v2-assistants-toolbar .v2-resource-filters {
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    margin: -0.25rem 0 -0.25rem -0.25rem;
+    padding: 0.25rem 1.5rem 0.25rem 0.25rem;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scroll-padding-inline: 0.25rem 1.5rem;
+    scrollbar-width: thin;
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - 1.5rem), transparent);
+    mask-image: linear-gradient(to right, black calc(100% - 1.5rem), transparent);
+  }
+
+  .v2-assistants-toolbar .v2-resource-filter {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .v2-assistants-toolbar-end {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    width: auto;
+  }
+
+  .v2-assistants-search {
+    flex: 0 0 auto;
+    width: auto;
+  }
+
+  .v2-assistants-search input {
+    width: 10rem;
+  }
+
+  .v2-assistants-group {
+    margin-top: 0.75rem;
+  }
+
+  .v2-assistants-empty {
+    min-height: 0;
+    margin-top: 0.75rem;
+    padding: 1rem;
+  }
+
+  .v2-assistants-empty-icon {
+    display: none;
+  }
+
+  .v2-assistants-empty h3 {
+    margin-top: 0;
+  }
+
+  .v2-assistants-empty > div,
+  .v2-assistants-empty > .v2-button {
+    margin-top: 0.75rem;
+  }
+
+  .v2-assistants-nothing {
+    margin-top: 0.75rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .v2-assistants-card {
     transition: none;

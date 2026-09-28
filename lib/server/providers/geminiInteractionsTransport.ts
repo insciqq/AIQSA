@@ -22,13 +22,17 @@ const GEMINI_HTTP_ERROR_CODES = [
 ] as const;
 export type GeminiHttpErrorCode = (typeof GEMINI_HTTP_ERROR_CODES)[number];
 
+// Type-only counts merged into the class: they declare no class field, so the
+// properties stay absent unless the provider stated them.
+export interface GeminiHttpError {
+  readonly reportedMaximumTokens?: number;
+  readonly reportedPromptTokens?: number;
+}
+
 /** Only reviewed error identities cross the transport boundary; never retain
  * provider messages, arguments or the error envelope. A context-length
  * identity also carries the token counts the provider stated. */
 export class GeminiHttpError extends Error {
-  declare readonly reportedMaximumTokens?: number;
-  declare readonly reportedPromptTokens?: number;
-
   constructor(readonly httpStatus: number, readonly code?: GeminiHttpErrorCode, counts?: ProviderContextLengthCounts) {
     super(providerHttpErrorMessage("Gemini", httpStatus));
     this.name = "GeminiHttpError";

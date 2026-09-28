@@ -1,4 +1,6 @@
-import { decodeAdminProviderCapabilityAttempts, decodeAdminProviderCatalogUpdates } from "@/lib/contracts/adminProviders";
+import {
+  ADMIN_PROVIDER_SETUP_CONFIGURATION_NEEDS, decodeAdminProviderCapabilityAttempts, decodeAdminProviderCatalogUpdates
+} from "@/lib/contracts/adminProviders";
 import type {
   AdminImageDiscoveredModel,
   AdminImageDiscoveredEndpoint,
@@ -91,6 +93,18 @@ function isModel(value: unknown): boolean {
 const checkRunStates = new Set(["cancelled", "completed", "interrupted", "running"]);
 const checkRunReasons = new Set(["credential", "model", "requested", "setup"]);
 
+/** Results produced before `needsConfiguration` existed omit it and stay valid. */
+function isBootstrapResult(value: Record<string, unknown>, text: (entry: unknown, maxLength: number) => boolean): boolean {
+  const keys = Object.keys(value).sort().join(",");
+  const needs = value.needsConfiguration;
+  return (keys === "defaults,search,state" || keys === "defaults,needsConfiguration,search,state" &&
+      Array.isArray(needs) && needs.length > 0 && new Set(needs).size === needs.length &&
+      needs.every((need) => (ADMIN_PROVIDER_SETUP_CONFIGURATION_NEEDS as readonly unknown[]).includes(need))) &&
+    ["completed", "partial"].includes(String(value.state)) && Array.isArray(value.defaults) &&
+    value.defaults.length <= 16 && value.defaults.every((label) => text(label, 512)) &&
+    ["ready", "failed", "skipped"].includes(String(value.search));
+}
+
 export function isAdminProviderCheckRun(value: unknown): value is AdminProviderCheckRun {
   const text = (entry: unknown, maxLength = 256) => typeof entry === "string" && entry.length > 0 &&
     entry.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(entry);
@@ -127,10 +141,7 @@ export function isAdminProviderCheckRun(value: unknown): value is AdminProviderC
       Number(value.capabilityProgress.completed) <= Number(value.capabilityProgress.total)) &&
     (value.setup === undefined || record(value.setup) && (
       value.setup.state === "running" && Object.keys(value.setup).join(",") === "state" ||
-      Object.keys(value.setup).sort().join(",") === "defaults,search,state" &&
-      ["completed", "partial"].includes(String(value.setup.state)) && Array.isArray(value.setup.defaults) &&
-        value.setup.defaults.length <= 16 && value.setup.defaults.every((label) => text(label, 512)) &&
-        ["ready", "failed", "skipped"].includes(String(value.setup.search)))) &&
+      isBootstrapResult(value.setup, text))) &&
     text(value.startedAt) &&
     (value.finishedAt === null || text(value.finishedAt));
 }

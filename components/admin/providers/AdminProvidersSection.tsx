@@ -24,7 +24,7 @@ export type AdminProvidersSectionProps = Readonly<{
   feedback: Pick<AdminFeedbackController, "reportError" | "reportNotice">;
   groups: readonly AdminGroup[];
   onMutationCommitted?(): void | Promise<unknown>;
-  onNavigateSection(section: AdminSectionId): void;
+  onNavigateSection(section: AdminSectionId, resource?: string | null): void;
   onSelectResource(resource: string | null): void;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
   /** Open provider page from `?resource=`, or null for the list. */
@@ -92,6 +92,8 @@ export function AdminProvidersSection({
     [connections, resource]
   );
   const { refresh } = controller.actions;
+
+  const openMemoryRole = useCallback(() => onNavigateSection("roles", "memory"), [onNavigateSection]);
 
   const backToList = useCallback(() => {
     setAdding(false);
@@ -218,6 +220,7 @@ export function AdminProvidersSection({
         onCloseSettings={() => setSettingsOpen(false)}
         onError={feedback.reportError}
         onNotice={feedback.reportNotice}
+        onOpenMemoryRole={openMemoryRole}
         onOpenSettings={() => setSettingsOpen(true)}
         requestConfirmation={requestConfirmation}
         settingsOpen={settingsOpen}
@@ -242,6 +245,7 @@ export function AdminProvidersSection({
         connections={connections}
         onClose={() => setAdding(false)}
         onCreated={openCreated}
+        onOpenMemoryRole={openMemoryRole}
         open={adding}
       />
     </div>

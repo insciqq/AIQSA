@@ -23,6 +23,7 @@ export type AdminProviderPageProps = Readonly<{
   onCloseSettings(): void;
   onError(message: string): void;
   onNotice(message: string): void;
+  onOpenMemoryRole?(): void;
   onOpenSettings(): void;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
   settingsOpen: boolean;
@@ -40,6 +41,7 @@ export function AdminProviderPage({
   onCloseSettings,
   onError,
   onNotice,
+  onOpenMemoryRole,
   onOpenSettings,
   requestConfirmation,
   settingsOpen,
@@ -73,6 +75,7 @@ export function AdminProviderPage({
         checks={{ ...checks, interrupted: selectedKeyAvailable ? checks.interrupted : null, run: selectedRun }}
         connection={connection}
         disabled={controller.state.busy}
+        onOpenMemoryRole={onOpenMemoryRole}
         selectedCredentialId={diagnosticCredentialId}
       />
 

@@ -101,8 +101,9 @@ export async function mutateArtifactLibrary(id: string, change: { title: string 
     if (change === "delete") await deleteArtifactSavedState(id);
     if (generation !== epoch) return;
     const duplicate = change === "duplicate" ? decodeArtifactLibraryItems([body.artifact])[0] : undefined;
-    const archivedLoaded = useArtifactLibraryStore.getState().data.archived !== null;
-    await Promise.all([refreshArtifactLibrary(false, true), ...(archivedLoaded ? [refreshArtifactLibrary(true, true)] : [])]);
+    // A pending archived read may predate the mutation; a never-requested catalog stays unrequested.
+    const archivedRequested = useArtifactLibraryStore.getState().data.archived !== null || requests.has("archived");
+    await Promise.all([refreshArtifactLibrary(false, true), ...(archivedRequested ? [refreshArtifactLibrary(true, true)] : [])]);
     if (generation === epoch && duplicate) {
       useArtifactLibraryStore.setState(current => ({ data: { ...current.data,
         recent: [duplicate, ...(current.data.recent ?? []).filter(item => item.id !== duplicate.id)] } }));

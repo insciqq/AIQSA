@@ -15,7 +15,7 @@ import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { chatMenuActionsV2 } from "@/features/navigation-v2/chatMenuActions";
 import { NameFieldFormV2, type NameSaveOutcome } from "@/features/navigation-v2/NameFieldFormV2";
 import { CHAT_TITLE_MAX_LENGTH } from "@/lib/contracts/chats";
-import { useRef, useState, type ReactNode, type RefObject } from "react";
+import { useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { ChatContextIndicatorV2 } from "./ChatContextIndicatorV2";
 import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
@@ -317,6 +317,7 @@ export function WorkspaceHeaderV2({
   title: string;
 }>) {
   const displayTitle = chatTitleForDisplay(title);
+  const renameHintId = useId();
   // S1 §4.3: the header carries no kicker; for an active chat the right side
   // is Share plus one "⋯" menu. Share additionally joins the menu below
   // 768px, where the Share text button collapses. The complete header menu
@@ -379,11 +380,14 @@ export function WorkspaceHeaderV2({
                   <span aria-hidden="true"> / </span>
                 </span>
               ) : null}
+              {/* The tooltip carries the full title the header may
+                  ellipsize; "Rename chat" stays the button's description. */}
               <button
+                aria-describedby={renameDisabled ? undefined : renameHintId}
                 className="v2-live-title-button v2-focusable"
                 data-testid="header-title"
                 disabled={renameDisabled}
-                title={renameDisabled ? undefined : "Rename chat"}
+                title={displayTitle}
                 type="button"
                 onClick={onRenameStart}
               >
@@ -392,6 +396,7 @@ export function WorkspaceHeaderV2({
                     hover/focus and always on coarse pointers. */}
                 {renameDisabled ? null : <UiV2Icon name="edit" />}
               </button>
+              {renameDisabled ? null : <span hidden id={renameHintId}>Rename chat</span>}
             </h1>
           )
         ) : null}

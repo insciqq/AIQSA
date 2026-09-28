@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
+import { SESSION_COOKIE_NAME } from "../../lib/server/auth/constants";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "../../prisma/local-seed-auth";
 import { submitPasswordSignIn } from "./support/workspace";
 
@@ -96,6 +97,91 @@ test("hydrates the login screen and honors the first mode-switch click", async (
 
   await expect(page.getByRole("heading", { level: 1, name: "Request access" })).toBeVisible();
   expect(hydrationErrors).toEqual([]);
+});
+
+test("posts a pre-hydration sign-in natively without leaking credentials or signing in", async ({ browser }) => {
+  // With scripts disabled the browser submits the server markup itself, exactly
+  // like a submit that wins the race against hydration.
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  const operator = await prisma.user.findUniqueOrThrow({
+    select: { id: true },
+    where: { email: LOCAL_OPERATOR_EMAIL }
+  });
+  const id = randomUUID();
+  const cases = [
+    // Unknown canary account.
+    {
+      email: `native-post-${id}@example.com`,
+      next: null,
+      password: `native-post-canary-${id}`
+    },
+    // Valid credentials must not sign in through the ignored POST body either.
+    {
+      email: LOCAL_OPERATOR_EMAIL,
+      next: "/admin?tab=users",
+      password: LOCAL_OPERATOR_PASSWORD
+    }
+  ] as const;
+
+  try {
+    for (const credentials of cases) {
+      const operatorSessionsBefore = await prisma.authSession.count({ where: { userId: operator.id } });
+      const loginPath = credentials.next
+        ? `/login?${new URLSearchParams({ next: credentials.next }).toString()}`
+        : "/login";
+      await page.goto(loginPath);
+      const form = page.locator("form");
+      await expect(form).toHaveCount(1);
+      await expect(form).not.toHaveAttribute("data-hydrated");
+      await expect(form).toHaveAttribute("method", "post");
+      await form.getByLabel("Email").fill(credentials.email);
+      await form.getByLabel("Password", { exact: true }).fill(credentials.password);
+
+      // The resulting URL equals the current one, so wait for the new document.
+      const loaded = page.waitForEvent("load");
+      const submitted = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname === "/login" &&
+          response.request().resourceType() === "document"
+      );
+      await form.getByRole("button", { name: "Sign in", exact: true }).click();
+      const response = await submitted;
+      await loaded;
+
+      // The values traveled only in the request body.
+      const body = new URLSearchParams(response.request().postData() ?? "");
+      expect(body.get("email")).toBe(credentials.email);
+      expect(body.get("password")).toBe(credentials.password);
+      expect(response.status()).toBe(200);
+
+      const url = new URL(page.url());
+      expect(url.pathname).toBe("/login");
+      expect([...url.searchParams.entries()]).toEqual(credentials.next ? [["next", credentials.next]] : []);
+      await expect(page.getByRole("heading", { level: 1, name: "Sign in to your workspace" })).toBeVisible();
+      await expect(page.getByLabel("Email")).toHaveValue("");
+      await expect(page.getByLabel("Password", { exact: true })).toHaveValue("");
+
+      const returnedHtml = await response.text();
+      const renderedHtml = await page.content();
+      for (const value of [credentials.email, credentials.password]) {
+        for (const spelling of new Set([value, encodeURIComponent(value)])) {
+          expect(page.url()).not.toContain(spelling);
+          expect(returnedHtml).not.toContain(spelling);
+          expect(renderedHtml).not.toContain(spelling);
+        }
+      }
+
+      expect((await context.cookies()).map((cookie) => cookie.name)).not.toContain(SESSION_COOKIE_NAME);
+      expect(await prisma.authSession.count({ where: { userId: operator.id } })).toBe(operatorSessionsBefore);
+    }
+
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/login\?next=%2F$/);
+  } finally {
+    await context.close();
+  }
 });
 
 test("keeps auth forms keyboard-safe and mobile-friendly without exposing recovery login", async ({ page }) => {

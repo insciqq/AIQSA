@@ -527,6 +527,26 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("button", { name: "Check models" })).toBeEnabled();
   });
 
+  it("opens the Memory row in Defaults & roles from finished setup that left Memory unassigned", async () => {
+    connections.current = connections.current.map((connection) => connection.id === "conn-openai"
+      ? { ...connection, checkRun: fixtureCheckRun({ credentialId: "cred-primary", done: 2, finishedAt: "2026-09-07T12:52:00.000Z",
+          id: "run-memory", reason: "setup", state: "completed", total: 2,
+          results: [{ providerModelId: "model-terra", state: "saved" }, { providerModelId: "model-luna", state: "saved" }],
+          setup: { defaults: ["Chat: GPT-5.6 Terra"], needsConfiguration: ["memory"], search: "ready", state: "completed" } }) }
+      : connection);
+    mockFetch(connections);
+    const { onNavigateSection } = renderSection("conn-openai");
+
+    const hint = await screen.findByTestId("provider-setup-memory-hint");
+    expect(hint).toHaveTextContent("Memory needs a model. Choose one in Defaults & roles");
+    expect(screen.getByText("Automatic setup finished.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Retry/u })).not.toBeInTheDocument();
+    const link = within(hint).getByRole("link", { name: "Choose one in Defaults & roles" });
+    expect(link).toHaveAttribute("href", "/admin?section=roles&resource=memory");
+    fireEvent.click(link);
+    expect(onNavigateSection).toHaveBeenCalledWith("roles", "memory");
+  });
+
   it("turns the provider off from the topbar switch and opens the Add provider sheet behind the primary action", async () => {
     const calls = mockFetch(connections, ({ body, method, url }) => {
       if (method === "POST" && url === "/api/admin/providers/conn-openai/actions") {

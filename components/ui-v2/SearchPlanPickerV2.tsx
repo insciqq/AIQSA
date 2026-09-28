@@ -20,9 +20,12 @@ export function SearchPlanPickerV2({ options, plan, onChange, disabled = false, 
   const sources = options.filter(option => option.kind !== "none");
   const unavailable = plan.optionIds.filter(id => !sources.some(option => option.strategyId === id));
   const allSelectedAllowed = isSearchCombinationCompatible(plan.optionIds, sources, "all_selected");
+  // The limit is named only when more sources are listed than it allows, so
+  // the count never reads as "of N available".
+  const limited = sources.length + unavailable.length > MAX_SEARCH_PLAN_OPTIONS;
   return <div className="v2-search-plan-picker">
     <div className="v2-search-plan-heading">
-      <span>{plan.optionIds.length} of {MAX_SEARCH_PLAN_OPTIONS} sources</span>
+      <span>{plan.optionIds.length} selected{limited ? ` · up to ${MAX_SEARCH_PLAN_OPTIONS}` : ""}</span>
       <button className="v2-search-plan-link v2-focusable" type="button" disabled={disabled || !plan.optionIds.length}
         onClick={() => onChange({ ...plan, optionIds: [] })}>Turn off search</button>
     </div>

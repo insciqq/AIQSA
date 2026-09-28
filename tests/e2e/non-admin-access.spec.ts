@@ -19,6 +19,16 @@ async function signIn(page: Page, fixture: OrdinaryFixture): Promise<void> {
   await expect(page.getByTestId("app-shell")).toBeVisible();
 }
 
+async function openSharedServerSheet(page: Page) {
+  const name = LOCAL_SHARED_MCP_FIXTURE.displayName;
+  await page.getByTestId("library-v2").getByRole("article", { exact: true, name })
+    .getByRole("button", { exact: true, name: `Open ${name}` }).click();
+  const sheet = page.getByTestId("mcp-server-sheet");
+  await expect(sheet.getByRole("dialog", { exact: true, name })).toBeVisible();
+  await expect(sheet.getByRole("heading", { exact: true, name: "Status" })).toBeVisible();
+  return sheet;
+}
+
 async function userMcpCatalog(page: Page): Promise<UserMcpCatalogResponse> {
   const response = await page.request.get("/api/me/mcp");
   expect(response.status()).toBe(200);
@@ -105,7 +115,9 @@ test.describe("seeded ordinary-user MCP access", () => {
     await expect(settings).toBeVisible({ timeout: 30_000 });
     await expect(settings.getByRole("article", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
     await expect(settings.getByRole("article", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toBeVisible();
-    await expect(settings.getByLabel("Fixture workspace")).toHaveValue("member-workspace");
+    const sheet = await openSharedServerSheet(page);
+    await expect(sheet.getByRole("heading", { exact: true, name: "Personal values" })).toBeVisible();
+    await expect(sheet.getByLabel("Fixture workspace", { exact: true })).toHaveValue("member-workspace");
 
     await page.goto("/admin");
     await expect(page.getByTestId("admin-denied")).toContainText("Admin access required");
@@ -165,7 +177,11 @@ test.describe("seeded ordinary-user MCP access", () => {
     await expect(settings).toBeVisible({ timeout: 30_000 });
     await expect(settings.getByRole("article", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
     await expect(settings.getByRole("article", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toHaveCount(0);
-    await expect(settings.getByText("Personal configuration")).toHaveCount(0);
+    const sheet = await openSharedServerSheet(page);
+    await expect(sheet.getByRole("heading", { exact: true, name: "Personal values" })).toHaveCount(0);
+    await expect(sheet.getByLabel("Fixture workspace", { exact: true })).toHaveCount(0);
+    await sheet.getByRole("button", { exact: true, name: "Close" }).click();
+    await expect(sheet).toHaveCount(0);
     await settings.getByRole("switch", { name: LOCAL_SHARED_MCP_FIXTURE.displayName }).click();
     await expect(settings.getByRole("alert")).toContainText(
       "This server needs additional administrator configuration before it can be enabled."

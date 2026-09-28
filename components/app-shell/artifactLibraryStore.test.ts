@@ -71,4 +71,37 @@ describe("artifact library cache", () => {
     expect(useArtifactLibraryStore.getState().data.recent?.[0]?.title).toBe("Updated");
     expect(useArtifactLibraryStore.getState().mutations[item.id]).toBe(false);
   });
+  it.each([
+    { change: { archived: true }, before: [], after: [item] },
+    { change: { archived: false }, before: [item], after: [] }
+  ])("replaces a first archived read that was pending during $change", async ({ change, before, after }) => {
+    let resolve!: (response: Response) => void;
+    const archivedReads: string[] = [];
+    const fetch = vi.fn((url: string) => {
+      if (url === "/api/artifacts?archived=true") {
+        archivedReads.push(url);
+        return archivedReads.length === 1 ? new Promise<Response>(done => { resolve = done; }) : Promise.resolve(Response.json({ artifacts: after }));
+      }
+      if (url === "/api/artifacts?archived=false") return Promise.resolve(Response.json({ artifacts: change.archived ? [] : [item] }));
+      return Promise.resolve(Response.json({ ok: true }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    activateArtifactLibraryAccount("account");
+    const old = refreshArtifactLibrary(true, true);
+    expect(useArtifactLibraryStore.getState().loadState.archived).toBe("loading");
+    await mutateArtifactLibrary(item.id, change);
+    resolve(Response.json({ artifacts: before }));
+    await old;
+    expect(useArtifactLibraryStore.getState()).toMatchObject({ data: { archived: after }, loadState: { archived: "ready" } });
+    expect(archivedReads).toHaveLength(2);
+    expect(useArtifactLibraryStore.getState().mutations[item.id]).toBe(false);
+  });
+  it("does not request an archived catalog that was never requested", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json({ ok: true })).mockResolvedValueOnce(Response.json({ artifacts: [] }));
+    vi.stubGlobal("fetch", fetch);
+    activateArtifactLibraryAccount("account");
+    await mutateArtifactLibrary(item.id, { archived: true });
+    expect(fetch.mock.calls.map(call => call[0])).toEqual(["/api/artifacts/artifact", "/api/artifacts?archived=false"]);
+    expect(useArtifactLibraryStore.getState()).toMatchObject({ data: { archived: null }, loadState: { archived: "idle" } });
+  });
 });

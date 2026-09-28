@@ -27,6 +27,20 @@ const eslintConfig = [
   },
   {
     files: [architectureModules],
+    ignores: ["**/*.d.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "PropertyDefinition[declare=true]",
+          message:
+            "Do not use TypeScript `declare` class fields: Playwright's Babel transform (preset-typescript without allowDeclareFields) cannot load any module containing one, which breaks every spec that imports it. Declare the member type-only through interface declaration merging instead."
+        }
+      ]
+    }
+  },
+  {
+    files: [architectureModules],
     ignores: ["**/*.test.*", "**/*.spec.*", "tests/**"],
     rules: {
       "aiqsa-architecture/test-support-boundary": "error"

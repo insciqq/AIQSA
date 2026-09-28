@@ -355,9 +355,16 @@ export type AdminProviderCheckRunState = "cancelled" | "completed" | "interrupte
 /** Why a background capability check started; the banner copy depends on it. */
 export type AdminProviderCheckRunReason = "credential" | "model" | "requested" | "setup";
 
+/** Roles setup left for an operator choice because no qualified target exists. */
+export const ADMIN_PROVIDER_SETUP_CONFIGURATION_NEEDS = ["memory"] as const;
+export type AdminProviderSetupConfigurationNeed = typeof ADMIN_PROVIDER_SETUP_CONFIGURATION_NEEDS[number];
+
 export type AdminProviderBootstrapResult = {
   defaults: string[];
+  /** Not a failure and not retryable; omitted when nothing needs a choice. */
+  needsConfiguration?: AdminProviderSetupConfigurationNeed[];
   search: "ready" | "failed" | "skipped";
+  /** `partial` means a save or check failed and a retry can finish it. */
   state: "completed" | "partial";
 };
 

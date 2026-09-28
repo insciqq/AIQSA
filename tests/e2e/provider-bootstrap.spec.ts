@@ -24,6 +24,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
   const priorChat = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   const priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   const priorSearch = await prisma.searchPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const priorMemory = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   let failSearch = true;
   let failPdf = true;
   let failJsonOnce = true;
@@ -116,6 +117,10 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
       providerModelId: null, reasoningEffort: null, chatPdfProviderModelId: null, chatPdfReasoningEffort: null
     } });
+    // No Memory recommendation qualifies for these native deployments, so an
+    // unassigned Memory row keeps setup partial; bootstrap preserves an operator clear.
+    const memoryCleared = { providerModelId: null, reasoningEffort: null, assignmentSource: "OPERATOR" } as const;
+    await prisma.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: memoryCleared });
     await prisma.providerConnection.create({ data: {
       id: connectionId, displayName: "Bootstrap OpenAI", family: "openai", enabled: false,
       draftConfig: { ...policy.connection.configuration, allowPrivateNetwork: true, apiRoot },
@@ -172,6 +177,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     await page.getByRole("button", { name: "Retry checks" }).click();
     await expect.poll(async () => (await read()).checkRun?.setup, { timeout: 60_000 })
       .toMatchObject({ search: "ready", state: "completed" });
+    expect(await prisma.memoryUtilityModelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject(memoryCleared);
     await expect(page.getByText("Search checked and ready.", { exact: true })).toBeVisible();
     expect(capabilityCalls).toEqual([{ model: "gpt-6-astra", check: "pdf" }]);
     expect((await read()).checkRun?.failed).toEqual([]);
@@ -248,6 +254,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
       ...priorRoles, imageParamsJson: priorRoles.imageParamsJson as Prisma.InputJsonValue,
       decisionFeaturesJson: priorRoles.decisionFeaturesJson as Prisma.InputJsonValue
     } });
+    await prisma.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: priorMemory });
     await prisma.searchPolicy.update({ where: { id: "installation" }, data: { ...priorSearch,
       defaultPlan: priorSearch.defaultPlan as Prisma.InputJsonValue
     } });
