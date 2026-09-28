@@ -741,7 +741,11 @@ export function useMessageRunActions({
         return false;
       }
 
-      useRunLifecycleStore.getState().ambiguityCleared({ chatId });
+      // A late recovery must not clear a subsequent interruption in this chat.
+      const current = useRunLifecycleStore.getState().ambiguousFailures[chatId];
+      if (current?.runId === interrupted.runId && current?.assistantMessageId === interrupted.assistantMessageId) {
+        useRunLifecycleStore.getState().ambiguityCleared({ chatId });
+      }
       return true;
     } catch {
       return false;

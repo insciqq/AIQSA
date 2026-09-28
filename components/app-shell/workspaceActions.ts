@@ -3,7 +3,8 @@ import {
   chatDetailFromApi,
   chatSummaryFromApi,
   messageFromApi,
-  shellFetch
+  shellFetch,
+  shellReadJson
 } from "@/components/app-shell/shellApi";
 import { fallbackCatalogModel } from "@/components/app-shell/controlDefaults";
 import {
@@ -413,13 +414,13 @@ export function useWorkspaceActions({
       .chats.find((candidate) => candidate.id === chatId);
     const request = (async () => {
       try {
-        const response = await shellFetch(`/api/chats/${chatId}`, options.signal ? { signal: options.signal } : undefined);
+        const { response, body } = await shellReadJson(`/api/chats/${chatId}`, options.signal);
         if (!response.ok) {
           if ([401, 403, 404].includes(response.status)) options.onUnavailable?.();
           throw new Error(`chat_detail_failed_${response.status}`);
         }
 
-        const chat = chatDetailBodyFromUnknown(await response.json());
+        const chat = chatDetailBodyFromUnknown(body);
         if (options.signal?.aborted) return null;
         if (!chat || chat.id !== chatId) {
           throw new Error("chat_detail_malformed");

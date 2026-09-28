@@ -485,7 +485,7 @@ describe("restoring a chat's Assistant", () => {
 
     await state.actions.activateChat(state.chatA, { resumeRuns: false });
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a");
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     const restored = useComposerControlStore.getState();
     expect(restored).toMatchObject({
       assistant: {
@@ -537,7 +537,7 @@ describe("restoring a chat's Assistant", () => {
     expect(fetchMock).not.toHaveBeenCalled();
 
     await state.actions.activateChat(state.chatA, { preserveControls: true, readAssistant: true, resumeRuns: false });
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/chats/chat-a");
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/chats/chat-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1", state: "bound" });
 
     // Once read, the projection is known and nothing is read again.
@@ -1049,7 +1049,7 @@ describe("workspace actions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const pendingDetail = state.actions.fetchChatDetail("chat-a");
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({ signal: expect.any(AbortSignal) })));
     await state.actions.deleteChat(state.chatA);
     resolveDetail(
       Response.json({
@@ -1186,6 +1186,25 @@ describe("workspace actions", () => {
       messages: [{ id: "new-leaf" }],
       usageStats: { totalTokens: 8 }
     });
+  });
+
+  it("refreshes past a suspended detail request and ignores its late stale response", async () => {
+    vi.useFakeTimers();
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "Unsent follow-up" });
+    let finish!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }))
+      .mockResolvedValueOnce(Response.json({ chat: apiChatDetail(state.chatA, [message({ id: "answer", content: "Finished" })]) })));
+    const stale = state.actions.fetchChatDetail("chat-a");
+    const refresh = state.actions.refreshActiveChat("chat-a", { forceDetail: true, preserveControls: true });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(stale).resolves.toBeNull();
+    await expect(refresh).resolves.toMatchObject({ messages: [{ content: "Finished" }] });
+    finish(Response.json({ chat: apiChatDetail(state.chatA, [message({ id: "answer", content: "Stale" })]) }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useThreadStore.getState().threadsByChatId["chat-a"]?.messages[0]?.content).toBe("Finished");
+    expect(state.draft()).toBe("Unsent follow-up");
+    vi.useRealTimers();
   });
 
   it("restores an immediately archived chat through the undo toast", async () => {
@@ -2096,7 +2115,7 @@ describe("workspace actions", () => {
     await state.actions.activateChat(cachedSummary!, { resumeRuns: false });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a");
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(useThreadStore.getState().threadsByChatId["chat-a"]).toMatchObject({
       activeLeafId: "assistant-a",
       contextStats: {
@@ -2187,7 +2206,7 @@ describe("workspace actions", () => {
 
     await state.actions.activateChat(summary, { resumeRuns: false });
 
-    expect(fetchMock).toHaveBeenCalledWith(`/api/chats/${summary.id}`);
+    expect(fetchMock).toHaveBeenCalledWith(`/api/chats/${summary.id}`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(useThreadStore.getState().threadsByChatId[summary.id]?.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ content: "Canonical answer", id: "assistant-canonical" })
@@ -2251,7 +2270,7 @@ describe("workspace actions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const activation = state.actions.activateChat(lazyChat, { resumeRuns: false });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({ signal: expect.any(AbortSignal) })));
     useThreadStore.getState().updateMessages("chat-a", (current) =>
       current.map((candidate) =>
         candidate.id === "assistant-a" ? { ...candidate, content: "Partial plus live token" } : candidate
@@ -2704,7 +2723,7 @@ describe("workspace actions", () => {
     await state.actions.exportChat(summary);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a");
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(useThreadStore.getState().threadsByChatId["chat-a"]?.messages).toHaveLength(2);
   });
 

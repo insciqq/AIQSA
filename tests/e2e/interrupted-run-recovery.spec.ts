@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { chooseSearchStrategy } from "./shell/composer";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
-import { activeChatId, selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
+import { activeChatId, disableMemoryRecall, selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
 
 const viewports = [
   { width: 1440, height: 900 }, { width: 900, height: 1440 },
@@ -10,8 +10,104 @@ const viewports = [
   { width: 390, height: 844 }, { width: 844, height: 390 }
 ] as const;
 
+for (const transport of ["suspended", "disconnected"] as const) {
+  test(`an answer ${transport} in the background recovers without reloading or resending`, async ({ page, context }, testInfo) => {
+    test.setTimeout(180_000);
+    // Keep the server's accepted stream running while the browser receives no
+    // further bytes. The two failures cover a hanging read and a closed stream.
+    await page.addInitScript(({ transport }) => {
+      const original = window.fetch.bind(window);
+      let hidden = false;
+      let stallStatus = false;
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => hidden ? "hidden" : "visible" });
+      Object.assign(window, { returnToChat() {
+        hidden = false;
+        document.dispatchEvent(new Event("visibilitychange"));
+      } });
+      window.fetch = async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (stallStatus && /\/api\/model-runs\/[^/]+$/u.test(url)) {
+          stallStatus = false;
+          // Simulate the first recovery request hanging after Android resumes.
+          return new Promise<Response>(() => undefined);
+        }
+        const response = await original(input, init);
+        if (init?.method !== "POST" || !/\/api\/chats\/[^/]+\/messages$/u.test(url) || !response.body ||
+          !response.headers.get("content-type")?.includes("text/event-stream")) return response;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let received = "";
+        let held = false;
+        return new Response(new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (held) return new Promise<void>(() => undefined);
+            const chunk = await reader.read();
+            if (chunk.done) { controller.close(); return; }
+            received += decoder.decode(chunk.value, { stream: true });
+            controller.enqueue(chunk.value);
+            if (received.includes("event: message_start") && received.includes("event: run_start")) {
+              held = true;
+              hidden = true;
+              stallStatus = transport === "disconnected";
+              document.dispatchEvent(new Event("visibilitychange"));
+              if (transport === "disconnected") controller.close();
+              void reader.cancel();
+            }
+          }
+        }), { status: response.status, headers: response.headers });
+      };
+    }, { transport });
+    await signInWithLocalToken(page);
+    await startPlainFakeChat(page);
+    let sends = 0;
+    page.on("request", request => {
+      if (request.method() === "POST" && /\/api\/chats\/[^/]+\/messages$/u.test(request.url())) sends++;
+    });
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("Background recovery check");
+    await page.getByRole("button", { name: "Send message" }).click();
+    const chatId = await activeChatId(page);
+    try {
+      await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("hidden");
+      await expect.poll(async () => {
+        const response = await page.request.get(`/api/chats/${chatId}`);
+        if (!response.ok()) return false;
+        const body = await response.json();
+        return body.chat.messages.some((message: { role: string; status: string }) => message.role === "assistant" && message.status === "complete");
+      }, { timeout: 45_000 }).toBe(true);
+      await composer.fill("Keep my unsent follow-up");
+      if (transport === "disconnected") {
+        await expect(page.getByTestId("run-connection-lost")).toBeVisible();
+        // Manual Refresh must also recover when its status request hangs.
+        await page.getByTestId("run-connection-lost").getByRole("button", { name: "Refresh" }).click();
+        await expect(page.locator('article[data-role="assistant"]').last())
+          .toContainText("Fake answer: Background recovery check", { timeout: 45_000 });
+      }
+      await page.evaluate(() => (window as unknown as { returnToChat(): void }).returnToChat());
+      await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Fake answer: Background recovery check", { timeout: 45_000 });
+      await expect(page.getByTestId("run-connection-lost")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
+      await expect(composer).toHaveValue("Keep my unsent follow-up");
+      expect(sends).toBe(1);
+      if (transport === "suspended") for (const theme of ["dark", "light"]) {
+        await context.addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
+        await page.evaluate(value => document.documentElement.setAttribute("data-theme", value), theme);
+        for (const viewport of viewports) {
+          await page.setViewportSize(viewport);
+          await expectNoHorizontalOverflow(page);
+          await expectWithinViewport(page, composer);
+          await page.screenshot({ path: testInfo.outputPath(`recovered-${theme}-${viewport.width}x${viewport.height}.png`) });
+        }
+      }
+    } finally {
+      await page.request.delete(`/api/chats/${chatId}`);
+    }
+  });
+}
+
 /** A plain fake-provider chat: no Workspace, no Search, deterministic Fake QSA. */
 async function startPlainFakeChat(page: Page): Promise<void> {
+  await disableMemoryRecall(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
   if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);

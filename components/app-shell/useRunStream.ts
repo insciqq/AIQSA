@@ -141,6 +141,23 @@ export function useRunStream({
       };
 
       const reader = response.body.getReader();
+      // A mobile browser can freeze the stream without rejecting reader.read().
+      // On return, hand observation to persisted-run reconciliation. Cancelling
+      // this reader detaches the browser; it never invokes Stop on the run.
+      let wasHidden = document.visibilityState === "hidden";
+      const reconnect = () => {
+        if (isCurrent()) void reader.cancel().catch(() => undefined);
+      };
+      const visibility = () => {
+        if (document.visibilityState === "hidden") wasHidden = true;
+        else if (wasHidden) reconnect();
+      };
+      const pageShow = (event: PageTransitionEvent) => {
+        if (event.persisted) reconnect();
+      };
+      document.addEventListener("visibilitychange", visibility);
+      document.addEventListener("resume", reconnect);
+      window.addEventListener("pageshow", pageShow);
       const decoder = new TextDecoder();
       let buffer = "";
       let done = false;
@@ -173,6 +190,9 @@ export function useRunStream({
 
         return { failed, receivedChatUpdate, runId, terminalStatus };
       } finally {
+        document.removeEventListener("visibilitychange", visibility);
+        document.removeEventListener("resume", reconnect);
+        window.removeEventListener("pageshow", pageShow);
         reader.releaseLock();
         if (isCurrent()) onStreamEnded?.(chatId, terminalStatus ?? "interrupted");
       }

@@ -134,6 +134,7 @@ import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { usePinnedScroll } from "@/components/app-shell/usePinnedScroll";
 import { usePowerAppShellViewModel } from "@/components/app-shell/usePowerAppShellViewModel";
 import { useRunStreaming } from "@/components/app-shell/useRunStreaming";
+import { useInterruptedRunRecovery } from "@/components/app-shell/useInterruptedRunRecovery";
 import { useShellAppearanceController } from "@/components/app-shell/useShellAppearanceController";
 import { useShellOverlayController } from "@/components/app-shell/useShellOverlayController";
 import { useShellUiActions } from "@/components/app-shell/useShellUiActions";
@@ -1832,6 +1833,11 @@ export function PowerAppShellV2({
     resetThreadToLatest,
     setNotice,
     activeChatStreaming,
+  });
+  useInterruptedRunRecovery({
+    chatId: activeChatId,
+    interrupted: Boolean(activeChatInterruptedRun) && !stopping,
+    refresh: refreshInterruptedRun
   });
   // Stable, so a caller that outlives its render (a Studio starter chip) sends from the current chat.
   const sendStarterEvent = useEventCallback((prompt: string) => void sendStarterPrompt(prompt));
