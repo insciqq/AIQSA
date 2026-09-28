@@ -470,8 +470,9 @@ export function AuthLogin({
   const [proofSessionGeneration, setProofSessionGeneration] = useState(0);
   const [registrationOutcome, setRegistrationOutcome] = useState<RegistrationOutcome>("request-received");
   const submitting = pendingAction !== null;
-  // Before hydration a submit would be the browser's native GET of the server
-  // markup; the forms say when they are interactive.
+  // Before hydration a submit is the browser's native POST of the server markup
+  // (method="post" keeps credentials out of the URL; the page ignores the body);
+  // the forms say when they are interactive.
   const hydratedForm = useSyncExternalStore(subscribeToHydration, hydratedSnapshot, serverSnapshot)
     ? "true"
     : undefined;
@@ -972,7 +973,7 @@ export function AuthLogin({
             ) : null}
 
           {mode === "password" ? (
-            <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} noValidate onSubmit={submitPassword}>
+            <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} method="post" noValidate onSubmit={submitPassword}>
               <div>
                 <label className="mb-2 block text-sm font-medium text-ink" htmlFor="email">
                   Email
@@ -1081,6 +1082,7 @@ export function AuthLogin({
               data-hydrated={hydratedForm}
               data-testid="register-form"
               key={activeInviteToken ? `auth-proof-${proofSessionGeneration}` : "access-request"}
+              method="post"
               noValidate
               onSubmit={activeInviteToken ? submitInviteAcceptance : submitRegister}
             >
@@ -1206,6 +1208,7 @@ export function AuthLogin({
               className={formClassName}
               data-hydrated={hydratedForm}
               key={`auth-proof-${proofSessionGeneration}`}
+              method="post"
               noValidate
               onSubmit={submitEmailVerification}
             >
@@ -1254,7 +1257,7 @@ export function AuthLogin({
           ) : null}
 
           {mode === "reset-request" ? (
-            <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} noValidate onSubmit={submitResetRequest}>
+            <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} method="post" noValidate onSubmit={submitResetRequest}>
               <div>
                 <label className="mb-2 block text-sm font-medium text-ink" htmlFor="reset-email">
                   Email
@@ -1301,6 +1304,7 @@ export function AuthLogin({
               className={formClassName}
               data-hydrated={hydratedForm}
               key={`auth-proof-${proofSessionGeneration}`}
+              method="post"
               noValidate
               onSubmit={submitResetComplete}
             >

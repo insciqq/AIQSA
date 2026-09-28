@@ -302,12 +302,17 @@ describe("Composer v2", () => {
   });
 
   it("distinguishes disabled automatic Skills from still-active pinned instructions", () => {
-    render(<ComposerV2 {...props({ skillsMode: "off", selectedSkillIds: ["pinned"] })} />);
+    const { rerender } = render(<ComposerV2 {...props({ skillsMode: "off", selectedSkillIds: ["pinned"] })} />);
     const chip = screen.getByRole("button", { name: "Change Skills mode" });
     expect(chip).toHaveAccessibleDescription("Skills: Auto off · 1 pinned (always loaded)");
     expect(chip.querySelector(".v2-composer-indicator-count")).toHaveTextContent("1");
+    // Pinned Skills still apply, so the chip is not struck through as off.
+    expect(chip).not.toHaveAttribute("data-off");
     fireEvent.click(chip);
     expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toHaveAttribute("aria-checked", "true");
+
+    rerender(<ComposerV2 {...props({ skillsMode: "off", selectedSkillIds: [] })} />);
+    expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveAttribute("data-off");
   });
 
   it("does not carry an Agent notice into another chat or retain a resolved restriction", () => {

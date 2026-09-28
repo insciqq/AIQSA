@@ -2,7 +2,9 @@
 
 import type { AdminModelCheckState } from "@/components/admin/providers/models/useAdminModelChecks";
 import { UiV2Button } from "@/components/ui-v2";
-import { AdminProviderSetupResults, CAPABILITY_LABELS, providerSetupNeedsRecovery } from "@/components/admin/providers/add/AdminProviderSetupResults";
+import {
+  AdminProviderSetupMemoryHint, AdminProviderSetupResults, CAPABILITY_LABELS, providerSetupNeedsRecovery
+} from "@/components/admin/providers/add/AdminProviderSetupResults";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
 import { useState } from "react";
 
@@ -10,6 +12,8 @@ export type AdminProviderCheckBannerProps = Readonly<{
   checks: AdminModelCheckState;
   connection: AdminProviderConnection;
   disabled: boolean;
+  /** Opens Defaults & roles at the Memory row; without it the link navigates natively. */
+  onOpenMemoryRole?: () => void;
   selectedCredentialId?: string | null;
 }>;
 
@@ -18,7 +22,7 @@ export type AdminProviderCheckBannerProps = Readonly<{
  * page shows one banner with the count, a bar and `Stop checking`; a run
  * lost to a restart shows the same slot with `Restart`. Single-model checks share the same progress and terminal feedback.
  */
-export function AdminProviderCheckBanner({ checks, connection, disabled, selectedCredentialId }: AdminProviderCheckBannerProps) {
+export function AdminProviderCheckBanner({ checks, connection, disabled, onOpenMemoryRole, selectedCredentialId }: AdminProviderCheckBannerProps) {
   const [stopping, setStopping] = useState(false);
   const run = selectedCredentialId === undefined || checks.run?.credentialId === selectedCredentialId ? checks.run : null;
   const interrupted = selectedCredentialId === undefined || checks.interrupted?.credentialId === selectedCredentialId ? checks.interrupted : null;
@@ -95,6 +99,7 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, selecte
           : retry ? "Saved capabilities remain available. Retry to finish the interrupted checks or save."
           : `Capabilities for key ${keyLabel(run.credentialId)} are shown with each model.`}</p>
         {setup?.defaults.length ? <p className="mt-1 text-xs leading-5 text-ink-muted">Defaults set — {setup.defaults.join("; ")}.</p> : null}
+        <AdminProviderSetupMemoryHint onOpenMemoryRole={onOpenMemoryRole} run={run} />
         <AdminProviderSetupResults models={connection.models} run={run} />
         {retry ? <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Retry checks</UiV2Button> : null}
       </section>

@@ -155,10 +155,10 @@
   }
 }
 
-/* The full Library section set can clip anywhere in the mobile layout after
-   text enlargement. Keep quiet edge cues and enough scroll padding to reveal
-   the final tab. */
-@media (max-width: 767px) {
+/* The full Library section set can clip anywhere in the tab strip (phones,
+   narrow tablets and short touch screens) after text enlargement. Keep quiet
+   edge cues and enough scroll padding to reveal the final tab. */
+@media (max-width: 1023px), (hover: none) and (max-height: 30rem), (pointer: coarse) and (max-height: 30rem) {
   .v2-library-tabs-scroll {
     padding-left: 1rem;
     padding-right: 2.5rem;
@@ -182,11 +182,33 @@
 }
 
 /*
- * Inside the shell (≥768px) the Library is rail | section column | content
- * (PRD §4.1/§4.10): the header's crumb row sits above the content and the
- * tablist becomes the second column on the sidebar surface.
+ * Beside the rail from 768px the Library keeps the phone's stacked header:
+ * the crumb row takes the rail header's measure and the section tab strip
+ * follows it, so a narrow tablet (768–1023px) or a short touch screen (a
+ * phone held sideways) gives the content the whole width. The same tablist
+ * is the section column on wider screens (below).
  */
-@media (min-width: 768px) {
+@media (min-width: 768px) and (max-width: 1023px), (min-width: 768px) and (hover: none) and (max-height: 30rem), (min-width: 768px) and (pointer: coarse) and (max-height: 30rem) {
+  .v2-library-header {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .v2-library-heading-row {
+    min-height: var(--v2-header-height);
+  }
+
+  .v2-library-tabs-scroll {
+    margin-top: 0;
+  }
+}
+
+/*
+ * From 1024px, unless the screen is a short touch screen, the Library is
+ * rail | section column | content (PRD §4.1/§4.10): the header's crumb row
+ * sits above the content and the tablist becomes the second column on the
+ * sidebar surface.
+ */
+@media (min-width: 1024px) and (min-height: 30.01rem), (min-width: 1024px) and (hover: hover) and (pointer: fine) {
   .v2-library {
     grid-template-columns: var(--v2-sidebar-width) minmax(0, 1fr);
     grid-template-rows: var(--v2-header-height) minmax(0, 1fr);
@@ -261,6 +283,20 @@
 
   .v2-library-panel {
     grid-area: 2 / 2 / 3 / 3;
+  }
+}
+
+/* Touch: the crumb row takes the rail's 56px measure, so the 44px Back
+   control keeps about 6px above and below instead of touching the bar. */
+@media (min-width: 768px) and ((hover: none) or (pointer: coarse)) {
+  .v2-library-heading-row {
+    min-height: 3.5rem;
+  }
+}
+
+@media (min-width: 1024px) and (min-height: 30.01rem) and ((hover: none) or (pointer: coarse)) {
+  .v2-library {
+    grid-template-rows: 3.5rem minmax(0, 1fr);
   }
 }
 
@@ -1409,8 +1445,12 @@
   opacity: 0.8;
 }
 
+/* A focused search field draws the 2px accent ring of the other Library
+   controls (the Category box), not only an accent border. */
 .v2-resource-search input:focus-visible {
   border-color: var(--v2-color-accent);
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 2px;
 }
 
 .v2-resource-filters {
@@ -1547,7 +1587,7 @@
   display: none;
 }
 
-@media (min-width: 768px) {
+@media (min-width: 1024px) and (min-height: 30.01rem), (min-width: 1024px) and (hover: hover) and (pointer: fine) {
   .v2-library-tabs-divider {
     display: block;
     height: 1px;
@@ -1687,4 +1727,49 @@
 /* Touch: a short label ("Off", "On") still gets a 44px-square segment. */
 @media (hover: none), (pointer: coarse) {
   .v2-settings-segment-option { min-width: 2.75rem; min-height: 2.75rem; }
+}
+
+/*
+ * A short screen (a phone held sideways): a compact section heading, so the
+ * first row, the empty state or the error shows on the first screen. The
+ * title stays beside its actions; the description (the crumb row and the
+ * tab strip already name the section) and the extra spacing go. Knowledge
+ * sub-view headings keep their meta line.
+ */
+@media (max-height: 30rem) {
+  .v2-library-panel {
+    padding-top: 0.75rem;
+  }
+
+  .v2-resource-heading {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding-bottom: 0.75rem;
+  }
+
+  .v2-resource-heading h2 {
+    font-size: 1rem;
+  }
+
+  .v2-resource-heading:not(.v2-knowledge-heading) > div > p {
+    display: none;
+  }
+
+  .v2-resource-heading-action,
+  .v2-resource-heading-action .v2-button {
+    width: auto;
+  }
+
+  .v2-resource-list,
+  .v2-resource-filters {
+    margin-top: 0.75rem;
+  }
+
+  .v2-assistant-empty {
+    min-height: 0;
+    margin-top: 0.75rem;
+    padding: 1rem;
+  }
 }

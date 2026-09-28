@@ -436,8 +436,9 @@
 /* While an action runs the choices are held, not disabled, so the pressed
    one keeps focus; they read as the disabled buttons do. */
 .v2-assistant-notice-actions > .v2-button[aria-disabled="true"] {
+  border-color: var(--v2-color-border);
+  color: var(--v2-color-text3);
   cursor: not-allowed;
-  opacity: 0.55;
 }
 
 /* The notice is the only way out of a blocked chat: its choices keep the
@@ -453,10 +454,12 @@
 }
 
 /* No kicker: the header carries the plain title only (S1 §4.3), preceded by
-   the folder crumb when the chat lives in a folder. */
+   the folder crumb when the chat lives in a folder. The title island already
+   yields to the header's other groups, so the title uses all of it before it
+   ellipsizes. */
 .v2-live-title h1 {
   display: flex;
-  max-width: min(40vw, 34rem);
+  max-width: 100%;
   min-width: 0;
   align-items: center;
   margin: 0;
@@ -479,7 +482,8 @@
 
 /* Clicking the title starts inline rename; the pencil reveals that on
    hover/focus (always on coarse pointers) so the title reads as an editable
-   field, not as static selectable text. */
+   field, not as static selectable text. At rest on fine pointers the pencil
+   takes no width, so it never ellipsizes the title early. */
 .v2-live-title-button {
   display: inline-flex;
   min-width: 0;
@@ -505,11 +509,10 @@
 }
 
 .v2-live-title-button .v2-icon {
+  display: none;
   width: 0.875rem;
   height: 0.875rem;
   color: var(--v2-color-text3);
-  opacity: 0;
-  transition: opacity var(--v2-motion-fast);
 }
 
 .v2-live-title-button:hover:not(:disabled),
@@ -519,7 +522,7 @@
 
 .v2-live-title-button:hover .v2-icon,
 .v2-live-title-button:focus-visible .v2-icon {
-  opacity: 1;
+  display: block;
 }
 
 .v2-live-title-button:disabled {
@@ -1553,7 +1556,32 @@
   }
 
   .v2-live-title-button .v2-icon {
-    opacity: 1;
+    display: block;
+  }
+
+  /* Share and the title (≥768px) keep the 44px target of the primitives. */
+  .v2-live-header-actions > .v2-button,
+  .v2-live-title-button {
+    min-height: 2.75rem;
+  }
+
+  .v2-live-title-button {
+    min-width: 2.75rem;
+  }
+}
+
+/* The touch floats are 44px ("Show list" 44 + 8 + "+" 44 from 0.75rem):
+   the collapsed bar's content starts 0.5rem after them, as the 32px fine
+   pointer floats end 0.5rem before 5.75rem. */
+@media (min-width: 768px) and ((hover: none) or (pointer: coarse)) {
+  .v2-workspace-shell[data-sidebar-collapsed="true"] .v2-live-header {
+    padding-left: max(7.25rem, calc(env(safe-area-inset-left) + 7.25rem));
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) and ((hover: none) or (pointer: coarse)) {
+  .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-live-header {
+    padding-left: max(7.25rem, calc(env(safe-area-inset-left) + 7.25rem));
   }
 }
 
@@ -1565,7 +1593,9 @@
   }
 }
 
-/* Touch (C2): the "⋯" island and the model pill keep 44px targets. */
+/* Touch (C2): the "⋯" island and the model pill keep 44px targets. The
+   centre pill clears the 44px side islands by 0.5rem (0.75rem edge, then
+   2.75rem + 0.5rem per island), the same gap "+" keeps from "⋯". */
 @media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
   .v2-live-header-island {
     height: 2.75rem;
@@ -1576,11 +1606,13 @@
     height: 2.75rem;
   }
 
-  .v2-workspace-shell[data-chat-active="true"] .v2-live-header {
-    padding-right: 6.25rem;
+  .v2-live-header {
+    padding-right: 3.25rem;
+    padding-left: 3.25rem;
   }
 
-  .v2-live-header {
-    padding-left: 3.25rem;
+  /* A Temporary chat hands the right edge to its in-flow indicator. */
+  .v2-workspace-shell[data-chat-active="true"] .v2-live-header:not(:has(.v2-live-temporary)) {
+    padding-right: 6.5rem;
   }
 }

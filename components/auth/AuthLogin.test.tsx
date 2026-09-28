@@ -93,6 +93,57 @@ describe("AuthLogin", () => {
     container.remove();
   });
 
+  function expectPostOnlyCredentialForm(scope: HTMLElement) {
+    const forms = scope.querySelectorAll("form");
+    expect(forms).toHaveLength(1);
+    // A pre-hydration native submit must never serialize credentials into the URL.
+    expect(forms[0]).toHaveAttribute("method", "post");
+    expect(forms[0]).not.toHaveAttribute("action");
+    expect(forms[0]).toHaveAttribute("novalidate");
+  }
+
+  it.each([
+    { heading: "Sign in to your workspace", mode: "password sign-in", props: {} },
+    { heading: "Create your account", mode: "invite registration", props: { inviteToken: "invite-token" } },
+    { heading: "Choose your password", mode: "email verification", props: { verifyToken: "verify-token" } },
+    { heading: "Choose a new password", mode: "reset completion", props: { resetToken: "reset-token" } }
+  ])("declares POST for the $mode form in server markup and after hydration", async ({ heading, props }) => {
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<AuthLogin nextPath="/" {...props} />);
+    document.body.append(container);
+    let root: Root | null = null;
+
+    try {
+      expectPostOnlyCredentialForm(container);
+
+      await act(async () => {
+        root = hydrateRoot(container, <AuthLogin nextPath="/" {...props} />);
+      });
+
+      expect(within(container).getByRole("heading", { level: 1, name: heading })).toBeInTheDocument();
+      expect(container.querySelector("form")).toHaveAttribute("data-hydrated", "true");
+      expectPostOnlyCredentialForm(container);
+    } finally {
+      await act(async () => {
+        root?.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it("declares POST for the client-only access request and reset request forms", () => {
+    const { container } = render(<AuthLogin nextPath="/" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Request access" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Request access" })).toBeInTheDocument();
+    expectPostOnlyCredentialForm(container);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset password" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Reset your password" })).toBeInTheDocument();
+    expectPostOnlyCredentialForm(container);
+  });
+
   it("explains that an expired or revoked session requires another sign-in", () => {
     render(<AuthLogin nextPath="/workspace" sessionExpired />);
 

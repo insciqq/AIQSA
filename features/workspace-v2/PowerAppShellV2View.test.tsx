@@ -687,6 +687,21 @@ describe("Workspace header v2", () => {
     expect(props.onRenameCancel).toHaveBeenCalledTimes(2);
   });
 
+  it("reveals the full title on hover while the title button still announces Rename", () => {
+    const title = "Quarterly release checklist for the payments platform migration and rollback drills";
+    const { rerender } = render(<WorkspaceHeaderV2 {...headerProps({ title })} />);
+    const button = screen.getByTestId("header-title");
+    expect(button).toHaveAttribute("title", title);
+    expect(button).toHaveAccessibleName(title);
+    expect(button).toHaveAccessibleDescription("Rename chat");
+    expect(button).toHaveTextContent(new RegExp(`^${title}$`));
+    expect(screen.getByRole("heading", { level: 1 })).toHaveAccessibleName(title);
+
+    rerender(<WorkspaceHeaderV2 {...headerProps({ renameDisabled: true, title })} />);
+    expect(screen.getByTestId("header-title")).toHaveAttribute("title", title);
+    expect(screen.getByTestId("header-title")).not.toHaveAccessibleDescription("Rename chat");
+  });
+
   it("shows the canonical New chat placeholder until a real title exists", () => {
     render(<WorkspaceHeaderV2 {...headerProps({ title: "New Chat" })} />);
 

@@ -5,6 +5,7 @@ import {
   createAdminProviderCredential,
   discoverAdminCompatibleModels,
   getAdminProviderConnections,
+  isAdminProviderCheckRun,
   renameAdminProviderModel,
   runAdminProviderConnectionAction
 } from "./adminProvidersApi";
@@ -42,6 +43,27 @@ const safeConnection = {
   updatedAt: "2026-07-23T00:00:00.000Z",
   userAssignments: []
 };
+
+describe("admin provider bootstrap result decoding", () => {
+  const run = (setup: unknown) => ({ credentialId: "key", current: null, done: 1, failed: [], finishedAt: "2026-09-28T00:00:01.000Z",
+    id: "run", inFlight: [], reason: "setup", setup, startedAt: "2026-09-28T00:00:00.000Z", state: "completed", total: 1 });
+
+  it("accepts results without the marker and the exact Memory marker", () => {
+    expect(isAdminProviderCheckRun(run({ defaults: ["Chat: Model"], search: "ready", state: "completed" }))).toBe(true);
+    expect(isAdminProviderCheckRun(run({ defaults: [], search: "failed", state: "partial" }))).toBe(true);
+    expect(isAdminProviderCheckRun(run({ defaults: [], needsConfiguration: ["memory"], search: "ready", state: "completed" }))).toBe(true);
+    expect(isAdminProviderCheckRun(run({ defaults: [], needsConfiguration: ["memory"], search: "failed", state: "partial" }))).toBe(true);
+  });
+
+  it.each([[[]], [["memory", "memory"]], [["search"]], ["memory"], [null], [[1]]])("rejects a malformed marker %j", (needsConfiguration) => {
+    expect(isAdminProviderCheckRun(run({ defaults: [], needsConfiguration, search: "ready", state: "completed" }))).toBe(false);
+  });
+
+  it("rejects a marker on running setup and unknown setup fields", () => {
+    expect(isAdminProviderCheckRun(run({ needsConfiguration: ["memory"], state: "running" }))).toBe(false);
+    expect(isAdminProviderCheckRun(run({ defaults: [], search: "ready", state: "completed", memory: "missing" }))).toBe(false);
+  });
+});
 
 describe("admin provider browser API", () => {
   it("posts exact selected catalog identities and rejects unrelated unavailable IDs or malformed suggestions", async () => {

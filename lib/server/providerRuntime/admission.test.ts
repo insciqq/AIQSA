@@ -5,6 +5,9 @@ import { validateRunParams } from "../../domain/runParams";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import { configuredModelParameterControls } from "../providers/providerModelCapabilities";
 import { insertAcceptedProviderRunBindings } from "../runs/prismaRepositoryBindings";
+import type { OpenRouterChatClient } from "../providers/openRouterChatTransport";
+import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouterPerplexitySearch";
+import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { loadInstallationAnswerProviderRole, loadInstallationRerankerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
 const capabilities = (input: Readonly<{
@@ -36,6 +39,7 @@ type ModelSpec = Readonly<{
   connectionResponseTimeoutMs?: number;
   connectionId: string;
   contextWindow?: number;
+  defaultParams?: Readonly<Record<string, unknown>>;
   displayName?: string;
   family: "anthropic" | "gemini" | "openai" | "openai_compatible" | "openrouter";
   id: string;
@@ -94,7 +98,7 @@ function providerModel(
         pdf: spec.pdf,
         toolCalling: spec.toolCalling
       }),
-      defaultParams: {},
+      defaultParams: spec.defaultParams ?? {},
       modelClass: "answer",
       ...(spec.reasoningRequestMapping
         ? { reasoningRequestMapping: spec.reasoningRequestMapping }
@@ -1597,6 +1601,106 @@ describe("provider admission", () => {
       revisionId: "revision-perplexity-client",
       role: { snapshot: { connectionId: "connection-openrouter" } }
     });
+  });
+
+  it("sends a migrated Perplexity template to future Search with hidden, not disabled, reasoning", async () => {
+    const answer: ModelSpec = {
+      adapterKind: "anthropic_messages",
+      connectionId: "connection-anthropic",
+      family: "anthropic",
+      id: "model-opus",
+      upstreamModelId: "claude-opus-5"
+    };
+    // activeConfig.defaultParams after 20260928220000_perplexity_legacy_reasoning:
+    // only the former template reasoning object became {exclude: true}.
+    const perplexityModel: ModelSpec = {
+      adapterKind: "openrouter_chat_completions",
+      answerSelectable: false,
+      connectionId: "connection-openrouter",
+      defaultParams: {
+        maxTokens: 8192,
+        provider: { allowFallbacks: true, dataCollection: "deny", order: ["perplexity"], sort: "throughput" },
+        reasoning: { exclude: true },
+        stream: true,
+        temperature: 1
+      },
+      family: "openrouter",
+      id: "model-perplexity-search",
+      nativeSearch: true,
+      upstreamModelId: "perplexity/sonar-pro-search"
+    };
+    const option: OptionSpec = {
+      displayName: "Perplexity Search",
+      kind: "perplexity_search",
+      optionId: "perplexity-tool-search",
+      routes: [{
+        adapterKind: "provider_model_client",
+        id: "route-perplexity-client",
+        protocol: "openrouter_perplexity_chat",
+        providerModelId: perplexityModel.id,
+        revisionId: "revision-perplexity-client"
+      }],
+      sourceConnectionId: perplexityModel.connectionId
+    };
+    const { db } = admissionDb({ answer, options: [option], technicalModels: [perplexityModel] });
+    const search = expectSearch(await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: answer.connectionId,
+      providerModelId: answer.id,
+      searchPlan: { mode: "all_selected", optionIds: [option.optionId] },
+      userId: "user-1"
+    }));
+    const createChatCompletion = vi.fn<OpenRouterChatClient["createChatCompletion"]>(async () => ({
+      choices: [{ finish_reason: "stop", message: { content: "Fact [1].", role: "assistant" } }],
+      citations: ["https://example.com/source"],
+      id: "or-search", model: "perplexity/sonar-pro-search", object: "chat.completion",
+      usage: { completion_tokens: 3, prompt_tokens: 5 }
+    }));
+    const router = createSearchPlanToolRouter({
+      plan: {
+        mode: "all_selected",
+        options: [{
+          adapterKind: search.configuration.adapterKind,
+          config: search.configuration.config,
+          credentialMode: search.configuration.credentialMode,
+          displayName: search.configuration.displayName,
+          executionModes: search.configuration.executionModes,
+          modelId: search.configuration.modelId,
+          optionId: search.optionId,
+          protocol: search.configuration.protocol,
+          provider: search.configuration.provider,
+          providerModelId: search.configuration.providerModelId,
+          revisionId: search.revisionId,
+          searchStrategyRowId: search.integrationId
+        }]
+      },
+      runtimes: {
+        [search.optionId]: {
+          adapter: {
+            buildRequestPreview: () => ({}),
+            async *stream() {
+              throw new Error("answer_adapter_must_not_execute_search");
+            }
+          },
+          responseTimeoutMs: 300_000,
+          searchAdapter: createOpenRouterPerplexitySearchAdapter({ client: { createChatCompletion } })
+        }
+      }
+    })!;
+    const logs = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const result = await router.execute(
+        { arguments: { query: "bounded query" }, id: "call-1", name: router.tools[0]!.name }, {}
+      );
+      expect(result.status).not.toBe("error");
+    } finally {
+      logs.mockRestore();
+    }
+
+    expect(createChatCompletion).toHaveBeenCalledOnce();
+    const body = createChatCompletion.mock.calls[0]![0];
+    expect(body).toMatchObject({ model: "perplexity/sonar-pro-search", stream: false });
+    expect(body.reasoning).toEqual({ exclude: true });
+    expect(JSON.stringify(body)).not.toMatch(/"enabled"|"effort"/u);
   });
 
   it("keeps Google Search native to Gemini and rejects it for non-Gemini answers", async () => {

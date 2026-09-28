@@ -62,7 +62,7 @@
 .v2-markdown-editor-preview { overflow-wrap: anywhere; }
 .v2-markdown-editor[data-mode="split"] .v2-markdown-editor-preview { border-left: 1px solid var(--v2-color-border); }
 .v2-markdown-editor-empty { color: var(--v2-color-text3); }
-@media (pointer: coarse) {
-  .v2-markdown-editor-variables > button { min-height: 2.75rem; }
+@media (hover: none), (pointer: coarse) {
+  .v2-markdown-editor-variables > button { min-width: 2.75rem; min-height: 2.75rem; }
   .v2-markdown-editor-modes > button { min-height: 2.75rem; min-width: 2.75rem; }
 }

@@ -389,7 +389,7 @@ test.describe("system model policy", () => {
     const picker = page.getByRole("dialog", { name: "Memory model deployment" });
     await picker.getByRole("option", { name: "System Policy Fixture / System Policy Model" }).click();
     await expect(row.getByTestId("admin-role-memory-status")).toHaveText("Working");
-    await row.locator("summary").click();
+    await row.locator("summary", { hasText: "Advanced" }).click();
     const reasoning = row.getByRole("combobox", { name: "Memory reasoning" });
     await reasoning.selectOption("low");
     await expect(reasoning).toHaveValue("low");
@@ -461,6 +461,12 @@ test.describe("system model policy", () => {
     await expect(useRecommended).toBeVisible();
     const dialog = page.getByRole("dialog", { name: "Use recommended Memory model" });
     const before = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    // Touch-safety is asserted under the product's touch rule. Chromium drops hasTouch's
+    // (hover: none)/(pointer: coarse) emulation for the page after an element screenshot
+    // taller than the viewport, so screenshots here stay within the viewport.
+    const expectTouchRule = async () => expect(
+      await page.evaluate(() => matchMedia("(hover: none), (pointer: coarse)").matches), "touch rule applies"
+    ).toBe(true);
     const viewports = [
       { name: "desktop-landscape", width: 1440, height: 900 }, { name: "desktop-portrait", width: 900, height: 1440 },
       { name: "tablet-landscape", width: 1024, height: 768 }, { name: "tablet-portrait", width: 768, height: 1024 },
@@ -471,6 +477,7 @@ test.describe("system model policy", () => {
       for (const viewport of viewports) {
         await page.setViewportSize(viewport);
         await expectNoHorizontalOverflow(page);
+        await expectTouchRule();
         await expectTouchSafe(useRecommended);
         const heading = row.locator("p").first();
         await heading.evaluate((element) => element.scrollIntoView({ block: "center" }));
@@ -479,10 +486,11 @@ test.describe("system model policy", () => {
         await useRecommended.focus();
         await useRecommended.scrollIntoViewIfNeeded();
         await expectCenterUnobscured(useRecommended);
-        await row.screenshot({ path: testInfo.outputPath(`memory-recommendation-${viewport.name}-${colorScheme}.png`) });
+        await page.screenshot({ path: testInfo.outputPath(`memory-recommendation-${viewport.name}-${colorScheme}.png`) });
         await useRecommended.click();
         await expect(dialog).toContainText("System Policy Model with low reasoning");
         const confirm = dialog.getByRole("button", { name: "Confirm use recommended", exact: true });
+        await expectTouchRule();
         await expectTouchSafe(confirm);
         await confirm.focus(); await expect(confirm).toBeFocused();
         await expectNoHorizontalOverflow(page);

@@ -113,12 +113,39 @@ describe("provider automatic setup", () => {
     }
   );
 
-  it("leaves Memory unassigned when only unqualified candidates are available", async () => {
+  it.each(["none", "unqualified", "different connection"])(
+    "leaves Memory for the operator without a retryable failure when the recommendation is %s", async (state) => {
+      const value = fixture();
+      if (state === "none") value.roles.memoryPolicy.recommendations = [];
+      if (state === "unqualified") value.roles.memoryPolicy.recommendations![0]!.unavailableReason = "verification_required";
+      if (state === "different connection") value.roles.memoryPolicy.recommendations![0]!.connectionId = "other";
+      const result = await value.run();
+      expect(result).toEqual({ state: "completed", search: "ready", needsConfiguration: ["memory"], defaults: [
+        "Chat: GPT-5.6 Terra", "System model: GPT-5.6 Terra", "Page-image reader: GPT-5.6 Terra"
+      ] });
+      expect(value.memoryUpdate).not.toHaveBeenCalled();
+      expect(value.chatUpdate).toHaveBeenCalledOnce();
+    }
+  );
+  it("keeps a failed Memory save retryable instead of asking for configuration", async () => {
+    const value = fixture();
+    value.memoryUpdate.mockRejectedValueOnce(new Error("synthetic_memory_failure"));
+    const result = await value.run();
+    expect(result).toMatchObject({ state: "partial", search: "ready" });
+    expect(result).not.toHaveProperty("needsConfiguration");
+    expect(JSON.stringify(result)).not.toContain("synthetic_memory_failure");
+  });
+  it("reports Memory configuration alongside a real failure without hiding the failure", async () => {
     const value = fixture();
     value.roles.memoryPolicy.recommendations = [];
-    expect(await value.run()).toMatchObject({ state: "partial" });
-    expect(value.memoryUpdate).not.toHaveBeenCalled();
-    expect(value.chatUpdate).toHaveBeenCalledOnce();
+    value.searchCreate.mockRejectedValueOnce(new Error("synthetic_search_failure"));
+    expect(await value.run()).toMatchObject({ state: "partial", search: "failed", needsConfiguration: ["memory"] });
+  });
+  it("does not ask for Memory configuration once Memory is assigned", async () => {
+    const value = fixture();
+    const result = await value.run();
+    expect(result.defaults).toContain("Memory: GPT-5.6 Terra");
+    expect(result).not.toHaveProperty("needsConfiguration");
   });
   it.each([false, true])("publishes Anthropic Search only after its check (failure=%s)", async (fails) => {
     const value = fixture();
@@ -207,7 +234,7 @@ describe("provider automatic setup", () => {
     const value = fixture();
     value.connection.activeChecks[0]!.credentialVersionId = "previous-key";
     value.connection.activeChecks[1]!.evidence = null;
-    expect(await value.run()).toEqual({ defaults: [], search: "skipped", state: "partial" });
+    expect(await value.run()).toEqual({ defaults: [], search: "skipped", state: "completed", needsConfiguration: ["memory"] });
     value.connection.enabled = false;
     await value.run();
     expect(value.chatUpdate).not.toHaveBeenCalled();

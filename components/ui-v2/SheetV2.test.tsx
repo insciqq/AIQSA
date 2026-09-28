@@ -74,6 +74,23 @@ describe("UiV2Sheet", () => {
     expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
   });
 
+  it("centres the title on Close's row and keeps the description under the title", async () => {
+    render(
+      <UiV2Sheet description="Stored encrypted" onClose={vi.fn()} open testId="sheet" title="Add key">
+        <p>Body</p>
+      </UiV2Sheet>
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Add key" });
+    const header = dialog.querySelector("header") as HTMLElement;
+    const [title, close, description] = Array.from(header.children);
+    expect(header).toHaveClass("grid", "items-center");
+    expect(header).not.toHaveClass("items-start");
+    expect(title).toHaveTextContent("Add key");
+    expect(close).toBe(screen.getByRole("button", { name: "Close" }));
+    expect(description).toHaveTextContent("Stored encrypted");
+    expect(description).not.toHaveClass("col-span-2");
+  });
+
   it("goes full screen on short phone viewports only when the consumer opts in", async () => {
     const view = render(
       <UiV2Sheet onClose={vi.fn()} open testId="sheet" title="Details" width="wide">

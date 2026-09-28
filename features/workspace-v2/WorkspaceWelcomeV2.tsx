@@ -573,7 +573,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           }}
         />
       ) : null}
-      <span className="v2-sr-only">Account {session.accountId}</span>
     </>
   );
 }

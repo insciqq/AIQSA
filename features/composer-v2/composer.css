@@ -364,6 +364,16 @@
   width: min(20.625rem, calc(100vw - 2rem));
 }
 
+/* The source picker shares the layer title's (and the sheet header's)
+   0.625rem inset: its count, rows and links line up under the title. */
+.v2-composer-layer .v2-search-plan-picker {
+  padding-inline: 0.625rem;
+}
+
+.v2-composer-layer .v2-search-plan-source {
+  padding-inline: 0;
+}
+
 .v2-composer-layer[data-kind="knowledge"] {
   width: min(23.75rem, calc(100vw - 2rem));
 }
@@ -999,13 +1009,16 @@
   stroke-width: 2.2;
 }
 
-/* Every non-default model keeps an outline star visible at rest. Hover or
-   keyboard focus expands that same action into its text label while the
+/* Every non-default model keeps an outline star visible at rest, centred on
+   the default star's column of the mark (0.625rem padding + 1rem check +
+   0.5rem gap + half of 1rem = 2.625rem from the row's right edge), so its
+   26px box (1.8125rem to 3.4375rem) ends before the glyphs (3.625rem). Hover
+   or keyboard focus expands that same action into its text label while the
    capability glyphs yield the space. */
 .v2-composer-model-default {
   position: absolute;
   top: 50%;
-  right: 3.1875rem;
+  right: 1.8125rem;
   display: inline-flex;
   min-height: 1.75rem;
   align-items: center;
@@ -1288,7 +1301,9 @@
      read as 28px pills on fine pointers. */
   .v2-composer-indicator { min-height: 2.75rem; }
 
-  .v2-composer-provenance > .v2-composer-layer-link { min-height: 2.75rem; }
+  /* Menu links: the provenance line, the Project lock box's override and
+     the Knowledge footer's Manage Knowledge. */
+  .v2-composer-layer-link { min-height: 2.75rem; }
 
   .v2-composer-indicator[data-glyph] {
     width: auto;
@@ -1314,7 +1329,10 @@
 
 /* Touch: the star alone marks "Set as default" (the label stays its
    accessible name); the sheet regains the capability glyphs the label had
-   displaced. */
+   displaced. The 44px star box sits between the check column and the glyphs:
+   the mark widens to 3.25rem and moves the star column to 3rem from the
+   row's right edge, so the box spans 1.625rem to 4.375rem, clear of the check
+   (0.625rem to 1.625rem) and ending where the glyphs end (4.375rem). */
 @media (hover: none), (pointer: coarse) {
   .v2-composer-input,
   .v2-composer-model-search-wrap input,
@@ -1327,7 +1345,13 @@
     display: none;
   }
 
+  .v2-composer-model-mark {
+    width: 3.25rem;
+    gap: 0.875rem;
+  }
+
   .v2-composer-model-default {
+    right: 1.625rem;
     min-width: 2.75rem;
     justify-content: center;
   }

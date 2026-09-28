@@ -32,9 +32,9 @@
   mask-image: none;
 }
 
-/* The page is 30rem or narrower: the panel's 2rem of gutters below 768px,
-   also the 16.25rem Studio column from 768px. */
-@media (max-width: 32rem), (min-width: 768px) and (max-width: 48.25rem) {
+/* The page is 30rem or narrower: the panel's 2rem of gutters below 768px.
+   From 768px the rail and the Studio column (from 1024px) leave it wider. */
+@media (max-width: 32rem) {
   .v2-library-panel:has(> .v2-library-content > .v2-assistant-editor-page) {
     --v2-assistant-editor-bar-status-row: calc(1.125rem + 0.5rem);
   }

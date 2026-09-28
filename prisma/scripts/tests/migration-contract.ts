@@ -33,6 +33,7 @@ import { SKILLS_PROGRESSIVE_MIGRATION, skillsProgressiveFixtureSql, skillsProgre
 import { ASSISTANTS_V2_MIGRATION, assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql } from "./assistants-v2-adoption";
 import { TOOL_BUDGET_DEFAULTS_MIGRATION, toolBudgetDefaultsFixtures } from "./tool-budget-defaults-adoption";
 import { SKILL_IMPORT_SOURCE_MIGRATION, skillImportSourceFixtureSql, skillImportSourceProofSql } from "./skill-import-source-adoption";
+import { PERPLEXITY_LEGACY_REASONING_MIGRATION, perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql } from "./perplexity-legacy-reasoning-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7516,6 +7517,8 @@ function main(
     assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILL_IMPORT_SOURCE_MIGRATION,
     skillImportSourceFixtureSql, skillImportSourceProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, PERPLEXITY_LEGACY_REASONING_MIGRATION,
+    perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql);
   for (const { fixture, proof, repeatProof } of toolBudgetDefaultsFixtures) {
     runForwardAdoptionProof(shadowDatabase, migrations, TOOL_BUDGET_DEFAULTS_MIGRATION,
       fixture, proof, repeatProof);

@@ -1315,7 +1315,8 @@ test("admin compact usage and empty access-rule states stay in the visible workf
       )
       .toBe(true);
 
-    const usageNote = usage.getByText(/This view uses provider-reported usage rows/);
+    const usageNote = usage.getByText("How to read these numbers", { exact: true }).locator("xpath=..");
+    await expect(usageNote).toBeVisible();
     await expect
       .poll(() =>
         usageNote.evaluate((element) => element.scrollWidth <= element.clientWidth)
@@ -1507,11 +1508,11 @@ test("Control Center role labels and pickers fit the available viewport", async 
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/admin?section=roles");
-    const role = page.getByTestId("admin-role-memory");
+    const role = page.getByTestId("admin-role-system");
     const label = role.getByText("System model", { exact: true });
     await expect(label).toBeVisible();
     expect((await label.boundingBox())!.width).toBeGreaterThanOrEqual(140);
-    const opener = page.getByTestId("admin-memory-picker");
+    const opener = page.getByTestId("admin-system-picker");
     await opener.click();
     const picker = page.getByRole("dialog", { name: "System model deployment" });
     await expect(picker).toBeVisible();

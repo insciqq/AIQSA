@@ -1388,7 +1388,7 @@ export function ComposerV2({
               </button>
               <button className="v2-composer-indicator v2-focusable" type="button"
                 data-quiet={effectiveSkillIds.length && effectiveSkillsMode !== "off" ? undefined : ""} data-glyph="wand"
-                data-off={effectiveSkillsMode === "off" || undefined} data-skills-mode={effectiveSkillsMode}
+                data-off={(effectiveSkillsMode === "off" && !effectiveSkillIds.length) || undefined} data-skills-mode={effectiveSkillsMode}
                 data-provenance={skillsProvenance?.marker ? "assistant" : undefined}
                 aria-label="Change Skills mode" aria-controls={`${layerId}-skills`} aria-expanded={layer === "skills"}
                 aria-haspopup="menu" aria-describedby={`${layerId}-skills-description`} disabled={activeRun}

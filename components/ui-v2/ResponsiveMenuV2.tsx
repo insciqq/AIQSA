@@ -11,7 +11,12 @@ import {
 import { UiV2MenuItem, UiV2MenuSeparator, UiV2MenuSurface, moveMenuFocusV2 } from "./index";
 import { useModalLayerV2 } from "./useModalLayerV2";
 
-const MOBILE_MENU_QUERY = "(max-width: 767px)";
+/**
+ * The sheet form serves phones and short touch screens (a phone held
+ * sideways), where an anchored popover has room for a few rows only.
+ */
+export const MOBILE_MENU_QUERY =
+  "(max-width: 767px), (hover: none) and (max-height: 30rem), (pointer: coarse) and (max-height: 30rem)";
 const VIEWPORT_GUTTER_PX = 8;
 const ANCHOR_GAP_PX = 6;
 
@@ -37,7 +42,7 @@ function subscribeToMobileMenu(change: () => void): () => void {
   return () => media.removeEventListener?.("change", change);
 }
 
-/** Whether shell overlays use their phone composition (below 768px). */
+/** Whether shell overlays use their sheet composition (`MOBILE_MENU_QUERY`). */
 export function useMobileLayoutV2(): boolean {
   return useSyncExternalStore(subscribeToMobileMenu, mobileSnapshot, () => false);
 }
@@ -58,9 +63,10 @@ function firstEnabledItem(menu: HTMLElement | null): HTMLElement | null {
 }
 
 /**
- * One row-action surface across the shell. At mobile width it becomes a
- * modal, scrim-backed sheet; otherwise it is a portalled anchored popover
- * that flips above its trigger when the lower viewport has less room.
+ * One row-action surface across the shell. On phones and short touch screens
+ * it becomes a modal, scrim-backed sheet that scrolls to its last item;
+ * otherwise it is a portalled anchored popover that flips above its trigger
+ * when the lower viewport has less room.
  */
 export function UiV2ResponsiveMenu({
   align = "end",
@@ -235,7 +241,9 @@ function MobileMenuSheet({
         >
           {children}
           <UiV2MenuSeparator />
-          <UiV2MenuItem onClick={onClose}>Close</UiV2MenuItem>
+          {/* Close keeps the icon column of the rows above; primitives.css
+              drops its glyph when those rows have none. */}
+          <UiV2MenuItem data-menu-close="" icon="close" onClick={onClose}>Close</UiV2MenuItem>
         </UiV2MenuSurface>
       </section>
     </div>,

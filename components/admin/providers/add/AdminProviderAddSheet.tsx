@@ -1,7 +1,7 @@
 "use client";
 
 import { AdminProviderSetupProgress } from "./AdminProviderSetupProgress";
-import { AdminProviderSetupResults, providerSetupNeedsRecovery } from "./AdminProviderSetupResults";
+import { AdminProviderSetupMemoryHint, AdminProviderSetupResults, providerSetupNeedsRecovery } from "./AdminProviderSetupResults";
 import { adminProviderErrorMessage, getAdminProviderCheckRun, getAdminProviderConnections, runAdminProviderConnectionAction } from "@/components/admin/adminProvidersApi";
 import type { AdminProviderSetupProgress as SetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { inputClass } from "@/components/admin/adminPrimitives";
@@ -89,6 +89,8 @@ export type AdminProviderAddSheetProps = Readonly<{
   onClose(): void;
   /** The connection now exists on the server; the caller opens its page. */
   onCreated(connectionId: string): void;
+  /** Opens Defaults & roles at the Memory row; without it the link navigates natively. */
+  onOpenMemoryRole?(): void;
   open: boolean;
 }>;
 
@@ -203,7 +205,7 @@ function PrivateNetworkField({
   );
 }
 
-function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAddSheetProps, "open">) {
+function AddSheetBody({ connections, onClose, onCreated, onOpenMemoryRole }: Omit<AdminProviderAddSheetProps, "open">) {
   const [family, setFamily] = useState<AddProviderFamily>("openai");
   const [builtIn, setBuiltIn] = useState<BuiltInForm>(() => initialBuiltInForm("openai", connections));
   const [custom, setCustom] = useState<CustomForm>(initialCustomForm);
@@ -654,6 +656,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
             completed: savedSetup.run.done, total: savedSetup.run.total || null,
             ...(savedSetup.run.capabilityProgress ? { capability: savedSetup.run.capabilityProgress.capability } : {})
           }} /> : null}
+          <AdminProviderSetupMemoryHint onOpenMemoryRole={onOpenMemoryRole} run={savedSetup.run} />
           {savedSetup.run ? <AdminProviderSetupResults models={savedSetup.models} run={savedSetup.run} /> : null}
         </section> : null}
 

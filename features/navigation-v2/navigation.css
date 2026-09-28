@@ -1191,10 +1191,53 @@ html[data-motion="off"] .v2-chat-pulse {
   }
 }
 
+/* Touch: the rail's destinations, mark and account avatar are 44px targets
+   (6px either side inside the 56px rail). */
+@media (hover: none), (pointer: coarse) {
+  .v2-rail-button,
+  .v2-rail-button.v2-rail-brand {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .v2-rail .v2-navigation-account-trigger {
+    width: 2.75rem;
+    min-height: 2.75rem;
+  }
+}
+
+/* A short touch screen (a phone on its side) keeps every 44px rail target
+   on screen: the targets sit edge to edge instead of 4px apart. */
+@media (max-height: 26rem) and ((hover: none) or (pointer: coarse)) {
+  .v2-rail {
+    gap: 0;
+    padding-top: 0.5rem;
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+
+  .v2-rail-group {
+    gap: 0;
+  }
+
+  .v2-rail-button.v2-rail-brand {
+    margin-bottom: 0.25rem;
+  }
+
+  .v2-rail .v2-navigation-account {
+    margin-top: 0;
+  }
+}
+
+/* Phone islands on touch are 44px and 8px apart: "+" clears the "⋯"
+   island by the same 0.5rem the menu island keeps from the model pill. */
 @media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
   .v2-sidebar-floats > .v2-icon-button {
     width: 2.75rem;
     height: 2.75rem;
+  }
+
+  .v2-workspace-shell[data-chat-active="true"] .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+    right: calc(max(0.75rem, env(safe-area-inset-right)) + 3.25rem);
   }
 }
 .v2-rail-button:disabled,
