@@ -289,7 +289,10 @@ function controlChange(
   state: ComposerControlSnapshot,
   update: Partial<ComposerControlSnapshot>
 ): Partial<ComposerControlSnapshot> {
-  return assistantGovernsControls(state) ? rowChange(state, "controls", update) : update;
+  // Every Assistant parameter edit is a chat override, including inherited
+  // and replacement models. Personal-default persistence is independent:
+  // Project chats never have that fallback for delivering the chosen value.
+  return rowChange(state, "controls", update);
 }
 
 function assistantControlDefaults(

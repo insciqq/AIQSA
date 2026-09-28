@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { PrismaClient } from "@prisma/client";
 import { expect, test, type Page, type Request } from "@playwright/test";
-import { e2eAssistantAvatar, e2eAssistantRows } from "./support/assistants";
+import { closeRunSetup, openRunSetup } from "./shell/composer";
+import { createAssistantFixture, e2eAssistantAvatar, e2eAssistantRows, fakeModelId } from "./support/assistants";
+import { captureState } from "./support/capture";
+import { prepareFakeQsaChats } from "./support/chatDefaults";
+import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
+import { createPeopleFixture } from "./support/people";
+import { activeChatId } from "./support/workspace";
 
 /*
  * Assistants in Project chats (PRD A-36): the picker lists only
@@ -12,6 +19,9 @@ import { signInWithLocalToken } from "./support/localAuth";
  */
 
 type Created = Readonly<{ id: string; name: string; version: number }>;
+
+const prisma = new PrismaClient();
+test.afterAll(() => prisma.$disconnect());
 
 function messageRequest(page: Page): Promise<Request> {
   return page.waitForRequest((request) => request.method() === "POST" &&
@@ -164,5 +174,98 @@ test("a Project chat offers the Project's Assistants and never changes the Proje
       });
     }
     await page.request.patch("/api/me/settings", { data: { defaultWorkspaceEnabled: workspaceDefault } });
+  }
+});
+
+test("a Project Assistant with an inherited model sends changed parameters and keeps them after reload", async ({ browser }, testInfo) => {
+  test.setTimeout(180_000);
+  const people = createPeopleFixture(prisma);
+  const assistants = createAssistantFixture(prisma, { suffix: people.suffix });
+  let projectId: string | undefined;
+  let page: Page | undefined;
+  try {
+    const user = await people.user("Project parameter user");
+    await prepareFakeQsaChats(prisma, user.id);
+    page = (await people.signIn(browser, user, {
+      locale: "en-US", reducedMotion: "reduce", viewport: { height: 900, width: 1440 }
+    })).page;
+    const modelId = await fakeModelId(prisma);
+    const assistant = await assistants.create(page.request, {
+      name: "Inherited model",
+      rows: { model: { policy: "adjustable", value: { mode: "inherit" } } }
+    });
+    const created = await page.request.post("/api/projects", {
+      data: { name: `Parameters ${people.suffix}`, preferredModelId: modelId }
+    });
+    expect(created.status()).toBe(201);
+    let project = (await created.json()).project;
+    projectId = project.id;
+    expect((await page.request.post(`/api/projects/${projectId}/resources`, { data: {
+      expectedAssistantVersion: assistant.version,
+      expectedPolicyRevision: project.policyRevision,
+      resourceId: assistant.id,
+      type: "assistant"
+    } })).status()).toBe(201);
+    project = (await (await page.request.get(`/api/projects/${projectId}`)).json()).project;
+    expect((await page.request.patch(`/api/projects/${projectId}`, { data: {
+      defaults: {
+        ...project.defaults,
+        assistantId: assistant.id,
+        controlValues: { ...project.defaults.controlValues, maxOutputTokens: "1024" }
+      },
+      expectedPolicyRevision: project.policyRevision
+    } })).ok()).toBe(true);
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Projects", exact: true }).click();
+    await page.locator('section[aria-label="Shared projects"] .v2-project-row').filter({ hasText: project.name }).click();
+    await page.getByTestId("project-overview-page").getByRole("button", { name: "Start shared chat" }).click();
+    await expect(page.getByTestId("header-assistant-selector")).toHaveAccessibleName(`Assistant: ${assistant.name}`);
+    const parameters = await openRunSetup(page);
+    const maxTokens = parameters.getByLabel("Max output tokens");
+    await expect(maxTokens).toHaveValue("1024");
+    await maxTokens.fill("256");
+    await closeRunSetup(page);
+    const first = await send(page, `Inherited parameters ${people.suffix}`);
+    expect(first).toMatchObject({ controlDefaults: { maxOutputTokens: "256" } });
+    const chatId = await activeChatId(page);
+    const persistedRuns = () => prisma.modelRun.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { assistantId: true, normalizedRequest: true },
+      where: { chatId }
+    });
+    expect(await persistedRuns()).toMatchObject([{
+      assistantId: assistant.id,
+      normalizedRequest: { params: { maxOutputTokens: 256 } }
+    }]);
+
+    await page.reload();
+    await expect(page.getByTestId("header-assistant-selector")).toHaveAccessibleName(`Assistant: ${assistant.name}`);
+    const chatPage = page;
+    await captureState(page, testInfo, "project-inherited-model-parameters", {
+      themes: ["light"],
+      atEachSize: async () => {
+        await closeRunSetup(chatPage);
+        await openRunSetup(chatPage);
+        await expect(maxTokens).toHaveValue("256");
+        await expect(maxTokens).toBeEnabled();
+        await expectWithinViewport(chatPage, parameters);
+        await expectNoHorizontalOverflow(chatPage);
+      }
+    });
+    await closeRunSetup(page);
+    await send(page, `Reloaded parameters ${people.suffix}`);
+    expect(await persistedRuns()).toMatchObject([
+      { assistantId: assistant.id, normalizedRequest: { params: { maxOutputTokens: 256 } } },
+      { assistantId: assistant.id, normalizedRequest: { params: { maxOutputTokens: 256 } } }
+    ]);
+    const unchanged = (await (await page.request.get(`/api/projects/${projectId}`)).json()).project;
+    expect(unchanged.defaults.controlValues.maxOutputTokens).toBe("1024");
+  } finally {
+    try {
+      if (projectId && page) expect((await page.request.delete(`/api/projects/${projectId}`)).ok()).toBe(true);
+    } finally {
+      try { await assistants.cleanup(); } finally { await people.cleanup(); }
+    }
   }
 });

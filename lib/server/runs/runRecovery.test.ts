@@ -12,6 +12,7 @@ import { resolveKnowledgeGroundingExecutionPolicyV1 } from "../knowledge/groundi
 import { knowledgeAnswerHash } from "../knowledge/answerGroundingV5";
 import { createHash } from "node:crypto";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { searchObservationReceipt } from "../toolObservations/searchReceipt";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -1807,7 +1808,7 @@ describe("run recovery", () => {
   });
 
   it.each(["direct", "stale", "installation"])("keeps one recovery scope through %s refresh", async entry => {
-    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const writer = await captureRunObservation();
     try {
       const contexts: Array<ReturnType<typeof getContext>> = [];
       const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => {
@@ -1820,7 +1821,7 @@ describe("run recovery", () => {
         : entry === "stale" ? reconcileStaleRuns(harness.deps, { userId }) : reconcileInstallationRuns(harness.deps);
       await runWithContext({ trace_id: "f".repeat(32), run_id: runId, job_id: "foreign-job" }, invoke);
       expect(refresh).toHaveBeenCalledOnce();
-      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      const records = writer.records();
       const lifecycle = records.filter(record => record.event === "run_recovery" && record.stage === "recovery");
       expect(lifecycle.map(record => record.outcome)).toEqual(["started", "completed"]);
       expect(new Set(lifecycle.map(record => record.trace_id)).size).toBe(1);
@@ -1830,11 +1831,11 @@ describe("run recovery", () => {
       await invoke();
       expect(refresh).toHaveBeenCalledTimes(2);
       expect(contexts[1]?.trace_id).not.toBe(contexts[0]?.trace_id);
-    } finally { writer.mockRestore(); }
+    } finally { writer.restore(); }
   });
 
   it("observes rejected installation candidates independently under fresh run contexts", async () => {
-    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const writer = await captureRunObservation();
     try {
       const harness = createHarness({ providers: {} });
       harness.repository.findInstallationRecoverableRuns = async () => ["failed-run", "recovered-run"].map((id) => ({
@@ -1852,17 +1853,17 @@ describe("run recovery", () => {
       expect(contexts.map((context) => context?.run_id)).toEqual(["failed-run", "recovered-run"]);
       expect(new Set(contexts.map((context) => context?.trace_id)).size).toBe(2);
       expect(contexts.every((context) => context?.job_id === undefined)).toBe(true);
-      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      const records = writer.records();
       expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "failed-run", outcome: "failed", prisma_code: "P1001" }));
       expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "recovered-run", stage: "prepare", outcome: "completed" }));
       expect(JSON.stringify(records)).not.toContain("PRIVATE_");
-    } finally { writer.mockRestore(); }
+    } finally { writer.restore(); }
   });
 
   it.each([true, false, "reject"] as const)("observes orphan failure before persistence outcome %s", async (outcome) => {
-    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const writer = await captureRunObservation();
     try {
-      const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      const records = () => writer.records();
       const harness = createHarness({ providers: {} });
       harness.repository.findInstallationRecoverableRuns = async () => [{
         ...staleControl({ providerResponseId: null, updatedAt: new Date("2026-07-12T09:00:00.000Z") }), userId
@@ -1876,11 +1877,11 @@ describe("run recovery", () => {
       expect(records()).toContainEqual(expect.objectContaining({ event: "job_persistence", subsystem: "run_recovery", stage: "fail",
         outcome: outcome === "reject" ? "unconfirmed" : outcome ? "confirmed" : "not_applied" }));
       expect(JSON.stringify(records())).not.toContain("PRIVATE_");
-    } finally { writer.mockRestore(); }
+    } finally { writer.restore(); }
   });
 
   it("observes a rejected Workspace release without undoing the recovered terminal write", async () => {
-    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const writer = await captureRunObservation();
     try {
       const harness = createHarness({ providers: {}, staleRuns: [staleControl({ providerResponseId: null })] });
       const error = new Error("PRIVATE_WORKSPACE_RELEASE_CANARY"); rememberDatabaseFailure(error, "P1001");
@@ -1891,11 +1892,11 @@ describe("run recovery", () => {
       } satisfies NonNullable<RunRecoveryDeps["workspace"]> };
       await reconcileStaleRuns(deps, { now: new Date("2026-07-12T10:00:01.000Z"), userId });
       expect(harness.state.failed).toHaveLength(1);
-      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      const records = writer.records();
       expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", stage: "release", outcome: "failed", prisma_code: "P1001" }));
       expect(records).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "fail", outcome: "confirmed" }));
       expect(JSON.stringify(records)).not.toContain("PRIVATE_");
-    } finally { writer.mockRestore(); }
+    } finally { writer.restore(); }
   });
 
   it("discovers and reconciles unrelated runs on successive ticks while a Workspace export is held", async () => {
@@ -4972,7 +4973,7 @@ describe("run recovery", () => {
   });
 
   it("skips refresh and stale reconciliation for locally owned foreground runs", async () => {
-    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const writer = await captureRunObservation();
     try {
       const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
         events: [],
@@ -4996,8 +4997,8 @@ describe("run recovery", () => {
       expect(refresh).not.toHaveBeenCalled();
       expect(harness.state.failed).toEqual([]);
       expect(harness.state.events).toEqual([]);
-      expect(writer).not.toHaveBeenCalled();
-    } finally { writer.mockRestore(); }
+      expect(writer.records()).toEqual([]);
+    } finally { writer.restore(); }
   });
 
   it("marks stale non-refreshable runs orphaned using the shared freshness threshold", async () => {
@@ -6134,12 +6135,13 @@ describe("run recovery", () => {
     expect(harness.state.completed).not.toBeNull();
   });
 
-  it("rejects a refreshed ninth tool batch and preserves partial text, settled work, and usage once", async () => {
+  it.each([false, true])("rejects a refreshed forbidden synthesis and preserves partial text, settled work, and usage once (native=%s)", async (nativeMarkup) => {
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
       events: [{ type: "token", data: { delta: "Available partial answer" } }],
       providerResponseId: "synthetic-final-response", status: "completed", terminal: true,
       result: { finalProviderResponsePreview: {}, finalText: "Available partial answer",
-        toolCalls: [{ id: "forbidden-call", name: recoveryToolName, arguments: {} }],
+        ...(nativeMarkup ? { synthesisToolCallForbidden: true as const }
+          : { toolCalls: [{ id: "forbidden-call", name: recoveryToolName, arguments: {} }] }),
         usage: { inputTokens: 3, outputTokens: 2, reasoningTokens: 0 } }
     }));
     const adapter = providerWithRefresh(refresh);
@@ -6467,7 +6469,7 @@ describe("run recovery", () => {
   });
 
   it("keeps a published-response safety failure terminal across later refresh requests", async () => {
-    const warning = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const warning = await captureRunObservation();
     let answerRounds = 0;
     const adapter: ProviderAdapter = {
       buildRequestPreview: () => ({}),
@@ -6536,12 +6538,7 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors[0]).not.toHaveProperty("providerResponseId");
     expect(harness.state.completed).toBeNull();
     expect(harness.state.events.map(({ event }) => event.type)).not.toContain("done");
-    const safetyWarnings = warning.mock.calls.flatMap(([chunk]) => {
-      try {
-        const record = JSON.parse(String(chunk));
-        return record.event === "provider_stream_safety_terminated" ? [record] : [];
-      } catch { return []; }
-    });
+    const safetyWarnings = warning.records().filter((record) => record.event === "provider_stream_safety_terminated");
     expect(safetyWarnings).toHaveLength(1);
     expect(safetyWarnings[0]).toMatchObject({
       code: "provider_stream_too_large",
@@ -6551,7 +6548,7 @@ describe("run recovery", () => {
       termination: "total_limit",
       totalStreamBytes: 513
     });
-    warning.mockRestore();
+    warning.restore();
   });
 
   it("recovers validated grounding display through the ordinary saved provider checkpoint", async () => {

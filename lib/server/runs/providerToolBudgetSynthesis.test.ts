@@ -178,7 +178,8 @@ describe("bounded final synthesis", () => {
     });
     const choice = (wire.generation_config as { tool_choice?: unknown } | undefined)?.tool_choice ?? wire.tool_choice;
     expect(choice).toEqual(provider === "anthropic" ? { type: "none" } : "none");
-    expect(wire.tools).toHaveLength(3);
+    if (provider === "deepseek") expect(wire).not.toHaveProperty("tools");
+    else expect(wire.tools).toHaveLength(3);
     expect(JSON.stringify(wire)).toContain("retained-tool-result");
     expect(beforeProviderRound).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ request: expect.objectContaining({ toolChoice: "none" }) }));
     expect(executeTool).not.toHaveBeenCalled();

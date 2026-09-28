@@ -10,6 +10,8 @@ import { createSkillSharingHandlers } from "./shareHandlers";
 import { createSkillPreferenceService } from "./preferenceService";
 import { createEnableAllSkillsHandler, createSetSkillPreferenceHandler } from "./handlers";
 import { createPrismaSkillCatalogRelevanceService } from "./catalogRelevanceService";
+import { createRemoteSkillImportService } from "./remoteImportService";
+import { createRemoteSkillImportHandlers } from "./remoteImportHandlers";
 
 export const defaultSkillRepository = createPrismaSkillRepository(prisma);
 export const defaultSkillCatalogRelevance = createPrismaSkillCatalogRelevanceService(prisma);
@@ -33,3 +35,8 @@ export const defaultSkillBundleHandlerDeps: SkillBundleHandlerDeps = {
   resolveAuth: resolveRequestAuth,
   service: () => createSkillBundleService(prisma, createS3StorageAdapter())
 };
+
+export const defaultRemoteSkillImportHandlers = createRemoteSkillImportHandlers({
+  resolveAuth: resolveRequestAuth,
+  service: () => createRemoteSkillImportService(prisma, createSkillBundleService(prisma, createS3StorageAdapter()))
+});

@@ -16,7 +16,8 @@ export const mcpModelOutputBudgetFixtures = [
   `,
   proof: `DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM "ModelPolicy" WHERE id = 'installation'
-      AND "mcpAutoDiscoveryMaxOutputTokens" ${expected} AND version = ${version})
+      -- The later tool-budget default adoption advances this policy once.
+      AND "mcpAutoDiscoveryMaxOutputTokens" ${expected} AND version = ${version + 1})
     THEN RAISE EXCEPTION 'mcp_budget_adoption_or_operator_preservation_failed'; END IF;
   END $$;`
 }));

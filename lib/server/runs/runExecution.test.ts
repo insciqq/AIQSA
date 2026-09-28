@@ -1,5 +1,6 @@
 import * as workspaceCheckpoints from "../workspace/checkpoints";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { workspaceCheckpointResult } from "../workspace/checkpointResult";
 import * as workspaceImageViewer from "../workspace/directImageView";
 import { prepareWorkspaceImages } from "../workspace/imageCapture";
@@ -1414,20 +1415,6 @@ function deferred<Value>() {
   });
 
   return { promise, resolve };
-}
-
-/** Captures the runtime logger's JSON lines. The shared writer drops records
- * while the real stdout is backpressured (a slow pipe of a whole-suite run), so
- * the stream is flushed before the spy replaces its `write`. */
-async function captureRunObservation() {
-  await new Promise<void>((resolve) => { process.stdout.write("", () => resolve()); });
-  const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-  return {
-    records: () => writer.mock.calls.flatMap(([chunk]) => {
-      try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
-    }),
-    restore: () => writer.mockRestore()
-  };
 }
 
 const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
@@ -6551,7 +6538,7 @@ describe("run execution", () => {
     expect(repository.completeRuns[0]?.finalText).toBe("legacy-result");
   });
 
-  it("publishes the reached budget and terminalizes a forbidden synthesis without losing text or work", async () => {
+  it.each([false, true])("publishes the reached budget and terminalizes a forbidden synthesis without losing text or work (native=%s)", async (nativeMarkup) => {
     const name = "mcp_synthetic_search";
     const mcp: McpRunPlanSnapshot = {
       version: 1,
@@ -6566,7 +6553,9 @@ describe("run execution", () => {
       return providerResult({
         finalText: requests.length === 1 ? "" : "Available partial answer",
         providerResponseId: `synthetic-response-${requests.length}`,
-        toolCalls: [{ arguments: {}, id: `synthetic-call-${requests.length}`, name }],
+        ...(nativeMarkup && requests.length > 1
+          ? { synthesisToolCallForbidden: true as const }
+          : { toolCalls: [{ arguments: {}, id: `synthetic-call-${requests.length}`, name }] }),
         usage: usage(2, 1, 0)
       });
     });

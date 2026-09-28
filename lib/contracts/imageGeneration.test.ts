@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { imageParameterDefinitions, normalizeImageGenerationParameters, normalizeImageModelConfiguration } from "./imageGeneration";
 
 describe("image model controls", () => {
+  it("keeps Gemini output JPEG-only without narrowing routed model formats", () => {
+    expect(normalizeImageGenerationParameters({}, { profile: "gemini" }, "gemini-3-pro-image")).toEqual({});
+    expect(normalizeImageGenerationParameters({ mime_type: "image/jpeg" }, { profile: "gemini" }, "gemini-3-pro-image"))
+      .toEqual({ mime_type: "image/jpeg" });
+    expect(() => normalizeImageGenerationParameters({ mime_type: "image/png" }, { profile: "gemini" }, "gemini-3-pro-image"))
+      .toThrow("image_parameters_invalid");
+    expect(normalizeImageGenerationParameters({ mime_type: "image/png" }, { profile: "openrouter", parameters: {
+      mime_type: { type: "enum", values: ["image/png"] }
+    } }, "vendor/image-model")).toEqual({ mime_type: "image/png" });
+  });
+
   it("limits Flash Lite image to 1K while retaining each Gemini model's controls", () => {
     const image = { profile: "gemini" as const };
     expect(normalizeImageGenerationParameters({ image_size: "1K", thinking_level: "minimal" }, image, "gemini-3.1-flash-lite-image"))

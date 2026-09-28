@@ -41,6 +41,7 @@ import {
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { SkillSelectionSummary, type SelectedSkillName } from "./SkillSelectionSummary";
 import { skillShareStateLabels, skillSharingErrorMessage } from "./skillSharingPresentation";
+import { SkillSourceImportDialog } from "./SkillSourceImportDialog";
 
 type EditorState = {
   draft: SkillDraft;
@@ -143,6 +144,7 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<SkillImportResponse | null>(null);
+  const [sourceImport, setSourceImport] = useState<{ target?: SkillDetail } | null>(null);
   const [filePreview, setFilePreview] = useState<{ path: string; text: string } | null>(null);
   const [fieldError, setFieldError] = useState<{ field: string; message: string } | null>(null);
   const [discardExit, setDiscardExit] = useState<(() => void) | null>(null);
@@ -430,6 +432,7 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
             {...{ webkitdirectory: "" }} onChange={(event) => void importFiles(event.target.files)} />
           <UiV2Button disabled={busy || Boolean(editor)} icon="file" onClick={() => importInput.current?.click()}>Import file</UiV2Button>
           <UiV2Button disabled={busy || Boolean(editor)} icon="folder" onClick={() => folderInput.current?.click()}>Import folder</UiV2Button>
+          <UiV2Button disabled={busy || Boolean(editor)} icon="link" onClick={() => { setImportResult(null); setSourceImport({}); }}>Import link</UiV2Button>
           <UiV2Button disabled={busy} icon="download" onClick={() => void runAction(() => exportSkills())}>Export all</UiV2Button>
           <label className="v2-resource-search v2-skill-search">
             <UiV2Icon name="search" />
@@ -502,7 +505,7 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
           ) : skills.length === 0 ? (
             loadState === "ready" ? <div className="v2-skill-state">
               <strong>{query ? "No matching Skills" : "No Skills yet"}</strong>
-              <p>Import a ZIP, SKILL.md, or folder, or create your own instructions.</p>
+              <p>Import from a link, file, or folder, or create your own instructions.</p>
             </div> : null
           ) : (
             <>
@@ -654,6 +657,12 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
                 </UiV2Button>
               </div>
               {detail.description ? <p className="v2-skill-description">{detail.description}</p> : null}
+              {detail.owned && detail.importSource ? <div className="v2-skill-detail-section v2-skill-import-source">
+                <h4>Import source</h4>
+                <p><a href={detail.importSource.url} target="_blank" rel="noopener noreferrer" className="v2-focusable">{detail.importSource.url}</a></p>
+                <p>{detail.importSource.path === "." ? "Source root" : detail.importSource.path} · Last imported revision <code title={detail.importSource.revision}>{detail.importSource.revision.slice(0, 12)}</code></p>
+                <div className="v2-skill-actions"><UiV2Button disabled={busy || detail.archived} onClick={() => { setImportResult(null); setSourceImport({ target: detail }); }}>Check for updates</UiV2Button></div>
+              </div> : null}
               {!assistantSelection ? <div className="v2-skill-detail-section"><h4>Auto load</h4>
                 <button className="v2-skill-enabled v2-focusable" type="button" role="switch" aria-label={`Auto load: ${detail.name}`}
                   aria-checked={detail.enabled ?? detail.owned} disabled={busy || detail.archived}
@@ -727,7 +736,7 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
                       <UiV2Button disabled={busy} onClick={() => void restoreArchived(detail)}>Restore</UiV2Button>
                     ) : null}
                   </div>
-                  <p className="v2-skill-import-hint">Import matches your Skills by name. A different name creates a new Skill.</p>
+                  <p className="v2-skill-import-hint">File and folder imports match your Skills by name. A different name creates a new Skill.</p>
 
                   {detail.canPublish && !detail.archived && data ? (
                     <div className="v2-skill-detail-section">
@@ -798,6 +807,13 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
           )}
         </section>
       </div>
+      {sourceImport ? <SkillSourceImportDialog target={sourceImport.target} onClose={() => setSourceImport(null)} onImported={result => {
+        setImportResult(result);
+        setSourceImport(null);
+        if (detail && result.results.some(entry => entry.outcome !== "failed" && entry.skillId === detail.id)) {
+          void runAction(() => reloadDetail(detail.id));
+        }
+      }} /> : null}
       {discardExit ? <DiscardChangesConfirmationDialog portal label="Skill"
         copy={{ title: "Discard unsaved Skill changes?", body: "Your unsaved Skill edits will be lost.",
           dialogLabel: "Unsaved Skill changes", cancelLabel: "Keep editing", confirmLabel: "Discard changes" }}

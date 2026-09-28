@@ -77,7 +77,7 @@ export function imageParameterDefinitions(image: ImageModelConfiguration, modelI
     return {
       aspect_ratio: enumeration("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"),
       ...(modern ? { image_size: flashLite ? enumeration("1K") : enumeration("1K", "2K", "4K") } : {}),
-      mime_type: enumeration("image/png", "image/jpeg"),
+      mime_type: enumeration("image/jpeg"),
       ...(flashLite || modelId.includes("3.1-flash-image") ? { thinking_level: enumeration("minimal", "high") } : {})
     };
   }

@@ -9,6 +9,7 @@ import type {
 import { revokeOwnedProjectResourcePublication } from "../projects/prismaRepository";
 import { ensureSkillShareRequest, skillRevisionSummary, skillShareRequestSummary } from "./shareRequests";
 import { createSkillCatalogRepository } from "./catalogRepository";
+import { decodeSkillImportSource, type SkillImportSource } from "../../contracts/skillSources";
 
 export type SkillRevisionRow = {
   createdAt: Date;
@@ -54,6 +55,7 @@ export type SkillDetailEntry = SkillListEntry & {
   audiences: SkillAudienceEntry[];
   revision: SkillRevisionRow;
   sharing?: SkillSharingStatus;
+  importSource?: SkillImportSource;
   workspaceUsageCount: number;
 };
 
@@ -335,6 +337,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       return leftName.localeCompare(rightName) || left.id.localeCompare(right.id);
     });
     const revision = owned ? definition.currentRevision : definition.sharedRevision!;
+    const importSource = owned ? decodeSkillImportSource(definition.importSourceJson) : null;
     const assistantUsageCount = await client.assistantDefinition.count({
       where: { skillLinks: { some: { skillId } } }
     });
@@ -359,6 +362,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       owned,
       ownerDisplayName: definition.owner.displayName,
       revision: revisionRow(revision),
+      ...(importSource ? { importSource } : {}),
       ...(owned ? { sharing: {
         currentRevision: skillRevisionSummary(definition.currentRevision),
         sharedRevision: definition.sharedRevision ? skillRevisionSummary(definition.sharedRevision) : null,

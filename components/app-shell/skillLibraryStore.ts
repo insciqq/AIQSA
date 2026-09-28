@@ -12,6 +12,13 @@ import type {
   SkillValidationError
 } from "@/lib/contracts/skills";
 import { SKILL_SHARE_REQUEST_STATES } from "@/lib/contracts/skills";
+import {
+  decodeSkillImportSource,
+  type SkillSourceImportRequest,
+  type SkillSourcePreview,
+  type SkillSourcePreviewRequest,
+  type SkillSourceTarget
+} from "@/lib/contracts/skillSources";
 import { create } from "zustand";
 
 type SkillLibraryLoadState = "error" | "idle" | "loading" | "ready";
@@ -182,6 +189,8 @@ function parseDetail(value: unknown): SkillDetail | null {
     typeof value.bundle.hasExecutables !== "boolean")) return null;
   const sharing = value.sharing === undefined ? undefined : parseSharing(value.sharing);
   if (sharing === null || (sharing && !skill.owned)) return null;
+  const importSource = value.importSource === undefined ? undefined : decodeSkillImportSource(value.importSource);
+  if (importSource === null || (importSource && !skill.owned)) return null;
   return {
     ...skill,
     assistantUsageCount: Number(value.assistantUsageCount),
@@ -194,6 +203,7 @@ function parseDetail(value: unknown): SkillDetail | null {
     ...(value.files === undefined ? {} : { files }),
     ...(value.bundle === undefined ? {} : { bundle: value.bundle as SkillDetail["bundle"] }),
     ...(sharing === undefined ? {} : { sharing }),
+    ...(importSource === undefined ? {} : { importSource }),
     owner: { displayName: value.owner.displayName },
     workspaceUsageCount: Number(value.workspaceUsageCount)
   };
@@ -471,6 +481,12 @@ export async function importSkills(files: readonly File[]): Promise<SkillImportR
   const form = new FormData();
   for (const file of files) form.append(file.webkitRelativePath || "file", file, file.name);
   const value = await request("/api/me/skills/import", { method: "POST", body: form });
+  const result = parseImportResult(value);
+  await refreshCurrentSkillLibrary();
+  return result;
+}
+
+function parseImportResult(value: unknown): SkillImportResponse {
   if (!isRecord(value) || !Array.isArray(value.results) || !Number.isSafeInteger(value.ignoredFiles) || Number(value.ignoredFiles) < 0) {
     throw new Error("skill_response_invalid");
   }
@@ -488,8 +504,74 @@ export async function importSkills(files: readonly File[]): Promise<SkillImportR
       results.push({ name: entry.name, outcome: entry.outcome as "created" | "updated" | "unchanged", skillId: entry.skillId });
     } else throw new Error("skill_response_invalid");
   }
-  await refreshCurrentSkillLibrary();
   return { results, ignoredFiles: Number(value.ignoredFiles) };
+}
+
+function parseSourceTarget(value: unknown): SkillSourceTarget | null {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id || typeof value.name !== "string" ||
+    !Number.isSafeInteger(value.version) || Number(value.version) < 1) return null;
+  return { id: value.id, name: value.name, version: Number(value.version) };
+}
+
+function parseSourcePreview(value: unknown): SkillSourcePreview | null {
+  if (!isRecord(value) || !isRecord(value.source) || typeof value.fingerprint !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.fingerprint) || !Array.isArray(value.candidates) ||
+    !Number.isSafeInteger(value.ignoredFiles) || Number(value.ignoredFiles) < 0) return null;
+  const source = decodeSkillImportSource({ ...value.source, path: ".", bundleDigest: value.fingerprint });
+  if (!source) return null;
+  const candidates: SkillSourcePreview["candidates"] = [];
+  const paths = new Set<string>();
+  for (const entry of value.candidates) {
+    if (!isRecord(entry) || typeof entry.path !== "string" || typeof entry.name !== "string" ||
+      paths.has(entry.path) || !Array.isArray(entry.matches) ||
+      !decodeSkillImportSource({ ...source, path: entry.path })) return null;
+    paths.add(entry.path);
+    const matches = entry.matches.map(parseSourceTarget);
+    if (matches.some(match => !match) || new Set(matches.map(match => match!.id)).size !== matches.length) return null;
+    const base = { path: entry.path, name: entry.name, matches: matches as SkillSourceTarget[] };
+    if (entry.error !== undefined) {
+      if (!isRecord(entry.error) || typeof entry.error.code !== "string" ||
+        (entry.error.field !== undefined && typeof entry.error.field !== "string") ||
+        [entry.error.actual, entry.error.limit].some(item => item !== undefined && (!Number.isSafeInteger(item) || Number(item) < 0))) return null;
+      candidates.push({ ...base, error: { code: entry.error.code,
+        ...(entry.error.field === undefined ? {} : { field: entry.error.field as string }),
+        ...(entry.error.actual === undefined ? {} : { actual: Number(entry.error.actual) }),
+        ...(entry.error.limit === undefined ? {} : { limit: Number(entry.error.limit) }) } });
+    } else {
+      if (typeof entry.bundleDigest !== "string" || !/^[a-f0-9]{64}$/u.test(entry.bundleDigest) ||
+        typeof entry.description !== "string" || typeof entry.hasExecutables !== "boolean" ||
+        !Number.isSafeInteger(entry.fileCount) || Number(entry.fileCount) < 0 ||
+        !Number.isSafeInteger(entry.totalBytes) || Number(entry.totalBytes) < 0) return null;
+      candidates.push({ ...base, bundleDigest: entry.bundleDigest, description: entry.description,
+        fileCount: Number(entry.fileCount), totalBytes: Number(entry.totalBytes), hasExecutables: entry.hasExecutables });
+    }
+  }
+  const target = value.target === undefined ? undefined : parseSourceTarget(value.target);
+  if (target === null || (target && (!isRecord(value.target) || typeof value.target.locallyModified !== "boolean" ||
+    !decodeSkillImportSource({ ...source, path: value.target.path })))) return null;
+  return { source: { kind: source.kind, url: source.url, revision: source.revision }, fingerprint: value.fingerprint,
+    candidates, ignoredFiles: Number(value.ignoredFiles),
+    ...(target ? { target: { ...target, path: (value.target as Record<string, unknown>).path as string,
+      locallyModified: (value.target as Record<string, unknown>).locallyModified as boolean } } : {}) };
+}
+
+export async function previewSkillSource(input: SkillSourcePreviewRequest, signal?: AbortSignal): Promise<SkillSourcePreview> {
+  const value = await request("/api/me/skills/import/preview", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input), signal
+  });
+  const result = parseSourcePreview(value);
+  if (!result || (input.targetSkillId ? result.target?.id !== input.targetSkillId : result.target !== undefined)) {
+    throw new Error("skill_response_invalid");
+  }
+  return result;
+}
+
+export async function importSkillSource(input: SkillSourceImportRequest): Promise<SkillImportResponse> {
+  const result = parseImportResult(await request("/api/me/skills/import/url", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input)
+  }));
+  await refreshCurrentSkillLibrary();
+  return result;
 }
 
 export async function loadSkillFile(skillId: string, path: string): Promise<string> {

@@ -30,7 +30,7 @@ import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
-import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "../../contracts/runs";
+import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
 import { refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
@@ -1520,7 +1520,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             }
             reportedUsage = mergeTokenUsage(reportedUsage, next.value.usage);
             executionOptions.onUsage?.(reportedUsage);
-            if ((next.value.toolCalls?.length ?? 0) > 0) {
+            if (next.value.synthesisToolCallForbidden || (next.value.toolCalls?.length ?? 0) > 0) {
               throw new Error("structured_output_tools_forbidden");
             }
             providerResponseId = next.value.providerResponseId ?? providerResponseId;
@@ -3263,6 +3263,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               signal
             )
             : providerRequest);
+        }
+        if (providerResult.synthesisToolCallForbidden) {
+          throw new RunPipelineError(TOOL_SYNTHESIS_FAILURE.code, TOOL_SYNTHESIS_FAILURE.message);
         }
         // The answer exists; no later compaction cycle can start for this run.
         await compactionPublisher.terminate();

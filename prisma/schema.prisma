@@ -1365,8 +1365,8 @@ model ModelPolicy {
   defaultProviderModelId         String?
   reasoningEffort                String?        @db.VarChar(32)
   memoryAdmissionTimeoutSeconds  BigInt         @default(30)
-  maxToolCalls                   BigInt         @default(20)
-  maxToolRounds                  BigInt         @default(8)
+  maxToolCalls                   BigInt         @default(80)
+  maxToolRounds                  BigInt         @default(32)
   maxMcpToolsPerDiscovery        BigInt         @default(10)
   mcpAutoDiscoveryTimeoutSeconds BigInt?
   mcpAutoDiscoveryMaxOutputTokens BigInt?
@@ -1789,6 +1789,7 @@ model SkillDefinition {
   ownerUserId            String
   currentRevisionId      String?                  @unique
   sharedRevisionId       String?                  @unique
+  importSourceJson       Json?
   version                Int                      @default(1)
   archivedAt             DateTime?
   deletedAt              DateTime?

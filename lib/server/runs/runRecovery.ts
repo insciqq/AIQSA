@@ -3100,7 +3100,8 @@ async function recoverCheckpointedToolLoop(
         "terminal",
         run.checkpoint.roundIndex
       );
-      if (roundRequest.toolChoice === "none" && (refreshed.result.toolCalls?.length ?? 0) > 0) {
+      if (refreshed.result.synthesisToolCallForbidden ||
+        roundRequest.toolChoice === "none" && (refreshed.result.toolCalls?.length ?? 0) > 0) {
         // A refreshed final provider round has the same authority as the live
         // round. Preserve its available text without replaying token deltas or
         // persisting/dispatching the forbidden tool batch.
@@ -4149,7 +4150,7 @@ async function recoverKnowledgeAnswerGrounding(
       if (!refreshed.terminal) throw new KnowledgeAnswerOperationDeferredError();
       const usage = reportedUsage(refreshed);
       if (usage) options.onUsage?.(usage);
-      if (!refreshed.result || (refreshed.result.toolCalls?.length ?? 0) > 0) {
+      if (!refreshed.result || refreshed.result.synthesisToolCallForbidden || (refreshed.result.toolCalls?.length ?? 0) > 0) {
         throw new Error("structured_output_recovery_invalid");
       }
       const providerResponseId = refreshed.result.providerResponseId ??
@@ -4196,7 +4197,7 @@ async function recoverKnowledgeAnswerGrounding(
       next = await stream.next();
     }
     options.onUsage?.(next.value.usage);
-    if ((next.value.toolCalls?.length ?? 0) > 0) {
+    if (next.value.synthesisToolCallForbidden || (next.value.toolCalls?.length ?? 0) > 0) {
       throw new Error("structured_output_tools_forbidden");
     }
     providerResponseId = next.value.providerResponseId ?? providerResponseId;
@@ -5247,8 +5248,10 @@ async function refreshProviderRunOnceRegistered(
     userId
   ))) return;
 
-  if ((refreshed.result?.toolCalls?.length ?? 0) > 0) {
-    const payload = focusedRequest
+  if (refreshed.result?.synthesisToolCallForbidden || (refreshed.result?.toolCalls?.length ?? 0) > 0) {
+    const payload = refreshed.result?.synthesisToolCallForbidden
+      ? TOOL_SYNTHESIS_FAILURE
+      : focusedRequest
       ? focusedKnowledgeFailure("knowledge_answer_failed")
       : {
           code: "tool_loop_recovery_required",

@@ -12,7 +12,7 @@ import { readSkillZip, type SkillImportFile } from "./zipReader";
 
 export type SkillBundleHandlerDeps = {
   resolveAuth: RequestAuthResolver;
-  service: () => SkillBundleService;
+  service: () => Pick<SkillBundleService, "importCandidates" | "exportOwned" | "readFile">;
   getMaxBytes?: () => number;
 };
 type SkillContext = { params: Promise<{ skillId: string }> | { skillId: string } };

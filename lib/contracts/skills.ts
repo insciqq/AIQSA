@@ -1,3 +1,5 @@
+import type { SkillImportSource } from "./skillSources";
+
 export const SKILL_NAME_MAX_LENGTH = 64;
 export const SKILL_DESCRIPTION_MAX_LENGTH = 1_024;
 export const SKILL_INSTRUCTIONS_MAX_BYTES = 131_072;
@@ -131,6 +133,8 @@ export type SkillDetail = SkillSummary & {
   bundle?: { fileCount: number; totalBytes: number; hasExecutables: boolean };
   /** Present only in the owner's private detail. */
   sharing?: SkillSharingStatus;
+  /** Present only in the owner's private detail. */
+  importSource?: SkillImportSource;
   owner: { displayName: string };
   workspaceUsageCount: number;
 };

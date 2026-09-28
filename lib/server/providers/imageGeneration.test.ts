@@ -7,7 +7,11 @@ import { normalizeImageGenerationParameters, type ImageProviderProfile } from ".
 import { imageParametersFromCatalog } from "./imageModelDiscovery";
 
 let png: Buffer;
-beforeAll(async () => { png = await sharp({ create: { width: 32, height: 32, channels: 3, background: "#ae32c7" } }).png().toBuffer(); });
+let jpeg: Buffer;
+beforeAll(async () => {
+  png = await sharp({ create: { width: 32, height: 32, channels: 3, background: "#ae32c7" } }).png().toBuffer();
+  jpeg = await sharp(png).jpeg().toBuffer();
+});
 const connection: ProviderConnectionConfiguration = { apiRoot: "https://provider.example/v1", allowPrivateNetwork: false, authenticationMode: "bearer", responseTimeoutMs: 5000 };
 function model(profile: ImageProviderProfile): ProviderModelConfiguration {
   return {
@@ -20,6 +24,30 @@ function model(profile: ImageProviderProfile): ProviderModelConfiguration {
 function response() { return Response.json({ data: [{ b64_json: png.toString("base64") }], usage: { input_tokens: 12, output_tokens: 20, total_tokens: 32 } }); }
 
 describe("image adapters", () => {
+  it.each([undefined, { mime_type: "image/jpeg" }])("keeps valid Gemini output settings and PNG references distinct (%j)", async (parameters) => {
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ status: "completed", steps: [
+      { type: "model_output", content: [{ type: "image", data: jpeg.toString("base64"), mime_type: "image/jpeg" }] }
+    ] }));
+    const output = await createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic", fetchFn })
+      .generate({ prompt: "Add a circle", ...(parameters ? { parameters, images: [{ bytes: png, mimeType: "image/png" as const }] } : {}) });
+    const body = JSON.parse(String(fetchFn.mock.calls[0]![1]!.body));
+    expect(body.response_format).toEqual({ type: "image", ...parameters });
+    expect(body.input).toHaveLength(parameters ? 2 : 1);
+    if (parameters) expect(body.input[1]).toEqual({ type: "image", mime_type: "image/png", data: png.toString("base64") });
+    expect(output).toMatchObject({ mimeType: "image/jpeg", width: 32, height: 32 });
+    expect(output.bytes).toEqual(jpeg);
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it("rejects unsupported Gemini output from arguments and model defaults before any dispatch", async () => {
+    const fetchFn = vi.fn<typeof fetch>();
+    await expect(createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic", fetchFn })
+      .generate({ prompt: "A circle", parameters: { mime_type: "image/png" } })).rejects.toThrow("image_parameters_invalid");
+    expect(() => createImageGenerationAdapter({ connection, model: { ...model("gemini"), defaultParams: { mime_type: "image/png" } },
+      secret: "synthetic", fetchFn })).toThrow("provider_image_configuration_invalid");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["google/gemini-3.1-flash-image", ["512", "1K", "2K", "4K"], []],
     ["google/gemini-3.1-flash-lite-image", ["1K"], []],

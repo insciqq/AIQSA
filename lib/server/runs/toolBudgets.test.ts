@@ -33,6 +33,14 @@ describe("accepted tool budgets", () => {
       maxMcpToolsPerDiscovery: 120, maxToolCalls: 31, maxToolRounds: 9 });
   });
 
+  it.each([
+    { maxToolCalls: 20, maxToolRounds: 8 },
+    { maxToolCalls: 80, maxToolRounds: 40 }
+  ])("keeps pre-increase accepted budgets unchanged: %o", (accepted) => {
+    const toolBudgets = { ...DEFAULT_TOOL_RUN_BUDGETS, ...accepted };
+    expect(toolRunBudgetsForRequest({ toolBudgets })).toBe(toolBudgets);
+  });
+
   it.each([null, 0, 1023, 65537, 4096.5, "8192"])("rejects an invalid persisted output allowance: %s", (value) => {
     expect(() => toolRunBudgetsForRequest({ toolBudgets: {
       ...DEFAULT_TOOL_RUN_BUDGETS, mcpAutoDiscoveryMaxOutputTokens: value
@@ -51,8 +59,8 @@ describe("accepted tool budgets", () => {
       mcpAutoDiscoveryTimeoutSeconds: 300,
       mcpAutoDiscoveryMaxOutputTokens: "model",
       maxMcpToolsPerDiscovery: 10,
-      maxToolCalls: 20,
-      maxToolRounds: 8
+      maxToolCalls: 80,
+      maxToolRounds: 32
     });
     // Without the installation policy the observation mode is unproven.
     expect(normalizeToolObservationPolicy(DEFAULT_TOOL_RUN_BUDGETS.toolObservationPolicy)).toBe("off");

@@ -29,6 +29,7 @@ export function imageGenerationTool(plan: AcceptedImageGenerationPlan): RunTool 
       "Describe the requested changes and which reference details should remain; exact pixel preservation is not guaranteed. Ask for clarification if the target image is ambiguous. " +
       "Use empty image_ids for a new image. Return one image. The resulting image is displayed in chat automatically. " +
       "Only override output settings that the user explicitly requests; otherwise omit parameters. " +
+      (model.image.profile === "gemini" ? "This image model outputs JPEG only; transparent output is unavailable. PNG reference images are supported. Explain this limitation when the requested output requires PNG or transparency. " : "") +
       `Generation ${model.capabilities.imageGeneration ? "available" : "unavailable"}; editing ${model.capabilities.imageEditing ? "available" : "unavailable"}.`,
     inputSchema: { type: "object", additionalProperties: false,
       properties: {

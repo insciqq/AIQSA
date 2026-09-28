@@ -192,7 +192,10 @@ function buildBody(
     reasoning: { effort },
     stream: request.forceNonStreaming === true ? false : params.stream,
     ...(effort === "none" ? { temperature: params.temperature } : {}),
-    ...(tools.length > 0
+    // DeepSeek can leak native tool syntax when declarations remain present
+    // with tool_choice:none. Keep settled call/result history in input, but
+    // advertise no tools in the final synthesis request.
+    ...(request.toolChoice === "none" ? { tool_choice: "none" as const } : tools.length > 0
       ? {
           tool_choice: request.toolChoice ?? "auto",
           tools

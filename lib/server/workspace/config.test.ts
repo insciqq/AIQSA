@@ -14,8 +14,8 @@ describe("Workspace configuration", () => {
       diskMiB: 10_240,
       idleTtlSeconds: 1_800,
       imageRef: "aiqsa-workspace:0.1.28",
-      maxToolCalls: 80,
-      maxToolRounds: 40,
+      maxToolCalls: 320,
+      maxToolRounds: 160,
       mcpVersion: WORKSPACE_MCP_VERSION,
       memoryMiB: 4_096,
       outputFileMaxBytes: 256 * 1_024 * 1_024,
@@ -39,6 +39,24 @@ describe("Workspace configuration", () => {
     expect(config.runnerToken).toHaveLength(32);
   });
 
+  it.each([
+    { calls: "80", rounds: "40" },
+    { calls: "500", rounds: "200" },
+    { calls: "800", rounds: "400" }
+  ])("preserves explicit tool budgets within the supported ceilings: %o", ({ calls, rounds }) => {
+    expect(getWorkspaceConfig({
+      AIQSA_WORKSPACE_MAX_TOOL_CALLS: calls,
+      AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: rounds
+    })).toMatchObject({ maxToolCalls: Number(calls), maxToolRounds: Number(rounds) });
+  });
+
+  it.each([undefined, ""])("keeps a calls-only override valid when rounds are unset: %s", (rounds) => {
+    expect(getWorkspaceConfig({
+      AIQSA_WORKSPACE_MAX_TOOL_CALLS: "80",
+      AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: rounds
+    })).toMatchObject({ maxToolCalls: 80, maxToolRounds: 80 });
+  });
+
   it("rejects partial, unbounded, and incompatible configuration", () => {
     const invalid = [
       { AIQSA_WORKSPACE_CPUS: "0" },
@@ -46,6 +64,9 @@ describe("Workspace configuration", () => {
       { AIQSA_WORKSPACE_RUNNER_TOKEN: "t".repeat(32) },
       { AIQSA_WORKSPACE_IDLE_TTL_SECONDS: "2000", AIQSA_WORKSPACE_RETENTION_SECONDS: "1000" },
       { AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES: "2000", AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES: "1000" },
+      { AIQSA_WORKSPACE_MAX_TOOL_CALLS: "801" },
+      { AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: "401" },
+      { AIQSA_WORKSPACE_MAX_TOOL_CALLS: "200", AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: "201" },
       { AIQSA_WORKSPACE_MCP_VERSION: "latest" }
     ];
     for (const env of invalid) {

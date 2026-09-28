@@ -28,8 +28,8 @@ export const DEFAULT_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
   mcpAutoDiscoveryMaxOutputTokens: "model",
   mcpAutoDiscoveryTimeoutSeconds: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.defaultSeconds,
   maxMcpToolsPerDiscovery: 10,
-  maxToolCalls: 20,
-  maxToolRounds: 8
+  maxToolCalls: 80,
+  maxToolRounds: 32
 });
 
 const LEGACY_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({

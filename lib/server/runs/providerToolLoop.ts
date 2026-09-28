@@ -399,7 +399,7 @@ export async function runProviderToolLoop(
       }
       if (publicationFailed) throw localSettlementError("publication", publicationError);
       const calls = result.toolCalls ?? [];
-      if (roundRequest.toolChoice === "none" && calls.length > 0) {
+      if (result.synthesisToolCallForbidden || roundRequest.toolChoice === "none" && calls.length > 0) {
         if (result.finalText.startsWith(emittedText)) {
           const remainingText = result.finalText.slice(emittedText.length);
           if (remainingText) await emitText(remainingText);

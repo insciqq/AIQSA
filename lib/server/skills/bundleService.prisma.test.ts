@@ -35,6 +35,7 @@ async function fixture() {
       const files = await prisma.skillRevisionFile.findMany({ where: { skillId: { in: ids } }, select: { storageKey: true } });
       await prisma.skillDefinition.updateMany({ where: { id: { in: ids } }, data: { currentRevisionId: null, sharedRevisionId: null } });
       await prisma.skillRevisionFile.deleteMany({ where: { skillId: { in: ids } } });
+      await prisma.skillPublication.deleteMany({ where: { skillId: { in: ids } } });
       await prisma.skillShareRequest.deleteMany({ where: { skillId: { in: ids } } });
       await prisma.skillRevision.deleteMany({ where: { skillId: { in: ids } } });
       await prisma.skillDefinition.deleteMany({ where: { id: { in: ids } } });
@@ -123,6 +124,72 @@ describe("Skill bundle persistence", () => {
       expect(updated.results[0]).toMatchObject({ outcome: "updated" });
       expect((await f.repository.getForUser(f.owner.id, created.skillId))?.archived).toBe(true);
     } finally { await f.cleanup(); }
+  });
+
+  it("keeps explicit remote creates independent and preserves owner-only provenance through edits", async () => {
+    const f = await fixture();
+    try {
+      const bundle = createSkillBundle({ name: "remote", description: "Fixture workflow", instructions: "Original remote" }, [
+        { path: "references/a.txt", bytes: Buffer.from("Companion reference") }
+      ]);
+      const source = { kind: "github" as const, url: "https://github.com/example/skills", revision: "a".repeat(40), path: "remote", bundleDigest: bundle.bundleDigest };
+      const first = await f.service.importRemoteCandidate(f.owner.id, bundle, { kind: "create" }, source);
+      const second = await f.service.importRemoteCandidate(f.owner.id, bundle, { kind: "create" }, source);
+      expect(first.outcome).toBe("created");
+      expect(second.skillId).not.toBe(first.skillId);
+      expect((await f.repository.getForUser(f.owner.id, first.skillId))?.importSource).toEqual(source);
+      expect(await f.service.importRemoteCandidate(f.owner.id, bundle, { kind: "update", skillId: first.skillId, version: 1 }, source))
+        .toEqual({ outcome: "unchanged", skillId: first.skillId });
+      expect((await f.repository.getForUser(f.owner.id, first.skillId))?.version).toBe(1);
+      await expect(f.service.importRemoteCandidate(f.peer.id, bundle, { kind: "update", skillId: first.skillId, version: 1 }, source))
+        .rejects.toThrow("skill_not_available");
+      const definition = await prisma.skillDefinition.findUniqueOrThrow({ where: { id: first.skillId } });
+      await prisma.skillDefinition.update({ where: { id: first.skillId }, data: { sharedRevisionId: definition.currentRevisionId } });
+      await prisma.skillPublication.create({ data: { skillId: first.skillId, scope: "installation", publishedByUserId: f.owner.id } });
+      expect((await f.repository.getForUser(f.peer.id, first.skillId))?.importSource).toBeUndefined();
+      expect(await f.repository.revise(f.owner.id, first.skillId, 1, { name: bundle.name, description: bundle.description, instructions: "Local edit" }))
+        .toEqual({ kind: "ok", skillId: first.skillId });
+      expect((await f.repository.getForUser(f.owner.id, first.skillId))?.importSource).toEqual(source);
+      await expect(f.service.importRemoteCandidate(f.owner.id, bundle, { kind: "update", skillId: first.skillId, version: 1 }, source))
+        .rejects.toThrow("skill_version_conflict");
+      await f.service.importRemoteCandidate(f.owner.id, bundle, { kind: "update", skillId: first.skillId, version: 2 }, source);
+      expect((await f.repository.getForUser(f.owner.id, first.skillId))?.revision.instructions).toBe("Original remote");
+      expect((await f.repository.getForUser(f.peer.id, first.skillId))?.revision.id).toBe(definition.currentRevisionId);
+      expect(await f.service.readFile(f.owner.id, first.skillId, "references/a.txt")).toMatchObject({ content: "Companion reference" });
+      await prisma.skillPublication.deleteMany({ where: { skillId: first.skillId } });
+    } finally { await f.cleanup(); }
+  });
+
+  it("fences a remote update after binary staging and leaves its previous source intact", async () => {
+    const f = await fixture();
+    const storing = signal(), releaseStorage = signal();
+    let pending: Promise<unknown> | undefined;
+    try {
+      const draft = { name: "remote-race", description: "Fixture workflow", instructions: "Original" };
+      const firstBundle = createSkillBundle(draft);
+      const firstSource = { kind: "zip" as const, url: "https://example.test/skills.zip", revision: "a".repeat(64), path: ".", bundleDigest: firstBundle.bundleDigest };
+      const first = await f.service.importRemoteCandidate(f.owner.id, firstBundle, { kind: "create" }, firstSource);
+      const replacement = createSkillBundle({ ...draft, instructions: "Replacement" }, [{ path: "binary", bytes: Buffer.from([0, 255]) }]);
+      const secondSource = { ...firstSource, revision: "b".repeat(64), bundleDigest: replacement.bundleDigest };
+      const service = createSkillBundleService(prisma, { ...f.memory.adapter, async putObject(input) {
+        storing.resolve();
+        await releaseStorage.promise;
+        await f.memory.adapter.putObject(input);
+      } });
+      const importing = service.importRemoteCandidate(f.owner.id, replacement, { kind: "update", skillId: first.skillId, version: 1 }, secondSource);
+      pending = importing.catch(() => undefined);
+      await Promise.race([storing.promise, importing.then(() => { throw new Error("import_finished_before_storage_barrier"); })]);
+      expect(await f.repository.revise(f.owner.id, first.skillId, 1, { ...draft, instructions: "Concurrent edit" })).toMatchObject({ kind: "ok" });
+      releaseStorage.resolve();
+      await expect(importing).rejects.toThrow("skill_version_conflict");
+      expect(await f.repository.getForUser(f.owner.id, first.skillId)).toMatchObject({
+        version: 2, importSource: firstSource, revision: { instructions: "Concurrent edit" }
+      });
+    } finally {
+      releaseStorage.resolve();
+      await pending;
+      await f.cleanup();
+    }
   });
 
   it("leaves current content unchanged on failed binary settlement", async () => {
