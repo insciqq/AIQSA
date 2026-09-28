@@ -4,6 +4,7 @@ import { databaseFailureCode, rememberDatabaseFailure, retainDatabaseFailure } f
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   Prisma,
+  type MemoryCommandStatus,
   type MemoryDeletionOperation,
   type MemoryJobKind,
   type PrismaClient
@@ -19,6 +20,7 @@ import {
 import { memorySourceJobSnapshotMatches } from "../sourceState";
 import { lockMemorySettings } from "../persistence/transaction";
 import { enqueueMemoryJob } from "../persistence/jobs";
+import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION, memoryHistoryIndexJobFingerprint } from "../history/contract";
 import { MemoryPersistenceError } from "../persistence/errors";
 import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "../learning/relations/explicitPolicy";
@@ -377,6 +379,27 @@ function jobEligibility(
     AND job."kind" IN (${jobKindList(kinds)})
     AND owner_user."status" = 'active'::"UserStatus"
     AND (
+      job."kind" <> 'MEMORY_COMMAND'::"MemoryJobKind"
+      OR NOT EXISTS (
+        SELECT 1 FROM "MemoryJob" AS preceding
+        WHERE preceding."userId" = job."userId"
+          AND preceding."commandSequence" < job."commandSequence"
+          AND preceding."state" IN ('QUEUED', 'CLAIMED', 'RETRYABLE_FAILED',
+            'WAITING_FOR_CONFIGURATION', 'WAITING_FOR_EGRESS_CONSENT')
+      )
+    )
+    AND (
+      job."kind" <> 'EXTRACT_FACTS'::"MemoryJobKind"
+      OR NOT EXISTS (
+        SELECT 1 FROM "MemoryJob" AS command
+        WHERE command."userId" = job."userId"
+          AND command."sourceMessageId" = job."sourceMessageId"
+          AND command."kind" = 'MEMORY_COMMAND'::"MemoryJobKind"
+          AND command."state" IN ('QUEUED', 'CLAIMED', 'RETRYABLE_FAILED',
+            'WAITING_FOR_CONFIGURATION', 'WAITING_FOR_EGRESS_CONSENT')
+      )
+    )
+    AND (
       job."kind" <> 'RESOLVE_FACT_RELATIONS'::"MemoryJobKind"
       OR job."pipelineVersion" <> ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
       OR NOT EXISTS (
@@ -642,6 +665,56 @@ async function commitJobSuccessWithAuthority(
   // deadlock. Provider execution remains parallel; only durable mutation is
   // ordered here.
   await lockMemorySettings(tx, input.claim.userId, false);
+  if (input.claim.kind === "MEMORY_COMMAND") {
+    // The command's effect and terminal receipt were already committed under
+    // its exact-message authority. Queue settlement must not reapply it, or
+    // invalidate its receipt after its own Forget advanced the generation.
+    const terminal = await tx.$queryRaw<Array<{
+      commandStatus: MemoryCommandStatus;
+      commandOperation: string;
+      commandResult: Prisma.JsonValue | null;
+    }>>(Prisma.sql`
+      SELECT "commandStatus", "commandOperation", "commandResult" FROM "MemoryJob" AS job
+      WHERE job."id" = ${input.claim.id} AND job."userId" = ${input.claim.userId}
+        AND job."kind" = 'MEMORY_COMMAND'::"MemoryJobKind"
+        AND job."state" = 'CLAIMED'::"MemoryJobState"
+        AND job."leaseToken" = ${input.claim.claimToken}
+        AND job."leaseExpiresAt" > ${input.now}
+        AND job."commandStatus" IN ('COMMITTED', 'REJECTED', 'AMBIGUOUS', 'FAILED', 'UNKNOWN', 'STALE')
+        AND EXISTS (SELECT 1 FROM "User" AS owner_user
+          WHERE owner_user."id" = job."userId" AND owner_user."status" = 'active'::"UserStatus")
+      FOR UPDATE OF job
+    `);
+    const status = terminal[0]?.commandStatus;
+    if (!status) return false;
+    const checkpoint = terminal[0]?.commandResult;
+    const noCommand = status === "REJECTED" && terminal[0]?.commandOperation === "UNKNOWN" &&
+      checkpoint !== null && typeof checkpoint === "object" && !Array.isArray(checkpoint) &&
+      Object.keys(checkpoint).length === 1 && checkpoint.classification === "NONE";
+    const updated = await tx.memoryJob.updateMany({
+      data: {
+        acceptedResultHash: memorySha256({ command: input.claim.id, status, version: 1 }),
+        commandIntent: Prisma.DbNull,
+        commandResult: noCommand ? { classification: "NONE" } : Prisma.DbNull,
+        completedAt: input.now,
+        errorCode: null,
+        errorMessage: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        nextAttemptAt: null,
+        stage: `command_${status.toLowerCase()}`,
+        state: "SUCCEEDED",
+        progressAt: input.now,
+        updatedAt: input.now
+      },
+      where: {
+        id: input.claim.id, userId: input.claim.userId, kind: "MEMORY_COMMAND",
+        commandStatus: status, state: "CLAIMED", leaseToken: input.claim.claimToken,
+        leaseExpiresAt: { gt: input.now }
+      }
+    });
+    return updated.count === 1;
+  }
   const sourceMatches = await memorySourceJobSnapshotMatches(
     tx,
     input.claim,
@@ -932,6 +1005,8 @@ export function createPrismaMemoryCoordinatorRepository(
       return client.$transaction(async (tx) => {
         const updated = await tx.memoryJob.updateMany({
           data: {
+            ...(terminal && input.claim.kind === "MEMORY_COMMAND"
+              ? { commandIntent: Prisma.DbNull, commandResult: Prisma.DbNull } : {}),
             completedAt: terminal ? input.now : null,
             errorCode: input.decision.errorCode,
             leaseExpiresAt: null,
@@ -984,6 +1059,8 @@ export function createPrismaMemoryCoordinatorRepository(
       return client.$transaction(async (tx) => {
         const updated = await tx.memoryJob.updateMany({
           data: {
+            ...(input.claim.kind === "MEMORY_COMMAND"
+              ? { commandIntent: Prisma.DbNull, commandResult: Prisma.DbNull } : {}),
             completedAt: input.now,
             errorCode: input.errorCode,
             leaseExpiresAt: null,
@@ -1017,6 +1094,8 @@ export function createPrismaMemoryCoordinatorRepository(
       return client.$executeRaw(Prisma.sql`
         UPDATE "MemoryJob" AS job
         SET
+          "commandIntent" = NULL,
+          "commandResult" = NULL,
           "completedAt" = ${input.now},
           "errorCode" = 'memory_job_handler_unavailable',
           "errorMessage" = NULL,
@@ -1120,6 +1199,8 @@ export function createPrismaMemoryCoordinatorRepository(
       return client.$executeRaw(Prisma.sql`
         UPDATE "MemoryJob" AS job
         SET
+          "commandIntent" = NULL,
+          "commandResult" = NULL,
           "state" = 'CANCELLED'::"MemoryJobState",
           "completedAt" = ${input.now},
           "leaseToken" = NULL,
@@ -1189,6 +1270,8 @@ export function createPrismaMemoryCoordinatorRepository(
                 updatedAt: input.now
               }
             : {
+                ...(terminal && input.job.kind === "MEMORY_COMMAND"
+                  ? { commandIntent: Prisma.DbNull, commandResult: Prisma.DbNull } : {}),
                 completedAt: terminal ? input.now : null,
                 errorCode: input.decision.errorCode,
                 nextAttemptAt: null,

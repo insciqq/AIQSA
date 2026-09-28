@@ -4,7 +4,7 @@ import {
 } from "../../../contracts/memoryActionIntent";
 
 export const MEMORY_ACTION_ADMISSION_VERSION =
-  "memory-action-admission-v5" as const;
+  "memory-action-admission-v6" as const;
 
 export const MEMORY_ACTION_ADMISSION_STATES = [
   "EXPLICIT_CANDIDATE",
@@ -22,10 +22,16 @@ export type MemoryActionAdmission = Readonly<{
   version: typeof MEMORY_ACTION_ADMISSION_VERSION;
 }>;
 
+/** The literal protocol boundary is independent of classifier input limits. */
+export function hasExplicitMemoryCommandBoundary(text: string): boolean {
+  return /^\/memory(?:\s|$)/iu.test(text.trimStart());
+}
+
 /** Bound classifier input without interpreting its language or meaning.
- * Every supported current-user turn reaches the strict semantic decision,
- * including a directive after the statement bound. A turn beyond the source
- * budget is reported as too long instead of being classified from a prefix or
+ * A supported current-user turn is a semantic candidate, including a
+ * directive after the statement bound. A qualified optional screen may
+ * confidently rule out a command before strict classification. A turn beyond
+ * the source budget is reported as too long instead of using a prefix or
  * silently treated as ordinary text. Admission grants no action, target, or
  * mutation authority. */
 export function admitMemoryAction(
@@ -47,7 +53,7 @@ export function admitMemoryAction(
       version: MEMORY_ACTION_ADMISSION_VERSION
     });
   }
-  const explicitCommand = /^\/memory(?:\s|$)/iu.test(text.trimStart());
+  const explicitCommand = hasExplicitMemoryCommandBoundary(text);
   return Object.freeze({
     reason: explicitCommand ? "MEMORY_COMMAND" : "CURRENT_USER_TEXT",
     state: explicitCommand ? "EXPLICIT_CANDIDATE" : "SEMANTIC_CANDIDATE",
@@ -55,11 +61,14 @@ export function admitMemoryAction(
   });
 }
 
-/** Whether the admitted turn may reach the one Memory control decision. */
+/** Synchronous control belongs to the explicit protocol boundary. Ordinary
+ * natural-language commands are classified by the durable command worker;
+ * reads do not wait for their classification or mutation. The legacy policy
+ * remains available only for already accepted execution compatibility. */
 export function memoryActionControlAdmitted(
   admission: MemoryActionAdmission,
   deterministicRead: boolean
 ): boolean {
   if (admission.state === "INPUT_TOO_LONG") return false;
-  return !deterministicRead || admission.state !== "ORDINARY";
+  return !deterministicRead || admission.state === "EXPLICIT_CANDIDATE";
 }

@@ -13,12 +13,14 @@ import type {
 } from "../coordinator/types";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import { memoryPersonalEvidenceRowPredicate } from "../persistence/eligibility";
+import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { ensureGlobalMemoryScope } from "../persistence/scopes";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { findMatchingMemorySuppressions } from "../persistence/suppressions";
 import {
-  memoryLegacyIdentityIsUnambiguous,
-  registerMemoryIdentityCompatibility
-} from "../learning/identity/compatibility";
+  loadMemorySuppressionKeyring,
+  type MemorySuppressionKeyring
+} from "../suppressionKeyring";
 import {
   advanceMemoryMutation,
   lockMemorySettings,
@@ -520,19 +522,16 @@ async function loadStagedExecution(
 }
 
 function patternIdentityKey(
-  clusterKey: string,
+  subjectKey: string,
   reasonCode: string,
-  entityIds: readonly string[],
-  version: 1 | 2
+  factIds: readonly string[]
 ): string {
-  return `prop:v${version}:${memorySha256({
-    clusterKey,
-    domain: version === 1
-      ? "aiqsa.memory.pattern-identity"
-      : "aiqsa.memory.pattern-identity-v2",
-    entityIds: [...entityIds].sort(),
+  return `prop:v2:${memorySha256({
+    subject: subjectKey,
+    domain: "aiqsa.memory.pattern-identity-v3",
+    factIds: [...factIds].sort(),
     reasonCode,
-    version
+    version: 3
   })}`;
 }
 
@@ -579,6 +578,54 @@ async function retractCurrentPattern(
   });
 }
 
+async function overlappingCurrentPatterns(
+  tx: MemoryTransaction,
+  userId: string,
+  reasonCode: string,
+  sourceFactIds: readonly string[]
+): Promise<readonly { factId: string; versionId: string }[]> {
+  const rows = await tx.$queryRaw<Array<{ factId: string; versionId: string }>>(Prisma.sql`
+    SELECT fact."id" AS "factId", version."id" AS "versionId"
+    FROM "MemoryFactVersion" AS version
+    INNER JOIN "MemoryFact" AS fact
+      ON fact."userId" = version."userId"
+     AND fact."id" = version."factId"
+     AND fact."state" = 'ACTIVE'::"MemoryFactState"
+     AND fact."currentVersionId" = version."id"
+    INNER JOIN "MemoryFactVersionRelation" AS relation
+      ON relation."userId" = version."userId"
+     AND relation."sourceVersionId" = version."id"
+     AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
+     AND relation."reasonCode" = ${reasonCode}
+    INNER JOIN "MemoryFactVersion" AS source_version
+      ON source_version."userId" = relation."userId"
+     AND source_version."id" = relation."targetVersionId"
+    WHERE version."userId" = ${userId}
+      AND version."modality" = 'PATTERN'::"MemoryFactModality"
+      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND source_version."factId" IN (${Prisma.join(sourceFactIds)})
+    ORDER BY fact."id", version."id"
+    FOR UPDATE OF fact, version
+  `);
+  return [...new Map(rows.map((row) => [row.versionId, row])).values()];
+}
+
+async function serviceRetractedPattern(
+  tx: MemoryTransaction,
+  userId: string,
+  factId: string
+): Promise<boolean> {
+  const event = await tx.memoryEvent.findFirst({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { metadata: true, operation: true },
+    where: { factId, userId }
+  });
+  if (event?.operation !== "SOURCE_INVALIDATE" ||
+    typeof event.metadata !== "object" || event.metadata === null ||
+    Array.isArray(event.metadata)) return false;
+  return event.metadata.reasonCode === "synthesis_source_set_replaced";
+}
+
 export type MemorySynthesisInvalidationResult = Readonly<{
   invalidated: number;
   scheduled: number;
@@ -592,9 +639,14 @@ export async function reconcileInvalidMemorySynthesisPatterns(
 ): Promise<MemorySynthesisInvalidationResult> {
   if (!Number.isFinite(now.getTime()) || !Number.isSafeInteger(limit) ||
     limit < 1 || limit > 128) return { invalidated: 0, scheduled: 0 };
-  const rows = await tx.$queryRaw<Array<{ factId: string; versionId: string }>>(
+  const rows = await tx.$queryRaw<Array<{
+    factId: string;
+    synthesisGeneration: number | null;
+    versionId: string;
+  }>>(
     Prisma.sql`
-      SELECT fact."id" AS "factId", version."id" AS "versionId"
+      SELECT fact."id" AS "factId", version."id" AS "versionId",
+        version."synthesisGeneration"
       FROM "MemoryFactVersion" AS version
       INNER JOIN "MemoryFact" AS fact
         ON fact."userId" = version."userId"
@@ -636,6 +688,12 @@ export async function reconcileInvalidMemorySynthesisPatterns(
   }
   let scheduled = 0;
   if (rows.length > 0) {
+    if (rows.some((row) => row.synthesisGeneration !== settings.memoryGeneration)) {
+      await tx.userMemorySettings.update({
+        data: { lastSynthesisAt: null },
+        where: { userId: settings.userId }
+      });
+    }
     await advanceMemoryMutation(tx, settings, "SYNTHESIS_PATTERN_CHANGE");
     for (const [targetFactVersionId, plan] of targetedPlans) {
       const idempotencyFingerprint = memorySynthesisJobFingerprint({
@@ -693,7 +751,8 @@ export async function retractInvalidMemorySynthesisPatterns(
 }
 
 export function createPrismaMemorySynthesisRepository(
-  client: PrismaClient
+  client: PrismaClient,
+  suppressionKeyring?: MemorySuppressionKeyring
 ) {
   return Object.freeze({
     async snapshot(job: MemoryJobDescriptor): Promise<MemorySynthesisSnapshot | null> {
@@ -807,85 +866,31 @@ export function createPrismaMemorySynthesisRepository(
         const normalized = normalizeMemorySearchText(pattern.statement);
         if (!normalized) continue;
         const proposedCanonicalKey = patternIdentityKey(
-          cluster.key,
+          cluster.subjectKey,
           pattern.reasonCode,
-          entityIds,
-          2
-        );
-        const legacyCanonicalKey = patternIdentityKey(
-          cluster.key,
-          pattern.reasonCode,
-          entityIds,
-          1
-        );
-        await registerMemoryIdentityCompatibility(tx, {
-          containerId: scope.id,
-          legacyCanonicalKey,
-          namespace: "FACT",
-          now,
-          unicodeCanonicalKey: proposedCanonicalKey,
-          userId: claim.userId
-        });
-        const legacyIsUnambiguous = await memoryLegacyIdentityIsUnambiguous(
-          tx,
-          {
-            containerId: scope.id,
-            legacyCanonicalKey,
-            namespace: "FACT",
-            unicodeCanonicalKey: proposedCanonicalKey,
-            userId: claim.userId
-          }
+          sources.map(({ factId }) => factId)
         );
         let fact: Readonly<{
           canonicalKey: string;
           currentVersionId: string | null;
           id: string;
+          state: string;
         }> | null = await tx.memoryFact.findFirst({
-          select: { canonicalKey: true, currentVersionId: true, id: true },
+          select: { canonicalKey: true, currentVersionId: true, id: true, state: true },
           where: {
             canonicalKey: proposedCanonicalKey,
             scopeId: scope.id,
             userId: claim.userId
           }
         });
-        if (!fact && legacyIsUnambiguous) {
-          fact = await tx.memoryFact.findFirst({
-            select: { canonicalKey: true, currentVersionId: true, id: true },
-            where: {
-              canonicalKey: legacyCanonicalKey,
-              scopeId: scope.id,
-              userId: claim.userId
-            }
-          });
-        }
-        if (!fact) {
-          const duplicate = await tx.$queryRaw<Array<{
-            canonicalKey: string;
-            currentVersionId: string | null;
-            id: string;
-          }>>(Prisma.sql`
-            SELECT fact."id", fact."canonicalKey", fact."currentVersionId"
-            FROM "MemoryFact" AS fact
-            INNER JOIN "MemoryFactVersion" AS version
-              ON version."userId" = fact."userId"
-             AND version."factId" = fact."id"
-            WHERE fact."userId" = ${claim.userId}
-              AND fact."scopeId" = ${scope.id}
-              AND version."modality" = 'PATTERN'::"MemoryFactModality"
-              AND version."normalizedSearchText" = ${normalized}
-            ORDER BY
-              (fact."currentVersionId" = version."id") DESC,
-              version."createdAt" DESC,
-              fact."id"
-            LIMIT 1
-            FOR UPDATE OF fact
-          `);
-          fact = duplicate[0] ?? null;
-        }
+        if (fact && fact.state !== "ACTIVE" && (
+          fact.state !== "RETRACTED" ||
+          !(await serviceRetractedPattern(tx, claim.userId, fact.id))
+        )) continue;
         const canonicalPatternIdentity = fact?.canonicalKey ?? proposedCanonicalKey;
         const patternFingerprint = memorySynthesisPatternFingerprint({
           canonicalPatternIdentity,
-          sourceSetFingerprint: plan.sourceSetFingerprint
+          sourceEligibilityHashes: sources.map(({ eligibilityHash }) => eligibilityHash)
         });
         const eventId = deterministicId(
           "aiqsa.memory.pattern-event",
@@ -900,6 +905,30 @@ export function createPrismaMemorySynthesisRepository(
           where: { id: versionId, userId: claim.userId }
         });
         if (replay) continue;
+        const keyring = suppressionKeyring ?? (() => {
+          const configuration = loadMemorySuppressionKeyring();
+          if (configuration.status !== "ready") throw new Error(configuration.code);
+          return configuration.keyring;
+        })();
+        if ((await findMatchingMemorySuppressions(tx, keyring, claim.userId, {
+          canonicalKey: canonicalPatternIdentity,
+          category: "patterns",
+          normalizedValue: normalized
+        })).length > 0) continue;
+        for (const overlap of await overlappingCurrentPatterns(
+          tx,
+          claim.userId,
+          pattern.reasonCode,
+          sources.map(({ factId }) => factId)
+        )) {
+          await retractCurrentPattern(
+            tx,
+            claim.userId,
+            overlap.factId,
+            overlap.versionId,
+            now
+          );
+        }
         const factId = fact?.id ?? deterministicId(
           "aiqsa.memory.pattern-fact",
           canonicalPatternIdentity
@@ -916,16 +945,8 @@ export function createPrismaMemorySynthesisRepository(
               state: "ORPHANED",
               userId: claim.userId
             },
-            select: { canonicalKey: true, currentVersionId: true, id: true }
+            select: { canonicalKey: true, currentVersionId: true, id: true, state: true }
           });
-        } else if (fact.currentVersionId) {
-          await retractCurrentPattern(
-            tx,
-            claim.userId,
-            fact.id,
-            fact.currentVersionId,
-            now
-          );
         }
         if (!fact) throw new Error("memory_synthesis_pattern_identity_unavailable");
         await tx.memoryEvent.create({
@@ -1015,6 +1036,13 @@ export function createPrismaMemorySynthesisRepository(
           },
           where: { id: fact.id }
         });
+        await ensureClassifiedSearchEntry(
+          tx,
+          settings,
+          versionId,
+          patternFingerprint,
+          now
+        );
         applied += 1;
       }
       await tx.userMemorySettings.update({

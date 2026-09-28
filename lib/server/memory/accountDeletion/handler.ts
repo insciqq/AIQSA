@@ -102,6 +102,8 @@ async function cancelUndispatchedWork(
 ): Promise<void> {
   await tx.memoryJob.updateMany({
     data: {
+      commandIntent: Prisma.DbNull,
+      commandResult: Prisma.DbNull,
       completedAt: now,
       errorCode: "memory_account_deletion",
       errorMessage: null,

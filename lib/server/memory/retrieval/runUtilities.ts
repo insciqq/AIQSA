@@ -74,6 +74,11 @@ import { createDecisionModelRoleResolver } from "../../providerRuntime/decisionM
 import { createAcceptedDecisionRuntime } from "../../providerRuntime/decisionRuntime";
 import { createMemoryHistoryRelevanceService, type MemoryHistoryRelevanceInput } from "./historyRelevanceRuntime";
 import type { MemoryHistoryRelevanceResult } from "./historyRelevancePolicy";
+import {
+  createMemoryControlScreenService,
+  type MemoryControlScreenInput
+} from "../actions/controlScreenRuntime";
+import type { MemoryControlScreenResult } from "../actions/controlScreenPolicy";
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v12";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
@@ -283,6 +288,7 @@ type QueryEmbeddingBaseInput = Readonly<{
 );
 
 export type MemoryRunUtilityService = Readonly<{
+  controlScreen?(input: MemoryControlScreenInput): Promise<MemoryControlScreenResult>;
   historyRelevance?(input: MemoryHistoryRelevanceInput): Promise<MemoryHistoryRelevanceResult>;
   embedQuery(input: QueryEmbeddingBaseInput & Readonly<{
     profile: MemoryVectorProfile;
@@ -1584,6 +1590,9 @@ function queryEmbeddingOrdinal(
   purpose: "ACTION_TARGET" | "RETRIEVAL"
 ): number | null {
   if (input.owner?.type === "JOB") {
+    // A durable command has one target-search embedding, separately identified
+    // from the retrieval/consolidation attempt slots. Recovery never buys it twice.
+    if (purpose === "ACTION_TARGET") return input.jobAttemptCount === 1 ? 3 : null;
     return purpose === "RETRIEVAL" &&
       (input.jobAttemptCount === 1 || input.jobAttemptCount === 2)
       ? input.jobAttemptCount
@@ -2107,8 +2116,12 @@ export function createPrismaMemoryRunUtilityService(
         : "GENERATIVE_COMPATIBILITY" as const;
     })
   });
-  return Object.freeze({ ...utilities, historyRelevance: createMemoryHistoryRelevanceService({
-    execution, runtime: createAcceptedDecisionRuntime(client),
+  const decisionRuntime = createAcceptedDecisionRuntime(client);
+  return Object.freeze({ ...utilities, controlScreen: createMemoryControlScreenService({
+    execution, runtime: decisionRuntime,
+    resolveRole: () => decisionRoleResolver.resolve("memoryControlScreen")
+  }), historyRelevance: createMemoryHistoryRelevanceService({
+    execution, runtime: decisionRuntime,
     resolveRole: () => decisionRoleResolver.resolve("memoryRelevance")
   }) });
 }

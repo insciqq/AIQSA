@@ -167,6 +167,47 @@ describe("Memory manager store", () => {
     });
   });
 
+  it("forgets a combined source through its nested opaque ref and refreshes the list", async () => {
+    const parent = memoryConsumerItemFixture({
+      allowedActions: ["FORGET"],
+      combined: {
+        sourceCount: 3,
+        sources: [1, 2, 3].map((index) => ({
+          category: "WORK",
+          createdAt: "2026-08-21T10:00:00.000Z",
+          memoryRef: `opaque-source-${index}`,
+          provenance: "LEARNED" as const,
+          sourceAvailable: true,
+          statement: `I use checklist step ${index}.`,
+          updatedAt: "2026-08-21T10:00:00.000Z"
+        }))
+      },
+      memoryRef: "opaque-combined"
+    });
+    const remaining = memoryConsumerItemFixture({
+      memoryRef: "opaque-source-2",
+      statement: "I use checklist step 2."
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ status: "FORGOTTEN" }))
+      .mockResolvedValueOnce(json(memoryConsumerListFixture([remaining])));
+    vi.stubGlobal("fetch", fetchMock);
+    useMemoryManagerStore.setState({ listLoadState: "ready", memories: [parent] });
+
+    requestForgetMemory("opaque-source-1");
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      activeMemory: { memoryRef: "opaque-source-1", allowedActions: ["FORGET"] },
+      screen: "forget"
+    });
+    await forgetCurrentMemory();
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      memories: [remaining],
+      notice: "forgotten",
+      screen: "list"
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/me/memories/opaque-source-1/forget");
+  });
+
   it("drops prior-account data before loading the next account", async () => {
     const first = memoryConsumerItemFixture();
     vi.stubGlobal("fetch", vi.fn()

@@ -153,6 +153,25 @@ describe("Memory preparing context ceiling", () => {
     })).toThrow(MemoryPreparingRunConflictError);
   });
 
+  it("adds only bounded standing facts to the ordinary item ceiling", () => {
+    const base = usedAttempt("SIMPLE", 1_024, 10_000);
+    const standing = Array.from({ length: 21 }, (_, index) => ({
+      exactItemId: `fact-${index}`,
+      exactSafeText: `current direct fact ${index}`,
+      factVersionId: `fact-${index}`,
+      featureSnapshot: { standingFact: true },
+      finalScore: 1,
+      itemType: "FACT_VERSION" as const,
+      selectionReason: "standing.explicit"
+    }));
+    expect(() => validateMemoryPreparingAttemptResult({
+      ...base, items: [...standing.slice(0, 20), ...attemptItems(20)]
+    })).not.toThrow();
+    expect(() => validateMemoryPreparingAttemptResult({
+      ...base, items: [...standing, ...attemptItems(19)]
+    })).toThrow(MemoryPreparingRunConflictError);
+  });
+
   it("rejects a cap that exceeds the admitted provider envelope", () => {
     const accepted = usedAttempt("SIMPLE", 1_000, 1_000);
     expect(() => validateMemoryPreparingAttemptResult({

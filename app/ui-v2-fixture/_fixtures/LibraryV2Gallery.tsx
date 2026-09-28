@@ -100,6 +100,28 @@ const files = [
 
 const memoryItems: readonly MemoryConsumerItem[] = [
   {
+    allowedActions: ["FORGET"],
+    category: "WORK",
+    combined: {
+      sourceCount: 3,
+      sources: ["tests", "migrations", "dependencies"].map((topic) => ({
+        category: "WORK" as const,
+        createdAt: "2026-08-12T10:00:00.000Z",
+        memoryRef: `memory-gallery-source-${topic}`,
+        provenance: "LEARNED" as const,
+        sourceAvailable: true,
+        statement: `Uses a written release checklist to review ${topic}.`,
+        updatedAt: "2026-09-01T10:00:00.000Z"
+      }))
+    },
+    createdAt: "2026-09-01T10:00:00.000Z",
+    memoryRef: "memory-gallery-combined",
+    provenance: "LEARNED",
+    sourceAvailable: true,
+    statement: "Uses a written release checklist.",
+    updatedAt: "2026-09-01T10:00:00.000Z"
+  },
+  {
     allowedActions: ["EDIT", "FORGET"],
     category: "ABOUT_YOU",
     createdAt: "2026-08-12T10:00:00.000Z",
@@ -257,7 +279,16 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
                 notice={null}
                 onCancelRow={() => setMemoryRow({ memoryRef: null, mode: null })}
                 onConfirmForget={() => {
-                  setMemories((current) => current.filter((item) => item.memoryRef !== memoryRow.memoryRef));
+                  setMemories((current) => current.flatMap((item): MemoryConsumerItem[] => {
+                    if (item.combined && (item.memoryRef === memoryRow.memoryRef ||
+                      item.combined.sources.some((source) => source.memoryRef === memoryRow.memoryRef))) {
+                      return item.combined.sources.filter((source) =>
+                        source.memoryRef !== memoryRow.memoryRef).map((source) => ({
+                        ...source, allowedActions: ["EDIT", "FORGET"]
+                      }));
+                    }
+                    return item.memoryRef === memoryRow.memoryRef ? [] : [item];
+                  }));
                   setMemoryRow({ memoryRef: null, mode: null });
                 }}
                 onCreate={() => {

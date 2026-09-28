@@ -14,6 +14,7 @@ import {
   type PrismaMemoryExecutionService
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
+import type { MemoryExecutionOwner } from "../execution/owner";
 import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import {
   createAcceptedMemoryLearningProvider,
@@ -114,6 +115,8 @@ export type MemoryTargetSelector = Readonly<{
   }>): Promise<void>;
   select(input: Readonly<{
     attemptId: string;
+    owner?: MemoryExecutionOwner;
+    ordinal?: 1 | 4;
     candidates: readonly Readonly<{ handle: string; target: MemoryActionTarget }>[];
     controlBindingId: string;
     currentUserText: string;
@@ -346,8 +349,8 @@ export function createMemoryTargetSelector(input: Readonly<{
       try {
         const binding = await input.execution.admission.bind(request.userId, {
           inputHash,
-          ordinal: 1,
-          owner: { retrievalAttemptId: request.attemptId, type: "RETRIEVAL_ATTEMPT" },
+          ordinal: request.ordinal ?? 1,
+          owner: request.owner ?? { retrievalAttemptId: request.attemptId, type: "RETRIEVAL_ATTEMPT" },
           role: "MEMORY_CONTROL",
           versions: targetSelectionVersions
         });

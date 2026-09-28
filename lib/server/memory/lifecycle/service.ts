@@ -13,6 +13,7 @@ import type { MemoryMutationAuthorizationUse } from "../persistence/authorizatio
 import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
 import {
   MemoryPersistenceError,
+  rememberMemoryPersistenceFailure,
   type MemoryPersistenceErrorCode
 } from "../persistence/errors";
 import { memorySha256 } from "../persistence/lexical";
@@ -125,7 +126,9 @@ async function persisted<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     if (error instanceof MemoryPersistenceError) {
-      return failure(publicPersistenceCode(error.code));
+      const mapped = new MemoryLifecycleServiceError(publicPersistenceCode(error.code));
+      rememberMemoryPersistenceFailure(mapped, error.code);
+      throw mapped;
     }
     throw error;
   }

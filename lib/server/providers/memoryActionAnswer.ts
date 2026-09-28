@@ -1,4 +1,5 @@
-export const MEMORY_ACTION_ANSWER_RESULT_VERSION = 1 as const;
+export const MEMORY_ACTION_ANSWER_RESULT_VERSION = 2 as const;
+export const MEMORY_ACTION_ASYNC_ANSWER_RESULT_VERSION = 3 as const;
 
 export const MEMORY_ACTION_ANSWER_OPERATIONS = [
   "NONE",
@@ -15,6 +16,7 @@ export const MEMORY_ACTION_ANSWER_STATUSES = [
   "COMMITTED",
   "COMPLETE",
   "CONFIRMATION_REQUIRED",
+  "PENDING",
   "REJECTED",
   "THIS_CHAT_ONLY",
   "UNAVAILABLE"
@@ -28,7 +30,8 @@ export type MemoryActionAnswerStatus =
 export type MemoryActionAnswerResult = Readonly<{
   operation: MemoryActionAnswerOperation;
   status: MemoryActionAnswerStatus;
-  version: typeof MEMORY_ACTION_ANSWER_RESULT_VERSION;
+  version: 1 | typeof MEMORY_ACTION_ANSWER_RESULT_VERSION |
+    typeof MEMORY_ACTION_ASYNC_ANSWER_RESULT_VERSION;
 }>;
 
 /**
@@ -43,14 +46,21 @@ export const MEMORY_ACTION_NO_COMMIT_RESULT: MemoryActionAnswerResult =
     version: MEMORY_ACTION_ANSWER_RESULT_VERSION
   });
 
+/** Used only after the current message's background command is durable. */
+export const MEMORY_ACTION_PENDING_RESULT: MemoryActionAnswerResult =
+  Object.freeze({ operation: "NONE", status: "PENDING", version: 3 });
+
 function includes<T extends string>(values: readonly T[], value: unknown): value is T {
   return typeof value === "string" && values.some((candidate) => candidate === value);
 }
 
 function validPair(
   operation: MemoryActionAnswerOperation,
-  status: MemoryActionAnswerStatus
+  status: MemoryActionAnswerStatus,
+  version: MemoryActionAnswerResult["version"]
 ): boolean {
+  if (version === 3) return operation === "NONE" && status === "PENDING";
+  if (status === "PENDING") return false;
   if (operation === "NONE") return status === "UNAVAILABLE";
   if (operation === "SAVE") {
     return status === "COMMITTED" || status === "REJECTED" ||
@@ -77,12 +87,13 @@ export function decodeMemoryActionAnswerResult(
     keys[2] !== "version" ||
     !includes(MEMORY_ACTION_ANSWER_OPERATIONS, record.operation) ||
     !includes(MEMORY_ACTION_ANSWER_STATUSES, record.status) ||
-    record.version !== MEMORY_ACTION_ANSWER_RESULT_VERSION ||
-    !validPair(record.operation, record.status)) return null;
+    (record.version !== 1 && record.version !== MEMORY_ACTION_ANSWER_RESULT_VERSION &&
+      record.version !== MEMORY_ACTION_ASYNC_ANSWER_RESULT_VERSION) ||
+    !validPair(record.operation, record.status, record.version)) return null;
   return {
     operation: record.operation,
     status: record.status,
-    version: MEMORY_ACTION_ANSWER_RESULT_VERSION
+    version: record.version
   };
 }
 
@@ -95,12 +106,39 @@ export function memoryActionAnswerContract(
   if (!decoded) throw new Error("memory_action_answer_result_invalid");
   const authority = `operation=${decoded.operation}; status=${decoded.status}.`;
   const authorityWidth = "operation=UPDATE; status=CONFIRMATION_REQUIRED.".length;
+  if (decoded.version === 3) {
+    return [
+      '<aiqsa_memory_result version="3">',
+      authority.padEnd(authorityWidth, " "),
+      "Only this result proves a Memory change. You do not mutate Memory.",
+      "PENDING means durable background processing: intent and outcome are not yet known; no change is guaranteed.",
+      "If asked to save, change, or forget while PENDING, explicitly say you will try; never promise success or claim it is done, failed, or absent from Memory. Do not ask the user to wait.",
+      "For list/search/reset or pattern exclusion, use /memory or Manage Memory; PENDING authorizes none.",
+      "Current-chat context is not saved Memory. Never reveal rejected candidates or secrets.",
+      "Preserve the ordinary answer. If the user did not request a Memory change, do not mention background processing.",
+      "</aiqsa_memory_result>"
+    ].join("\n");
+  }
+  if (decoded.version === 1) {
+    // Accepted runs must reproduce the exact v1 prompt on recovery.
+    return [
+      '<aiqsa_memory_result version="1">',
+      authority.padEnd(authorityWidth, " "),
+      "Server truth: claim Personal Memory changed only for the matching COMMITTED operation; otherwise no reusable change occurred.",
+      "For REJECTED or UNAVAILABLE, never expose or paraphrase candidate content or secrets.",
+      "Preserve the ordinary answer; exact Memory feedback is rendered separately.",
+      "</aiqsa_memory_result>"
+    ].join("\n");
+  }
   return [
-    '<aiqsa_memory_result version="1">',
+    '<aiqsa_memory_result version="2">',
     authority.padEnd(authorityWidth, " "),
-    "Server truth: claim Personal Memory changed only for the matching COMMITTED operation; otherwise no reusable change occurred.",
-    "For REJECTED or UNAVAILABLE, never expose or paraphrase candidate content or secrets.",
-    "Preserve the ordinary answer; exact Memory feedback is rendered separately.",
+    "Only this server result establishes whether Personal Memory changed. You report the server's completed work; you do not perform the mutation yourself.",
+    "Confirm saving, changing, or forgetting only when the matching operation has status COMMITTED.",
+    "COMMITTED means the server successfully completed that operation: acknowledge it as done, never say it failed or was not saved.",
+    "If this user message asks to save, change, or forget and the matching operation is not COMMITTED, explicitly say it was not done. This includes NONE/UNAVAILABLE and THIS_CHAT_ONLY.",
+    "Current-chat context is not saved Memory. Do not expose or paraphrase rejected candidate content or secrets.",
+    "Preserve any separately requested ordinary answer.",
     "</aiqsa_memory_result>"
   ].join("\n");
 }

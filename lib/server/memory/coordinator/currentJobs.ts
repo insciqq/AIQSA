@@ -39,8 +39,14 @@ export function currentMemoryJobsSql(now: Date): Prisma.Sql {
             chat.id IS NOT NULL AND chat."projectId" IS NULL AND chat."permanentDeletionAt" IS NULL
             AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
             AND (job."branchGeneration" IS NULL OR job."branchGeneration" = chat."memoryBranchGeneration")
-            AND (job."sourceRevision" IS NULL OR job."sourceRevision" = chat."memorySourceRevision")
-            AND (job."activeLeafMessageId" IS NULL OR job."activeLeafMessageId" = chat."activeLeafMessageId")
+            -- A command owns one exact source message and may outlive the
+            -- assistant append that advances the chat snapshot. Its worker
+            -- checks ancestry/hash/lease immediately before dispatch. A
+            -- branch generation change still removes it here.
+            AND (job.kind = 'MEMORY_COMMAND'::"MemoryJobKind"
+              OR job."sourceRevision" IS NULL OR job."sourceRevision" = chat."memorySourceRevision")
+            AND (job.kind = 'MEMORY_COMMAND'::"MemoryJobKind"
+              OR job."activeLeafMessageId" IS NULL OR job."activeLeafMessageId" = chat."activeLeafMessageId")
             AND (job."sourceMessageId" IS NULL OR source.id IS NOT NULL)
           ))
           AND (job."targetFactVersionId" IS NULL OR EXISTS (

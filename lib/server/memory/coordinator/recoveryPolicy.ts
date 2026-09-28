@@ -11,7 +11,11 @@ export const MEMORY_RECOVERY_DELAYS_MS = Object.freeze([5 * 60_000, 30 * 60_000,
  * Unknown/model-output failures do not grant another paid execution.
  * These predicates use current_jobs job. */
 export function memoryRecoverableFailureSql(): Prisma.Sql {
-  return Prisma.sql`(job.kind IN (${Prisma.join(MEMORY_COORDINATOR_JOB_KINDS.map((kind) => Prisma.sql`${kind}::"MemoryJobKind"`))}) AND COALESCE((
+  // A terminal command released its place in the owner's sequence. Reviving
+  // it after successors ran would reorder user mutations. Its bounded retry
+  // and crash recovery happen while it still owns a nonterminal queue slot.
+  return Prisma.sql`(job.kind <> 'MEMORY_COMMAND'::"MemoryJobKind"
+    AND job.kind IN (${Prisma.join(MEMORY_COORDINATOR_JOB_KINDS.map((kind) => Prisma.sql`${kind}::"MemoryJobKind"`))}) AND COALESCE((
     job."errorCode" IN ('memory_job_commit_timeout', 'memory_job_commit_database_p2034',
       'memory_job_commit_database_p1001', 'memory_job_commit_database_p1002',
       'memory_job_commit_database_p1017')

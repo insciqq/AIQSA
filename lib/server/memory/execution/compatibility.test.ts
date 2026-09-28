@@ -5,6 +5,7 @@ import { resolveMemoryExecutionCompatibility } from "./compatibility";
 import { createMemoryExecutionSnapshot, parseMemoryExecutionSnapshot } from "./snapshot";
 import { memoryFactProviderEvidence } from "../learning/extraction/runtime";
 import { memoryFactDecisionProviderEvidence } from "../learning/consolidation/runtime";
+import { jevModelConfiguration, JEV_SERVED_MODEL_ID } from "../../../domain/decisionModels";
 import {
   MEMORY_EXECUTABLE_ROLES,
   MEMORY_EXECUTION_ROLES,
@@ -79,6 +80,21 @@ function target(
 }
 
 describe("Memory execution compatibility", () => {
+  it("accepts a verified decision target only for the optional control screen", () => {
+    const base = target(false);
+    const decisionTarget = { ...base, snapshot: {
+      ...base.snapshot,
+      providerFamily: "openrouter" as const,
+      model: jevModelConfiguration(),
+      decisionVerification: { probeVersion: 1 as const, adapterKind: "openrouter_decisions" as const,
+        upstreamModelId: "typesafe/jev-1.13", servedModelId: JEV_SERVED_MODEL_ID,
+        provider: "TypeSafe", noul: true as const, choice: true as const }
+    } };
+    expect(resolveMemoryExecutionCompatibility({ role: "MEMORY_CONTROL_SCREEN",
+      target: decisionTarget, versions })).toMatchObject({ requirement: expect.anything() });
+    expect(() => resolveMemoryExecutionCompatibility({ role: "MEMORY_CONTROL",
+      target: decisionTarget, versions })).toThrow("memory_execution_capability_unavailable");
+  });
   it("pins the new output policy and preserves the version of previously accepted work", () => {
     const acceptedTarget = target(true);
     const compatibility = resolveMemoryExecutionCompatibility({
@@ -106,6 +122,9 @@ describe("Memory execution compatibility", () => {
   it("keeps the bounded role and strict-output declarations", () => {
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_FACT_EXTRACT");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_RERANK");
+    expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_CONTROL_SCREEN");
+    expect(MEMORY_EXECUTABLE_ROLES).toContain("MEMORY_CONTROL_SCREEN");
+    expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_CONTROL_SCREEN");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_QUERY_RESOLVE");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_AGGREGATE");
     expect(MEMORY_EXECUTABLE_ROLES).not.toContain("MEMORY_AGGREGATE");

@@ -19,6 +19,7 @@ import {
   MEMORY_RERANK_MAX_ATTEMPTS
 } from "../memory/retrieval/runUtilities";
 import { MEMORY_HISTORY_RELEVANCE_VERSION } from "../memory/retrieval/historyRelevancePolicy";
+import { MEMORY_CONTROL_SCREEN_VERSION } from "../memory/actions/controlScreenPolicy";
 import { MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES, MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES } from "../../domain/memory/retrieval/config";
 
 const settingsSnapshot = Object.freeze({
@@ -232,6 +233,18 @@ describe("initial Memory admission deadline fallback", () => {
 });
 
 describe("Memory retrieval execution sequence", () => {
+  it("admits one qualified control screen before or without strict control", () => {
+    const screen = { logicalRole: "MEMORY_CONTROL_SCREEN", ordinal: 0,
+      pipelineVersion: MEMORY_CONTROL_SCREEN_VERSION };
+    expect(validMemoryRetrievalExecutionSequence([screen])).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([screen,
+      { logicalRole: "MEMORY_CONTROL", ordinal: 0 }])).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([screen], true)).toBe(true);
+    expect(validMemoryRetrievalExecutionSequence([screen, screen])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([{ ...screen, ordinal: 1 }])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([{ ...screen,
+      pipelineVersion: "unqualified" }])).toBe(false);
+  });
   it("admits governed per-passage decisions without relaxing other role positions", () => {
     const history = (ordinal: number) => ({ logicalRole: "MEMORY_HISTORY_RELEVANCE", ordinal, pipelineVersion: MEMORY_HISTORY_RELEVANCE_VERSION });
     expect(validMemoryRetrievalExecutionSequence([history(1), history(2)])).toBe(true);

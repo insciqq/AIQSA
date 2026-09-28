@@ -1,3 +1,4 @@
+import { requireMemoryCommandSource } from "../commands/sourceAuthority";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
@@ -6,6 +7,7 @@ import {
 } from "../../../contracts/memory";
 import {
   MEMORY_ACTION_INTENT_MAX_SOURCE_TEXT_LENGTH,
+  decodeMemoryActionIntent,
   type MemoryActionIntent
 } from "../../../contracts/memoryActionIntent";
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
@@ -110,6 +112,11 @@ export type MemoryMutationControlAuthorizationMint = Readonly<{
   targetSelectionOutputHash?: string;
   targetSelectionSelectedHandle?: string;
   targetFactId?: string | null;
+}>;
+
+export type MemoryMutationCommandAuthorizationMint = MemoryMutationControlAuthorizationMint & Readonly<{
+  memoryJobId: string;
+  claimToken: string;
 }>;
 
 const authorizationSelect = {
@@ -401,6 +408,10 @@ async function requireCurrentControlMutationLifecycle(
   userId: string,
   row: MemoryMutationAuthorizationSnapshot
 ): Promise<void> {
+  if (row.requestId.startsWith("command-v1:")) {
+    await requireCurrentCommandMutationLifecycle(tx, userId, row);
+    return;
+  }
   if (!controlBackedMutation(row)) return;
   const rows = await tx.$queryRaw<ControlMutationLifecycleRow[]>(Prisma.sql`
     SELECT
@@ -512,6 +523,76 @@ async function requireCurrentControlMutationLifecycle(
           selectedVersionId: row.expectedTargetVersionId
         })) {
       return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+    }
+  }
+}
+
+type CommandMutationEvidence = Readonly<{
+  bindingId: string;
+  claimToken: string;
+  intentHash: string;
+  mutationHash: string;
+  candidateMapHash: string | null;
+  selectedHandle: string | null;
+  selectionBindingId: string | null;
+}>;
+
+async function requireCurrentCommandMutationLifecycle(
+  tx: MemoryTransaction, userId: string, row: MemoryMutationAuthorizationSnapshot,
+  recordCommit = true
+): Promise<void> {
+  const jobId = row.requestId.slice("command-v1:".length);
+  const { job, modelRunId } = await requireMemoryCommandSource(tx, userId, jobId);
+  const evidence = job.commandResult as CommandMutationEvidence | null;
+  const checkpoint = job.commandIntent && typeof job.commandIntent === "object" && !Array.isArray(job.commandIntent)
+    ? job.commandIntent : null;
+  const decodedIntent = decodeMemoryActionIntent(checkpoint?.intent);
+  if (!evidence || typeof evidence !== "object" || !decodedIntent.ok ||
+    checkpoint?.bindingId !== evidence.bindingId ||
+    memoryControlIntentHash(decodedIntent.value) !== evidence.intentHash ||
+    !controlIntentMatchesMutation(decodedIntent.value, row) || evidence.claimToken !== job.leaseToken ||
+    modelRunId !== row.modelRunId || job.chatId !== row.sourceChatId ||
+    job.sourceMessageId !== row.sourceMessageId ||
+    evidence.mutationHash !== controlMutationHash(row)) {
+    return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+  }
+  const binding = await tx.memoryExecutionBinding.findFirst({ where: {
+    id: evidence.bindingId, userId, memoryJobId: jobId, ownerType: "JOB",
+    logicalRole: "MEMORY_CONTROL", ordinal: { in: [0, 2] }, state: "SUCCEEDED", relationsDetachedAt: null
+  } });
+  if (!binding || binding.acceptedOutputHash !== memoryControlAcceptedOutputHash(
+    binding.inputHash, evidence.intentHash)) {
+    return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+  }
+  if (evidence.selectedHandle && evidence.candidateMapHash && evidence.selectionBindingId) {
+    const selected = await tx.memoryExecutionBinding.findFirst({ where: {
+      id: evidence.selectionBindingId, userId, memoryJobId: jobId, ownerType: "JOB",
+      logicalRole: "MEMORY_CONTROL", ordinal: { in: [1, 4] }, state: "SUCCEEDED", relationsDetachedAt: null
+    } });
+    if (!selected || !row.targetFactId || !row.expectedTargetVersionId ||
+      selected.acceptedOutputHash !== memoryTargetSelectionAcceptedOutputHash({
+        candidateMapHash: evidence.candidateMapHash, inputHash: selected.inputHash,
+        selectedFactId: row.targetFactId, selectedHandle: evidence.selectedHandle,
+        selectedVersionId: row.expectedTargetVersionId
+      }) || !sameMemoryExecutionTarget(binding.secretFreeExecutionSnapshot, selected.secretFreeExecutionSnapshot)) {
+      return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+    }
+  } else if (row.action === "FORGET" || row.action === "EDIT") {
+    return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+  }
+  // This write shares the fact/deletion transaction: rollback restores RUNNING;
+  // a crash after commit can report COMMITTED without replaying the mutation.
+  if (recordCommit) {
+    await tx.memoryJob.update({ where: { id: jobId }, data: { commandStatus: "COMMITTED" } });
+    if (row.action === "FORGET" && job.commandSequence !== null) {
+      // This authorization is consumed inside the same transaction that advances
+      // generation for exactly one Forget. Carry only already-ordered successors
+      // across that known advance; an unrelated UI reset/Forget still fences them.
+      await tx.memoryJob.updateMany({ where: {
+        userId, kind: "MEMORY_COMMAND", commandSequence: { gt: job.commandSequence },
+        memoryGenerationSnapshot: job.memoryGenerationSnapshot,
+        state: { in: ["QUEUED", "RETRYABLE_FAILED", "WAITING_FOR_CONFIGURATION", "WAITING_FOR_EGRESS_CONSENT"] }
+      }, data: { memoryGenerationSnapshot: { increment: 1 } } });
     }
   }
 }
@@ -738,6 +819,59 @@ export function createPrismaMemoryMutationAuthorizationRepository(
         sourceMessageId: run.userMessageId,
         targetFactId: input.targetFactId
       }, now);
+    },
+
+    async mintForCommand(
+      userId: string, input: MemoryMutationCommandAuthorizationMint, now = new Date()
+    ): Promise<MemoryMutationAuthorizationSnapshot> {
+      if (!bounded(input.memoryJobId, 256) || !bounded(input.claimToken, 128) ||
+        !validTargetShape(input) || !controlIntentMatchesMutation(input.controlIntent, input)) {
+        return memoryPersistenceFailure("memory_input_invalid");
+      }
+      return withLockedMemoryTransaction(client, userId, async (tx) => {
+        const source = await requireMemoryCommandSource(tx, userId, input.memoryJobId, input.claimToken, now);
+        if (source.modelRunId !== input.modelRunId || source.job.chatId !== input.chatId ||
+          source.safeText !== input.sourceText) return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+        const evidence: CommandMutationEvidence = {
+          bindingId: input.bindingId, claimToken: input.claimToken,
+          intentHash: memoryControlIntentHash(input.controlIntent), mutationHash: controlMutationHash(input),
+          candidateMapHash: input.targetSelectionCandidateMapHash ?? null,
+          selectedHandle: input.targetSelectionSelectedHandle ?? null,
+          selectionBindingId: input.targetSelectionBindingId ?? null
+        };
+        const requestId = `command-v1:${input.memoryJobId}`;
+        const nonceHash = memoryMutationNonceHash(userId, requestId);
+        const previous = await tx.memoryMutationAuthorization.findUnique({
+          select: authorizationSelect, where: { userId_nonceHash: { userId, nonceHash } }
+        });
+        if (previous && previous.consumedAt === null && previous.expiresAt <= now &&
+          matchesUse(previous, { ...input, authorizationId: previous.id }, requestId)) {
+          // Lease recovery refreshes only the still-unconsumed authority window;
+          // request/nonce/payload identity and any eventual receipt stay exact.
+          await tx.memoryMutationAuthorization.update({ where: { id: previous.id },
+            data: { expiresAt: new Date(now.getTime() + MEMORY_MUTATION_AUTHORIZATION_TTL_MS) } });
+        }
+        const row = await mintAuthorizationInTransaction(tx, userId, {
+          action: input.action, authorizedPayloadHash: input.authorizedPayloadHash,
+          confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+          exactSourceStart: 0, exactSourceEnd: source.text.length,
+          expectedTargetVersionId: input.expectedTargetVersionId,
+          expiresAt: new Date(now.getTime() + MEMORY_MUTATION_AUTHORIZATION_TTL_MS),
+          modelRunId: source.modelRunId,
+          nonceHash, requestId,
+          sourceChatId: source.job.chatId, sourceMessageId: source.job.sourceMessageId,
+          targetFactId: input.targetFactId
+        }, now);
+        await tx.memoryJob.update({ where: { id: input.memoryJobId }, data: {
+          commandResult: {
+            ...(source.job.commandResult && typeof source.job.commandResult === "object" && !Array.isArray(source.job.commandResult)
+              ? source.job.commandResult : {}), ...evidence
+          } as Prisma.InputJsonValue
+        } });
+        // Validate exactly the proof consume will use, without recording a commit.
+        await requireCurrentCommandMutationLifecycle(tx, userId, row, false);
+        return row;
+      });
     },
 
     async mintForControl(

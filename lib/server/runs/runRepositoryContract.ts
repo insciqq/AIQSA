@@ -457,6 +457,7 @@ export type PreparingRunAdmissionResult = Readonly<{
   chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   folderId: string | null;
   memoryGeneration: number;
+  memoryCommandQueued?: boolean;
   memoryRevision: number;
   runId: string;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;

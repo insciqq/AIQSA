@@ -11,6 +11,7 @@ export const MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS = 1_500;
 // fence. System Model utilities scale with the configured admission budget
 // without extending embedding or reranker provider budgets.
 export const MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS = 8_000;
+export const MEMORY_CONTROL_SCREEN_OPTIONAL_MAXIMUM_MS = 1_500;
 export const MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS = 2_000;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS = 4_000;
 // Authoritative rejoin plus the synchronous packer after a reranking stage.
@@ -57,6 +58,7 @@ export type MemoryRetrievalDeadline = Readonly<{
 
 export type OptionalMemoryUtilityRole =
   | "CONTROL"
+  | "CONTROL_SCREEN"
   | "QUERY_EMBED"
   | "QUERY_RESOLVE"
   | "HISTORY_RELEVANCE"
@@ -82,7 +84,7 @@ function optionalUtilityTimeoutCode(role: OptionalMemoryUtilityRole): string {
 }
 
 const optionalUtilityTimeoutCodes: ReadonlySet<string> = new Set(
-  (["CONTROL", "QUERY_EMBED", "QUERY_RESOLVE", "HISTORY_RELEVANCE", "RERANK"] as const)
+  (["CONTROL", "CONTROL_SCREEN", "QUERY_EMBED", "QUERY_RESOLVE", "HISTORY_RELEVANCE", "RERANK"] as const)
     .map(optionalUtilityTimeoutCode)
 );
 
@@ -107,6 +109,10 @@ export function isMemoryDeadlineExhaustion(error: unknown): boolean {
 const optionalUtilityBudget = Object.freeze({
   CONTROL: {
     maximumMs: null,
+    reserveMs: MEMORY_CONTROL_READ_RESERVE_MS
+  },
+  CONTROL_SCREEN: {
+    maximumMs: MEMORY_CONTROL_SCREEN_OPTIONAL_MAXIMUM_MS,
     reserveMs: MEMORY_CONTROL_READ_RESERVE_MS
   },
   QUERY_EMBED: {

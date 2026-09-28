@@ -316,7 +316,7 @@ describe("client-safe Memory action feedback", () => {
         }}
       />
     );
-    expect(screen.getByText("Saved for this chat only.")).toBeVisible();
+    expect(screen.getByText("Not saved to Memory. Available in this chat only.")).toBeVisible();
     expect(screen.getByText("This chat only")).toBeVisible();
   });
 });

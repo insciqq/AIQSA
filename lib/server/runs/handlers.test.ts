@@ -2883,7 +2883,7 @@ describe("model run route handlers", () => {
       }
     ];
     const { repository, state } = createMemoryRepository(entitledFakeModel, conversationContext, null, {
-      contextWindow: 280,
+      contextWindow: 400,
       defaultMaxOutputTokens: 20,
       nativePdfInput: false,
       nativeSearch: true,

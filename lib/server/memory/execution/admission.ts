@@ -1,3 +1,4 @@
+import { requireMemoryCommandSource } from "../commands/sourceAuthority";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import {
@@ -117,8 +118,15 @@ async function assertActiveExecutionOwner(
   owner: MemoryExecutionOwner,
   now: Date
 ): Promise<void> {
-  if (owner.type === "JOB" || owner.type === "MODEL_RUN_TOOL_CALL" ||
-    owner.type === "INBOUND_MCP_REQUEST") return;
+  if (owner.type === "JOB") {
+    const job = await tx.memoryJob.findFirst({ select: { kind: true },
+      where: { id: owner.memoryJobId, userId } });
+    if (job?.kind === "MEMORY_COMMAND") {
+      await requireMemoryCommandSource(tx, userId, owner.memoryJobId, undefined, now);
+    }
+    return;
+  }
+  if (owner.type === "MODEL_RUN_TOOL_CALL" || owner.type === "INBOUND_MCP_REQUEST") return;
   const rows = owner.type === "RETRIEVAL_ATTEMPT"
     ? await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id"

@@ -6,6 +6,7 @@ import {
   advanceMemoryLexicalProjectionRevisionFence,
   claimMemoryLexicalProjectionEvents,
   enqueueMemoryLexicalProjectionUserPurge,
+  listMemoryLexicalProjectionVerificationCandidates,
   resetMemoryLexicalProjection,
   settleMemoryLexicalProjectionFailure,
   settleMemoryLexicalProjectionSuccess
@@ -87,13 +88,18 @@ async function createFixture(): Promise<Fixture> {
 
 async function cleanupFixture(fixture: Fixture): Promise<void> {
   await prisma.memorySearchEntry.deleteMany({ where: { userId: fixture.userId } });
-  await prisma.memoryIndexGeneration.deleteMany({ where: { userId: fixture.userId } });
   await prisma.memoryLexicalProjectionEvent.deleteMany({
     where: { userId: fixture.userId }
   });
   await prisma.memoryLexicalProjectionState.deleteMany({
     where: { userId: fixture.userId }
   });
+  await prisma.$transaction([
+    prisma.userMemorySettings.update({
+      data: { activeIndexGenerationId: null }, where: { userId: fixture.userId }
+    }),
+    prisma.memoryIndexGeneration.deleteMany({ where: { userId: fixture.userId } })
+  ]);
   await prisma.user.deleteMany({ where: { id: fixture.userId } });
 }
 
@@ -136,6 +142,65 @@ async function quiesceUnrelatedProjectionEvents(
 }
 
 describe("Memory lexical projection PostgreSQL repository", () => {
+  it("verifies degraded active generations without revisiting superseded ones", async () => {
+    const fixture = await createFixture();
+    try {
+      await prisma.$transaction([
+        prisma.userMemorySettings.update({
+          data: { activeIndexGenerationId: fixture.generationId },
+          where: { userId: fixture.userId }
+        }),
+        prisma.memoryIndexGeneration.update({
+          data: { activatedAt: new Date(), readyAt: new Date(), state: "ACTIVE" },
+          where: { id: fixture.generationId }
+        })
+      ]);
+      await prisma.memoryLexicalProjectionState.create({ data: {
+        analysisProfile: "test-analysis",
+        backendKind: "OPENSEARCH",
+        indexGenerationId: fixture.generationId,
+        mappingVersion: "test-mapping",
+        normalizationVersion: "test-normalization",
+        retrievalPipelineVersion: "test-retrieval",
+        status: "DEGRADED",
+        targetMemoryRevision: 7,
+        userId: fixture.userId
+      } });
+      const superseded = await prisma.memoryIndexGeneration.create({ data: {
+        chunkingVersion: "memory-projection-test-chunking-v1",
+        generation: 2,
+        indexMode: "LEXICAL_ONLY",
+        indexedThroughMemoryRevision: 7,
+        languageProfile: "multilingual",
+        normalizationVersion: "memory-unicode-query-analysis-v1",
+        retrievalPipelineVersion: "memory-personal-retrieval-v63",
+        activatedAt: new Date(),
+        readyAt: new Date(),
+        state: "SUPERSEDED",
+        supersededAt: new Date(),
+        targetMemoryRevision: 7,
+        userId: fixture.userId
+      } });
+      await prisma.memoryLexicalProjectionState.create({ data: {
+        analysisProfile: "test-analysis",
+        backendKind: "OPENSEARCH",
+        indexGenerationId: superseded.id,
+        mappingVersion: "test-mapping",
+        normalizationVersion: "test-normalization",
+        retrievalPipelineVersion: "test-retrieval",
+        status: "DEGRADED",
+        targetMemoryRevision: 7,
+        userId: fixture.userId
+      } });
+      const selected = await listMemoryLexicalProjectionVerificationCandidates(prisma, 100);
+      expect(selected.filter((candidate) => candidate.userId === fixture.userId))
+        .toEqual([{ indexGenerationId: fixture.generationId, userId: fixture.userId }]);
+      expect(selected.some((candidate) =>
+        candidate.indexGenerationId === superseded.id)).toBe(false);
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
   it("advances a ready projection through a document-stable revision fence", async () => {
     const fixture = await createFixture();
     const now = new Date("2026-08-31T03:05:00.000Z");

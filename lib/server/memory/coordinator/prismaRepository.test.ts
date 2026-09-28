@@ -33,6 +33,99 @@ function jobClaim(): MemoryJobClaim {
 }
 
 describe("Prisma memory coordinator repository preflight", () => {
+  it.each(["COMMITTED", "REJECTED", "AMBIGUOUS", "FAILED", "UNKNOWN", "STALE"] as const)(
+    "settles durable %s command receipts without repeating source validation or apply", async (commandStatus) => {
+      const apply = vi.fn();
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValueOnce([{ id: "user-1" }])
+          .mockResolvedValueOnce([{ commandStatus, commandOperation: "SAVE", commandResult: { private: "checkpoint" } }]),
+        memoryJob: { updateMany: vi.fn(async () => ({ count: 1 })) }
+      };
+      const repository = createPrismaMemoryCoordinatorRepository({
+        $transaction: async (consume: (value: typeof tx) => Promise<boolean>) => consume(tx)
+      } as never);
+      expect(await repository.commitJobSuccess({ acceptedResultHash: "a".repeat(64), apply,
+        claim: { ...jobClaim(), kind: "MEMORY_COMMAND", chatId: "chat", sourceMessageId: "source" },
+        now: new Date("2026-08-21T10:00:00.000Z"), stage: "old_worker_stage"
+      })).toBe(true);
+      expect(apply).not.toHaveBeenCalled();
+      expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+      expect(tx.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ state: "SUCCEEDED", stage: `command_${commandStatus.toLowerCase()}`,
+          commandIntent: Prisma.DbNull, commandResult: Prisma.DbNull }),
+        where: expect.objectContaining({ commandStatus })
+      }));
+    });
+
+  it.each([
+    { status: "REJECTED", operation: "UNKNOWN", value: { classification: "NONE" }, retained: true },
+    { status: "REJECTED", operation: "UNKNOWN", value: { classification: "NONE", private: "checkpoint" }, retained: false },
+    { status: "COMMITTED", operation: "SAVE", value: { classification: "NONE" }, retained: false }
+  ])("preserves only the exact successful ordinary-command marker ($status/$retained)", async ({ status, operation, value, retained }) => {
+    const tx = { $queryRaw: vi.fn().mockResolvedValueOnce([{ id: "user-1" }])
+      .mockResolvedValueOnce([{ commandStatus: status, commandOperation: operation, commandResult: value }]),
+      memoryJob: { updateMany: vi.fn(async () => ({ count: 1 })) } };
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: async (consume: (value: typeof tx) => Promise<boolean>) => consume(tx)
+    } as never);
+    await repository.commitJobSuccess({ acceptedResultHash: "a".repeat(64),
+      claim: { ...jobClaim(), kind: "MEMORY_COMMAND" }, now: new Date(), stage: null });
+    expect(tx.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      commandIntent: Prisma.DbNull, commandResult: retained ? { classification: "NONE" } : Prisma.DbNull
+    }) }));
+  });
+
+  it("erases private command checkpoints on failure and terminal gates while retaining retry checkpoints", async () => {
+    const tx = { $queryRaw: vi.fn(async () => [{ id: "user-1" }]),
+      memoryJob: { updateMany: vi.fn(async (_input: { data: Record<string, unknown> }) => ({ count: 1 })) } };
+    const repository = createPrismaMemoryCoordinatorRepository({ ...tx,
+      $transaction: async (consume: (value: typeof tx) => Promise<boolean>) => consume(tx)
+    } as never);
+    const claim = { ...jobClaim(), kind: "MEMORY_COMMAND" as const };
+    const now = new Date();
+    await repository.terminalJob({ claim, now, errorCode: "memory_job_failed" });
+    await repository.settleJobGate({ claim, now, decision: { status: "CANCELLED", errorCode: "memory_owner_unavailable" } });
+    await repository.resolveWaitingJob({ job: claim, now, decision: { status: "STALE", errorCode: "memory_job_stale" } });
+    for (const [input] of tx.memoryJob.updateMany.mock.calls) {
+      expect(input).toMatchObject({ data: { commandIntent: Prisma.DbNull, commandResult: Prisma.DbNull } });
+    }
+    tx.memoryJob.updateMany.mockClear();
+    await repository.retryJob({ claim, now, nextAttemptAt: now, errorCode: "memory_job_failed" });
+    await repository.settleJobGate({ claim, now, decision: { status: "WAITING_FOR_CONFIGURATION", errorCode: "memory_job_failed" } });
+    for (const [input] of tx.memoryJob.updateMany.mock.calls) {
+      expect(input).not.toHaveProperty("data.commandIntent");
+      expect(input).not.toHaveProperty("data.commandResult");
+    }
+  });
+
+  it("erases command checkpoints during unsupported-handler and unavailable-owner batch retirement", async () => {
+    const executeRaw = vi.fn(async (_query: Prisma.Sql) => 1);
+    const repository = createPrismaMemoryCoordinatorRepository({ $executeRaw: executeRaw } as never);
+    await repository.terminalUnavailableJobs?.({ now: new Date(), supportedKinds: ["INDEX_HISTORY"] });
+    await repository.cancelUnavailableJobOwners({ now: new Date(), kinds: ["MEMORY_COMMAND"] });
+    for (const [query] of executeRaw.mock.calls) {
+      expect(query.sql).toContain('"commandIntent" = NULL');
+      expect(query.sql).toContain('"commandResult" = NULL');
+    }
+  });
+
+  it("does not settle a command without a durable terminal receipt", async () => {
+    const apply = vi.fn();
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValueOnce([{ id: "user-1" }]).mockResolvedValueOnce([]),
+      memoryJob: { updateMany: vi.fn() }
+    };
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: async (consume: (value: typeof tx) => Promise<boolean>) => consume(tx)
+    } as never);
+    expect(await repository.commitJobSuccess({ acceptedResultHash: "a".repeat(64), apply,
+      claim: { ...jobClaim(), kind: "MEMORY_COMMAND" },
+      now: new Date("2026-08-21T10:00:00.000Z"), stage: null
+    })).toBe(false);
+    expect(apply).not.toHaveBeenCalled();
+    expect(tx.memoryJob.updateMany).not.toHaveBeenCalled();
+  });
+
   it("checks schema bindings before the rollback-only lifecycle probe", async () => {
     const queryRaw = vi.fn(async () => []);
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>

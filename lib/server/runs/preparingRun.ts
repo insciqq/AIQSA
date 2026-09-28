@@ -14,6 +14,7 @@ import {
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
   MEMORY_RETRIEVAL_PLANNER_VERSION,
   MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS,
+  MEMORY_STANDING_MAX_FACTS,
   type MemoryRetrievalItemType,
   type MemorySafeProjectionKind
 } from "../../domain/memory/retrieval";
@@ -25,9 +26,12 @@ export const MEMORY_PREPARING_BASE_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024;
 export const MEMORY_PREPARING_CONTEXT_MAX_TOKENS = MEMORY_CONTEXT_HARD_CAP_TOKENS;
 export const MEMORY_PREPARING_AGGREGATION_CONTEXT_MAX_TOKENS =
   MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS;
-export const MEMORY_PREPARING_ITEM_LIMIT = MEMORY_CONTEXT_MAX_ITEMS;
+// Standing facts occupy a separate, bounded section ahead of the existing
+// dynamic item limits. Browser sources filter standing-only entries, so their
+// forty-item projection ceiling still bounds the dynamic evidence list.
+export const MEMORY_PREPARING_ITEM_LIMIT = MEMORY_CONTEXT_MAX_ITEMS + MEMORY_STANDING_MAX_FACTS;
 export const MEMORY_PREPARING_AGGREGATION_ITEM_LIMIT =
-  MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS;
+  MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS + MEMORY_STANDING_MAX_FACTS;
 export const MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS = 4_096;
 export const MEMORY_PREPARING_QUERY_PLANNER_VERSION =
   MEMORY_RETRIEVAL_PLANNER_VERSION;
@@ -448,7 +452,11 @@ export function validateMemoryPreparingAttemptResult(
   const itemLimit = aggregationRequested || budgetProfile === "COMPLEX"
     ? MEMORY_PREPARING_AGGREGATION_ITEM_LIMIT
     : MEMORY_PREPARING_ITEM_LIMIT;
-  if (items.length > itemLimit) {
+  const standingCount = items.filter((item) => item.itemType === "FACT_VERSION" &&
+    isRecord(item.featureSnapshot) && item.featureSnapshot.standingFact === true).length;
+  const dynamicLimit = itemLimit - MEMORY_STANDING_MAX_FACTS;
+  if (items.length > itemLimit || standingCount > MEMORY_STANDING_MAX_FACTS ||
+    items.length - standingCount > dynamicLimit) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
   if (input.degradationCode !== undefined && input.degradationCode !== null &&

@@ -405,7 +405,10 @@ describe("provider-neutral personal context", () => {
   it.each([
     { operation: "SAVE", status: "COMMITTED", version: 1 },
     { operation: "UPDATE", status: "REJECTED", version: 1 },
-    { operation: "NONE", status: "UNAVAILABLE", version: 1 }
+    { operation: "NONE", status: "UNAVAILABLE", version: 1 },
+    { operation: "SAVE", status: "COMMITTED", version: 2 },
+    { operation: "SAVE", status: "REJECTED", version: 2 },
+    { operation: "NONE", status: "UNAVAILABLE", version: 2 }
   ] as const)("bridges the authoritative Memory result without replacing the ordinary answer %#", (
     memoryActionAnswerResult
   ) => {
@@ -430,8 +433,11 @@ describe("provider-neutral personal context", () => {
       role: "user"
     });
     expect(contract).not.toContain("private-secret-sentinel");
-    if (memoryActionAnswerResult.status !== "COMMITTED") {
+    if (memoryActionAnswerResult.version === 1 &&
+      memoryActionAnswerResult.status !== "COMMITTED") {
       expect(contract).toContain("otherwise no reusable change occurred");
+    } else if (memoryActionAnswerResult.version === 2) {
+      expect(contract).toContain("Only this server result establishes whether Personal Memory changed");
     }
   });
 

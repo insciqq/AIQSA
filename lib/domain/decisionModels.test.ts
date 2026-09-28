@@ -13,6 +13,8 @@ describe("optional Skill catalog decision policy", () => {
     expect(decodeDecisionFeatureOverrides(historical)).toEqual(historical);
     expect(decisionFeatureEnabled(historical, "skillCatalogRelevance")).toBe(false);
     expect(decisionFeatureEnabled({}, "skillCatalogRelevance")).toBe(false);
+    expect(decisionFeatureEnabled({}, "memoryControlScreen")).toBe(false);
+    expect(decisionFeatureEnabled({ memoryControlScreen: true }, "memoryControlScreen")).toBe(true);
     expect(decisionFeatureEnabled({ ...historical, skillCatalogRelevance: true }, "skillCatalogRelevance")).toBe(true);
     expect(decodeDecisionFeatureOverrides({ ...historical, skillCatalogRelevance: false })).toEqual({ ...historical, skillCatalogRelevance: false });
   });

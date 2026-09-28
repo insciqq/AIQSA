@@ -22,6 +22,7 @@ import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
 import { createMemoryLifecycleService } from "../lifecycle/service";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
 import {
   MEMORY_HISTORY_SOURCE_PROJECTION_VERSION
 } from "../history/sourceProjection";
@@ -1615,7 +1616,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
     }
   });
 
-  it("embeds a current chunk and degrades another chunk outage without losing lexical rows", async () => {
+  it("embeds a current chunk and aliased tool event while degrading another chunk outage", async () => {
     const fixture = await createFixture();
     const sourceHash = "9".repeat(64);
     const chunkText = "The release checklist uses a blue-green deployment.";
@@ -1809,11 +1810,74 @@ describe("Prisma explicit Memory vector enrichment", () => {
           ]
         });
       });
+      const toolChat = await prisma.chat.create({
+        data: { memorySourceRevision: 1, title: "Memory tool embedding", userId: fixture.userId }
+      });
+      const toolUser = await prisma.message.create({ data: {
+        chatId: toolChat.id, content: textMessageContent("Create the sample report."),
+        role: "user", status: "complete"
+      } });
+      const toolAssistant = await prisma.message.create({ data: {
+        chatId: toolChat.id, content: textMessageContent("The report is ready."),
+        parentMessageId: toolUser.id, role: "assistant", status: "complete"
+      } });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: toolAssistant.id }, where: { id: toolChat.id }
+      });
+      const run = await prisma.modelRun.create({ data: {
+        assistantMessageId: toolAssistant.id, chatId: toolChat.id,
+        modelId: "memory-tool-embedding-model", provider: "memory-tool-embedding-provider",
+        normalizedRequest: {},
+        status: "complete", userId: fixture.userId, userMessageId: toolUser.id
+      } });
+      const occurredAt = new Date("2026-08-10T12:00:02.000Z");
+      const call = await prisma.modelRunToolCall.create({ data: {
+        arguments: {}, completedAt: occurredAt, modelRunId: run.id,
+        ordinal: 0, providerCallId: "embedding-tool-call", result: { task: "QX-418" },
+        roundIndex: 0, state: "complete", toolName: "filesystem.write"
+      } });
+      await prisma.chatMemoryCheckpoint.create({ data: {
+        activeLeafMessageId: toolAssistant.id, branchGeneration: 0,
+        chatId: toolChat.id, lastIndexedMessageId: toolAssistant.id,
+        lastSucceededAt: INITIAL_NOW, pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+        sourceContentHash: sourceHash, sourceRevision: 1, status: "READY",
+        userId: fixture.userId
+      } });
+      await prisma.chatMemoryCheckpointMessage.create({ data: {
+        chatId: toolChat.id, messageId: toolAssistant.id, ordinal: 0,
+        sourceMessageCreatedAt: toolAssistant.createdAt,
+        sourceMessageUpdatedAt: toolAssistant.updatedAt, userId: fixture.userId
+      } });
+      const toolText = "Created the sample report.";
+      const toolAliasText = "qx 418 created the sample report";
+      const toolEvent = await prisma.memoryToolEvent.create({ data: {
+        assistantMessageId: toolAssistant.id, branchGeneration: 0,
+        chatId: toolChat.id, contentHash: memorySha256(toolText),
+        evidenceRootHash: memorySha256({ callId: call.id }), id: randomUUID(),
+        languageCode: "en", modelRunId: run.id, modelRunToolCallId: call.id,
+        normalizedSafeSearchText: toolAliasText, occurredAt, operation: "write",
+        outcome: "SUCCESS", projectionVersion: MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+        redactionState: "NOT_NEEDED", safeProjectedText: toolText,
+        safetyClass: "NORMAL", sourceCallUpdatedAtAtCreation: call.updatedAt,
+        sourcePayloadHash: memorySha256({ task: "QX-418" }),
+        sourceRevisionAtCreation: 1, structuredIdentifiers: { task: "QX-418" },
+        toolName: "filesystem.write", userId: fixture.userId
+      } });
+      const toolEntry = await prisma.memorySearchEntry.create({ data: {
+        embeddingState: "PENDING", indexGenerationId: fixture.generationId,
+        itemType: "TOOL_EVENT", languageCode: "en", normalizedSearchText: toolAliasText,
+        safeContentHash: toolEvent.contentHash, safetyIdentitySnapshot: "4".repeat(64),
+        sourceIdentitySnapshot: "3".repeat(64), suppressionIdentitySnapshot: "2".repeat(64),
+        toolEventId: toolEvent.id, userId: fixture.userId
+      } });
       const itemRepository = createPrismaMemoryItemEmbeddingRepository(prisma);
       await expect(itemRepository.loadTarget(fixture.userId, chunkEntryId))
         .resolves.toMatchObject({ itemId: chunkId, itemType: "RECALL_CHUNK" });
       await expect(itemRepository.loadTarget(fixture.userId, failingChunkEntryId))
         .resolves.toMatchObject({ itemId: failingChunkId, itemType: "RECALL_CHUNK" });
+      await expect(itemRepository.loadTarget(fixture.userId, toolEntry.id))
+        .resolves.toMatchObject({ itemId: toolEvent.id, itemType: "TOOL_EVENT",
+          normalizedSearchText: toolAliasText });
       const jobs = createPrismaMemoryJobRepository(prisma);
       const chunkJob = await jobs.enqueue(fixture.userId, {
         idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
@@ -1831,23 +1895,29 @@ describe("Prisma explicit Memory vector enrichment", () => {
         kind: "EMBED_ITEMS",
         pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
       });
+      const toolJob = await jobs.enqueue(fixture.userId, {
+        idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(toolEntry.id, toolEvent.id),
+        kind: "EMBED_ITEMS", pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+      });
 
+      await coordinator.reconcileNow();
       await coordinator.reconcileNow();
       await coordinator.reconcileNow();
 
       const bindings = await prisma.memoryExecutionBinding.findMany({
         select: { errorCode: true, memoryJobId: true, state: true },
-        where: { memoryJobId: { in: [chunkJob.id, failingChunkJob.id] } }
+        where: { memoryJobId: { in: [chunkJob.id, failingChunkJob.id, toolJob.id] } }
       });
       expect(bindings).toEqual(expect.arrayContaining([
         { errorCode: null, memoryJobId: chunkJob.id, state: "SUCCEEDED" },
+        { errorCode: null, memoryJobId: toolJob.id, state: "SUCCEEDED" },
         {
           errorCode: "embedding_provider_http_error",
           memoryJobId: failingChunkJob.id,
           state: "FAILED"
         }
       ]));
-      expect(bindings).toHaveLength(2);
+      expect(bindings).toHaveLength(3);
       await expect(prisma.memoryJob.findUniqueOrThrow({
         where: { id: chunkJob.id }
       })).resolves.toMatchObject({ state: "SUCCEEDED" });
@@ -1868,10 +1938,17 @@ describe("Prisma explicit Memory vector enrichment", () => {
         embeddingState: "FAILED",
         normalizedSearchText: normalizeMemorySearchText(failingChunkText)
       });
+      await expect(prisma.memorySearchEntry.findUniqueOrThrow({
+        where: { id: toolEntry.id }
+      })).resolves.toMatchObject({
+        embeddingDimension: DIMENSION,
+        embeddingState: "READY",
+        normalizedSearchText: toolAliasText
+      });
       const bindingIds = await prisma.memoryExecutionBinding.findMany({
         select: { id: true },
         where: {
-          memoryJobId: { in: [chunkJob.id, failingChunkJob.id] },
+          memoryJobId: { in: [chunkJob.id, failingChunkJob.id, toolJob.id] },
           userId: fixture.userId
         }
       });
@@ -1880,8 +1957,8 @@ describe("Prisma explicit Memory vector enrichment", () => {
           memoryExecutionBindingId: { in: bindingIds.map(({ id }) => id) },
           userId: fixture.userId
         }
-      })).resolves.toBe(2);
-      expect(embed).toHaveBeenCalledTimes(2);
+      })).resolves.toBe(3);
+      expect(embed).toHaveBeenCalledTimes(3);
     } finally {
       coordinator.stop();
       if (chatId) {

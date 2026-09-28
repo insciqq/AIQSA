@@ -21,6 +21,7 @@ import {
   type PrismaMemoryExecutionService
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
+import type { MemoryExecutionOwner } from "../execution/owner";
 import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import {
   createAcceptedMemoryLearningProvider,
@@ -37,7 +38,7 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v30";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v33";
 export const MEMORY_CONTROL_REASONING_POLICY = "accepted-system-model-parameters" as const;
 export const MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR = 2_048 as const;
 /** The whole turn cannot fit the admitted model's context with its reserve. */
@@ -48,14 +49,15 @@ export const MEMORY_CONTROL_STATEMENT_TOO_LONG =
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v28",
-  promptVersion: "memory-control-prompt-v33",
+  policyVersion: "memory-control-policy-v30",
+  promptVersion: "memory-control-prompt-v36",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
     reasoningPolicy: MEMORY_CONTROL_REASONING_POLICY,
     reasoningOutputTokenFloor: MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR,
-    version: 25
+    referencePolicy: "offered-only-v1",
+    version: 27
   }),
   schemaVersion: MEMORY_ACTION_CONTROL_SCHEMA_VERSION
 });
@@ -75,6 +77,9 @@ export type MemoryControlResult =
 export type MemoryControlService = Readonly<{
   decide(input: Readonly<{
     attemptId: string;
+    owner?: MemoryExecutionOwner;
+    /** One separate safe-transient command retry; selector retains ordinal 1. */
+    ordinal?: 0 | 2;
     context: MemoryActionIntentContext;
     /**
      * Reports the opaque durable binding as soon as admission creates it.
@@ -275,7 +280,10 @@ function awaitControlProviderResult<T>(
 /** Treat provider output as another untrusted egress source. A model can echo
  * or invent credential-shaped text even when every input field was already
  * projected, so bind and persist only the locally re-decoded safe intent. */
-function sanitizeProviderIntent(intent: MemoryActionIntent): MemoryActionIntent | null {
+function sanitizeProviderIntent(
+  intent: MemoryActionIntent,
+  offeredMemoryRefs: readonly string[]
+): MemoryActionIntent | null {
   const projected: MemoryActionIntent = {
     ...intent,
     entityMentions: intent.entityMentions.flatMap((mention) => {
@@ -291,7 +299,10 @@ function sanitizeProviderIntent(intent: MemoryActionIntent): MemoryActionIntent 
       return projected.eligible && projected.safeText ? [projected.safeText] : [];
     }),
     queryText: safeNullableControlText(intent.queryText),
-    referencedMemoryRef: intent.referencedMemoryRef === null
+    // A provider-generated identifier is not a reference. Drop it before
+    // hashing/checkpointing so a valid targetQuery can reach strict selection.
+    referencedMemoryRef: intent.referencedMemoryRef === null ||
+      !offeredMemoryRefs.includes(intent.referencedMemoryRef)
       ? null
       : sanitizeMemoryUtilityText(intent.referencedMemoryRef).redacted
         ? null
@@ -429,8 +440,8 @@ export function createMemoryControlService(input: Readonly<{
       try {
         const binding = await input.execution.admission.bind(requestInput.userId, {
           inputHash,
-          ordinal: 0,
-          owner: { retrievalAttemptId: requestInput.attemptId, type: "RETRIEVAL_ATTEMPT" },
+          ordinal: requestInput.ordinal ?? 0,
+          owner: requestInput.owner ?? { retrievalAttemptId: requestInput.attemptId, type: "RETRIEVAL_ATTEMPT" },
           role: "MEMORY_CONTROL",
           versions: MEMORY_CONTROL_VERSIONS
         });
@@ -461,7 +472,7 @@ export function createMemoryControlService(input: Readonly<{
           });
           return { bindingId: binding.id, reason, status: "UNAVAILABLE" };
         }
-        const intent = sanitizeProviderIntent(decodedIntent);
+        const intent = sanitizeProviderIntent(decodedIntent, safeContext.memoryRefs);
         if (!intent) {
           await input.execution.lifecycle.settle(requestInput.userId, binding.id, {
             acceptedOutputHash: null,

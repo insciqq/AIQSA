@@ -85,6 +85,30 @@ describe("bounded observability runtime", () => {
       .toMatchObject({ code, outcome: "failed", level: "error" });
   });
 
+  it("reports a Dream no-plan evaluation with only an allowlisted code and source count", () => {
+    const line = serializeEvent("runtime_lifecycle", {
+      subsystem: "memory",
+      stage: "reconcile",
+      outcome: "skipped",
+      code: "memory_synthesis_plan_unavailable",
+      count: 3,
+      userId: "PRIVATE_USER",
+      messageId: "PRIVATE_MESSAGE",
+      factId: "PRIVATE_FACT",
+      sourceText: "PRIVATE_SOURCE"
+    } as never)!;
+    expect(JSON.parse(line)).toMatchObject({
+      code: "memory_synthesis_plan_unavailable",
+      count: 3,
+      event: "runtime_lifecycle",
+      level: "info",
+      outcome: "skipped",
+      stage: "reconcile",
+      subsystem: "memory"
+    });
+    expect(line).not.toContain("PRIVATE_");
+  });
+
   it("generates nonzero lowercase trace ids and immutable allowlisted contexts", () => {
     for (let index = 0; index < 100; index += 1) expect(createTraceId()).toMatch(/^(?!0{32}$)[a-f0-9]{32}$/);
     runWithContext({ trace_id: "0".repeat(32), run_id: "run-1", user_id: "secret-canary" } as never, () => {

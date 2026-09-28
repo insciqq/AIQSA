@@ -246,7 +246,10 @@ ResolvedMemoryIdentity {
 
   if (predicate === "product_status") {
     const subjectKey = productSubject(input.identity, profile);
-    if (!subjectKey || value.state === null || !productStates.has(value.state) ||
+    if (value.state !== null && !productStates.has(value.state)) {
+      invalid("memory_fact_state_unsupported");
+    }
+    if (!subjectKey || value.state === null ||
       !onlyFields(value, ["state"])) invalid();
     return slotResult({
       category: "about_you",

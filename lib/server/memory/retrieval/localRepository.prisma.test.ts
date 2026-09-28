@@ -1318,6 +1318,138 @@ describe("local Memory retrieval on PostgreSQL", () => {
     await prisma.$disconnect();
   });
 
+  it("loads reusable personal facts without relying on the search index", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const plan = planMemoryRetrieval({
+      currentUserText: "Explain a lunar eclipse.",
+      now: fixtureNow
+    });
+    const snapshot = await repository.snapshot({
+      assistantId: null,
+      chatId: fixture.currentChatId,
+      now: fixtureNow,
+      plan,
+      userId: fixture.userId
+    });
+    const standing = await repository.loadStandingFacts(snapshot);
+    const ids = standing.map(({ candidate }) => candidate.itemId);
+    expect(ids).toContain(fixture.directUnindexedFactVersionId);
+    expect(ids).toContain(fixture.enFactVersionId);
+    expect(ids).toContain(fixture.automaticSensitiveFactVersionId);
+    expect(ids).not.toContain(fixture.foreignFactVersionId);
+    expect(ids).not.toContain(fixture.expiredFactVersionId);
+    expect(ids).not.toContain(fixture.staleAutomaticFactVersionId);
+    expect(ids).not.toContain(fixture.legacyFolderFactVersionId);
+    expect(ids).not.toContain(fixture.legacyAssistantFactVersionId);
+    expect(ids).not.toContain(fixture.legacyChatFactVersionId);
+    expect(ids).not.toContain(fixture.movedHistoricalMacbookFactVersionId);
+    expect(standing.every(({ candidate }) =>
+      candidate.metadata.modality !== "PATTERN" &&
+      candidate.metadata.scopeType === "GLOBAL_USER" &&
+      candidate.featureSnapshot.directFactAuthority === true
+    )).toBe(true);
+    const sourceModes = standing.map(({ candidate }) => candidate.metadata.sourceMode);
+    const firstAutomatic = sourceModes.indexOf("AUTOMATIC");
+    if (firstAutomatic >= 0) {
+      expect(sourceModes.slice(0, firstAutomatic).every((mode) => mode === "EXPLICIT"))
+        .toBe(true);
+      expect(sourceModes.slice(firstAutomatic).every((mode) => mode === "AUTOMATIC"))
+        .toBe(true);
+    }
+  });
+
+  it("rechecks classification, suppression, and forgetting on an issued standing snapshot", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const plan = planMemoryRetrieval({ currentUserText: "An unrelated question.", now: fixtureNow });
+    const snapshot = await repository.snapshot({
+      assistantId: null, chatId: fixture.currentChatId, now: fixtureNow,
+      plan, userId: fixture.userId
+    });
+    const version = await prisma.memoryFactVersion.findUniqueOrThrow({
+      select: {
+        factId: true, systemFrom: true,
+        safetyClassifiedAt: true,
+        safetyClassifierExecutionId: true,
+        safetyClassifierProviderId: true,
+        safetyClassifierModelId: true,
+        safetyClassifierPolicyVersion: true,
+        safetyClassificationReasonCode: true
+      },
+      where: { id: fixture.enFactVersionId }
+    });
+    const loaded = async () => (await repository.loadStandingFacts(snapshot))
+      .some(({ candidate }) => candidate.itemId === fixture.enFactVersionId);
+    expect(await loaded()).toBe(true);
+    try {
+      await prisma.memoryFactVersion.update({
+        data: {
+          safetyClassificationState: "PENDING",
+          safetyClassifiedAt: null,
+          safetyClassifierExecutionId: null,
+          safetyClassifierProviderId: null,
+          safetyClassifierModelId: null,
+          safetyClassifierPolicyVersion: null,
+          safetyClassificationReasonCode: null
+        },
+        where: { id: fixture.enFactVersionId }
+      });
+      expect(await loaded()).toBe(false);
+    } finally {
+      await prisma.memoryFactVersion.update({
+        data: {
+          safetyClassificationState: "CLASSIFIED",
+          safetyClassifiedAt: version.safetyClassifiedAt,
+          safetyClassifierExecutionId: version.safetyClassifierExecutionId,
+          safetyClassifierProviderId: version.safetyClassifierProviderId,
+          safetyClassifierModelId: version.safetyClassifierModelId,
+          safetyClassifierPolicyVersion: version.safetyClassifierPolicyVersion,
+          safetyClassificationReasonCode: version.safetyClassificationReasonCode
+        },
+        where: { id: fixture.enFactVersionId }
+      });
+    }
+    const suppression = await prisma.memorySuppression.create({
+      data: {
+        deletionGeneration: 1,
+        fingerprintKeyVersion: "memory-test-v1",
+        normalizationVersion: "memory-search-normalization-v1",
+        scope: "ALL",
+        userId: fixture.userId
+      }
+    });
+    try {
+      expect(await loaded()).toBe(false);
+    } finally {
+      await prisma.memorySuppression.delete({ where: { id: suppression.id } });
+    }
+    expect(await loaded()).toBe(true);
+    const forgottenAt = new Date(Math.max(Date.now(), version.systemFrom.getTime() + 1));
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryFactVersion.update({
+          data: { state: "FORGOTTEN", systemTo: forgottenAt },
+          where: { id: fixture.enFactVersionId }
+        });
+        await tx.memoryFact.update({
+          data: { currentVersionId: null, forgottenAt, state: "FORGOTTEN" },
+          where: { id: version.factId }
+        });
+      });
+      expect(await loaded()).toBe(false);
+    } finally {
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryFactVersion.update({
+          data: { state: "ACTIVE", systemTo: null },
+          where: { id: fixture.enFactVersionId }
+        });
+        await tx.memoryFact.update({
+          data: { currentVersionId: fixture.enFactVersionId, forgottenAt: null, state: "ACTIVE" },
+          where: { id: version.factId }
+        });
+      });
+    }
+  });
+
   it("keeps Unicode lexical candidates bounded and excludes tenant/scope/source/safety violations", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const enQuery = "preferred editor";

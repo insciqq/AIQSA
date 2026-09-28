@@ -1,6 +1,7 @@
 import type { MemoryExactTextRef } from "./contract";
 
-const controlSyntax = /[\u0000-\u001f\u007f]/u;
+// Source projection preserves line breaks and tabs in direct user testimony.
+const controlSyntax = /[\u0000-\u0008\u000b-\u001f\u007f]/u;
 
 export type MemoryExactTextSpan = Readonly<{
   endOffset: number;

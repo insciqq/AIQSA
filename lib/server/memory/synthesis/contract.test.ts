@@ -54,9 +54,10 @@ describe("Dream synthesis strict contract", () => {
 
   it("keeps a stored PATTERN eligible only with three independent direct roots", () => {
     const sql = memorySynthesisPatternAuthorityPredicate("user-1").sql;
-    expect(sql).toContain('COUNT(DISTINCT source_root."rootKey")');
-    expect(sql).toContain("'explicit:' || root_source_version.\"id\"");
-    expect(sql).toContain("'message:' || support.\"messageId\"");
+    expect(sql).toContain('WITH root_support AS');
+    expect(sql).toContain('second."factId" <> first."factId"');
+    expect(sql).toContain('third."messageId" <> second."messageId"');
+    expect(sql).not.toContain("'explicit:'");
     expect(sql).toContain('support."sourceRole" = \'user\'');
   });
 
@@ -101,7 +102,7 @@ describe("Dream synthesis strict contract", () => {
     }, collapsedPlan)).toThrow(MemorySynthesisContractError);
   });
 
-  it("collapses redundant valid proposals for one durable cluster and reason identity", () => {
+  it("keeps disjoint proposals and deterministically drops overlapping proposals", () => {
     const input = plan();
     const refs = input.clusters[0]!.sources.slice(0, 6).map(({ ref }) => ref);
     const entityRef = input.clusters[0]!.entityRefs[0]!;
@@ -120,11 +121,18 @@ describe("Dream synthesis strict contract", () => {
           reason_code: "repeated_workflow_pattern",
           source_refs: refs.slice(3, 6),
           statement: "The user tends to prefer another wording of that workflow pattern."
+        },
+        {
+          confidence_band: "HIGH",
+          entity_refs: [entityRef],
+          reason_code: "repeated_workflow_pattern",
+          source_refs: refs.slice(1, 4),
+          statement: "The user tends to prefer an overlapping workflow pattern."
         }
       ]
     }, input);
 
-    expect(decoded.patterns).toHaveLength(1);
+    expect(decoded.patterns).toHaveLength(2);
     expect(decoded.patterns[0]?.statement)
       .toBe("The user tends to prefer one recurring workflow pattern.");
   });
@@ -141,12 +149,12 @@ describe("Dream synthesis strict contract", () => {
 
   it("[E06] builds a bounded ref-only prompt with untrusted source labels", () => {
     const request = buildMemorySynthesisRequest(plan());
-    expect(request.name).toBe("submit_memory_synthesis_patterns_v2");
+    expect(request.name).toBe("submit_memory_synthesis_patterns_v3");
     expect(request.systemPrompt).toContain("untrusted");
-    expect(request.systemPrompt).toContain("cluster_ref and reason_code pair");
-    expect(request.systemPrompt).toContain("same narrow recurring predicate");
-    expect(request.systemPrompt).toContain("future-useful predictive value");
-    expect(request.systemPrompt).toContain("otherwise unrelated facts");
+    expect(request.systemPrompt).toContain("combined_overlapping_facts");
+    expect(request.systemPrompt).toContain("same narrow recurring preference");
+    expect(request.systemPrompt).toContain("Every selected source must directly support the entire statement");
+    expect(request.systemPrompt).toContain("Do not join unrelated facts");
     expect(request.userPrompt.length).toBeLessThanOrEqual(64_000);
     expect(request.userPrompt).toContain("instruction_boundary");
     expect(request.userPrompt).toContain('"entity_refs":["E1"]');

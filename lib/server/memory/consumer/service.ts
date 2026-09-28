@@ -88,10 +88,15 @@ export type MemoryConsumerService = Readonly<{
     input: MemoryConsumerForgetInput,
     context?: MemoryConsumerMutationContext
   ): Promise<MemoryConsumerForgetResponse>;
-  get(userId: string, memoryRef: string): Promise<MemoryConsumerItemResponse>;
+  get(
+    userId: string,
+    memoryRef: string,
+    context?: MemoryConsumerMutationContext
+  ): Promise<MemoryConsumerItemResponse>;
   list(
     userId: string,
-    input: MemoryConsumerListInput
+    input: MemoryConsumerListInput,
+    context?: MemoryConsumerMutationContext
   ): Promise<MemoryConsumerListResponse>;
   patchSettings(
     userId: string,
@@ -103,7 +108,8 @@ export type MemoryConsumerService = Readonly<{
   ): Promise<MemoryConsumerResetResponse>;
   search(
     userId: string,
-    input: MemoryConsumerSearchInput
+    input: MemoryConsumerSearchInput,
+    context?: MemoryConsumerMutationContext
   ): Promise<MemoryConsumerListResponse>;
   settings(userId: string): Promise<MemoryConsumerSettingsResponse>;
 }>;
@@ -281,12 +287,31 @@ export function projectMemoryConsumerItem(
     return failure("memory_action_failed");
   }
   const sourceAvailable = summary.sourceMode === "EXPLICIT" || summary.sourceCount > 0;
+  const pattern = summary.modality === "PATTERN";
   return {
-    allowedActions: ["EDIT", "FORGET"],
+    allowedActions: pattern ? ["FORGET"] : ["EDIT", "FORGET"],
     category: category(summary.category),
+    ...(summary.combinedSources ? {
+      combined: {
+        sourceCount: summary.combinedSources.length,
+        sources: summary.combinedSources.map((source) => ({
+          category: category(source.category),
+          createdAt: source.createdAt,
+          memoryRef: refs.mintItem(userId, {
+            allowedOperations: ["READ", "FORGET"],
+            factId: source.factId,
+            factVersionId: source.versionId
+          }, now),
+          provenance: source.sourceMode === "EXPLICIT" ? "SAVED" as const : "LEARNED" as const,
+          sourceAvailable: true,
+          statement: source.statement,
+          updatedAt: source.updatedAt
+        }))
+      }
+    } : {}),
     createdAt: summary.createdAt,
     memoryRef: refs.mintItem(userId, {
-      allowedOperations: ["READ", "EDIT", "FORGET"],
+      allowedOperations: pattern ? ["READ", "FORGET"] : ["READ", "EDIT", "FORGET"],
       factId: summary.id,
       factVersionId: versionId
     }, now),
@@ -442,14 +467,15 @@ export function createMemoryConsumerService(input: Readonly<{
       });
     },
 
-    get(userId, memoryRef) {
+    get(userId, memoryRef, context) {
       return safe(async () => {
         const now = clock();
         const target = await itemTarget(userId, memoryRef, "READ", now);
         const detail = await input.explicitService.get(userId, target.factId);
         const currentVersionId = detail.memory.currentVersionId ??
           detail.memory.actionVersionId;
-        if (detail.memory.factState !== "ACTIVE" || !currentVersionId) {
+        if (detail.memory.factState !== "ACTIVE" || !currentVersionId ||
+          (context?.authority === "DELEGATED_MCP" && detail.memory.modality === "PATTERN")) {
           return failure("memory_not_found");
         }
         if (currentVersionId !== target.factVersionId) {
@@ -459,7 +485,7 @@ export function createMemoryConsumerService(input: Readonly<{
       });
     },
 
-    list(userId, listInput) {
+    list(userId, listInput, context) {
       return safe(async () => {
         const now = clock();
         const response = await input.explicitService.list(userId, {
@@ -467,6 +493,7 @@ export function createMemoryConsumerService(input: Readonly<{
             ? storageCategory(listInput.category)
             : undefined,
           cursor: resolvedCursor(refs, userId, listInput.cursor, now),
+          includePatterns: context?.authority !== "DELEGATED_MCP",
           pageSize: listInput.pageSize,
           scope: { type: "GLOBAL_USER" },
           sourceMode: sourceMode(listInput.provenance),
@@ -519,7 +546,7 @@ export function createMemoryConsumerService(input: Readonly<{
       });
     },
 
-    search(userId, searchInput) {
+    search(userId, searchInput, context) {
       return safe(async () => {
         const now = clock();
         const response = await input.explicitService.search(userId, {
@@ -527,6 +554,7 @@ export function createMemoryConsumerService(input: Readonly<{
             ? storageCategory(searchInput.category)
             : undefined,
           cursor: resolvedCursor(refs, userId, searchInput.cursor, now),
+          includePatterns: context?.authority !== "DELEGATED_MCP",
           pageSize: searchInput.pageSize,
           query: searchInput.query,
           scope: { type: "GLOBAL_USER" },

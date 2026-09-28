@@ -12,6 +12,7 @@ import {
 } from "./transaction";
 
 export type MemoryJobEnqueueInput = Readonly<{
+  commandSequence?: number;
   idempotencyFingerprint: string;
   kind: MemoryJobKind;
   nextAttemptAt?: Date | null;
@@ -123,6 +124,11 @@ export async function enqueueMemoryJob(
     !validToken(input.idempotencyFingerprint, 128) ||
     !validToken(input.pipelineVersion, 64) ||
     !validSource(input.source) ||
+    (input.kind === "MEMORY_COMMAND" ? (
+      input.source?.sourceMessageId === undefined ||
+      !Number.isSafeInteger(input.commandSequence) ||
+      input.commandSequence! <= 0 || input.commandSequence! > 2_147_483_647
+    ) : input.commandSequence !== undefined) ||
     (input.targetFactVersionId !== undefined &&
       !validToken(input.targetFactVersionId, 256)) ||
     (input.kind === "EXTRACT_FACTS" &&
@@ -166,8 +172,12 @@ export async function enqueueMemoryJob(
     }
   });
   if (existing) {
-    const sourceConflict = input.kind === "EXTRACT_FACTS" &&
-      isMemoryDirectMessageExtractionPipeline(input.pipelineVersion)
+    const sourceConflict = input.kind === "MEMORY_COMMAND"
+      ? existing.chatId !== (input.source?.chatId ?? null) ||
+        existing.sourceMessageId !== (input.source?.sourceMessageId ?? null) ||
+        existing.sourceHash !== (input.source?.sourceHash ?? null)
+      : input.kind === "EXTRACT_FACTS" &&
+        isMemoryDirectMessageExtractionPipeline(input.pipelineVersion)
       ? existing.chatId !== (input.source?.chatId ?? null) ||
         existing.sourceMessageId !== (input.source?.sourceMessageId ?? null)
       : existing.chatId !== (input.source?.chatId ?? null) ||
@@ -202,6 +212,11 @@ export async function enqueueMemoryJob(
       nextAttemptAt: input.nextAttemptAt,
       pipelineVersion: input.pipelineVersion,
       targetFactVersionId: input.targetFactVersionId,
+      ...(input.kind === "MEMORY_COMMAND" ? {
+        commandOperation: "UNKNOWN" as const,
+        commandSequence: input.commandSequence,
+        commandStatus: "PENDING" as const
+      } : {}),
       ...(input.source
         ? {
             activeLeafMessageId: input.source.activeLeafMessageId,

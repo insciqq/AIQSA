@@ -2,6 +2,7 @@ import type { MemoryJobKind } from "@prisma/client";
 import type { MemoryCoordinatorPolicy } from "./policy";
 
 export const MEMORY_SAFETY_JOB_KINDS = Object.freeze([
+  "MEMORY_COMMAND",
   // Retired source reconciliation kinds are intentionally not scheduler
   // tiers: source/generation fences are synchronous and those jobs are no
   // longer enqueueable.

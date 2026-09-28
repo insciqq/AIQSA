@@ -21,9 +21,9 @@ import {
 export const MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION =
   "memory-semantic-adjudication-v1";
 export const MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION =
-  "memory-semantic-adjudication-policy-v16";
+  "memory-semantic-adjudication-policy-v18";
 export const MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION =
-  "memory-semantic-adjudication-prompt-v18";
+  "memory-semantic-adjudication-prompt-v20";
 export const MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION =
   "memory-semantic-adjudication-schema-v3";
 export const MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME =
@@ -283,6 +283,9 @@ export function memoryCandidateRequiresSemanticAdjudication(
   candidate: MemoryExtractedCandidate,
   contextRefs: readonly MemoryFactContextRef[] = []
 ): boolean {
+  if (candidate.semanticFrame.speechAct === "COMMAND" &&
+    candidate.semanticFrame.memoryDirective === "NONE" &&
+    candidate.modality === "PREFERENCE") return true;
   if (candidate.entityAnnotationReviewRequired) return true;
   if (candidate.semanticFrame.subjectScope === "USER_RELATIONSHIP_CONTEXT") return true;
   const factContexts = contextRefs.filter(({ kind }) => kind === "FACT_VERSION");
@@ -371,12 +374,17 @@ export function memorySemanticAuthorityAdmitsCandidate(
   // The adjudication output can resolve subject/assertion/temporal authority,
   // but it deliberately cannot invent speech act, polarity, change intent, or
   // a memory directive. UNKNOWN in those fields therefore remains terminal.
+  const durablePreferenceCommand = frame.speechAct === "COMMAND" &&
+    frame.memoryDirective === "NONE" && candidate.modality === "PREFERENCE" &&
+    candidate.temporary === false && frame.changeIntent === "NONE" &&
+    frame.polarity === "AFFIRMED";
   if (frame.speechAct === "UNKNOWN" || frame.polarity === "UNKNOWN" ||
     frame.changeIntent === "UNKNOWN" || frame.memoryDirective === "UNKNOWN" ||
     (frame.speechAct !== "ASSERTION" && !(
       frame.speechAct === "COMMAND" &&
       frame.memoryDirective === "EXPLICIT_REMEMBER"
-    )) || (frame.polarity !== "AFFIRMED" && frame.polarity !== "CORRECTION" &&
+    ) && !durablePreferenceCommand) ||
+    (frame.polarity !== "AFFIRMED" && frame.polarity !== "CORRECTION" &&
     frame.polarity !== "RETRACTION" && !(
       frame.polarity === "NEGATED" && candidate.identityKind === "PROPOSITION"
     ))) {
@@ -763,6 +771,8 @@ export const MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT = [
   "When context_refs is empty, set entity_ref and target_ref to null. For an otherwise ENTAILED new observation with no existing target, use operation NO_RELATION.",
   "ENTAILED plus HIGH is required for a current-user hard fact or relation operation; otherwise return AMBIGUOUS with UNKNOWN or CONTRADICTED.",
   "The complete proposed_statement must be entailed by the direct target with references resolved only through its declared dependencies, preserving the same agent, possessor, subject, object, recipient, beneficiary, relation, and material qualifiers. The target itself must supply the new predicate, state, value, or change; never import unrelated details from context.",
+  "For a short answer to the immediately preceding assistant question, the question may identify the attribute but the user's answer must contain the value. A bare confirmation or a value present only in assistant text is not entailed. Preserve the assistant MESSAGE dependency without treating it as testimony.",
+  "A first-person plural assertion about the user's own team or project is CURRENT_USER work context. Preserve every directly stated tool, version, platform, skill level, and license condition without inferring ownership from use. An expressly active license without a supported product_status state may remain a PROPOSITION.",
   "Interpret relative time in the target using target_message_created_at and time_zone, the persisted source clock used by extraction. These anchors only resolve the target's asserted temporal expression; they never establish an unasserted event, fulfilled condition, permission, or current state. Check the proposed normalization against that expression and its declared temporal dependencies.",
   MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE,
   "CURRENT_USER includes an explicitly established relation to the user's project, activity, or plan, even when a continuation names that same subject without repeating a self pronoun. A project's deadline is a fact about that project in the user's context, not a new claim that the user owns an organization or object. If that relation is unsupported or ambiguous, retain UNKNOWN.",
@@ -771,6 +781,7 @@ export const MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT = [
   "A public bio, external quotation, assistant statement, arbitrary third-party dossier, ungrounded entity, or unresolved pronoun is not USER_RELATIONSHIP_CONTEXT. Return AMBIGUOUS or CONTRADICTED rather than importing it.",
   "Do not turn participation in a purchase, transfer, gift, recommendation, or setup into CURRENT_USER ownership. An item obtained for a distinct recipient is not thereby owned or kept by the current user.",
   "Questions, hypothetical events, unmet conditions, standalone quotations, assistant claims, arbitrary third-party claims, and ambiguous ownership do not establish actual personal facts.",
+  "A durable communication preference can be an imperative with COMMAND speech_act only when its source applies beyond the current assistant task and temporary is false. A one-off direction for this reply, code, document, or image is not a personal preference or plan. If a message mixes a lasting goal or dated personal plan with a request for immediate assistant work, entail only the independent goal or plan; the requested work is not a fact.",
   MEMORY_ASSERTED_PLAN_GUIDANCE,
   "Choose SUPERSEDE_TARGET only when the direct target explicitly revises the exact existing fact: a current state change, a replacement current proposition, or a newly agreed schedule for the same future plan or constraint. A current permission can replace an earlier restriction when the user explicitly cancels that restriction for the same subject and activity. Broader replacement wording does not by itself make these unrelated facts; preserve distinct subjects, activities, times, and independently applicable constraints.",
   "Choose REPLACE_RELATIONSHIP_TARGET only when the direct user explicitly states that a distinct person or thing has become the current holder of the exact same personal relationship described by one FACT_VERSION target. This changes that relationship, not the identity of either subject. Require HIGH ENTAILED ASSERTED CURRENT USER_RELATIONSHIP_CONTEXT; set subject_identity UNRESOLVED and entity_ref null. Keep the new subject's exact grounded mention. A different name alone, an additional relationship, a hypothetical successor, or a former holder never authorizes replacement. Keep every other relationship and property of the previous subject unchanged. A property change about the same subject still uses SUPERSEDE_TARGET.",
@@ -808,9 +819,11 @@ export function memorySemanticAdjudicationPromptPayload(
         predicate_key: candidate.predicateKey,
         subject_key: candidate.subjectKey
       },
+      memory_type: candidate.modality,
       proposed_value: candidate.proposedValue,
       proposed_statement: candidate.statement,
       semantic_frame: candidate.semanticFrame,
+      temporary: candidate.temporary === true,
       temporal: {
         expiration_intent: candidate.expirationIntent,
         normalization: candidate.temporalNormalization

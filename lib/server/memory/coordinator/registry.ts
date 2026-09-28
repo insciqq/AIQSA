@@ -9,6 +9,7 @@ import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
  * handler and a startup completeness check.
  */
 export const MEMORY_COORDINATOR_JOB_KINDS = Object.freeze([
+  "MEMORY_COMMAND",
   "INDEX_HISTORY",
   "EXTRACT_FACTS",
   "EMBED_ITEMS",
@@ -40,6 +41,11 @@ type MemoryCoordinatorJobManifestEntry = Readonly<{
 }>;
 
 export const MEMORY_COORDINATOR_JOB_MANIFEST = Object.freeze({
+  MEMORY_COMMAND: Object.freeze({
+    leaseRequired: true,
+    maxAttempts: 2,
+    retryable: true
+  }),
   EMBED_ITEMS: Object.freeze({
     leaseRequired: true,
     retryable: true

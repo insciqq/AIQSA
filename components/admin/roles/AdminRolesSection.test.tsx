@@ -389,6 +389,9 @@ describe("AdminRolesSection", () => {
     const calls = server(catalog);
     const { reportNotice } = renderSection();
     const picker = await screen.findByRole("button", { name: "Relevance checks deployment" });
+    expect(screen.getByTestId("admin-role-decisions")).toHaveTextContent(
+      "screen the current message for possible Memory commands"
+    );
     expect(screen.getByTestId("admin-role-decisions-status")).toHaveTextContent("Off");
     fireEvent.click(picker);
     fireEvent.click(await screen.findByRole("option", { name: /Jev/ }));

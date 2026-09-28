@@ -13,7 +13,10 @@ import {
 } from "../history/rounds";
 import { loadMemoryRunSources } from "./runProjection";
 
-function client() {
+function client(input: Readonly<{
+  selectionReason?: string;
+  standingFactSearchMatched?: boolean;
+}> = {}) {
   return {
     $queryRaw: vi.fn()
       .mockResolvedValueOnce([{ id: "private-version-1" }])
@@ -56,6 +59,7 @@ function client() {
       bindingId: "binding-1",
       factVersionId: "private-version-1",
       featureSnapshot: {
+        standingFactSearchMatched: input.standingFactSearchMatched ?? false,
         documentTime: "internal-document-time-sentinel",
         evidenceHandle: "internal-evidence-handle-sentinel",
         sourceAuthority: "user_saved",
@@ -64,6 +68,7 @@ function client() {
       includedText: "I prefer exact, concise answers.",
       itemType: "FACT_VERSION",
       recallChunkId: null,
+      selectionReason: input.selectionReason ?? "fact_exact",
       sourceChatIdSnapshot: null,
       sourceMessageIdsSnapshot: [],
       sourceRevisionSnapshot: null
@@ -164,6 +169,20 @@ function historyClient(overrides: Readonly<{
 }
 
 describe("answer Memory source projection", () => {
+  it.each([false, true])("shows standing facts only when search also found them (%s)", async (searchMatched) => {
+    const database = client({
+      selectionReason: "standing.explicit",
+      standingFactSearchMatched: searchMatched
+    });
+    const result = await loadMemoryRunSources(database as never, {
+      clientRefs: createMemoryClientRefService({ encryptionKey: () => randomBytes(32) }),
+      runIds: ["run-1"],
+      userId: "user-1"
+    });
+    expect(result.get("run-1") ?? []).toHaveLength(searchMatched ? 1 : 0);
+    if (!searchMatched) expect(database.memoryFactVersion.findMany).not.toHaveBeenCalled();
+  });
+
   it("uses exact committed run items and emits no repository identifiers", async () => {
     const sources = await loadMemoryRunSources(client() as never, {
       clientRefs: createMemoryClientRefService({ encryptionKey: () => randomBytes(32) }),

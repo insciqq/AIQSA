@@ -150,6 +150,12 @@ export async function touchFrozenMemoryPack(
       decayTouchedAt: null,
       factVersionId: { not: null },
       itemType: "FACT_VERSION",
+      // Standing context alone is not a retrieval/access signal. Filter it
+      // before the limit so it cannot crowd out independently found facts.
+      OR: [
+        { NOT: { selectionReason: { startsWith: "standing." } } },
+        { featureSnapshot: { path: ["standingFactSearchMatched"], equals: true } }
+      ],
       userId: input.userId
     }
   });

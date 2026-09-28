@@ -18,7 +18,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v45");
+      .toBe("memory-fact-extraction-prompt-v47");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -45,6 +45,8 @@ describe("Memory semantic-frame extraction prompt", () => {
       "exact evidence text must entail the complete statement with references resolved only through declared dependencies",
       "subject, semantic relation, object or value, recipient",
       "assistant-role context message is never user testimony",
+      "short answer to the immediately preceding assistant question",
+      "bare confirmation such as yes",
       "copy that item's opaque context_ref into dependency_refs",
       "zero-based ordinal among identical exact-text matches",
       "never a character offset",
@@ -102,6 +104,16 @@ describe("Memory semantic-frame extraction prompt", () => {
       "pasted public bio",
       "arbitrary third-party dossier",
       "profession, employment role, or work identity remains eligible",
+      "first-person plural report about their own team or project",
+      "preserve every value",
+      "Tool use does not imply ownership",
+      "self-assessed skill level or long-term learning goal",
+      "closed set: considering, planned, ordered, owned",
+      "active license or subscription with no matching state",
+      "imperative addressed to the assistant may still assert a durable response preference",
+      "current assistant task or artifact",
+      "A need to change an arrangement that only explains why the user wants the assistant to prepare documents",
+      "independently stated dated vacation",
       "cannot form an employment_status SLOT",
       "structured temporal normalization",
       "target_message.created_at in time_zone",

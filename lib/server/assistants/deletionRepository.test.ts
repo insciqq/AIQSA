@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { createPrismaAssistantDeletionRepository } from "./deletionRepository";
+import { createPrismaAssistantRepository } from "./prismaRepository";
 
 function unknownPostgres(code: string): Prisma.PrismaClientUnknownRequestError {
   return new Prisma.PrismaClientUnknownRequestError(
@@ -34,6 +35,27 @@ function clientWithFailures(...failures: unknown[]) {
 }
 
 describe("Prisma Assistant deletion retries", () => {
+  it.each(["delete", "archive"] as const)("locks the owner before the definition for %s", async (operation) => {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const tx = { $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ text: strings.join(""), values });
+      return [];
+    }) };
+    const client = { $transaction: async (apply: (value: typeof tx) => Promise<unknown>) => apply(tx) } as unknown as PrismaClient;
+    const result = operation === "delete"
+      ? await createPrismaAssistantDeletionRepository(client).delete("owner", "assistant", 3)
+      : await createPrismaAssistantRepository(client).setArchived("owner", "assistant", 3, true);
+
+    expect(result).toEqual({ kind: "not_found" });
+    expect(queries).toHaveLength(2);
+    expect(queries[0]).toMatchObject({ text: expect.stringContaining('FROM "User"'), values: ["owner"] });
+    expect(queries[0]?.text).toContain("FOR UPDATE");
+    expect(queries[1]).toMatchObject({
+      text: expect.stringContaining('FROM "AssistantDefinition"'), values: ["assistant", "owner"]
+    });
+    expect(queries[1]?.text).toContain('"ownerUserId"');
+  });
+
   it.each([
     ["an unknown-request deadlock", unknownPostgres("40P01")],
     ["an unknown-request serialization failure", unknownPostgres("40001")],

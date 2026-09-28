@@ -3,7 +3,7 @@ import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   type MemorySummary
 } from "../../../contracts/memory";
-import { MemoryPersistenceError } from "../persistence/errors";
+import { MemoryPersistenceError, memoryPersistenceFailureCode } from "../persistence/errors";
 import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
 import { memorySha256 } from "../persistence/lexical";
 import {
@@ -929,12 +929,13 @@ describe("explicit Memory service", () => {
       readRepository: readRepository(),
       scopeRepository: scopeRepository()
     });
-    await expect(failing.create("user-1", {
+    const error = await failing.create("user-1", {
       mutationAuthorizationId: "authorization-3",
       scope: { type: "GLOBAL_USER" },
       statement: "Remember an ordinary preference"
-    })).rejects.toEqual(
-      new ExplicitMemoryServiceError("memory_intent_confirmation_required")
-    );
+    }).catch((error: unknown) => error);
+    expect(error).toEqual(new ExplicitMemoryServiceError("memory_intent_confirmation_required"));
+    expect(memoryPersistenceFailureCode(error)).toBe("memory_mutation_authorization_invalid");
+    expect(JSON.stringify(error)).not.toContain("memory_mutation_authorization_invalid");
   });
 });

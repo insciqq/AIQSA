@@ -426,8 +426,8 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
     }).toEqual({
       adjudication: [
         "memory-semantic-adjudication-v1",
-        "memory-semantic-adjudication-policy-v16",
-        "memory-semantic-adjudication-prompt-v18",
+        "memory-semantic-adjudication-policy-v18",
+        "memory-semantic-adjudication-prompt-v20",
         "memory-semantic-adjudication-schema-v3"
       ],
       digest: [
@@ -439,8 +439,8 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       entity: ["memory-entity-resolution-v3", "slot-v3"],
       extraction: [
         "memory-fact-extraction-vnext-v8",
-        "memory-fact-extraction-policy-v32",
-        "memory-fact-extraction-prompt-v45",
+        "memory-fact-extraction-policy-v35",
+        "memory-fact-extraction-prompt-v47",
         "memory-fact-extraction-schema-v5"
       ],
       history: "memory-history-incremental-v10",
@@ -450,12 +450,12 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v69",
+      retrieval: "memory-personal-retrieval-v70",
       synthesis: [
         "memory-synthesis-v2",
-        "memory-synthesis-policy-v4",
-        "memory-synthesis-prompt-v4",
-        "memory-synthesis-schema-v2"
+        "memory-synthesis-policy-v5",
+        "memory-synthesis-prompt-v7",
+        "memory-synthesis-schema-v3"
       ],
       temporal: "memory-temporal-resolution-v3"
     });

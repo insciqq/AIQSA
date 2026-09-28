@@ -1,3 +1,4 @@
+import type { MemoryExecutionOwner } from "../execution/owner";
 import type { MemorySummary } from "../../../contracts/memory";
 import type {
   MemoryActionFeedback,
@@ -49,6 +50,7 @@ export type MemoryIntentAuthorizationRepository = Readonly<{
 export type MemoryIntentActionExecutionInput = Readonly<{
   admissionDeadlineAtMs: number;
   attemptId: string;
+  owner?: Extract<MemoryExecutionOwner, { type: "JOB" }>;
   bindingId: string;
   chatId: string;
   currentUserText: string;
@@ -197,7 +199,7 @@ async function selectedTarget(
       target: ExactTarget;
     }>
 > {
-  if (targets.length === 1 && input.intent.action !== "FORGET") {
+  if (targets.length === 1 && input.intent.action !== "FORGET" && !input.owner) {
     return { kind: "TARGET", target: targets[0]! };
   }
   const bounded = targets.slice(0, 5);
@@ -205,6 +207,7 @@ async function selectedTarget(
   const candidates = bounded.map((target, index) => ({ handle: `c${index}`, target }));
   const selection = await selector.select({
     attemptId: input.attemptId,
+    ...(input.owner ? { owner: input.owner } : {}),
     candidates,
     controlBindingId: input.bindingId,
     currentUserText: input.currentUserText,
@@ -289,6 +292,7 @@ async function resolveTarget(
   }
   const semantic = await search.semantic({
     attemptId: input.attemptId,
+    ...(input.owner ? { owner: input.owner } : {}),
     fallbackText: input.currentUserText,
     query,
     signal: input.signal,
@@ -384,6 +388,7 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
           if (!intent.targetQuery || !input.targetSearch) return null;
           const searched = await input.targetSearch.semantic({
             attemptId: execution.attemptId,
+            ...(execution.owner ? { owner: execution.owner } : {}),
             query: intent.targetQuery,
             signal: execution.signal,
             userId: execution.userId

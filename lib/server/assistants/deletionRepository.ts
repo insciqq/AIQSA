@@ -107,6 +107,9 @@ export function createPrismaAssistantDeletionRepository(
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           const result = await client.$transaction(async (tx) => {
+            // Match Memory admission's owner -> definition -> chat order.
+            // The deletion hook later locks this owner's Memory settings.
+            await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
             // The exclusive row lock also blocks every new reference: inserting
             // a run, chat binding, pin or Project binding takes a key-share
             // lock on this row, so the sets read below can only shrink.

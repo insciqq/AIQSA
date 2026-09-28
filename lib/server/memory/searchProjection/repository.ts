@@ -761,6 +761,13 @@ export async function listMemoryLexicalProjectionVerificationCandidates(
     Prisma.sql`
       SELECT state."userId", state."indexGenerationId"
       FROM "MemoryLexicalProjectionState" AS state
+      INNER JOIN "UserMemorySettings" AS settings
+        ON settings."userId" = state."userId"
+        AND settings."activeIndexGenerationId" = state."indexGenerationId"
+      INNER JOIN "MemoryIndexGeneration" AS generation
+        ON generation."userId" = state."userId"
+        AND generation."id" = state."indexGenerationId"
+        AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
       WHERE state."status" IN (
         'BUILDING'::"MemoryLexicalProjectionStatus",
         'CATCHING_UP'::"MemoryLexicalProjectionStatus",

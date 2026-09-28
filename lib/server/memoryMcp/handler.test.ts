@@ -284,13 +284,14 @@ describe("Personal Memory MCP handler", () => {
       category: undefined,
       provenance: undefined,
       cursor: undefined
-    });
+    }, { authority: "DELEGATED_MCP" });
 
     await client.callTool({
       name: "get_memory",
       arguments: { memoryRef: firstItem.memoryRef }
     });
-    expect(service.get).toHaveBeenCalledWith("owner-1", firstItem.memoryRef);
+    expect(service.get).toHaveBeenCalledWith(
+      "owner-1", firstItem.memoryRef, { authority: "DELEGATED_MCP" });
 
     const updated = await client.callTool({
       name: "update_memory",

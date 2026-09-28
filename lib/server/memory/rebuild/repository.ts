@@ -133,9 +133,9 @@ type ChunkRow = Readonly<{
   contentHash: string;
   id: string;
   languageCode: string;
+  normalizedSafeSearchText: string;
   redactionReasonCodes: string[];
   redactionState: string;
-  safeProjectedText: string;
   safetyClass: string;
   sourceContentHash: string;
   sourceProjectionVersion: string;
@@ -198,11 +198,11 @@ type ToolEventRow = Readonly<{
   languageCode: string;
   modelRunId: string;
   modelRunToolCallId: string;
+  normalizedSafeSearchText: string;
   projectionVersion: string;
   redactionReasonCodes: string[];
   redactionState: string;
   safetyClass: string;
-  safeProjectedText: string;
   sourcePayloadHash: string;
 }>;
 
@@ -582,7 +582,7 @@ async function eligibleChunks(
     SELECT
       chunk."id", chunk."chatId", chunk."branchGeneration",
       chunk."sourceRevisionAtCreation", chunk."contentHash",
-      chunk."safeProjectedText", chunk."languageCode", chunk."safetyClass"::text AS "safetyClass",
+      chunk."normalizedSafeSearchText", chunk."languageCode", chunk."safetyClass"::text AS "safetyClass",
       chunk."redactionState"::text AS "redactionState", chunk."redactionReasonCodes",
       chunk."sourceProjectionVersion", checkpoint."sourceContentHash"
     FROM "MemoryRecallChunk" AS chunk
@@ -660,7 +660,7 @@ async function eligibleChunks(
       itemType: "RECALL_CHUNK" as const,
       languageCode: row.languageCode,
       safeContentHash: row.contentHash,
-      normalizedSearchText: normalizeMemorySearchText(row.safeProjectedText),
+      normalizedSearchText: row.normalizedSafeSearchText,
       safetyIdentitySnapshot: memorySha256({
         classificationPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
         projectionVersion: row.sourceProjectionVersion,
@@ -1013,7 +1013,7 @@ async function eligibleToolEvents(
     SELECT tool_event."assistantMessageId", tool_event."chatId",
       tool_event."contentHash", tool_event."evidenceRootHash", tool_event."id",
       tool_event."languageCode", tool_event."modelRunId",
-      tool_event."modelRunToolCallId", tool_event."safeProjectedText",
+      tool_event."modelRunToolCallId", tool_event."normalizedSafeSearchText",
       tool_event."projectionVersion", tool_event."redactionReasonCodes",
       tool_event."redactionState"::text AS "redactionState",
       tool_event."safetyClass"::text AS "safetyClass",
@@ -1123,7 +1123,7 @@ async function eligibleToolEvents(
       itemId: row.id,
       itemType: "TOOL_EVENT",
       languageCode: row.languageCode,
-      normalizedSearchText: normalizeMemorySearchText(row.safeProjectedText),
+      normalizedSearchText: row.normalizedSafeSearchText,
       safeContentHash: row.contentHash,
       safetyIdentitySnapshot: memorySha256({
         projectionVersion: row.projectionVersion,

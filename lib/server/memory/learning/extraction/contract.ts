@@ -12,9 +12,9 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v32";
+  "memory-fact-extraction-policy-v35";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v45";
+  "memory-fact-extraction-prompt-v47";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -28,7 +28,7 @@ export const MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE =
   "The user's own action or experience has CURRENT_USER scope, including when another person or pet participates. A relationship to someone, or that person's or pet's own state or property, has USER_RELATIONSHIP_CONTEXT scope. Classify the asserted information, not merely the type or role of a mentioned entity. Reporting another subject's property does not turn it into the user's own state or action. Preserve the actor, recipient, and ownership roles without inferring possession.";
 
 export const MEMORY_ASSERTED_PLAN_GUIDANCE =
-  "A directly stated personal intention or commitment is an ASSERTED plan even when it depends on a prerequisite. Preserve the complete prerequisite and prospective wording in the proposition; the asserted fact is the user's plan, not that its condition is met or its future event has happened. Use PLAN with FUTURE perspective for that prospective activity. Such a plan never replaces an actual current residence, role, schedule, or ownership merely because it describes a possible change. An imagined example, question, or conditional possibility without a stated intention or commitment remains hypothetical; do not invent a plan from it.";
+  "A directly stated personal intention or commitment is an ASSERTED plan only when it describes the user's own future activity or durable goal beyond the present assistant task. Preserve its prerequisite and prospective wording in the proposition; the asserted fact is the user's plan, not that its condition is met or its future event has happened. Use PLAN with FUTURE perspective for that activity. A stated need or desired outcome that merely motivates a request for the assistant's immediate deliverable is task context, not an independent personal plan; preparing documents for a change does not establish a lasting plan to make that change. First-person necessity alone is insufficient. In a mixed message, retain an independently asserted scheduled activity or durable goal, including its date, but omit the assistant task and its motivating need. A possible future state never replaces an actual current residence, role, schedule, or ownership. An imagined example, question, or conditional possibility without a stated intention or commitment remains hypothetical; do not invent a plan from it.";
 
 // Context is a bounded non-authoritative aid. The final direct-user target is
 // the only evidence source; every admitted prior message is persisted as an
@@ -176,15 +176,26 @@ export type MemoryFactCandidateRejection = Readonly<{
   reasonCode:
     | "REJECT_AMBIGUOUS"
     | "REJECT_DUPLICATE"
+    | "REJECT_EVIDENCE_INVALID"
+    | "REJECT_EVIDENCE_NOT_IN_TARGET"
+    | "REJECT_ENTITY_UNSUPPORTED"
+    | "REJECT_DEPENDENCY_UNSUPPORTED"
+    | "REJECT_FRAME_INELIGIBLE"
+    | "REJECT_IDENTITY_INVALID"
     | "REJECT_LOW_CONFIDENCE"
+    | "REJECT_NOT_USEFUL"
     /** Evidence starts outside this page's core; its own page covers it. */
     | "REJECT_OUTSIDE_PAGE"
     /** Beyond a full packet: the continuation page resumes at its evidence,
      * or, sharing one evidence start with a full packet, it is not retried. */
     | "REJECT_PACKET_OVERFLOW"
     | "REJECT_SECRET"
+    | "REJECT_PRODUCT_IDENTITY_UNSUPPORTED"
+    | "REJECT_RESIDENCE_IDENTITY_UNSUPPORTED"
+    | "REJECT_STATE_UNSUPPORTED"
     | "REJECT_STALE_SOURCE"
     | "REJECT_TEMPORARY"
+    | "REJECT_TEMPORAL_UNSUPPORTED"
     | "REJECT_UNSUPPORTED";
 }>;
 

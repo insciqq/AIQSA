@@ -28,6 +28,8 @@ import {
   MEMORY_CORE_CONTEXT_TARGET_TOKENS,
   MEMORY_CORE_MAX_FACTS,
   MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES,
+  MEMORY_STANDING_CONTEXT_TARGET_TOKENS,
+  MEMORY_STANDING_MAX_FACTS,
   MEMORY_RETRIEVAL_TARGETED_RAW_ANCHORS_PER_CHAT
 } from "./config";
 import {
@@ -37,6 +39,7 @@ import {
   type MemoryCoreCandidate,
   type MemoryExpandedCandidate,
   type MemoryPackedItem,
+  type MemoryPackedTemporalPresentation,
   type MemoryPackedQueryScopeConstraint,
   type MemoryRankedCandidate,
   type MemoryRetrievalPlan
@@ -67,6 +70,12 @@ const toolObservationPreamble =
 
 const patternPreamble =
   "source_authority derived_pattern is a cautious derived tendency, never a hard current fact. Use it only with its attached direct supports; a newer contradictory user_saved or learned_from_user fact wins.";
+
+const standingFactPreamble =
+  "Current Memory records accompany this turn. Use them only when relevant; do not recite or mention them without a reason. Their modality and dates determine what they describe.";
+
+const temporalPresentationPreamble =
+  "time_status is about temporal meaning, not record lifecycle: elapsed_plan_unconfirmed is no longer a current intention and does not prove completion; past_event is a past occurrence; stale_unconfirmed has not been reconfirmed since its date.";
 
 export const MEMORY_CONTEXT_AGGREGATION_GUIDANCE = [
   "READER-FIRST MEMORY AGGREGATION — reason only from the bounded evidence below.",
@@ -304,6 +313,11 @@ function renderedEvidence(
   const claimState = item.itemType === "FACT_VERSION"
     ? item.recordStatus
     : "timeline_evidence";
+  const timeMeaning = item.temporalPresentation?.kind === "elapsed_plan_unconfirmed"
+    ? "The planned date has passed; this is not an upcoming or current plan. Completion is unknown."
+    : item.temporalPresentation?.kind === "past_event"
+      ? "This event is in the past."
+      : "This statement has not been reconfirmed for more than 30 days; its current status is unknown.";
   return safeJsonLine({
     claim_state: claimState,
     derived: item.derived,
@@ -345,6 +359,9 @@ function renderedEvidence(
         speaker_scope: "user"
       }))
     ],
+    ...(item.temporalPresentation
+      ? { time_status: { ...item.temporalPresentation, meaning: timeMeaning } }
+      : {}),
     temporal_reason: item.temporalReason,
     validity: {
       from: renderedDate(item.validFrom),
@@ -391,6 +408,12 @@ function render(
     plan.aggregationRequested;
   const lines = [
     contextPreamble,
+    ...(items.some(({ item }) => item.section === "STANDING")
+      ? [standingFactPreamble]
+      : []),
+    ...(items.some(({ item }) => item.temporalPresentation)
+      ? [temporalPresentationPreamble]
+      : []),
     ...(items.some(({ item }) => item.itemType === "TOOL_EVENT")
       ? [toolObservationPreamble]
       : []),
@@ -654,6 +677,45 @@ function evidenceRecordStatus(
   return candidate.metadata.historical ? "historical" : "current";
 }
 
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+function temporalPresentation(
+  candidate: MemoryRankedCandidate,
+  now: Date | null,
+  historicalRead: boolean
+): MemoryPackedTemporalPresentation | null {
+  const metadata = candidate.metadata;
+  if (!now || historicalRead || candidate.itemType !== "FACT_VERSION" ||
+    metadata.historical || metadata.lifecycleState !== "ACTIVE") return null;
+  const modality = metadata.modality;
+  if (modality !== "PLAN" && modality !== "INTENTION" && modality !== "EVENT") {
+    return null;
+  }
+  const dated = modality === "EVENT" ? metadata.occurredAt : metadata.expectedAt;
+  if (dated) {
+    if (dated.getTime() >= now.getTime() - DAY_MS) return null;
+    return Object.freeze({
+      date: dated.toISOString(),
+      kind: modality === "EVENT" ? "past_event" : "elapsed_plan_unconfirmed"
+    });
+  }
+  const lastConfirmation = [
+    metadata.lastConfirmedAt,
+    metadata.observedAt,
+    metadata.systemFrom
+  ].filter((value): value is Date => value !== null)
+    .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
+  if (!lastConfirmation ||
+    lastConfirmation.getTime() >= now.getTime() - 30 * DAY_MS) return null;
+  const statementDate = metadata.observedAt ?? metadata.systemFrom ??
+    lastConfirmation;
+  return Object.freeze({
+    date: lastConfirmation.toISOString(),
+    kind: "stale_unconfirmed",
+    statementDate: statementDate.toISOString()
+  });
+}
+
 function retrievalReason(candidate: MemoryRankedCandidate):
 MemoryPackedItem["retrievalReason"] {
   const matches = candidate.featureSnapshot.deterministicMatches ?? [];
@@ -689,6 +751,8 @@ function packedItem(input: Readonly<{
   candidate: MemoryRankedCandidate;
   evidenceHandle: string;
   expansion: MemoryExpandedCandidate;
+  historicalRead: boolean;
+  now: Date | null;
   section: MemoryPackedItem["section"];
   sourceSessionHandle: string | null;
   sourceSessionHandles: ReadonlyMap<string, string>;
@@ -698,6 +762,7 @@ function packedItem(input: Readonly<{
   const { candidate, expansion } = input;
   const rawSafeText = packedSafeText(candidate, expansion);
   const documentTime = documentDate(candidate, expansion);
+  const timeStatus = temporalPresentation(candidate, input.now, input.historicalRead);
   const fact = candidate.itemType === "FACT_VERSION";
   const toolEvent = candidate.itemType === "TOOL_EVENT";
   const item: MemoryPackedItem = {
@@ -759,6 +824,7 @@ function packedItem(input: Readonly<{
       sourceSessionHandle: input.sourceSessionHandle ?? "none"
     }))),
     supportingItemId: expansion.supportingItemId,
+    ...(timeStatus ? { temporalPresentation: timeStatus } : {}),
     temporalReason: input.temporalReason,
     tier: input.tier,
     validFrom: iso(candidate.metadata.validFrom),
@@ -838,16 +904,23 @@ export function memoryRetrievalProjectionMap(
 
 export function packMemoryPersonalContext(input: Readonly<{
   core?: readonly MemoryCoreCandidate[];
+  standing?: readonly MemoryCoreCandidate[];
   expanded: readonly MemoryExpandedCandidate[];
   /** Separately admitted current-fact policy of a deterministic mixed read. */
   factPlan?: MemoryRetrievalPlan;
   hardCapTokens?: number;
   maximumTokens?: number | null;
+  now?: Date;
   plan: MemoryRetrievalPlan;
   questionDirectedTemporalFallback?: boolean;
   ranked: readonly MemoryRankedCandidate[];
   targetTokens?: number;
 }>): MemoryContextPack {
+  const now = input.now ?? null;
+  if (now !== null && (!(now instanceof Date) || !Number.isFinite(now.getTime()))) {
+    throw new Error("memory_context_time_invalid");
+  }
+  const historicalRead = input.plan.mode === "HISTORICAL_MEMORY";
   const aggregation = input.plan.aggregationRequested;
   const questionDirectedTemporalFallback =
     input.questionDirectedTemporalFallback === true;
@@ -903,6 +976,63 @@ export function packMemoryPersonalContext(input: Readonly<{
   const selectedEvidenceRoots = new Set<string>();
   const sourceSessionHandles = new Map<string, string>();
 
+  const standingCandidates = input.standing ?? [];
+  if (standingCandidates.length > MEMORY_STANDING_MAX_FACTS) {
+    omissionCounts.standing_item_limit = standingCandidates.length - MEMORY_STANDING_MAX_FACTS;
+  }
+  for (const standing of standingCandidates.slice(0, MEMORY_STANDING_MAX_FACTS)) {
+    const { candidate, expansion } = standing;
+    const authority = candidate.metadata.sourceAuthority;
+    if (candidate.itemType !== "FACT_VERSION" ||
+      candidate.featureSnapshot.tier !== "DYNAMIC" ||
+      candidate.featureSnapshot.directFactAuthority !== true ||
+      !candidate.metadata.current || candidate.metadata.historical ||
+      candidate.metadata.lifecycleState !== "ACTIVE" ||
+      candidate.metadata.scopeType !== "GLOBAL_USER" ||
+      (authority !== "EXPLICIT" && authority !== "DIRECT_AUTOMATIC") ||
+      candidate.selectionReason !== (authority === "EXPLICIT"
+        ? "standing.explicit" : "standing.automatic") ||
+      !memoryCandidateMatchesRetrievalProjection(candidate, expansion, input.plan)) {
+      increment(omissionCounts, "standing_contract_invalid");
+      continue;
+    }
+    const identity = itemKey(candidate);
+    const evidenceRoot = memoryRetrievalEvidenceRootKey(candidate);
+    if (selectedIdentity.has(identity) || selectedEvidenceRoots.has(evidenceRoot)) {
+      increment(omissionCounts, "duplicate_identity");
+      continue;
+    }
+    const entry = packedItem({
+      candidate,
+      evidenceHandle: `M${selected.length + 1}`,
+      expansion,
+      historicalRead,
+      now,
+      section: "STANDING",
+      sourceSessionHandle: null,
+      sourceSessionHandles: new Map(),
+      temporalReason: "current",
+      tier: "DYNAMIC"
+    });
+    const proposed = [...selected, entry];
+    if (corePayloadTokens(proposed) > MEMORY_STANDING_CONTEXT_TARGET_TOKENS) {
+      increment(omissionCounts, "standing_token_budget");
+      continue;
+    }
+    if (estimateApproxTokens(render(
+      readerEvidenceOrder(proposed, input.plan, questionDirectedTemporalFallback),
+      input.plan,
+      defaults.profile,
+      questionDirectedTemporalFallback
+    )) > targetTokens) {
+      increment(omissionCounts, "token_budget");
+      continue;
+    }
+    selected.push(entry);
+    selectedIdentity.add(identity);
+    selectedEvidenceRoots.add(evidenceRoot);
+  }
+
   const coreCandidates = input.core ?? [];
   if (coreCandidates.length > MEMORY_CORE_MAX_FACTS) {
     omissionCounts.core_item_limit = coreCandidates.length - MEMORY_CORE_MAX_FACTS;
@@ -924,6 +1054,8 @@ export function packMemoryPersonalContext(input: Readonly<{
       candidate,
       evidenceHandle: `M${selected.length + 1}`,
       expansion,
+      historicalRead,
+      now,
       section: "CORE",
       sourceSessionHandle: null,
       sourceSessionHandles: new Map(),
@@ -931,7 +1063,8 @@ export function packMemoryPersonalContext(input: Readonly<{
       tier: "CORE"
     });
     const proposed = [...selected, entry];
-    if (corePayloadTokens(proposed) > MEMORY_CORE_CONTEXT_TARGET_TOKENS) {
+    if (corePayloadTokens(proposed.filter(({ item }) => item.section === "CORE")) >
+      MEMORY_CORE_CONTEXT_TARGET_TOKENS) {
       increment(omissionCounts, "core_token_budget");
       continue;
     }
@@ -949,7 +1082,7 @@ export function packMemoryPersonalContext(input: Readonly<{
     selectedEvidenceRoots.add(evidenceRoot);
   }
 
-  const coreTokens = corePayloadTokens(selected);
+  const coreTokens = corePayloadTokens(selected.filter(({ item }) => item.section === "CORE"));
   const sourceChats = new Set<string>();
   let factCount = 0;
   let historyCount = 0;
@@ -978,6 +1111,11 @@ export function packMemoryPersonalContext(input: Readonly<{
     }
     if (!memoryCandidateMatchesRetrievalProjection(candidate, expansion, input.plan)) {
       increment(omissionCounts, "preparing_projection_contract");
+      continue;
+    }
+    if (candidate.metadata.sourceAuthority === "SYNTHESIS" &&
+      candidate.metadata.combinedMemory === true) {
+      increment(omissionCounts, "combined_memory_display_only");
       continue;
     }
     const patternSupports = expansion.patternSupportingEvidence ?? [];
@@ -1016,7 +1154,7 @@ export function packMemoryPersonalContext(input: Readonly<{
     }
     const retained = contained.size > 0
       ? selected.filter((entry) => !contained.has(entry)) : selected;
-    if (retained.length >= maximumItems) {
+    if (retained.filter(({ item }) => item.section !== "STANDING").length >= maximumItems) {
       increment(omissionCounts, "item_limit");
       continue;
     }
@@ -1067,6 +1205,8 @@ export function packMemoryPersonalContext(input: Readonly<{
       candidate,
       evidenceHandle: `M${nextEvidenceOrdinal}`,
       expansion,
+      historicalRead,
+      now,
       section: fact
         ? candidate.metadata.sourceAuthority === "SYNTHESIS"
           ? "PATTERN"
@@ -1136,7 +1276,7 @@ export function packMemoryPersonalContext(input: Readonly<{
     return {
       approxTokens: 0,
       budgetProfile: defaults.profile,
-      candidateCount: coreCandidates.length + input.ranked.length,
+      candidateCount: standingCandidates.length + coreCandidates.length + input.ranked.length,
       coreTokens: 0,
       hardCapTokens,
       items: [],
@@ -1165,7 +1305,7 @@ export function packMemoryPersonalContext(input: Readonly<{
   return {
     approxTokens,
     budgetProfile: defaults.profile,
-    candidateCount: coreCandidates.length + input.ranked.length,
+    candidateCount: standingCandidates.length + coreCandidates.length + input.ranked.length,
     coreTokens,
     hardCapTokens,
     items: ordered.map((entry) => entry.item),
