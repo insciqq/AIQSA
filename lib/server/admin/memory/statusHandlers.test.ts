@@ -5,7 +5,7 @@ import { AdminMemoryStatusServiceError } from "./statusService";
 import { createAdminMemoryStatusHandlers } from "./statusHandlers";
 
 const status: AdminMemoryStatus = {
-  admissionTimeout: { seconds: 15, version: 4 },
+  searchTimeout: { seconds: 15, version: 4 },
   processing: { enabled: true, issues: [] },
   configuredTargets: [{ model: "Utility", provider: "Primary" }],
   index: { generation: 2, readiness: "READY" },
@@ -32,9 +32,9 @@ function service(overrides: Record<string, unknown> = {}) {
       rebuild: { state: "IN_PROGRESS" }
     }),
     recover: vi.fn().mockResolvedValue(status),
-    updateAdmissionTimeout: vi.fn().mockResolvedValue({
+    updateSearchTimeout: vi.fn().mockResolvedValue({
       ...status,
-      admissionTimeout: { seconds: 30, version: 5 }
+      searchTimeout: { seconds: 30, version: 5 }
     }),
     ...overrides
   };
@@ -123,7 +123,7 @@ describe("administrator Memory status handlers", () => {
     });
   });
 
-  it("updates the installation timeout through a strict admin-only payload", async () => {
+  it("updates the Memory search timeout through a strict admin-only payload", async () => {
     const memoryService = service();
     const handler = createAdminMemoryStatusHandlers({
       resolveAuth: auth(),
@@ -136,13 +136,13 @@ describe("administrator Memory status handlers", () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(memoryService.updateAdmissionTimeout).toHaveBeenCalledWith({
+    expect(memoryService.updateSearchTimeout).toHaveBeenCalledWith({
       expectedVersion: 4,
       seconds: 30,
       userId: "admin-1"
     });
     await expect(response.json()).resolves.toMatchObject({
-      memory: { admissionTimeout: { seconds: 30, version: 5 } }
+      memory: { searchTimeout: { seconds: 30, version: 5 } }
     });
   });
 });

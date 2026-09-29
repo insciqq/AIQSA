@@ -32,6 +32,8 @@ import { SKILLS_SHARING_MIGRATION, skillsSharingFixtureSql, skillsSharingProofSq
 import { SKILLS_PROGRESSIVE_MIGRATION, skillsProgressiveFixtureSql, skillsProgressiveProofSql } from "./skills-progressive-adoption";
 import { ASSISTANTS_V2_MIGRATION, assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql } from "./assistants-v2-adoption";
 import { TOOL_BUDGET_DEFAULTS_MIGRATION, toolBudgetDefaultsFixtures } from "./tool-budget-defaults-adoption";
+import { MEMORY_SEARCH_TIMEOUT_MIGRATION, memorySearchTimeoutFixtureSql, memorySearchTimeoutProofSql, memorySearchTimeoutRepeatProofSql } from "./memory-search-timeout-adoption";
+import { MEMORY_SEARCH_RECEIPT_MIGRATION, memorySearchReceiptFixtureSql, memorySearchReceiptProofSql, memorySearchReceiptRepeatProofSql } from "./memory-search-receipt-adoption";
 import { SKILL_IMPORT_SOURCE_MIGRATION, skillImportSourceFixtureSql, skillImportSourceProofSql } from "./skill-import-source-adoption";
 import { PERPLEXITY_LEGACY_REASONING_MIGRATION, perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql } from "./perplexity-legacy-reasoning-adoption";
 import assert from "node:assert/strict";
@@ -556,7 +558,7 @@ function bootstrapFoundationDigest(database: string): string {
         SELECT jsonb_agg(jsonb_build_array(
           id,
           "defaultProviderModelId",
-          "memoryAdmissionTimeoutSeconds",
+          "memorySearchTimeoutSeconds",
           "maxToolCalls",
           "maxToolRounds",
           "toolObservationPolicy",
@@ -587,6 +589,8 @@ function bootstrapFoundationDigest(database: string): string {
 }
 
 function runBootstrapProof(database: string): void {
+  assert.equal(psqlScalar(database, `SELECT "memorySearchTimeoutSeconds" FROM "ModelPolicy" WHERE id = 'installation';`),
+    "30", "fresh installation must use the Memory search time limit default");
   assert.equal(psqlScalar(database, `SELECT "maxToolCalls" || ':' || "maxToolRounds" FROM "ModelPolicy" WHERE id = 'installation';`),
     "80:32", "fresh installation must receive the increased tool budgets");
   assert.equal(psqlScalar(database, `SELECT "limitsEnabled" FROM "AgentPolicy" WHERE id = 'installation';`), "f",
@@ -7523,6 +7527,10 @@ function main(
     runForwardAdoptionProof(shadowDatabase, migrations, TOOL_BUDGET_DEFAULTS_MIGRATION,
       fixture, proof, repeatProof);
   }
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_SEARCH_TIMEOUT_MIGRATION,
+    memorySearchTimeoutFixtureSql, memorySearchTimeoutProofSql, memorySearchTimeoutRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_SEARCH_RECEIPT_MIGRATION,
+    memorySearchReceiptFixtureSql, memorySearchReceiptProofSql, memorySearchReceiptRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, ARTIFACT_VERSIONED_MIGRATION,
     artifactVersionedFixtureSql, artifactVersionedProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, RUN_FOLLOWUPS_MIGRATION,

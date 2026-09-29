@@ -875,6 +875,48 @@ function preparedFrom(result: RunPreparationResult): PreparedRun {
   return result.prepared;
 }
 
+describe("standing Memory and optional search admission", () => {
+  const snapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const,
+    resultTokens: 6000 as const, comparisonResultTokens: 12000 as const, timeoutSeconds: 30,
+    memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
+  it("admits native recall without Workspace or MCP and prevents summary reuse of its evidence", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const admit = vi.fn(async () => snapshot);
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } }, sendInput()));
+    expect(admit).toHaveBeenCalledWith("user-1", null);
+    expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
+    expect(prepared.normalizedRequest.memorySearch).toEqual(snapshot);
+    expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search")).toBe(true);
+    expect(prepared.normalizedRequest.contextCompactionPolicy).toBeUndefined();
+  });
+  it.each(["none", "no_capability"])("retains standing preparation when search is unavailable (%s)", async mode => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: mode === "none" } });
+    const admit = vi.fn(async () => snapshot);
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } },
+      sendInput(successBody(mode === "none" ? { tools: "none" } : {}))));
+    expect(admit).not.toHaveBeenCalled();
+    expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
+    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+  });
+  it("keeps excluded chats outside both Memory contracts", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const admit = vi.fn(async () => snapshot);
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } },
+      sendInput(successBody(), { memoryMode: "EXCLUDED" })));
+    expect(admit).not.toHaveBeenCalled();
+    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+  });
+  it("keeps explicit /memory management on its existing synchronous path", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const admit = vi.fn(async () => snapshot);
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } },
+      sendInput(successBody({ content: textMessageContent("/memory list") }))));
+    expect(admit).not.toHaveBeenCalled();
+    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+  });
+});
+
 async function withFrozenClock<Value>(run: () => Promise<Value>): Promise<Value> {
   vi.useFakeTimers({ now: new Date("2026-08-06T09:15:00Z"), toFake: ["Date"] });
   try {

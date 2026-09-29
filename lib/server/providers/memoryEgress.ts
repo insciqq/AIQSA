@@ -42,7 +42,9 @@ export function memoryEgressRequestEvidence(request: ProviderRunRequest) {
     knowledgePlanHash: memorySha256(request.knowledgePlan),
     memoryPlanHash: memorySha256({
       actionTools: request.memoryActionTools ?? null,
-      history: request.memoryHistoryTool ?? null
+      history: request.memoryHistoryTool ?? null,
+      ...(request.memoryStandingVersion === 1 ? { standingVersion: 1 } : {}),
+      ...(request.memorySearch ? { search: request.memorySearch } : {})
     }),
     mcpSnapshotHash: memorySha256(request.mcp ?? null),
     modelId: request.modelId,

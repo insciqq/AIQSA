@@ -5,6 +5,9 @@ import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
 import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
+import { admitMemorySearch } from "../memory/search/admission";
+import { createPrismaMemorySearchService } from "../memory/search/runtime";
+import { prisma } from "../prisma";
 import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { defaultSkillTools } from "../skills/defaultSkillTools";
@@ -26,6 +29,13 @@ export function defaultRunServices(storage: StorageAdapter) {
     knowledgeExecutor: knowledgeToolExecutor,
     knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
     memoryEgress: defaultMemoryToolEgressReceiptService,
+    memorySearch: createPrismaMemorySearchService(),
+    memorySearchAdmission: { async admit(userId: string, assistantId?: string | null) {
+      const policy = await prisma.modelPolicy.findUniqueOrThrow({
+        where: { id: "installation" }, select: { memorySearchTimeoutSeconds: true }
+      });
+      return admitMemorySearch({ userId, assistantId, timeoutSeconds: Number(policy.memorySearchTimeoutSeconds) });
+    } },
     mcp: defaultMcpRunPlan,
     providerAdmission: providerAdmissionService,
     providerRuntime: providerRuntimeResolver,

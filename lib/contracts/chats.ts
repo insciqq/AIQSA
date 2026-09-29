@@ -1,3 +1,4 @@
+import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "./memorySearchActivity";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
@@ -255,6 +256,8 @@ export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolA
 }
 
 export type ThreadToolActivityCall = {
+  memorySearchCall?: number;
+  memorySearchOutcome?: MemorySearchActivityOutcome;
   skillId?: string;
   skillName?: string;
   skillPath?: string;
@@ -1041,7 +1044,14 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
     if (!toolName || round === null || round < 1 || !status ||
       (candidate.serverName !== undefined && !serverName) ||
       (candidate.durationMs !== undefined && durationMs === null)) return null;
+    if (candidate.memorySearchCall !== undefined &&
+      (!Number.isSafeInteger(candidate.memorySearchCall) || Number(candidate.memorySearchCall) < 1)) return null;
+    if (candidate.memorySearchOutcome !== undefined && !isMemorySearchActivityOutcome(candidate.memorySearchOutcome)) return null;
     calls.push({
+      ...(candidate.origin === "memory" && candidate.toolName === "memory_search" ? {
+        ...(candidate.memorySearchCall !== undefined ? { memorySearchCall: Number(candidate.memorySearchCall) } : {}),
+        ...(isMemorySearchActivityOutcome(candidate.memorySearchOutcome) ? { memorySearchOutcome: candidate.memorySearchOutcome } : {})
+      } : {}),
       ...(candidate.origin === "skill" && typeof candidate.skillId === "string" && candidate.skillId.length <= 64 ? { skillId: candidate.skillId } : {}),
       ...(candidate.origin === "skill" && typeof candidate.skillName === "string" && candidate.skillName.length <= 160 ? { skillName: candidate.skillName } : {}),
       ...(candidate.origin === "skill" && typeof candidate.skillPath === "string" && candidate.skillPath.length <= 256 ? { skillPath: candidate.skillPath } : {}),

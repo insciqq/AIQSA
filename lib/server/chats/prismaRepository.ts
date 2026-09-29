@@ -130,7 +130,7 @@ import type {
   WorkspaceAvailabilitySnapshot
 } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
-import { activityName, toolActivityDescriptors, skillToolActivityFacts } from "../tools/activityDescriptors";
+import { activityName, toolActivityDescriptors, skillToolActivityFacts, memorySearchActivityFacts } from "../tools/activityDescriptors";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import {
@@ -211,6 +211,7 @@ const assistantRunDetailSelect = {
       arguments: true,
       completedAt: true,
       ordinal: true,
+      result: true,
       roundIndex: true,
       startedAt: true,
       state: true,
@@ -433,6 +434,7 @@ type ToolActivityRun = {
   searchRuns?: readonly Readonly<{ invocationId?: string | null; status?: string; strategyId?: string }>[];
   toolCalls: {
     arguments?: unknown;
+    result?: unknown;
     completedAt: Date | null;
     ordinal: number;
     roundIndex: number;
@@ -1073,12 +1075,15 @@ export function summarizeMessageRunToolActivity(
     const duration = call.startedAt && call.completedAt
       ? call.completedAt.getTime() - call.startedAt.getTime()
       : null;
-    const status = call.state === "complete" || call.state === "error" ||
+    const memorySearch = memorySearchActivityFacts(call.toolName, call.result, call.ordinal);
+    const status = memorySearch.memorySearchOutcome === "cancelled" ? "cancelled"
+      : call.state === "complete" || call.state === "error" ||
       call.state === "cancelled"
       ? call.state
       : "running";
     return {
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
+      ...memorySearch,
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
       origin: descriptor.origin,
       // Automatic Knowledge retrieval is persisted before the provider loop at

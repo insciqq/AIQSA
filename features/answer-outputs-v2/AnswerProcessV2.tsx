@@ -159,7 +159,7 @@ export function AnswerProcessV2({
   }));
   const compactionLabel = compaction?.label ?? earlierCompactionFailures.at(-1)?.label ?? null;
 
-  if (liveLabel && !timeline && !searchSummary && !contextCompaction && earlierCompactionFailures.length === 0) {
+  if (liveLabel && !timeline && !searchSummary && !calls.some(call => call.origin === "memory" && call.toolName === "memory_search") && !contextCompaction && earlierCompactionFailures.length === 0) {
     return (
       <div className="v2-answer-process" data-live="true" data-testid="run-status-line">
         <span className="v2-answer-process-slot" aria-hidden="true">

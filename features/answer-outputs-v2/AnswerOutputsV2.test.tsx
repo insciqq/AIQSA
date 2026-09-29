@@ -58,6 +58,19 @@ function pickMemoryAction(name: string, index = 0) {
 }
 
 describe("answer outputs v2", () => {
+  it("keeps Memory search steps inspectable while running and shows the settled outcome", () => {
+    const call = { origin: "memory" as const, serverName: "Memory", toolName: "memory_search",
+      memorySearchCall: 1, round: 1, status: "running" as const };
+    const { rerender } = render(<AnswerProcessV2 liveLabel="Searching memory…" toolActivity={{ calls: [call] }} />);
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure).toHaveTextContent("Searching memory…");
+    openProcess();
+    expect(screen.getByText("Searching memory")).toBeVisible();
+    rerender(<AnswerProcessV2 toolActivity={{ calls: [{ ...call, status: "complete", memorySearchOutcome: "no_results" }] }} />);
+    expect(screen.getByText("No matching memories found")).toBeVisible();
+    expect(disclosure).not.toHaveTextContent("memory_search");
+  });
+
   it("shows pending and stopped creation honestly, then replaces it with the authoritative saved card", () => {
     const onOpen = vi.fn();
     const onOpenArtifact = vi.fn();

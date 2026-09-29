@@ -1,7 +1,7 @@
 import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it } from "vitest";
 import {
-  decodeAdminMemoryAdmissionTimeoutInput,
+  decodeAdminMemorySearchTimeoutInput,
   decodeAdminMemoryActionInput,
   decodeAdminMemoryRebuildInput,
   decodeAdminMemoryStatusResponse
@@ -10,7 +10,7 @@ import {
 function response() {
   return {
     memory: {
-      admissionTimeout: { seconds: 15, version: 4 },
+      searchTimeout: { seconds: 15, version: 4 },
       processing: { enabled: true, issues: [] },
       configuredTargets: [
         { model: "Utility model", provider: "Primary provider" },
@@ -43,6 +43,10 @@ describe("administrator Memory status contract", () => {
 
   it("accepts only the minimal operational projection", () => {
     expect(decodeAdminMemoryStatusResponse(response())).toEqual(response());
+    expect(decodeAdminMemoryStatusResponse({ memory: {
+      ...response().memory,
+      admissionTimeout: { seconds: 15, version: 4 }
+    } })).toBeNull();
     expect(decodeAdminMemoryStatusResponse({
       ...response(),
       memoryEgress: { currentFingerprint: "a".repeat(64) }
@@ -79,11 +83,16 @@ describe("administrator Memory status contract", () => {
   });
 
   it("accepts a bounded optimistic timeout update", () => {
-    expect(decodeAdminMemoryAdmissionTimeoutInput({
+    expect(decodeAdminMemorySearchTimeoutInput({ expectedVersion: 4, timeoutSeconds: 1 }))
+      .toEqual({ expectedVersion: 4, timeoutSeconds: 1 });
+    expect(decodeAdminMemorySearchTimeoutInput({
       expectedVersion: 4,
       timeoutSeconds: 30
     })).toEqual({ expectedVersion: 4, timeoutSeconds: 30 });
-    expect(decodeAdminMemoryAdmissionTimeoutInput({
+    expect(decodeAdminMemorySearchTimeoutInput({ expectedVersion: 4, timeoutSeconds: 120 }))
+      .toEqual({ expectedVersion: 4, timeoutSeconds: 120 });
+    expect(decodeAdminMemorySearchTimeoutInput({ expectedVersion: 4, timeoutSeconds: 0 })).toBeNull();
+    expect(decodeAdminMemorySearchTimeoutInput({
       expectedVersion: 4,
       timeoutSeconds: 121
     })).toBeNull();

@@ -71,7 +71,7 @@ function clientFixture(input: Readonly<{
     },
     modelPolicy: {
       findUnique: vi.fn().mockResolvedValue({
-        memoryAdmissionTimeoutSeconds: BigInt(15),
+        memorySearchTimeoutSeconds: BigInt(15),
         version: 4
       }),
       updateMany: vi.fn().mockResolvedValue({ count: 1 })
@@ -106,7 +106,7 @@ describe("Prisma administrator Memory status repository", () => {
     const result = await repository.read(new Date("2026-08-21T08:00:00.000Z"));
 
     expect(result).toMatchObject({
-      admissionTimeout: { seconds: 15, version: 4 },
+      searchTimeout: { seconds: 15, version: 4 },
       processing: { enabled: true, issues: [] },
       configuredTargets: [{ model: "Utility model", provider: "Primary provider" }],
       index: {
@@ -223,21 +223,21 @@ describe("Prisma administrator Memory status repository", () => {
     });
   });
 
-  it("updates the installation timeout only at the expected policy version", async () => {
+  it("updates the installation Memory search timeout only at the expected policy version", async () => {
     const client = clientFixture();
     const repository = createPrismaAdminMemoryStatusRepository(
       client,
       vi.fn().mockResolvedValue(undefined)
     );
 
-    await expect(repository.updateAdmissionTimeout({
+    await expect(repository.updateSearchTimeout({
       expectedVersion: 4,
       seconds: 30,
       userId: "admin-1"
     })).resolves.toBe(true);
     expect(client.modelPolicy.updateMany).toHaveBeenCalledWith({
       data: {
-        memoryAdmissionTimeoutSeconds: BigInt(30),
+        memorySearchTimeoutSeconds: BigInt(30),
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },

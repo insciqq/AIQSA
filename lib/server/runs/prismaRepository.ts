@@ -42,7 +42,6 @@ import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import {
   boundedMemoryAdmissionDeadlineMs,
-  memoryAdmissionDeadlineMsFromPolicySeconds,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../memory/admissionDeadline";
 import { serializeRunAssistantIdentity } from "./prismaRepositoryBindings";
@@ -51,6 +50,7 @@ import {
   beginPreparingRunAttemptWithClient,
   completePreparingRunAttemptWithClient,
   createDormantPreparingRun,
+  MEMORY_STANDING_PREPARATION_TIMEOUT_MS,
   continuePdfPreparedRunWithClient,
   continueWorkspacePreparedRunWithClient,
   finalizePreparingRunWithClient,
@@ -194,18 +194,12 @@ export function createPrismaRunRepository(
     memorySourceHooks
   );
   const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
-  async function loadMemoryAdmissionDeadlineMs(): Promise<number> {
+  async function loadMemoryAdmissionDeadlineMs(request?: { memoryStandingVersion?: 1 }): Promise<number> {
+    if (request?.memoryStandingVersion === 1) return MEMORY_STANDING_PREPARATION_TIMEOUT_MS;
     if (options.memoryAdmissionDeadlineMs !== undefined) {
       return boundedMemoryAdmissionDeadlineMs(options.memoryAdmissionDeadlineMs);
     }
-    const policy = await prismaClient.modelPolicy.findUnique({
-      select: { memoryAdmissionTimeoutSeconds: true },
-      where: { id: "installation" }
-    }).catch(retainRunPrismaCode);
-    if (!policy) throw new Error("installation_model_policy_missing");
-    return memoryAdmissionDeadlineMsFromPolicySeconds(
-      policy.memoryAdmissionTimeoutSeconds
-    );
+    return MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS;
   }
   async function loadConversationPath(
     chatId: string,
@@ -791,7 +785,7 @@ export function createPrismaRunRepository(
     continuePdfPreparedRun: async (input) => {
       const created = await continuePdfPreparedRunWithClient(prismaClient, input,
         memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        await loadMemoryAdmissionDeadlineMs()).catch(retainRunPrismaCode);
+        await loadMemoryAdmissionDeadlineMs(input.admission.normalizedRequest)).catch(retainRunPrismaCode);
       return { assistantMessageId: created.assistantMessageId, runId: created.runId,
         userMessageId: created.userMessageId,
         ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
@@ -799,7 +793,7 @@ export function createPrismaRunRepository(
     continueWorkspacePreparedRun: async (input) => {
       const created = await continueWorkspacePreparedRunWithClient(prismaClient, input,
         memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        await loadMemoryAdmissionDeadlineMs()).catch(retainRunPrismaCode);
+        await loadMemoryAdmissionDeadlineMs(input.admission.normalizedRequest)).catch(retainRunPrismaCode);
       return { assistantMessageId: created.assistantMessageId, runId: created.runId,
         userMessageId: created.userMessageId, ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
         ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
@@ -807,7 +801,7 @@ export function createPrismaRunRepository(
     createRun: async (input) => {
       const memoryAdmissionDeadlineMs = input.project
         ? MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
-        : await loadMemoryAdmissionDeadlineMs();
+        : await loadMemoryAdmissionDeadlineMs(input.normalizedRequest);
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "NORMAL_SEND"
@@ -827,7 +821,7 @@ export function createPrismaRunRepository(
     createRegenerationRun: async (input) => {
       const memoryAdmissionDeadlineMs = input.project
         ? MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
-        : await loadMemoryAdmissionDeadlineMs();
+        : await loadMemoryAdmissionDeadlineMs(input.normalizedRequest);
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "REGENERATE"
@@ -1491,6 +1485,7 @@ export function createPrismaRunRepository(
                     select: {
                       completedAt: true,
                       ordinal: true,
+                      result: true,
                       roundIndex: true,
                       startedAt: true,
                       state: true,

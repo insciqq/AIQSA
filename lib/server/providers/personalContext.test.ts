@@ -26,7 +26,9 @@ import {
   MEMORY_READER_CONTRACT_V13,
   MEMORY_READER_FINALIZATION_CONTRACT_V1,
   PERSONAL_CONTEXT_HEADING,
-  assertPersonalContextEgressSafe
+  assertPersonalContextEgressSafe,
+  providerInstructionsWithPersonalContext,
+  MEMORY_STANDING_READER_CONTRACT_V1
 } from "./personalContext";
 import { memoryActionAnswerContract } from "./memoryActionAnswer";
 import type { ProviderRunRequest } from "./types";
@@ -78,6 +80,23 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("provider-neutral personal context", () => {
+  it("gives standing-plus-search guidance even when no facts were attached", () => {
+    const input = request({ personalContext: undefined, memoryStandingVersion: 1 });
+    const instructions = providerInstructionsWithPersonalContext(input)!;
+    expect(instructions).toContain(MEMORY_STANDING_READER_CONTRACT_V1);
+    expect(instructions).not.toContain(MEMORY_READER_CONTRACT_CURRENT);
+    expect(instructions).not.toContain(MEMORY_READER_FINALIZATION_CONTRACT_V1);
+  });
+
+  it("requires the new frozen version and enforces standing limits at provider egress", () => {
+    const original = request();
+    const input = request({ memoryStandingVersion: 1,
+      personalContext: { ...original.personalContext!, mode: "standing-v1", itemCount: 50, approxTokens: 10_000 } });
+    expect(() => assertPersonalContextEgressSafe(input)).not.toThrow();
+    expect(() => assertPersonalContextEgressSafe({ ...input, memoryStandingVersion: undefined })).toThrow();
+    expect(() => assertPersonalContextEgressSafe({ ...input,
+      personalContext: { ...input.personalContext!, approxTokens: 10_001 } })).toThrow();
+  });
   it.each<[string, (input: ProviderRunRequest) => unknown]>([
     ["OpenAI Responses", input => buildOpenAIResponsesRequest(input).instructions],
     ["compatible Chat", input => buildOpenAICompatibleChatRequest(input).messages[0]?.content],

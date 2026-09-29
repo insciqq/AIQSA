@@ -1639,6 +1639,38 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run recovery", () => {
+  it.each(["complete", "running"] as const)("revalidates or settles a %s Memory call without replaying search", async state => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) {
+      requests.push(request); return providerResult;
+    } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const result = { callId: "provider-call-1", name: "memory_search", status: "complete" as const,
+      content: [{ type: "json" as const, value: { version: "memory-search-v1", outcome: "results", evidence: "current evidence" } }] };
+    const failure = { ...result, status: "error" as const,
+      content: [{ type: "json" as const, value: { version: "memory-search-v1", outcome: "failure", evidence: null } }] };
+    const call = { ...persistedRecoveryCall(state), toolName: "memory_search", mcpBinding: null,
+      arguments: { query: "earlier plan", comparison: false }, result };
+    const base = checkpointedRun({ calls: [call], phase: "tools_running", providerToolMessages: [{
+      arguments: '{"query":"earlier plan","comparison":false}', call_id: call.providerCallId,
+      name: "memory_search", type: "function_call"
+    }] });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized,
+      memoryStandingVersion: 1, memorySearch: { version: "memory-search-v1", maxCalls: 3,
+        resultTokens: 6000, comparisonResultTokens: 12000, timeoutSeconds: 30,
+        memoryGeneration: 1, referenceChatHistory: true, destinations: [] } } });
+    const service = { execute: vi.fn(), settleAmbiguous: vi.fn(async () => failure),
+      revalidate: vi.fn(async () => state === "running" ? failure : result), markDelivered: vi.fn(async () => {}) };
+    await refreshProviderRunIfNeeded({ ...harness.deps, memorySearch: service }, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(service.execute).not.toHaveBeenCalled();
+    expect(service.settleAmbiguous).toHaveBeenCalledTimes(state === "running" ? 1 : 0);
+    expect(service.revalidate).toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(service.markDelivered).toHaveBeenCalledTimes(state === "complete" ? 1 : 0);
+  });
+
   it.each(["accepted", "delivered"] as const)("ends a lost executor honestly with a %s clarification instead of replaying the old question", async delivery => {
     const refresh = vi.fn();
     const adapter = providerWithRefresh(refresh);

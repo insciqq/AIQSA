@@ -1,3 +1,4 @@
+import { decodeMemorySearchActivity, type MemorySearchActivitySnapshot } from "../../contracts/memorySearchActivity";
 import { decodeGroundingDisplay, type GroundingDisplay } from "../../domain/groundingDisplay";
 import { validateGeminiSearchSuggestionsHtml } from "../providers/geminiInteractionsGrounding";
 import { decodeThreadSearchSource, type ThreadSearchSource } from "../../contracts/searchSources";
@@ -28,6 +29,7 @@ type RunOutputGeneratedArtifact = {
 };
 
 export type RunOutputArtifactEvent =
+  | { type: "artifact"; data: { artifactType: "memory_search_activity"; payload: MemorySearchActivitySnapshot } }
   | { type: "artifact"; data: { artifactType: "workspace_checkpoint"; payload: ThreadWorkspaceCheckpointOutput } }
   | { type: "artifact"; data: { artifactType: "generated_artifact"; payload: RunOutputGeneratedArtifact } }
   | { type: "artifact"; data: { artifactType: "image"; payload: ThreadGeneratedImage } }
@@ -190,6 +192,11 @@ export function projectRunOutputArtifactEvent(
       : null;
   }
 
+  if (event.data.artifactType === "memory_search_activity") {
+    const payload = decodeMemorySearchActivity(event.data.payload);
+    return payload ? { type: "artifact", data: { artifactType: "memory_search_activity", payload } } : null;
+  }
+
   if (event.data.artifactType === "search_activity") {
     const payload = decodeThreadSearchActivitySnapshot(event.data.payload);
     return payload ? { type: "artifact", data: { artifactType: "search_activity", payload } } : null;
@@ -261,6 +268,10 @@ export function isRunOutputArtifactEvent(
   }
   if (event.data.artifactType === "workspace_activity") {
     return isExactWorkspaceActivity(event.data.payload);
+  }
+  if (event.data.artifactType === "memory_search_activity") {
+    const decoded = decodeMemorySearchActivity(event.data.payload);
+    return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
   }
   if (event.data.artifactType === "search_activity") {
     const decoded = decodeThreadSearchActivitySnapshot(event.data.payload);

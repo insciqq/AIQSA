@@ -36,6 +36,31 @@ function summary(payload: Record<string, unknown>): RunEventView {
   };
 }
 
+describe("native Memory search activity", () => {
+  const event = (payload: Record<string, unknown>): RunEventView => ({ type: "artifact",
+    data: { artifactType: "memory_search_activity", payload: { call: 1, round: 1, ...payload } } });
+  it("deduplicates replayed status and keeps settlement over late progress and reload", () => {
+    const running = event({ status: "running" });
+    const settled = event({ status: "complete", outcome: "limited" });
+    const projected = presentToolActivityV2([running, running, settled, settled, running]);
+    expect(projected?.calls).toHaveLength(1);
+    expect(projected?.calls[0]).toMatchObject({ status: "complete", memorySearchOutcome: "limited" });
+    expect(presentToolActivityV2([running, settled], projected)).toEqual(projected);
+    expect(presentRunLifecycleV2(state({ events: [running], runId: "run" })).activity?.label).toBe("Searching memory…");
+    expect(presentRunLifecycleV2(state({ events: [running, settled, running], runId: "run" })).activity?.label).toBe("Thinking…");
+    expect(presentToolActivityV2([running, event({ call: 2, status: "running" })])?.calls).toHaveLength(2);
+    expect(presentRunLifecycleV2(state({ events: [running, event({ call: 2, status: "running" }), settled], runId: "run" }))
+      .activity?.label).toBe("Searching memory…");
+  });
+  it.each([
+    ["results", "Searched memory"], ["no_results", "No matching memories found"],
+    ["limited", "Memory search returned limited results"], ["failure", "Memory search unavailable"],
+    ["cancelled", "Memory search stopped"]
+  ])("uses a distinct safe label for %s", (memorySearchOutcome, label) => {
+    expect(describeToolCallV2({ origin: "memory", toolName: "memory_search", memorySearchOutcome }, "settled")).toBe(label);
+  });
+});
+
 describe("run lifecycle v2 presentation", () => {
   it("projects compaction as a live process status and keeps terminal state over late progress", () => {
     const running = {

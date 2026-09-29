@@ -653,6 +653,85 @@ function resolveWhenAborted<T>(signal: AbortSignal, value: T): Promise<T> {
 }
 
 describe("Personal Memory v1 run admission", () => {
+  it.each([0, 50, 51])("prepares only compact standing facts (%i candidates) without external work", async (count) => {
+    const local = repository({
+      standing: Array.from({ length: count }, (_, index) => standingFact(`fact-${index}`)),
+      speculativeBaseline: true,
+      speculativeDense: true
+    });
+    const options = retrievalOptions([]);
+    const result = await createMemoryRunRetrievalService(local.value, options).retrieve({
+      ...runInput("Could you explain this everyday topic?"),
+      memoryCommandQueued: true,
+      readMode: "STANDING_V1"
+    });
+    expect(result.outcome).toBe(count ? "USED" : "EMPTY");
+    expect(result.items).toHaveLength(Math.min(count, 50));
+    expect(result.degradationCode).toBeUndefined();
+    expect(result.budgetSnapshot).toMatchObject({
+      budgetProfile: "STANDING", targetTokens: 10_000,
+      memoryActionAnswerResult: MEMORY_ACTION_PENDING_RESULT,
+      utilityEgressMode: "LOCAL_ONLY", utilityExecutions: []
+    });
+    expect(local.retrieve).not.toHaveBeenCalled();
+    expect(local.retrieveSpeculativeBaseline).not.toHaveBeenCalled();
+    expect(local.retrieveSpeculativeDense).not.toHaveBeenCalled();
+    expect(local.expand).not.toHaveBeenCalled();
+    expect(options.control.decide).not.toHaveBeenCalled();
+    expect(options.utilities.embedQuery).not.toHaveBeenCalled();
+    expect(options.utilities.rerank).not.toHaveBeenCalled();
+    expect(() => validateMemoryPreparingAttemptResult(result)).not.toThrow();
+  });
+
+  it("keeps the standing deadline independent from the legacy configured admission limit", async () => {
+    const local = repository({ standing: [standingFact("saved")] });
+    let elapsed = 0;
+    local.loadStandingFacts!.mockImplementation(async () => {
+      elapsed = 1_100;
+      return [standingFact("saved")];
+    });
+    const result = await createMemoryRunRetrievalService(local.value, {
+      admissionDeadlineMs: 1_000, clock: () => now.getTime() + elapsed
+    }).retrieve({ ...runInput("An ordinary question"), readMode: "STANDING_V1" });
+    expect(result.outcome).toBe("USED");
+    expect(result.degradationCode).toBeUndefined();
+  });
+
+  it("fails safe when the local standing read is unavailable without trying dynamic retrieval", async () => {
+    const local = repository({ standing: [] });
+    local.loadStandingFacts!.mockRejectedValue(new Error("database unavailable"));
+    const result = await createMemoryRunRetrievalService(local.value).retrieve({
+      ...runInput("An ordinary question"), readMode: "STANDING_V1"
+    });
+    expect(result).toMatchObject({ outcome: "FAILED_SAFE", preparedContext: null,
+      budgetSnapshot: { reason: "memory_standing_unavailable" } });
+    expect(local.retrieve).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the accepted standing authority snapshot", async () => {
+    const local = repository({ standing: [standingFact("saved")] });
+    vi.mocked(local.value.snapshot).mockResolvedValue({ ...local.state, memoryRevision: 99 });
+    await expect(createMemoryRunRetrievalService(local.value).retrieve({
+      ...runInput("An ordinary question"), readMode: "STANDING_V1"
+    })).rejects.toMatchObject({ code: "memory_admission_settings_changed" });
+    expect(local.loadStandingFacts).not.toHaveBeenCalled();
+  });
+
+  it("does not disclose standing facts after Stop or through the disabled master switch", async () => {
+    const local = repository({ standing: [standingFact("saved")] });
+    const input = runInput("An ordinary question");
+    const service = createMemoryRunRetrievalService(local.value);
+    const stopped = await service.retrieve({ ...input, readMode: "STANDING_V1",
+      signal: AbortSignal.abort() });
+    expect(stopped.preparedContext).toBeNull();
+    const disabled = await service.retrieve({ ...input, readMode: "STANDING_V1",
+      expected: { ...input.expected,
+        settings: { ...input.expected.settings, useMemoryFacts: false } } });
+    expect(disabled.outcome).toBe("DISABLED");
+    expect(local.value.snapshot).not.toHaveBeenCalled();
+    expect(local.loadStandingFacts).not.toHaveBeenCalled();
+  });
+
   it("screens an ordinary turn without invoking strict control, while declaring the decision binding", async () => {
     const local = repository({ standing: [standingFact("saved")] });
     const options = retrievalOptions([]);

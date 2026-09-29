@@ -1,5 +1,5 @@
 import {
-  ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS,
+  ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS,
   adminMemoryStatusSchema,
   type AdminMemoryStatus
 } from "../../../contracts/adminMemory";
@@ -19,7 +19,7 @@ export type AdminMemoryRebuildCandidate = Readonly<{
 }>;
 
 export type AdminMemoryStatusSnapshot = Readonly<{
-  admissionTimeout: Readonly<{
+  searchTimeout: Readonly<{
     seconds: number;
     version: number;
   }>;
@@ -49,7 +49,7 @@ export type AdminMemoryStatusRepository = Readonly<{
   read(now: Date): Promise<AdminMemoryStatusSnapshot>;
   startRebuild(candidate: AdminMemoryRebuildCandidate): Promise<void>;
   recoverEligible?: (input: Readonly<{ limit: number; now: Date }>) => Promise<number>;
-  updateAdmissionTimeout(input: Readonly<{
+  updateSearchTimeout(input: Readonly<{
     expectedVersion: number;
     seconds: number;
     userId: string;
@@ -60,7 +60,7 @@ export type AdminMemoryStatusService = Readonly<{
   get(): Promise<AdminMemoryStatus>;
   rebuild(): Promise<AdminMemoryStatus>;
   recover(): Promise<AdminMemoryStatus>;
-  updateAdmissionTimeout(input: Readonly<{
+  updateSearchTimeout(input: Readonly<{
     expectedVersion: number;
     seconds: number;
     userId: string;
@@ -182,7 +182,7 @@ function project(snapshot: AdminMemoryStatusSnapshot, now: Date): AdminMemorySta
       : "NOT_REQUIRED" as const;
 
   return adminMemoryStatusSchema.parse({
-    admissionTimeout: snapshot.admissionTimeout,
+    searchTimeout: snapshot.searchTimeout,
     processing: snapshot.processing,
     recovery: snapshot.recovery,
     configuredTargets: snapshot.configuredTargets,
@@ -263,14 +263,14 @@ export function createAdminMemoryStatusService(input: Readonly<{
       return project(await input.repository.read(observedAt), observedAt);
     },
 
-    async updateAdmissionTimeout(update) {
+    async updateSearchTimeout(update) {
       if (!Number.isSafeInteger(update.expectedVersion) || update.expectedVersion < 1 ||
         !Number.isSafeInteger(update.seconds) ||
-        update.seconds < ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds ||
-        update.seconds > ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds) {
+        update.seconds < ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.minSeconds ||
+        update.seconds > ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.maxSeconds) {
         throw new Error("memory_admin_timeout_input_invalid");
       }
-      const updated = await input.repository.updateAdmissionTimeout(update);
+      const updated = await input.repository.updateSearchTimeout(update);
       if (!updated) {
         throw new AdminMemoryStatusServiceError("memory_admin_timeout_stale");
       }

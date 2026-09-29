@@ -15,6 +15,8 @@ import {
   MEMORY_RETRIEVAL_PLANNER_VERSION,
   MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS,
   MEMORY_STANDING_MAX_FACTS,
+  MEMORY_LEGACY_STANDING_MAX_FACTS,
+  MEMORY_STANDING_CONTEXT_TARGET_TOKENS,
   type MemoryRetrievalItemType,
   type MemorySafeProjectionKind
 } from "../../domain/memory/retrieval";
@@ -29,9 +31,9 @@ export const MEMORY_PREPARING_AGGREGATION_CONTEXT_MAX_TOKENS =
 // Standing facts occupy a separate, bounded section ahead of the existing
 // dynamic item limits. Browser sources filter standing-only entries, so their
 // forty-item projection ceiling still bounds the dynamic evidence list.
-export const MEMORY_PREPARING_ITEM_LIMIT = MEMORY_CONTEXT_MAX_ITEMS + MEMORY_STANDING_MAX_FACTS;
+export const MEMORY_PREPARING_ITEM_LIMIT = MEMORY_CONTEXT_MAX_ITEMS + MEMORY_LEGACY_STANDING_MAX_FACTS;
 export const MEMORY_PREPARING_AGGREGATION_ITEM_LIMIT =
-  MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS + MEMORY_STANDING_MAX_FACTS;
+  MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS + MEMORY_LEGACY_STANDING_MAX_FACTS;
 export const MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS = 4_096;
 export const MEMORY_PREPARING_QUERY_PLANNER_VERSION =
   MEMORY_RETRIEVAL_PLANNER_VERSION;
@@ -393,13 +395,17 @@ export function validateMemoryPreparingAttemptResult(
   const aggregationRequested = budgetPlan?.aggregationRequested === true;
   const budgetProfile = input.budgetSnapshot.budgetProfile;
   if (budgetProfile !== undefined && budgetProfile !== "SIMPLE" &&
-    budgetProfile !== "PAST_CHAT" && budgetProfile !== "COMPLEX") {
+    budgetProfile !== "PAST_CHAT" && budgetProfile !== "COMPLEX" &&
+    budgetProfile !== "STANDING") {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
   const declaredHardCap = input.budgetSnapshot.hardCapTokens;
   const declaredTarget = input.budgetSnapshot.targetTokens;
   const providerTokenLimit = input.budgetSnapshot.providerTokenLimit;
-  const profileLimits = budgetProfile === "COMPLEX"
+  const profileLimits = budgetProfile === "STANDING"
+    ? { hardCapTokens: MEMORY_STANDING_CONTEXT_TARGET_TOKENS,
+        targetTokens: MEMORY_STANDING_CONTEXT_TARGET_TOKENS }
+    : budgetProfile === "COMPLEX"
     ? {
         hardCapTokens: MEMORY_CONTEXT_AGGREGATION_HARD_CAP_TOKENS,
         targetTokens: MEMORY_CONTEXT_AGGREGATION_TARGET_TOKENS
@@ -449,13 +455,16 @@ export function validateMemoryPreparingAttemptResult(
     : aggregationRequested || budgetProfile === "COMPLEX"
       ? MEMORY_PREPARING_AGGREGATION_CONTEXT_MAX_TOKENS
       : MEMORY_PREPARING_CONTEXT_MAX_TOKENS;
-  const itemLimit = aggregationRequested || budgetProfile === "COMPLEX"
-    ? MEMORY_PREPARING_AGGREGATION_ITEM_LIMIT
-    : MEMORY_PREPARING_ITEM_LIMIT;
+  const standingLimit = budgetProfile === "STANDING"
+    ? MEMORY_STANDING_MAX_FACTS : MEMORY_LEGACY_STANDING_MAX_FACTS;
+  const itemLimit = budgetProfile === "STANDING" ? MEMORY_STANDING_MAX_FACTS
+    : aggregationRequested || budgetProfile === "COMPLEX"
+      ? MEMORY_PREPARING_AGGREGATION_ITEM_LIMIT : MEMORY_PREPARING_ITEM_LIMIT;
+  const dynamicLimit = itemLimit - standingLimit;
   const standingCount = items.filter((item) => item.itemType === "FACT_VERSION" &&
     isRecord(item.featureSnapshot) && item.featureSnapshot.standingFact === true).length;
-  const dynamicLimit = itemLimit - MEMORY_STANDING_MAX_FACTS;
-  if (items.length > itemLimit || standingCount > MEMORY_STANDING_MAX_FACTS ||
+  if (items.length > itemLimit || standingCount > standingLimit ||
+    (budgetProfile === "STANDING" && standingCount !== items.length) ||
     items.length - standingCount > dynamicLimit) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }

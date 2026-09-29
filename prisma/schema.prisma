@@ -1365,7 +1365,7 @@ model ModelPolicy {
   id                             String         @id
   defaultProviderModelId         String?
   reasoningEffort                String?        @db.VarChar(32)
-  memoryAdmissionTimeoutSeconds  BigInt         @default(30)
+  memorySearchTimeoutSeconds     BigInt         @default(30)
   maxToolCalls                   BigInt         @default(80)
   maxToolRounds                  BigInt         @default(32)
   maxMcpToolsPerDiscovery        BigInt         @default(10)
@@ -6820,6 +6820,7 @@ model MemoryHistoryRun {
   userId              String
   modelRunId          String
   modelRunToolCallId  String                      @unique
+  receiptVersion      String?                     @db.VarChar(32)
   invocationOrdinal   Int
   state               MemoryHistoryRunState       @default(RUNNING)
   outcome             MemoryHistoryRunOutcome?

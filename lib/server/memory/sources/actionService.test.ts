@@ -41,6 +41,7 @@ function setup() {
     chatMemoryCheckpointMessage: { findMany: vi.fn(async () => []) },
     chatMemoryDigest: { findFirst: vi.fn() },
     chatMemoryDigestMessage: { findMany: vi.fn(async () => []) },
+    memoryHistoryRun: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
     memoryFact: { findFirst: vi.fn(async () => ({
       currentVersionId: "version-1",
       scopeId: "scope-1",
@@ -129,6 +130,33 @@ describe("Memory source actions", () => {
       ...common,
       version: 1
     }));
+  });
+
+  it("binds native search feedback to its delivered tool receipt and rechecks the current fact", async () => {
+    const { client, feedback, ref, service } = setup();
+    client.modelRunMemoryItem.findFirst.mockResolvedValue(null as never);
+    client.memoryHistoryRun.findMany.mockResolvedValue([{
+      id: "receipt-1", modelRunId: "run-1", modelRunToolCallId: "call-1",
+      results: { version: "memory-search-v1", results: [{
+        exactItemId: "version-1", factVersionId: "version-1", featureSnapshot: {},
+        includedText: "I prefer concise answers.", itemType: "FACT_VERSION",
+        recallChunkId: null, recallRoundId: null, selectionReason: "search",
+        sourceBranchGenerationSnapshot: null, sourceChatId: null,
+        sourceContentHashSnapshot: null, sourceMessageIds: [], sourceRevisionSnapshot: null
+      }] }
+    }]);
+    await expect(service.execute("user-1", {
+      action: "NOT_RELEVANT", memoryRef: ref, requestNonce: "search-feedback"
+    }, now)).resolves.toEqual({ status: "COMMITTED" });
+    expect(feedback.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      modelRunMemoryItemId: null, modelRunToolCallId: "call-1", memoryFactVersionId: "version-1"
+    }) });
+    client.memoryFact.findFirst.mockResolvedValue({
+      currentVersionId: "corrected-version", scopeId: "scope-1", state: "ACTIVE"
+    });
+    await expect(service.execute("user-1", {
+      action: "NOT_RELEVANT", memoryRef: ref, requestNonce: "stale-feedback"
+    }, now)).rejects.toMatchObject({ code: "memory_version_stale" });
   });
 
   it("records owner- and run-bound Not relevant feedback without returning identifiers", async () => {
@@ -318,6 +346,7 @@ describe("Memory source actions", () => {
       $queryRaw: vi.fn(async () => [{ id: "version-1" }]),
       chat: { findFirst: vi.fn() },
       chatMemoryCheckpoint: { findUnique: vi.fn() },
+      memoryHistoryRun: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
       memoryFact: { findFirst: vi.fn(async () => ({
         currentVersionId: "version-1",
         scopeId: "scope-1",

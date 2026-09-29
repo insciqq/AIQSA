@@ -821,7 +821,7 @@ describe("provider dispatch recovery request loading", () => {
     })).resolves.toEqual(fullContextRequest);
   });
 
-  it("round-trips the exact frozen structured Personal Memory pack", async () => {
+  it.each(["prefetched", "standing-v1"] as const)("round-trips the exact frozen %s Personal Memory pack", async mode => {
     const memoryText = [
       PERSONAL_CONTEXT_HEADING,
       '<aiqsa_memory_evidence version="2">',
@@ -832,12 +832,18 @@ describe("provider dispatch recovery request loading", () => {
     ].join("\n");
     const frozenRequest: NormalizedRunRequest = {
       ...normalizedRequest,
+      ...(mode === "standing-v1" ? { memoryStandingVersion: 1 as const,
+        toolMode: "auto" as const,
+        modelCapabilities: { ...normalizedRequest.modelCapabilities, toolCalling: true },
+        memorySearch: { version: "memory-search-v1" as const, maxCalls: 3 as const, resultTokens: 6000 as const,
+          comparisonResultTokens: 12000 as const, timeoutSeconds: 30, memoryGeneration: 7,
+          referenceChatHistory: true, destinations: [] } } : {}),
       personalContext: {
         approxTokens: 64,
         itemCount: 1,
         memoryGeneration: 7,
         memoryRevision: 11,
-        mode: "prefetched",
+        mode,
         text: memoryText
       }
     };
