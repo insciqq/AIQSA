@@ -302,6 +302,9 @@ try {
       "set -eu",
       "test \"$(pwd)\" = /workspace/project",
       "bash --version >/dev/null",
+      "ps aux >/dev/null",
+      "ps -ef >/dev/null",
+      "test \"$(ps -p $$ -o pid= | tr -d ' ')\" = \"$$\"",
       "python3 -c 'print(\"python-ok\")'",
       "node -e 'console.log(\"node-ok\")'",
       "if env | grep -Eq '^(AIQSA_|DATABASE_URL|S3_|OPENAI_)'; then exit 91; fi"

@@ -1837,7 +1837,17 @@ export function PowerAppShellV2({
   useInterruptedRunRecovery({
     chatId: activeChatId,
     interrupted: Boolean(activeChatInterruptedRun) && !stopping,
-    refresh: refreshInterruptedRun
+    refresh: refreshInterruptedRun,
+    async refreshOnReturn(chatId, signal) {
+      // Let a foreground producer or branch mutation settle before reading its
+      // replacement. The recovery owner retries without another message POST.
+      if (stopping || activeStreamAbortRef.current.has(chatId) ||
+        useRunLifecycleStore.getState().activeStreams[chatId] ||
+        pendingBranchCheckouts.has(chatId) || pendingThreadMutations.has(chatId)) return false;
+      return Boolean(await refreshActiveChat(chatId, {
+        forceDetail: true, preserveControls: true, signal
+      }));
+    }
   });
   // Stable, so a caller that outlives its render (a Studio starter chip) sends from the current chat.
   const sendStarterEvent = useEventCallback((prompt: string) => void sendStarterPrompt(prompt));

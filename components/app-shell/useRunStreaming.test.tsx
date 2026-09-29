@@ -26,6 +26,34 @@ function chat(id: string, title: string): WorkspaceChatSummary {
 }
 
 describe("run streaming", () => {
+  it("uses an explicit abort race when a suspended reader's cancellation never settles", async () => {
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
+    const signal = new AbortController();
+    const cancel = vi.fn(() => new Promise<void>(() => undefined));
+    const pending = result.current.consumeRunStream({ chatId: "chat-a", failurePrefix: "send_failed",
+      onRunId: vi.fn(), onMessageIds: vi.fn(), tokenBuffer: { flush: vi.fn(), push: vi.fn() },
+      signal: signal.signal, response: new Response(new ReadableStream({ cancel })) });
+    const interrupted = expect(pending).rejects.toThrow("Detached for recovery");
+    signal.abort(new Error("Detached for recovery"));
+    await interrupted;
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("consumes already delivered terminal bytes before detaching on return", async () => {
+    vi.useFakeTimers();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
+    const push = vi.fn();
+    const pending = result.current.consumeRunStream({ chatId: "chat-a", failurePrefix: "send_failed",
+      onRunId: vi.fn(), onMessageIds: vi.fn(), tokenBuffer: { flush: vi.fn(), push },
+      response: new Response('event: token\ndata: {"delta":"Delivered answer"}\n\nevent: done\ndata: {"runId":"run","status":"complete"}\n\n') });
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await expect(pending).resolves.toMatchObject({ failed: false, terminalStatus: "complete" });
+    await vi.runOnlyPendingTimersAsync();
+    expect(push).toHaveBeenCalledExactlyOnceWith("Delivered answer");
+  });
+
   it.each(["visibility", "resume", "pageshow"])("detaches a suspended stream on %s without reporting a cancelled run", async (event) => {
     const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
     const cancel = vi.fn();

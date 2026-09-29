@@ -33,7 +33,7 @@ async function fixture(runConfiguration = configuration) {
   await prisma.user.create({ data: { id: userId, displayName: "Agent store fixture", status: "active" } });
   const chat = await prisma.chat.create({ data: { userId, title: "Agent fixture" } });
   const session = await prisma.workspaceSession.create({ data: { chatId: chat.id, sandboxName: `agent-${randomUUID()}`,
-    imageRef: "aiqsa-workspace:0.1.28", internetEnabled: true, policyRevision: 1,
+    imageRef: "aiqsa-workspace:0.1.29", internetEnabled: true, policyRevision: 1,
     runtimeSandboxId: "fixture-runtime", state: "RUNNING", expiresAt: new Date(Date.now() + 600000) } });
   async function run() {
     await prisma.modelRun.updateMany({ where: { chatId: chat.id, status: "in_progress" }, data: { status: "error" } });

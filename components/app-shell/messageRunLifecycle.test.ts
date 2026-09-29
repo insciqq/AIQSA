@@ -4,7 +4,7 @@ import {
   resetRunSurfaceStoreForTest,
   resetThreadStoreForTest
 } from "@/tests/support/appShellStores";
-import { executeMessageRunLifecycle } from "./messageRunLifecycle";
+import { executeMessageRunLifecycle, type ConsumeMessageRunStream } from "./messageRunLifecycle";
 import { useRunLifecycleStore } from "./runLifecycleStore";
 import {
   selectRunSurface,
@@ -33,6 +33,105 @@ function surfaceEvents(chatId = "chat-1") {
 }
 
 describe("message run lifecycle", () => {
+  it.each(["headers", "admission", "refusal", "stream"] as const)("reconciles a wake during %s even when transport ignores abort and fences its late response", async (stage) => {
+    vi.useFakeTimers();
+    prepareThread();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const activeStreamAbortRef = { current: new Map<string, AbortController>() };
+    let ready!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    let release!: (value: unknown) => void;
+    const stalled = new Promise<unknown>(resolve => { release = resolve; });
+    const admission = { version: 1, assistantMessageId: "answer-server", userMessageId: "question-server",
+      run: { id: "run-server", status: "queued", workspacePreparation: true } };
+    const response = stage === "refusal"
+      ? Response.json({ error: "active_leaf_changed" }, { status: 409 })
+      : Response.json(admission, { status: 202 });
+    if (stage === "admission") vi.spyOn(response, "json").mockImplementation(() => { ready(); return stalled; });
+    if (stage === "refusal") vi.spyOn(response, "text").mockImplementation(async () => { ready(); return await stalled as string; });
+    const reconcileMessageIds = vi.fn();
+    const onRunAdmitted = vi.fn();
+    const consumeRunStream = vi.fn<ConsumeMessageRunStream>(async ({ onRunId, onMessageIds }) => {
+      onRunId("run-server");
+      useRunSurfaceStore.getState().appendEvent("chat-1", { type: "artifact_generation", data: { draftId: "draft", phase: "started" } });
+      useRunSurfaceStore.getState().appendEvent("chat-1", { type: "artifact_generation", data: {
+        draftId: "draft", phase: "file", index: 0, offset: 0, path: "index.html", text: "<h1>Partial"
+      } });
+      ready();
+      await stalled;
+      onRunId("late-run");
+      onMessageIds({ assistantMessageId: "late-answer" }, "late-run");
+      return { failed: false, receivedChatUpdate: true, runId: "late-run", terminalStatus: "complete" as const };
+    });
+    let transportSignal!: AbortSignal;
+    const running = executeMessageRunLifecycle({ chatId: "chat-1", activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef, failurePrefix: "send_failed", fetchRun: vi.fn(), notifyAnswerReady: vi.fn(),
+      optimisticAssistantMessageId: "assistant-optimistic", primeAnswerSound: vi.fn(), onRunAdmitted,
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }), refreshActiveChat: vi.fn(),
+      reconcileMessageIds, consumeRunStream, request: async (signal) => {
+        transportSignal = signal;
+        if (stage === "headers") { ready(); return await stalled as Response; }
+        return stage === "admission" || stage === "refusal" ? response : new Response("");
+      }
+    });
+    await started;
+    const stopController = activeStreamAbortRef.current.get("chat-1")!;
+    visibility.mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(transportSignal.aborted).toBe(false);
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await running).toMatchObject({ failed: true, cancelled: false, runId: stage === "stream" ? "run-server" : null });
+    expect(stopController.signal.aborted).toBe(false);
+    expect(transportSignal.aborted).toBe(true);
+    expect(activeStreamAbortRef.current.has("chat-1")).toBe(false);
+    if (stage === "stream") expect(selectRunSurface(useRunSurfaceStore.getState(), "chat-1").artifactDrafts)
+      .toMatchObject([{ status: "interrupted", files: [] }]);
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-1"]).toEqual({
+      assistantMessageId: "assistant-optimistic", runId: stage === "stream" ? "run-server" : null
+    });
+    const threadAfterRecovery = selectThreadSnapshot(useThreadStore.getState(), "chat-1");
+    release(stage === "headers" ? response : stage === "refusal" ? '{"error":"active_leaf_changed"}' : admission);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcileMessageIds).not.toHaveBeenCalled();
+    expect(onRunAdmitted).toHaveBeenCalledTimes(stage === "stream" ? 1 : 0);
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1")).toBe(threadAfterRecovery);
+    if (stage !== "stream") expect(consumeRunStream).not.toHaveBeenCalled();
+  });
+
+  it("hands a published answer back to reconciliation after wake without cancelling or failing it", async () => {
+    vi.useFakeTimers();
+    prepareThread();
+    const activeStreamAbortRef = { current: new Map<string, AbortController>() };
+    let publish!: () => void;
+    const published = new Promise<void>(resolve => { publish = resolve; });
+    const refreshActiveChat = vi.fn(async () => null);
+    const notifyAnswerReady = vi.fn();
+    const running = executeMessageRunLifecycle({ chatId: "chat-1", activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef, failurePrefix: "send_failed", fetchRun: vi.fn(), notifyAnswerReady,
+      optimisticAssistantMessageId: "assistant-optimistic", primeAnswerSound: vi.fn(),
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }), refreshActiveChat,
+      request: async () => new Response(""), reconcileMessageIds: vi.fn(),
+      consumeRunStream: async ({ onRunId, onAnswerComplete }) => {
+        onRunId("run-server");
+        onAnswerComplete!({ assistantMessageId: "assistant-optimistic", runId: "run-server" });
+        publish();
+        return await new Promise(() => undefined);
+      }
+    });
+    await published;
+    document.dispatchEvent(new Event("resume"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await running).toMatchObject({ failed: false, cancelled: false, runId: "run-server" });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({ status: "complete" });
+    expect(useRunLifecycleStore.getState().ambiguousFailures).toEqual({});
+    expect(activeStreamAbortRef.current.has("chat-1")).toBe(false);
+    expect(notifyAnswerReady).toHaveBeenCalledOnce();
+    await vi.runOnlyPendingTimersAsync();
+    expect(refreshActiveChat).toHaveBeenCalledWith("chat-1", { forceDetail: true, preserveControls: true });
+  });
+
   it("reports streaming admission once while the answer and stream remain pending", async () => {
     prepareThread();
     let release!: () => void;
