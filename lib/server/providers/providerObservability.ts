@@ -360,7 +360,8 @@ export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<
         code === "agent_provider_dns_failed" || code === "agent_provider_connection_lost" ? "network"
       : status !== undefined ? "http"
       : code === PROVIDER_CONTEXT_LENGTH_EXCEEDED ? "safety_limit"
-      : code === "provider_response_failed" || code === "openai_response_incomplete" || code === "openai_response_failed" ||
+      : code.startsWith("gemini_interactions_stream_") ||
+        code === "provider_response_failed" || code === "openai_response_incomplete" || code === "openai_response_failed" ||
         code === "openai_response_not_completed" || code === "knowledge_answer_contract_failed" || code === "knowledge_citation_contract_failed"
         ? "invalid_response"
       : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||

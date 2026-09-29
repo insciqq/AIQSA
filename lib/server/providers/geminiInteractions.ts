@@ -1,3 +1,4 @@
+import { GeminiInteractionsStreamError } from "./geminiInteractionsStreamError";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
   buildGeminiInteractionsRequest,
@@ -48,7 +49,7 @@ export function createGeminiInteractionsAdapter(
           timeoutMs: runOptions.timeoutMs
         });
         if (!response.body) {
-          throw new Error("gemini_interactions_stream_body_missing");
+          throw new GeminiInteractionsStreamError("gemini_interactions_stream_body_missing");
         }
         return yield* parseGeminiInteractionsSse({
           onToolArguments: runOptions.onToolArguments,

@@ -30,6 +30,7 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { McpSemanticRouterError } from "../mcp/router";
 import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
+import { GeminiInteractionsStreamError } from "../providers/geminiInteractionsStreamError";
 import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { mcpRunTools } from "../mcp/toolExecutor";
@@ -3361,6 +3362,40 @@ describe("run execution", () => {
       "done"
     ]);
     expect(repository.persistedEvents.filter(({ event }) => !isContextEvent(event))).toEqual([]);
+  });
+
+  it.each([false, true])("preserves a Gemini parser diagnostic through run failure after tools=%s", async afterTools => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    repository.repository.loadEntitlements = async () => ({
+      modelKeys: new Set<string>(), providerKeys: new Set(["gemini"]), searchStrategies: new Set<string>()
+    });
+    const base = preparedData({ modelId: "gemini-test", provider: "gemini" });
+    const prepared = afterTools ? {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    } : base;
+    const failure = new GeminiInteractionsStreamError("gemini_interactions_stream_truncated");
+    failure.message = "PRIVATE_PROVIDER_MESSAGE_CANARY";
+    let rounds = 0;
+    const adapter = createAdapter(async function* () {
+      rounds += 1;
+      if (afterTools && rounds === 1) return providerResult({ finalText: "", toolCalls: [{
+        arguments: {}, id: "status-call", name: "get_session_status"
+      }] });
+      yield { type: "token", data: { delta: "Partial answer" } };
+      throw failure;
+    });
+    const response = await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text();
+    expect(rounds).toBe(afterTools ? 2 : 1);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({
+      code: "gemini_interactions_stream_truncated"
+    }) })]);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed",
+      code: "gemini_interactions_stream_truncated", reason: "invalid_response" }));
+    expect(JSON.stringify([response, repository.failedRuns, observation.records()])).not.toContain("PRIVATE_PROVIDER_MESSAGE_CANARY");
   });
 
   it("flushes partial text and records failure without persisting a timeline", async () => {
