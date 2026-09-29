@@ -157,6 +157,7 @@ export function boundThreadReasoningText(
 export type {
   ThreadSearchSource
 };
+import { decodeThreadSearchEngineActivity, type ThreadSearchEngineActivity } from "./searchActivity";
 export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
@@ -230,6 +231,7 @@ export type ThreadKnowledgeAnswerState = Readonly<{
 
 export type ThreadToolActivity = {
   calls: ThreadToolActivityCall[];
+  searchEngines?: ThreadSearchEngineActivity[];
   warning?: ThreadToolBudgetWarning;
 };
 
@@ -1058,7 +1060,16 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
     if (!decoded) return null;
     warning = decoded;
   }
-  return { calls, ...(warning ? { warning } : {}) };
+  let searchEngines: ThreadSearchEngineActivity[] | undefined;
+  if (value.searchEngines !== undefined) {
+    if (!Array.isArray(value.searchEngines) || value.searchEngines.length > 3) return null;
+    const decoded = value.searchEngines.map(decodeThreadSearchEngineActivity);
+    if (decoded.some(row => row === null) ||
+      new Set(decoded.map(row => row?.engine)).size !== decoded.length) return null;
+    searchEngines = decoded as ThreadSearchEngineActivity[];
+  }
+  return { calls, ...(searchEngines ? { searchEngines } : {}),
+    ...(warning ? { warning } : {}) };
 }
 
 function decodeChatMessageWire(value: unknown): ChatMessageWire | null {

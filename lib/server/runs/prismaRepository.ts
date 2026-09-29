@@ -1472,7 +1472,10 @@ export function createPrismaRunRepository(
                       createdAt: "asc"
                     },
                     select: {
-                      artifacts: true
+                      artifacts: true,
+                      invocationId: true,
+                      status: true,
+                      strategyId: true
                     }
                   },
                   normalizedRequest: true,

@@ -271,6 +271,7 @@ export function RunAnswerV2({
       contextCompaction={presentation.compaction}
       contextCompactionFailures={presentation.compactionFailures}
       disclosureId={processDisclosureId ?? anchorId}
+      generatedFileCount={artifact?.generatedFiles?.length ?? 0}
       liveLabel={liveLabel}
       onPinSkill={onPinSkill}
       pinnedSkillIds={pinnedSkillIds}

@@ -25,7 +25,7 @@ import { artifactTool, readArtifactTool, READ_ARTIFACT_TOOL_NAME, ARTIFACT_TOOL_
 import { acceptsSkillTool, isSkillToolName, skillToolsForRequest } from "../tools/skill";
 import { createSkillToolResultBudget } from "../skills/toolResultBudget";
 import { deliverSkillWorkspaceBundle } from "../skills/workspaceDelivery";
-import { skillToolActivityFacts } from "../tools/activityDescriptors";
+import { skillToolActivityFacts, toolActivityDescriptors } from "../tools/activityDescriptors";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
@@ -172,6 +172,8 @@ import {
   requestHasServerExternalTools
 } from "../providers/memoryEgress";
 import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
+import { acceptedClientSearchOptions } from "../search/activityProjection";
+import type { ThreadSearchEngineActivity } from "../../contracts/searchActivity";
 import {
   finalizeRunCompletion,
   usageAttributionsWithEstimatedCost,
@@ -1986,6 +1988,40 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               runtimes: input.searchRuntimes ?? {}
             })
           : null;
+        const searchActivityRows = acceptedClientSearchOptions(normalizedRequest).map(option => ({
+          ...option, requested: 0, settled: 0, complete: 0, error: 0, skipped: 0
+        }));
+        const searchActivityRequested = new Set<string>();
+        const searchActivitySettled = new Set<string>();
+        const acceptedActivityDescriptors = toolActivityDescriptors(normalizedRequest);
+        const searchActivitySnapshot = async () => {
+          const engines: ThreadSearchEngineActivity[] = searchActivityRows.filter(row => row.requested > 0)
+            .map(({ engine, name, requested, settled, complete, error, skipped }) => ({
+              engine, name, requested, settled, complete, error, skipped
+            }));
+          if (engines.length) await emit(controller, encoder, input.repository, runId, {
+            type: "artifact", data: { artifactType: "search_activity", payload: { engines } }
+          });
+        };
+        const settleSearchActivity = async (input: Readonly<{
+          persistedId: string;
+          toolName: string;
+          executions: readonly SearchExecutionEvidence[];
+          provedSkip?: boolean;
+        }>) => {
+          if (!searchPlanRouter || searchActivitySettled.has(input.persistedId)) return;
+          searchActivitySettled.add(input.persistedId);
+          for (const optionId of searchPlanRouter.optionIdsForTool(input.toolName)) {
+            const row = searchActivityRows.find(candidate => candidate.optionId === optionId);
+            if (!row) continue;
+            row.settled += 1;
+            const execution = input.executions.find(candidate => candidate.optionId === optionId);
+            if (execution?.status === "complete") row.complete += 1;
+            else if (execution?.status === "error") row.error += 1;
+            else if (input.provedSkip) row.skipped += 1;
+          }
+          await searchActivitySnapshot();
+        };
         const isSearchCall = (name: string) =>
           searchPlanRouter?.accepts(name) === true;
         const knowledgeTools = clientToolsEnabled && admittedKnowledgeReady
@@ -2057,7 +2093,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const unrecordedSearches = new Map<string, ToolExecutionResult>();
         const observationBatches = observationWholeDeliveryBatches();
         const accountObservedSearch = async (persisted: Pick<PersistedToolLoopCall, "id" | "usageAccountedAt">) => {
-          if (observationUsageCollected.has(persisted.id)) return;
+          if (observationUsageCollected.has(persisted.id)) return [];
           const receipt = await (await observationService()).searchAccounting({
             runId, userId: input.userId, toolCallId: persisted.id });
           // Without a receipt, an executed Search keeps its reported usage as Off does.
@@ -2069,6 +2105,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           }
           observationUsageCollected.add(persisted.id);
           if (persisted.usageAccountedAt == null) usageAccountedToolCallIds.add(persisted.id);
+          return executions;
         };
         const knowledgeToolResults = new Map<string, ToolExecutionResult>();
         const mcpDiscoveryBatches = new Map<string, Readonly<{
@@ -2154,12 +2191,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               const result = settled.result.status === "complete"
                 ? settled.result.value
                 : toolExecutionErrorResult(call, new Error(settled.result.error.message));
+              let searchExecutions: readonly SearchExecutionEvidence[] = [];
               if (searchPlanRouter?.accepts(call.name) && normalizedRequest.toolObservationVersion === 1) {
                 const persisted = persistedCalls.get(call.id);
                 if (!persisted) throw new RunPipelineError("tool_call_not_found", "Search accounting identity is unavailable.");
-                await accountObservedSearch(persisted);
+                searchExecutions = await accountObservedSearch(persisted);
               } else if (searchPlanRouter?.accepts(call.name)) {
                 const executions = searchExecutionsFromToolResult(result);
+                searchExecutions = executions;
                 const previewCount = searchExecutionPreviewCount(result);
                 if (previewCount !== null && executions.length !== previewCount) {
                   throw new RunPipelineError(
@@ -2181,6 +2220,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 if (persistedCall && persistedCall.usageAccountedAt == null) {
                   usageAccountedToolCallIds.add(persistedCall.id);
                 }
+              }
+              if (searchPlanRouter?.accepts(call.name)) {
+                const persisted = persistedCalls.get(call.id);
+                if (persisted) await settleSearchActivity({ persistedId: persisted.id, toolName: call.name,
+                  executions: searchExecutions, provedSkip: result.rawPreview?.providerCall === false });
               }
               if (isKnowledgeCall(call.name)) {
                 knowledgeToolResults.set(call.id, result);
@@ -2728,7 +2772,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   const settled = snapshot && await input.repository.settleToolLoopCall({ callId: claim.call.id,
                     result: snapshot, runId, state: "error", userId: input.userId });
                   if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Search outcome could not be settled.");
-                  await accountObservedSearch(claim.call);
+                  const executions = await accountObservedSearch(claim.call);
+                  await settleSearchActivity({ persistedId: claim.call.id, toolName: call.name,
+                    executions });
                   await persistReportedUsageForIncompleteRun();
                 } else if (error instanceof SearchToolCancelledError) {
                   // Search has already collected its engines' outcomes. Settle
@@ -2751,6 +2797,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
                   }
                   usageAccountedToolCallIds.add(claim.call.id);
+                  await settleSearchActivity({ persistedId: claim.call.id, toolName: call.name,
+                    executions: searchExecutionsFromToolResult(error.result) });
                 }
                 if (externalReceipt) {
                   await input.memoryEgress!.failDispatch(
@@ -2909,6 +2957,18 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool batch could not persist");
             }
             for (const call of persisted.calls) persistedCalls.set(call.providerCallId, call);
+            if (searchPlanRouter) {
+              let changed = false;
+              for (const call of persisted.calls) {
+                if (!searchPlanRouter.accepts(call.toolName) || searchActivityRequested.has(call.id)) continue;
+                searchActivityRequested.add(call.id);
+                for (const optionId of searchPlanRouter.optionIdsForTool(call.toolName)) {
+                  const row = searchActivityRows.find(candidate => candidate.optionId === optionId);
+                  if (row) { row.requested += 1; changed = true; }
+                }
+              }
+              if (changed) await searchActivitySnapshot();
+            }
             const discoveryCalls = calls.flatMap((candidate) => {
               const call = modelToolCall(candidate);
               const persistedCall = persistedCalls.get(call.id);
@@ -2992,7 +3052,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     ? "Workspace"
                 : call.name.includes("memory")
                     ? "Memory"
-                    : call.name.startsWith("search_engine_")
+                    : isSearchCall(call.name)
                       ? "Web search"
                       : undefined;
               const workspaceToolName = isWorkspaceCall(call.name)
@@ -3015,7 +3075,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   } : builtInServer ? {
                       serverName: builtInServer,
                       ...(workspaceToolName ? { toolName: workspaceToolName } : {})
-                    } : {})
+                    } : {}),
+                  ...(isSearchCall(call.name) ? acceptedActivityDescriptors.get(call.name) : {})
                 })
               );
             }

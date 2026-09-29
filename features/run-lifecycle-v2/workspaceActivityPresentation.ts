@@ -45,6 +45,25 @@ export function presentWorkspaceActivityV2(
   return activity ? { ...activity, entries: closeWorkspaceActivityEntries(activity.entries, terminal) } : null;
 }
 
+/** Keep lifecycle proof in the source activity, but do not present a successful
+ * empty handoff as work performed by the answer. */
+export function visibleWorkspaceActivityV2(
+  activity: ThreadWorkspaceActivity | null,
+  generatedFileCount = 0
+): ThreadWorkspaceActivity | null {
+  const entries = (activity?.entries ?? []).filter(entry =>
+    !(entry.kind === "execution_status" && entry.phase === "closed") &&
+    !(entry.kind === "outputs_export" && entry.phase === "succeeded" && entry.count === 0) &&
+    !(entry.kind === "attachments_prepare" && entry.phase === "succeeded" && entry.count === 0)
+  );
+  const substantiveEntry = entries.some(entry =>
+    !(entry.kind === "workspace_start" && entry.phase === "succeeded")
+  );
+  const unresolvedExport = activity?.outputStatus && activity.outputStatus.state !== "complete";
+  if (!substantiveEntry && generatedFileCount === 0 && !unresolvedExport) return null;
+  return activity ? { ...activity, entries } : { entries };
+}
+
 /** Consecutive successful existence/stat checks collapse into one "Checked N files" row. */
 export function aggregateWorkspaceActivityV2(
   entries: readonly ThreadWorkspaceActivityEntry[]
@@ -194,9 +213,10 @@ export function workspaceDurationV2(durationMs: number | undefined): string | nu
 
 /** Live status line while the run works: the latest running step, else the generic phrase. */
 export function workspaceLiveLabelV2(activity: ThreadWorkspaceActivity | null): string | null {
-  if (!activity || activity.entries.length === 0) return null;
-  for (let index = activity.entries.length - 1; index >= 0; index -= 1) {
-    const entry = activity.entries[index]!;
+  const visible = visibleWorkspaceActivityV2(activity);
+  if (!visible || visible.entries.length === 0) return null;
+  for (let index = visible.entries.length - 1; index >= 0; index -= 1) {
+    const entry = visible.entries[index]!;
     if (isWorkspaceActivityActive(entry) && entry.kind !== "plan") {
       return workspaceActivityLabelV2(entry);
     }

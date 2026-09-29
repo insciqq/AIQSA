@@ -3,6 +3,7 @@ import { decodeThreadWorkspaceActivity, type ThreadWorkspaceActivityEntry } from
 import {
   aggregateWorkspaceActivityV2,
   presentWorkspaceActivityV2,
+  visibleWorkspaceActivityV2,
   workspaceActivityLabelV2,
   workspaceLiveLabelV2,
   workspaceOutputStatusCopyV2,
@@ -13,6 +14,33 @@ const command = (id: string, phase: ThreadWorkspaceActivityEntry["phase"], previ
   ({ command: { preview }, id, kind: "command", phase });
 
 describe("workspace activity presentation", () => {
+  it("hides successful empty lifecycle bookkeeping without changing the source receipts", () => {
+    const activity = { entries: [
+      { id: "start", kind: "workspace_start", phase: "succeeded" },
+      { id: "empty-export", kind: "outputs_export", phase: "succeeded", count: 0 },
+      { id: "closed", kind: "execution_status", phase: "closed" }
+    ], outputStatus: { state: "complete" } } as const;
+    expect(visibleWorkspaceActivityV2(activity)).toBeNull();
+    expect(visibleWorkspaceActivityV2({ entries: [], outputStatus: { state: "complete" } })).toBeNull();
+    expect(activity.entries).toHaveLength(3);
+    expect(workspaceLiveLabelV2(activity)).toBeNull();
+  });
+
+  it("keeps real steps, exported files, and unresolved outcomes visible", () => {
+    const closed = { id: "closed", kind: "execution_status", phase: "closed" } as const;
+    const command = { id: "command", kind: "command", phase: "failed", command: { preview: "run.sh" } } as const;
+    const activity = { entries: [command, closed], outputStatus: { state: "complete" } } as const;
+    expect(visibleWorkspaceActivityV2(activity)?.entries).toEqual([command]);
+    expect(visibleWorkspaceActivityV2({ entries: [closed], outputStatus: { state: "complete" } }, 1)?.entries).toEqual([]);
+    expect(visibleWorkspaceActivityV2({ entries: [{ id: "export", kind: "outputs_export", phase: "succeeded", count: 1 }] }))
+      .not.toBeNull();
+    expect(visibleWorkspaceActivityV2({ entries: [{ id: "unknown", kind: "execution_status", phase: "unknown" }] }))
+      .not.toBeNull();
+    expect(visibleWorkspaceActivityV2({ entries: [{ id: "failed", kind: "workspace_start", phase: "failed" }] }))
+      .not.toBeNull();
+    expect(visibleWorkspaceActivityV2({ entries: [], outputStatus: { state: "failed" } })).not.toBeNull();
+  });
+
   it("shows a failed discovery and its safe cause instead of claiming tools were found", () => {
     const failed = { id: "discovery", kind: "mcp_call", phase: "failed", mcp: { discovery: true, toolName: "find_tools" } } as const;
     expect(workspaceActivityLabelV2(failed)).toBe("Tool discovery failed");

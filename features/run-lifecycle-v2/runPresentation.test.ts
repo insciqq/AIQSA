@@ -492,6 +492,23 @@ describe("answer process label", () => {
     expect(describeToolCallV2({ toolName: "search_selected_engines" }, "running")).toBe("Searching the web");
   });
 
+  it("merges absolute search outcomes across duplicate and reordered live snapshots", () => {
+    const event = (requested: number, complete: number, error = 0) => ({
+      type: "artifact", data: { artifactType: "search_activity", payload: { engines: [
+        { engine: 1, name: "Perplexity", requested, settled: complete + error, complete, error, skipped: 0 }
+      ] } }
+    });
+    const activity = presentToolActivityV2([event(2, 1), event(1, 0), event(2, 1), event(2, 2)]);
+    expect(activity?.searchEngines).toEqual([
+      { engine: 1, name: "Perplexity", requested: 2, settled: 2, complete: 2, error: 0, skipped: 0 }
+    ]);
+    expect(presentToolActivityV2([event(1, 0)], activity)?.searchEngines).toEqual(activity?.searchEngines);
+    expect(presentToolActivityV2([event(1, 0)], null, true)?.searchEngines).toEqual([
+      { engine: 1, name: "Perplexity", requested: 1, settled: 1, complete: 0, error: 0, skipped: 0 }
+    ]);
+    expect(JSON.stringify(activity)).not.toMatch(/invocationId|optionId|query|requestBody/iu);
+  });
+
   it.each([
     ["Repository Tools", "search", "search"],
     ["Document Tools", "search_knowledge", "search knowledge"],

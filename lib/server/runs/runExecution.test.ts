@@ -4938,7 +4938,9 @@ describe("run execution", () => {
       "artifact",
       "token",
       "artifact",
+      "artifact",
       "message_reset",
+      "artifact",
       "token",
       "usage",
       "done"
@@ -4947,7 +4949,17 @@ describe("run execution", () => {
       events
         .filter((event) => event.type === "artifact")
         .map((event) => (event.type === "artifact" ? event.data.artifactType : ""))
-    ).toEqual(["reasoning", "tool_call"]);
+    ).toEqual(["reasoning", "search_activity", "tool_call", "search_activity"]);
+    const searchActivity = events.flatMap(event => event.type === "artifact" &&
+      event.data.artifactType === "search_activity" ? [event.data.payload] : []);
+    expect(searchActivity).toEqual([
+      { engines: [{ engine: 1, name: "Client Search", requested: 1, settled: 0,
+        complete: 0, error: 0, skipped: 0 }] },
+      { engines: [{ engine: 1, name: "Client Search", requested: 1, settled: 1,
+        complete: 1, error: 0, skipped: 0 }] }
+    ]);
+    expect(events.find(event => event.type === "artifact" && event.data.artifactType === "tool_call"))
+      .toMatchObject({ data: { payload: { name: "search", origin: "web_search", serverName: "Client Search" } } });
     expect(events.some((event) =>
       event.type === "token" && event.data.delta === "discarded draft"
     )).toBe(true);

@@ -337,6 +337,21 @@ describe("answer outputs v2", () => {
     expect(document.body.textContent).not.toContain("search_knowledge");
   });
 
+  it("shows successful search calls per engine with other outcomes and rounds separately", () => {
+    render(<AnswerProcessV2 toolActivity={{ calls: [
+      { origin: "web_search", round: 2, status: "complete", toolName: "search" }
+    ], searchEngines: [
+      { engine: 1, name: "Perplexity", requested: 3, settled: 2, complete: 2, error: 0, skipped: 0 },
+      { engine: 2, name: "OpenAI (CodexLB)", requested: 3, settled: 3, complete: 1, error: 1, skipped: 1 }
+    ] }} />);
+    expect(screen.getByText(/Web search · Perplexity ×2/iu)).toBeVisible();
+    openProcess();
+    expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("Perplexity ×2 · 1 in progress");
+    expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("OpenAI (CodexLB) ×1 · 1 unsuccessful · 1 skipped");
+    expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("Provider-internal searches and HTTP retries are excluded.");
+    expect(screen.getByText(/round 2/iu)).toBeVisible();
+  });
+
   it.each([
     ["running", "Using Repository Tools: search"],
     ["complete", "Used Repository Tools: search"],
@@ -689,4 +704,57 @@ it("keeps historical failed commands in the disclosure without a false aggregate
   expect(screen.getByText("Worked in Workspace")).toBeVisible();
   expect(screen.queryByText(/Needs attention/u)).not.toBeInTheDocument();
   expect(screen.getByText("first-attempt failed")).toBeInTheDocument();
+});
+
+it("keeps Memory and Past chats under the ordinary process label after an empty Workspace handoff", () => {
+  const pastChat: MemoryAnswerSource = {
+    actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"], chatGroup: "chat-1", date: "2026-09-06T10:00:00.000Z",
+    memoryRef: "earlier-chat-ref", origin: "Earlier chat", sourceAvailable: true,
+    sourceType: "PAST_CHAT", text: "Previous context"
+  };
+  const empty = { entries: [{ id: "closed", kind: "execution_status", phase: "closed" }],
+    outputStatus: { state: "complete" } } as const;
+  const { rerender } = render(<AnswerProcessV2 liveLabel="Thinking…" workspaceActivity={empty} />);
+  expect(screen.getByTestId("run-status-line")).toHaveTextContent("Thinking…");
+  expect(screen.queryByText(/Worked in Workspace/u)).not.toBeInTheDocument();
+  rerender(<AnswerProcessV2 memorySources={[memorySource(), pastChat]} workspaceActivity={empty} />);
+  const process = screen.getByTestId("tool-activity-disclosure");
+  expect(process.querySelector("summary")).toHaveTextContent("Past chats · 1 · Memory · 1");
+  expect(process).not.toHaveAttribute("data-workspace");
+  expect(screen.queryByTestId("workspace-activity-section")).not.toBeInTheDocument();
+});
+
+it("shows output-only files even when the export activity event was lost", () => {
+  const output = { attachmentId: "output", byteSize: 12, fileName: "report.txt",
+    mimeType: "text/plain", relativePath: "report.txt" };
+  render(<RunAnswerV2 content="Done." artifact={{ citations: [], sources: [], reasoningText: [], generatedFiles: [output] }}
+    presentation={{ kind: "complete", runId: "output-run" }}
+    workspaceActivity={{ entries: [{ id: "closed", kind: "execution_status", phase: "closed" }],
+      outputStatus: { state: "complete" } }}
+    actionsSlot={<AnswerOutputsV2 artifact={{ citations: [], sources: [], reasoningText: [], generatedFiles: [output] }} />} />);
+  const process = screen.getByTestId("tool-activity-disclosure");
+  expect(process).toHaveAttribute("data-workspace", "true");
+  expect(process.querySelector("summary")).toHaveTextContent("Worked in Workspace");
+  openProcess();
+  expect(screen.getByText("1 file available for download")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/attachments/output/content");
+  expect(screen.queryByText("Workspace execution ended")).not.toBeInTheDocument();
+});
+
+it("keeps failed export and unknown cleanup visible without the successful closure row", () => {
+  const { rerender } = render(<AnswerProcessV2 workspaceActivity={{
+    entries: [{ id: "closed", kind: "execution_status", phase: "closed" }],
+    outputStatus: { state: "failed" }
+  }} />);
+  expect(screen.getByTestId("tool-activity-disclosure").querySelector("summary"))
+    .toHaveTextContent("File export failed");
+  openProcess();
+  expect(screen.getByText("Some generated files could not be prepared for download.")).toBeVisible();
+  expect(screen.queryByText("Workspace execution ended")).not.toBeInTheDocument();
+  rerender(<AnswerProcessV2 workspaceActivity={{ entries: [
+    { id: "unknown", kind: "execution_status", phase: "unknown" }
+  ] }} />);
+  expect(screen.getByTestId("tool-activity-disclosure").querySelector("summary"))
+    .toHaveTextContent("Cleanup unconfirmed");
+  expect(screen.getByText("Workspace cleanup unconfirmed")).toBeVisible();
 });

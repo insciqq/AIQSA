@@ -64,13 +64,14 @@ for (const viewport of [
     const emitActivity = (entry: ThreadWorkspaceActivityEntry) => stream.emit(page, "artifact", {
       artifactType: "workspace_activity", payload: { ...entry, sequence: ++sequence }
     });
-    await emitActivity({ id: "start", kind: "workspace_start", phase: "succeeded", durationMs: 546 });
+    await emitActivity({ id: "start", kind: "workspace_start", phase: "running" });
     const disclosure = page.getByTestId("tool-activity-disclosure");
     const summary = disclosure.locator(":scope > summary");
-    await expect(summary).toHaveText("Working in Workspace…");
+    await expect(summary).toHaveText("Starting workspace…");
     await expect(disclosure).not.toHaveAttribute("open");
     await summary.click();
     const initialWidth = await expectStackedTimeline(disclosure);
+    await emitActivity({ id: "start", kind: "workspace_start", phase: "succeeded", durationMs: 546 });
 
     for (const [index, preview] of ["pwd", "python -c \"from pathlib import Path; print(Path('project/report-with-a-long-file-name.txt').read_text())\""].entries()) {
       const entry: ThreadWorkspaceActivityEntry = { id: `command-${index}`, kind: "command", phase: "running", command: { preview } };

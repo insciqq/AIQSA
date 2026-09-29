@@ -1206,7 +1206,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       );
     }
     const { artifact, events, ownsLiveRun, presentation, transportLost } = presentAnswer(source);
-    const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null);
+    const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null,
+      !transportLost && (source.status === "complete" || source.status === "error" || source.status === "cancelled"));
     const workspaceActivity = presentWorkspaceActivityV2(events, source.workspaceActivity ?? null,
       !transportLost && (source.status === "complete" || source.status === "error" || source.status === "cancelled"));
     // Model-written `sandbox:` links resolve only against this run's own
