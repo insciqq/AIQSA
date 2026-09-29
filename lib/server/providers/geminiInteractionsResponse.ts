@@ -1,3 +1,4 @@
+import { GeminiInteractionsStreamError } from "./geminiInteractionsStreamError";
 import { observeStreamParseFailure } from "./providerObservability";
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
@@ -793,7 +794,7 @@ export async function* streamGeminiInteractionsJsonResponse(
 function streamIndex(value: unknown): number {
   const index = nonNegativeInteger(value);
   if (index === null || index >= MAX_STEP_COUNT) {
-    throw new Error("gemini_interactions_stream_step_invalid");
+    throw new GeminiInteractionsStreamError("gemini_interactions_stream_step_invalid");
   }
   return index;
 }
@@ -806,7 +807,7 @@ function startStep(
   snapshot: ProviderStreamSafetySnapshot | null
 ): StreamStepAccumulator {
   if (!isRecord(value)) {
-    throw new Error("gemini_interactions_stream_step_invalid");
+    throw new GeminiInteractionsStreamError("gemini_interactions_stream_step_invalid");
   }
 
   switch (value.type) {
@@ -850,7 +851,7 @@ function startStep(
         !boundedString(value.id, MAX_TOOL_CALL_ID_LENGTH) ||
         !boundedString(value.name, MAX_TOOL_NAME_LENGTH)
       ) {
-        throw new Error("gemini_interactions_stream_step_invalid");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_step_invalid");
       }
       const argumentsValue = isAbsent(value.arguments) ? {} : validateArguments(value.arguments);
       assertBoundedStructuredTextLength({
@@ -894,7 +895,7 @@ function startStep(
       };
     }
     default:
-      throw new Error("gemini_interactions_stream_step_unsupported");
+      throw new GeminiInteractionsStreamError("gemini_interactions_stream_step_unsupported");
   }
 }
 
@@ -918,7 +919,7 @@ function appendDelta(
   snapshot: ProviderStreamSafetySnapshot | null
 ): string | null {
   if (!isRecord(value) || typeof value.type !== "string") {
-    throw new Error("gemini_interactions_stream_delta_invalid");
+    throw new GeminiInteractionsStreamError("gemini_interactions_stream_delta_invalid");
   }
   const step = accumulator.step;
 
@@ -988,7 +989,7 @@ function appendDelta(
     return null;
   }
 
-  throw new Error("gemini_interactions_stream_delta_invalid");
+  throw new GeminiInteractionsStreamError("gemini_interactions_stream_delta_invalid");
 }
 
 function finalizeStep(accumulator: StreamStepAccumulator): Record<string, unknown> {
@@ -1017,7 +1018,7 @@ function totalUsageFromEvent(event: Record<string, unknown>): unknown {
 
 function interactionFromEvent(event: Record<string, unknown>): Record<string, unknown> {
   if (!isRecord(event.interaction)) {
-    throw new Error("gemini_interactions_stream_interaction_invalid");
+    throw new GeminiInteractionsStreamError("gemini_interactions_stream_interaction_invalid");
   }
   return event.interaction;
 }
@@ -1068,11 +1069,11 @@ export async function* parseGeminiInteractionsSse(
     const snapshot = providerStreamSafetySnapshot(event);
     latestSnapshot = snapshot;
     if (done) {
-      throw new Error("gemini_interactions_stream_trailing_data");
+      throw new GeminiInteractionsStreamError("gemini_interactions_stream_trailing_data");
     }
     if (event.data === "[DONE]") {
       if (event.event !== "done" || !terminal) {
-        throw new Error("gemini_interactions_stream_truncated");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_truncated");
       }
       done = true;
       continue;
@@ -1083,21 +1084,21 @@ export async function* parseGeminiInteractionsSse(
       parsed = JSON.parse(event.data) as unknown;
     } catch {
       observeStreamParseFailure(input.responseBody);
-      throw new Error("gemini_interactions_stream_invalid_json");
+      throw new GeminiInteractionsStreamError("gemini_interactions_stream_invalid_json");
     }
     if (!isRecord(parsed) || typeof parsed.event_type !== "string" || event.event !== parsed.event_type) {
-      throw new Error("gemini_interactions_stream_event_invalid");
+      throw new GeminiInteractionsStreamError("gemini_interactions_stream_event_invalid");
     }
     if (terminal) {
-      throw new Error("gemini_interactions_stream_trailing_data");
+      throw new GeminiInteractionsStreamError("gemini_interactions_stream_trailing_data");
     }
 
     const eventType = parsed.event_type;
     if (eventType === "error") {
-      throw new Error("gemini_interactions_stream_error");
+      throw new GeminiInteractionsStreamError("gemini_interactions_stream_error");
     }
     if (!created && eventType !== "interaction.created") {
-      throw new Error("gemini_interactions_stream_created_missing");
+      throw new GeminiInteractionsStreamError("gemini_interactions_stream_created_missing");
     }
 
     const cumulativeUsage = totalUsageFromEvent(parsed);
@@ -1107,29 +1108,31 @@ export async function* parseGeminiInteractionsSse(
 
     if (eventType === "interaction.created") {
       if (created) {
-        throw new Error("gemini_interactions_stream_created_duplicate");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_created_duplicate");
       }
       const interaction = interactionFromEvent(parsed);
-      if (typeof interaction.id !== "string") {
-        throw new Error("gemini_interactions_stream_created_id_missing");
+      // Native requests use store:false. Gemini can omit these initial fields;
+      // the created event itself establishes progress, never terminal success.
+      if (interaction.id !== undefined && typeof interaction.id !== "string") {
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_created_id_missing");
       }
-      if (interaction.id.length > MAX_INTERACTION_ID_LENGTH) {
-        throw new Error("gemini_interactions_stream_created_id_too_long");
+      if (typeof interaction.id === "string" && interaction.id.length > MAX_INTERACTION_ID_LENGTH) {
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_created_id_too_long");
       }
       if (interaction.id && !boundedString(interaction.id, MAX_INTERACTION_ID_LENGTH)) {
-        throw new Error("gemini_interactions_stream_created_id_invalid");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_created_id_invalid");
       }
-      if (statusValue(interaction.status) !== "in_progress") {
-        throw new Error("gemini_interactions_stream_created_status_invalid");
+      if (interaction.status !== undefined && statusValue(interaction.status) !== "in_progress") {
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_created_status_invalid");
       }
       if (interaction.model !== undefined) {
         if (!boundedString(interaction.model, MAX_MODEL_LENGTH)) {
-          throw new Error("gemini_interactions_stream_created_model_invalid");
+          throw new GeminiInteractionsStreamError("gemini_interactions_stream_created_model_invalid");
         }
         model = interaction.model;
       }
       created = true;
-      interactionId = interaction.id;
+      interactionId = typeof interaction.id === "string" ? interaction.id : "";
       yield geminiInteractionSummaryEvent({
         model,
         ...(interactionId ? { providerResponseId: interactionId } : {}),
@@ -1139,16 +1142,18 @@ export async function* parseGeminiInteractionsSse(
     }
 
     if (eventType === "interaction.status_update") {
+      // store:false can omit the ID here too; the status itself remains required.
       if (
-        typeof parsed.interaction_id !== "string" ||
-        (parsed.interaction_id !== "" &&
-          !boundedString(parsed.interaction_id, MAX_INTERACTION_ID_LENGTH)) ||
-        (interactionId && parsed.interaction_id !== "" && parsed.interaction_id !== interactionId) ||
+        (parsed.interaction_id !== undefined && (
+          typeof parsed.interaction_id !== "string" ||
+          (parsed.interaction_id !== "" &&
+            !boundedString(parsed.interaction_id, MAX_INTERACTION_ID_LENGTH)) ||
+          (interactionId && parsed.interaction_id !== "" && parsed.interaction_id !== interactionId))) ||
         !statusValue(parsed.status)
       ) {
-        throw new Error("gemini_interactions_stream_status_invalid");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_status_invalid");
       }
-      if (parsed.interaction_id) interactionId = parsed.interaction_id;
+      if (typeof parsed.interaction_id === "string" && parsed.interaction_id) interactionId = parsed.interaction_id;
       if (parsed.status === "failed" || parsed.status === "cancelled" || parsed.status === "incomplete") {
         throw interactionFailure(parsed.status);
       }
@@ -1163,7 +1168,7 @@ export async function* parseGeminiInteractionsSse(
         protectedSteps.length >= MAX_STEP_COUNT ||
         index !== protectedSteps.length
       ) {
-        throw new Error("gemini_interactions_stream_step_invalid");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_step_invalid");
       }
       const accumulator = startStep(
         parsed.step,
@@ -1210,7 +1215,7 @@ export async function* parseGeminiInteractionsSse(
       const index = streamIndex(parsed.index);
       const accumulator = activeSteps.get(index);
       if (!accumulator) {
-        throw new Error("gemini_interactions_stream_step_invalid");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_step_invalid");
       }
       const previousQueryCount = accumulator.step.type === "google_search_call"
         ? queryCountFromSearchCall(accumulator.step)
@@ -1266,7 +1271,7 @@ export async function* parseGeminiInteractionsSse(
       const index = streamIndex(parsed.index);
       const accumulator = activeSteps.get(index);
       if (!accumulator) {
-        throw new Error("gemini_interactions_stream_step_invalid");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_step_invalid");
       }
       activeSteps.delete(index);
       const finalizedStep = finalizeStep(accumulator);
@@ -1299,17 +1304,18 @@ export async function* parseGeminiInteractionsSse(
 
     if (eventType === "interaction.completed") {
       if (activeSteps.size > 0) {
-        throw new Error("gemini_interactions_stream_step_unfinished");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_step_unfinished");
       }
       const interaction = interactionFromEvent(parsed);
       if (
-        typeof interaction.id !== "string" ||
-        (interaction.id !== "" && !boundedString(interaction.id, MAX_INTERACTION_ID_LENGTH)) ||
-        (interactionId && interaction.id !== "" && interaction.id !== interactionId)
+        interaction.id !== undefined && (
+          typeof interaction.id !== "string" ||
+          (interaction.id !== "" && !boundedString(interaction.id, MAX_INTERACTION_ID_LENGTH)) ||
+          (interactionId && interaction.id !== "" && interaction.id !== interactionId))
       ) {
-        throw new Error("gemini_interactions_stream_completed_id_invalid");
+        throw new GeminiInteractionsStreamError("gemini_interactions_stream_completed_id_invalid");
       }
-      if (interaction.id) interactionId = interaction.id;
+      if (typeof interaction.id === "string" && interaction.id) interactionId = interaction.id;
       terminalStatus = validateTerminalStatus(interaction.status);
       if (interaction.steps !== undefined) {
         if (!Array.isArray(interaction.steps) || interaction.steps.length > MAX_STEP_COUNT) {
@@ -1337,7 +1343,7 @@ export async function* parseGeminiInteractionsSse(
         const terminalText = textFromSteps(terminalSteps, maxOutputChars, snapshot);
         const streamedText = streamedRawText.value();
         if (streamedText && terminalText !== streamedText) {
-          throw new Error("gemini_interactions_stream_text_mismatch");
+          throw new GeminiInteractionsStreamError("gemini_interactions_stream_text_mismatch");
         }
         protectedSteps.splice(0, protectedSteps.length, ...terminalSteps);
         groundingRetention = terminalGroundingRetention;
@@ -1374,11 +1380,11 @@ export async function* parseGeminiInteractionsSse(
       continue;
     }
 
-    throw new Error("gemini_interactions_stream_event_unsupported");
+    throw new GeminiInteractionsStreamError("gemini_interactions_stream_event_unsupported");
   }
 
   if (!created || !terminal || !done || !terminalStatus || activeSteps.size > 0) {
-    throw new Error("gemini_interactions_stream_truncated");
+    throw new GeminiInteractionsStreamError("gemini_interactions_stream_truncated");
   }
 
   const rawFinalText = textFromSteps(protectedSteps, maxOutputChars, latestSnapshot);

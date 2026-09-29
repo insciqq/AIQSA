@@ -16,6 +16,8 @@ import { createFetchAnthropicMessagesClient } from "./anthropicMessages";
 import { executeWithProviderRetry } from "./providerRetry";
 import { ProviderRequestTimeoutError, withTimeoutSignal } from "./network";
 import { ProviderSearchExecutionError } from "./types";
+import { GeminiInteractionsStreamError } from "./geminiInteractionsStreamError";
+import { parseGeminiInteractionsSse } from "./geminiInteractionsResponse";
 
 const identity = { adapterKind: "openai_responses_compatible", providerFamily: "openai_compatible", connectionId: "connection-safe", providerModelId: "model-safe" };
 
@@ -164,6 +166,36 @@ describe("provider diagnostics", () => {
     expect(observedFailure(error)).toEqual({ code: "unknown", reason: "unknown" });
     expect(getter).not.toHaveBeenCalled();
     expect(observedFailure(new TypeError("PRIVATE_TYPE_ERROR_CANARY"))).toEqual({ code: "unknown", reason: "unknown" });
+  });
+
+  it("retains the parser's Gemini failure identity through a streamed operation", async () => {
+    const records = capture();
+    const responseBody = new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(new TextEncoder().encode("event: interaction.created\ndata: PRIVATE_INVALID_JSON_CANARY\n\n"));
+      controller.close();
+    } });
+    const iterator = observeProviderStream({ ...identity, adapterKind: "gemini_interactions_native", providerFamily: "gemini" },
+      parseGeminiInteractionsSse({ responseBody, modelId: "gemini-test", groundingExpected: false }),
+      { timeoutMs: 1000, signal: new AbortController().signal });
+
+    await expect(iterator.next()).rejects.toMatchObject({ code: "gemini_interactions_stream_invalid_json" });
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
+      code: "gemini_interactions_stream_invalid_json", reason: "invalid_response" }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("does not treat the Gemini diagnostic prefix or exception text as an allowlist", () => {
+    expect(observedFailure(new Error("gemini_interactions_stream_truncated")))
+      .toEqual({ code: "unknown", reason: "unknown" });
+    const error = new GeminiInteractionsStreamError("gemini_interactions_stream_truncated");
+    error.message = "PRIVATE_PROVIDER_CANARY";
+    expect(observedFailure(error)).toEqual({ code: "gemini_interactions_stream_truncated", reason: "invalid_response" });
+    Object.defineProperty(error, "code", { value: "gemini_interactions_stream_PRIVATE_CANARY" });
+    expect(observedFailure(error)).toEqual({ code: "unknown", reason: "unknown" });
+    const getter = vi.fn(() => "gemini_interactions_stream_truncated");
+    Object.defineProperty(error, "code", { get: getter });
+    expect(observedFailure(error)).toEqual({ code: "unknown", reason: "unknown" });
+    expect(getter).not.toHaveBeenCalled();
   });
 
   it("recognizes native local deadlines without reading arbitrary name getters", async () => {

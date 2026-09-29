@@ -1,4 +1,5 @@
 import { observeJsonParse } from "./providerObservability";
+import { GeminiInteractionsStreamError } from "./geminiInteractionsStreamError";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
@@ -203,7 +204,7 @@ export function createFetchGeminiInteractionsClient(input: Readonly<{
           return await throwHttpError(exchange.response, exchange.timeout.signal);
         }
         if (!exchange.response.body) {
-          throw new Error("gemini_interactions_stream_body_missing");
+          throw new GeminiInteractionsStreamError("gemini_interactions_stream_body_missing");
         }
         return exchange.response;
       } finally {

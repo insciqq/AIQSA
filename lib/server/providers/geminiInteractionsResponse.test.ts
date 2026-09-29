@@ -51,6 +51,88 @@ function frame(event: string, payload: unknown): string {
 }
 
 describe("Gemini Interactions response normalization", () => {
+  const outputSteps = [{ type: "model_output", content: [{ type: "text", text: "ok" }] }];
+  const metadataStream = (created: Record<string, unknown>, completed: Record<string, unknown>,
+    updates: readonly Record<string, unknown>[] = []) =>
+    parseGeminiInteractionsSse({ groundingExpected: false, modelId: "gemini-3.8-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", { event_type: "interaction.created", interaction: created }),
+        ...updates.map(update => frame("interaction.status_update", { event_type: "interaction.status_update", ...update })),
+        frame("interaction.completed", { event_type: "interaction.completed",
+          interaction: { steps: outputSteps, ...completed } }),
+        frame("done", "[DONE]")
+      ]) });
+
+  it.each([
+    { id: "", status: "in_progress" },
+    { status: "in_progress" },
+    { id: "" },
+    { object: "interaction", model: "gemini-3.8-flash" }
+  ])("accepts omitted stateless metadata without inventing an ID: %j", async created => {
+    const normalized = await collect(metadataStream(created, { status: "completed" }));
+    expect(normalized.result.finalText).toBe("ok");
+    expect(normalized.result).not.toHaveProperty("providerResponseId");
+    expect(JSON.stringify(normalized.events)).not.toContain("responseId");
+  });
+
+  it("retains a supplied ID when completion omits it and accepts a later first ID", async () => {
+    expect((await collect(metadataStream({ id: "known-id" }, { status: "completed" })))
+      .result.providerResponseId).toBe("known-id");
+    expect((await collect(metadataStream({}, { id: "late-id", status: "completed" })))
+      .result.providerResponseId).toBe("late-id");
+  });
+
+  it("accepts a stateless status update with no ID and preserves any earlier ID", async () => {
+    const updates = [{ status: "in_progress" }];
+    expect((await collect(metadataStream({}, { status: "completed" }, updates)))
+      .result.providerResponseId).toBeUndefined();
+    expect((await collect(metadataStream({ id: "known-id" }, { status: "completed" }, updates)))
+      .result.providerResponseId).toBe("known-id");
+    expect((await collect(metadataStream({}, { status: "completed" }, [
+      { status: "in_progress", interaction_id: "later-id" }
+    ]))).result.providerResponseId).toBe("later-id");
+  });
+
+  it.each([
+    { interaction_id: null, status: "in_progress" },
+    { interaction_id: 7, status: "in_progress" },
+    { interaction_id: "different-id", status: "in_progress" },
+    { interaction_id: "known-id" },
+    { interaction_id: "known-id", status: null }
+  ])("still validates supplied status update metadata: %j", async update => {
+    await expect(collect(metadataStream({ id: "known-id" }, { status: "completed" }, [update])))
+      .rejects.toThrow("gemini_interactions_stream_status_invalid");
+  });
+
+  it.each([
+    [{ id: null }, { status: "completed" }, "stream_created_id_missing"],
+    [{ id: 7 }, { status: "completed" }, "stream_created_id_missing"],
+    [{ id: "\u0001" }, { status: "completed" }, "stream_created_id_invalid"],
+    [{ id: "x".repeat(513) }, { status: "completed" }, "stream_created_id_too_long"],
+    [{ status: null }, { status: "completed" }, "stream_created_status_invalid"],
+    [{ status: "completed" }, { status: "completed" }, "stream_created_status_invalid"],
+    [{}, { id: null, status: "completed" }, "stream_completed_id_invalid"],
+    [{ id: "first" }, { id: "different", status: "completed" }, "stream_completed_id_invalid"]
+  ] as const)("rejects malformed supplied stream metadata %#", async (created, completed, suffix) => {
+    await expect(collect(metadataStream(created, completed))).rejects.toThrow(`gemini_interactions_${suffix}`);
+  });
+
+  it.each([undefined, null, "in_progress", "failed", "cancelled", "incomplete"])(
+    "still requires a successful explicit terminal status: %s", async status => {
+      await expect(collect(metadataStream({}, { status }))).rejects.toThrow(
+        ["failed", "cancelled", "incomplete"].includes(String(status))
+          ? `gemini_interaction_${status}` : "gemini_interaction_not_terminal"
+      );
+    });
+
+  it("does not treat an omitted-metadata created frame as terminal proof", async () => {
+    await expect(collect(parseGeminiInteractionsSse({ groundingExpected: false, modelId: "gemini-3.8-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", { event_type: "interaction.created", interaction: {} }),
+        frame("done", "[DONE]")
+      ]) }))).rejects.toThrow("gemini_interactions_stream_truncated");
+  });
+
   it("retains signed no-call steps for a required-tool correction without exposing the signature", async () => {
     const steps = [
       { signature: "private-correction-signature", type: "thought" },

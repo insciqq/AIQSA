@@ -1,3 +1,5 @@
+import { createGeminiInteractionsAdapter } from "../providers/geminiInteractions";
+import type { GeminiInteractionsClient } from "../providers/geminiInteractionsTransport";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -10,7 +12,7 @@ import {
 import { calculateContextBudgetLimits } from "../../domain/contextBudget";
 import { createCompatibleResponsesAdapter } from "../providers/compatibleResponses";
 import { createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
-import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
+import { anthropicMessagesToolBridge, geminiInteractionsToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 import { runProviderToolLoop } from "./providerToolLoop";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { openRouterChatToolBridge } from "../tools/bridges";
@@ -1308,4 +1310,43 @@ describe("context-length rejection rebuild", () => {
       expect(loop.onUsage).not.toHaveBeenCalled();
     }
   });
+});
+
+it("continues after a tool when store:false omits created metadata, without replaying the action", async () => {
+  const response = (created: Record<string, unknown>, completed: Record<string, unknown>) => new Response([
+    `event: interaction.created\ndata: ${JSON.stringify({ event_type: "interaction.created", interaction: created })}\n\n`,
+    `event: interaction.status_update\ndata: ${JSON.stringify({ event_type: "interaction.status_update", interaction_id: created.id, status: "in_progress" })}\n\n`,
+    `event: interaction.completed\ndata: ${JSON.stringify({ event_type: "interaction.completed", interaction: completed })}\n\n`,
+    "event: done\ndata: [DONE]\n\n"
+  ].join(""), { headers: { "content-type": "text/event-stream" } });
+  const signedCall = { type: "function_call", id: "call-1", name: "lookup_note",
+    arguments: {}, signature: "synthetic-private-signature" };
+  const streamInteraction = vi.fn<GeminiInteractionsClient["streamInteraction"]>()
+    .mockResolvedValueOnce(response({ id: "", status: "in_progress" }, {
+      id: "", status: "requires_action", steps: [signedCall]
+    }))
+    .mockResolvedValueOnce(response({ object: "interaction", model: "gemini-3.8-flash" }, {
+      status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: "ok" }] }]
+    }));
+  const executeTool = vi.fn(async () => ({ status: "complete" as const, value: {
+    callId: "call-1", name: "lookup_note", status: "complete" as const,
+    content: [{ type: "text" as const, text: "Synthetic note" }]
+  } }));
+  const outcome = await runProviderToolLoop({
+    adapter: createGeminiInteractionsAdapter({ client: { streamInteraction, createInteraction: vi.fn() } }),
+    bridge: geminiInteractionsToolBridge,
+    budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 2,
+      providerRoundTimeoutMs: 5000, toolCallTimeoutMs: 1000 },
+    executeTool, initialRequest: request({ provider: "gemini", modelId: "gemini-3.8-flash", params: { stream: true } }), parallelToolCalls: false,
+    tools: [{ capability: "mcp", name: "lookup_note", description: "Read a synthetic note",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false } }]
+  });
+  expect(outcome).toMatchObject({ status: "complete", providerRounds: 2, final: { finalText: "ok" } });
+  expect(executeTool).toHaveBeenCalledOnce();
+  expect(streamInteraction).toHaveBeenCalledTimes(2);
+  const continuation = streamInteraction.mock.calls[1]![0];
+  expect(continuation).toMatchObject({ store: false, stream: true });
+  expect(continuation).not.toHaveProperty("previous_interaction_id");
+  expect(continuation.input).toEqual(expect.arrayContaining([signedCall,
+    expect.objectContaining({ type: "function_result", call_id: "call-1" })]));
 });
