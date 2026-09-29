@@ -494,6 +494,113 @@ function expiredKnowledgeUploadSessionWhere(cutoff: Date): Prisma.KnowledgeUploa
   };
 }
 
+/**
+ * Releases locked upload sessions through the expiry transition: stage the
+ * object and multipart-abort obligation, drop recorded parts, and require a
+ * new upload attempt. PostgreSQL only; the storage work is a later obligation.
+ */
+async function releaseLockedKnowledgeUploadSessions(
+  tx: Prisma.TransactionClient,
+  candidates: readonly LockedKnowledgeUploadSession[],
+  now: Date,
+  releasable: (candidate: LockedKnowledgeUploadSession) => Prisma.KnowledgeUploadItemWhereInput
+): Promise<Readonly<{ itemsReleased: number; jobsStaged: number; multipartSessionsReleased: number }>> {
+  let itemsReleased = 0;
+  let jobsStaged = 0;
+  let multipartSessionsReleased = 0;
+  const touchedBatchIds = new Set<string>();
+
+  for (const candidate of candidates) {
+    const existingJob = await tx.attachmentDeletionJob.findUnique({
+      select: { id: true, multipartUploadId: true },
+      where: { storageKey: candidate.storageKey }
+    });
+    if (!existingJob) {
+      await tx.attachmentDeletionJob.create({
+        data: {
+          multipartUploadId: candidate.multipartUploadId,
+          storageKey: candidate.storageKey
+        }
+      });
+      jobsStaged += 1;
+    } else if (!existingJob.multipartUploadId && candidate.multipartUploadId) {
+      await tx.attachmentDeletionJob.update({
+        data: { multipartUploadId: candidate.multipartUploadId },
+        where: { id: existingJob.id }
+      });
+    }
+
+    await tx.knowledgeUploadPart.deleteMany({ where: { uploadItemId: candidate.id } });
+    const released = await tx.knowledgeUploadItem.updateMany({
+      data: {
+        errorCode: "knowledge_upload_session_expired",
+        multipartUploadId: null,
+        state: "NEEDS_ATTENTION",
+        storageKey: null,
+        uploadedByteSize: 0,
+        updatedAt: now
+      },
+      where: releasable(candidate)
+    });
+    if (released.count !== 1) continue;
+    itemsReleased += 1;
+    if (candidate.multipartUploadId) multipartSessionsReleased += 1;
+    touchedBatchIds.add(candidate.batchId);
+  }
+
+  if (touchedBatchIds.size > 0) {
+    await tx.knowledgeUploadBatch.updateMany({
+      data: { updatedAt: now },
+      where: { id: { in: [...touchedBatchIds] } }
+    });
+  }
+  return { itemsReleased, jobsStaged, multipartSessionsReleased };
+}
+
+/**
+ * Object-store replacement: an in-progress direct multipart upload holds an
+ * upload ID that the new store does not know, so it cannot resume. Release
+ * every such session regardless of expiry, in PostgreSQL only, so the client
+ * starts a new upload. Completed, settled and already failed items keep their
+ * state; the staged abort tolerates the unknown ID on the new store.
+ */
+export async function releaseInProgressMultipartKnowledgeUploads(
+  prisma: PrismaClient,
+  input: Readonly<{ limit: number; now: Date }>
+): Promise<number> {
+  let total = 0;
+  for (;;) {
+    const released = await prisma.$transaction(async (tx) => {
+      const candidates = await tx.$queryRaw<LockedKnowledgeUploadSession[]>`
+        SELECT item."id", item."batchId", item."storageKey", item."multipartUploadId"
+        FROM "KnowledgeUploadItem" AS item
+        WHERE item."transport" = 'MULTIPART'::"KnowledgeUploadTransport"
+          AND item."state" IN (
+            'QUEUED'::"KnowledgeUploadItemState",
+            'UPLOADING'::"KnowledgeUploadItemState"
+          )
+          AND item."multipartUploadId" IS NOT NULL
+          AND item."storageKey" IS NOT NULL
+        ORDER BY item."id"
+        FOR UPDATE SKIP LOCKED
+        LIMIT ${input.limit}
+      `;
+      if (candidates.length === 0) return null;
+      return (await releaseLockedKnowledgeUploadSessions(tx, candidates, input.now, (candidate) => ({
+        id: candidate.id,
+        state: { in: ["QUEUED", "UPLOADING"] },
+        storageKey: candidate.storageKey,
+        transport: "MULTIPART"
+      }))).itemsReleased;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    if (released === null) return total;
+    // Writers are stopped during the replacement; a candidate that cannot be
+    // released means another writer is still active.
+    if (released === 0) throw new Error("knowledge_upload_settlement_incomplete");
+    total += released;
+  }
+}
+
 export function createPrismaRetentionRepository(prisma: PrismaClient): RetentionRepository {
   return {
     async claimAttachmentDeletionJobs({ claimableBefore, limit, now }) {
@@ -1100,67 +1207,19 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           FOR UPDATE SKIP LOCKED
           LIMIT ${limit}
         `;
-        let itemsReleased = 0;
-        let jobsStaged = 0;
-        let multipartSessionsReleased = 0;
-        const touchedBatchIds = new Set<string>();
-
-        for (const candidate of candidates) {
-          const existingJob = await tx.attachmentDeletionJob.findUnique({
-            select: { id: true, multipartUploadId: true },
-            where: { storageKey: candidate.storageKey }
-          });
-          if (!existingJob) {
-            await tx.attachmentDeletionJob.create({
-              data: {
-                multipartUploadId: candidate.multipartUploadId,
-                storageKey: candidate.storageKey
-              }
-            });
-            jobsStaged += 1;
-          } else if (!existingJob.multipartUploadId && candidate.multipartUploadId) {
-            await tx.attachmentDeletionJob.update({
-              data: { multipartUploadId: candidate.multipartUploadId },
-              where: { id: existingJob.id }
-            });
-          }
-
-          await tx.knowledgeUploadPart.deleteMany({ where: { uploadItemId: candidate.id } });
-          const released = await tx.knowledgeUploadItem.updateMany({
-            data: {
-              errorCode: "knowledge_upload_session_expired",
-              multipartUploadId: null,
-              state: "NEEDS_ATTENTION",
-              storageKey: null,
-              uploadedByteSize: 0,
-              updatedAt: now
-            },
-            where: {
-              id: candidate.id,
-              sessionExpiresAt: { lt: cutoff },
-              state: { in: ["QUEUED", "UPLOADING", "STORED", "NEEDS_ATTENTION"] },
-              storageKey: candidate.storageKey
-            }
-          });
-          if (released.count !== 1) continue;
-          itemsReleased += 1;
-          if (candidate.multipartUploadId) multipartSessionsReleased += 1;
-          touchedBatchIds.add(candidate.batchId);
-        }
-
-        if (touchedBatchIds.size > 0) {
-          await tx.knowledgeUploadBatch.updateMany({
-            data: { updatedAt: now },
-            where: { id: { in: [...touchedBatchIds] } }
-          });
-        }
+        const released = await releaseLockedKnowledgeUploadSessions(tx, candidates, now, (candidate) => ({
+          id: candidate.id,
+          sessionExpiresAt: { lt: cutoff },
+          state: { in: ["QUEUED", "UPLOADING", "STORED", "NEEDS_ATTENTION"] },
+          storageKey: candidate.storageKey
+        }));
 
         return {
           items: candidates.length,
-          itemsReleased,
-          jobsStaged,
+          itemsReleased: released.itemsReleased,
+          jobsStaged: released.jobsStaged,
           multipartSessions: candidates.filter(({ multipartUploadId }) => multipartUploadId !== null).length,
-          multipartSessionsReleased
+          multipartSessionsReleased: released.multipartSessionsReleased
         };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     },

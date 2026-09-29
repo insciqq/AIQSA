@@ -67,14 +67,18 @@ services:
     volumes: !override
       - postgres18_dev_data:/var/lib/postgresql
 
+  seaweedfs:
+    container_name: aiqsa-memory-benchmark-second-seaweedfs
+
   minio:
     container_name: aiqsa-memory-benchmark-second-minio
     ports: !override
       - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_MINIO_PORT:-19100}:9000"
-      - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_MINIO_CONSOLE_PORT:-19101}:9001"
 
-  minio-init:
-    container_name: aiqsa-memory-benchmark-second-minio-init
+  storage-init:
+    container_name: aiqsa-memory-benchmark-second-storage-init
+    environment:
+      DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@postgres:5432/aiqsa_memory_benchmark?schema=public
 
 networks:
   default:
@@ -107,8 +111,8 @@ networks:
         - subnet: 192.168.116.0/24
 
 volumes:
-  minio_dev_data:
-    name: aiqsa-memory-benchmark-second-minio
+  seaweedfs_dev_data:
+    name: aiqsa-memory-benchmark-second-seaweedfs
   postgres18_dev_data:
     name: aiqsa-memory-benchmark-second_postgres18_dev_data
   opensearch_dev_data:

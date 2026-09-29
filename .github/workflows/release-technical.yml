@@ -77,7 +77,7 @@ jobs:
       - name: Initialize fresh disposable object storage
         run: >-
           docker compose -f docker-compose.dev.yml run --rm -T --no-deps
-          minio-init
+          storage-init
 
       - name: Run full disposable container checks
         run: npm run check:container

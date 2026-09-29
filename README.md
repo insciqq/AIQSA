@@ -22,7 +22,7 @@ AIQSA is pre-1.0 and designed for small, operator-managed installations with a s
 
 For local use by one person with external model providers:
 
-- 64-bit Linux on amd64 or arm64, Docker Engine with Compose v2, and OpenSSL.
+- 64-bit Linux on amd64 or arm64, Docker Engine with Compose 2.29.7 or newer, and OpenSSL.
 - **Minimum for basic chat: 2 CPU cores, 4 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups.
 - **Recommended: 8 GB RAM.** Active Knowledge ingestion, OCR, and Workspace need additional memory. Workspace also requires `/dev/kvm`; each workspace defaults to 4 GB RAM and 10 GB disk.
 
@@ -48,11 +48,18 @@ The stack uses prebuilt images and persistent Docker volumes. Keep `.env` with y
 
 ## Update
 
+**Existing installations using bundled MinIO:** follow the [MinIO → SeaweedFS upgrade runbook](UPGRADING_FROM_MINIO.md) before running `docker compose up -d`. This is a one-time storage migration.
+
+Update the checkout first so Compose uses the release's configuration, then pull the images and restart:
+
 ```bash
+git pull --ff-only
 docker compose pull && docker compose up -d
 ```
 
 This tracks stable releases and applies database migrations before starting the application. See the [release notes](https://github.com/insciqq/AIQSA/releases) before updating. Images are published on [GHCR](https://github.com/insciqq/AIQSA/pkgs/container/aiqsa); their digests are included in each release.
+
+If `docker compose pull` reports `pull access denied for minio/mc`, the Compose file is outdated: run `git pull --ff-only` first and follow the migration runbook above.
 
 ## Development
 
@@ -67,8 +74,6 @@ The separate `docker-compose.dev.yml` runs the development server. See [CONTRIBU
 
 ## Further reading
 
-- [Architecture and integrations](human_docs/architecture.md)
-- [Personal Memory through MCP](human_docs/personal-memory-mcp.md)
 - [Security reporting](SECURITY.md) and [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## License
