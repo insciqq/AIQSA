@@ -23,6 +23,8 @@ vi.mock("../knowledge/defaultEvidenceDispatch", () => ({ knowledgeProviderDispat
 vi.mock("../knowledge/defaultRetrieval", () => ({ knowledgeToolExecutor: { kind: "knowledgeExecutor" } }));
 vi.mock("../knowledge/runAdmission", () => ({ knowledgeRunAdmissionService: { kind: "knowledgeAdmission" } }));
 vi.mock("../mcp/defaultRuntime", () => ({ defaultMcpRunPlan: { kind: "mcp" } }));
+vi.mock("../memory/search/runtime", () => ({ createPrismaMemorySearchService: () => ({ kind: "memorySearch" }) }));
+vi.mock("../memory/search/admission", () => ({ admitMemorySearch: vi.fn() }));
 vi.mock("../memory/egress/receipts", () => ({ defaultMemoryToolEgressReceiptService: { kind: "memoryEgress" } }));
 vi.mock("../providerRuntime/defaultAdmission", () => ({ providerAdmissionService: { kind: "providerAdmission" } }));
 vi.mock("../providerRuntime/defaultRuntime", () => ({ providerRuntimeResolver: { kind: "providerRuntime" } }));
@@ -65,6 +67,7 @@ describe("default run recovery scheduler", () => {
       knowledgeExecutor: { kind: "knowledgeExecutor" },
       knowledgeProviderDispatch: { kind: "knowledgeProviderDispatch" },
       memoryEgress: { kind: "memoryEgress" },
+      memorySearch: { kind: "memorySearch" },
       mcp: { kind: "mcp" },
       providerAdmission: { kind: "providerAdmission" },
       providerRuntime: { kind: "providerRuntime" },

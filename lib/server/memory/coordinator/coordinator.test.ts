@@ -742,7 +742,7 @@ describe("Memory coordinator worker liveness", () => {
     });
     const status = createAdminMemoryStatusService({ repository: {
       read: async () => ({
-        admissionTimeout: { seconds: 30, version: 1 },
+        searchTimeout: { seconds: 30, version: 1 },
         processing: { enabled: true, issues: [] },
         configuredTargets: [],
         index: { activeGenerations: [], ownerCount: 0, preparing: false,
@@ -760,7 +760,7 @@ describe("Memory coordinator worker liveness", () => {
       }),
       startRebuild: vi.fn(),
       recoverEligible: vi.fn(async () => 0),
-      updateAdmissionTimeout: vi.fn()
+      updateSearchTimeout: vi.fn()
     } });
     const userState = () => readMemoryCapabilityOperationalState({
       memoryIndexGeneration: { findFirst: vi.fn() },

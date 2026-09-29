@@ -46,6 +46,19 @@ it("persists only bounded absolute per-engine search counters", () => {
   expect(isRunOutputArtifactEvent(privateEvent)).toBe(false);
 });
 
+it("persists only exact content-free native Memory search status", () => {
+  const event = { type: "artifact", data: { artifactType: "memory_search_activity", payload: {
+    call: 1, round: 2, status: "complete", outcome: "limited", durationMs: 18000
+  } } } as const;
+  expect(projectRunOutputArtifactEvent(event)).toEqual(event);
+  expect(isRunOutputArtifactEvent(event)).toBe(true);
+  for (const extra of [{ query: "private" }, { evidence: "private" }, { outcome: "private" }, { status: "running" }]) {
+    const invalid = { ...event, data: { ...event.data, payload: { ...event.data.payload, ...extra } } };
+    expect(projectRunOutputArtifactEvent(invalid)).toBeNull();
+    expect(isRunOutputArtifactEvent(invalid)).toBe(false);
+  }
+});
+
 describe("durable run output events", () => {
   it("keeps only validated grounding display and strips provider counters, styles and wrappers", () => {
     const event = { type: "grounding_display" as const, data: {

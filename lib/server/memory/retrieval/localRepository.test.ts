@@ -202,7 +202,7 @@ function mockClient(
   const laneSql: string[] = [];
   let lexicalCanonicalCall = 0;
   let nextExpansionRows: readonly Record<string, unknown>[] | null = null;
-  const $queryRaw = vi.fn(async (query: { strings?: readonly string[] }) => {
+  const $queryRaw = vi.fn(async (query: { strings?: readonly string[]; values?: readonly unknown[] }) => {
     const sql = query.strings?.join("?") ?? "";
     if (sql.includes("set_config('lock_timeout'")) return [];
     if (sql.includes('owner."status"')) return [row];
@@ -2401,8 +2401,15 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('FROM "MemorySuppression"');
     expect(sql).toContain('FROM "MemoryFeedback"');
     expect(sql).toContain('root_fact."lastConfirmedAt" DESC NULLS LAST');
-    expect(sql).toContain("LIMIT 21");
+    expect(sql).toContain("LIMIT");
     expect(sql).not.toContain('version."coreEligible" = TRUE');
+    const legacyQuery = mocked.$queryRaw.mock.calls.find(([query]) =>
+      query.strings?.join("?").includes("standing_fact_floor"))?.[0];
+    expect(legacyQuery?.values).toContain(21);
+    await repository.loadStandingFacts(snapshot, { standingVersion: 1 });
+    const standingQueries = mocked.$queryRaw.mock.calls.filter(([query]) =>
+      query.strings?.join("?").includes("standing_fact_floor"));
+    expect(standingQueries.at(-1)?.[0]?.values).toContain(51);
   });
 
   it("requires an issued personal snapshot before reading standing facts", async () => {

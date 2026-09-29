@@ -52,6 +52,7 @@ import {
   MEMORY_FACT_SOURCE_PROJECTION_VERSION
 } from "../learning/extraction/contract";
 import { createPrismaMemoryLifecycleRepository } from "./repository";
+import { inspectMemorySearchFactReceipts, purgeMemorySearchFactReceipts } from "../history/purge";
 import {
   createMemoryLifecycleService,
   MemoryLifecycleServiceError
@@ -1460,6 +1461,47 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
           status: "complete" }, where: { id: run.assistantMessageId } });
         reads.push(run);
       }
+      const searches: Array<{ runId: string; chatId: string; messageId: string;
+        assistantMessageId: string; receiptId: string; toolCallId: string }> = [];
+      for (const delivered of [false, true]) {
+        const run = { runId: randomUUID(), chatId: randomUUID(), messageId: randomUUID(),
+          assistantMessageId: randomUUID() };
+        await prisma.chat.create({ data: { id: run.chatId, title: "Synthetic search receipt", userId } });
+        await prisma.message.createMany({ data: [
+          { id: run.messageId, chatId: run.chatId, role: "user", status: "complete",
+            content: textMessageContent("Recall my preference") },
+          { id: run.assistantMessageId, chatId: run.chatId, parentMessageId: run.messageId,
+            role: "assistant", status: "complete", content: textMessageContent(statement) }
+        ] });
+        await prisma.modelRun.create({ data: {
+          id: run.runId, chatId: run.chatId, userId, userMessageId: run.messageId,
+          assistantMessageId: run.assistantMessageId, status: "complete", normalizedRequest: {},
+          modelId: providerTemplateIds.fakeModel, provider: providerTemplateIds.fakeConnection
+        } });
+        const toolCall = await prisma.modelRunToolCall.create({ data: {
+          arguments: { query: "Recall my preference", comparison: false },
+          modelRunId: run.runId, ordinal: 0, providerCallId: randomUUID(), roundIndex: 0,
+          state: "complete", toolName: "memory_search", startedAt: new Date(), completedAt: new Date(),
+          result: { status: "complete", content: [{ type: "text", text: statement }] }
+        } });
+        const providerResult = { callId: toolCall.providerCallId, name: "memory_search",
+          content: [{ type: "text", text: statement }], status: "complete" };
+        const receipt = await prisma.memoryHistoryRun.create({ data: {
+          userId, modelRunId: run.runId, modelRunToolCallId: toolCall.id, invocationOrdinal: 1,
+          query: "Recall my preference", queryHash: memorySha256("Recall my preference"),
+          receiptVersion: "memory-search-v1",
+          privateRequest: { version: "memory-search-v1" }, indexingEvidence: { delivered },
+          results: { version: "memory-search-v1", results: [{
+            exactItemId: versionId, factVersionId: versionId, itemType: "FACT_VERSION",
+            sourceChatId: null, sourceMessageIds: [], includedText: statement,
+            recallChunkId: null, recallRoundId: null, featureSnapshot: {}, selectionReason: "search",
+            sourceBranchGenerationSnapshot: null, sourceRevisionSnapshot: null,
+            sourceContentHashSnapshot: null
+          }] }, providerResult, resultHash: memorySha256(providerResult), resultCount: 1,
+          state: "COMPLETE", outcome: "RESULTS", completedAt: new Date(), durationMs: 1
+        } });
+        searches.push({ ...run, receiptId: receipt.id, toolCallId: toolCall.id });
+      }
       const origin = await createUnacceptedAttemptItem({ factVersionId: versionId,
         requestContent: `Remember: ${statement}`, statement, userId });
       // Declare the actual chat origin of this synthetic explicit-save receipt.
@@ -1467,6 +1509,12 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         data: { modelRunId: origin.runId },
         where: { operation: "SAVE", targetVersionId: versionId, userId }
       })).count).toBe(1);
+      expect(await prisma.memoryHistoryRun.findUniqueOrThrow({
+        select: { state: true, retentionState: true, indexingEvidence: true,
+          modelRunToolCall: { select: { state: true, toolName: true } } },
+        where: { id: searches[1]!.receiptId }
+      })).toEqual({ state: "COMPLETE", retentionState: "RETAINED", indexingEvidence: { delivered: true },
+        modelRunToolCall: { state: "complete", toolName: "memory_search" } });
       const authorization = await explicit.mintAuthorization(userId, {
         action: "FORGET", confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
         expectedTargetVersionId: versionId, requestNonce: "echo-forget",
@@ -1479,13 +1527,27 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       const fenced = await prisma.memorySuppression.findMany({
         select: { sourceMessageId: true }, where: { scope: "SOURCE_MESSAGE", userId }
       });
+      expect(fenced.some((row) => row.sourceMessageId === searches[1]!.assistantMessageId),
+        "delivered search answer must be fenced").toBe(true);
       expect(new Set(fenced.map((row) => row.sourceMessageId))).toEqual(new Set(
-        [origin, reads[0]!, reads[2]!].flatMap((run) =>
+        [origin, reads[0]!, reads[2]!, searches[1]!].flatMap((run) =>
           [run.messageId, run.assistantMessageId])
       ));
       for (const run of reads) {
         expect(await prisma.message.findUniqueOrThrow({ select: { content: true },
           where: { id: run.assistantMessageId } })).toEqual({ content: textMessageContent(statement) });
+      }
+      const selectedVersion = Prisma.sql`version."userId" = ${userId} AND version."id" = ${versionId}`;
+      await prisma.$transaction(async (tx) => {
+        expect(await inspectMemorySearchFactReceipts(tx, userId, selectedVersion)).toBe(2);
+        await purgeMemorySearchFactReceipts(tx, userId, selectedVersion);
+        expect(await inspectMemorySearchFactReceipts(tx, userId, selectedVersion)).toBe(0);
+      });
+      for (const search of searches) {
+        expect(await prisma.memoryHistoryRun.findUniqueOrThrow({ where: { id: search.receiptId } }))
+          .toMatchObject({ retentionState: "SCRUBBED", query: null, results: null, providerResult: null });
+        expect(await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: search.toolCallId } }))
+          .toMatchObject({ state: "error", arguments: {} });
       }
     } finally { await cleanupUsers([userId]); }
   });

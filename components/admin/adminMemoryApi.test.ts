@@ -3,13 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getAdminMemoryStatus,
   startAdminMemoryRebuild,
-  updateAdminMemoryAdmissionTimeout
+  updateAdminMemorySearchTimeout
 } from "./adminMemoryApi";
 
 function response() {
   return {
     memory: {
-      admissionTimeout: { seconds: 15, version: 4 },
+      searchTimeout: { seconds: 15, version: 4 },
       processing: { enabled: true, issues: [] },
       configuredTargets: [{ model: "Utility", provider: "Primary" }],
       index: { generation: 2, readiness: "READY" },
@@ -37,7 +37,7 @@ describe("administrator Memory API", () => {
       body: JSON.stringify({ action: "REBUILD_REQUIRED" }),
       method: "POST"
     });
-    await expect(updateAdminMemoryAdmissionTimeout(4, 30, fetcher))
+    await expect(updateAdminMemorySearchTimeout(4, 30, fetcher))
       .resolves.toMatchObject({ ok: true });
     expect(fetcher.mock.calls[2]?.[1]).toMatchObject({
       body: JSON.stringify({ expectedVersion: 4, timeoutSeconds: 30 }),

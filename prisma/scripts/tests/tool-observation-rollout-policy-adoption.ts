@@ -43,18 +43,19 @@ DO $$ BEGIN
   IF (SELECT count(*) FROM "_ObservationRolloutFixture") <> 1
     THEN RAISE EXCEPTION 'observation_rollout_fixture_missing'; END IF;
   -- The new column defaults to v1 (observations and compaction on without an
-  -- administrator action); every existing policy value is unchanged.
+  -- administrator action). The later Memory search migration resets its timeout
+  -- and advances the revision; unrelated administrator values remain unchanged.
   IF NOT EXISTS (SELECT 1 FROM "ModelPolicy" p JOIN "_ObservationRolloutFixture" f ON f.id = p.id
     WHERE p."toolObservationPolicy" = 'v1'
       AND p."defaultProviderModelId" IS NOT DISTINCT FROM f."defaultProviderModelId"
       AND p."reasoningEffort" IS NOT DISTINCT FROM f."reasoningEffort"
-      AND p."memoryAdmissionTimeoutSeconds" = f."memoryAdmissionTimeoutSeconds"
+      AND p."memorySearchTimeoutSeconds" = 30
       AND p."maxToolCalls" = f."maxToolCalls" AND p."maxToolRounds" = f."maxToolRounds"
       AND p."maxMcpToolsPerDiscovery" = f."maxMcpToolsPerDiscovery"
       AND p."mcpAutoDiscoveryTimeoutSeconds" IS NOT DISTINCT FROM f."mcpAutoDiscoveryTimeoutSeconds"
       AND p."mcpAutoDiscoveryMaxOutputTokens" IS NOT DISTINCT FROM f."mcpAutoDiscoveryMaxOutputTokens"
-      AND p.version = f.version AND p."updatedByUserId" IS NOT DISTINCT FROM f."updatedByUserId"
-      AND p."createdAt" = f."createdAt" AND p."updatedAt" = f."updatedAt")
+      AND p.version = f.version + 1 AND p."updatedByUserId" IS NOT DISTINCT FROM f."updatedByUserId"
+      AND p."createdAt" = f."createdAt" AND p."updatedAt" > f."updatedAt")
     THEN RAISE EXCEPTION 'observation_rollout_changed_model_policy'; END IF;
   -- An accepted run keeps its frozen request: no observation version backfill.
   IF NOT EXISTS (SELECT 1 FROM "_ObservationRolloutFixture" f

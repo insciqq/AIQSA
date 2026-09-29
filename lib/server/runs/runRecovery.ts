@@ -198,6 +198,9 @@ import { applyProviderRequestContextBudget, measureSessionContext, observationWh
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import type { ProviderToolBridge } from "../tools/types";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
+import { memorySearchTool, MEMORY_SEARCH_TOOL_NAME } from "../memory/search/contract";
+import { revalidateMemorySearchDispatch } from "./memorySearchDispatch";
+import { memorySearchActivityEvent } from "../tools/activityDescriptors";
 import {
   memoryEgressRequestEvidence,
   requestHasHostedSearchCapability,
@@ -359,6 +362,7 @@ export type RunRecoveryDeps = Readonly<{
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
   memoryEgress?: MemoryToolEgressReceiptService;
+  memorySearch?: import("../memory/search/runtime").MemorySearchService;
   mcpRuntime?: RunRecoveryMcpRuntime;
   mcp?: Readonly<{
     filterTools: import("../mcp/toolAccess").McpToolAccessFilter;
@@ -578,7 +582,7 @@ function toolLoopJson(value: unknown, maxBytes: number, code: string): ToolLoopJ
 }
 
 type RecoveryToolUnavailableCode = "artifact_tool_unavailable" | "image_tool_unavailable" |
-  "skill_tool_unavailable" | "vision_model_unavailable";
+  "skill_tool_unavailable" | "vision_model_unavailable" | "memory_search_unavailable";
 
 function recoveryToolUnavailable(code: RecoveryToolUnavailableCode): Error {
   return Object.assign(new Error(code), { code });
@@ -1502,6 +1506,26 @@ async function executePersistedToolCallInContext(
     runId: context.run.id,
     userId: context.run.userId
   });
+  const memoryActivity = async (state: "running" | "complete" | "error" | "cancelled", result?: ToolExecutionResult) => {
+    const event = memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state, result });
+    const projected = projectRunOutputArtifactEvent(event);
+    if (projected) await context.deps.repository.appendRunOutputEvent(context.run.id, projected);
+  };
+  if (claim.kind === "claimed" && call.name === MEMORY_SEARCH_TOOL_NAME && context.run.normalizedRequest.memorySearch) {
+    await memoryActivity("running");
+  }
+  if (claim.kind === "ambiguous" && call.name === MEMORY_SEARCH_TOOL_NAME &&
+    context.run.normalizedRequest.memorySearch && context.deps.memorySearch) {
+    const result = await context.deps.memorySearch.settleAmbiguous(call, {
+      persistedToolCallId: persisted.id, request: context.providerRequest,
+      runId: context.run.id, userId: context.run.userId });
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
+      result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
+    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Memory search could not be settled.");
+    await memoryActivity(result.status, result);
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
+  }
   if (claim.kind === "ambiguous" && isRecoveredObservationRead(context, call.name)) {
     const result = await executeReadToolResult(await recoveredObservations(context), call,
       { runId: context.run.id, userId: context.run.userId }, signal);
@@ -1606,9 +1630,15 @@ async function executePersistedToolCallInContext(
     );
   }
   if (claim.kind === "settled") {
-    let result = isRecoveredObservationRead(context, call.name)
+    let result = call.name === MEMORY_SEARCH_TOOL_NAME && context.run.normalizedRequest.memorySearch && context.deps.memorySearch
+      ? await context.deps.memorySearch.revalidate(call, { persistedToolCallId: persisted.id,
+          request: context.providerRequest, runId: context.run.id, userId: context.run.userId })
+      : isRecoveredObservationRead(context, call.name)
       ? await executeReadToolResult(await recoveredObservations(context), call, { runId: context.run.id, userId: context.run.userId }, signal)
       : parsePersistedToolExecutionResult(call, claim.call.result);
+    if (result && call.name === MEMORY_SEARCH_TOOL_NAME && context.run.normalizedRequest.memorySearch) {
+      await memoryActivity(result.status, result);
+    }
     if (result && !result.observation && context.run.normalizedRequest.toolObservationVersion === 1 &&
       (isRecoveredSkillCall(context, call.name) || isRecoveredKnowledgeCall(context, call.name))) {
       const saved = await (await recoveredObservations(context)).restore({ runId: context.run.id,
@@ -1699,6 +1729,9 @@ async function executePersistedToolCallInContext(
       );
     }
     resultSettled = true;
+    if (call.name === MEMORY_SEARCH_TOOL_NAME && context.run.normalizedRequest.memorySearch) {
+      await memoryActivity(signal.aborted ? "cancelled" : result.status, result);
+    }
     return result;
   };
   let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
@@ -1732,7 +1765,8 @@ async function executePersistedToolCallInContext(
     const isViewImageCall = context.run.normalizedRequest.workspaceImageView === true && call.name === VIEW_WORKSPACE_IMAGE;
     const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
-    const externalCall = !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredObservationRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
+    const isMemoryCall = Boolean(context.run.normalizedRequest.memorySearch) && call.name === MEMORY_SEARCH_TOOL_NAME;
+    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredObservationRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -1856,6 +1890,9 @@ async function executePersistedToolCallInContext(
             producer: { runId: context.run.id, userId: context.run.userId, toolCallId: claim.call.id }, signal }, "skill",
             { version: 1, source: "skill", skillId: skill.skillId, revisionId: skill.revisionId },
             async () => finishResult(await execute())) : await execute();
+    } else if (isMemoryCall) {
+      if (!context.deps.memorySearch) throw recoveryToolUnavailable("memory_search_unavailable");
+      result = await context.deps.memorySearch.execute(call, executionContext, { signal });
     } else if (isRecoveredArtifactCall(context, call.name)) {
       if (!context.deps.artifacts) throw recoveryToolUnavailable("artifact_tool_unavailable");
       result = await context.deps.artifacts.execute(call, executionContext, { signal });
@@ -2057,6 +2094,7 @@ async function executePersistedToolBatch(
   });
   const ambiguous = ordered.find((call) =>
     call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME &&
+    !(context.run.normalizedRequest.memorySearch && context.deps.memorySearch && call.toolName === MEMORY_SEARCH_TOOL_NAME) &&
     !isSkillToolName(call.toolName) &&
     !isRecoveredObservationRead(context, call.toolName) &&
     !(context.run.normalizedRequest.toolObservationVersion === 1 &&
@@ -2369,6 +2407,7 @@ async function recoverCheckpointedToolLoop(
         })
       : [];
     const tools: RunTool[] = [
+      ...(clientToolsEnabled && run.normalizedRequest.memorySearch ? [memorySearchTool(run.normalizedRequest.memorySearch)] : []),
       ...skillToolsForRequest(run.normalizedRequest),
       ...(run.normalizedRequest.workspaceCheckpoints ? [checkpointOutputsTool] : []),
       ...(run.normalizedRequest.visionAnalysis ? [analyzeImageTool(run.normalizedRequest.visionAnalysis)] : []),
@@ -2404,7 +2443,7 @@ async function recoverCheckpointedToolLoop(
       tool.capability !== "artifact" && tool.capability !== "memory" && tool.capability !== "session" && tool.capability !== "skill"
     );
     const hostedSearchPresent = requestHasHostedSearchCapability(providerRequest);
-    const egressReceiptRequired = externalToolsPresent ||
+    const egressReceiptRequired = externalToolsPresent || providerRequest.memorySearch !== undefined ||
       hostedSearchPresent ||
       requestHasServerExternalTools(providerRequest) ||
       providerRequest.personalContext !== undefined;
@@ -2487,6 +2526,9 @@ async function recoverCheckpointedToolLoop(
       // local failure until then is not a dispatched answer round.
       let dispatchStarted = false;
       try {
+        const memoryDispatch = await revalidateMemorySearchDispatch({ request, calls: persistedCalls.values(),
+          bridge, service: deps.memorySearch, runId: run.id, userId: run.userId });
+        request = memoryDispatch.request;
         if (egressReceiptRequired && !deps.memoryEgress && process.env.NODE_ENV === "production") {
           throw new ToolLoopRecoveryError(
             "memory_egress_receipt_unavailable",
@@ -2547,10 +2589,20 @@ async function recoverCheckpointedToolLoop(
         dispatchStarted = true;
         const stream = adapter!.stream(wireRequest, { signal: dispatchSignal });
         let next = await stream.next();
+        let memoryDeliveryMarked = false;
+        const markMemoryDelivery = async () => {
+          if (memoryDeliveryMarked || !memoryDispatch.deliveredToolCallIds.length) return;
+          await deps.memorySearch!.markDelivered({ runId: run.id, userId: run.userId,
+            toolCallIds: memoryDispatch.deliveredToolCallIds });
+          memoryDeliveryMarked = true;
+        };
         while (!next.done) {
+          if (next.value.type === "token" || next.value.type === "usage" ||
+            providerResponseIdFromEvent(next.value)) await markMemoryDelivery();
           yield next.value;
           next = await stream.next();
         }
+        await markMemoryDelivery();
         if (receipt) yield { type: "usage", data: next.value.usage };
         if (receipt && !(await deps.memoryEgress!.completeDispatch(receipt.id)
           .catch(error => { throw new RunSettlementError("completion", error); }))) {
@@ -2912,7 +2964,8 @@ async function recoverCheckpointedToolLoop(
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
-          if (!route && !isRecoveredKnowledgeCall(context, call.name) &&
+          if (!route && !(run.normalizedRequest.memorySearch && call.name === MEMORY_SEARCH_TOOL_NAME) &&
+            !isRecoveredKnowledgeCall(context, call.name) &&
             searchExecutor?.accepts(call.name) !== true &&
             !isRecoveredMcpDiscoveryCall(context, call.name) &&
             !(run.normalizedRequest.workspaceCheckpoints && call.name === CHECKPOINT_OUTPUTS_TOOL_NAME) &&

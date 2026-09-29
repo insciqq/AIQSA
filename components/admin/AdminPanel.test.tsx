@@ -965,7 +965,7 @@ describe("AdminPanel", () => {
     };
     const memory = {
       processing: { enabled: true, issues: [] },
-      admissionTimeout: { seconds: 30, version: 1 },
+      searchTimeout: { seconds: 30, version: 1 },
       configuredTargets: [],
       index: { generation: 1, readiness: "READY" },
       queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },

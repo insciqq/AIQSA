@@ -577,6 +577,19 @@ describe("summarizeMessageRunArtifacts", () => {
 });
 
 describe("summarizeMessageRunToolActivity", () => {
+  it.each(["results", "no_results", "limited", "failure", "cancelled"])("projects only native Memory search outcome %s", outcome => {
+    const activity = summarizeMessageRunToolActivity({ errorPayload: null, status: "complete", normalizedRequest: {},
+      toolCalls: [{ ordinal: 2, roundIndex: 1, startedAt: null, completedAt: null,
+        state: outcome === "failure" || outcome === "cancelled" ? "error" : "complete",
+        toolName: "memory_search", arguments: { query: "private-query" }, result: {
+          content: [{ type: "json", value: { version: "memory-search-v1", outcome, evidence: "private-evidence" } }]
+        } }] });
+    expect(activity?.calls[0]).toMatchObject({ origin: "memory", serverName: "Memory",
+      toolName: "memory_search", memorySearchCall: 3, memorySearchOutcome: outcome,
+      status: outcome === "cancelled" ? "cancelled" : outcome === "failure" ? "error" : "complete" });
+    expect(JSON.stringify(activity)).not.toMatch(/private|evidence|query/);
+  });
+
   it("projects all-selected engine outcomes without exposing the technical tool name", () => {
     const activity = summarizeMessageRunToolActivity({ errorPayload: null, status: "complete",
       normalizedRequest: { searchPlan: { mode: "all_selected", options: [

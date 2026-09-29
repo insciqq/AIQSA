@@ -1,18 +1,14 @@
-import { ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS } from "../../contracts/adminMemory";
-
 /**
- * One end-to-end budget for synchronous Personal Memory admission.
+ * Legacy synchronous Personal Memory admission and explicit /memory commands.
  *
  * The run preparation boundary subtracts small persistence/finalization
  * reserves from this budget, while every Memory utility and controlled
  * mutation receives the same absolute deadline.
+ * These frozen bounds are independent of the administrator's search-tool limit.
  */
-export const MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS =
-  ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.defaultSeconds * 1_000;
-export const MEMORY_ADMISSION_MAX_TIMEOUT_MS =
-  ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds * 1_000;
-export const MEMORY_ADMISSION_MIN_TIMEOUT_MS =
-  ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds * 1_000;
+export const MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS = 30_000;
+export const MEMORY_ADMISSION_MAX_TIMEOUT_MS = 120_000;
+export const MEMORY_ADMISSION_MIN_TIMEOUT_MS = 1_000;
 
 export function boundedMemoryAdmissionDeadlineMs(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -24,8 +20,8 @@ export function boundedMemoryAdmissionDeadlineMs(value: number | undefined): num
 export function memoryAdmissionDeadlineMsFromPolicySeconds(value: unknown): number {
   const seconds = Number(value);
   if (!Number.isSafeInteger(seconds) ||
-    seconds < ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds ||
-    seconds > ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds) {
+    seconds < MEMORY_ADMISSION_MIN_TIMEOUT_MS / 1_000 ||
+    seconds > MEMORY_ADMISSION_MAX_TIMEOUT_MS / 1_000) {
     throw new Error("installation_memory_admission_timeout_invalid");
   }
   return seconds * 1_000;

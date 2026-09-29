@@ -33,14 +33,17 @@ export const toolBudgetDefaultsFixtures = [
       FROM "ModelPolicy" p CROSS JOIN "ModelRun" r
       WHERE p.id = 'installation' AND r.id = 'tool-budget-run';
     `,
+    // The subsequent Memory search policy migration intentionally resets its
+    // timeout and advances this same installation revision once more.
     proof: `
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM "ModelPolicy" p JOIN "_ToolBudgetDefaultsFixture" f ON true
           WHERE p.id = 'installation' AND p."maxToolCalls" = ${expectedCalls}
-            AND p."maxToolRounds" = ${expectedRounds} AND p.version = ${changed ? 8 : 7}
-            AND p."updatedAt" ${changed ? ">" : "="} (f.policy->>'updatedAt')::timestamp
-            AND (to_jsonb(p) - ARRAY['maxToolCalls', 'maxToolRounds', 'version', 'updatedAt']) =
-              (f.policy - ARRAY['maxToolCalls', 'maxToolRounds', 'version', 'updatedAt']))
+            AND p."maxToolRounds" = ${expectedRounds} AND p.version = ${changed ? 9 : 8}
+            AND p."memorySearchTimeoutSeconds" = 30
+            AND p."updatedAt" > (f.policy->>'updatedAt')::timestamp
+            AND (to_jsonb(p) - ARRAY['maxToolCalls', 'maxToolRounds', 'version', 'updatedAt', 'memoryAdmissionTimeoutSeconds', 'memorySearchTimeoutSeconds']) =
+              (f.policy - ARRAY['maxToolCalls', 'maxToolRounds', 'version', 'updatedAt', 'memoryAdmissionTimeoutSeconds', 'memorySearchTimeoutSeconds']))
           THEN RAISE EXCEPTION 'tool_budget_defaults_adoption_or_policy_preservation_failed'; END IF;
         IF NOT EXISTS (SELECT 1 FROM "ModelRun" r JOIN "_ToolBudgetDefaultsFixture" f ON f.run = to_jsonb(r)
           WHERE r.id = 'tool-budget-run')

@@ -318,7 +318,7 @@ export type MemoryPackedTemporalPresentation = Readonly<{
   statementDate?: string;
 }>;
 
-export type MemoryContextBudgetProfile = "COMPLEX" | "PAST_CHAT" | "SIMPLE";
+export type MemoryContextBudgetProfile = "COMPLEX" | "PAST_CHAT" | "SIMPLE" | "STANDING";
 
 export type MemoryPackedQueryScopeConstraint = Readonly<{
   evidenceHandle: "current_query" | string;

@@ -10,6 +10,8 @@ import {
   MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS,
   MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS,
   MEMORY_CORE_MAX_FACTS,
+  MEMORY_STANDING_MAX_FACTS,
+  MEMORY_LEGACY_STANDING_MAX_FACTS,
   MEMORY_RETRIEVAL_BASELINE_FACT_EVIDENCE_ROOTS,
   MEMORY_RETRIEVAL_BASELINE_HISTORY_EVIDENCE_ROOTS,
   MEMORY_RETRIEVAL_COMPLEX_DIGEST_CHATS,
@@ -1555,7 +1557,7 @@ function coreSql(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql {
   `;
 }
 
-function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql {
+function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot, limit: number): Prisma.Sql {
   return Prisma.sql`
     /* standing_fact_floor */
     SELECT ${factColumns(Prisma.sql`NULL::text`)}, version."displayText" AS "safeText",
@@ -1602,20 +1604,22 @@ function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql {
       AND ${memoryFactConversationFeedbackPredicate(snapshot)}
     ORDER BY (version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode") DESC,
       root_fact."lastConfirmedAt" DESC NULLS LAST, root_fact."id", version."id"
-    LIMIT 21
+    LIMIT ${limit}
   `;
 }
 
 async function loadStandingFacts(
   client: PrismaClient,
-  snapshot: MemoryLocalRetrievalSnapshot
+  snapshot: MemoryLocalRetrievalSnapshot,
+  options: Readonly<{ standingVersion?: 1 }> = {}
 ): Promise<readonly MemoryCoreCandidate[]> {
   if (snapshot.status !== "READY" || !snapshot.useMemoryFacts ||
     snapshot.chatId === null || snapshot.chatMemoryMode !== "NORMAL") return [];
   const rows = await withMemoryReadBudget(
     client,
     MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,
-    (tx) => tx.$queryRaw<CoreRow[]>(standingFactsSql(snapshot))
+    (tx) => tx.$queryRaw<CoreRow[]>(standingFactsSql(snapshot,
+      options.standingVersion === 1 ? MEMORY_STANDING_MAX_FACTS + 1 : MEMORY_LEGACY_STANDING_MAX_FACTS + 1))
   );
   return rows.flatMap((row): readonly MemoryCoreCandidate[] => {
     const safeText = safeMemoryProjectionText(row.safeText);
@@ -6279,13 +6283,14 @@ export function createPrismaLocalMemoryRetrievalRepository(
     );
   const repository = {
     async loadStandingFacts(
-      snapshot: MemoryLocalRetrievalSnapshot
+      snapshot: MemoryLocalRetrievalSnapshot,
+      options: Readonly<{ standingVersion?: 1 }> = {}
     ): Promise<readonly MemoryCoreCandidate[]> {
       const issued = issuedSnapshots.get(snapshot);
       if (!issued || issued.authorityFingerprint !== snapshotAuthorityFingerprint(snapshot)) {
         throw new Error("memory_retrieval_source_snapshot_invalid");
       }
-      return loadStandingFacts(client, snapshot);
+      return loadStandingFacts(client, snapshot, options);
     },
 
     async expand(

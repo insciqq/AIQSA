@@ -5,7 +5,7 @@ import {
   adminMemoryErrorMessage,
   getAdminMemoryStatus,
   startAdminMemoryRebuild,
-  updateAdminMemoryAdmissionTimeout
+  updateAdminMemorySearchTimeout
 } from "@/components/admin/adminMemoryApi";
 import { inputClass } from "@/components/admin/adminPrimitives";
 import {
@@ -23,7 +23,7 @@ import type { AdminRoleStatus } from "@/components/admin/roles/rolesView";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { UiV2Button } from "@/components/ui-v2";
-import { ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS, adminMemoryProcessingIssueKey, type AdminMemoryStatus } from "@/lib/contracts/adminMemory";
+import { ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS, adminMemoryProcessingIssueKey, type AdminMemoryStatus } from "@/lib/contracts/adminMemory";
 import { adminMemoryProcessingCopy } from "@/lib/domain/adminMemoryProcessing";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -103,7 +103,7 @@ export function AdminMemoryHealthCard({
     if (result.ok) {
       setStatus(result.data.memory);
       setObservedAt(new Date().toISOString());
-      setTimeoutDraft((current) => (timeoutDirty ? current : String(result.data.memory.admissionTimeout.seconds)));
+      setTimeoutDraft((current) => (timeoutDirty ? current : String(result.data.memory.searchTimeout.seconds)));
       setError(null);
       return;
     }
@@ -127,8 +127,8 @@ export function AdminMemoryHealthCard({
 
   const parsedTimeout = /^[0-9]+$/u.test(timeoutDraft) ? Number(timeoutDraft) : null;
   const timeoutValid = parsedTimeout !== null && Number.isSafeInteger(parsedTimeout) &&
-    parsedTimeout >= ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds &&
-    parsedTimeout <= ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds;
+    parsedTimeout >= ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.minSeconds &&
+    parsedTimeout <= ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.maxSeconds;
 
   const saveTimeout = async () => {
     if (busy || !status || !timeoutDirty || !timeoutValid || parsedTimeout === null) return;
@@ -136,7 +136,7 @@ export function AdminMemoryHealthCard({
     busyRef.current = true;
     const sequence = ++sequenceRef.current;
     setFormError(null);
-    const result = await updateAdminMemoryAdmissionTimeout(status.admissionTimeout.version, parsedTimeout);
+    const result = await updateAdminMemorySearchTimeout(status.searchTimeout.version, parsedTimeout);
     if (sequence !== sequenceRef.current) return;
     busyRef.current = false;
     setBusy(false);
@@ -147,7 +147,7 @@ export function AdminMemoryHealthCard({
     setStatus(result.data.memory);
     setObservedAt(new Date().toISOString());
     setError(null);
-    setTimeoutDraft(String(result.data.memory.admissionTimeout.seconds));
+    setTimeoutDraft(String(result.data.memory.searchTimeout.seconds));
     setTimeoutDirty(false);
     reportNotice(copy.timeoutNotice);
   };
@@ -287,19 +287,19 @@ export function AdminMemoryHealthCard({
 
           <div className="grid gap-3 border-t border-trace-subtle px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
             <div className="grid gap-1.5 text-xs font-medium text-ink-secondary">
-              <label htmlFor="memory-admission-timeout-seconds">{copy.timeoutLabel}</label>
-              <span className="font-normal leading-5 text-ink-muted" id="memory-admission-timeout-description">
+              <label htmlFor="memory-search-timeout-seconds">{copy.timeoutLabel}</label>
+              <span className="font-normal leading-5 text-ink-muted" id="memory-search-timeout-description">
                 {copy.timeoutDescription}
               </span>
               <input
-                aria-describedby="memory-admission-timeout-description"
+                aria-describedby="memory-search-timeout-description"
                 aria-invalid={timeoutDraft.length > 0 && !timeoutValid ? true : undefined}
                 className={`${inputClass} md:w-28`}
                 disabled={busy}
-                id="memory-admission-timeout-seconds"
+                id="memory-search-timeout-seconds"
                 inputMode="numeric"
-                max={ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds}
-                min={ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds}
+                max={ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.maxSeconds}
+                min={ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.minSeconds}
                 onChange={(event) => {
                   setTimeoutDraft(event.currentTarget.value);
                   setTimeoutDirty(true);
@@ -311,7 +311,7 @@ export function AdminMemoryHealthCard({
             </div>
             <UiV2Button
               busy={busy && timeoutDirty}
-              disabled={busy || !timeoutDirty || !timeoutValid || parsedTimeout === status.admissionTimeout.seconds}
+              disabled={busy || !timeoutDirty || !timeoutValid || parsedTimeout === status.searchTimeout.seconds}
               onClick={() => void saveTimeout()}
               tone="primary"
             >

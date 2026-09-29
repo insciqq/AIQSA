@@ -138,7 +138,7 @@ test("Memory recovery distinguishes stalled and stopped workers across responsiv
   unavailable = false;
   await refresh.click();
   await expect(retry).toBeEnabled();
-  const timeout = section.getByRole("spinbutton", { name: "Admission timeout (seconds)" });
+  const timeout = section.getByRole("spinbutton", { name: "Memory search time limit (seconds)" });
   await timeout.fill("42");
   await retry.click();
   await expect(page.getByTestId("admin-feedback")).toContainText("Eligible Memory work was queued for retry");
@@ -268,7 +268,7 @@ function memoryResponse(input: Readonly<{
         generation: input.rebuilding ? 5 : 4,
         readiness: input.rebuilding ? "REBUILDING" : "REBUILD_REQUIRED"
       },
-      admissionTimeout: {
+      searchTimeout: {
         seconds: input.timeoutSeconds,
         version: input.timeoutVersion
       },
@@ -337,12 +337,14 @@ test("administrator sees minimal Memory runtime status and starts a bounded rebu
   await expect(section.getByText("None", { exact: true })).toBeVisible();
   await expect(section.getByText(/fingerprint|policy revision|destination matrix|Generation|System Models/iu)).toHaveCount(0);
 
-  const timeout = section.getByRole("spinbutton", { name: "Admission timeout (seconds)" });
+  const timeout = section.getByRole("spinbutton", { name: "Memory search time limit (seconds)" });
   await expect(timeout).toHaveValue("15");
   await timeout.fill("30");
   await section.getByRole("button", { name: "Save" }).click();
   await expect(timeout).toHaveValue("30");
-  await expect(page.getByTestId("admin-feedback")).toContainText(/timeout saved.*New messages/u);
+  await expect(page.getByTestId("admin-feedback")).toContainText(
+    "Memory search time limit saved. New answers use the updated limit."
+  );
   expect(timeoutBodies).toEqual([{ expectedVersion: 4, timeoutSeconds: 30 }]);
 
   const rebuild = section.getByRole("button", { name: "Rebuild" });

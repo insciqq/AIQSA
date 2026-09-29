@@ -544,6 +544,23 @@ async function sourceEvidence(
           OR item."featureSnapshot"->'standingFactSearchMatched' = 'true'::jsonb
         )
       UNION ALL
+      SELECT history."modelRunId", TRUE AS "retrievalOnly"
+      FROM "MemoryHistoryRun" AS history
+      INNER JOIN "ModelRunToolCall" AS tool_call
+        ON tool_call."modelRunId" = history."modelRunId"
+        AND tool_call."id" = history."modelRunToolCallId"
+        AND tool_call."toolName" = 'memory_search'
+        AND tool_call."state" = 'complete'::"ModelRunToolCallState"
+      CROSS JOIN LATERAL jsonb_array_elements(
+        COALESCE(history."results" -> 'results', '[]'::jsonb)
+      ) AS evidence(item)
+      WHERE history."userId" = ${userId}
+        AND history."state" = 'COMPLETE'::"MemoryHistoryRunState"
+        AND history."retentionState" = 'RETAINED'::"MemoryReceiptRetentionState"
+        AND history."indexingEvidence" -> 'delivered' = 'true'::jsonb
+        AND history."results" ->> 'version' = 'memory-search-v1'
+        AND evidence.item ->> 'factVersionId' IN (${Prisma.join([...versionIds])})
+      UNION ALL
       SELECT receipt."modelRunId", FALSE AS "retrievalOnly"
       FROM "MemoryOperationReceipt" AS receipt
       WHERE receipt."userId" = ${userId}

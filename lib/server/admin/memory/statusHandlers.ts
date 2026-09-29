@@ -1,5 +1,5 @@
 import {
-  decodeAdminMemoryAdmissionTimeoutInput,
+  decodeAdminMemorySearchTimeoutInput,
   decodeAdminMemoryActionInput
 } from "../../../contracts/adminMemory";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
@@ -99,13 +99,13 @@ export function createAdminMemoryStatusHandlers(input: Readonly<{
         bodyError.headers.set("vary", "Cookie");
         return bodyError;
       }
-      const decoded = decodeAdminMemoryAdmissionTimeoutInput(value);
+      const decoded = decodeAdminMemorySearchTimeoutInput(value);
       if (!decoded) {
         return json({ error: "memory_admin_timeout_input_invalid" }, 400);
       }
       try {
         return json({
-          memory: await input.service.updateAdmissionTimeout({
+          memory: await input.service.updateSearchTimeout({
             expectedVersion: decoded.expectedVersion,
             seconds: decoded.timeoutSeconds,
             userId: auth.userId

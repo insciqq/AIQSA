@@ -21,6 +21,7 @@ import {
 } from "../persistence/eligibility";
 import { canonicalGlobalMemoryScopeWhere } from "../persistence/scopes";
 import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
+import { loadDeliveredMemorySearchEvidence } from "./searchEvidence";
 
 type MemoryRunSourceClient = Pick<
   PrismaClient,
@@ -30,6 +31,7 @@ type MemoryRunSourceClient = Pick<
   | "chatMemoryDigestMessage"
   | "chatMemoryCheckpoint"
   | "chat"
+  | "memoryHistoryRun"
   | "memoryFact"
   | "memoryFactVersion"
   | "memorySuppression"
@@ -82,7 +84,6 @@ export async function loadMemoryRunSources(
     select: { id: true, modelRunId: true },
     where: { modelRunId: { in: [...personalRunIds] }, userId: input.userId }
   });
-  if (bindings.length === 0) return new Map();
   const runByBindingId = new Map(bindings.map((binding) => [binding.id, binding.modelRunId]));
   const frozenItems = await client.modelRunMemoryItem.findMany({
     orderBy: [{ bindingId: "asc" }, { ordinal: "asc" }],
@@ -103,12 +104,13 @@ export async function loadMemoryRunSources(
     },
     where: { bindingId: { in: bindings.map(({ id }) => id) }, userId: input.userId }
   });
-  const items = frozenItems.filter((item) => {
+  const searchItems = await loadDeliveredMemorySearchEvidence(client, input.userId, [...personalRunIds]);
+  const items = [...frozenItems.filter((item) => {
     if (!item.selectionReason?.startsWith("standing.")) return true;
     const feature = item.featureSnapshot;
     return typeof feature === "object" && feature !== null && !Array.isArray(feature) &&
       feature.standingFactSearchMatched === true;
-  });
+  }).map((item) => ({ ...item, modelRunId: runByBindingId.get(item.bindingId) })), ...searchItems];
   const factVersionIds = items.flatMap((item) => item.factVersionId ? [item.factVersionId] : []);
   const chunkIds = items.flatMap((item) => item.recallChunkId ? [item.recallChunkId] : []);
   const roundIds = items.flatMap((item) => item.recallRoundId ? [item.recallRoundId] : []);
@@ -417,8 +419,9 @@ export async function loadMemoryRunSources(
     return group;
   };
 
+  const seenSources = new Set<string>();
   for (const item of items) {
-    const runId = runByBindingId.get(item.bindingId);
+    const runId = item.modelRunId;
     if (!runId) continue;
     let source: MemoryAnswerSource | null = null;
     if (item.itemType === "FACT_VERSION" && item.factVersionId) {
@@ -676,6 +679,10 @@ export async function loadMemoryRunSources(
       };
     }
     if (!source) continue;
+    const sourceKey = JSON.stringify([runId, item.itemType, item.factVersionId,
+      item.recallChunkId, item.recallRoundId, item.sourceMessageIdsSnapshot]);
+    if (seenSources.has(sourceKey)) continue;
+    seenSources.add(sourceKey);
     const current = sourcesByRun.get(runId) ?? [];
     current.push(source);
     sourcesByRun.set(runId, current);

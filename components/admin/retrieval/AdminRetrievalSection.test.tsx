@@ -10,7 +10,7 @@ import { AdminRetrievalSection } from "./AdminRetrievalSection";
 function memoryStatus(overrides: Partial<AdminMemoryStatus> = {}): AdminMemoryStatus {
   return {
     processing: { enabled: true, issues: [] },
-    admissionTimeout: { seconds: 15, version: 4 },
+    searchTimeout: { seconds: 15, version: 4 },
     configuredTargets: [{ model: "GPT Luna", provider: "OpenAI" }],
     index: { generation: 4, readiness: "READY" },
     queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
@@ -56,7 +56,7 @@ function server(initial: Readonly<{ knowledge?: AdminKnowledgeSettings; memory?:
     }
     if (url === "/api/admin/memory") {
       if (method === "PUT" && body) {
-        memory = { ...memory, admissionTimeout: { seconds: Number(body.timeoutSeconds), version: memory.admissionTimeout.version + 1 } };
+        memory = { ...memory, searchTimeout: { seconds: Number(body.timeoutSeconds), version: memory.searchTimeout.version + 1 } };
       }
       if (method === "POST" && body?.action === "RECOVER_ELIGIBLE") {
         memory = { ...memory, recovery: memoryRecoveryStatusFixture(),
@@ -121,7 +121,7 @@ describe("AdminRetrievalSection", () => {
     const calls = server({ memory: memoryStatus({ recovery: memoryRecoveryStatusFixture({ eligible: 2 }) }) });
     const { reportNotice, requestConfirmation } = renderSection();
     const retry = await screen.findByRole("button", { name: "Retry eligible work" });
-    const field = screen.getByRole("spinbutton", { name: "Admission timeout (seconds)" });
+    const field = screen.getByRole("spinbutton", { name: "Memory search time limit (seconds)" });
     fireEvent.change(field, { target: { value: "42" } });
     fireEvent.click(retry);
     await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Eligible Memory work was queued for retry."));
@@ -287,18 +287,22 @@ describe("AdminRetrievalSection", () => {
     expect(searches).toHaveValue(18);
   });
 
-  it("saves the Memory admission timeout and confirms before a rebuild", async () => {
+  it("saves the Memory search time limit and confirms before a rebuild", async () => {
     const calls = server({ memory: memoryStatus({ index: { generation: 4, readiness: "REBUILD_REQUIRED" }, rebuild: { state: "AVAILABLE" } }) });
     const { reportNotice, requestConfirmation } = renderSection();
     const memory = await screen.findByTestId("admin-retrieval-memory");
     expect(within(memory).getByTestId("memory-state")).toHaveTextContent("Rebuild required");
     expect(within(memory).getByText("Rebuild required", { selector: "dd" })).toBeInTheDocument();
     expect(within(memory).queryByText(/Generation|fingerprint|System Models/)).not.toBeInTheDocument();
-    const timeout = within(memory).getByRole("spinbutton", { name: "Admission timeout (seconds)" });
+    const timeout = within(memory).getByRole("spinbutton", { name: "Memory search time limit (seconds)" });
+    expect(memory).toHaveTextContent("Applies to each Memory search requested by the answer.");
+    expect(memory).toHaveTextContent("Local standing facts use a separate fixed limit.");
     expect(timeout).toHaveValue(15);
     fireEvent.change(timeout, { target: { value: "30" } });
     fireEvent.click(within(memory).getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith(expect.stringMatching(/timeout saved/)));
+    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith(
+      "Memory search time limit saved. New answers use the updated limit."
+    ));
     expect(calls.filter((call) => call.method === "PUT").map((call) => call.body)).toEqual([{ expectedVersion: 4, timeoutSeconds: 30 }]);
 
     fireEvent.click(within(memory).getByRole("button", { name: "Rebuild" }));

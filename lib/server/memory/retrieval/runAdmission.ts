@@ -142,6 +142,8 @@ import {
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
   "memory-run-retrieval-admission-v63";
+export const MEMORY_STANDING_ADMISSION_VERSION = "memory-standing-admission-v1";
+export const MEMORY_STANDING_ADMISSION_TIMEOUT_MS = 4_000;
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v20";
 const MEMORY_QUERY_EMBEDDING_DEADLINE_REASON =
@@ -213,6 +215,8 @@ export type MemoryRunRetrievalInput = Readonly<{
   memoryCommandQueued?: boolean;
   modelRunId: string;
   normalizedRequest: NormalizedRunRequest;
+  /** Frozen accepted read policy. Absence retains the legacy prefetched path. */
+  readMode?: "STANDING_V1";
   now: Date;
   signal?: AbortSignal;
   userId: string;
@@ -248,6 +252,7 @@ export type MemoryRunControlCache = {
   actionResolved?: boolean;
   actionResult?: MemoryActionFeedback | null;
   admissionDeadlineAtMs?: number;
+  standingDeadlineAtMs?: number;
   control?: MemoryControlResult;
   controlAttemptId?: string;
   controlInputHash?: string;
@@ -2507,6 +2512,111 @@ function degradationFor(
   return null;
 }
 
+async function retrieveStandingContext(
+  input: MemoryRunRetrievalInput,
+  repository: PrismaLocalMemoryRetrievalRepository,
+  options: MemoryRunRetrievalOptions,
+  timings: MemoryPreparationTimings
+): Promise<MemoryPreparingAttemptResult> {
+  const evidence = {
+    admissionVersion: MEMORY_STANDING_ADMISSION_VERSION,
+    memoryReadUtilityPolicy: "STANDING_V1",
+    memoryActionAnswerResult: input.memoryCommandQueued
+      ? MEMORY_ACTION_PENDING_RESULT : MEMORY_ACTION_NO_COMMIT_RESULT,
+    utilityEgressMode: "LOCAL_ONLY",
+    utilityExecutions: []
+  };
+  const empty = (outcome: MemoryPreparingAttemptResult["outcome"], reason: string) =>
+    emptyAttempt(input.expected, outcome, reason, null, evidence);
+  if (input.expected.chatMemoryMode !== "NORMAL") {
+    return empty("DISABLED", input.expected.chatMemoryMode === "TEMPORARY"
+      ? "temporary_chat" : "chat_memory_off");
+  }
+  if (!input.expected.settings.useMemoryFacts) return empty("DISABLED", "memory_off");
+  const cache = input.controlCache ?? {};
+  const deadline = createMemoryRetrievalDeadline(input.signal, {
+    admissionDeadlineMs: MEMORY_STANDING_ADMISSION_TIMEOUT_MS,
+    clock: options.clock,
+    existingDeadlineAtMs: cache.standingDeadlineAtMs
+  });
+  cache.standingDeadlineAtMs = deadline.outerDeadlineAtMs;
+  const fail = () => empty("FAILED_SAFE", deadline.expired()
+    ? "memory_standing_deadline_exceeded" : "memory_standing_unavailable");
+  try {
+    if (deadline.signal.aborted || deadline.expired()) return fail();
+    const querySafety = sanitizeMemoryUtilityText(exactCurrentUserText(input.normalizedRequest));
+    const plan = planMemoryRetrieval({
+      currentUserText: querySafety.safeText,
+      now: input.now,
+      timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
+    });
+    let snapshot: MemoryLocalRetrievalSnapshot;
+    try {
+      snapshot = await timings.measure("snapshotMs", () => runBoundedMemoryRead(
+        deadline,
+        MEMORY_SNAPSHOT_OPTIONAL_MAXIMUM_MS,
+        (signal) => abortableRead(repository.snapshot({
+          assistantId: input.expected.assistantId,
+          chatId: input.chatId,
+          now: input.now,
+          plan,
+          userId: input.userId
+        }), signal)
+      ));
+    } catch {
+      return fail();
+    }
+    if (input.expected.assistantId !== null && snapshot.assistantId === null) {
+      return empty("DISABLED", "assistant_memory_grant_missing");
+    }
+    assertStableSnapshot(snapshot, input.expected, cache, input.attemptId,
+      baseBudget("memory_admission_settings_changed", input.expected, evidence));
+    if (snapshot.status === "DISABLED") return empty("DISABLED", snapshot.reason);
+    if (typeof repository.loadStandingFacts !== "function") return fail();
+    let standing: readonly MemoryCoreCandidate[];
+    try {
+      standing = await timings.measure("localRetrievalMs", () => runBoundedMemoryRead(
+        deadline,
+        MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
+        (signal) => abortableRead(repository.loadStandingFacts(snapshot, { standingVersion: 1 }), signal)
+      ));
+    } catch {
+      return fail();
+    }
+    const pack = timings.measureSync("packerMs", () => packMemoryPersonalContext({
+      standingOnly: true,
+      standing,
+      expanded: [],
+      ranked: [],
+      plan,
+      now: input.now,
+      maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest)
+    }));
+    if (deadline.signal.aborted || deadline.expired()) return fail();
+    const items = attemptItems(pack, standing, [], [], plan, plan);
+    return {
+      budgetSnapshot: {
+        ...baseBudget("standing_context", input.expected, evidence),
+        budgetProfile: pack.budgetProfile,
+        candidateCount: pack.candidateCount,
+        hardCapTokens: pack.hardCapTokens,
+        itemCount: items.length,
+        omissionCounts: pack.omissionCounts,
+        packedTokens: pack.approxTokens,
+        packerVersion: pack.packerVersion,
+        providerTokenLimit: pack.providerTokenLimit,
+        targetTokens: pack.targetTokens
+      },
+      items,
+      outcome: items.length ? "USED" : "EMPTY",
+      preparedContext: pack.text ? { approxTokens: pack.approxTokens, text: pack.text } : null,
+      querySnapshot: null
+    };
+  } finally {
+    deadline.dispose();
+  }
+}
+
 export function createMemoryRunRetrievalService(
   repository: PrismaLocalMemoryRetrievalRepository =
     createPrismaLocalMemoryRetrievalRepository(),
@@ -2520,6 +2630,10 @@ export function createMemoryRunRetrievalService(
       const timings = createMemoryPreparationTimings(
         options.monotonicClock ?? (() => performance.now())
       );
+      if (input.readMode === "STANDING_V1") {
+        const result = await retrieveStandingContext(input, repository, options, timings);
+        return withMemoryPreparationEvidence(result, timings);
+      }
       const queryResolverState: { execution: MemoryQueryResolverExecution | null } = {
         execution: null
       };

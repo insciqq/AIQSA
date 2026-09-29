@@ -65,6 +65,8 @@ import {
 } from "../providerRuntime/admission";
 import { createProviderPreviewRuntimeBinding } from "../providers/runtimeFactory";
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
+import { memorySearchTool, type MemorySearchSnapshot } from "../memory/search/contract";
+import { hasExplicitMemoryCommandBoundary } from "../memory/actions/actionAdmission";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -226,6 +228,7 @@ async function carriedContextSummary(input: Readonly<{
 }
 
 export type RunPreparationDeps = Readonly<{
+  memorySearchAdmission?: Readonly<{ admit(userId: string, assistantId?: string | null): Promise<MemorySearchSnapshot | null> }>;
   artifacts?: import("../artifacts/service").ArtifactService;
   vision?: Pick<import("../vision/service").VisionAnalysisService, "resolve">;
   images?: Pick<import("../images/service").ImageGenerationService, "resolve">;
@@ -2021,7 +2024,16 @@ async function prepareRunWith(
     }) === true;
   const toolObservationVersion: 0 | 1 = observationPolicy === "v1" && observationCapable ? 1 : 0;
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
+  const memoryStandingEligible = !project && !agent && resolvedChatMode.mode === "NORMAL" &&
+    !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
+  const memorySearch = memoryStandingEligible && body?.tools !== "none" &&
+    modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
+      modelId: executionModelId, provider: executionProvider
+    }) === true && deps.memorySearchAdmission
+    ? await deps.memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null) : null;
   const baseNormalizedRequest: NormalizedRunRequest = {
+    ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
+    ...(memorySearch ? { memorySearch } : {}),
     toolObservationVersion,
     ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
@@ -2042,10 +2054,10 @@ async function prepareRunWith(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    // Knowledge runs keep the legacy whole-turn guard on every answer route:
-    // model-derived notes never stand beside citation evidence. The store and
-    // reader stay available for their other tool results.
-    ...(!agent && !knowledgeRequested && toolObservationVersion === 1 ? { contextCompactionPolicy: conversationContextPolicy({
+    // Knowledge and native Memory search keep the whole-turn guard: summaries
+    // cannot retain private evidence after its source authority is revoked.
+    // The observation store/reader remains available for other tool results.
+    ...(!agent && !knowledgeRequested && !memorySearch && toolObservationVersion === 1 ? { contextCompactionPolicy: conversationContextPolicy({
       leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
       messages: contextMessages,
       mode: "hybrid"
@@ -2125,6 +2137,7 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
+        ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
         ...(visionAnalysis ? [analyzeImageTool(visionAnalysis)] : []),
         ...(imagePlan ? [imageGenerationTool(imagePlan)] : []),

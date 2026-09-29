@@ -26,6 +26,7 @@ function client(input: Readonly<{
     chatMemoryCheckpointMessage: { findMany: vi.fn(async () => []) },
     chatMemoryDigest: { findMany: vi.fn(async () => []) },
     chatMemoryDigestMessage: { findMany: vi.fn(async () => []) },
+    memoryHistoryRun: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
     memoryFact: { findMany: vi.fn(async () => [{
       currentVersionId: "private-version-1",
       id: "private-fact-1",
@@ -113,6 +114,7 @@ function historyClient(overrides: Readonly<{
     }]) },
     chatMemoryDigest: { findMany: vi.fn(async () => []) },
     chatMemoryDigestMessage: { findMany: vi.fn(async () => []) },
+    memoryHistoryRun: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
     memoryFact: { findMany: vi.fn(async () => []) },
     memoryFactVersion: { findMany: vi.fn(async () => []) },
     memoryScope: { findMany: vi.fn(async () => []) },
@@ -181,6 +183,56 @@ describe("answer Memory source projection", () => {
     });
     expect(result.get("run-1") ?? []).toHaveLength(searchMatched ? 1 : 0);
     if (!searchMatched) expect(database.memoryFactVersion.findMany).not.toHaveBeenCalled();
+  });
+
+  it("projects delivered native search facts without a standing binding and deduplicates repeated calls", async () => {
+    const database = client();
+    const [fact] = await database.modelRunMemoryItem.findMany();
+    database.modelRunMemoryBinding.findMany.mockResolvedValue([]);
+    database.modelRunMemoryItem.findMany.mockResolvedValue([]);
+    const evidence = { ...fact, exactItemId: "private-version-1", recallRoundId: null,
+      sourceBranchGenerationSnapshot: null, sourceContentHashSnapshot: null,
+      sourceChatId: null, sourceMessageIds: [] };
+    database.memoryHistoryRun.findMany.mockResolvedValue([1, 2].map((id) => ({
+      id: `receipt-${id}`, modelRunId: "run-1", modelRunToolCallId: `call-${id}`,
+      results: { version: "memory-search-v1", results: [evidence] }
+    })));
+    const sources = await loadMemoryRunSources(database as never, {
+      clientRefs: createMemoryClientRefService({ encryptionKey: () => randomBytes(32) }),
+      runIds: ["run-1"], userId: "user-1"
+    });
+    expect(sources.get("run-1")).toHaveLength(1);
+    expect(sources.get("run-1")?.[0]).toMatchObject({
+      sourceType: "SAVED_MEMORY", text: "I prefer exact, concise answers."
+    });
+    expect(database.memoryHistoryRun.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        indexingEvidence: { path: ["delivered"], equals: true },
+        modelRunToolCall: { state: "complete", toolName: "memory_search" },
+        retentionState: "RETAINED", state: "COMPLETE", userId: "user-1"
+      })
+    }));
+  });
+
+  it("revalidates native search history against source suppression", async () => {
+    const database = historyClient();
+    const [item] = await database.modelRunMemoryItem.findMany();
+    database.modelRunMemoryItem.findMany.mockResolvedValue([]);
+    database.memoryHistoryRun.findMany.mockResolvedValue([{
+      id: "receipt-1", modelRunId: "run-1", modelRunToolCallId: "call-1",
+      results: { version: "memory-search-v1", results: [{ ...item,
+        exactItemId: "private-chunk-1", recallRoundId: null, selectionReason: "search",
+        sourceChatId: item!.sourceChatIdSnapshot, sourceMessageIds: item!.sourceMessageIdsSnapshot
+      }] }
+    }]);
+    database.memorySuppression.findMany.mockResolvedValue([{
+      sourceBranchGeneration: 4, sourceChatId: "source-chat-1", sourceMessageId: "source-message-1"
+    }]);
+    const sources = await loadMemoryRunSources(database as never, {
+      clientRefs: createMemoryClientRefService({ encryptionKey: () => randomBytes(32) }),
+      runIds: ["run-1"], userId: "user-1"
+    });
+    expect(sources.size).toBe(0);
   });
 
   it("uses exact committed run items and emits no repository identifiers", async () => {

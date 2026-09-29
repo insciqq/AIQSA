@@ -648,7 +648,10 @@ async function receiptSelectionPredicates(
     return {
       history: Prisma.sql`TRUE`,
       result: Prisma.sql`result ->> 'sourceChatId' = ${selection.chatId}`,
-      running: Prisma.sql`history."state" = 'RUNNING'::"MemoryHistoryRunState"`
+      running: Prisma.sql`(
+        history."state" = 'RUNNING'::"MemoryHistoryRunState"
+        AND history."privateRequest" ->> 'version' IS DISTINCT FROM 'memory-search-v1'
+      ) OR (${staleNativeSearchReceipt()})`
     };
   }
   if (selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE") {
@@ -690,7 +693,10 @@ async function receiptSelectionPredicates(
           )
       )
     `,
-    running: Prisma.sql`history."state" = 'RUNNING'::"MemoryHistoryRunState"`
+    running: Prisma.sql`(
+        history."state" = 'RUNNING'::"MemoryHistoryRunState"
+        AND history."privateRequest" ->> 'version' IS DISTINCT FROM 'memory-search-v1'
+      ) OR (${staleNativeSearchReceipt()})`
   };
 }
 
@@ -770,6 +776,14 @@ export async function purgeMemoryHistoryReceiptDerivatives(
     WHERE job."userId" = execution."userId" AND job.id = execution."memoryJobId"
       AND execution."userId" = ${userId} AND execution."clearedAt" IS NULL AND ${executionPredicate}
   `);
+  await scrubMemoryHistoryReceipts(tx, userId, predicates);
+}
+
+async function scrubMemoryHistoryReceipts(
+  tx: MemoryTransaction,
+  userId: string,
+  predicates: Readonly<{ history: Prisma.Sql; result: Prisma.Sql; running: Prisma.Sql }>
+): Promise<void> {
   await tx.$executeRaw(Prisma.sql`
     WITH affected AS MATERIALIZED (
       SELECT DISTINCT history."id", history."modelRunToolCallId"
@@ -845,6 +859,61 @@ export async function purgeMemoryHistoryReceiptDerivatives(
     FROM scrubbed_history
     WHERE call."id" = scrubbed_history."modelRunToolCallId"
   `);
+}
+
+function staleNativeSearchReceipt(): Prisma.Sql {
+  return Prisma.sql`history."state" = 'RUNNING'::"MemoryHistoryRunState"
+    AND history."privateRequest" ->> 'version' = 'memory-search-v1'
+    AND jsonb_typeof(history."privateRequest" #> '{accepted,memoryGeneration}') = 'number'
+    AND EXISTS (
+      SELECT 1 FROM "UserMemorySettings" AS settings
+      WHERE settings."userId" = history."userId"
+        AND history."privateRequest" #> '{accepted,memoryGeneration}' < to_jsonb(settings."memoryGeneration")
+    )`;
+}
+
+/** Fact deletion must also scrub native search receipts, including facts with no chat source. */
+export async function purgeMemorySearchFactReceipts(
+  tx: MemoryTransaction,
+  userId: string,
+  versionCondition: Prisma.Sql
+): Promise<void> {
+  await scrubMemoryHistoryReceipts(tx, userId, {
+    history: Prisma.sql`history."results" ->> 'version' = 'memory-search-v1'`,
+    result: Prisma.sql`EXISTS (
+      SELECT 1 FROM "MemoryFactVersion" AS version
+      WHERE version."id" = result ->> 'factVersionId'
+        AND ${versionCondition}
+    )`,
+    // A retry cannot cancel a newly admitted search after the deletion fence.
+    running: staleNativeSearchReceipt()
+  });
+}
+
+export async function inspectMemorySearchFactReceipts(
+  tx: MemoryTransaction,
+  userId: string,
+  versionCondition: Prisma.Sql
+): Promise<number> {
+  const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+    SELECT COUNT(DISTINCT history."id")::integer AS count
+    FROM "MemoryHistoryRun" AS history
+    LEFT JOIN LATERAL jsonb_array_elements(
+      COALESCE(history."results" -> 'results', '[]'::jsonb)
+    ) AS result ON TRUE
+    WHERE history."userId" = ${userId}
+      AND history."retentionState" = 'RETAINED'::"MemoryReceiptRetentionState"
+      AND ((${staleNativeSearchReceipt()}) OR (
+        history."results" ->> 'version' = 'memory-search-v1'
+        AND EXISTS (SELECT 1 FROM "MemoryFactVersion" AS version
+          WHERE version."id" = result ->> 'factVersionId' AND ${versionCondition})
+      ))
+  `);
+  const count = rows[0]?.count;
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new MemoryCoordinatorError("memory_purge_incomplete", true);
+  }
+  return count;
 }
 
 export async function purgeMemoryHistorySelection(

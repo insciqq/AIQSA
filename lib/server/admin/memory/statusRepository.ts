@@ -140,7 +140,7 @@ export function createPrismaAdminMemoryStatusRepository(
       ] = await Promise.all([
         client.modelPolicy.findUnique({
           select: {
-            memoryAdmissionTimeoutSeconds: true,
+            memorySearchTimeoutSeconds: true,
             version: true
           },
           where: { id: "installation" }
@@ -348,9 +348,9 @@ export function createPrismaAdminMemoryStatusRepository(
         readMemoryRecoveryStatus(client, now)
       ]);
       if (!modelPolicy) throw new Error("installation_model_policy_missing");
-      const admissionTimeoutSeconds = Number(modelPolicy.memoryAdmissionTimeoutSeconds);
-      if (!Number.isSafeInteger(admissionTimeoutSeconds)) {
-        throw new Error("installation_memory_admission_timeout_invalid");
+      const searchTimeoutSeconds = Number(modelPolicy.memorySearchTimeoutSeconds);
+      if (!Number.isSafeInteger(searchTimeoutSeconds)) {
+        throw new Error("installation_memory_search_timeout_invalid");
       }
 
       const selectedModelIds = [...new Set([
@@ -419,8 +419,8 @@ export function createPrismaAdminMemoryStatusRepository(
         });
       }
       return Object.freeze({
-        admissionTimeout: Object.freeze({
-          seconds: admissionTimeoutSeconds,
+        searchTimeout: Object.freeze({
+          seconds: searchTimeoutSeconds,
           version: modelPolicy.version
         }),
         processing,
@@ -450,10 +450,10 @@ export function createPrismaAdminMemoryStatusRepository(
 
     ...(recoverEligible ? { recoverEligible } : {}),
 
-    async updateAdmissionTimeout(input) {
+    async updateSearchTimeout(input) {
       const result = await client.modelPolicy.updateMany({
         data: {
-          memoryAdmissionTimeoutSeconds: BigInt(input.seconds),
+          memorySearchTimeoutSeconds: BigInt(input.seconds),
           updatedByUserId: input.userId,
           version: { increment: 1 }
         },

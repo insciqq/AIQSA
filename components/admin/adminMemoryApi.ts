@@ -55,7 +55,7 @@ export function recoverAdminMemoryWork(fetcher: Fetcher = fetch) {
   }, fetcher);
 }
 
-export function updateAdminMemoryAdmissionTimeout(
+export function updateAdminMemorySearchTimeout(
   expectedVersion: number,
   timeoutSeconds: number,
   fetcher: Fetcher = fetch
@@ -78,8 +78,8 @@ export function adminMemoryErrorMessage(code: string): string {
     memory_admin_recovery_unavailable: "No eligible Memory work could be recovered. Refresh to see the current queue state.",
     memory_admin_status_failed: "Memory status could not be loaded.",
     memory_admin_status_response_invalid: "The Memory status response was invalid.",
-    memory_admin_timeout_input_invalid: "Enter a whole-number Memory timeout within the allowed range.",
-    memory_admin_timeout_stale: "The Memory timeout changed in another session. Refresh and try again.",
+    memory_admin_timeout_input_invalid: "Enter a whole-number Memory search time limit within the allowed range.",
+    memory_admin_timeout_stale: "The Memory search time limit changed in another session. Refresh and try again.",
     network_error: "Memory status could not be reached.",
     unauthorized: "Your administrator session has expired. Sign in again to continue."
   };

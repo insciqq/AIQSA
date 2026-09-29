@@ -183,6 +183,30 @@ describe("Memory preparing context ceiling", () => {
     })).toThrow(MemoryPreparingRunConflictError);
   });
 
+  it("accepts fifty standing facts at 10000 tokens but rejects overflow or dynamic items", () => {
+    const base = usedAttempt("SIMPLE", 10_000, 10_000);
+    const standing = Array.from({ length: 51 }, (_, index) => ({
+      exactItemId: `fact-${index}`,
+      exactSafeText: `current direct fact ${index}`,
+      factVersionId: `fact-${index}`,
+      featureSnapshot: { standingFact: true },
+      finalScore: 0,
+      itemType: "FACT_VERSION" as const,
+      selectionReason: "standing.explicit"
+    }));
+    const valid = { ...base,
+      budgetSnapshot: { ...base.budgetSnapshot, budgetProfile: "STANDING", targetTokens: 10_000 },
+      items: standing.slice(0, 50) };
+    expect(() => validateMemoryPreparingAttemptResult(valid)).not.toThrow();
+    expect(() => validateMemoryPreparingAttemptResult({ ...valid, items: standing }))
+      .toThrow(MemoryPreparingRunConflictError);
+    expect(() => validateMemoryPreparingAttemptResult({ ...valid, items: attemptItems(1) }))
+      .toThrow(MemoryPreparingRunConflictError);
+    expect(() => validateMemoryPreparingAttemptResult({ ...valid,
+      budgetSnapshot: { ...valid.budgetSnapshot, hardCapTokens: 10_001, targetTokens: 10_001 } }))
+      .toThrow(MemoryPreparingRunConflictError);
+  });
+
   it("rejects a declared cap above the selected profile", () => {
     const accepted = usedAttempt("SIMPLE", 1_000, 10_000);
     expect(() => validateMemoryPreparingAttemptResult({

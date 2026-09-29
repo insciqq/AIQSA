@@ -57,6 +57,7 @@ import {
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../history/rounds";
 import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
+import { loadDeliveredMemorySearchEvidence } from "./searchEvidence";
 
 type SourceActionClient = Pick<
   PrismaClient,
@@ -67,6 +68,7 @@ type SourceActionClient = Pick<
   | "chatMemoryCheckpointMessage"
   | "chatMemoryDigest"
   | "chatMemoryDigestMessage"
+  | "memoryHistoryRun"
   | "memoryFact"
   | "memoryFactVersion"
   | "memoryEvent"
@@ -396,7 +398,7 @@ export function createMemorySourceActionService(input: Readonly<{
       select: { id: true },
       where: { modelRunId: ref.originatingRunId, userId }
     });
-    const item = binding ? await input.client.modelRunMemoryItem.findFirst({
+    const bindingItem = binding ? await input.client.modelRunMemoryItem.findFirst({
       select: {
         factVersionId: true,
         featureSnapshot: true,
@@ -417,15 +419,29 @@ export function createMemorySourceActionService(input: Readonly<{
         userId
       }
     }) : null;
-    if (!binding) throw new MemorySourceActionError("memory_not_found");
+    const searchItem = bindingItem ? null :
+      (await loadDeliveredMemorySearchEvidence(input.client, userId, [ref.originatingRunId]))
+        .find((candidate) => candidate.exactItemId === ref.target.exactItemId &&
+          candidate.itemType === ref.target.itemType &&
+          (candidate.sourceChatIdSnapshot === ref.target.sourceChatId ||
+            (candidate.itemType === "FACT_VERSION" && ref.target.sourceChatId === null)) &&
+          (digestIdFromFeatureSnapshot(candidate.featureSnapshot) !== null ||
+            sameStrings(candidate.sourceMessageIdsSnapshot, ref.target.sourceMessageIds) ||
+            (candidate.itemType === "FACT_VERSION" && ref.target.sourceChatId === null &&
+              ref.target.sourceMessageIds.length === 0)));
+    const item = bindingItem
+      ? { ...bindingItem, modelRunToolCallId: null }
+      : searchItem ? { ...searchItem, id: null } : null;
+    if (!binding && !item) throw new MemorySourceActionError("memory_not_found");
     const digestId = item ? digestIdFromFeatureSnapshot(item.featureSnapshot) : null;
     if (item && (item.itemType !== ref.target.itemType ||
       item.factVersionId !== ref.target.factVersionId ||
       item.recallChunkId !== ref.target.recallChunkId ||
       item.recallRoundId !== ref.target.recallRoundId ||
-      item.sourceChatIdSnapshot !== ref.target.sourceChatId ||
-      (digestId === null &&
-        !sameStrings(item.sourceMessageIdsSnapshot, ref.target.sourceMessageIds)))) {
+      ((item.itemType !== "FACT_VERSION" || ref.target.sourceChatId !== null) &&
+        (item.sourceChatIdSnapshot !== ref.target.sourceChatId ||
+          (digestId === null &&
+            !sameStrings(item.sourceMessageIdsSnapshot, ref.target.sourceMessageIds)))))) {
       throw new MemorySourceActionError("memory_not_found");
     }
 
@@ -1063,12 +1079,19 @@ export function createMemorySourceActionService(input: Readonly<{
             throw new MemorySourceActionError("memory_not_found");
           }
           const existing = await tx.memoryFeedback.findUnique({
-            select: { feedbackType: true, modelRunMemoryItemId: true },
+            select: { feedbackType: true, modelRunMemoryItemId: true,
+              modelRunToolCallId: true, memoryFactVersionId: true,
+              recallChunkId: true, recallRoundId: true },
             where: { userId_idempotencyFingerprint: { idempotencyFingerprint, userId } }
           });
           if (existing) {
             if (existing.feedbackType !== "NOT_USEFUL" ||
-              existing.modelRunMemoryItemId !== item.id) {
+              existing.modelRunMemoryItemId !== item.id ||
+              (item.modelRunToolCallId !== null &&
+                (existing.modelRunToolCallId !== item.modelRunToolCallId ||
+                  existing.memoryFactVersionId !== ref.target.factVersionId ||
+                  existing.recallChunkId !== ref.target.recallChunkId ||
+                  existing.recallRoundId !== ref.target.recallRoundId))) {
               throw new MemorySourceActionError("memory_action_failed");
             }
             return;
@@ -1101,6 +1124,7 @@ export function createMemorySourceActionService(input: Readonly<{
               memoryEventId: eventId,
               modelRunId: ref.originatingRunId,
               modelRunMemoryItemId: item.id,
+              modelRunToolCallId: item.modelRunToolCallId,
               recallChunkId: ref.target.recallChunkId,
               recallRoundId: ref.target.recallRoundId,
               requestId: actionInput.requestNonce,

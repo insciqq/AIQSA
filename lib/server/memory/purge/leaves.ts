@@ -7,7 +7,9 @@ import type {
 import {
   allReusableMemoryHistoryPurgeSelection,
   inspectMemoryHistoryPurge,
+  inspectMemorySearchFactReceipts,
   purgeMemoryHistorySelection,
+  purgeMemorySearchFactReceipts,
   suppressedMemoryHistoryPurgeSelection
 } from "../history/purge";
 import { memoryPurgeVersionCondition } from "./selection";
@@ -630,7 +632,10 @@ const feedbackContributor: MemoryDeletionContributor = Object.freeze({
 
 const historyDerivativesContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
-    if (target.kind === "AUTOMATIC_SET") return 0;
+    const factReceipts = await inspectMemorySearchFactReceipts(
+      tx, target.userId, memoryPurgeVersionCondition(target)
+    );
+    if (target.kind === "AUTOMATIC_SET") return factReceipts;
     const progress = await inspectMemoryHistoryPurge(
       tx,
       target.userId,
@@ -638,10 +643,11 @@ const historyDerivativesContributor: MemoryDeletionContributor = Object.freeze({
         ? allReusableMemoryHistoryPurgeSelection(target.targetId)
         : suppressedMemoryHistoryPurgeSelection
     );
-    return progress.totalUnits - progress.completedUnits;
+    return factReceipts + progress.totalUnits - progress.completedUnits;
   },
   id: "history-derivatives",
   async purge(tx, target) {
+    await purgeMemorySearchFactReceipts(tx, target.userId, memoryPurgeVersionCondition(target));
     if (target.kind === "AUTOMATIC_SET") return;
     await purgeMemoryHistorySelection(
       tx,

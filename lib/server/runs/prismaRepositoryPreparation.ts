@@ -179,6 +179,7 @@ import {
 type PreparingSettingsRow = MemoryPreparingSettingsSnapshot & LockedMemorySettings;
 
 const MEMORY_PREPARING_ADMISSION_RESERVE_MS = 1_500;
+export const MEMORY_STANDING_PREPARATION_TIMEOUT_MS = 6_000;
 // A ready standing pack still needs two authoritative transactions before
 // dispatch. Leave each one a bounded window after optional retrieval expires.
 const MEMORY_PREPARING_RETRIEVAL_RESERVE_MS = 4_000;
@@ -3009,7 +3010,8 @@ function validateFinalPreparingRequest(
     !contextIsDerived ||
     (contextBearingOutcome
       ? !personalContext ||
-        personalContext.mode !== "prefetched" ||
+        personalContext.mode !== (baseSnapshot.normalizedRequest.memoryStandingVersion === 1
+          ? "standing-v1" : "prefetched") ||
         personalContext.text !== attempt.preparedContextText ||
         personalContext.approxTokens !== attempt.preparedContextTokenCount ||
         personalContext.itemCount !== items.length ||
@@ -4015,7 +4017,8 @@ export async function createDormantPreparingRun(
     return created;
   }
   const memoryAdmissionDeadlineAtMs =
-    Date.now() + boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs);
+    Date.now() + (admission.normalizedRequest.memoryStandingVersion === 1
+      ? MEMORY_STANDING_PREPARATION_TIMEOUT_MS : boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs));
   let created: PreparingRunAdmissionResult;
   try {
     created = await admitPreparingRunWithClient(
@@ -4102,7 +4105,9 @@ async function continuePreparingRunWithClient(
   };
   const memoryControlCache: MemoryRunControlCache = {
     admissionDeadlineAtMs: memoryAdmissionDeadlineAtMs -
-      retrievalReserveMs
+      retrievalReserveMs,
+    ...(admission.normalizedRequest.memoryStandingVersion === 1
+      ? { standingDeadlineAtMs: memoryAdmissionDeadlineAtMs - retrievalReserveMs } : {})
   };
   const fallbackMaterializedRequest = created.memoryCommandQueued
     ? admission.memoryMaterializer?.(null, MEMORY_ACTION_PENDING_RESULT) ?? undefined
@@ -4245,6 +4250,8 @@ async function continuePreparingRunWithClient(
                   settings: currentSettings.settingsSnapshot
                 },
                 normalizedRequest: admission.normalizedRequest,
+                ...(admission.normalizedRequest.memoryStandingVersion === 1
+                  ? { readMode: "STANDING_V1" as const } : {}),
                 modelRunId: created.runId,
                 memoryCommandQueued: created.memoryCommandQueued,
                 now: new Date(),
@@ -4268,7 +4275,8 @@ async function continuePreparingRunWithClient(
                 itemCount: attemptResult.items?.length ?? 0,
                 memoryGeneration: currentSettings.memoryGeneration,
                 memoryRevision: currentSettings.memoryRevision,
-                mode: "prefetched" as const,
+                mode: admission.normalizedRequest.memoryStandingVersion === 1
+                  ? "standing-v1" as const : "prefetched" as const,
                 text: attemptResult.preparedContext.text
               }
             : null;
@@ -4552,7 +4560,8 @@ async function continueDeferredPreparedRunWithClient(
       preparingAttemptCarriesProviderContext(attempt) ? {
         approxTokens: attempt.preparedContextTokenCount!, itemCount,
         memoryGeneration: attempt.memoryGenerationSnapshot, memoryRevision: attempt.retrievalRevisionSnapshot,
-        mode: "prefetched", text: attempt.preparedContextText!
+        mode: admission.normalizedRequest.memoryStandingVersion === 1
+          ? "standing-v1" : "prefetched", text: attempt.preparedContextText!
       } : null, action
     );
     if (!materializedRequest || !(await finalizePreparingRunWithClient(prismaClient, {
@@ -4562,7 +4571,8 @@ async function continueDeferredPreparedRunWithClient(
   }
   return continuePreparingRunWithClient(prismaClient, admission, admitted.created,
     memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-    Date.now() + boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs));
+    Date.now() + (admission.normalizedRequest.memoryStandingVersion === 1
+      ? MEMORY_STANDING_PREPARATION_TIMEOUT_MS : boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs)));
 }
 
 export const continuePdfPreparedRunWithClient = continueDeferredPreparedRunWithClient;

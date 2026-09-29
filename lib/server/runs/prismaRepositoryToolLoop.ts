@@ -1,3 +1,4 @@
+import { decodeMemorySearchSnapshot } from "../memory/search/contract";
 import { decodeContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeAcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
@@ -588,6 +589,8 @@ const normalizedRequestKeys = new Set([
   "knowledgeQueryAnchorVersion",
   "memoryActionTools",
   "memoryHistoryTool",
+  "memoryStandingVersion",
+  "memorySearch",
   "modelCapabilities",
   "mcpDiscovery",
   "mcp",
@@ -1072,10 +1075,16 @@ function decodeProviderDispatchRecoveryRequest(
     !onlyKnownKeys(value.memoryHistoryTool, new Set(["maxCalls", "pageSize"])) ||
     value.memoryHistoryTool.maxCalls !== 2 || value.memoryHistoryTool.pageSize !== 20)) return null;
   const personalContext = value.personalContext;
+  if (value.memoryStandingVersion !== undefined && value.memoryStandingVersion !== 1) return null;
+  if (value.memorySearch !== undefined && (!decodeMemorySearchSnapshot(value.memorySearch) ||
+    value.memoryStandingVersion !== 1 || value.agent !== undefined || value.toolMode === "none" ||
+    !isRecord(value.modelCapabilities) || value.modelCapabilities.toolCalling !== true)) return null;
   if (personalContext !== undefined && (!isRecord(personalContext) ||
     !onlyKnownKeys(personalContext, new Set([
       "approxTokens", "itemCount", "memoryGeneration", "memoryRevision", "mode", "text"
-    ])) || personalContext.mode !== "prefetched" ||
+    ])) || (personalContext.mode !== "prefetched" && personalContext.mode !== "standing-v1") ||
+    personalContext.mode === "standing-v1" && (value.memoryStandingVersion !== 1 ||
+      Number(personalContext.itemCount) > 50 || Number(personalContext.approxTokens) > 10_000) ||
     typeof personalContext.text !== "string" ||
     ["approxTokens", "itemCount", "memoryGeneration", "memoryRevision"].some((key) =>
       !Number.isSafeInteger(personalContext[key]) || Number(personalContext[key]) < 0))) return null;

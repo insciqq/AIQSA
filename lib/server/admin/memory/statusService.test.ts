@@ -16,7 +16,7 @@ function snapshot(
   overrides: Partial<AdminMemoryStatusSnapshot> = {}
 ): AdminMemoryStatusSnapshot {
   return {
-    admissionTimeout: { seconds: 15, version: 4 },
+    searchTimeout: { seconds: 15, version: 4 },
     processing: { enabled: true, issues: [] },
     recovery: memoryRecoveryStatusFixture(),
     configuredTargets: [{ model: "Utility", provider: "Primary" }],
@@ -50,7 +50,7 @@ function repository(
     read: vi.fn(async () => rows[Math.min(index++, rows.length - 1)]!),
     startRebuild,
     recoverEligible: vi.fn(async () => 0),
-    updateAdmissionTimeout: vi.fn().mockResolvedValue(true)
+    updateSearchTimeout: vi.fn().mockResolvedValue(true)
   };
 }
 
@@ -138,7 +138,7 @@ describe("administrator Memory status service", () => {
     });
 
     await expect(service.get()).resolves.toEqual({
-      admissionTimeout: { seconds: 15, version: 4 },
+      searchTimeout: { seconds: 15, version: 4 },
       processing: { enabled: true, issues: [] },
       recovery: memoryRecoveryStatusFixture(),
       configuredTargets: [{ model: "Utility", provider: "Primary" }],
@@ -259,38 +259,38 @@ describe("administrator Memory status service", () => {
     await expect(service.get()).rejects.toThrow("memory_admin_status_count_invalid");
   });
 
-  it("updates the timeout with optimistic installation policy authority", async () => {
+  it("updates the Memory search timeout with optimistic installation policy authority", async () => {
     const policyRepository = repository([
-      snapshot({ admissionTimeout: { seconds: 30, version: 5 } })
+      snapshot({ searchTimeout: { seconds: 30, version: 5 } })
     ]);
     const service = createAdminMemoryStatusService({
       now: () => now,
       repository: policyRepository
     });
 
-    await expect(service.updateAdmissionTimeout({
+    await expect(service.updateSearchTimeout({
       expectedVersion: 4,
       seconds: 30,
       userId: "admin-1"
     })).resolves.toMatchObject({
-      admissionTimeout: { seconds: 30, version: 5 }
+      searchTimeout: { seconds: 30, version: 5 }
     });
-    expect(policyRepository.updateAdmissionTimeout).toHaveBeenCalledWith({
+    expect(policyRepository.updateSearchTimeout).toHaveBeenCalledWith({
       expectedVersion: 4,
       seconds: 30,
       userId: "admin-1"
     });
   });
 
-  it("fails stale timeout updates without overwriting a newer policy", async () => {
+  it("fails stale Memory search timeout updates without overwriting a newer policy", async () => {
     const policyRepository = repository([snapshot()]);
-    vi.mocked(policyRepository.updateAdmissionTimeout).mockResolvedValue(false);
+    vi.mocked(policyRepository.updateSearchTimeout).mockResolvedValue(false);
     const service = createAdminMemoryStatusService({
       now: () => now,
       repository: policyRepository
     });
 
-    await expect(service.updateAdmissionTimeout({
+    await expect(service.updateSearchTimeout({
       expectedVersion: 3,
       seconds: 30,
       userId: "admin-1"

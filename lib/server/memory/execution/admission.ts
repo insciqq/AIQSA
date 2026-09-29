@@ -1,4 +1,6 @@
 import { requireMemoryCommandSource } from "../commands/sourceAuthority";
+import { decodeMemorySearchSnapshot, MEMORY_SEARCH_TOOL_NAME } from "../search/contract";
+import { requireMemorySearchActiveBranch } from "../search/authority";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import {
@@ -126,7 +128,36 @@ async function assertActiveExecutionOwner(
     }
     return;
   }
-  if (owner.type === "MODEL_RUN_TOOL_CALL" || owner.type === "INBOUND_MCP_REQUEST") return;
+  if (owner.type === "MODEL_RUN_TOOL_CALL") {
+    await requireMemorySearchActiveBranch(tx, userId, owner.modelRunId);
+    const call = await tx.modelRunToolCall.findFirst({
+      select: { state: true, toolName: true, modelRun: { select: { status: true, normalizedRequest: true,
+        chat: { select: { memoryMode: true, projectId: true, permanentDeletionAt: true } } } } },
+      where: { id: owner.modelRunToolCallId, modelRunId: owner.modelRunId, modelRun: { userId } }
+    });
+    const request = call?.modelRun.normalizedRequest;
+    const snapshot = request && typeof request === "object" && !Array.isArray(request)
+      ? decodeMemorySearchSnapshot(request.memorySearch) : null;
+    if (!call || call.state !== "running" || call.toolName !== MEMORY_SEARCH_TOOL_NAME || !snapshot ||
+      !["queued", "streaming", "in_progress"].includes(call.modelRun.status) ||
+      call.modelRun.chat.projectId !== null || call.modelRun.chat.memoryMode !== "NORMAL" ||
+      call.modelRun.chat.permanentDeletionAt !== null) {
+      return memoryExecutionFailure("memory_execution_state_conflict");
+    }
+    const settings = await tx.userMemorySettings.findUnique({ where: { userId },
+      select: { useMemoryFacts: true, memoryGeneration: true, memoryRevision: true, referenceChatHistory: true } });
+    const receipt = await tx.memoryHistoryRun.findUnique({ where: { modelRunToolCallId: owner.modelRunToolCallId },
+      select: { privateRequest: true, retentionState: true, state: true } });
+    const requestEvidence = receipt?.privateRequest;
+    if (!settings?.useMemoryFacts || settings.memoryGeneration !== snapshot.memoryGeneration ||
+      (snapshot.referenceChatHistory && !settings.referenceChatHistory) || receipt?.state !== "RUNNING" ||
+      receipt.retentionState !== "RETAINED" || !requestEvidence || typeof requestEvidence !== "object" ||
+      Array.isArray(requestEvidence) || requestEvidence.memoryRevision !== settings.memoryRevision) {
+      return memoryExecutionFailure("memory_execution_policy_drift");
+    }
+    return;
+  }
+  if (owner.type === "INBOUND_MCP_REQUEST") return;
   const rows = owner.type === "RETRIEVAL_ATTEMPT"
     ? await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id"
@@ -286,6 +317,19 @@ export function createPrismaMemoryExecutionAdmission(
           userId,
           versions: input.versions
         });
+        if (input.owner.type === "MODEL_RUN_TOOL_CALL") {
+          const run = await tx.modelRun.findFirst({ where: { id: input.owner.modelRunId, userId },
+            select: { normalizedRequest: true } });
+          const request = run?.normalizedRequest;
+          const accepted = request && typeof request === "object" && !Array.isArray(request)
+            ? decodeMemorySearchSnapshot(request.memorySearch) : null;
+          if (!accepted?.destinations.some(destination => destination.role === input.role &&
+            destination.providerModelId === authority.target.authority.providerModelId &&
+            destination.destinationFingerprint === authority.target.destinationFingerprint &&
+            destination.executionTargetFingerprint === authority.target.executionTargetFingerprint)) {
+            return memoryExecutionFailure("memory_execution_policy_drift");
+          }
+        }
         const snapshot = createMemoryExecutionSnapshot({
           acceptedUtilityEgressFingerprint: authority.policy.fingerprint,
           compatibilityId: authority.compatibility.compatibilityId,

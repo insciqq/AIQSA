@@ -29,7 +29,7 @@ export const ADMIN_MEMORY_WORKER_REASONS = [
   "QUEUE_STALLED"
 ] as const;
 
-export const ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS = Object.freeze({
+export const ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS = Object.freeze({
   defaultSeconds: 30,
   maxSeconds: 120,
   minSeconds: 1
@@ -54,9 +54,9 @@ export function adminMemoryProcessingIssueKey(issue: AdminMemoryProcessingIssue)
 }
 
 export const adminMemoryStatusSchema = z.strictObject({
-  admissionTimeout: z.strictObject({
-    seconds: safeInteger.min(ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds)
-      .max(ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds),
+  searchTimeout: z.strictObject({
+    seconds: safeInteger.min(ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.minSeconds)
+      .max(ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.maxSeconds),
     version: safeInteger.min(1)
   }),
   processing: z.strictObject({
@@ -159,10 +159,10 @@ export const adminMemoryActionInputSchema = z.union([
   adminMemoryRecoveryInputSchema
 ]);
 
-export const adminMemoryAdmissionTimeoutInputSchema = z.strictObject({
+export const adminMemorySearchTimeoutInputSchema = z.strictObject({
   expectedVersion: safeInteger.min(1),
-  timeoutSeconds: safeInteger.min(ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds)
-    .max(ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds)
+  timeoutSeconds: safeInteger.min(ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.minSeconds)
+    .max(ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS.maxSeconds)
 });
 
 export type AdminMemoryStatus = z.infer<typeof adminMemoryStatusSchema>;
@@ -170,8 +170,8 @@ export type AdminMemoryStatusResponse = z.infer<typeof adminMemoryStatusResponse
 export type AdminMemoryRebuildInput = z.infer<typeof adminMemoryRebuildInputSchema>;
 export type AdminMemoryRecoveryInput = z.infer<typeof adminMemoryRecoveryInputSchema>;
 export type AdminMemoryActionInput = z.infer<typeof adminMemoryActionInputSchema>;
-export type AdminMemoryAdmissionTimeoutInput = z.infer<
-  typeof adminMemoryAdmissionTimeoutInputSchema
+export type AdminMemorySearchTimeoutInput = z.infer<
+  typeof adminMemorySearchTimeoutInputSchema
 >;
 
 export function decodeAdminMemoryStatusResponse(
@@ -195,9 +195,9 @@ export function decodeAdminMemoryActionInput(
   return decoded.success ? decoded.data : null;
 }
 
-export function decodeAdminMemoryAdmissionTimeoutInput(
+export function decodeAdminMemorySearchTimeoutInput(
   value: unknown
-): AdminMemoryAdmissionTimeoutInput | null {
-  const decoded = adminMemoryAdmissionTimeoutInputSchema.safeParse(value);
+): AdminMemorySearchTimeoutInput | null {
+  const decoded = adminMemorySearchTimeoutInputSchema.safeParse(value);
   return decoded.success ? decoded.data : null;
 }

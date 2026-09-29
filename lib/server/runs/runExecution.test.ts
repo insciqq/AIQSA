@@ -1540,6 +1540,48 @@ function followupFixture(repository: RunExecutionRepository) {
 }
 
 describe("run execution", () => {
+  it.each([false, true])("executes native Memory search and marks only actual dispatch (local-only failure: %s)", async localFailure => {
+    const prepared = preparedData();
+    const memorySearch = { version: "memory-search-v1" as const, maxCalls: 3 as const,
+      resultTokens: 6000 as const, comparisonResultTokens: 12000 as const, timeoutSeconds: 30,
+      memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
+    prepared.normalizedRequest.memorySearch = memorySearch;
+    prepared.normalizedRequest.memoryStandingVersion = 1;
+    prepared.providerRequest.memorySearch = memorySearch;
+    prepared.providerRequest.memoryStandingVersion = 1;
+    const requests: ProviderRunRequest[] = [];
+    const order: string[] = [];
+    const result = { callId: "memory-call", name: "memory_search", status: "complete" as const,
+      content: [{ type: "json" as const, value: { version: "memory-search-v1", outcome: "results", evidence: "current evidence" } }] };
+    const service = { execute: vi.fn(async () => { order.push("execute"); return result; }),
+      revalidate: vi.fn(async () => { order.push("revalidate"); return result; }),
+      settleAmbiguous: vi.fn(), markDelivered: vi.fn(async () => { order.push("delivered"); }) };
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      order.push(`provider-${requests.length}`);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{
+        id: "memory-call", name: "memory_search", arguments: { query: "earlier plan", comparison: false } }] });
+      yield { type: "artifact", data: { artifactType: "summary", payload: { provider: "fake", stream: true } } };
+      expect(service.markDelivered).not.toHaveBeenCalled();
+      if (localFailure) throw new Error("provider_open_failed");
+      yield { type: "token", data: { delta: "Answer from recalled evidence." } };
+      return providerResult({ finalText: "Answer from recalled evidence." });
+    });
+    const harness = createRepository();
+    const response = createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: harness.repository }),
+      memorySearch: service });
+    await response.text();
+    expect(harness.failedRuns).toHaveLength(localFailure ? 1 : 0);
+    expect(service.execute).toHaveBeenCalledOnce();
+    expect(service.revalidate).toHaveBeenCalledOnce();
+    if (localFailure) expect(service.markDelivered).not.toHaveBeenCalled();
+    else expect(service.markDelivered).toHaveBeenCalledWith({ runId: "run-1", userId: "user-1", toolCallIds: ["persisted-tool-call-1"] });
+    expect(order).toEqual(["provider-1", "execute", "revalidate", "provider-2", ...(localFailure ? [] : ["delivered"])]);
+    expect(requests[0]!.tools?.some(tool => tool.name === "memory_search")).toBe(true);
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("current evidence");
+    expect(harness.persistedEvents.some(({ event }) => event.type === "artifact" && event.data.artifactType === "memory_search_activity")).toBe(true);
+  });
+
   it.each(["followup", "stop"] as const)("keeps %s available during initial context compaction", async mode => {
     const repository = createRepository();
     const followups = followupFixture(repository.repository);

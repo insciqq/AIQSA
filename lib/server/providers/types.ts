@@ -208,6 +208,9 @@ export type NormalizedRunRequest = {
     maxCalls: 2;
     pageSize: 20;
   }>;
+  /** Frozen local standing-context admission; independent of tool support. */
+  memoryStandingVersion?: 1;
+  memorySearch?: import("../memory/search/contract").MemorySearchSnapshot;
   modelCapabilities: ProviderModelCapabilities;
   mcpDiscovery?: McpDiscoveryState;
   mcp?: McpRunPlanSnapshot;
@@ -217,7 +220,7 @@ export type NormalizedRunRequest = {
     itemCount: number;
     memoryGeneration: number;
     memoryRevision: number;
-    mode: "prefetched";
+    mode: "prefetched" | "standing-v1";
     text: string;
   }>;
   skills?: import("../skills/runManifest").FrozenSkillManifest | import("../skills/runManifest").LegacySkillManifest;

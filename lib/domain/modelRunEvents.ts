@@ -98,6 +98,7 @@ export type ModelRunSseEvent =
           | "reasoning"
           | "search"
           | "search_activity"
+          | "memory_search_activity"
           | "summary"
           | "tool_budget"
           | "tool_call"

@@ -1158,8 +1158,8 @@ async function main() {
     );
     ensure(adminStatus?.memory?.worker?.state === "RUNNING", "memory_worker_not_running");
     ensure(
-      adminStatus?.memory?.admissionTimeout?.seconds === 120,
-      "memory_admission_timeout_not_120"
+      adminStatus?.memory?.searchTimeout?.seconds === 120,
+      "memory_search_timeout_not_120"
     );
 
     currentStage = "settings-proof";

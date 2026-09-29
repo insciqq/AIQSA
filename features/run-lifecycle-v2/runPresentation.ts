@@ -1,3 +1,4 @@
+import { decodeMemorySearchActivity } from "@/lib/contracts/memorySearchActivity";
 import type { ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import {
   isToolSynthesisFailure,
@@ -191,6 +192,14 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
     return budget ? { index, kind: "synthesis", budget } : null;
   }
 
+  if (artifactType === "memory_search_activity") {
+    const activity = decodeMemorySearchActivity(payload);
+    if (!activity) return null;
+    return activity.status === "running"
+      ? { index, kind: "tool", origin: "memory", serverName: "Memory", toolName: "memory_search" }
+      : { index, kind: "provider" };
+  }
+
   if (artifactType === "tool_call" && payload.status === "requested") {
     return { index, kind: "tool", ...toolActivityMetadata(payload) };
   }
@@ -241,6 +250,7 @@ type ToolActivityIdentity = Readonly<{
   origin?: unknown;
   serverName?: unknown;
   toolName?: unknown;
+  memorySearchOutcome?: unknown;
 }>;
 
 /** Accepted tool origin wins over names, including reserved display names.
@@ -310,6 +320,14 @@ export function describeToolCallV2(
     if (phase === "failed") return "Knowledge search unavailable";
     if (phase === "cancelled") return "Knowledge search stopped";
     return running ? "Searching Knowledge" : "Searched Knowledge";
+  }
+  if (origin === "memory" && call.toolName === "memory_search") {
+    if (phase === "cancelled" || call.memorySearchOutcome === "cancelled") return "Memory search stopped";
+    if (phase === "failed" || call.memorySearchOutcome === "failure") return "Memory search unavailable";
+    if (running) return "Searching memory";
+    if (call.memorySearchOutcome === "no_results") return "No matching memories found";
+    if (call.memorySearchOutcome === "limited") return "Memory search returned limited results";
+    return "Searched memory";
   }
   if (origin === "web_search") {
     if (phase === "failed") return "Web search failed";
@@ -665,6 +683,19 @@ export function presentToolActivityV2(
       if (snapshot) searchEngines = mergeThreadSearchEngineActivity(searchEngines, snapshot.engines);
       continue;
     }
+    if (event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "memory_search_activity") {
+      const snapshot = decodeMemorySearchActivity(payload);
+      if (!snapshot) continue;
+      const existing = calls.findIndex(call => call.origin === "memory" &&
+        call.toolName === "memory_search" && call.round === snapshot.round && call.memorySearchCall === snapshot.call);
+      const call = { origin: "memory" as const, serverName: "Memory", toolName: "memory_search",
+        round: snapshot.round, memorySearchCall: snapshot.call, status: snapshot.status,
+        ...(snapshot.outcome ? { memorySearchOutcome: snapshot.outcome } : {}),
+        ...(snapshot.durationMs !== undefined ? { durationMs: snapshot.durationMs } : {}) };
+      if (existing < 0) calls.push(call);
+      else if (calls[existing]!.status === "running") calls[existing] = { ...calls[existing]!, ...call };
+      continue;
+    }
     if (event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "tool_budget") {
       warning = decodeThreadToolBudgetWarning(payload) ?? warning;
       continue;
@@ -677,6 +708,8 @@ export function presentToolActivityV2(
       ? Number(payload.round)
       : null;
     if (!toolName || round === null) continue;
+    // Native search has ordinal-bound snapshots, including terminal outcomes.
+    if (origin === "memory" && toolName === "memory_search") continue;
     const existing = calls.findIndex((call, index) =>
       !matched.has(index) && call.round === round && safeToolName(call.toolName) === toolName &&
       safeServerName(call.serverName) === (serverName ?? null) &&
@@ -763,6 +796,8 @@ export function presentRunLifecycleV2(
   const activitySignals: ActivitySignal[] = [];
   let latestTokenIndex = -1;
   let eventFailure: RunFailureV2 | null = null;
+  const settledMemorySearchCalls = new Set<string>();
+  const activeMemorySearchCalls = new Set<string>();
 
   for (const [index, event] of state.events.entries()) {
     if (event.type === "token") {
@@ -770,7 +805,19 @@ export function presentRunLifecycleV2(
       continue;
     }
 
-    const activity = activityFromEvent(event, index);
+    const nativeSearch = event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "memory_search_activity"
+      ? decodeMemorySearchActivity(event.data.payload) : null;
+    const nativeKey = nativeSearch ? `${nativeSearch.round}:${nativeSearch.call}` : null;
+    const lateNativeStart = nativeSearch?.status === "running" && nativeKey !== null && settledMemorySearchCalls.has(nativeKey);
+    if (nativeSearch && nativeKey !== null) {
+      if (nativeSearch.status !== "running") {
+        settledMemorySearchCalls.add(nativeKey);
+        activeMemorySearchCalls.delete(nativeKey);
+      } else if (!lateNativeStart) activeMemorySearchCalls.add(nativeKey);
+    }
+    const activity = lateNativeStart ? null : nativeSearch && activeMemorySearchCalls.size > 0
+      ? { index, kind: "tool" as const, origin: "memory" as const, serverName: "Memory", toolName: "memory_search" }
+      : activityFromEvent(event, index);
     if (activity && (activity.kind !== "compaction" || compaction?.state === "running")) activitySignals.push(activity);
 
     if (event.type === "error") {

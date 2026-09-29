@@ -166,6 +166,9 @@ import {
 import { measureSessionContext, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
+import { memorySearchTool, MEMORY_SEARCH_TOOL_NAME } from "../memory/search/contract";
+import { revalidateMemorySearchDispatch } from "./memorySearchDispatch";
+import { memorySearchActivityEvent } from "../tools/activityDescriptors";
 import {
   memoryEgressRequestEvidence,
   requestHasHostedSearchCapability,
@@ -316,6 +319,7 @@ export type RunExecutionInput = Readonly<{
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
   memoryEgress?: MemoryToolEgressReceiptService;
+  memorySearch?: import("../memory/search/runtime").MemorySearchService;
   providerAdmission?: Readonly<{
     load(input: {
       executionScope?: "project";
@@ -684,7 +688,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
   const hostedSearchMode = requestHasHostedSearchCapability(
     input.prepared.providerRequest
   );
-  const egressReceiptRequired = serverExternalToolMode || hostedSearchMode ||
+  const egressReceiptRequired = serverExternalToolMode || hostedSearchMode || normalizedRequest.memorySearch !== undefined ||
     input.prepared.providerRequest.personalContext !== undefined;
   activeRunControllers.set(runId, abortController);
   let resolveSettled: () => void = () => undefined;
@@ -1853,6 +1857,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         });
       }
 
+      const memoryCallsForDispatch = new Map<string, PersistedToolLoopCall>();
       async function* streamAnswerProviderDispatch(
         request: ProviderRunRequest,
         dispatchSignal: AbortSignal = signal,
@@ -1874,6 +1879,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // local failure until then is not a dispatched answer round.
         let dispatchStarted = false;
         try {
+          const memoryDispatch = await revalidateMemorySearchDispatch({ request,
+            calls: memoryCallsForDispatch.values(), bridge: input.toolBridge ??
+              providerToolBridges[request.provider as keyof typeof providerToolBridges],
+            service: input.memorySearch, runId, userId: input.userId });
+          request = memoryDispatch.request;
           await assertProjectRunAccessCurrent(true);
           if (!(await currentAnswerDispatchAllowed())) {
             throw new RunPipelineError(
@@ -1935,10 +1945,22 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           const stream = input.adapter.stream(wireRequest, { signal: dispatchSignal, onToolArguments, ...(timeoutMs ? { timeoutMs } : {}) });
           try {
             let next = await stream.next();
+            let memoryDeliveryMarked = false;
+            const markMemoryDelivery = async () => {
+              if (memoryDeliveryMarked || !memoryDispatch.deliveredToolCallIds.length) return;
+              await input.memorySearch!.markDelivered({ runId, userId: input.userId,
+                toolCallIds: memoryDispatch.deliveredToolCallIds });
+              memoryDeliveryMarked = true;
+            };
             while (!next.done) {
+              // Some adapters emit a local summary before opening the network.
+              // Tokens, usage or a provider identity establish actual dispatch.
+              if (next.value.type === "token" || next.value.type === "usage" ||
+                providerResponseIdFromEvent(next.value)) await markMemoryDelivery();
               yield next.value;
               next = await stream.next();
             }
+            await markMemoryDelivery();
             // Preserve terminal provider usage even if the local receipt write
             // fails before this generator can return its terminal result.
             if (receipt) yield { type: "usage", data: next.value.usage };
@@ -2065,6 +2087,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const isArtifactCall = (name: string) => clientToolsEnabled && normalizedRequest.artifactTool === true && (name === ARTIFACT_TOOL_NAME || name === READ_ARTIFACT_TOOL_NAME && Boolean(normalizedRequest.artifactReferences?.length));
         const isSkillCall = (name: string) => acceptsSkillTool(normalizedRequest, name);
         const tools: RunTool[] = [
+          ...(clientToolsEnabled && normalizedRequest.memorySearch ? [memorySearchTool(normalizedRequest.memorySearch)] : []),
           ...skillToolsForRequest(normalizedRequest),
           ...(normalizedRequest.workspaceCheckpoints ? [checkpointOutputsTool] : []),
           ...(normalizedRequest.visionAnalysis ? [analyzeImageTool(normalizedRequest.visionAnalysis)] : []),
@@ -2081,6 +2104,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         ];
         let sessionRequest = request;
         const skillResultBudget = createSkillToolResultBudget();
+        const isMemoryCall = (name: string) => clientToolsEnabled && Boolean(normalizedRequest.memorySearch) && name === MEMORY_SEARCH_TOOL_NAME;
         const isObservationRead = (name: string) => normalizedRequest.toolObservationVersion === 1 && name === READ_TOOL_RESULT_NAME;
         const isSessionCall = (name: string) => normalizedRequest.sessionStatusTool === true && name === SESSION_STATUS_TOOL_NAME;
         if (tools.length === 0) {
@@ -2312,6 +2336,22 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 runId,
                 userId: input.userId
               });
+              if (isMemoryCall(call.name)) {
+                memoryCallsForDispatch.set(call.id, persisted);
+                if (claim.kind === "claimed") await emit(controller, encoder, input.repository, runId,
+                  memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state: "running" }));
+              }
+              if (claim.kind === "ambiguous" && isMemoryCall(call.name) && input.memorySearch) {
+                const result = await input.memorySearch.settleAmbiguous(call, {
+                  persistedToolCallId: persisted.id, request, runId, userId: input.userId });
+                const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+                const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
+                  result: snapshot, runId, state: result.status, userId: input.userId });
+                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Memory search could not be settled.");
+                await emit(controller, encoder, input.repository, runId, memorySearchActivityEvent({
+                  ordinal: persisted.ordinal, round: persisted.roundIndex, state: result.status, result }));
+                return { status: "complete", value: result };
+              }
               if (claim.kind === "ambiguous" && isObservationRead(call.name)) {
                 const result = await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal);
                 const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
@@ -2402,9 +2442,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 };
               }
               if (claim.kind === "settled") {
-                let stored = isObservationRead(call.name)
+                let stored = isMemoryCall(call.name) && input.memorySearch
+                  ? await input.memorySearch.revalidate(call, { persistedToolCallId: persisted.id,
+                      request, runId, userId: input.userId })
+                  : isObservationRead(call.name)
                   ? await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal)
                   : parsePersistedToolExecutionResult(call, claim.call.result);
+                if (isMemoryCall(call.name) && stored) await emit(controller, encoder, input.repository, runId,
+                  memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state: stored.status, result: stored }));
                 if (stored && !stored.observation && normalizedRequest.toolObservationVersion === 1 && (isSkillCall(call.name) || isKnowledgeCall(call.name))) {
                   const saved = await (await observationService()).restore({ runId, userId: input.userId, toolCallId: claim.call.id }, context.signal).catch(() => null);
                   if (saved) stored = { ...stored, observation: saved.projection.observation };
@@ -2482,6 +2527,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   throw new RunPipelineError("tool_call_settle_conflict", "Tool result could not be durably settled.");
                 }
                 resultSettled = true;
+                if (isMemoryCall(call.name)) await emit(controller, encoder, input.repository, runId,
+                  memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex,
+                    state: context.signal.aborted ? "cancelled" : result.status, result }));
                 return result;
               };
               let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
@@ -2509,7 +2557,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
+                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2630,6 +2678,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                         producer: { runId, userId: input.userId, toolCallId: claim.call.id }, signal: context.signal }, "skill",
                         { version: 1, source: "skill", skillId: skill.skillId, revisionId: skill.revisionId },
                         async () => finishResult(await execute())) : await execute();
+                } else if (isMemoryCall(call.name)) {
+                  if (!input.memorySearch) throw new Error("memory_search_unavailable");
+                  result = await input.memorySearch.execute(call, executionContext, { signal: context.signal });
                 } else if (isArtifactCall(call.name)) {
                   if (!input.artifacts) throw new Error("artifact_tool_unavailable");
                   result = await input.artifacts.execute(call, executionContext, { signal });
@@ -2912,7 +2963,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
-                if (!route && !isKnowledgeCall(call.name) &&
+                if (!route && !isMemoryCall(call.name) && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
                   !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
@@ -3231,7 +3282,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;

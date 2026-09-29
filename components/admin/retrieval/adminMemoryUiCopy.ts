@@ -23,9 +23,9 @@ const COPY = {
   rebuildUnavailable: "A rebuild is required, but it cannot start until the Memory worker and model setup are ready.",
   saveTimeout: "Save",
   statusUnavailable: "Status unavailable",
-  timeoutDescription: "Applies to new personal Memory lookups. If the full Memory chain exceeds this budget, the answer continues without Memory.",
-  timeoutLabel: "Admission timeout (seconds)",
-  timeoutNotice: "Memory admission timeout saved. New messages use the updated budget.",
+  timeoutDescription: "Applies to each Memory search requested by the answer. Local standing facts use a separate fixed limit.",
+  timeoutLabel: "Memory search time limit (seconds)",
+  timeoutNotice: "Memory search time limit saved. New answers use the updated limit.",
   worker: "Memory worker"
 } as const;
 

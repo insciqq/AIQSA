@@ -435,6 +435,52 @@ describe("Personal Memory context pack", () => {
     expect(small.omissionCounts.token_budget).toBe(1);
   });
 
+  it("packs fifty compact standing facts with a partial-set warning", () => {
+    const pack = packMemoryPersonalContext({ expanded: [], ranked: [], plan, now,
+      standingOnly: true,
+      standing: Array.from({ length: 51 }, (_, index) => standing(`saved-${index}`, index > 0)) });
+    expect(pack.items).toHaveLength(50);
+    expect(pack.budgetProfile).toBe("STANDING");
+    expect(pack.omissionCounts.standing_item_limit).toBe(1);
+    expect(pack.text).toContain("absence here is not absence from Memory");
+    expect(pack.text).toContain("Search Memory before saying you do not know");
+    const records = pack.text!.split("\n").filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    expect(records[0]).toEqual({ raw_safe_evidence: "memory saved-0",
+      source_authority: "user_saved", modality: "PREFERENCE", date: now.toISOString() });
+    expect(records[1].source_authority).toBe("learned_from_user");
+    expect(pack.text).not.toContain("evidence_handle");
+    expect(pack.text).not.toContain("retrieval_reason");
+    expect(pack.text).not.toContain("supporting_authoritative_evidence");
+    expect(pack.approxTokens).toBeLessThan(10_000);
+  });
+
+  it("enforces the full 10000-token standing limit including guidance and long facts", () => {
+    const pack = packMemoryPersonalContext({ expanded: [], ranked: [], plan, now,
+      standingOnly: true,
+      standing: Array.from({ length: 50 }, (_, index) => {
+        const item = standing(`long-${index}`);
+        return { ...item, expansion: { ...item.expansion, safeText: "context ".repeat(499) } };
+      }) });
+    expect(pack.items.length).toBeGreaterThan(0);
+    expect(pack.items.length).toBeLessThan(50);
+    expect(pack.approxTokens).toBeGreaterThan(6_000);
+    expect(estimateApproxTokens(pack.text!)).toBeLessThanOrEqual(10_000);
+    expect(pack.omissionCounts.token_budget).toBeGreaterThan(0);
+  });
+
+  it("preserves elapsed-plan meaning in compact standing context", () => {
+    const fact = standing("plan");
+    const date = new Date(now.getTime() - 3 * 86_400_000);
+    const pack = packMemoryPersonalContext({ expanded: [], ranked: [], plan, now,
+      standingOnly: true, standing: [{ ...fact,
+        candidate: { ...fact.candidate, metadata: { ...fact.candidate.metadata,
+          modality: "PLAN", expectedAt: date } } }] });
+    expect(pack.text).toContain('"kind":"elapsed_plan_unconfirmed"');
+    expect(pack.text).toContain('"date":"' + date.toISOString() + '"');
+    expect(pack.text).toContain("does not prove completion");
+  });
+
   it("marks an elapsed PLAN or INTENTION without claiming it happened", () => {
     const past = new Date(now.getTime() - 2 * 86_400_000);
     const nearPast = new Date(now.getTime() - 23 * 3_600_000);

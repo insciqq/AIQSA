@@ -81,6 +81,8 @@ export type {
 } from "./runRepositoryContract";
 
 export type RunHandlerDeps = {
+  memorySearchAdmission?: RunPreparationDeps["memorySearchAdmission"];
+  memorySearch?: import("../memory/search/runtime").MemorySearchService;
   workspaceFollowup?: Readonly<{
     findAdmission(admissionKey: string, userId: string): Promise<PreparingRunAdmissionResponse | null>;
     kick(): void;
@@ -266,6 +268,7 @@ function recoveryDeps(
     | "vision"
     | "images"
     | "memoryEgress"
+    | "memorySearch"
     | "mcp"
     | "providerAdmission"
     | "providerRuntime"
@@ -289,6 +292,7 @@ function recoveryDeps(
     ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
     ...(deps.observations ? { observations: deps.observations } : {}),
     ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
+    ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
     ...(deps.mcp ? { mcp: deps.mcp } : {}),
     ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
     ...(deps.providerRuntime ? { providerRuntime: deps.providerRuntime } : {}),
@@ -774,6 +778,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
       ...(deps.observations ? { observations: deps.observations } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
+      ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
@@ -997,6 +1002,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
       ...(deps.observations ? { observations: deps.observations } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
+      ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
@@ -1024,6 +1030,7 @@ export function createGetModelRunHandler(
     | "vision"
     | "images"
     | "memoryEgress"
+    | "memorySearch"
     | "mcp"
     | "providerAdmission"
     | "providerRuntime"

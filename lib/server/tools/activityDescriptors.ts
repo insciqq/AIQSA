@@ -1,3 +1,5 @@
+import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "../../contracts/memorySearchActivity";
+import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "@/lib/domain/workspace";
 import type { ThreadToolActivityOrigin } from "@/lib/contracts/chats";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
@@ -103,6 +105,7 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
     "mark_memory_incorrect",
     "save_memory",
     "search_memory",
+    "memory_search",
     "update_memory"
   ]) {
     descriptors.set(name, { origin: "memory", serverName: "Memory", toolName: name });
@@ -121,4 +124,32 @@ export function skillToolActivityFacts(normalizedRequest: unknown, toolName: str
   const path = toolName === READ_SKILL_FILE_TOOL_NAME && typeof argumentsValue.path === "string" &&
     argumentsValue.path.length <= 256 && skillTarPath(argumentsValue.path) ? argumentsValue.path : null;
   return { skillId: skill.skillId, skillName: activityName(skill.name, "Skill"), ...(path ? { skillPath: path } : {}) };
+}
+
+/** Only the allowlisted outcome crosses the private native Memory result boundary. */
+export function memorySearchActivityFacts(toolName: string, result: unknown, ordinal: number): {
+  memorySearchCall?: number; memorySearchOutcome?: MemorySearchActivityOutcome;
+} {
+  if (toolName !== "memory_search") return {};
+  const value = isRecord(result) && Array.isArray(result.content)
+    ? result.content.find(part => isRecord(part) && part.type === "json" &&
+      isRecord(part.value) && part.value.version === "memory-search-v1")?.value : null;
+  const outcome = isRecord(value) && isMemorySearchActivityOutcome(value.outcome) ? value.outcome : undefined;
+  return { memorySearchCall: ordinal + 1, ...(outcome ? { memorySearchOutcome: outcome } : {}) };
+}
+
+export function memorySearchActivityEvent(input: Readonly<{
+  ordinal: number; round: number; state: "running" | "complete" | "error" | "cancelled";
+  result?: unknown; durationMs?: number;
+}>): ModelRunSseEvent {
+  const facts = memorySearchActivityFacts("memory_search", input.result, input.ordinal);
+  const outcome = input.state === "running" ? undefined
+    : input.state === "cancelled" || facts.memorySearchOutcome === "cancelled" ? "cancelled"
+    : input.state === "error" ? "failure" : facts.memorySearchOutcome ?? "failure";
+  return { type: "artifact", data: { artifactType: "memory_search_activity", payload: {
+    call: input.ordinal + 1, round: Math.max(1, input.round),
+    status: outcome === "failure" ? "error" : outcome === "cancelled" ? "cancelled" : input.state,
+    ...(outcome ? { outcome } : {}),
+    ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {})
+  } } };
 }
