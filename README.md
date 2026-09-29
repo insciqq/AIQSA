@@ -57,7 +57,7 @@ docker compose pull && docker compose up -d
 
 This tracks stable releases and applies database migrations before starting the application. See the [release notes](https://github.com/insciqq/AIQSA/releases) before updating. Images are published on [GHCR](https://github.com/insciqq/AIQSA/pkgs/container/aiqsa); their digests are included in each release.
 
-Installations created with a release that bundled MinIO move their stored files to SeaweedFS once: after `git pull --ff-only` and `docker compose pull`, follow [Upgrading from MinIO](human_docs/upgrading-from-minio.md) instead of `docker compose up -d`. If `docker compose pull` reports `pull access denied for minio/mc`, the Compose file is outdated: run `git pull --ff-only` first.
+Installations created with a release that bundled MinIO move their stored files to SeaweedFS once: after `git pull --ff-only` and `docker compose pull`, run `sh scripts/migrate-minio-to-seaweedfs.sh --dry-run` and then `sh scripts/migrate-minio-to-seaweedfs.sh` instead of `docker compose up -d`. If `docker compose pull` reports `pull access denied for minio/mc`, the Compose file is outdated: run `git pull --ff-only` first.
 
 ## Development
 
@@ -72,9 +72,6 @@ The separate `docker-compose.dev.yml` runs the development server. See [CONTRIBU
 
 ## Further reading
 
-- [Architecture and integrations](human_docs/architecture.md)
-- [Upgrading from MinIO](human_docs/upgrading-from-minio.md)
-- [Personal Memory through MCP](human_docs/personal-memory-mcp.md)
 - [Security reporting](SECURITY.md) and [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## License

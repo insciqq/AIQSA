@@ -8,8 +8,8 @@
 # Run it from the AIQSA checkout after `git pull --ff-only` and
 # `docker compose pull`. It uses only the Docker CLI, honours
 # COMPOSE_PROJECT_NAME, COMPOSE_FILE and override files, never runs
-# `docker compose down`, and never deletes volumes or images. The procedure
-# and every exit code are described in human_docs/upgrading-from-minio.md.
+# `docker compose down`, and never deletes volumes or images. Every refusal
+# prints a stable exit code and the next step.
 set -u
 
 MIN_COMPOSE_VERSION=2.29.7
@@ -154,7 +154,7 @@ case $plan_error in
   storage_endpoint_external)
     fail 13 'The application uses an external S3 endpoint; there is no bundled MinIO data to migrate.' 'No migration is needed. Start with docker compose up -d.' ;;
   storage_legacy_mount_mismatch | storage_minio_data_remapped | storage_target_is_legacy | storage_legacy_ambiguous | storage_legacy_source_missing | storage_legacy_source_unsupported)
-    fail 14 "Storage mounts do not match ($plan_error). ${plan_detail}" 'Adjust compose.override.yaml as described in the runbook section on overrides, then rerun.' ;;
+    fail 14 "Storage mounts do not match ($plan_error). ${plan_detail}" 'In compose.override.yaml remove any /data mapping from the minio service and map the old MinIO data into minio-legacy (/data) and storage-init (/legacy, read-only), then rerun.' ;;
   *)
     fail 11 "The Compose configuration could not be resolved (${plan_error:-no plan})." 'Run docker compose config to check the configuration, then rerun.' ;;
 esac
@@ -179,7 +179,7 @@ if [ -z "$old_minio_container" ] && [ -n "$(docker compose ps -q --status runnin
       note 'Already migrated: the storage holds a valid completion marker. Nothing was changed.'
       exit 0 ;;
     3) note 'No completion marker yet.' ;;
-    4) fail 19 'The new storage holds an invalid completion marker or one from another installation.' 'Stop and check which data this Compose project uses; see the runbook.' ;;
+    4) fail 19 'The new storage holds an invalid completion marker or one from another installation.' 'Check COMPOSE_PROJECT_NAME and the volumes this checkout uses. Nothing was changed.' ;;
     *) note 'The new storage did not answer; the copier checks the marker again before copying.' ;;
   esac
 else
@@ -189,7 +189,7 @@ fi
 step 'Checking the legacy MinIO data'
 if [ "$legacy_type" = volume ]; then
   docker volume inspect "$legacy_source" >/dev/null 2>&1 ||
-    fail 15 "The legacy volume $legacy_source does not exist." 'Check COMPOSE_PROJECT_NAME and overrides: the old MinIO data must be where Compose expects it. See the runbook.'
+    fail 15 "The legacy volume $legacy_source does not exist." 'Check COMPOSE_PROJECT_NAME and overrides: the old MinIO data must be where Compose expects it. Nothing was changed.'
 fi
 read_lines() {
   layout='' legacy_bytes='' available='' used=0 inspect_error=''
@@ -211,12 +211,12 @@ docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64m
 inspection=$?
 read_lines "$work/legacy"
 if [ "$inspection" -ne 0 ] || [ -z "$layout" ]; then
-  fail 15 "The legacy MinIO data could not be read (${inspect_error:-inspection failed})." 'Check that the legacy data is present and readable; see the runbook.'
+  fail 15 "The legacy MinIO data could not be read (${inspect_error:-inspection failed})." 'Check that the legacy data is present and readable. Nothing was changed.'
 fi
 case $layout in
   minio) note "MinIO data found: $legacy_bytes bytes on disk." ;;
-  empty) fail 15 "The legacy $legacy_type $legacy_source holds no MinIO data." 'Check COMPOSE_PROJECT_NAME and overrides: the old MinIO data must be where Compose expects it. See the runbook.' ;;
-  *) fail 15 "The legacy $legacy_type $legacy_source has an unknown layout." 'Nothing was changed. See the runbook before continuing.' ;;
+  empty) fail 15 "The legacy $legacy_type $legacy_source holds no MinIO data." 'Check COMPOSE_PROJECT_NAME and overrides: the old MinIO data must be where Compose expects it. Nothing was changed.' ;;
+  *) fail 15 "The legacy $legacy_type $legacy_source has an unknown layout." 'Nothing was changed. Check what the legacy volume holds before continuing.' ;;
 esac
 legacy_size=$legacy_bytes
 
@@ -238,7 +238,7 @@ if [ -n "$old_minio_container" ] && [ "$(docker inspect -f '{{.State.Running}}' 
   case $source_state in
     ok | absent) note "The legacy bucket can be copied ($source_state)." ;;
     storage_migrate_source_*)
-      fail 18 "The legacy bucket cannot be copied exactly ($source_state)." 'Versioning, encryption, object lock and public policies are not migrated. See the runbook.' ;;
+      fail 18 "The legacy bucket cannot be copied exactly ($source_state)." 'Versioning, encryption, object lock and public policies are not migrated: restore the default private bucket settings. Nothing was changed.' ;;
     *) fail 18 'The legacy bucket settings could not be read.' 'Check docker compose logs minio, then rerun.' ;;
   esac
 else
@@ -332,7 +332,7 @@ case $result in
     # MinIO holds newer data than the SeaweedFS volume.
     if [ -n "$old_minio_container" ]; then
       fail 19 'The new storage already holds a completed migration while MinIO was still in use (a rollback).' \
-        "MinIO data is authoritative after a rollback: follow the runbook section on migrating again after a rollback."
+        "MinIO data is authoritative after a rollback: remove the stale copy with docker volume rm $target_source, then rerun."
     fi
     note 'The completion marker is already present; nothing was copied.' ;;
   *) fail 24 'Copy or verification did not complete; no completion marker was written.' 'Fix the cause named above (for example free disk space), then rerun the script: it resumes.' ;;

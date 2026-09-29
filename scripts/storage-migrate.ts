@@ -120,8 +120,8 @@ async function main(): Promise<number> {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === COPY_COMMAND) return copy();
   if (args.length === 1 && args[0] === "plan") return plan();
-  print("storage-migrate: this service runs only through scripts/migrate-minio-to-seaweedfs.sh;");
-  print("storage-migrate: see human_docs/upgrading-from-minio.md. Nothing was changed.");
+  print("storage-migrate: this service runs only through scripts/migrate-minio-to-seaweedfs.sh.");
+  print("storage-migrate: Nothing was changed.");
   return 2;
 }
 
