@@ -310,9 +310,13 @@ export function createPrismaAdminMemoryStatusRepository(
             FROM current_jobs
             WHERE "state" IN (${Prisma.join(ACTIVE_JOB_STATES.map((state) => Prisma.sql`${state}::"MemoryJobState"`))})
             UNION ALL
-            SELECT "state" = 'RUNNING'::"MemoryDeletionState" AS "inProgress", "createdAt"
+            SELECT "state" = 'RUNNING'::"MemoryDeletionState" AS "inProgress",
+              CASE WHEN "state" IN ('PENDING', 'RETRY_WAIT')
+                THEN GREATEST("createdAt", "nextAttemptAt") ELSE "createdAt" END AS "createdAt"
             FROM "MemoryDeletionOutbox"
             WHERE "state" IN (${Prisma.join(ACTIVE_DELETION_STATES.map((state) => Prisma.sql`${state}::"MemoryDeletionState"`))})
+              AND ("state" NOT IN ('PENDING', 'RETRY_WAIT') OR "nextAttemptAt" IS NULL
+                OR "nextAttemptAt" <= ${now})
           ) AS work
         `).then((rows) => {
           if (!rows[0]) throw new Error("memory_admin_status_queue_invalid");

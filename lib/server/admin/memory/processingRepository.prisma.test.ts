@@ -122,4 +122,38 @@ describe("administrator Memory processing aggregates", () => {
       expect((await readAdminMemoryProcessing(prisma, f.now)).issues).toEqual([]);
     } finally { await f.cleanup(); }
   });
+
+  it.each([
+    { state: "PENDING", nextMinutes: null, progressMinutes: null, reason: "STALLED" },
+    { state: "RETRY_WAIT", nextMinutes: null, progressMinutes: null, reason: "STALLED" },
+    { state: "PENDING", nextMinutes: -20, progressMinutes: -1, reason: null },
+    { state: "RUNNING", nextMinutes: null, progressMinutes: -20, reason: "STALLED" },
+    { state: "RUNNING", nextMinutes: 60, progressMinutes: -20, reason: "STALLED" },
+    { state: "RUNNING", nextMinutes: null, progressMinutes: -1, reason: null },
+    { state: "BLOCKED_REQUIRES_ADMIN", nextMinutes: 60, progressMinutes: null, reason: "PROCESSING_FAILED" },
+    { state: "SUCCEEDED", nextMinutes: null, progressMinutes: null, reason: null },
+    { state: "CANCELLED", nextMinutes: null, progressMinutes: null, reason: null }
+  ] as const)("preserves deletion diagnostics for $state with next=$nextMinutes and progress=$progressMinutes", async (entry) => {
+    const f = await fixture();
+    try {
+      resolution.available = true;
+      await prisma.memoryDeletionOutbox.create({ data: {
+        userId: f.userId, state: entry.state, memoryGeneration: 0, operation: "TEMPORARY_DELETE",
+        targetType: "TEMPORARY_CHAT@temporary-24h-v1", targetId: f.chatId,
+        createdAt: new Date(f.now.getTime() - 60 * 60_000),
+        nextAttemptAt: entry.nextMinutes === null ? null : new Date(f.now.getTime() + entry.nextMinutes * 60_000),
+        progressAt: entry.progressMinutes === null ? null : new Date(f.now.getTime() + entry.progressMinutes * 60_000),
+        ...(entry.state === "RUNNING" ? { leaseToken: randomUUID(), leaseExpiresAt: new Date(f.now.getTime() + 60_000) } : {}),
+        ...(entry.state === "SUCCEEDED" ? { completedAt: f.now, lastAuditAt: f.now } : {}),
+        ...(entry.state === "CANCELLED" ? { completedAt: f.now, errorCode: "memory_deletion_failed" } : {})
+      } });
+      const issues = (await readAdminMemoryProcessing(prisma, f.now)).issues.filter(({ stage }) => stage === "DELETION");
+      expect(issues).toEqual(entry.reason === null ? [] : [expect.objectContaining({
+        reason: entry.reason, count: 1, severity: entry.reason === "STALLED" ? "warn" : "bad"
+      })]);
+    } finally {
+      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: f.userId } });
+      await f.cleanup();
+    }
+  });
 });

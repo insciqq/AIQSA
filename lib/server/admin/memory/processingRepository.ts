@@ -76,10 +76,14 @@ export async function readAdminMemoryProcessing(
               AND recovered."chatId" IS NOT DISTINCT FROM job."chatId"
           ))
         UNION ALL
-        SELECT 'DELETION', deletion."createdAt",
+        SELECT 'DELETION', CASE WHEN deletion.state IN ('PENDING', 'RETRY_WAIT')
+          THEN GREATEST(deletion."createdAt", deletion."nextAttemptAt") ELSE deletion."createdAt" END,
           CASE WHEN deletion.state = 'BLOCKED_REQUIRES_ADMIN' THEN 'PROCESSING_FAILED'
             WHEN deletion."createdAt" <= ${new Date(now.getTime() - STALLED_MS)}
               AND (deletion."progressAt" IS NULL OR deletion."progressAt" <= ${new Date(now.getTime() - STALLED_MS)})
+              -- Scheduled retention and retry backoff are not stalled work.
+              AND (deletion.state = 'RUNNING' OR deletion."nextAttemptAt" IS NULL
+                OR deletion."nextAttemptAt" <= ${new Date(now.getTime() - STALLED_MS)})
               THEN 'STALLED' ELSE NULL END, NULL AS "autoHeal"
         FROM "MemoryDeletionOutbox" AS deletion
         WHERE deletion.state IN ('PENDING', 'RUNNING', 'RETRY_WAIT', 'BLOCKED_REQUIRES_ADMIN')

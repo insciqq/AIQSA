@@ -2,13 +2,61 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "../../prisma";
 import { createPrismaAdminMemoryStatusRepository } from "./statusRepository";
+import { createAdminMemoryStatusService } from "./statusService";
 
-vi.mock("./processingRepository", () => ({
-  readAdminMemoryProcessing: async () => ({ enabled: true, issues: [] })
+vi.mock("../../providerRuntime/memoryUtilityModelRole", () => ({
+  createMemoryUtilityModelRoleResolver: () => ({ resolve: async () => ({ ok: true }) })
 }));
 
 describe("administrator Memory queue aggregates", () => {
   afterAll(() => prisma.$disconnect());
+
+  it.each(["PENDING", "RETRY_WAIT"] as const)(
+    "keeps scheduled %s deletion idle until due and warns only after fifteen overdue minutes",
+    async (state) => {
+      const userId = `memory-scheduled-${randomUUID()}`;
+      const createdAt = new Date(Date.now() - 60 * 60_000);
+      const dueAt = new Date(createdAt.getTime() + 24 * 60 * 60_000);
+      let now = new Date(createdAt.getTime() + 16 * 60_000);
+      const repository = createPrismaAdminMemoryStatusRepository(prisma, async () => undefined);
+      const service = createAdminMemoryStatusService({ now: () => now, repository: {
+        ...repository,
+        read: async (observedAt) => ({ ...await repository.read(observedAt),
+          workerLastSeenAt: observedAt, workerReady: true })
+      } });
+      await prisma.user.create({ data: { id: userId, displayName: "Scheduled deletion fixture", status: "active" } });
+      try {
+        const deletion = await prisma.memoryDeletionOutbox.create({ data: {
+          userId, state, memoryGeneration: 0, operation: "TEMPORARY_DELETE",
+          targetType: "TEMPORARY_CHAT@temporary-24h-v1", targetId: randomUUID(),
+          createdAt, nextAttemptAt: dueAt,
+          progressAt: state === "RETRY_WAIT" ? createdAt : null
+        } });
+        for (const observedAt of [now, new Date(dueAt.getTime() - 1)]) {
+          now = observedAt;
+          expect(await service.get()).toMatchObject({
+            queue: { length: 0, inProgress: 0, oldestAgeSeconds: null },
+            worker: { state: "RUNNING", reason: "IDLE" },
+            processing: { issues: [] }
+          });
+        }
+        for (const elapsed of [0, 15 * 60_000 - 1, 15 * 60_000]) {
+          now = new Date(dueAt.getTime() + elapsed);
+          const stalled = elapsed === 15 * 60_000;
+          expect(await service.get()).toMatchObject({
+            queue: { length: 1, inProgress: 0, oldestAgeSeconds: Math.floor(elapsed / 1000) },
+            worker: { state: stalled ? "STALLED" : "RUNNING", reason: stalled ? "QUEUE_STALLED" : "ACTIVE" },
+            processing: { issues: stalled ? [{ stage: "DELETION", reason: "STALLED", severity: "warn",
+              count: 1, oldestAgeSeconds: 900 }] : [] }
+          });
+        }
+        expect(await prisma.memoryDeletionOutbox.findUniqueOrThrow({ where: { id: deletion.id } })).toEqual(deletion);
+      } finally {
+        await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
+        await prisma.user.delete({ where: { id: userId } });
+      }
+    }
+  );
 
   it.each(["disabled", "pending", "denied"] as const)(
     "excludes an unavailable index for a %s owner until activation without changing retained settings",
@@ -68,6 +116,7 @@ describe("administrator Memory queue aggregates", () => {
         await prisma.memoryDeletionOutbox.create({ data: {
           userId, state, memoryGeneration: settings.memoryGeneration, operation: "TEMPORARY_DELETE",
           targetType: "CHAT", targetId: randomUUID(), createdAt: state === "RUNNING" ? runningAt : waitingAt,
+          ...(state === "BLOCKED_REQUIRES_ADMIN" ? { nextAttemptAt: new Date(now.getTime() + 60_000) } : {}),
           ...(state === "RUNNING" ? { leaseToken: randomUUID(), leaseExpiresAt: new Date(now.getTime() + 60_000) } : {}),
           ...(state === "SUCCEEDED" ? { completedAt: now, lastAuditAt: now } : {}),
           ...(state === "CANCELLED" ? { completedAt: now, errorCode: "memory_deletion_failed" } : {})
