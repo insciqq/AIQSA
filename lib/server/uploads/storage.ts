@@ -849,8 +849,16 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
   });
 
   const publicEndpoint = publicS3Endpoint(env.S3_PUBLIC_ENDPOINT);
+  // Presigned part URLs carry no SDK checksum parameters: the browser sends the
+  // bytes and settlement verifies size and SHA-256 afterwards.
   const publicClient = publicEndpoint
-    ? new S3Client({ credentials, endpoint: publicEndpoint, forcePathStyle: true, region })
+    ? new S3Client({
+      credentials,
+      endpoint: publicEndpoint,
+      forcePathStyle: true,
+      region,
+      requestChecksumCalculation: "WHEN_REQUIRED"
+    })
     : null;
 
   async function readOutput(
