@@ -18,7 +18,6 @@ benchmarks/**/.venv
 benchmarks/**/results
 benchmarks/**/.download.*
 agent_docs
-human_docs
 **/AGENTS.md
 **/CLAUDE.md
 .env

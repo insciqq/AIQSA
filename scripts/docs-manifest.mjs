@@ -1,6 +1,5 @@
 export const NESTED_AGENT_INSTRUCTIONS = Object.freeze([
   "components/AGENTS.md",
-  "human_docs/AGENTS.md",
   "lib/server/AGENTS.md",
   "ops/AGENTS.md",
   "prisma/AGENTS.md"

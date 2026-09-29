@@ -68,9 +68,10 @@ export const STORAGE_INIT_GUIDANCE: Readonly<Record<string, string>> = {
   storage_marker_foreign: "The storage marker belongs to another bucket or Compose project; nothing was changed.",
   storage_marker_invalid: "The storage marker is unreadable or has an unknown format; nothing was changed.",
   storage_migration_required:
-    "Existing data has not been migrated from MinIO. Follow human_docs/upgrading-from-minio.md; " +
+    "Existing data has not been migrated from MinIO. From the checkout run " +
+    "sh scripts/migrate-minio-to-seaweedfs.sh --dry-run, then without --dry-run; " +
     "the application stays stopped until the migration completes.",
   storage_target_unmarked:
     "The storage volume holds objects without a completion marker (an unfinished migration). " +
-    "Rerun scripts/migrate-minio-to-seaweedfs.sh as described in human_docs/upgrading-from-minio.md."
+    "Rerun sh scripts/migrate-minio-to-seaweedfs.sh from the checkout; it resumes."
 };

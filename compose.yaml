@@ -680,7 +680,7 @@ services:
       - minio_data:/legacy:ro
 
   # One-time upgrade from a MinIO-based release. Both services start only
-  # through scripts/migrate-minio-to-seaweedfs.sh (human_docs/upgrading-from-minio.md).
+  # through scripts/migrate-minio-to-seaweedfs.sh.
   # The reader uses the MinIO image already cached on the host and is never pulled.
   minio-legacy:
     profiles:
