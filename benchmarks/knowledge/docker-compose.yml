@@ -83,14 +83,18 @@ services:
     ports: !override
       - "127.0.0.1:${AIQSA_KNOWLEDGE_BENCHMARK_POSTGRES_PORT:-15447}:5432"
 
+  seaweedfs:
+    container_name: aiqsa-knowledge-benchmark-second-seaweedfs
+
   minio:
     container_name: aiqsa-knowledge-benchmark-second-minio
     ports: !override
       - "127.0.0.1:${AIQSA_KNOWLEDGE_BENCHMARK_MINIO_PORT:-19110}:9000"
-      - "127.0.0.1:${AIQSA_KNOWLEDGE_BENCHMARK_MINIO_CONSOLE_PORT:-19111}:9001"
 
-  minio-init:
-    container_name: aiqsa-knowledge-benchmark-second-minio-init
+  storage-init:
+    container_name: aiqsa-knowledge-benchmark-second-storage-init
+    environment:
+      DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-knowledge-benchmark-dev-password@postgres:5432/aiqsa_knowledge_benchmark?schema=public
 
   opensearch:
     ports: !override
@@ -127,8 +131,8 @@ networks:
         - subnet: ${AIQSA_KNOWLEDGE_BENCHMARK_SEARCH_DIAGNOSTIC_SUBNET:-192.168.118.0/24}
 
 volumes:
-  minio_dev_data:
-    name: aiqsa-knowledge-benchmark-second-minio
+  seaweedfs_dev_data:
+    name: aiqsa-knowledge-benchmark-second-seaweedfs
   opensearch_dev_data:
     name: aiqsa-knowledge-benchmark-second-opensearch
   postgres18_dev_data:

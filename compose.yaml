@@ -154,7 +154,7 @@ services:
         condition: service_completed_successfully
       minio:
         condition: service_healthy
-      minio-init:
+      storage-init:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -201,6 +201,8 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
 
   memory-search-worker:
     image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
@@ -373,18 +375,9 @@ services:
       DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
       NEXT_TELEMETRY_DISABLED: "1"
       NODE_ENV: production
-      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
-      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
-      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
-      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
-      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
     command: ["sh", "-c", "npm run db:migrate:deploy && npm run db:bootstrap"]
     cpus: ${AIQSA_TOOLS_CPU_LIMIT:-1.0}
     depends_on:
-      minio:
-        condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     logging: *default-logging
@@ -551,45 +544,203 @@ services:
     volumes:
       - opensearch_data:/usr/share/opensearch/data
 
-  minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    command: server /data --console-address ":9001"
+  # Object storage. SeaweedFS runs without any network interface except
+  # loopback; its S3 API reaches the Compose network only through the `minio`
+  # relay, so master, volume, filer, gRPC and catalog listeners stay private.
+  # The S3 credential file is rendered from .env into tmpfs on every start.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    entrypoint:
+      - /bin/sh
+      - -euc
+      - |
+        umask 077
+        access_key=$${AIQSA_STORAGE_ACCESS_KEY_ID-}
+        secret_key=$${AIQSA_STORAGE_SECRET_ACCESS_KEY-}
+        for value in "$$access_key" "$$secret_key"; do
+          case "$$value" in
+            '' | *[![:print:]]*) echo 'storage_credentials_invalid' >&2; exit 64 ;;
+          esac
+        done
+        origin=$$(printf '%s' "$${AIQSA_STORAGE_ALLOWED_ORIGIN-}" | sed -n 's#^\(https\{0,1\}://[^/?#]\{1,\}\).*$$#\1#p')
+        [ -n "$$origin" ] || { echo 'storage_allowed_origin_invalid' >&2; exit 64; }
+        json() { printf '%s' "$$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+        config=/run/aiqsa-storage/s3.json
+        printf '{"identities":[{"name":"aiqsa","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","List","Write"]}]}\n' \
+          "$$(json "$$access_key")" "$$(json "$$secret_key")" > "$$config.tmp"
+        mv "$$config.tmp" "$$config"
+        unset access_key secret_key AIQSA_STORAGE_ACCESS_KEY_ID AIQSA_STORAGE_SECRET_ACCESS_KEY
+        umask 007
+        set -- -logtostderr=true server -dir=/data -master.dir=/data \
+          -ip=127.0.0.1 -ip.bind=127.0.0.1 -master.telemetry=false \
+          -master.volumeSizeLimitMB=1024 -volume.max=0 \
+          -filer -s3 -s3.port=8333 -s3.localSocket=/run/aiqsa-storage-socket/s3.sock \
+          -s3.config="$$config" -s3.autoCreateBucket=false -s3.iam=false \
+          -s3.port.iceberg=0 -s3.port.lance=0 -webdav=false \
+          -s3.cacheCapacityMB=0 -s3.readerCacheSizeMB=256 \
+          -s3.allowedOrigins="$$origin"
+        if [ -n "$${AIQSA_STORAGE_EXTERNAL_URL-}" ]; then set -- "$$@" -s3.externalUrl="$$AIQSA_STORAGE_EXTERNAL_URL"; fi
+        exec /usr/bin/weed "$$@"
+      - aiqsa-storage
+    command: []
     environment:
+      AIQSA_STORAGE_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      AIQSA_STORAGE_ALLOWED_ORIGIN: ${AIQSA_APP_BASE_URL:-http://localhost:3000}
+      AIQSA_STORAGE_EXTERNAL_URL: ${AIQSA_S3_PUBLIC_ENDPOINT:-}
+      AIQSA_STORAGE_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_MINIO_CPU_LIMIT:-1.0}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging: *default-logging
+    mem_limit: ${AIQSA_MINIO_MEMORY_LIMIT:-1g}
+    network_mode: none
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /run/aiqsa-storage:rw,nosuid,nodev,noexec,size=1m,mode=0700,uid=1000,gid=1000
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777
+    user: "1000:1000"
+    volumes:
+      - seaweedfs_data:/data
+      - storage_socket:/run/aiqsa-storage-socket
+
+  # The storage service name and port stay `minio:9000` for application,
+  # proxy and restore wiring.
+  minio:
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    command: ["node", "scripts/storage-relay.cjs"]
+    environment:
+      AIQSA_STORAGE_SOCKET: /run/aiqsa-storage-socket/s3.sock
+    cap_drop:
+      - ALL
+    cpus: "1.0"
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    init: true
+    logging: *default-logging
+    mem_limit: 256m
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    user: "1000:1000"
+    volumes:
+      - storage_socket:/run/aiqsa-storage-socket
+
+  # Runs after migrations on every start and admits application writers only
+  # onto a fresh or migrated store. It reads the legacy MinIO volume read-only
+  # to recognize an installation whose data has not been migrated yet.
+  storage-init:
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    # Arguments of `docker compose run storage-init ...` select a subcommand.
+    entrypoint: ["node", "--import", "tsx", "scripts/storage-init.ts"]
+    command: []
+    environment:
+      AIQSA_STORAGE_PROJECT: ${COMPOSE_PROJECT_NAME}
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_TOOLS_CPU_LIMIT:-1.0}
+    depends_on:
+      migrate-bootstrap:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+    logging: *default-logging
+    mem_limit: ${AIQSA_TOOLS_MEMORY_LIMIT:-1g}
+    read_only: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    volumes:
+      - minio_data:/legacy:ro
+
+  # One-time upgrade from a MinIO-based release. Both services start only
+  # through scripts/migrate-minio-to-seaweedfs.sh.
+  # The reader uses the MinIO image already cached on the host and is never pulled.
+  minio-legacy:
+    profiles:
+      - storage-migration
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    pull_policy: never
+    command: server /data
+    environment:
+      MINIO_BROWSER: "off"
       MINIO_ROOT_PASSWORD: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
       MINIO_ROOT_USER: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+    cpus: ${AIQSA_MINIO_CPU_LIMIT:-1.0}
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 3s
       retries: 20
-    cpus: ${AIQSA_MINIO_CPU_LIMIT:-1.0}
     logging: *default-logging
     mem_limit: ${AIQSA_MINIO_MEMORY_LIMIT:-1g}
-    restart: unless-stopped
+    networks:
+      - storage-migration
+    restart: "no"
     stop_grace_period: 30s
     volumes:
       - minio_data:/data
 
-  minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        mc alias set local http://minio:9000 "$${S3_ACCESS_KEY_ID}" "$${S3_SECRET_ACCESS_KEY}" >/dev/null
-        mc mb --ignore-existing "local/$${S3_BUCKET}" >/dev/null
-        mc anonymous set private "local/$${S3_BUCKET}" >/dev/null
+  storage-migrate:
+    profiles:
+      - storage-migration
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    # Without the script's explicit argument this entry point only explains itself.
+    entrypoint: ["node", "--import", "tsx", "scripts/storage-migrate.ts"]
+    command: []
     environment:
+      AIQSA_LEGACY_S3_ENDPOINT: http://minio-legacy:9000
+      # Parallel object copies (1-16); lower it for slow disks.
+      AIQSA_STORAGE_MIGRATION_CONCURRENCY: ${AIQSA_STORAGE_MIGRATION_CONCURRENCY:-4}
+      AIQSA_STORAGE_PROJECT: ${COMPOSE_PROJECT_NAME}
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
       S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
       S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
       S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
       S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_TOOLS_CPU_LIMIT:-1.0}
     logging: *default-logging
+    mem_limit: ${AIQSA_TOOLS_MEMORY_LIMIT:-1g}
+    networks:
+      - default
+      - storage-migration
+    read_only: true
     restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
 
 networks:
   mcp-control:
@@ -598,13 +749,22 @@ networks:
     internal: true
   search-control:
     internal: true
+  storage-migration:
+    internal: true
   workspace-control:
     internal: true
   workspace-egress: {}
 
 volumes:
+  # MinIO data from releases before SeaweedFS; kept until the operator removes it.
   minio_data:
   opensearch_data:
   postgres18_data:
+  seaweedfs_data:
+  storage_socket:
+    driver_opts:
+      device: tmpfs
+      o: size=1m,uid=1000,gid=1000,mode=0770
+      type: tmpfs
   toolhive_data:
   workspace_runtime_data:
