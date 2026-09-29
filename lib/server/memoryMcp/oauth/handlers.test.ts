@@ -134,6 +134,32 @@ function setDirectPeer(request: Request, peerAddress = "192.168.1.20"): Request 
 }
 
 describe("inbound Memory MCP OAuth HTTP handlers", () => {
+  it.each([undefined, "skills:read", "skills:read skills:write"])("shows Skills write as optional and forwards explicit consent (scope %s)", async (scope) => {
+    const oauth = service();
+    const handlers = createInboundMcpAuthorizationHandlers({
+      getConfig: () => config, resolveAuth: async () => authSession(), service: oauth as never
+    });
+    const url = authorizationUrl();
+    url.searchParams.set("resource", "http://localhost:3000/mcp/skills");
+    if (scope) url.searchParams.set("scope", scope);
+    const html = await (await handlers.GET(new Request(url))).text();
+    expect(html).toContain("Connect Skills?");
+    expect(html).toContain("Copies already downloaded remain");
+    expect(html.includes('name="skills_write"')).toBe(scope !== "skills:read");
+    expect(html).not.toContain("checked");
+    url.searchParams.set("decision", "approve");
+    url.searchParams.set("consent_token", `abcdefghi.${"A".repeat(43)}`);
+    await handlers.POST(formRequest(url.origin + url.pathname, url.searchParams));
+    expect(oauth.approveAuthorization).toHaveBeenLastCalledWith(expect.not.objectContaining({ allowSkillsWrite: true }));
+    if (scope !== "skills:read") {
+      url.searchParams.set("skills_write", "allow");
+      await handlers.POST(formRequest(url.origin + url.pathname, url.searchParams));
+      expect(oauth.approveAuthorization).toHaveBeenLastCalledWith(expect.objectContaining({ allowSkillsWrite: true }));
+    }
+    url.searchParams.set("skills_write", "unexpected");
+    expect((await handlers.POST(formRequest(url.origin + url.pathname, url.searchParams))).status).toBe(400);
+  });
+
   it("redirects a production LAN authorization response to an exact HTTP web callback", async () => {
     const lanConfig = getAuthConfig({
       AIQSA_APP_BASE_URL: "http://192.168.1.10:3000",

@@ -11,6 +11,7 @@ import { hashToken } from "../../auth/token";
 import { prisma } from "../../prisma";
 import { createPrismaRetentionRepository } from "../../retention/prune";
 import {
+  assertInboundMcpSkillsAuthority,
   createPrismaInboundMcpOAuthRepository,
   revokeInboundMcpGrantsForUser
 } from "./repository";
@@ -156,6 +157,99 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
     await prisma.$disconnect();
   });
 
+  it("isolates Skills scopes across issuance, narrowing refresh, reconsent and revocation", async () => {
+    await withFixture(async ({ clientId, repository, userId }) => {
+      const client = (await repository.findClient(clientId))!;
+      const now = new Date();
+      const authority = { resource: `${RESOURCE}/skills`, capability: "skills:store" as const };
+      async function issue(scopes: readonly string[]) {
+        const pair = { ...authority, clientId, codeHash: hashToken(randomUUID()), codeChallenge: CHALLENGE,
+          redirectUri: REDIRECT_URI, issuer: ISSUER, now,
+          accessExpiresAt: new Date(now.getTime() + 3_600_000), accessTokenHash: hashToken(randomUUID()),
+          refreshExpiresAt: new Date(now.getTime() + 86_400_000), refreshTokenHash: hashToken(randomUUID()) };
+        expect(await repository.approveAuthorization({ ...pair, scopes, clientRecordId: client.id,
+          expiresAt: new Date(now.getTime() + 300_000), userId })).toBe(true);
+        expect(await repository.exchangeAuthorizationCode(pair)).toEqual({ scopes });
+        return pair;
+      }
+      async function resolve(pair: Awaited<ReturnType<typeof issue>>) {
+        return repository.resolveAccessToken({ ...pair, tokenHash: pair.accessTokenHash });
+      }
+      const read = await issue(["skills:read"]);
+      const readAuth = (await resolve(read))!;
+      expect(readAuth.scopes).toEqual(["skills:read"]);
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, readAuth, "read"))).toBe(true);
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, readAuth, "write"))).toBe(false);
+      expect(await repository.resolveAccessToken({ ...read, resource: RESOURCE, capability: "memory:facts", tokenHash: read.accessTokenHash })).toBeNull();
+      expect(await repository.resolveAccessToken({ ...read, resource: `${RESOURCE}/hub`, capability: "mcp:hub", tokenHash: read.accessTokenHash })).toBeNull();
+      const rotation = { ...read, presentedRefreshTokenHash: read.refreshTokenHash,
+        nextRefreshTokenHash: hashToken(randomUUID()), accessTokenHash: hashToken(randomUUID()) };
+      expect(await repository.rotateRefreshToken({ ...rotation, requestedScopes: ["skills:read", "skills:write"] })).toBe("invalid");
+      expect(await repository.rotateRefreshToken(rotation)).toEqual({ scopes: ["skills:read"] });
+
+      const write = await issue(["skills:read", "skills:write"]);
+      expect(await resolve(read)).toBeNull();
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, readAuth, "read"))).toBe(false);
+      const writeAuth = (await resolve(write))!;
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, writeAuth, "write"))).toBe(true);
+      const narrowed = { ...write, presentedRefreshTokenHash: write.refreshTokenHash,
+        nextRefreshTokenHash: hashToken(randomUUID()), accessTokenHash: hashToken(randomUUID()), requestedScopes: ["skills:read"] };
+      expect(await repository.rotateRefreshToken(narrowed)).toEqual({ scopes: ["skills:read"] });
+      const narrowedAuth = (await resolve({ ...write, accessTokenHash: narrowed.accessTokenHash }))!;
+      expect(narrowedAuth.scopes).toEqual(["skills:read"]);
+      expect(await repository.rotateRefreshToken({ ...narrowed,
+        presentedRefreshTokenHash: narrowed.nextRefreshTokenHash, nextRefreshTokenHash: hashToken(randomUUID()),
+        accessTokenHash: hashToken(randomUUID()), requestedScopes: ["skills:read", "skills:write"] })).toBe("invalid");
+      // Immutable snapshots cannot be upgraded by changing a granted scope later.
+      await expect(prisma.inboundMcpOAuthToken.update({ where: { id: narrowedAuth.tokenId }, data: { scopes: ["skills:read", "skills:write"] } })).rejects.toThrow();
+      await expect(prisma.inboundMcpOAuthGrant.update({ where: { id: writeAuth.grantId }, data: { scopes: ["skills:read"] } })).rejects.toThrow();
+      await expect(prisma.inboundMcpOAuthTokenFamily.update({ where: { id: writeAuth.familyId }, data: { scopes: ["skills:read"] } })).rejects.toThrow();
+      const readAgain = await issue(["skills:read"]);
+      expect(await resolve(write)).toBeNull();
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, writeAuth, "write"))).toBe(false);
+      const readAgainAuth = (await resolve(readAgain))!;
+      expect(await repository.revokeGrant({ grantId: readAgainAuth.grantId, now, userId })).toBe(true);
+      expect(await resolve(readAgain)).toBeNull();
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, readAgainAuth, "read"))).toBe(false);
+    });
+  });
+
+  it("holds Skills mutation authority until commit and rejects it after owner or grant revocation", async () => {
+    await withFixture(async ({ clientId, repository, userId }) => {
+      const client = (await repository.findClient(clientId))!;
+      const now = new Date();
+      const pair = { resource: `${RESOURCE}/skills`, capability: "skills:store" as const,
+        clientId, codeHash: hashToken(randomUUID()), codeChallenge: CHALLENGE,
+        redirectUri: REDIRECT_URI, issuer: ISSUER, now,
+        accessExpiresAt: new Date(now.getTime() + 3_600_000), accessTokenHash: hashToken(randomUUID()),
+        refreshExpiresAt: new Date(now.getTime() + 86_400_000), refreshTokenHash: hashToken(randomUUID()) };
+      expect(await repository.approveAuthorization({ ...pair, scopes: ["skills:read", "skills:write"], clientRecordId: client.id,
+        expiresAt: new Date(now.getTime() + 300_000), userId })).toBe(true);
+      expect(await repository.exchangeAuthorizationCode(pair)).toEqual({ scopes: ["skills:read", "skills:write"] });
+      const auth = (await repository.resolveAccessToken({ ...pair, tokenHash: pair.accessTokenHash }))!;
+      await prisma.user.update({ where: { id: userId }, data: { status: "disabled" } });
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, auth, "write"))).toBe(false);
+      await prisma.user.update({ where: { id: userId }, data: { status: "active" } });
+      const held = deferred();
+      const released = deferred();
+      const guarded = prisma.$transaction(async (tx) => {
+        expect(await assertInboundMcpSkillsAuthority(tx, auth, "write")).toBe(true);
+        held.resolve();
+        await released.promise;
+      });
+      await held.promise;
+      const revoking = repository.revokeGrant({ grantId: auth.grantId, now, userId });
+      try {
+        await waitForLockWaiter();
+      } finally {
+        released.resolve();
+      }
+      await guarded;
+      expect(await revoking).toBe(true);
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, auth, "write"))).toBe(false);
+    });
+  });
+
   it.each([false, true])("isolates both grant orders, reconsent, refresh and revocation (Hub first: %s)", async (hubFirst) => {
     await withFixture(async ({ clientId, repository, userId }) => {
       const client = (await repository.findClient(clientId))!;
@@ -176,7 +270,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
         // Substituting the audience must neither consume nor broaden the code.
         expect(await repository.exchangeAuthorizationCode({ ...exchange,
           ...(authority === memory ? hub : memory) })).toBe(false);
-        expect(await repository.exchangeAuthorizationCode(exchange)).toBe(true);
+        expect(await repository.exchangeAuthorizationCode(exchange)).toEqual({ scopes: [] });
         return exchange;
       }
       async function resolve(pair: Awaited<ReturnType<typeof issue>>, authority = pair) {
@@ -187,7 +281,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
           presentedRefreshTokenHash: pair.refreshTokenHash, accessTokenHash: hashToken(randomUUID()) };
         expect(await repository.rotateRefreshToken({ ...rotation,
           ...(pair.capability === "mcp:hub" ? memory : hub) })).toBe("invalid");
-        expect(await repository.rotateRefreshToken(rotation)).toBe("rotated");
+        expect(await repository.rotateRefreshToken(rotation)).toEqual({ scopes: [] });
         return { ...pair, accessTokenHash: rotation.accessTokenHash, refreshTokenHash: rotation.nextRefreshTokenHash };
       }
       const first = hubFirst ? hub : memory;
@@ -249,7 +343,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
         accessExpiresAt: time("2026-09-03T02:00:00.000Z"), refreshExpiresAt: time("2026-10-03T01:00:00.000Z") };
       expect(await repository.exchangeAuthorizationCode({ ...exchange,
         resource: `${RESOURCE}/hub`, capability: "mcp:hub" })).toBe(false);
-      expect(await repository.exchangeAuthorizationCode(exchange)).toBe(true);
+      expect(await repository.exchangeAuthorizationCode(exchange)).toEqual({ scopes: [] });
       await expect(prisma.inboundMcpOAuthAuthorizationCode.update({
         where: { id: legacyCode.id }, data: { resourcePath: "/mcp/hub", capability: "mcp:hub" }
       })).rejects.toThrow();
@@ -283,7 +377,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
         presentedRefreshTokenHash: refreshTokenHash, nextRefreshTokenHash: hashToken(randomUUID()),
         accessTokenHash: hashToken(randomUUID()), accessExpiresAt: token.expiresAt,
         refreshExpiresAt: family.inactivityExpiresAt };
-      expect(await repository.rotateRefreshToken(rotation)).toBe("rotated");
+      expect(await repository.rotateRefreshToken(rotation)).toEqual({ scopes: [] });
       // Wrong resource replay must not revoke a valid Memory family.
       expect(await repository.rotateRefreshToken({ ...rotation, resource: `${RESOURCE}/hub`, capability: "mcp:hub" })).toBe("invalid");
       expect(await repository.resolveAccessToken(query)).not.toBeNull();
@@ -325,7 +419,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
         refreshTokenHash: hashToken(refresh1),
         resource: RESOURCE
       };
-      await expect(repository.exchangeAuthorizationCode(exchange)).resolves.toBe(true);
+      await expect(repository.exchangeAuthorizationCode(exchange)).resolves.toEqual({ scopes: [] });
       await expect(repository.exchangeAuthorizationCode(exchange)).resolves.toBe(false);
       await expect(repository.resolveAccessToken({
         issuer: ISSUER,
@@ -347,7 +441,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
         refreshExpiresAt: time("2026-10-03T01:03:00.000Z"),
         resource: RESOURCE
       };
-      await expect(repository.rotateRefreshToken(rotation)).resolves.toBe("rotated");
+      await expect(repository.rotateRefreshToken(rotation)).resolves.toEqual({ scopes: [] });
       await expect(repository.resolveAccessToken({
         issuer: ISSUER,
         now: time("2026-09-03T01:04:00.000Z"),

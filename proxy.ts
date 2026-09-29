@@ -54,6 +54,7 @@ function isPublicPath(
   env: Record<string, string | undefined>
 ): boolean {
   if (pathname === "/robots.txt") return true;
+  if (["/AGENTS", "/AGENTS.md", "/agents/guide", "/agents/metadata", "/agents/skills-client.mjs"].includes(pathname)) return true;
   if (pathname === "/ui-v2-fixture" && isTestAuthAllowedEnv(env)) {
     return true;
   }

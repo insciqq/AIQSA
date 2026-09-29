@@ -16,7 +16,7 @@ export type SettingsDestinationStore = SettingsDestinationSnapshot & {
   closeMemory(): void;
   closeSettings(): void;
   openMemoryLibrary(): void;
-  openSettings(): void;
+  openSettings(section?: SettingsSection): void;
 };
 
 export const initialSettingsDestinationSnapshot: SettingsDestinationSnapshot = {
@@ -36,7 +36,7 @@ export const useSettingsDestinationStore = create<SettingsDestinationStore>((set
   openMemoryLibrary() {
     set({ memoryOpen: true, settingsOpen: false });
   },
-  openSettings() {
-    set({ settingsOpen: true, settingsSection: "general" });
+  openSettings(section = "general") {
+    set({ settingsOpen: true, settingsSection: section });
   }
 }));

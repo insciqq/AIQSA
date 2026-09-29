@@ -9,6 +9,7 @@
 /CLAUDE.local.md
 
 node_modules/
+/public/agents/skills-client.mjs
 .next/
 /next-env.d.ts
 .aiqsa/

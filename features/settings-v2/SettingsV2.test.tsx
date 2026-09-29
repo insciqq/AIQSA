@@ -8,7 +8,7 @@ describe("SettingsV2", () => {
       onClose={vi.fn()} onThemeChange={vi.fn()} themeId="light" />);
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     expect(within(nav).getAllByRole("button").map(button => button.textContent?.trim())).toEqual([
-      "General", "Account", "Connected apps", "Data"
+      "General", "Account", "Claude Code & Codex", "Data"
     ]);
   });
   it("exposes exactly System, Light, and Dark and supports roving selection", () => {
@@ -128,8 +128,8 @@ describe("SettingsV2", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Connected apps" }));
-    expect(screen.getByRole("heading", { name: "Connected apps" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code & Codex" }));
+    expect(screen.getByRole("heading", { name: "Claude Code & Codex" })).toBeInTheDocument();
     expect(screen.getByText("Personal Memory grants")).toBeInTheDocument();
     expect(screen.queryByText("Outbound MCP servers")).not.toBeInTheDocument();
 

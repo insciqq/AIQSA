@@ -24,6 +24,16 @@ function authorizationParameters(overrides: Record<string, string> = {}) {
 }
 
 describe("inbound Memory MCP OAuth contracts", () => {
+  it("decodes bounded Skills scope sets and rejects duplicates, mixing and unknown permissions", () => {
+    for (const scope of ["skills:read", "skills:write", "skills:read skills:write", "skills:write skills:read"]) {
+      expect(decodeAuthorizationRequest(authorizationParameters({ scope })).ok).toBe(true);
+    }
+    for (const scope of ["skills:read skills:read", "skills:read mcp:hub", "skills:admin", " skills:read", "skills:read  skills:write"]) {
+      expect(decodeAuthorizationRequest(authorizationParameters({ scope })))
+        .toEqual({ ok: false, error: "invalid_scope" });
+    }
+  });
+
   it("accepts the narrow authorization request and rejects authority expansion", () => {
     expect(decodeAuthorizationRequest(authorizationParameters())).toMatchObject({
       ok: true,

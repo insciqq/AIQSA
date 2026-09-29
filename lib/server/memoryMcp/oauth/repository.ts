@@ -5,7 +5,7 @@ import type {
   PrismaClient
 } from "@prisma/client";
 import { registeredRedirectUriMatches } from "./contracts";
-import { inboundMcpResourceAuthority, type InboundMcpCapability } from "./resources";
+import { inboundMcpResourceAuthority, type InboundMcpCapability, type InboundMcpResourcePath } from "./resources";
 
 export type InboundMcpOAuthClientRecord = Readonly<{
   applicationType: InboundMcpOAuthApplicationType;
@@ -25,7 +25,8 @@ export type InboundMcpConnectedApp = Readonly<{
   clientOrigin: string;
   connectedAt: Date;
   grantId: string;
-  resourcePath: "/mcp" | "/mcp/hub";
+  resourcePath: InboundMcpResourcePath;
+  scopes?: readonly string[];
   capability: InboundMcpCapability;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
@@ -43,10 +44,11 @@ export type InboundMcpOAuthRepository = Readonly<{
     redirectUri: string;
     resource: string;
     capability?: InboundMcpCapability;
+    scopes?: readonly string[];
     userId: string;
   }>): Promise<boolean>;
   createDynamicClient(input: InboundMcpOAuthClientWrite): Promise<InboundMcpOAuthClientRecord>;
-  exchangeAuthorizationCode(input: InboundMcpAuthorizationCodeExchange): Promise<boolean>;
+  exchangeAuthorizationCode(input: InboundMcpAuthorizationCodeExchange): Promise<false | Readonly<{ scopes: readonly string[] }>>;
   findClient(clientId: string): Promise<InboundMcpOAuthClientRecord | null>;
   listConnectedApps(userId: string): Promise<readonly InboundMcpConnectedApp[]>;
   resolveAccessToken(input: Readonly<{
@@ -57,6 +59,10 @@ export type InboundMcpOAuthRepository = Readonly<{
     tokenHash: string;
   }>): Promise<Readonly<{
     capability: InboundMcpCapability;
+    scopes: readonly string[];
+    grantRevision: number;
+    tokenId: string;
+    familyId: string;
     resource: string;
     clientId: string;
     expiresAt: Date;
@@ -73,7 +79,7 @@ export type InboundMcpOAuthRepository = Readonly<{
     now: Date;
     tokenHash: string;
   }>): Promise<void>;
-  rotateRefreshToken(input: InboundMcpRefreshTokenRotation): Promise<"invalid" | "reused" | "rotated">;
+  rotateRefreshToken(input: InboundMcpRefreshTokenRotation): Promise<"invalid" | "reused" | Readonly<{ scopes: readonly string[] }>>;
   upsertMetadataClient(input: InboundMcpOAuthClientWrite): Promise<InboundMcpOAuthClientRecord>;
 }>;
 
@@ -116,6 +122,7 @@ export type InboundMcpRefreshTokenRotation = Readonly<{
   nextRefreshTokenHash: string;
   now: Date;
   presentedRefreshTokenHash: string;
+  requestedScopes?: readonly string[];
   refreshExpiresAt: Date;
   resource: string;
   capability?: InboundMcpCapability;
@@ -265,6 +272,55 @@ function activeGrant(input: Readonly<{
     input.grant.user.status === "active";
 }
 
+function scopesWithin(scopes: readonly string[], authority: readonly string[]): boolean {
+  return scopes.every((scope) => authority.includes(scope));
+}
+function validSkillsScopes(scopes: readonly string[]): boolean {
+  return scopes.length === 1 && scopes[0] === "skills:read" ||
+    scopes.length === 2 && scopes[0] === "skills:read" && scopes[1] === "skills:write";
+}
+
+export type InboundMcpSkillsAuthorization = Readonly<{
+  userId: string;
+  clientId: string;
+  grantId: string;
+  grantRevision: number;
+  tokenId: string;
+  familyId: string;
+  scopes: readonly string[];
+}>;
+
+/** Hold authority rows until the same transaction commits the protected operation. */
+export async function assertInboundMcpSkillsAuthority(
+  tx: Prisma.TransactionClient,
+  auth: InboundMcpSkillsAuthorization,
+  access: "read" | "write"
+): Promise<boolean> {
+  const requiredScope = access === "write" ? "skills:write" : "skills:read";
+  if (!auth.scopes.includes(requiredScope)) return false;
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT t."id" FROM "InboundMcpOAuthToken" t
+    JOIN "InboundMcpOAuthTokenFamily" f ON f."id" = t."familyId"
+    JOIN "InboundMcpOAuthGrant" g ON g."id" = f."grantId"
+    JOIN "InboundMcpOAuthClient" c ON c."id" = g."oauthClientId"
+    JOIN "User" u ON u."id" = g."userId"
+    WHERE t."id" = ${auth.tokenId} AND f."id" = ${auth.familyId}
+      AND g."id" = ${auth.grantId} AND g."userId" = ${auth.userId}
+      AND c."clientId" = ${auth.clientId} AND u."status" = 'active'
+      AND g."state" = 'ACTIVE' AND g."revision" = ${auth.grantRevision}
+      AND f."grantRevision" = g."revision" AND f."revokedAt" IS NULL
+      AND f."inactivityExpiresAt" > clock_timestamp()
+      AND t."kind" = 'ACCESS' AND t."expiresAt" > clock_timestamp()
+      AND t."resourcePath" = '/mcp/skills' AND t."capability" = 'skills:store'
+      AND f."resourcePath" = t."resourcePath" AND f."capability" = t."capability"
+      AND g."resourcePath" = f."resourcePath" AND g."capability" = f."capability"
+      AND ${requiredScope} = ANY(t."scopes")
+      AND t."scopes" <@ f."scopes" AND f."scopes" <@ g."scopes"
+    FOR SHARE OF t, f, g, u
+  `;
+  return rows.length === 1;
+}
+
 export function createPrismaInboundMcpOAuthRepository(
   prisma: PrismaClient
 ): InboundMcpOAuthRepository {
@@ -273,6 +329,14 @@ export function createPrismaInboundMcpOAuthRepository(
       return prisma.$transaction(async (tx) => {
         const authority = requestedAuthority(input);
         if (!authority) return false;
+        const scopes = input.scopes ?? [];
+        if (authority.capability === "skills:store"
+          ? !validSkillsScopes(scopes) : scopes.length !== 0) return false;
+        // Serialize new/repeated consent against owner disable/delete, including first grants.
+        const activeOwners = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "User" WHERE "id" = ${input.userId} AND "status" = 'active' FOR SHARE
+        `;
+        if (activeOwners.length !== 1) return false;
         const [client, user] = await Promise.all([
           tx.inboundMcpOAuthClient.findUnique({
             select: { applicationType: true, id: true, redirectUris: true },
@@ -308,6 +372,7 @@ export function createPrismaInboundMcpOAuthRepository(
           });
           grant = await tx.inboundMcpOAuthGrant.update({
             data: {
+              scopes: [...scopes],
               connectedAt: input.now,
               updatedAt: input.now,
               lastUsedAt: null,
@@ -321,6 +386,7 @@ export function createPrismaInboundMcpOAuthRepository(
         } else {
           grant = await tx.inboundMcpOAuthGrant.create({
             data: {
+              scopes: [...scopes],
               capability: authority.capability,
               resourcePath: authority.resourcePath,
               client: { connect: { id: client.id } },
@@ -334,6 +400,7 @@ export function createPrismaInboundMcpOAuthRepository(
         }
         await tx.inboundMcpOAuthAuthorizationCode.create({
           data: {
+            scopes: [...scopes],
             capability: authority.capability,
             resourcePath: authority.resourcePath,
             codeChallenge: input.codeChallenge,
@@ -396,6 +463,7 @@ export function createPrismaInboundMcpOAuthRepository(
           code.redirectUri !== input.redirectUri || code.issuer !== input.issuer ||
           code.resource !== input.resource ||
           !matchesAuthority(code, authority) || !matchesAuthority(code.grant, authority) ||
+          !scopesWithin(code.scopes, code.grant.scopes) ||
           !activeGrant({ grant: code.grant, grantRevision: code.grantRevision })) {
           return false;
         }
@@ -406,6 +474,7 @@ export function createPrismaInboundMcpOAuthRepository(
         if (consumed.count !== 1) return false;
         const family = await tx.inboundMcpOAuthTokenFamily.create({
           data: {
+            scopes: code.scopes,
             capability: code.capability,
             resourcePath: code.resourcePath,
             grantId: code.grantId,
@@ -423,6 +492,7 @@ export function createPrismaInboundMcpOAuthRepository(
           data: [{
             createdAt: input.now,
             expiresAt: input.accessExpiresAt,
+            scopes: code.scopes,
             capability: code.capability,
             resourcePath: code.resourcePath,
             familyId: family.id,
@@ -431,6 +501,7 @@ export function createPrismaInboundMcpOAuthRepository(
           }, {
             createdAt: input.now,
             expiresAt: input.refreshExpiresAt,
+            scopes: code.scopes,
             capability: code.capability,
             resourcePath: code.resourcePath,
             familyId: family.id,
@@ -448,7 +519,7 @@ export function createPrismaInboundMcpOAuthRepository(
             where: { id: code.oauthClientId }
           })
         ]);
-        return true;
+        return { scopes: code.scopes };
       });
     },
 
@@ -465,6 +536,7 @@ export function createPrismaInboundMcpOAuthRepository(
         orderBy: [{ connectedAt: "desc" }, { id: "desc" }],
         select: {
           client: { select: { clientName: true, clientOrigin: true } },
+          scopes: true,
           capability: true,
           resourcePath: true,
           connectedAt: true,
@@ -476,8 +548,9 @@ export function createPrismaInboundMcpOAuthRepository(
         where: { userId }
       });
       return grants.map((grant) => ({
+        scopes: grant.scopes,
         capability: grant.capability as InboundMcpCapability,
-        resourcePath: grant.resourcePath as "/mcp" | "/mcp/hub",
+        resourcePath: grant.resourcePath as InboundMcpResourcePath,
         clientName: grant.client.clientName,
         clientOrigin: grant.client.clientOrigin,
         connectedAt: grant.connectedAt,
@@ -512,6 +585,8 @@ export function createPrismaInboundMcpOAuthRepository(
           token.family.issuer !== input.issuer || token.family.resource !== input.resource ||
           !matchesAuthority(token, authority) || !matchesAuthority(token.family, authority) ||
           !matchesAuthority(token.family.grant, authority) ||
+          !scopesWithin(token.scopes, token.family.scopes) ||
+          !scopesWithin(token.family.scopes, token.family.grant.scopes) ||
           !activeGrant({
             grant: token.family.grant,
             grantRevision: token.family.grantRevision
@@ -535,6 +610,10 @@ export function createPrismaInboundMcpOAuthRepository(
           })
         ]);
         return {
+          scopes: token.scopes,
+          tokenId: token.id,
+          familyId: token.familyId,
+          grantRevision: token.family.grantRevision,
           capability: authority.capability,
           resource: authority.resource,
           clientId: token.family.grant.client.clientId,
@@ -608,7 +687,11 @@ export function createPrismaInboundMcpOAuthRepository(
           token.family.grant.client.clientId !== input.clientId ||
           token.family.issuer !== input.issuer || token.family.resource !== input.resource ||
           !matchesAuthority(token, authority) || !matchesAuthority(token.family, authority) ||
-          !matchesAuthority(token.family.grant, authority)) return "invalid";
+          !matchesAuthority(token.family.grant, authority) ||
+          !scopesWithin(token.scopes, token.family.scopes) ||
+          !scopesWithin(token.family.scopes, token.family.grant.scopes)) return "invalid";
+        const scopes = input.requestedScopes ?? token.scopes;
+        if (!scopesWithin(scopes, token.scopes)) return "invalid";
         if (token.consumedAt) {
           await markRefreshReuse(tx, token.familyId, input.now);
           return "reused";
@@ -631,6 +714,7 @@ export function createPrismaInboundMcpOAuthRepository(
           data: [{
             createdAt: input.now,
             expiresAt: input.accessExpiresAt,
+            scopes: [...scopes],
             capability: token.capability,
             resourcePath: token.resourcePath,
             familyId: token.familyId,
@@ -639,6 +723,7 @@ export function createPrismaInboundMcpOAuthRepository(
           }, {
             createdAt: input.now,
             expiresAt: input.refreshExpiresAt,
+            scopes: [...scopes],
             capability: token.capability,
             resourcePath: token.resourcePath,
             familyId: token.familyId,
@@ -663,7 +748,7 @@ export function createPrismaInboundMcpOAuthRepository(
             where: { id: token.family.grant.client.id }
           })
         ]);
-        return "rotated";
+        return { scopes };
       });
     },
 

@@ -861,6 +861,7 @@ model User {
   knowledgeUploadBatches              KnowledgeUploadBatch[]
   memoryEgressPolicyUpdates           MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
   inboundMcpOAuthGrants               InboundMcpOAuthGrant[]
+  skillStoreOperations                SkillStoreOperation[]
   mcpHubDispatches                    McpHubDispatch[]
   mcpHubDiscoveryAttempts             McpHubDiscoveryAttempt[]
   optionalDecisionAttempts           OptionalDecisionAttempt[]
@@ -3787,6 +3788,7 @@ model InboundMcpOAuthClient {
 }
 
 model InboundMcpOAuthGrant {
+  scopes             String[]                           @default([])
   resourcePath       String                             @default("/mcp") @db.VarChar(32)
   capability         String                             @default("memory:facts") @db.VarChar(32)
   id                 String                             @id @default(uuid())
@@ -3813,6 +3815,7 @@ model InboundMcpOAuthGrant {
 }
 
 model InboundMcpOAuthAuthorizationCode {
+  scopes             String[]                           @default([])
   resourcePath  String                @default("/mcp") @db.VarChar(32)
   capability    String                @default("memory:facts") @db.VarChar(32)
   id            String                @id @default(uuid())
@@ -3836,6 +3839,7 @@ model InboundMcpOAuthAuthorizationCode {
 }
 
 model InboundMcpOAuthTokenFamily {
+  scopes             String[]                           @default([])
   resourcePath        String                 @default("/mcp") @db.VarChar(32)
   capability          String                 @default("memory:facts") @db.VarChar(32)
   id                  String                 @id @default(uuid())
@@ -3858,6 +3862,7 @@ model InboundMcpOAuthTokenFamily {
 }
 
 model InboundMcpOAuthToken {
+  scopes             String[]                           @default([])
   resourcePath String                     @default("/mcp") @db.VarChar(32)
   capability   String                     @default("memory:facts") @db.VarChar(32)
   id           String                     @id @default(uuid())
@@ -6981,4 +6986,26 @@ model ChatPdfPageAttempt {
   @@unique([preparationId, page])
   @@index([workKey, requestDigest, state])
   @@index([resultArtifactId])
+}
+
+/// Owner/client-bound mutation receipts contain digests and safe results, never package bytes.
+model SkillStoreOperation {
+  id                        String   @id @default(cuid())
+  ownerUserId               String
+  clientId                  String   @db.VarChar(2048)
+  operationKey              String   @db.VarChar(128)
+  requestDigest             String   @db.VarChar(64)
+  action                    String   @db.VarChar(16)
+  status                    String   @default("STAGED") @db.VarChar(16)
+  skillId                   String?
+  revisionId                String?
+  expectedVersion           Int?
+  expectedCurrentRevisionId String?
+  resultJson                Json?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+  owner                     User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerUserId, clientId, operationKey])
+  @@index([status, createdAt])
 }

@@ -3,15 +3,9 @@ import { posix } from "node:path";
 import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
 import { bundleFileBytes, type ArtifactBundle, type ArtifactBundleFile } from "./bundle";
 import { parseArtifactCss } from "./css";
+import { crc32 } from "../../domain/crc32";
 
-export function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
+export { crc32 } from "../../domain/crc32";
 
 /** Bounded, normalized bundle paths only; no filesystem or archive extraction. */
 export function artifactZip(bundle: ArtifactBundle): Buffer {

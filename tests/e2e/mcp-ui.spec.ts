@@ -1,6 +1,5 @@
 import { expect, test } from "@playwright/test";
 import type { UserMcpServer } from "../../lib/contracts/mcp";
-import { runAccountMenuAction } from "./shell/page";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken as signIn } from "./support/localAuth";
@@ -8,53 +7,91 @@ import { signInWithLocalToken as signIn } from "./support/localAuth";
 test.use({ hasTouch: true });
 
 for (const profile of [
-  { theme: "light", width: 390, height: 844 },
-  { theme: "dark", width: 1440, height: 900 }
+  { name: "phone-portrait", theme: "light", width: 390, height: 844 },
+  { name: "phone-landscape", theme: "dark", width: 844, height: 390 },
+  { name: "tablet-portrait", theme: "dark", width: 820, height: 1180 },
+  { name: "tablet-landscape", theme: "light", width: 1180, height: 820 },
+  { name: "desktop", theme: "dark", width: 1440, height: 900 }
 ] as const) {
-  test(`MCP Hub onboarding and independent app revocation · ${profile.theme}`, async ({ context, page }, testInfo) => {
+  test(`Agent guide, setup and independent app revocation · ${profile.name}`, async ({ context, page }, testInfo) => {
     await context.addCookies([{ name: "aiqsa.theme", value: profile.theme, url: "http://127.0.0.1:3000" }]);
     await page.setViewportSize(profile);
     await installMatrixCatalogFixture(page);
-    const canonical = `https://${"installation-".repeat(8)}example.test/mcp/hub`;
+    const canonical = `https://${"installation-".repeat(8)}example.test`;
     await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
-    await page.route("**/.well-known/oauth-protected-resource/mcp/hub", (route) => route.fulfill({ json: { resource: canonical } }));
+    await page.route("**/agents/metadata", (route) => route.fulfill({ json: { origin: canonical, hubEnabled: true } }));
     const common = {
       clientName: "Synthetic agent", clientOrigin: "https://agent.example.test",
       connectedAt: "2026-09-12T00:00:00.000Z", lastUsedAt: null, revokedAt: null, state: "ACTIVE"
     };
     const memory = { ...common, connectionId: "memory-grant", resourcePath: "/mcp", capability: "memory:facts" };
     const hub = { ...common, connectionId: "hub-grant", resourcePath: "/mcp/hub", capability: "mcp:hub" };
+    const readSkills = { ...common, clientName: "Read-only agent", connectionId: "skills-read-grant", resourcePath: "/mcp/skills", capability: "skills:store", scopes: ["skills:read"] };
+    const writeSkills = { ...common, clientName: "Skill writer", connectionId: "skills-write-grant", resourcePath: "/mcp/skills", capability: "skills:store", scopes: ["skills:read", "skills:write"] };
     let revoked = false;
-    await page.route("**/api/me/connected-apps", (route) => route.fulfill({ json: { apps: [memory, hub] } }));
-    await page.route("**/api/me/connected-apps/hub-grant", async (route) => {
+    await page.route("**/api/me/connected-apps", (route) => route.fulfill({ json: { apps: [memory, hub, readSkills, writeSkills] } }));
+    await page.route("**/api/me/connected-apps/skills-write-grant", async (route) => {
       expect(route.request().method()).toBe("DELETE");
       revoked = true;
-      await route.fulfill({ json: { app: { ...hub, revokedAt: "2026-09-12T00:01:00.000Z", state: "REVOKED" } } });
+      await route.fulfill({ json: { app: { ...writeSkills, revokedAt: "2026-09-12T00:01:00.000Z", state: "REVOKED" } } });
     });
     await signIn(page);
     await page.goto("/?library=mcp");
-    let settings = page.getByTestId("library-v2");
-    await settings.getByText("Connect an external agent to MCP Hub", { exact: true }).click();
-    await expect(settings.getByLabel("MCP Hub URL")).toHaveValue(canonical);
-    await expectWithinViewport(page, settings.getByLabel("MCP Hub URL"));
-    await expectTouchSafe(settings.getByRole("button", { name: "Copy URL" }));
+    const library = page.getByTestId("library-v2");
+    await library.getByRole("button", { name: "Connect Claude Code or Codex" }).click();
+    const settings = page.getByTestId("settings-v2");
+    await expect(settings.getByRole("heading", { name: "Claude Code & Codex", exact: true })).toBeVisible();
+    const guide = settings.getByLabel("Agent instructions");
+    await expect(guide).toHaveValue(`${canonical}/AGENTS.md`);
+    await expectWithinViewport(page, guide);
+    await expectTouchSafe(settings.getByRole("button", { name: "Copy link" }));
+    await expect(settings.getByText("Set up manually").locator("xpath=..")).not.toHaveAttribute("open", "");
     await expectNoHorizontalOverflow(page);
-    await page.screenshot({ path: testInfo.outputPath(`hub-connect-${profile.theme}.png`) });
-    await runAccountMenuAction(page, "Settings");
-    settings = page.getByTestId("settings-v2");
-    await settings.getByRole("button", { name: "Connected apps", exact: true }).click();
-    const revoke = settings.getByRole("button", { name: "Revoke Synthetic agent MCP Hub access" });
+    await page.screenshot({ path: testInfo.outputPath(`agents-connect-${profile.name}.png`) });
+    await settings.getByText("Set up manually", { exact: true }).click();
+    const codex = settings.getByRole("button", { name: "Codex", exact: true });
+    await codex.click();
+    await expect(codex).toHaveAttribute("aria-pressed", "true");
+    await expectTouchSafe(codex);
+    await settings.getByRole("combobox", { name: "Connection" }).selectOption("skills");
+    await expect(settings.locator("pre")).toContainText("codex mcp add aiqsa-skills");
+    await expect(settings.locator("pre")).toContainText(`${canonical}/mcp/skills`);
+    await settings.locator("pre").scrollIntoViewIfNeeded();
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath(`agents-manual-${profile.name}.png`) });
+    await settings.getByText("Set up manually", { exact: true }).click();
+    const revoke = settings.getByRole("button", { name: "Revoke Skill writer Skills · read, download, create, update, and delete access" });
+    await revoke.scrollIntoViewIfNeeded();
     await expectTouchSafe(revoke);
     await revoke.click();
-    await expect(settings.getByRole("status").filter({ hasText: "MCP Hub access revoked." }))
-      .toHaveText("MCP Hub access revoked. Your MCP connections were kept.");
+    await expect(settings.getByRole("status").filter({ hasText: "Skills access revoked." }))
+      .toHaveText("Skills access revoked. Your stored Skills and downloaded copies were kept.");
     expect(revoked).toBe(true);
     await expect(settings.getByRole("button", { name: "Revoke Synthetic agent Personal Memory access" })).toBeEnabled();
-    await expect(settings.getByRole("heading", { name: "Synthetic agent" }).last()).toBeFocused();
+    await expect(settings.getByRole("button", { name: "Revoke Synthetic agent MCP Hub access" })).toBeEnabled();
+    await expect(settings.getByRole("button", { name: "Revoke Read-only agent Skills · read and download access" })).toBeEnabled();
+    await expect(settings.getByRole("heading", { name: "Skill writer" })).toBeFocused();
     await expectNoHorizontalOverflow(page);
-    await page.screenshot({ path: testInfo.outputPath(`hub-revoked-${profile.theme}.png`) });
+    await page.screenshot({ path: testInfo.outputPath(`agents-revoked-${profile.name}.png`) });
+    await page.keyboard.press("Escape");
+    await expect(settings).toBeHidden();
+    await expect(library.getByRole("button", { name: "Connect Claude Code or Codex" })).toBeFocused();
   });
 }
+
+test("public agent instructions and alias work without login and describe the installation", async ({ request }) => {
+  const guide = await request.get("/AGENTS.md");
+  expect(guide.status()).toBe(200);
+  expect(guide.headers()["content-type"]).toContain("text/markdown");
+  const body = await guide.text();
+  expect(body).toContain("# Connect your agent to AIQSA");
+  expect(body).toContain("/mcp/skills");
+  expect(body).toContain("/agents/skills-client.mjs");
+  expect(body).not.toMatch(/AGENTS.override|DEV_SERVER|agent_docs|<html/u);
+  const alias = await request.get("/AGENTS", { maxRedirects: 0 });
+  expect(alias.status()).toBe(308);
+  expect(alias.headers().location).toBe("/AGENTS.md");
+});
 
 test("explains MCP health failures and timeouts and refreshes their status explicitly", async ({ page }) => {
   await installMatrixCatalogFixture(page);

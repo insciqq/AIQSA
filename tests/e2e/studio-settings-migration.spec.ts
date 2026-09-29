@@ -188,7 +188,7 @@ for (const theme of ["dark", "light"] as const) {
       await runAccountMenuAction(page, "Settings");
       const settings = page.getByTestId("settings-v2");
       await expect(settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText([
-        "General", "Account", "Connected apps", "Data"
+        "General", "Account", "Claude Code & Codex", "Data"
       ]);
       if (size.width === 1440) {
         await expect.poll(async () => {

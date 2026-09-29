@@ -52,6 +52,7 @@ function fixture(overrides: Partial<McpHubServiceDependencies> = {}, deadlineMs 
   const resolveAccessToken = vi.fn(async (candidate: string, resource?: string) =>
     active && candidate === token && resource === endpoint.href ? {
       capability: "mcp:hub" as const, resource, clientId: "fixture-client", expiresAt: new Date(Date.now() + 60_000),
+      scopes: [], grantRevision: 1, familyId: "fixture-family", tokenId: "fixture-token",
       grantId: "fixture-grant", userId: "fixture-owner"
     } : null);
   const handler = createMcpHubHandler({

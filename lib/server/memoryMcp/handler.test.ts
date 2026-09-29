@@ -61,15 +61,9 @@ function nativeSearchService(): MemoryNativeFactSearchService {
 }
 
 function oauthService(
-  resolve: (token: string, resource?: string) => Promise<{
-    capability: "memory:facts" | "mcp:hub";
-    resource: string;
-    clientId: string;
-    expiresAt: Date;
-    grantId: string;
-    userId: string;
-  } | null> = async (token) => token === activeToken ? {
+  resolve: InboundMcpOAuthService["resolveAccessToken"] = async (token) => token === activeToken ? {
     capability: "memory:facts",
+    scopes: [], grantRevision: 1, familyId: "family-1", tokenId: "token-1",
     resource: endpoint.toString(),
     clientId: "codex-client",
     expiresAt: new Date(Date.now() + 60_000),
@@ -364,6 +358,7 @@ describe("Personal Memory MCP handler", () => {
     const service = memoryService();
     const expiredOAuth = oauthService(async (token) => token === activeToken ? {
       capability: "memory:facts",
+      scopes: [], grantRevision: 1, familyId: "family-1", tokenId: "token-1",
       resource: endpoint.toString(),
       clientId: "codex-client",
       expiresAt: new Date(Date.now() - 1_000),

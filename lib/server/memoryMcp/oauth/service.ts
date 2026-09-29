@@ -65,7 +65,7 @@ export type InboundMcpOAuthTokenResponse = Readonly<{
   expires_in: number;
   refresh_token: string;
   token_type: "Bearer";
-  scope?: "mcp:hub";
+  scope?: string;
 }>;
 
 export type InboundMcpAuthorizationView = Readonly<{
@@ -88,6 +88,7 @@ export type InboundMcpDynamicRegistrationResponse = Readonly<{
 
 export type InboundMcpOAuthService = Readonly<{
   approveAuthorization(input: Readonly<{
+    allowSkillsWrite?: boolean;
     consentToken: string;
     request: InboundMcpAuthorizationRequest;
     sessionId: string;
@@ -112,6 +113,10 @@ export type InboundMcpOAuthService = Readonly<{
   registerClient(value: unknown): Promise<InboundMcpDynamicRegistrationResponse>;
   resolveAccessToken(token: string, resource?: string): Promise<Readonly<{
     capability: InboundMcpCapability;
+    scopes: readonly string[];
+    grantRevision: number;
+    tokenId: string;
+    familyId: string;
     resource: string;
     clientId: string;
     expiresAt: Date;
@@ -163,8 +168,10 @@ export function inboundMcpProtectedResourceMetadata(
     authorization_servers: [configuration.issuer],
     bearer_methods_supported: ["header"],
     resource: inboundMcpResourceUrl(configuration.issuer, resourcePath),
-    resource_name: resourcePath === "/mcp/hub" ? "AIQSA MCP Hub" : "AIQSA Personal Memory",
-    ...(resourcePath === "/mcp/hub" ? { scopes_supported: ["mcp:hub"] } : {})
+    resource_name: resourcePath === "/mcp/hub" ? "AIQSA MCP Hub"
+      : resourcePath === "/mcp/skills" ? "AIQSA Personal Skills" : "AIQSA Personal Memory",
+    ...(resourcePath === "/mcp/hub" ? { scopes_supported: ["mcp:hub"] }
+      : resourcePath === "/mcp/skills" ? { scopes_supported: ["skills:read", "skills:write"] } : {})
   });
 }
 
@@ -181,7 +188,7 @@ export function inboundMcpAuthorizationServerMetadata(
     registration_endpoint: configuration.registrationEndpoint,
     resource_indicators_supported: true,
     response_types_supported: ["code"],
-    scopes_supported: ["mcp:hub"],
+    scopes_supported: ["mcp:hub", "skills:read", "skills:write"],
     revocation_endpoint: configuration.revocationEndpoint,
     revocation_endpoint_auth_methods_supported: ["none"],
     token_endpoint: configuration.tokenEndpoint,
@@ -293,7 +300,10 @@ export function createInboundMcpOAuthService(input: Readonly<{
   function assertResource(resource: string, scope?: string) {
     const authority = inboundMcpResourceAuthority(input.configuration.issuer, resource);
     if (!authority) return failure("invalid_target");
-    if (scope && (scope !== "mcp:hub" || authority.capability !== "mcp:hub")) {
+    const scopes = scope?.split(" ") ?? [];
+    if (scope && (authority.capability === "skills:store"
+      ? scopes.some((value) => value !== "skills:read" && value !== "skills:write")
+      : scope !== "mcp:hub" || authority.capability !== "mcp:hub")) {
       return failure("invalid_scope");
     }
     return authority;
@@ -358,9 +368,10 @@ export function createInboundMcpOAuthService(input: Readonly<{
   function tokenResponse(tokens: Readonly<{
     accessToken: string;
     refreshToken: string;
-  }>, capability: InboundMcpCapability): InboundMcpOAuthTokenResponse {
+  }>, capability: InboundMcpCapability, scopes: readonly string[]): InboundMcpOAuthTokenResponse {
     return {
-      ...(capability === "mcp:hub" ? { scope: "mcp:hub" } : {}),
+      ...(capability === "mcp:hub" ? { scope: "mcp:hub" }
+        : capability === "skills:store" ? { scope: scopes.join(" ") } : {}),
       access_token: tokens.accessToken,
       expires_in: INBOUND_MCP_ACCESS_TOKEN_TTL_MS / 1_000,
       refresh_token: tokens.refreshToken,
@@ -396,6 +407,13 @@ export function createInboundMcpOAuthService(input: Readonly<{
     async approveAuthorization(requestInput) {
       const now = clock();
       const client = await validateConsent(requestInput);
+      const authority = assertResource(requestInput.request.resource, requestInput.request.scope);
+      const requestedWrite = !requestInput.request.scope || requestInput.request.scope.split(" ").includes("skills:write");
+      if (requestInput.allowSkillsWrite && (authority.capability !== "skills:store" || !requestedWrite)) {
+        return failure("invalid_scope");
+      }
+      const scopes = authority.capability === "skills:store"
+        ? ["skills:read", ...(requestInput.allowSkillsWrite ? ["skills:write"] : [])] : [];
       const code = rawCredential("aiqsa_mc_");
       const approved = await input.repository.approveAuthorization({
         clientRecordId: client.id,
@@ -405,7 +423,8 @@ export function createInboundMcpOAuthService(input: Readonly<{
         issuer: input.configuration.issuer,
         now,
         redirectUri: requestInput.request.redirectUri,
-        ...assertResource(requestInput.request.resource, requestInput.request.scope),
+        ...authority,
+        scopes,
         userId: requestInput.userId
       });
       return approved ? code : failure("access_denied");
@@ -515,7 +534,7 @@ export function createInboundMcpOAuthService(input: Readonly<{
           refreshTokenHash: hashToken(tokens.refreshToken),
           ...authority
         });
-        return exchanged ? tokenResponse(tokens, authority.capability) : failure("invalid_grant");
+        return exchanged ? tokenResponse(tokens, authority.capability, exchanged.scopes) : failure("invalid_grant");
       }
       const rotated = await input.repository.rotateRefreshToken({
         accessExpiresAt: tokens.accessExpiresAt,
@@ -525,10 +544,12 @@ export function createInboundMcpOAuthService(input: Readonly<{
         nextRefreshTokenHash: hashToken(tokens.refreshToken),
         now,
         presentedRefreshTokenHash: hashToken(request.refreshToken),
+        ...(authority.capability === "skills:store" && request.scope
+          ? { requestedScopes: ["skills:read", ...(request.scope.split(" ").includes("skills:write") ? ["skills:write"] : [])] } : {}),
         refreshExpiresAt: tokens.refreshExpiresAt,
         ...authority
       });
-      return rotated === "rotated" ? tokenResponse(tokens, authority.capability) : failure("invalid_grant");
+      return typeof rotated === "object" ? tokenResponse(tokens, authority.capability, rotated.scopes) : failure("invalid_grant");
     }
   });
 }

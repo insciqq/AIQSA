@@ -153,7 +153,8 @@ export async function createInboundMcpTestClient(
         presentedRefreshTokenHash: connection.refreshTokenHash,
         refreshExpiresAt
       });
-      return { next: outcome === "rotated" ? next : null, outcome };
+      return { next: typeof outcome === "object" ? next : null,
+        outcome: typeof outcome === "object" ? "rotated" as const : outcome };
     },
     repository
   };
