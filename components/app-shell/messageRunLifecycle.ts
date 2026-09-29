@@ -7,6 +7,7 @@ import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { useThreadStore } from "@/components/app-shell/threadStore";
 import type { ThreadMessage } from "@/components/app-shell/types";
+import { observeRunTransport, waitForRunTransport } from "./runTransportLifecycle";
 import type {
   RunStreamMessageIds,
   RunStreamTerminalStatus,
@@ -23,6 +24,7 @@ export type ConsumeMessageRunStream = (input: {
   onMessageIds(messageIds: RunStreamMessageIds, currentRunId: string | null): void;
   onRunId(runId: string): void;
   response: Response;
+  signal?: AbortSignal;
   tokenBuffer: RunStreamTokenBuffer;
 }) => Promise<{
   failed: boolean;
@@ -228,6 +230,8 @@ export async function executeMessageRunLifecycle({
   });
   void primeAnswerSound();
   activeStreamAbortRef.current.set(chatId, abortController);
+  const transport = observeRunTransport(abortController.signal);
+  const acceptsTransport = () => ownsStream() && !transport.signal.aborted;
 
   const tokenBuffer = createStreamTokenBuffer({
     chatId,
@@ -235,13 +239,21 @@ export async function executeMessageRunLifecycle({
   });
 
   try {
-    const response = await request(abortController.signal);
+    const response = await waitForRunTransport(request(transport.signal).then((value) => {
+      if (transport.signal.aborted) {
+        void value.body?.cancel().catch(() => undefined);
+        transport.signal.throwIfAborted();
+      }
+      return value;
+    }), transport.signal);
     if (!response.ok) {
-      serverRejectedRequest = true;
-      const details = await responseErrorMessageDetails(
+      const details = await waitForRunTransport(responseErrorMessageDetails(
         response,
         `${failurePrefix}_${response.status}`
-      );
+      ), transport.signal);
+      // An unread refusal can describe a stale branch after an earlier accepted
+      // send. Preserve reconciliation until its complete reason is available.
+      serverRejectedRequest = true;
       failureCode = details.code ?? null;
       rejectionMessage = details.message;
       userFacingFailureMessage = details.preserveForComposer ? details.message : null;
@@ -249,7 +261,7 @@ export async function executeMessageRunLifecycle({
     }
 
     if (response.status === 202) {
-      const admitted = decodePreparingRunAdmission(await response.json());
+      const admitted = decodePreparingRunAdmission(await waitForRunTransport(response.json(), transport.signal));
       if (!admitted) throw new Error("run_admission_malformed");
       runId = admitted.run.id;
       useRunSurfaceStore.getState().bindContextMessage(chatId, assistantMessageId, admitted.assistantMessageId);
@@ -264,11 +276,12 @@ export async function executeMessageRunLifecycle({
         : message));
       deferred = true;
     } else {
-    const streamResult = await consumeRunStream({
+    const streamResult = await waitForRunTransport(consumeRunStream({
       chatId,
       failurePrefix,
-      isCurrent: ownsStream,
+      isCurrent: acceptsTransport,
       onAnswerComplete(published) {
+        if (!acceptsTransport()) return;
         if (published.runId !== runId || published.assistantMessageId !== assistantMessageId) return;
         answerPublished = true;
         updateStreamChatMessages(chatId, (messages) => messages.map((message) => message.id === assistantMessageId
@@ -278,6 +291,7 @@ export async function executeMessageRunLifecycle({
         void notifyAnswerReady();
       },
       onMessageIds(messageIds, currentRunId) {
+        if (!acceptsTransport()) return;
         const reconciledAssistantMessageId =
           messageIds.assistantMessageId ?? assistantMessageId;
         useRunSurfaceStore.getState().bindContextMessage(chatId, assistantMessageId, reconciledAssistantMessageId);
@@ -298,6 +312,7 @@ export async function executeMessageRunLifecycle({
         }
       },
       onRunId(nextRunId) {
+        if (!acceptsTransport()) return;
         runId = nextRunId;
         useRunLifecycleStore.getState().runIdReceived({ chatId, producer, runId: nextRunId });
         notifyAdmission(nextRunId);
@@ -308,8 +323,9 @@ export async function executeMessageRunLifecycle({
         );
       },
       response,
+      signal: transport.signal,
       tokenBuffer
-    });
+    }), transport.signal);
 
     receivedChatUpdate = streamResult.receivedChatUpdate;
     runId = streamResult.runId;
@@ -374,6 +390,10 @@ export async function executeMessageRunLifecycle({
       }
     }
   } finally {
+    transport.dispose();
+    if (transport.signal.aborted && ownsStream()) {
+      useRunSurfaceStore.getState().endArtifactStream(chatId, cancelled ? "cancelled" : "interrupted");
+    }
     finishStream({
       abortController,
       activeStreamAbortRef,

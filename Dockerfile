@@ -146,7 +146,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash binutils build-essential ca-certificates coreutils curl ffmpeg file git \
     fonts-noto-core imagemagick jq libmagic1 libreoffice openssh-client p7zip-full \
-    pkg-config poppler-utils python3 python3-dev python3-pip python3-venv \
+    pkg-config poppler-utils procps python3 python3-dev python3-pip python3-venv \
     ripgrep sqlite3 tar unzip wget xz-utils xxd zip \
   && rm -rf /var/lib/apt/lists/* \
   && python3 -m venv /opt/aiqsa-python \
@@ -180,7 +180,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.28 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.29 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.

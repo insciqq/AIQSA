@@ -2513,6 +2513,7 @@ describe("message run actions", () => {
     await actions.submitComposer();
 
     expect(persistActiveLeaf).toHaveBeenCalledWith("chat-a", "message-selected");
+    expect(actions.refreshActiveChat).toHaveBeenCalledWith("chat-a", { forceDetail: true, preserveControls: true });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "Question for selected branch",
@@ -2521,6 +2522,30 @@ describe("message run actions", () => {
     });
     expect(actions.setNotice).not.toHaveBeenCalled();
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
+  });
+
+  it.each(["active_leaf_changed", "active_run_in_progress"])("reconciles %s after rollback without replaying the send or losing newer input", async (code) => {
+    const fetchMock = vi.fn(async () => Response.json({ error: code }, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const refreshActiveChat = vi.fn(async () => {
+      expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([]);
+      prepareRegenerationThread("Accepted question", "Saved answer");
+      useComposerSessionStore.getState().setDraft("New unsent question");
+      const snapshot = selectThreadSnapshot(useThreadStore.getState(), "chat-a");
+      return { ...chat(), activeLeafMessageId: snapshot.activeLeafId, contextStats: { approximateActiveBranchInputTokens: 0 },
+        messages: snapshot.messages, pageInfo: { activeLeafMessageId: snapshot.activeLeafId,
+          beforeCursor: null, hasOlder: false, snapshotUpdatedAt: chat().updatedAt }, usageStats: null };
+    });
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Original question", refreshActiveChat });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(refreshActiveChat).toHaveBeenCalledExactlyOnceWith("chat-a", { forceDetail: true, preserveControls: true });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
+      activeLeafId: "assistant-original", messages: [expect.anything(), expect.objectContaining({ content: "Saved answer" })]
+    });
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({ draft: "Original question\n\nNew unsent question", pendingSend: null });
   });
 
   it("does not move a different active chat when branch settlement outlives navigation", async () => {

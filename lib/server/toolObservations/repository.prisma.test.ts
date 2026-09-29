@@ -669,7 +669,7 @@ describe("durable tool observation ownership", () => {
     // An Agent run beyond its own 64 MiB budget on an otherwise roomy branch.
     const g = await fixture();
     const session = await prisma.workspaceSession.create({ data: { chatId: g.chat.id, sandboxName: `observation-${randomUUID()}`,
-      imageRef: "aiqsa-workspace:0.1.28", internetEnabled: false, policyRevision: 1, runtimeSandboxId: "fixture-runtime",
+      imageRef: "aiqsa-workspace:0.1.29", internetEnabled: false, policyRevision: 1, runtimeSandboxId: "fixture-runtime",
       state: "RUNNING", expiresAt: new Date(Date.now() + 600_000) } });
     cleanups.push(async () => {
       // Binding -> session and session -> chat are RESTRICT: remove the run first.

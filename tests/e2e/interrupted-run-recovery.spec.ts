@@ -1,14 +1,224 @@
 import { expect, test, type Page } from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { chooseSearchStrategy } from "./shell/composer";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 import { activeChatId, disableMemoryRecall, selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
+import { interruptAdmission, releaseLateAdmission, returnAfterAdmissionLoss } from "./support/admissionTransport";
+import type { ChatDetailWire } from "../../lib/contracts/chats";
+import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 
 const viewports = [
   { width: 1440, height: 900 }, { width: 900, height: 1440 },
   { width: 820, height: 1180 }, { width: 1180, height: 820 },
   { width: 390, height: 844 }, { width: 844, height: 390 }
 ] as const;
+
+async function persistedChat(page: Page, chatId: string): Promise<ChatDetailWire> {
+  const response = await page.request.get(`/api/chats/${chatId}`);
+  expect(response.ok()).toBe(true);
+  return (await response.json() as { chat: ChatDetailWire }).chat;
+}
+
+async function expectSettledTurns(page: Page, chatId: string, count: number): Promise<void> {
+  await expect.poll(async () => {
+    // The browser allocates the first chat's address before admission commits.
+    // An early 404 must be polled rather than escaping expect.poll as a failure.
+    const response = await page.request.get(`/api/chats/${chatId}`);
+    if (response.status() === 404) return null;
+    expect(response.ok()).toBe(true);
+    const chat = (await response.json() as { chat: ChatDetailWire }).chat;
+    const answers = chat.messages.filter((message) => message.role === "assistant");
+    return {
+      questions: chat.messages.filter((message) => message.role === "user").length,
+      answers: answers.length,
+      completed: answers.filter((message) => message.status === "complete").length,
+      runs: new Set(answers.map((message) => message.modelRunId).filter(Boolean)).size
+    };
+  }, { timeout: 60_000 }).toEqual({ questions: count, answers: count, completed: count, runs: count });
+}
+
+for (const fault of ["headers", "admission-body", "malformed-admission", "conflict"] as const) {
+  test(`an accepted send with lost ${fault} recovers before acknowledgement and fences a late reply`, async ({ page }) => {
+    test.setTimeout(180_000);
+    await interruptAdmission(page, fault);
+    await signInWithLocalToken(page);
+    await startPlainFakeChat(page);
+    let sends = 0;
+    let documentLoads = 0;
+    page.on("request", (request) => { if (request.isNavigationRequest()) documentLoads++; });
+    page.on("request", (request) => {
+      if (request.method() === "POST" && /\/api\/chats\/[^/]+\/messages$/u.test(request.url())) sends++;
+    });
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("Lost admission acknowledgement");
+    await page.getByRole("button", { name: "Send message" }).click();
+    const chatId = await activeChatId(page);
+    try {
+      await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("hidden");
+      await expectSettledTurns(page, chatId, 1);
+      await composer.fill("Keep my newer draft");
+      await returnAfterAdmissionLoss(page);
+      await expect(page.locator('article[data-role="assistant"]').last())
+        .toContainText("Fake answer: Lost admission acknowledgement", { timeout: 45_000 });
+      await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
+      await expect(page.getByTestId("run-connection-lost")).toHaveCount(0);
+      await expect(composer).toHaveValue(/Keep my newer draft$/u);
+      expect(sends).toBe(1);
+      expect(documentLoads).toBe(0);
+
+      // A deliberate second send proves the old request released its producer.
+      // Its late response must neither replace this answer nor clear this draft.
+      await composer.fill("Successor after recovery");
+      await page.getByRole("button", { name: "Send message" }).click();
+      await expect(page.locator('article[data-role="assistant"]').last())
+        .toContainText("Fake answer: Successor after recovery", { timeout: 45_000 });
+      await expectSettledTurns(page, chatId, 2);
+      await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
+      await composer.fill("Draft after the successor");
+      await releaseLateAdmission(page);
+      await expect(composer).toHaveValue("Draft after the successor");
+      await expect(page.locator('article[data-role="assistant"]')).toHaveCount(2);
+      await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Fake answer: Successor after recovery");
+      expect(sends).toBe(2);
+      expect(documentLoads).toBe(0);
+    } finally {
+      await page.request.delete(`/api/chats/${chatId}`);
+    }
+  });
+}
+
+test("a stale branch refusal refreshes a saved answer without resending the refused draft", async ({ page }) => {
+  test.setTimeout(180_000);
+  await signInWithLocalToken(page);
+  await startPlainFakeChat(page);
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("Original visible turn");
+  const firstSend = page.waitForRequest((request) => request.method() === "POST" && /\/api\/chats\/[^/]+\/messages$/u.test(request.url()));
+  await page.getByRole("button", { name: "Send message" }).click();
+  const originalPayload = (await firstSend).postDataJSON() as Record<string, unknown>;
+  const chatId = await activeChatId(page);
+  try {
+    await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Fake answer: Original visible turn", { timeout: 45_000 });
+    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
+    // Another client produces the canonical turn while this page retains its
+    // previous leaf. The browser's next send receives a real server 409.
+    const before = await persistedChat(page, chatId);
+    const accepted = await page.request.post(`/api/chats/${chatId}/messages`, { data: {
+      ...originalPayload,
+      admissionId: randomUUID(),
+      expectedActiveLeafId: before.activeLeafMessageId,
+      content: { blocks: [{ type: "text", text: "Answer saved while the first page was stale" }] }
+    } });
+    expect(accepted.ok()).toBe(true);
+    await expectSettledTurns(page, chatId, 2);
+    let sends = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && /\/api\/chats\/[^/]+\/messages$/u.test(request.url())) sends++;
+    });
+    await composer.fill("Preserve the refused draft");
+    const refusal = page.waitForResponse((response) => response.request().method() === "POST" &&
+      new URL(response.url()).pathname === `/api/chats/${chatId}/messages`);
+    await page.getByRole("button", { name: "Send message" }).click();
+    const response = await refusal;
+    expect(response.status()).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "active_leaf_changed" });
+    await expect(page.locator('article[data-role="assistant"]').last())
+      .toContainText("Fake answer: Answer saved while the first page was stale", { timeout: 45_000 });
+    await expect(composer).toHaveValue("Preserve the refused draft");
+    await expectSettledTurns(page, chatId, 2);
+    expect(sends).toBe(1);
+  } finally {
+    await page.request.delete(`/api/chats/${chatId}`);
+  }
+});
+
+test("a Workspace answer recovers from lost acknowledgement across reading viewports", async ({ page, context }, testInfo) => {
+  test.setTimeout(180_000);
+  expect(process.env.AIQSA_STATEFUL_TEST_TARGET).toBe("DISPOSABLE");
+  await interruptAdmission(page, "headers");
+  await signInWithLocalToken(page);
+  const policyResponse = await page.request.get("/api/admin/workspace");
+  expect(policyResponse.ok()).toBe(true);
+  const { workspace: policy } = await policyResponse.json() as { workspace: { enabled: boolean; version: number } };
+  const prisma = new PrismaClient();
+  let modelSnapshot: { activeConfig: Prisma.JsonValue; capabilities: Prisma.JsonValue } | null = null;
+  let chatId: string | null = null;
+  try {
+    modelSnapshot = await prisma.providerModel.findUniqueOrThrow({
+      where: { id: providerTemplateIds.fakeModel }, select: { activeConfig: true, capabilities: true }
+    });
+    const configuration = modelSnapshot.activeConfig as Prisma.JsonObject;
+    expect(configuration.adapterKind).toBe("fake");
+    // Workspace's real tool schemas exceed this seed model's 8k window.
+    // Expand only this disposable fixture; ordinary context budgeting still runs.
+    await prisma.providerModel.update({ where: { id: providerTemplateIds.fakeModel }, data: {
+      activeConfig: { ...configuration, capabilities: { ...configuration.capabilities as Prisma.JsonObject, contextWindow: 1_000_000 } },
+      capabilities: { ...modelSnapshot.capabilities as Prisma.JsonObject, contextWindow: 1_000_000 }
+    } });
+    if (!policy.enabled) {
+      const enabled = await page.request.patch("/api/admin/workspace", { data: { enabled: true, expectedVersion: policy.version } });
+      expect(enabled.ok()).toBe(true);
+    }
+    await page.reload();
+    await startPlainFakeChat(page);
+    await setWorkspaceEnabled(page, true);
+    let sends = 0;
+    let documentLoads = 0;
+    page.on("request", (request) => { if (request.isNavigationRequest()) documentLoads++; });
+    page.on("request", (request) => {
+      if (request.method() === "POST" && /\/api\/chats\/[^/]+\/messages$/u.test(request.url())) sends++;
+    });
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("[AIQSA_WORKSPACE_E2E:browser_missing]");
+    await page.getByRole("button", { name: "Send message" }).click();
+    chatId = await activeChatId(page);
+    await expectSettledTurns(page, chatId, 1);
+    expect((await persistedChat(page, chatId)).workspace?.enabled).toBe(true);
+    await composer.fill("Keep the Workspace follow-up draft");
+    await returnAfterAdmissionLoss(page);
+    await expect(page.locator('article[data-role="assistant"]').last())
+      .toContainText("Workspace browser session absent.", { timeout: 45_000 });
+    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
+    await expect(page.getByTestId("run-connection-lost")).toHaveCount(0);
+    await expect(composer).toHaveValue(/Keep the Workspace follow-up draft$/u);
+    expect(sends).toBe(1);
+    expect(documentLoads).toBe(0);
+    for (const theme of ["dark", "light"] as const) {
+      await context.addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
+      await page.evaluate((value) => document.documentElement.setAttribute("data-theme", value), theme);
+      for (const viewport of viewports) {
+        await page.setViewportSize(viewport);
+        await expectNoHorizontalOverflow(page);
+        await expectWithinViewport(page, composer);
+        await page.screenshot({ path: testInfo.outputPath(`workspace-recovered-${theme}-${viewport.width}x${viewport.height}.png`) });
+      }
+    }
+    await releaseLateAdmission(page);
+    await expect(composer).toHaveValue(/Keep the Workspace follow-up draft$/u);
+    await expectSettledTurns(page, chatId, 1);
+  } finally {
+    try {
+      if (chatId) await page.request.delete(`/api/chats/${chatId}`);
+      if (!policy.enabled) {
+        const current = await page.request.get("/api/admin/workspace");
+        const body = await current.json() as { workspace: { version: number } };
+        const restored = await page.request.patch("/api/admin/workspace", { data: { enabled: false, expectedVersion: body.workspace.version } });
+        expect(restored.ok()).toBe(true);
+      }
+    } finally {
+      try {
+        if (modelSnapshot) await prisma.providerModel.update({ where: { id: providerTemplateIds.fakeModel }, data: {
+          activeConfig: modelSnapshot.activeConfig as Prisma.InputJsonValue,
+          capabilities: modelSnapshot.capabilities as Prisma.InputJsonValue
+        } });
+      } finally {
+        await prisma.$disconnect();
+      }
+    }
+  }
+});
 
 for (const transport of ["suspended", "disconnected"] as const) {
   test(`an answer ${transport} in the background recovers without reloading or resending`, async ({ page, context }, testInfo) => {

@@ -10,6 +10,7 @@ import {
 } from "@/components/app-shell/shellApi";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { RunEventView } from "@/components/app-shell/types";
+import { observeRunTransport, waitForRunTransport } from "./runTransportLifecycle";
 
 export type RunStreamTokenBuffer = {
   flush(): void;
@@ -37,6 +38,7 @@ type ConsumeRunStreamInput = {
   onMessageIds(messageIds: RunStreamMessageIds, currentRunId: string | null): void;
   onRunId(runId: string): void;
   response: Response;
+  signal?: AbortSignal;
   tokenBuffer: RunStreamTokenBuffer;
 };
 
@@ -64,6 +66,7 @@ export function useRunStream({
       onMessageIds,
       onRunId,
       response,
+      signal,
       tokenBuffer
     }: ConsumeRunStreamInput): Promise<ConsumeRunStreamResult> {
       if (!response.body) {
@@ -141,30 +144,18 @@ export function useRunStream({
       };
 
       const reader = response.body.getReader();
-      // A mobile browser can freeze the stream without rejecting reader.read().
-      // On return, hand observation to persisted-run reconciliation. Cancelling
-      // this reader detaches the browser; it never invokes Stop on the run.
-      let wasHidden = document.visibilityState === "hidden";
-      const reconnect = () => {
-        if (isCurrent()) void reader.cancel().catch(() => undefined);
-      };
-      const visibility = () => {
-        if (document.visibilityState === "hidden") wasHidden = true;
-        else if (wasHidden) reconnect();
-      };
-      const pageShow = (event: PageTransitionEvent) => {
-        if (event.persisted) reconnect();
-      };
-      document.addEventListener("visibilitychange", visibility);
-      document.addEventListener("resume", reconnect);
-      window.addEventListener("pageshow", pageShow);
+      const ownedTransport = signal ? null : observeRunTransport();
+      const transportSignal = signal ?? ownedTransport!.signal;
+      const detach = () => { void reader.cancel().catch(() => undefined); };
+      transportSignal.addEventListener("abort", detach, { once: true });
+      if (transportSignal.aborted) detach();
       const decoder = new TextDecoder();
       let buffer = "";
       let done = false;
 
       try {
         while (!done) {
-          const result = await reader.read();
+          const result = await waitForRunTransport(reader.read(), transportSignal);
           done = result.done;
           buffer += decoder.decode(result.value ?? new Uint8Array(), { stream: !done });
           const chunks = buffer.split("\n\n");
@@ -190,9 +181,8 @@ export function useRunStream({
 
         return { failed, receivedChatUpdate, runId, terminalStatus };
       } finally {
-        document.removeEventListener("visibilitychange", visibility);
-        document.removeEventListener("resume", reconnect);
-        window.removeEventListener("pageshow", pageShow);
+        transportSignal.removeEventListener("abort", detach);
+        ownedTransport?.dispose();
         reader.releaseLock();
         if (isCurrent()) onStreamEnded?.(chatId, terminalStatus ?? "interrupted");
       }

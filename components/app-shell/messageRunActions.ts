@@ -616,6 +616,7 @@ export function useMessageRunActions({
       // The committed branch keeps the readable failed tail: rollback would hide
       // the edited question again, and the stranded-leaf reconcile owns retry.
     });
+    await reconcileBranchConflict(chatId, result.failureCode);
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
     }
@@ -784,6 +785,14 @@ export function useMessageRunActions({
       text: "The interrupted run could not be reconciled. Retry when the connection is available."
     });
     return false;
+  }
+
+  async function reconcileBranchConflict(chatId: string, code: string | undefined) {
+    if (code !== "active_leaf_changed" && code !== "active_run_in_progress") return;
+    // A refusal can follow a lost acknowledgement of an accepted turn. Read
+    // server state before another user action; never replay the refused send.
+    try { await refreshActiveChat(chatId, { forceDetail: true, preserveControls: true }); }
+    catch { /* Keep the draft and refusal; foreground recovery can retry. */ }
   }
 
   async function sendMessage() {
@@ -991,6 +1000,7 @@ export function useMessageRunActions({
           await persistActiveLeaf(chatIdForSend, parentLeafForSend);
         } catch (error) {
           sendFailureMessage = errorMessage(error);
+          await reconcileBranchConflict(chatIdForSend, error instanceof Error ? error.message : undefined);
           return;
         }
       }
@@ -1104,6 +1114,7 @@ export function useMessageRunActions({
             method: "POST",
             signal
           });
+          signal.throwIfAborted();
           if (response.ok && (projectDraftForSend || personalDraftForSend)) {
             useWorkspaceStore.getState().updateChats((current) => current.map((chat) =>
               chat.id === chatIdForSend
@@ -1137,6 +1148,7 @@ export function useMessageRunActions({
           // The user-owned refresh action reconciles it with durable server state.
         }
       });
+      await reconcileBranchConflict(chatIdForSend, result.failureCode);
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
       sendContextTooLarge = result.failureCode === "context_too_large";
       sendFailureMessage = result.failureMessage ?? null;
@@ -1287,6 +1299,7 @@ export function useMessageRunActions({
           await persistActiveLeaf(chatIdForSend, parentLeafForSend);
         } catch (error) {
           setNotice({ kind: "error", text: errorMessage(error) });
+          await reconcileBranchConflict(chatIdForSend, error instanceof Error ? error.message : undefined);
           return;
         }
       }
@@ -1375,6 +1388,7 @@ export function useMessageRunActions({
             method: "POST",
             signal
           });
+          signal.throwIfAborted();
           if (response.ok && (projectDraftForSend || personalDraftForSend)) {
             useWorkspaceStore.getState().updateChats((current) => current.map((chat) =>
               chat.id === chatIdForSend
@@ -1401,6 +1415,7 @@ export function useMessageRunActions({
           }
         }
       });
+      await reconcileBranchConflict(chatIdForSend, result.failureCode);
       if (result.failureCode === "memory_intent_confirmation_required") {
         await showMemoryTargetSelection();
       } else {
@@ -1529,6 +1544,7 @@ export function useMessageRunActions({
         }
       }
     });
+    await reconcileBranchConflict(chatIdForRegenerate, result.failureCode);
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
     } else {
