@@ -99,8 +99,8 @@ be reviewed manually before the disposable user is deleted.
 
 The overlay has an explicit compose name, container names, network names,
 volume names, database identity, and loopback-only ports. Its defaults are app
-`3137`, PostgreSQL `55437`, OpenSearch `19237`, MinIO `19100`, and MinIO console
-`19101`; it does not share state with the default development installation.
+`3137`, PostgreSQL `55437`, OpenSearch `19237`, and object storage (S3) `19100`;
+it does not share state with the default development installation.
 The frozen reader-first qualifications run Memory lexical retrieval on OpenSearch-primary
 and keeps PostgreSQL fallback available, but any observed fallback, dirty
 projection, or non-OpenSearch candidate-provider lane fails that case before

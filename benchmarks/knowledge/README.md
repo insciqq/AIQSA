@@ -80,7 +80,7 @@ active profile's `upstreamModelId` instead; the report is not an active-profile
 attestation by itself.
 
 The BRIGHT importer uses the isolated benchmark Compose identity described
-below, but its named PostgreSQL, MinIO, and OpenSearch volumes are retained
+below, but its named PostgreSQL, object-storage, and OpenSearch volumes are retained
 across ordinary `down`/`up` cycles. Initial import requires an active
 Knowledge profile.
 
@@ -109,7 +109,7 @@ docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f 
 ```
 
 The default `sources` phase validates and writes the ordinary encoded
-normalized document to MinIO plus deterministic Source/version/artifact/Base
+normalized document to object storage plus deterministic Source/version/artifact/Base
 rows to PostgreSQL. Run the complete retained phase with `--document-limit
 107081 --batch-size 500`; after an interruption, repeat the exact range and
 controls with `--resume`.
@@ -303,7 +303,7 @@ docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f 
   --output results/bright-answer-five
 ```
 
-The retained PostgreSQL/MinIO/OpenSearch services must already be running and
+The retained PostgreSQL/object-storage/OpenSearch services must already be running and
 migrations current. `benchmark-web` has a two-CPU/3-GiB limit and runs the
 ordinary app, including its background coordinators. Run the answer CLI in
 the separate two-CPU/2-GiB `benchmark-runner`: corpus preflight and the app's
@@ -943,7 +943,7 @@ runner asserts a zero OCR count (empty PDF-processing ledger and no
 
 2. Start the isolated, retained-by-default overlay stack (compose project
 `aiqsa-knowledge-benchmark-second`; loopback-only app `3147`, PostgreSQL
-`15447`, MinIO `19110`/`19111`; its own container, network, volume, and
+`15447`, object storage (S3) `19110`; its own container, network, volume, and
 database identities — it never shares state with the default development
 installation):
 
@@ -1089,7 +1089,7 @@ npx tsx benchmarks/knowledge/evaluate.ts \
 ```
 
 Stop the stack with the same two compose files. This preserves PostgreSQL,
-MinIO, and OpenSearch state; add `--volumes` only for an explicitly intended
+object-storage, and OpenSearch state; add `--volumes` only for an explicitly intended
 full benchmark-state purge:
 
 ```bash
