@@ -26,6 +26,12 @@ const codeVerifierSchema = z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/u);
 const opaqueTokenSchema = z.string().min(32).max(INBOUND_MCP_OAUTH_TOKEN_MAX_LENGTH)
   .regex(/^[A-Za-z0-9_-]+$/u);
 
+/** Only supported resource-local permission sets are accepted. Consent signs the exact wire value. */
+export function isSupportedInboundMcpScope(value: string): boolean {
+  return ["", "mcp:hub", "skills:read", "skills:write", "skills:read skills:write", "skills:write skills:read"].includes(value);
+}
+const inboundMcpScopeSchema = z.string().max(64).refine(isSupportedInboundMcpScope);
+
 const authorizationParameterNames = new Set([
   "client_id",
   "code_challenge",
@@ -42,7 +48,7 @@ export type InboundMcpAuthorizationRequest = Readonly<{
   codeChallenge: string;
   redirectUri: string;
   resource: string;
-  scope?: "mcp:hub";
+  scope?: string;
   state: string | null;
 }>;
 
@@ -68,7 +74,7 @@ export function decodeAuthorizationRequest(
 ): OAuthDecodeResult<InboundMcpAuthorizationRequest, InboundMcpAuthorizationRequestError> {
   const values = singleParameters(input, authorizationParameterNames);
   if (!values) return { error: "invalid_request", ok: false };
-  if (!["", "mcp:hub"].includes(values.scope ?? "")) return { error: "invalid_scope", ok: false };
+  if (!isSupportedInboundMcpScope(values.scope ?? "")) return { error: "invalid_scope", ok: false };
   if (values.response_type !== "code") {
     return { error: "unsupported_response_type", ok: false };
   }
@@ -79,7 +85,7 @@ export function decodeAuthorizationRequest(
     redirect_uri: redirectUriSchema,
     resource: resourceSchema,
     response_type: z.literal("code"),
-    scope: z.enum(["", "mcp:hub"]).optional(),
+    scope: inboundMcpScopeSchema.optional(),
     state: stateSchema.optional()
   }).safeParse(values);
   if (!decoded.success) return { error: "invalid_request", ok: false };
@@ -115,14 +121,14 @@ export type InboundMcpTokenRequest =
       grantType: "authorization_code";
       redirectUri: string;
       resource: string;
-      scope?: "mcp:hub";
+      scope?: string;
     }>
   | Readonly<{
       clientId: string;
       grantType: "refresh_token";
       refreshToken: string;
       resource: string;
-      scope?: "mcp:hub";
+      scope?: string;
     }>;
 
 export type InboundMcpTokenRequestError =
@@ -135,7 +141,7 @@ export function decodeTokenRequest(
 ): OAuthDecodeResult<InboundMcpTokenRequest, InboundMcpTokenRequestError> {
   const values = singleParameters(input, tokenParameterNames);
   if (!values) return { error: "invalid_request", ok: false };
-  if (!["", "mcp:hub"].includes(values.scope ?? "")) return { error: "invalid_scope", ok: false };
+  if (!isSupportedInboundMcpScope(values.scope ?? "")) return { error: "invalid_scope", ok: false };
   if (values.grant_type !== "authorization_code" && values.grant_type !== "refresh_token") {
     return { error: "unsupported_grant_type", ok: false };
   }
@@ -147,7 +153,7 @@ export function decodeTokenRequest(
       grant_type: z.literal("authorization_code"),
       redirect_uri: redirectUriSchema,
       resource: resourceSchema,
-      scope: z.enum(["", "mcp:hub"]).optional()
+      scope: inboundMcpScopeSchema.optional()
     }).safeParse(values);
     return decoded.success
       ? {
@@ -169,7 +175,7 @@ export function decodeTokenRequest(
     grant_type: z.literal("refresh_token"),
     refresh_token: opaqueTokenSchema,
     resource: resourceSchema,
-    scope: z.enum(["", "mcp:hub"]).optional()
+    scope: inboundMcpScopeSchema.optional()
   }).safeParse(values);
   return decoded.success
     ? {
@@ -238,7 +244,7 @@ const baseClientMetadataSchema = z.object({
   grant_types: grantTypesSchema.optional(),
   redirect_uris: redirectUrisSchema,
   response_types: responseTypesSchema.optional(),
-  scope: z.enum(["", "mcp:hub"]).optional(),
+  scope: inboundMcpScopeSchema.optional(),
   token_endpoint_auth_method: z.literal("none").optional()
 });
 

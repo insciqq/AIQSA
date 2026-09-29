@@ -1,8 +1,9 @@
-/** Immutable resource/capability pairs; Hub always requires its own resource and consent. */
+/** Immutable resource/capability pairs; each resource requires its own consent. */
 export const INBOUND_MCP_MEMORY_CAPABILITY = "memory:facts";
 export const INBOUND_MCP_HUB_CAPABILITY = "mcp:hub";
-export type InboundMcpCapability = "memory:facts" | "mcp:hub";
-export type InboundMcpResourcePath = "/mcp" | "/mcp/hub";
+export const INBOUND_MCP_SKILLS_CAPABILITY = "skills:store";
+export type InboundMcpCapability = "memory:facts" | "mcp:hub" | "skills:store";
+export type InboundMcpResourcePath = "/mcp" | "/mcp/hub" | "/mcp/skills";
 export type InboundMcpAuthority = Readonly<{
   capability: InboundMcpCapability;
   resource: string;
@@ -17,10 +18,11 @@ export function inboundMcpResourceAuthority(
   issuer: string,
   resource: string
 ): InboundMcpAuthority | null {
-  for (const resourcePath of ["/mcp", "/mcp/hub"] as const) {
+  for (const resourcePath of ["/mcp", "/mcp/hub", "/mcp/skills"] as const) {
     if (resource === inboundMcpResourceUrl(issuer, resourcePath)) {
       return {
-        capability: resourcePath === "/mcp" ? INBOUND_MCP_MEMORY_CAPABILITY : INBOUND_MCP_HUB_CAPABILITY,
+        capability: resourcePath === "/mcp" ? INBOUND_MCP_MEMORY_CAPABILITY
+          : resourcePath === "/mcp/hub" ? INBOUND_MCP_HUB_CAPABILITY : INBOUND_MCP_SKILLS_CAPABILITY,
         resource,
         resourcePath
       };

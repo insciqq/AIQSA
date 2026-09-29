@@ -7,6 +7,7 @@ AGENTS.override.md
 CLAUDE.local.md
 .aiqsa
 node_modules
+public/agents/skills-client.mjs
 .next
 *.tsbuildinfo
 coverage

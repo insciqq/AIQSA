@@ -2,8 +2,7 @@ import {
   MEMORY_MCP_CONNECTED_APPS_MAX,
   decodeMemoryMcpConnectionId,
   memoryMcpConnectedAppResponseSchema,
-  memoryMcpConnectedAppsResponseSchema,
-  type MemoryMcpConnectedApp
+  memoryMcpConnectedAppsResponseSchema
 } from "../../contracts/memoryMcpConnectedApps";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import type { InboundMcpConnectedApp } from "./oauth/repository";
@@ -35,11 +34,12 @@ function hasNoSearchParams(request: Request): boolean {
   return [...new URL(request.url).searchParams].length === 0;
 }
 
-function project(app: InboundMcpConnectedApp): MemoryMcpConnectedApp {
+function project(app: InboundMcpConnectedApp) {
   return {
     connectionId: app.grantId,
     resourcePath: app.resourcePath,
     capability: app.capability,
+    ...(app.scopes?.length ? { scopes: app.scopes } : {}),
     clientName: app.clientName,
     clientOrigin: app.clientOrigin,
     connectedAt: app.connectedAt.toISOString(),

@@ -46,7 +46,7 @@ function dependencies() {
       ...input,
       id: "dynamic-client-record"
     })),
-    exchangeAuthorizationCode: vi.fn(async () => true),
+    exchangeAuthorizationCode: vi.fn(async () => ({ scopes: [] as string[] })),
     findClient: vi.fn(async () => client),
     listConnectedApps: vi.fn(async () => []),
     resolveAccessToken: vi.fn(async () => ({
@@ -57,7 +57,7 @@ function dependencies() {
     })),
     revokeGrant: vi.fn(async () => true),
     revokeTokenFamily: vi.fn(async () => undefined),
-    rotateRefreshToken: vi.fn(async () => "rotated" as const),
+    rotateRefreshToken: vi.fn(async () => ({ scopes: [] as string[] })),
     upsertMetadataClient: vi.fn(async () => client)
   };
   const clientMetadataResolver = {
@@ -81,6 +81,60 @@ function dependencies() {
 }
 
 describe("inbound Memory MCP OAuth service", () => {
+  it.each([undefined, "skills:read", "skills:read skills:write"])("keeps Skills consent read-only unless explicitly selected (scope %s)", async (scope) => {
+    const { service, repository } = dependencies();
+    const request = authorizationRequest({ resource: "https://aiqsa.example/mcp/skills", scope });
+    const authorization = { request, sessionId: "session-1", userId: "user-1" };
+    const view = await service.prepareAuthorization(authorization);
+    await service.approveAuthorization({ ...authorization, consentToken: view.consentToken });
+    expect(repository.approveAuthorization).toHaveBeenLastCalledWith(expect.objectContaining({
+      capability: "skills:store", resourcePath: "/mcp/skills", scopes: ["skills:read"]
+    }));
+    const writable = service.approveAuthorization({ ...authorization, consentToken: view.consentToken, allowSkillsWrite: true });
+    if (scope === "skills:read") {
+      await expect(writable).rejects.toEqual(new InboundMcpOAuthError("invalid_scope"));
+    } else {
+      await writable;
+      expect(repository.approveAuthorization).toHaveBeenLastCalledWith(expect.objectContaining({
+        scopes: ["skills:read", "skills:write"]
+      }));
+    }
+  });
+
+  it("returns granted Skills scope snapshots, even if consent declined requested write", async () => {
+    const { service, repository } = dependencies();
+    repository.exchangeAuthorizationCode.mockResolvedValue({ scopes: ["skills:read"] });
+    repository.rotateRefreshToken.mockResolvedValue({ scopes: ["skills:read"] });
+    const request = authorizationRequest({ resource: "https://aiqsa.example/mcp/skills", scope: "skills:read skills:write" });
+    const authorization = { request, sessionId: "session-1", userId: "user-1" };
+    const view = await service.prepareAuthorization(authorization);
+    const code = await service.approveAuthorization({ ...authorization, consentToken: view.consentToken });
+    const pair = await service.token({ ...request, grantType: "authorization_code", code, codeVerifier: VERIFIER });
+    expect(pair.scope).toBe("skills:read");
+    const refreshed = await service.token({ clientId: request.clientId, resource: request.resource,
+      grantType: "refresh_token", refreshToken: pair.refresh_token });
+    expect(refreshed.scope).toBe("skills:read");
+    expect(repository.rotateRefreshToken).toHaveBeenLastCalledWith(expect.not.objectContaining({ requestedScopes: expect.anything() }));
+    await service.token({ clientId: request.clientId, resource: request.resource,
+      grantType: "refresh_token", refreshToken: pair.refresh_token, scope: "skills:read" });
+    expect(repository.rotateRefreshToken).toHaveBeenLastCalledWith(expect.objectContaining({ requestedScopes: ["skills:read"] }));
+  });
+
+  it("rejects Skills scopes on Hub/Memory and tampering with the consent resource", async () => {
+    const { service, repository } = dependencies();
+    for (const path of ["/mcp", "/mcp/hub"]) {
+      await expect(service.prepareAuthorization({ request: authorizationRequest({ resource: `https://aiqsa.example${path}`, scope: "skills:read" }),
+        sessionId: "session-1", userId: "user-1" })).rejects.toEqual(new InboundMcpOAuthError("invalid_scope"));
+    }
+    const request = authorizationRequest({ resource: "https://aiqsa.example/mcp/skills", scope: "skills:read" });
+    const authorization = { request, sessionId: "session-1", userId: "user-1" };
+    const view = await service.prepareAuthorization(authorization);
+    await expect(service.approveAuthorization({ ...authorization,
+      request: { ...request, scope: "skills:read skills:write" }, consentToken: view.consentToken,
+      allowSkillsWrite: true })).rejects.toEqual(new InboundMcpOAuthError("invalid_request"));
+    expect(repository.approveAuthorization).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "mcp:hub"] as const)("binds Hub consent and issuance when wire scope is %s", async (scope) => {
     const { repository, service } = dependencies();
     const request = authorizationRequest({ resource: "https://aiqsa.example/mcp/hub", scope });
@@ -149,8 +203,11 @@ describe("inbound Memory MCP OAuth service", () => {
       token_endpoint_auth_methods_supported: ["none"]
     });
     expect(inboundMcpAuthorizationServerMetadata(configuration)).toHaveProperty(
-      "scopes_supported", ["mcp:hub"]
+      "scopes_supported", ["mcp:hub", "skills:read", "skills:write"]
     );
+    expect(inboundMcpProtectedResourceMetadata(configuration, "/mcp/skills")).toMatchObject({
+      resource: "https://aiqsa.example/mcp/skills", scopes_supported: ["skills:read", "skills:write"]
+    });
     expect(inboundMcpProtectedResourceMetadata(configuration, "/mcp/hub")).toMatchObject({
       resource: "https://aiqsa.example/mcp/hub", scopes_supported: ["mcp:hub"]
     });

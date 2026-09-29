@@ -75,6 +75,24 @@ export async function lockSkillRevisionWrites(tx: Prisma.TransactionClient, user
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`skill-import:${userId}`}, 0))::text`;
 }
 
+/** Shared deletion lifecycle; callers may add an exact-version fence in their transaction. */
+export async function deleteOwnedSkillInTransaction(
+  tx: Prisma.TransactionClient, userId: string, skillId: string, expectedVersion?: number
+): Promise<"not_found" | "version_conflict" | "ok"> {
+  const [skill] = await tx.$queryRaw<Array<{ deletedAt: Date | null; id: string; version: number }>>`
+    SELECT "id", "deletedAt", "version" FROM "SkillDefinition"
+    WHERE "id" = ${skillId} AND "ownerUserId" = ${userId} FOR UPDATE`;
+  if (!skill || skill.deletedAt) return "not_found";
+  if (expectedVersion !== undefined && skill.version !== expectedVersion) return "version_conflict";
+  await tx.skillPublication.deleteMany({ where: { skillId } });
+  await tx.skillShareRequest.updateMany({ where: { skillId, state: "pending" }, data: { state: "withdrawn" } });
+  await tx.assistantSkill.deleteMany({ where: { skillId } });
+  await tx.skillDefinition.update({
+    data: { deletedAt: new Date(), version: { increment: 1 } }, where: { id: skillId }
+  });
+  return "ok";
+}
+
 export async function retrySkillRevisionWrite<T>(write: () => Promise<T>, onConflict: () => T): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -408,25 +426,8 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       for (let attempt = 0; ; attempt += 1) {
         try {
           return await client.$transaction(async (tx) => {
-            const [skill] = await tx.$queryRaw<Array<{
-              deletedAt: Date | null;
-              id: string;
-            }>>`
-              SELECT "id", "deletedAt"
-              FROM "SkillDefinition"
-              WHERE "id" = ${skillId}
-                AND "ownerUserId" = ${userId}
-              FOR UPDATE
-            `;
-            if (!skill || skill.deletedAt) return "not_found" as const;
-            await tx.skillPublication.deleteMany({ where: { skillId } });
-            await tx.skillShareRequest.updateMany({ where: { skillId, state: "pending" }, data: { state: "withdrawn" } });
-            await tx.assistantSkill.deleteMany({ where: { skillId } });
-            await tx.skillDefinition.update({
-              data: { deletedAt: new Date(), version: { increment: 1 } },
-              where: { id: skillId }
-            });
-            return "ok" as const;
+            const result = await deleteOwnedSkillInTransaction(tx, userId, skillId);
+            return result === "ok" ? "ok" as const : "not_found" as const;
           });
         } catch (error) {
           const retryable = error instanceof Prisma.PrismaClientKnownRequestError &&

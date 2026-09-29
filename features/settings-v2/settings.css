@@ -17,6 +17,123 @@
   margin-top: 1.5rem;
 }
 
+/* Agent setup begins with one shareable address; permissions follow below. */
+.v2-agent-settings,
+.v2-agent-connect,
+.v2-agent-guide-field,
+.v2-agent-manual {
+  display: grid;
+  min-width: 0;
+  gap: 1rem;
+}
+
+.v2-agent-settings {
+  gap: 1.75rem;
+}
+
+.v2-agent-connect h3 {
+  margin: 0 0 0.375rem;
+  color: var(--v2-color-text);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.v2-agent-connect p,
+.v2-agent-capabilities dd {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+.v2-agent-guide-field {
+  gap: 0.375rem;
+}
+
+.v2-agent-guide-field > label,
+.v2-agent-connection-select,
+.v2-agent-capabilities dt {
+  color: var(--v2-color-text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.v2-agent-guide-field .v2-settings-input,
+.v2-agent-command,
+.v2-agent-endpoint code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+}
+
+.v2-agent-guide-field > a {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--v2-color-accent);
+  font-size: 0.78125rem;
+  text-underline-offset: 0.2em;
+}
+
+.v2-agent-capabilities {
+  display: grid;
+  gap: 0.875rem;
+  margin: 0;
+}
+
+.v2-agent-capabilities > div {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.v2-agent-manual {
+  padding: 0.5rem 0 1rem;
+}
+
+.v2-agent-client-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.v2-agent-client-picker [aria-pressed="true"] {
+  border-color: var(--v2-color-accent);
+  color: var(--v2-color-accent);
+  background: var(--v2-color-accent-dim);
+}
+
+.v2-agent-connection-select {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.v2-agent-command {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface2);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.v2-agent-endpoint {
+  overflow-wrap: anywhere;
+}
+
+.v2-agent-permissions {
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--v2-color-border);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-agent-connect .v2-settings-input,
+  .v2-agent-connect .v2-settings-disclosure > summary {
+    min-height: 2.75rem;
+  }
+}
+
 .v2-settings-confirm {
   position: fixed;
   z-index: 92;

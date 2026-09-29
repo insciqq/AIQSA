@@ -44,10 +44,11 @@ async function prepare(page: Page, servers: () => UserMcpServer[]) {
       await route.fulfill({ json: { servers: servers() } });
     } else await route.fulfill({ status: 400, json: { error: "unexpected_test_mutation" } });
   });
-  await page.route("**/.well-known/oauth-protected-resource/mcp/hub", async route => {
+  await page.route("**/agents/metadata", async route => {
     hubReads++;
-    await route.fulfill({ json: { resource: "https://example.test/mcp/hub" } });
+    await route.fulfill({ json: { origin: "https://example.test", hubEnabled: true } });
   });
+  await page.route("**/api/me/connected-apps", route => route.fulfill({ json: { apps: [] } }));
   await page.goto("/?library=mcp");
   await expect(page.getByRole("heading", { name: "MCP servers", exact: true })).toBeVisible();
   await expect(page.getByRole("article")).toHaveCount(8);
@@ -69,7 +70,10 @@ for (const theme of ["light", "dark"] as const) {
     const sheet = page.getByRole("dialog", { name: "Calendar with a deliberately long integration name", exact: true });
     for (const size of sizes) {
       await page.setViewportSize(size);
-      await expectWithinViewport(page, library.getByRole("tab", { name: "MCP servers", exact: true }));
+      // The selected tab is revealed on the ResizeObserver's next animation frame.
+      await expect(async () => {
+        await expectWithinViewport(page, library.getByRole("tab", { name: "MCP servers", exact: true }));
+      }).toPass({ timeout: 5_000 });
       await expect(library.getByRole("article")).toHaveCount(8);
       if (size.width === 1440) {
         const rows = await library.getByRole("article").evaluateAll(nodes => nodes.map(node => {
@@ -115,9 +119,10 @@ for (const theme of ["light", "dark"] as const) {
     await expect(library.getByRole("article")).toHaveCount(1);
     expect(observed.requests).toEqual(Array(observed.initialReads).fill("GET /api/me/mcp"));
     expect(observed.hubReads()).toBe(0);
-    await library.getByText("Connect an external agent to MCP Hub", { exact: true }).click();
-    await expect(library.getByLabel("MCP Hub URL")).toHaveValue("https://example.test/mcp/hub");
-    expect(observed.hubReads()).toBe(1);
+    await library.getByRole("button", { name: "Connect Claude Code or Codex", exact: true }).click();
+    await expect(page.getByTestId("settings-v2").getByLabel("Agent instructions")).toHaveValue("https://example.test/AGENTS.md");
+    // Mounting Settings may repeat an aborted read under development Strict Mode.
+    expect(observed.hubReads()).toBeGreaterThanOrEqual(1);
   });
 }
 

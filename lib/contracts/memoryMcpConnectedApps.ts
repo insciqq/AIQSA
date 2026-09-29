@@ -43,8 +43,9 @@ const isoTimestampSchema = z.string().max(64).refine((value) => {
 
 export const memoryMcpConnectedAppSchema = z.strictObject({
   connectionId: connectionIdSchema,
-  resourcePath: z.enum(["/mcp", "/mcp/hub"]),
-  capability: z.enum(["memory:facts", "mcp:hub"]),
+  resourcePath: z.enum(["/mcp", "/mcp/hub", "/mcp/skills"]),
+  capability: z.enum(["memory:facts", "mcp:hub", "skills:store"]),
+  scopes: z.array(z.enum(["skills:read", "skills:write"])).max(2).optional(),
   clientName: clientNameSchema,
   clientOrigin: clientOriginSchema,
   connectedAt: isoTimestampSchema,
@@ -52,8 +53,14 @@ export const memoryMcpConnectedAppSchema = z.strictObject({
   revokedAt: isoTimestampSchema.nullable(),
   state: z.enum(["ACTIVE", "REVOKED"])
 }).superRefine((app, context) => {
-  if ((app.resourcePath === "/mcp") !== (app.capability === "memory:facts")) {
+  if ((app.resourcePath === "/mcp") !== (app.capability === "memory:facts") ||
+    (app.resourcePath === "/mcp/skills") !== (app.capability === "skills:store")) {
     context.addIssue({ code: "custom", message: "resource capability mismatch" });
+  }
+  if (app.capability === "skills:store"
+    ? !app.scopes?.includes("skills:read") || new Set(app.scopes).size !== app.scopes.length
+    : !!app.scopes?.length) {
+    context.addIssue({ code: "custom", message: "resource scopes mismatch" });
   }
   if (app.state === "ACTIVE" && app.revokedAt !== null) {
     context.addIssue({ code: "custom", message: "active app has revokedAt" });

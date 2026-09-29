@@ -9,9 +9,9 @@ Scope: HTTP/API and control-plane boundaries.
 
 Project SSE authenticates sessions and reauthorizes membership during delivery. Cursors order invalidations, never grant authority; expired history requires canonical resync, and access loss closes delivery. Mutations stay bounded. Skill lists expose metadata; instructions/files require authorized reads. Discovery/pagination stay server-side.
 
-HTTP correlation begins at the owned Node listener with a fresh server-generated trace and response header; client headers cannot select it. Production route labels come only from the active build's manifest, and describe pathname matching rather than proof of handler execution. Unknown/dev routes never fall back to raw URLs. Accepted run and job identities correlate independent requests and recovery without changing authority or adding persistence fields. Shared coordinators and timers start outside the triggering request's context; each claimed operation owns its context.
+HTTP correlation starts at the Node listener with a server-generated trace/response header; client headers cannot select it. Production route labels come only from the build manifest, never proving handler execution; unknown/dev routes omit raw URLs. Run/job identities correlate requests/recovery without new authority or persistence. Coordinators/timers start outside request context; claimed operations own theirs.
 
-Diagnostics validate event fields at runtime. HTTP completion, operation outcome and confirmed persistence are separate facts. Output failure cannot replace the operation outcome; bounded loss reporting and synchronous emergency writes provide best-effort evidence. Process observation preserves existing exit policy; mixed third-party output is outside the writer's control.
+Diagnostics validate fields at runtime. HTTP completion, operation outcome and persistence remain distinct. Output failures cannot replace outcomes; bounded loss reporting and synchronous emergency writes provide best-effort evidence. Observation preserves exit policy; third-party output stays outside the writer's control.
 
 ## Control Planes
 
@@ -22,6 +22,8 @@ Assistant publication must preserve direct Skill audience coverage and require a
 Answer recommendations and purpose-specific System Model assignments are independent and grant no entitlement. Each system role uses its configured deployment and installation credential without substitution. Consolidated administration does not merge domain ownership: Knowledge activation creates an immutable profile with explicit reprocessing/reindexing, while Personal Memory retains owner-scoped entitlement and generation rules.
 
 Inbound MCP grants resolve the current active account; clients cannot select another owner. Memory calls and Hub discovery/dispatch create no synthetic chat/run/history state. Hub uses existing outbound MCP configuration and runtime authority. Utility execution evidence is content-free.
+
+The Skill store exposes owned packages independently of chat enablement; write grants permit mutations, never sharing/execution. Mutations hold authority through commit. Clients install complete bundles locally; missing packages imply no deletion. Public agent instructions exclude repository instructions/private catalogs.
 
 The Control Center attention list is read-only aggregation of already-authorized administrator projections. Unavailable sources are named without failing the whole list; entries contain human copy and navigation only, never raw failures, secrets, or private identifiers.
 

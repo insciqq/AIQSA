@@ -37,7 +37,7 @@ const SECTION_ORDER: readonly SettingsSectionV2[] = ["general", "account", "conn
 const SECTION_META: Record<SettingsSectionV2, Readonly<{ icon: UiV2IconName; label: string }>> = {
   general: { icon: "sun", label: "General" },
   account: { icon: "assistant", label: "Account" },
-  connected_apps: { icon: "link", label: "Connected apps" },
+  connected_apps: { icon: "link", label: "Claude Code & Codex" },
   data: { icon: "archive", label: "Data" }
 };
 
@@ -330,7 +330,7 @@ export function SettingsV2({
           ) : activeSection === "connected_apps" ? (
             <section className="v2-settings-section" aria-labelledby="v2-settings-connected_apps-heading">
               <p className="v2-settings-intro">
-                Review external applications that you authorized to use Personal Memory.
+                Connect these and other AI agents to AIQSA.
               </p>
               <div className="v2-settings-owner-slot" data-testid="settings-connected-apps-owner">
                 {connectedAppsContent}

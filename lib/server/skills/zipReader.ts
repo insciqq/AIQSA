@@ -1,7 +1,7 @@
 import { inflateRawSync } from "node:zlib";
 import { SKILL_ARCHIVE_MAX_BYTES, SKILL_ARCHIVE_MAX_ENTRIES, SKILL_FILE_MAX_BYTES } from "../../contracts/skills";
 import { isSafeWorkspaceRelativePath } from "../../domain/workspace";
-import { crc32 } from "../artifacts/zip";
+import { crc32 } from "../../domain/crc32";
 import { SkillBundleError, skillLimit } from "./bundleErrors";
 
 export type SkillImportFile = { path: string; bytes: Buffer; executable?: boolean };

@@ -15,6 +15,12 @@ const activeApp = {
   state: "ACTIVE" as const
 };
 
+function stubFetch(fetcher: (input: string, ...args: unknown[]) => Promise<Response>) {
+  vi.stubGlobal("fetch", (input: string, ...args: unknown[]) => input === "/agents/metadata"
+    ? Promise.resolve(Response.json({ origin: "https://canonical.example", hubEnabled: true }))
+    : fetcher(input, ...args));
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
@@ -26,15 +32,15 @@ describe("ConnectedAppsSection", () => {
   });
 
   it("explains fact-only authority and renders the empty state", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ apps: [] })));
+    stubFetch(vi.fn(async () => jsonResponse({ apps: [] })));
     render(<ConnectedAppsSection accountId="account-a" />);
 
-    expect(screen.getByRole("status")).toHaveTextContent("Loading connected apps");
+    expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("Loading connected apps"))).toBe(true);
     expect(await screen.findByText("No connected apps")).toBeInTheDocument();
-    expect(screen.getByText(/read, add, change, and delete all your Personal Memory facts/i))
+    expect(screen.getByText(/read, add, change, and delete your Memory facts/i))
       .toBeInTheDocument();
     expect(screen.getByText(/Chat history is not shared/i)).toBeInTheDocument();
-    expect(screen.getByText(/keeps your MCP connections and stored Memory facts/i)).toBeInTheDocument();
+    expect(screen.getByText(/Your stored Skills, MCP connections, and Memory facts remain/i)).toBeInTheDocument();
   });
 
   it("revokes access, reports retained facts, and focuses the changed app", async () => {
@@ -49,7 +55,7 @@ describe("ConnectedAppsSection", () => {
       .mockImplementationOnce(() => new Promise<Response>((resolve) => {
         resolveRevoke = resolve;
       }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     const onBusyChange = vi.fn();
     render(
       <ConnectedAppsSection accountId="account-a" onBusyChange={onBusyChange} />
@@ -74,7 +80,7 @@ describe("ConnectedAppsSection", () => {
   });
 
   it("renders a recoverable, non-destructive load failure", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () =>
+    stubFetch(vi.fn(async () =>
       jsonResponse({ error: "connected_apps_unavailable" }, 503)
     ));
     render(<ConnectedAppsSection accountId="account-a" />);
@@ -91,7 +97,7 @@ describe("ConnectedAppsSection", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ apps: [activeApp, hub] }))
       .mockResolvedValueOnce(jsonResponse({ app: { ...hub, state: "REVOKED", revokedAt: "2026-09-03T02:00:00.000Z" } }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch(fetchMock);
     render(<ConnectedAppsSection accountId="account-a" />);
     const revoke = await screen.findByRole("button", { name: "Revoke Codex CLI MCP Hub access" });
     expect(screen.getByRole("button", { name: "Revoke Codex CLI Personal Memory access" })).toBeEnabled();
@@ -100,5 +106,22 @@ describe("ConnectedAppsSection", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me/connected-apps/hub-grant");
     expect(screen.getByRole("button", { name: "Revoke Codex CLI Personal Memory access" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Revoke Codex CLI MCP Hub access" })).not.toBeInTheDocument();
+  });
+
+  it("distinguishes Skill read and write grants and retains packages after revocation", async () => {
+    const read = { ...activeApp, connectionId: "skills-read", clientName: "Reader", resourcePath: "/mcp/skills", capability: "skills:store", scopes: ["skills:read"] };
+    const write = { ...read, connectionId: "skills-write", clientName: "Writer", scopes: ["skills:read", "skills:write"] };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ apps: [read, write] }))
+      .mockResolvedValueOnce(jsonResponse({ app: { ...write, state: "REVOKED", revokedAt: "2026-09-03T02:00:00.000Z" } }));
+    stubFetch(fetchMock);
+    render(<ConnectedAppsSection accountId="account-a" />);
+    expect(await screen.findByText("Skills · read and download")).toBeVisible();
+    const revoke = screen.getByRole("button", { name: "Revoke Writer Skills · read, download, create, update, and delete access" });
+    fireEvent.click(revoke);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Skills access revoked. Your stored Skills and downloaded copies were kept."));
+    expect(screen.getByRole("button", { name: "Revoke Reader Skills · read and download access" })).toBeEnabled();
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me/connected-apps/skills-write");
+    expect(screen.getByRole("heading", { name: "Writer" })).toHaveFocus();
   });
 });

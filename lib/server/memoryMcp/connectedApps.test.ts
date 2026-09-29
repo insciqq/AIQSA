@@ -37,6 +37,26 @@ function activeApp() {
 }
 
 describe("Memory MCP Connected Apps handlers", () => {
+  it.each([["skills:read"], ["skills:read", "skills:write"]])("projects the Skills grant's consented permissions: %j", async (...scopes) => {
+    const GET = createListMemoryMcpConnectedAppsHandler({ resolveAuth: async () => session(), service: {
+      listConnectedApps: async () => [{ ...activeApp(), resourcePath: "/mcp/skills", capability: "skills:store", scopes }],
+      revokeConnectedApp: async () => false
+    } });
+    const response = await GET(new Request("https://aiqsa.example/api/me/connected-apps"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ apps: [{ resourcePath: "/mcp/skills", capability: "skills:store", scopes }] });
+  });
+
+  it("rejects an inconsistent resource/permission projection", async () => {
+    const GET = createListMemoryMcpConnectedAppsHandler({ resolveAuth: async () => session(), service: {
+      listConnectedApps: async () => [{ ...activeApp(), scopes: ["skills:read", "skills:write"] }],
+      revokeConnectedApp: async () => false
+    } });
+    const response = await GET(new Request("https://aiqsa.example/api/me/connected-apps"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "connected_apps_unavailable" });
+  });
+
   it("lists only the authenticated owner's client-safe grant projection", async () => {
     const service = {
       listConnectedApps: vi.fn(async () => [activeApp()]),
