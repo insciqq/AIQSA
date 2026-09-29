@@ -5,6 +5,8 @@ import { useDisclosurePreference } from "@/components/app-shell/disclosurePrefer
 import { useState } from "react";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import { runningSearchEngineCalls, unknownSearchEngineCalls,
+  type ThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import type { ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
@@ -16,7 +18,9 @@ import {
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { WorkspaceActivityTimelineV2 } from "@/features/run-lifecycle-v2/WorkspaceActivityTimelineV2";
 import {
+  visibleWorkspaceActivityV2,
   workspaceActivityOutcomeV2,
+  workspaceOutputStatusCopyV2,
   workspaceProcessLabelV2
 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { MemorySourcesV2 } from "./MemorySourcesV2";
@@ -40,6 +44,22 @@ function toolMeta(call: ToolCallV2): string {
   if (duration) parts.push(duration);
   parts.push(`round ${call.round}`);
   return parts.join(" · ");
+}
+
+function searchEngineOutcome(engine: ThreadSearchEngineActivity): string {
+  const parts: string[] = [];
+  if (engine.complete > 0) parts.push(`×${engine.complete}`);
+  if (engine.error > 0) parts.push(`${engine.error} unsuccessful`);
+  const running = runningSearchEngineCalls(engine);
+  if (running > 0) parts.push(`${running} in progress`);
+  if (engine.skipped > 0) parts.push(`${engine.skipped} skipped`);
+  const unknown = unknownSearchEngineCalls(engine);
+  if (unknown > 0) parts.push(`${unknown} outcome unavailable`);
+  return `${engine.name} ${parts.join(" · ")}`;
+}
+
+function searchActivitySummary(engines: readonly ThreadSearchEngineActivity[]): string | null {
+  return engines.length > 0 ? `Web search · ${engines.map(searchEngineOutcome).join(" · ")}` : null;
 }
 
 function ToolCallMarkV2({ status }: { status: ToolCallV2["status"] }) {
@@ -73,6 +93,8 @@ export type AnswerProcessV2Props = Readonly<{
   /** Failed cycles a later cycle superseded, oldest first; listed before the latest one. */
   contextCompactionFailures?: readonly ContextCompactionStatus[];
   disclosureId?: string;
+  /** Settled, downloadable Workspace outputs from this answer. */
+  generatedFileCount?: number;
   /** Live status while the run works; it occupies the settled line's place. */
   liveLabel?: string | null;
   onPinSkill?(skillId: string): Promise<void>;
@@ -99,6 +121,7 @@ export function AnswerProcessV2({
   contextCompaction,
   contextCompactionFailures = [],
   disclosureId,
+  generatedFileCount = 0,
   liveLabel = null,
   onPinSkill,
   pinnedSkillIds = [],
@@ -115,7 +138,14 @@ export function AnswerProcessV2({
   // Workspace steps are rendered by the timeline; the generic list keeps only
   // other tools so no raw sandbox identifier can reach the thread.
   const calls = (toolActivity?.calls ?? []).filter((call) => toolActivityOriginV2(call) !== "workspace");
-  const timeline = workspaceActivity && (workspaceActivity.entries.length > 0 || workspaceActivity.outputStatus) ? workspaceActivity : null;
+  const searchEngines = toolActivity?.searchEngines ?? [];
+  const searchSummary = searchActivitySummary(searchEngines);
+  const timeline = visibleWorkspaceActivityV2(workspaceActivity, generatedFileCount);
+  const outputOnlyCount = generatedFileCount > 0 && !timeline?.entries.some(entry =>
+    entry.kind === "outputs_export" && (entry.count ?? 0) > 0
+  ) ? generatedFileCount : 0;
+  const emptyWorkspaceStatus = timeline?.entries.length === 0
+    ? workspaceOutputStatusCopyV2(timeline.outputStatus, generatedFileCount) : null;
   const workspaceOutcome = workspaceActivityOutcomeV2(timeline);
   const warning = toolActivity?.warning ? (
     <div className="v2-tool-budget-warning" data-kind={toolActivity.warning.kind} role="status">
@@ -129,7 +159,7 @@ export function AnswerProcessV2({
   }));
   const compactionLabel = compaction?.label ?? earlierCompactionFailures.at(-1)?.label ?? null;
 
-  if (liveLabel && !timeline && !contextCompaction && earlierCompactionFailures.length === 0) {
+  if (liveLabel && !timeline && !searchSummary && !contextCompaction && earlierCompactionFailures.length === 0) {
     return (
       <div className="v2-answer-process" data-live="true" data-testid="run-status-line">
         <span className="v2-answer-process-slot" aria-hidden="true">
@@ -150,7 +180,7 @@ export function AnswerProcessV2({
         stepCount: calls.length,
         workDurationMs
       });
-  const displayLabel = [label, compactionLabel].filter((value): value is string => Boolean(value)).join(" · ");
+  const displayLabel = [searchSummary, label, compactionLabel].filter((value): value is string => Boolean(value)).join(" · ");
   if (!displayLabel) return warning;
 
   return (
@@ -168,7 +198,8 @@ export function AnswerProcessV2({
             {live ? <span className="v2-answer-process-spinner v2-spinner" /> : <span className="v2-answer-process-chevron" />}
           </span>
           <span className={live ? "v2-run-shimmer v2-answer-process-label" : "v2-answer-process-label"}>
-            {live && liveLabel ? liveLabel : workspaceOutcome ? `${displayLabel} · ${workspaceOutcome}` : displayLabel}
+            {live && liveLabel ? searchSummary ? `${liveLabel} · ${searchSummary}` : liveLabel
+              : workspaceOutcome ? `${displayLabel} · ${workspaceOutcome}` : displayLabel}
           </span>
         </summary>
         <div className="v2-answer-process-body">
@@ -188,6 +219,12 @@ export function AnswerProcessV2({
             <section className="v2-answer-process-section" data-testid="workspace-activity-section">
               <h3>Workspace</h3>
               <WorkspaceActivityTimelineV2 activity={timeline} />
+              {emptyWorkspaceStatus ? <p className="v2-answer-process-step-meta">{emptyWorkspaceStatus}</p> : null}
+              {outputOnlyCount > 0 ? (
+                <p className="v2-answer-process-step-meta">
+                  {outputOnlyCount} {outputOnlyCount === 1 ? "file" : "files"} available for download
+                </p>
+              ) : null}
             </section>
           ) : null}
           {reasoning ? (
@@ -201,6 +238,17 @@ export function AnswerProcessV2({
                   Thinking is too long to show in full.
                 </p>
               ) : null}
+            </section>
+          ) : null}
+          {searchEngines.length > 0 ? (
+            <section className="v2-answer-process-section" data-testid="search-engine-activity">
+              <h3>Web search</h3>
+              <p className="v2-answer-process-step-meta">
+                ×N counts successful calls by this answer to each selected search engine. Provider-internal searches and HTTP retries are excluded.
+              </p>
+              <ul>
+                {searchEngines.map(engine => <li className="v2-answer-process-step-name" key={engine.engine}>{searchEngineOutcome(engine)}</li>)}
+              </ul>
             </section>
           ) : null}
           {calls.length > 0 ? (

@@ -13,6 +13,7 @@ import {
   type ThreadToolBudgetWarning
 } from "@/lib/contracts/chats";
 import { formatMemoryUiCopy } from "@/components/app-shell/memoryUiCopy";
+import { decodeThreadSearchActivitySnapshot, mergeThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, terminalContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
@@ -650,13 +651,20 @@ export function stepRunAnnouncementV2(
 /** Merges safe live call facts into an existing persisted projection. */
 export function presentToolActivityV2(
   events: readonly RunEventView[],
-  persisted: ThreadToolActivity | null = null
+  persisted: ThreadToolActivity | null = null,
+  terminal = false
 ): ThreadToolActivity | null {
   const calls = [...(persisted?.calls ?? [])];
+  let searchEngines = [...(persisted?.searchEngines ?? [])];
   let warning = persisted?.warning;
   const matched = new Set<number>();
   for (const event of events) {
     const payload = eventPayload(event);
+    if (event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "search_activity") {
+      const snapshot = decodeThreadSearchActivitySnapshot(payload);
+      if (snapshot) searchEngines = mergeThreadSearchEngineActivity(searchEngines, snapshot.engines);
+      continue;
+    }
     if (event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "tool_budget") {
       warning = decodeThreadToolBudgetWarning(payload) ?? warning;
       continue;
@@ -685,8 +693,9 @@ export function presentToolActivityV2(
       toolName
     });
   }
-  return calls.length > 0 || warning
-    ? { calls, ...(warning ? { warning } : {}) }
+  if (terminal) searchEngines = searchEngines.map(row => ({ ...row, settled: row.requested }));
+  return calls.length > 0 || warning || searchEngines.length > 0
+    ? { calls, ...(searchEngines.length ? { searchEngines } : {}), ...(warning ? { warning } : {}) }
     : null;
 }
 

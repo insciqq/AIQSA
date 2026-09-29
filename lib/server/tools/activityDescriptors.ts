@@ -64,7 +64,8 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
 
   const searchPlan = isRecord(normalizedRequest.searchPlan) ? normalizedRequest.searchPlan : null;
   if (searchPlan && Array.isArray(searchPlan.options)) {
-    searchPlan.options.forEach((option, index) => {
+    const clientOptions = searchPlan.options.filter(option => isRecord(option) && option.adapterKind !== "answer_provider_hosted");
+    clientOptions.forEach((option, index) => {
       descriptors.set(`search_engine_${index + 1}`, {
         origin: "web_search",
         serverName: isRecord(option)
@@ -73,6 +74,11 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
         toolName: "search"
       });
     });
+    if (searchPlan.mode === "all_selected" && clientOptions.length > 0) {
+      descriptors.set("search_selected_engines", {
+        origin: "web_search", serverName: "Web search", toolName: "search"
+      });
+    }
   }
 
   if (isRecord(normalizedRequest.workspace) && normalizedRequest.workspace.enabled === true) {

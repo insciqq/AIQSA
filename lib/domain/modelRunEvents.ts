@@ -97,6 +97,7 @@ export type ModelRunSseEvent =
           | "context_truncated"
           | "reasoning"
           | "search"
+          | "search_activity"
           | "summary"
           | "tool_budget"
           | "tool_call"

@@ -577,6 +577,23 @@ describe("summarizeMessageRunArtifacts", () => {
 });
 
 describe("summarizeMessageRunToolActivity", () => {
+  it("projects all-selected engine outcomes without exposing the technical tool name", () => {
+    const activity = summarizeMessageRunToolActivity({ errorPayload: null, status: "complete",
+      normalizedRequest: { searchPlan: { mode: "all_selected", options: [
+        { optionId: "perplexity", displayName: "Perplexity", adapterKind: "provider_model_client" },
+        { optionId: "openai", displayName: "OpenAI (CodexLB)", adapterKind: "provider_model_client" }
+      ] } },
+      toolCalls: [{ completedAt: null, startedAt: null, ordinal: 0, roundIndex: 1,
+        state: "complete", toolName: "search_selected_engines" }],
+      searchRuns: [
+        { invocationId: "call:perplexity", strategyId: "perplexity", status: "complete" },
+        { invocationId: "call:openai", strategyId: "openai", status: "complete" }
+      ] });
+    expect(activity?.calls[0]).toMatchObject({ origin: "web_search", serverName: "Web search", toolName: "search", round: 1 });
+    expect(activity?.searchEngines?.map(row => row.complete)).toEqual([1, 1]);
+    expect(JSON.stringify(activity)).not.toMatch(/search_selected_engines|invocationId|strategyId|optionId/iu);
+  });
+
   it("projects automatic Knowledge preflight as the first user-facing round", () => {
     expect(summarizeMessageRunToolActivity({
       errorPayload: null,

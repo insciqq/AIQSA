@@ -32,6 +32,20 @@ it("accepts only the content-free server compaction status at the durable event 
   expect(JSON.stringify(payload)).not.toMatch(/notes|sourceRefs|prompt|provider/iu);
 });
 
+it("persists only bounded absolute per-engine search counters", () => {
+  const event = { type: "artifact", data: { artifactType: "search_activity", payload: {
+    engines: [{ engine: 1, name: "Perplexity", requested: 2, settled: 1,
+      complete: 1, error: 0, skipped: 0 }]
+  } } } as const;
+  expect(projectRunOutputArtifactEvent(event)).toEqual(event);
+  expect(isRunOutputArtifactEvent(event)).toBe(true);
+  const privateEvent = { ...event, data: { ...event.data, payload: { engines: [
+    { ...event.data.payload.engines[0]!, invocationId: "private" }
+  ] } } };
+  expect(projectRunOutputArtifactEvent(privateEvent)).toBeNull();
+  expect(isRunOutputArtifactEvent(privateEvent)).toBe(false);
+});
+
 describe("durable run output events", () => {
   it("keeps only validated grounding display and strips provider counters, styles and wrappers", () => {
     const event = { type: "grounding_display" as const, data: {

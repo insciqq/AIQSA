@@ -40,6 +40,8 @@ import {
 } from "../../contracts/workspace";
 import { foldWorkspaceActivityEntries, workspaceActivityEntryId, workspaceLifecycleActivity } from "../workspace/activityProjection";
 import { collectThreadSearchSources } from "../../domain/searchSources";
+import { projectSearchEngineActivity } from "../search/activityProjection";
+import { decodeThreadSearchActivitySnapshot } from "../../contracts/searchActivity";
 import { latestGeneratedArtifactsForAnswer } from "../../domain/generatedArtifacts";
 import { decodeAssistantIdentity } from "../../contracts/assistants";
 import {
@@ -195,7 +197,10 @@ const assistantRunDetailSelect = {
       createdAt: "asc"
     },
     select: {
-      artifacts: true
+      artifacts: true,
+      invocationId: true,
+      status: true,
+      strategyId: true
     }
   },
   normalizedRequest: true,
@@ -386,6 +391,9 @@ type ArtifactSummaryRun = {
   }[];
   searchRuns: {
     artifacts?: unknown;
+    invocationId?: string | null;
+    status?: string;
+    strategyId?: string;
   }[];
   status?: string;
   toolCalls?: readonly object[];
@@ -419,8 +427,10 @@ function runWorkDurationMs(run: ArtifactSummaryRun): number | null {
 
 type ToolActivityRun = {
   errorPayload: unknown;
+  events?: readonly Readonly<{ payload: unknown }>[];
   normalizedRequest: unknown;
   status: string;
+  searchRuns?: readonly Readonly<{ invocationId?: string | null; status?: string; strategyId?: string }>[];
   toolCalls: {
     arguments?: unknown;
     completedAt: Date | null;
@@ -1081,8 +1091,13 @@ export function summarizeMessageRunToolActivity(
     } satisfies ThreadToolActivity["calls"][number];
   });
   const warning = toolBudgetWarning(run, acceptedToolBudgets(run.normalizedRequest));
-  return calls.length > 0 || warning
-    ? { calls, ...(warning ? { warning } : {}) }
+  const searchEngines = projectSearchEngineActivity({ normalizedRequest: run.normalizedRequest,
+    runStatus: run.status,
+    searchRuns: run.searchRuns ?? [], toolCalls: run.toolCalls,
+    snapshots: (run.events ?? []).flatMap(event => artifactType(event.payload) === "search_activity"
+      ? decodeThreadSearchActivitySnapshot(artifactInnerPayload(event.payload))?.engines ?? [] : []) });
+  return calls.length > 0 || warning || searchEngines.length > 0
+    ? { calls, ...(searchEngines.length ? { searchEngines } : {}), ...(warning ? { warning } : {}) }
     : null;
 }
 
