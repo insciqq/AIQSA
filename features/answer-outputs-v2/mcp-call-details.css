@@ -1,0 +1,93 @@
+.v2-mcp-call {
+  width: 100%;
+  min-width: 0;
+}
+
+.v2-mcp-call-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.25rem 0;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  background: transparent;
+  color: var(--v2-color-text2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.v2-mcp-call-chevron {
+  flex: 0 0 auto;
+  color: var(--v2-color-text3);
+}
+
+.v2-mcp-call-details {
+  display: grid;
+  min-width: 0;
+  gap: 0.625rem;
+  padding: 0.375rem 0 0.75rem;
+  font-size: 0.8125rem;
+}
+
+.v2-mcp-call-details p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.v2-mcp-call-section {
+  display: grid;
+  min-width: 0;
+  gap: 0.375rem;
+}
+
+.v2-mcp-call-section header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.v2-mcp-call-section h4 {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.v2-mcp-call-section pre {
+  max-width: 100%;
+  max-height: min(20rem, 45dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 0.625rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-surface);
+  color: var(--v2-color-text);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre;
+  user-select: text;
+}
+
+@media (pointer: coarse) {
+  .v2-mcp-call-section header button,
+  .v2-mcp-call-details > button,
+  .v2-mcp-call-details [role="alert"] button {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+}
+.v2-answer-process-steps li.v2-mcp-call-row {
+  align-items: flex-start;
+}
+
+.v2-mcp-call-row > .v2-answer-process-mark {
+  margin-top: 0.9375rem;
+}

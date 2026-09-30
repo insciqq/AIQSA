@@ -60,7 +60,9 @@ export function coerceReasoningEffort(
 
   return options.includes(value as ReasoningEffort)
     ? (value as ReasoningEffort)
-    : options[0];
+    : options.includes(controls.reasoningEffort.defaultValue)
+      ? controls.reasoningEffort.defaultValue
+      : options[0];
 }
 
 export function coerceReasoningMode(

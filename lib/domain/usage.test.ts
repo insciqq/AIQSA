@@ -118,7 +118,7 @@ describe("usage helpers", () => {
   });
 
   it("does not price incomplete usage or an unknown independently priced reasoning category", () => {
-    const pricing = { inputTokenPriceMicros: 1, outputTokenPriceMicros: 2, reasoningTokenPriceMicros: 3 };
+    const pricing = { inputTokenPriceUsdPerMillion: 1, outputTokenPriceUsdPerMillion: 2, reasoningTokenPriceUsdPerMillion: 3 };
     expect(estimateCostMicros({}, pricing)).toBeNull();
     expect(estimateCostMicros({ inputTokens: 4 }, pricing)).toBeNull();
     expect(estimateCostMicros({ inputTokens: 4, outputTokens: 3 }, pricing)).toBeNull();
@@ -130,11 +130,39 @@ describe("usage helpers", () => {
       estimateCostMicros(
         { inputTokens: 100, outputTokens: 20, reasoningTokens: 10 },
         {
-          inputTokenPriceMicros: 2,
-          outputTokenPriceMicros: 8
+          inputTokenPriceUsdPerMillion: 2,
+          outputTokenPriceUsdPerMillion: 8
         }
       )
     ).toBe(360);
+  });
+
+  it("splits cache read and write prices and rounds to integer micro-dollars", () => {
+    const usage = { inputTokens: 10_000, cachedInputTokens: 8_000, outputTokens: 1_000 };
+    const pricing = { inputTokenPriceUsdPerMillion: 2, cachedInputTokenPriceUsdPerMillion: 0.2, outputTokenPriceUsdPerMillion: 10 };
+    expect(estimateCostMicros(usage, pricing)).toBe(15_600);
+    expect(estimateCostMicros({ ...usage, cacheWriteInputTokens: 1_000 },
+      { ...pricing, cacheWriteInputTokenPriceUsdPerMillion: 2.5 })).toBe(16_100);
+    expect(estimateCostMicros({ inputTokens: 100, outputTokens: 0 },
+      { inputTokenPriceUsdPerMillion: 0.0125, outputTokenPriceUsdPerMillion: 0 })).toBe(1);
+  });
+
+  it("rounds exact decimal half-micro boundaries up", () => {
+    expect(estimateCostMicros({ inputTokens: 50, outputTokens: 0 },
+      { inputTokenPriceUsdPerMillion: 0.29, outputTokenPriceUsdPerMillion: 0 })).toBe(15);
+  });
+
+  it("falls back to ordinary input prices only for missing cache tariffs", () => {
+    const usage = { inputTokens: 10_000, cachedInputTokens: 8_000, cacheWriteInputTokens: 1_000, outputTokens: 1_000 };
+    const pricing = { inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 10 };
+    expect(estimateCostMicros(usage, pricing)).toBe(30_000);
+    expect(estimateCostMicros(usage, { ...pricing, inputTokenPriceUsdPerMillion: null })).toBeNull();
+    expect(estimateCostMicros(usage, { ...pricing, outputTokenPriceUsdPerMillion: null })).toBeNull();
+    expect(estimateCostMicros({ ...usage, completeness: "partial" }, pricing)).toBeNull();
+    expect(estimateCostMicros({ inputTokens: 10, outputTokens: 2 },
+      { inputTokenPriceUsdPerMillion: 0, outputTokenPriceUsdPerMillion: 0 })).toBe(0);
+    expect(estimateCostMicros({ inputTokens: 10, cachedInputTokens: 20, outputTokens: 0 },
+      { ...pricing, cachedInputTokenPriceUsdPerMillion: 0.2 })).toBe(4);
   });
 
   it("prices reasoning tokens as a subset of output tokens", () => {
@@ -142,9 +170,9 @@ describe("usage helpers", () => {
       estimateCostMicros(
         { inputTokens: 10, outputTokens: 100, reasoningTokens: 80 },
         {
-          inputTokenPriceMicros: 2,
-          outputTokenPriceMicros: 8,
-          reasoningTokenPriceMicros: 20
+          inputTokenPriceUsdPerMillion: 2,
+          outputTokenPriceUsdPerMillion: 8,
+          reasoningTokenPriceUsdPerMillion: 20
         }
       )
     ).toBe(1780);
@@ -155,8 +183,8 @@ describe("usage helpers", () => {
       estimateCostMicros(
         { inputTokens: 10, outputTokens: 100, reasoningTokens: 80 },
         {
-          inputTokenPriceMicros: 2,
-          outputTokenPriceMicros: 8
+          inputTokenPriceUsdPerMillion: 2,
+          outputTokenPriceUsdPerMillion: 8
         }
       )
     ).toBe(820);

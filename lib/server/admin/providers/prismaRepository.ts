@@ -1,4 +1,5 @@
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
+import { adminModelPricingColumns, initialAdminModelPricing, projectAdminModelPricing, resolveAdminModelPricingChange } from "./providerModelPricing";
 import { nativeRouteAdoptionStatus } from "../../../contracts/nativeRoutingAdoption";
 import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
 import { decodeDecisionEvidence } from "../../providers/decisionEvidence";
@@ -934,6 +935,7 @@ export function createPrismaAdminProviderRepository(
         family: family(connection.family),
         id: connection.id,
         models: connection.models.map((model) => ({
+          pricing: projectAdminModelPricing(model, connection),
           nativeRoutingAdoption: nativeRouteAdoptionStatus(model.nativeRoutingAdoptionReason, model.nativeRoutingAdoptionEvidence),
           activatedAt: date(model.activatedAt),
           activeConfig: model.activeConfig === null
@@ -1020,7 +1022,10 @@ export function createPrismaAdminProviderRepository(
           await tx.providerModel.create({ data: {
             ...modelColumns(model.configuration),
             id: model.id, connectionId: connection.id, provider: connection.family, displayName: model.displayName,
-            inputTokenPriceMicros: model.inputTokenPriceMicros, outputTokenPriceMicros: model.outputTokenPriceMicros,
+            inputTokenPriceUsdPerMillion: model.inputTokenPriceUsdPerMillion,
+            cachedInputTokenPriceUsdPerMillion: model.cachedInputTokenPriceUsdPerMillion ?? null,
+            cacheWriteInputTokenPriceUsdPerMillion: model.cacheWriteInputTokenPriceUsdPerMillion ?? null,
+            outputTokenPriceUsdPerMillion: model.outputTokenPriceUsdPerMillion,
             templateKey: model.templateKey, draftConfig: json(model.configuration), draftVersion: 1,
             activeConfig: json(model.configuration), activeVersion: 1, activatedAt: input.now, enabled: true
           } });
@@ -1037,14 +1042,21 @@ export function createPrismaAdminProviderRepository(
 
     async createModel(input) {
       const connection = await prisma.providerConnection.findUnique({
-        select: { family: true },
+        select: { activeConfig: true, draftConfig: true, family: true },
         where: { id: input.connectionId }
       });
       if (!connection || connection.family === "fake") return "connection_not_found";
       if (connection.family !== input.family) return "family_mismatch";
+      // The identity of the row this call stores: no template key, the saved upstream model.
+      const row = { modelClass: input.configuration.modelClass, modelId: input.configuration.upstreamModelId, templateKey: null };
+      const pricing = input.pricing === undefined ? initialAdminModelPricing(row, connection)
+        : resolveAdminModelPricingChange(row, connection, input.pricing);
+      if (input.pricing !== undefined && !pricing) return "pricing_unavailable";
       await prisma.providerModel.create({
         data: {
           ...modelColumns(input.configuration),
+          // Without explicit or catalog prices the deployment's unknown price is administrator-owned.
+          ...(pricing ? adminModelPricingColumns(pricing) : { priceSource: "admin" }),
           connectionId: input.connectionId,
           displayName: input.displayName,
           draftConfig: json(input.configuration),
@@ -1054,12 +1066,13 @@ export function createPrismaAdminProviderRepository(
           provider: connection.family
         }
       });
-      return "created";
+      return pricing ? { status: "created", pricing } : "created";
     },
 
     async updateModelDraft(input) {
       const existing = await prisma.providerModel.findUnique({
-        select: { connection: { select: { family: true } }, id: true, modelClass: true },
+        select: { connection: { select: { activeConfig: true, draftConfig: true, family: true } }, id: true, modelClass: true,
+          modelId: true, templateKey: true },
         where: { id: input.modelId }
       });
       if (!existing || existing.connection.family === "fake") return "not_found";
@@ -1067,8 +1080,11 @@ export function createPrismaAdminProviderRepository(
       if (existing.modelClass !== input.configuration.modelClass) {
         return "model_class_mismatch";
       }
+      const pricing = input.pricing === undefined ? null : resolveAdminModelPricingChange(existing, existing.connection, input.pricing);
+      if (input.pricing !== undefined && !pricing) return "pricing_unavailable";
       const updated = await prisma.providerModel.updateMany({
         data: {
+          ...(pricing ? adminModelPricingColumns(pricing) : {}),
           displayName: input.displayName,
           draftConfig: json(input.configuration),
           draftVersion: { increment: 1 },
@@ -1077,6 +1093,7 @@ export function createPrismaAdminProviderRepository(
           nativeRoutingAdoptionEvidence: Prisma.DbNull
         },
         where: {
+          ...(pricing ? { modelClass: existing.modelClass, modelId: existing.modelId, templateKey: existing.templateKey } : {}),
           activeVersion: input.expectedActiveVersion,
           displayName: input.expectedDisplayName,
           draftVersion: input.expectedDraftVersion,
@@ -1084,7 +1101,7 @@ export function createPrismaAdminProviderRepository(
           updatedAt: input.expectedUpdatedAt
         }
       });
-      return updated.count === 1 ? "updated" : "stale";
+      return updated.count === 1 ? pricing ? { status: "updated", pricing } : "updated" : "stale";
     },
 
     async renameModelCas(input) {
@@ -1104,6 +1121,25 @@ export function createPrismaAdminProviderRepository(
         }
       });
       if (updated.count === 1) return "updated";
+      return await prisma.providerModel.findFirst({ where, select: { id: true } }) ? "stale" : "not_found";
+    },
+
+    async updateModelMetadataCas(input) {
+      const where = { connectionId: input.connectionId, id: input.modelId, connection: { family: { not: "fake" } } };
+      const model = await prisma.providerModel.findFirst({ where, select: {
+        connection: { select: { activeConfig: true, draftConfig: true, family: true } }, modelClass: true, modelId: true, templateKey: true
+      } });
+      if (!model) return "not_found";
+      const pricing = resolveAdminModelPricingChange(model, model.connection, input.pricing);
+      if (!pricing) return "pricing_unavailable";
+      const updated = await prisma.providerModel.updateMany({
+        data: { ...adminModelPricingColumns(pricing), displayName: input.displayName,
+          updatedAt: new Date(Math.max(input.now.getTime(), input.expectedUpdatedAt.getTime() + 1)) },
+        where: { ...where, modelClass: model.modelClass, modelId: model.modelId, templateKey: model.templateKey,
+          activeVersion: input.expectedActiveVersion, displayName: input.expectedDisplayName,
+          draftVersion: input.expectedDraftVersion, updatedAt: input.expectedUpdatedAt }
+      });
+      if (updated.count === 1) return { status: "updated", pricing };
       return await prisma.providerModel.findFirst({ where, select: { id: true } }) ? "stale" : "not_found";
     },
 
@@ -2017,7 +2053,10 @@ export function createPrismaAdminProviderRepository(
             await tx.providerModel.create({ data: {
               ...modelColumns(model.configuration),
               id: model.id, connectionId: connection.id, provider: connection.family, displayName: model.displayName,
-              inputTokenPriceMicros: model.inputTokenPriceMicros, outputTokenPriceMicros: model.outputTokenPriceMicros,
+              inputTokenPriceUsdPerMillion: model.inputTokenPriceUsdPerMillion,
+              cachedInputTokenPriceUsdPerMillion: model.cachedInputTokenPriceUsdPerMillion ?? null,
+              cacheWriteInputTokenPriceUsdPerMillion: model.cacheWriteInputTokenPriceUsdPerMillion ?? null,
+              outputTokenPriceUsdPerMillion: model.outputTokenPriceUsdPerMillion,
               templateKey: model.templateKey, draftConfig: json(model.configuration), draftVersion: 1,
               activeConfig: json(model.configuration), activeVersion: 1, activatedAt: input.now, enabled: true
             } });

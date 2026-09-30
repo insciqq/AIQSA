@@ -15,6 +15,7 @@ import type {
   AdminProviderCustomSetupCommitResult,
   AdminProviderCustomSetupRepository
 } from "./customSetupRepositoryContract";
+import { adminModelPricingColumns, initialAdminModelPricing } from "./providerModelPricing";
 
 type CustomSetupRepositoryOptions = Readonly<{
   exposeFake?: boolean;
@@ -318,9 +319,14 @@ async function applyCustomSetupPlan(
       unassignedPolicy: "require_assignment"
     }
   });
+  const connection = { activeConfig: plan.connection.configuration, draftConfig: plan.connection.configuration, family: "openai_compatible" };
   for (const model of plan.models) {
+    // A codex-lb model takes its OpenAI catalog tariff; any other custom price stays administrator-owned.
+    const pricing = initialAdminModelPricing({ modelClass: model.configuration.modelClass,
+      modelId: model.configuration.upstreamModelId, templateKey: null }, connection);
     await tx.providerModel.create({
       data: {
+        ...(pricing ? adminModelPricingColumns(pricing) : { priceSource: "admin" }),
         activatedAt: plan.now,
         activeConfig: json(model.configuration),
         activeVersion: 1,

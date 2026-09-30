@@ -267,7 +267,7 @@ async function reserveAcceptedWorkspaceSession(
     if (liveExports > 0) throw new WorkspaceRunConflictError("workspace_busy");
     await tx.workspaceSession.update({
       data: {
-        expiresAt, lastActiveAt: new Date(), operationOwner: workspaceRunOperationOwner(plan.runId),
+        operationOwner: workspaceRunOperationOwner(plan.runId),
         operationExpiresAt: null, version: { increment: 1 }
       },
       where: { id: existing.id }
@@ -340,6 +340,7 @@ async function insertAcceptedWorkspaceRunBinding(
   }
   await tx.workspaceRunBinding.create({
     data: {
+      guestUsedAt: null,
       browserSessionSequence: await acceptWorkspaceBrowserSequence(tx, input.userId, input.chatId),
       imageRef: plan.normalized.imageRef,
       internetEnabled: plan.normalized.internetEnabled,

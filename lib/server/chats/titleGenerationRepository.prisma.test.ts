@@ -10,6 +10,7 @@ import { createPrismaPermanentChatDeletionRepository } from "./permanentDeletion
 import { createPermanentChatDeletionService } from "./permanentDeletion/service";
 import { createChatTitleRepository } from "./titleGenerationRepository";
 import { loadChatTitleFirstTurn } from "./titleGeneration";
+import { createPrismaChatRepository } from "./prismaRepository";
 
 const repository = createChatTitleRepository(prisma);
 const usage = { inputTokens: 10, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 };
@@ -27,7 +28,7 @@ async function fixture(run: (work: ReturnType<typeof chatTitleWork>, userMessage
     } });
     const model = await prisma.providerModel.create({ data: {
       connectionId, displayName: "Title fixture", provider: "openai_compatible", modelId: "title-test", capabilities: {}, defaultParams: {},
-      inputTokenPriceMicros: 1_000_000, outputTokenPriceMicros: 2_000_000
+      inputTokenPriceUsdPerMillion: 1_000_000, outputTokenPriceUsdPerMillion: 2_000_000
     } });
     const base = chatTitleWork();
     const chat = await prisma.chat.create({ data: { userId, title: base.expectedTitle } });
@@ -166,8 +167,16 @@ describe("durable optional title work", () => {
         modelRunId: work.runId, userId: work.userId, provider: "openai_compatible", modelId: "title-test",
         providerModelId: "unrelated-model"
       } })).rejects.toThrow("chat_title_usage_scope_invalid");
+      const chats = createPrismaChatRepository(prisma);
+      expect((await chats.getChat({ chatId: work.chatId, userId: work.userId }))?.usageStats).toMatchObject({
+        recordCount: 1, knownCostRecordCount: 0, totalTokens: null, estimatedCostMicros: null, titleUsagePending: true
+      });
       await Promise.all([repository.recordUsage(work, usage), repository.recordUsage(work, usage)]);
       await Promise.all([repository.finish(work, "TCP and UDP compared"), repository.finish(work, "TCP and UDP compared")]);
+      expect((await chats.getChat({ chatId: work.chatId, userId: work.userId }))?.usageStats).toMatchObject({
+        recordCount: 1, knownCostRecordCount: 1, totalTokens: 15, estimatedCostMicros: 20_000_000
+      });
+      expect((await chats.getChat({ chatId: work.chatId, userId: work.userId }))?.usageStats?.titleUsagePending).toBeUndefined();
       expect((await chat(work.chatId)).title).toBe("TCP and UDP compared");
       expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: work.runId } })).toMatchObject({ status: "complete", inputTokens: 30, outputTokens: 35, totalTokens: 65 });
       expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: secondRun.id } })).toMatchObject({ totalTokens: null });

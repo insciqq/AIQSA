@@ -41,9 +41,11 @@ it("resolves source links through current authorization and never exposes inacce
   const sourceHref = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce("/p/project/c/old");
   const handler = createContinuationSourceHandler({ sourceHref, resolveAuth: async () => session });
   expect((await handler(new Request("http://localhost/api/chats/source/continuation-source"), context)).status).toBe(404);
-  const response = await handler(new Request("http://localhost/api/chats/source/continuation-source"), context);
+  const response = await handler(new Request("http://0.0.0.0:3000/api/chats/source/continuation-source"), context);
   expect(response.status).toBe(303);
-  expect(response.headers.get("location")).toBe("http://localhost/p/project/c/old");
+  // The browser retains its public origin even behind a reverse proxy.
+  expect(response.headers.get("location")).toBe("/p/project/c/old");
+  expect(response.headers.get("cache-control")).toBe("no-store");
 });
 
 it("links a continuation to its source chat address in personal and Project form", async () => {

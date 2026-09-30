@@ -701,6 +701,7 @@ export function KnowledgeCitationViewerProvider({
   const viewerKey = useRef<string | null>(null);
 
   const beginPreview = useCallback((request: ViewerRequest, trigger: HTMLElement) => {
+    if (window.getSelection()?.toString()) return;
     const key = requestKey(request);
     previewAbort.current?.abort();
     const controller = new AbortController();
@@ -779,9 +780,12 @@ export function KnowledgeCitationViewerProvider({
       previewAbort.current?.abort();
       setPreview(null);
     };
+    const selectionChanged = () => { if (window.getSelection()?.toString()) dismiss(); };
+    document.addEventListener("selectionchange", selectionChanged);
     window.addEventListener("resize", dismiss);
     window.addEventListener("scroll", dismiss, true);
     return () => {
+      document.removeEventListener("selectionchange", selectionChanged);
       window.removeEventListener("resize", dismiss);
       window.removeEventListener("scroll", dismiss, true);
     };

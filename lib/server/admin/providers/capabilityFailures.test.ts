@@ -1,3 +1,4 @@
+import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminProviderConnection, AdminProviderModelConfiguration, AdminProviderTestEvidence } from "../../../contracts/adminProviders";
@@ -89,7 +90,7 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
     credentials: [{ activatedAt: timestamp, activeVersion: { activatedAt: timestamp, id: "version",
       revokedAt: null, testedAt: timestamp, version: 1 }, createdAt: timestamp, draftSecretConfigured: false,
       draftVersion: 1, enabled: true, id: request.credentialId, label: "Synthetic", testedAt: timestamp, updatedAt: timestamp }],
-    models: [{ activatedAt: timestamp, activeConfig: selectedModel, activeVersion: 4, connectionId: request.connectionId,
+    models: [{ pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null }, activatedAt: timestamp, activeConfig: selectedModel, activeVersion: 4, connectionId: request.connectionId,
       createdAt: timestamp, displayName: "Synthetic", draftConfig: selectedModel, draftVersion: 4, enabled: true,
       id: request.providerModelId, updatedAt: timestamp }]
   };

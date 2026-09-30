@@ -34,6 +34,34 @@ function props(overrides: Partial<Parameters<typeof ComposerV2>[0]> = {}) {
   } satisfies Parameters<typeof ComposerV2>[0];
 }
 
+describe("comment-aware composer send controls", () => {
+  it("allows comment-only sends and counts the entire built follow-up", () => {
+    const comments = [{ id: "one", quote: "Selected fragment", text: "My comment" }];
+    const onSend = vi.fn(), onFollowup = vi.fn();
+    const view = render(<ComposerV2 {...props({ draft: "", comments, onSend })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenCalledOnce();
+    view.rerender(<ComposerV2 {...props({ draft: "x".repeat(15990), comments, activeRun: true, runId: "run", onFollowup })} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("edit or delete a comment");
+    expect(screen.getByRole("button", { name: /Send follow-up/u })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    expect(onFollowup).not.toHaveBeenCalled();
+  });
+
+  it("says once when the unsent input is too large to keep after a reload and keeps it sendable", () => {
+    const onSend = vi.fn();
+    const view = render(<ComposerV2 {...props({ draft: "long text", onSend })} />);
+    expect(screen.queryByText(/Too large to keep after a reload/u)).toBeNull();
+    view.rerender(<ComposerV2 {...props({ draft: "long text", onSend, draftTooLargeToKeep: true })} />);
+    const notice = screen.getByText(/Too large to keep after a reload/u);
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice).toHaveTextContent("only the last version that fit would come back. Send this message, or shorten its text or comments.");
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("long text");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenCalledOnce();
+  });
+});
+
 const ALL_FIXED: Record<AssistantRowKey, AssistantRowPolicy> = {
   controls: "fixed", knowledge: "fixed", model: "fixed", search: "fixed", skills: "fixed", tools: "fixed"
 };
@@ -1608,5 +1636,161 @@ describe("Composer v2", () => {
       currentCount: 1,
       maxCount: 1
     });
+  });
+});
+
+describe("the composer's reasoning effort chip", () => {
+  const LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+  const reasoning = (value = "high", onChange = vi.fn()) => ({ onChange, options: LEVELS, value });
+  const chip = () => screen.getByRole("button", { name: /^Reasoning effort:/u });
+
+  it("shows the raw level and changes it through a menu of the model's levels", async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<ComposerV2 {...props({ reasoningEffort: reasoning("xhigh", onChange) })} />);
+    expect(chip()).toHaveAccessibleName("Reasoning effort: xhigh");
+    expect(chip()).toHaveAttribute("data-tooltip", "Reasoning effort: xhigh");
+    expect(chip()).toHaveTextContent(/^xhigh$/u);
+    expect(chip()).not.toHaveAttribute("data-provenance");
+    expect(chip()).not.toHaveAttribute("data-locked");
+
+    fireEvent.click(chip());
+    expect(chip()).toHaveAttribute("aria-expanded", "true");
+    const menu = screen.getByRole("menu", { name: "Reasoning effort" });
+    const rows = within(menu).getAllByRole("menuitemradio");
+    expect(rows.map((row) => row.textContent)).toEqual(LEVELS);
+    expect(within(menu).getByRole("menuitemradio", { name: "xhigh" })).toHaveAttribute("aria-checked", "true");
+    expect(menu).toHaveTextContent("Applies to your next message.");
+    await waitFor(() => expect(rows[0]).toHaveFocus());
+
+    // Choosing the level in force changes nothing and closes the menu.
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: "xhigh" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu", { name: "Reasoning effort" })).toBeNull();
+    await waitFor(() => expect(chip()).toHaveFocus());
+
+    fireEvent.click(chip());
+    fireEvent.click(within(screen.getByRole("menu", { name: "Reasoning effort" })).getByRole("menuitemradio", { name: "low" }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("low");
+    expect(screen.queryByRole("menu", { name: "Reasoning effort" })).toBeNull();
+
+    // The chip shows what its owner holds, so a change from the Parameters dialog shows too.
+    rerender(<ComposerV2 {...props({ reasoningEffort: reasoning("low", onChange) })} />);
+    expect(chip()).toHaveAccessibleName("Reasoning effort: low");
+    expect(chip()).toHaveTextContent(/^low$/u);
+  });
+
+  it("is absent for a model without a reasoning control and closes its menu with the level", () => {
+    const { rerender } = render(<ComposerV2 {...props({ reasoningEffort: reasoning() })} />);
+    fireEvent.click(chip());
+    expect(screen.getByRole("menu", { name: "Reasoning effort" })).toBeVisible();
+
+    rerender(<ComposerV2 {...props({ reasoningEffort: null })} />);
+    expect(screen.queryByRole("button", { name: /^Reasoning effort/u })).toBeNull();
+    // The layer never falls back to another menu's content.
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close menu" })).toBeNull();
+
+    rerender(<ComposerV2 {...props({ reasoningEffort: { ...reasoning(), options: [] } })} />);
+    expect(screen.queryByRole("button", { name: /^Reasoning effort/u })).toBeNull();
+  });
+
+  it("keeps the level visible and unchangeable during an active run", () => {
+    const onChange = vi.fn();
+    render(<ComposerV2 {...props({ activeRun: true, onStop: vi.fn(), runId: "run", reasoningEffort: reasoning("medium", onChange) })} />);
+    expect(chip()).toBeDisabled();
+    expect(chip()).toHaveAccessibleName("Reasoning effort: medium");
+    expect(chip()).toHaveTextContent(/^medium$/u);
+    fireEvent.click(chip());
+    expect(screen.queryByRole("menu", { name: "Reasoning effort" })).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("locks a level the Assistant fixes and marks it with the Assistant's dot", () => {
+    const onChange = vi.fn();
+    render(<ComposerV2 {...props({
+      assistant: galleryAssistant({ policies: { controls: "fixed", model: "fixed" } }),
+      reasoningEffort: reasoning("high", onChange)
+    })} />);
+    expect(chip()).toBeEnabled();
+    expect(chip()).toHaveAttribute("data-locked", "true");
+    expect(chip()).toHaveAttribute("data-provenance", "assistant");
+    expect(chip()).toHaveAccessibleName("Reasoning effort: high");
+    expect(chip()).toHaveAccessibleDescription("Fixed by Research editor");
+    expect(chip()).toHaveAttribute("data-tooltip", "Reasoning effort: high · Fixed by Research editor");
+
+    fireEvent.click(chip());
+    const menu = screen.getByRole("menu", { name: "Reasoning effort" });
+    expect(within(menu).getByTestId("assistant-row-provenance")).toHaveTextContent("Fixed by Research editor");
+    const current = within(menu).getByRole("menuitemradio", { name: "high" });
+    expect(current).toHaveAttribute("aria-checked", "true");
+    expect(current).toHaveAttribute("aria-disabled", "true");
+    for (const level of LEVELS.filter((level) => level !== "high")) {
+      expect(within(menu).getByRole("menuitemradio", { name: level })).toBeDisabled();
+    }
+    fireEvent.click(current);
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: "low" }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("names the Assistant only where its parameters set the level for its own model", () => {
+    const { rerender } = render(<ComposerV2 {...props({ assistant: galleryAssistant(), reasoningEffort: reasoning() })} />);
+    expect(chip()).toHaveAttribute("data-provenance", "assistant");
+    expect(chip()).not.toHaveAttribute("data-locked");
+    expect(chip()).toHaveAccessibleDescription("From Research editor · adjustable for this chat");
+    fireEvent.click(chip());
+    const menu = screen.getByRole("menu", { name: "Reasoning effort" });
+    expect(within(menu).getByTestId("assistant-row-provenance"))
+      .toHaveTextContent("From Research editor · adjustable for this chat");
+    expect(within(menu).getByRole("menuitemradio", { name: "low" })).toBeEnabled();
+    fireEvent.keyDown(menu, { key: "Escape" });
+
+    // Changed for this chat: no dot, the menu names the Assistant's level.
+    rerender(<ComposerV2 {...props({
+      assistant: galleryAssistant({ origins: { controls: "chat" } }),
+      reasoningEffort: reasoning("low")
+    })} />);
+    expect(chip()).not.toHaveAttribute("data-provenance");
+    expect(chip()).toHaveAccessibleDescription("Changed for this chat · Research editor starts with high");
+
+    // Parameters without a level, or another model: the level is the user's own.
+    rerender(<ComposerV2 {...props({
+      assistant: galleryAssistant({ assistantValues: { controls: { temperature: 0.2 } } }),
+      reasoningEffort: reasoning()
+    })} />);
+    expect(chip()).not.toHaveAttribute("data-provenance");
+    expect(chip()).not.toHaveAccessibleDescription(/Research editor/u);
+    rerender(<ComposerV2 {...props({
+      assistant: galleryAssistant({ policies: { controls: "fixed", model: "fixed" } }),
+      reasoningEffort: reasoning(),
+      selectedModelId: "gpt-5.2-mini"
+    })} />);
+    expect(chip()).not.toHaveAttribute("data-provenance");
+    expect(chip()).not.toHaveAttribute("data-locked");
+    fireEvent.click(chip());
+    expect(within(screen.getByRole("menu", { name: "Reasoning effort" })).getByRole("menuitemradio", { name: "low" }))
+      .toBeEnabled();
+  });
+
+  it("sits after the tools and turns labels into icons only as the seventh chip", () => {
+    const six = { agent: { enabled: false, onToggle: vi.fn() }, workspace: galleryWorkspace() };
+    const { rerender } = render(<ComposerV2 {...props({ ...six, reasoningEffort: reasoning() })} />);
+    const row = screen.getByLabelText("Active capabilities");
+    const buttons = within(row).getAllByRole("button");
+    expect(buttons.at(-1)).toBe(chip());
+    expect(buttons.at(-2)).toBe(screen.getByRole("button", { name: "Change Skills mode" }));
+    expect(row).toHaveAttribute("data-compact-labels", "true");
+
+    // Five capabilities and the level keep their labels; so do six without it.
+    rerender(<ComposerV2 {...props({ workspace: galleryWorkspace(), reasoningEffort: reasoning() })} />);
+    expect(row).not.toHaveAttribute("data-compact-labels");
+    rerender(<ComposerV2 {...props({ ...six, reasoningEffort: null })} />);
+    expect(row).not.toHaveAttribute("data-compact-labels");
+    // Pending comments count as a chip.
+    rerender(<ComposerV2 {...props({
+      comments: [{ id: "one", quote: "Fragment", text: "Comment" }],
+      reasoningEffort: reasoning(),
+      workspace: galleryWorkspace()
+    })} />);
+    expect(row).toHaveAttribute("data-compact-labels", "true");
   });
 });

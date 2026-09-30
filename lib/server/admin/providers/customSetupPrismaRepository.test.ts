@@ -355,6 +355,36 @@ describe("Prisma custom provider setup repository", () => {
     expect(tx.userSettings.update).not.toHaveBeenCalled();
   });
 
+  it("prices codex-lb models from their OpenAI tariff and keeps other custom models administrator-owned", async () => {
+    const base = plan();
+    const priced = {
+      ...base.models[0]!,
+      configuration: { ...base.models[0]!.configuration, upstreamModelId: "gpt-6-sol" },
+      evidence: { ...base.models[0]!.evidence, upstreamModelId: "gpt-6-sol" },
+      grantId: "grant-2",
+      id: "model-2"
+    };
+    const codex = plan({
+      connection: { ...base.connection, configuration: { ...base.connection.configuration, apiRoot: "https://codex.example.test/backend-api/codex" } },
+      models: [base.models[0]!, priced]
+    });
+    const { repository, tx } = harness({
+      grantModelIds: ["model-1", "model-2"],
+      models: [readyModel(codex), readyModel(codex, 1)]
+    });
+
+    await expect(repository.commit(codex)).resolves.toMatchObject({ status: "ready" });
+
+    expect(tx.providerModel.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      id: "model-2", priceSource: "catalog", inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: "0.2",
+      cacheWriteInputTokenPriceUsdPerMillion: "2.5", outputTokenPriceUsdPerMillion: "10"
+    }) });
+    const custom = (tx.providerModel.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>)
+      .find(([{ data }]) => data.id === "model-1")?.[0].data;
+    expect(custom).toMatchObject({ priceSource: "admin" });
+    expect(custom).not.toHaveProperty("inputTokenPriceUsdPerMillion");
+  });
+
   it("publishes tested hosted and client routes behind one connection-scoped Search option", async () => {
     const { commitPlan, repository, tx } = harness();
     const searchCapable = plan({

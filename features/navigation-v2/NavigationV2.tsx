@@ -66,6 +66,8 @@ export type NavigationChatRowState = Readonly<{
 }>;
 
 export type NavigationSidebarProps = Readonly<{
+  /** The authenticated viewer, for the account menu's sign-out. */
+  accountId?: string | null;
   accountLabel?: string | null;
   activeChatId: string | null;
   /** Shows the Control Center link inside the account menu. */
@@ -1020,6 +1022,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             ) : null}
           </div>
           <AccountMenuV2
+            accountId={props.accountId ?? null}
             accountLabel={props.accountLabel}
             adminEntryVisible={props.adminEntryVisible}
             onSettings={props.onSettings}
@@ -1572,6 +1575,7 @@ export function ReadingRoomShellV2({
       <UiV2IconSprite />
       {composition !== "mobile" ? (
         <RailV2
+          accountId={navigationOwnerProps.accountId}
           accountLabel={navigationOwnerProps.accountLabel}
           active={resolvedSection}
           navigationBusy={navigationOwnerProps.navigationBusy}

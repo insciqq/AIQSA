@@ -63,6 +63,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "attachments",
         "capabilities",
         "chips-wide",
+        "chips-wide-comments",
         "chips-off",
         "chips-off-pinned",
         "chips-agent",
@@ -73,6 +74,10 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "knowledge",
         "model",
         "project-knowledge",
+        "reasoning",
+        "reasoning-hidden",
+        "reasoning-locked",
+        "reasoning-running",
         "zero"
       ] as const,
       "default"

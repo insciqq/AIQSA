@@ -4,6 +4,9 @@ import type { WorkspaceChatSummary } from "./types";
 import { chatSummaryFromApi } from "./shellApi";
 import { useChatTitleReconciliation } from "./useChatTitleReconciliation";
 import { initialWorkspaceSnapshot, useWorkspaceStore } from "./workspaceStore";
+import { initialThreadStoreState, useThreadStore } from "./threadStore";
+import { initialRunLifecycleSnapshot, useRunLifecycleStore } from "./runLifecycleStore";
+import { useComposerSessionStore } from "./composerSessionStore";
 
 const chat: WorkspaceChatSummary = chatSummaryFromApi({
   activeLeafMessageId: "answer", createdAt: "2026-01-01T00:00:00Z", defaultModelId: "model",
@@ -15,11 +18,112 @@ const advance = async (ms: number) => { await act(async () => { await vi.advance
 describe("chat title metadata reconciliation", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    useThreadStore.setState(initialThreadStoreState);
+    useRunLifecycleStore.setState(initialRunLifecycleSnapshot);
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     useWorkspaceStore.setState({ ...initialWorkspaceSnapshot, activeChatId: "another-chat", chats: [chat],
       navigationChats: [{ activeRun: true, assistant: null, folderId: null, id: chat.id, title: chat.title, updatedAt: chat.updatedAt }] });
   });
-  afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); useWorkspaceStore.setState(initialWorkspaceSnapshot); });
+  afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); useWorkspaceStore.setState(initialWorkspaceSnapshot);
+    useThreadStore.setState(initialThreadStoreState); useRunLifecycleStore.setState(initialRunLifecycleSnapshot); });
+
+  const totals = { hasCompletedAnswer: true, recordCount: 2, knownCostRecordCount: 2,
+    incompleteRecordCount: 0, totalTokens: 20, estimatedCostMicros: 2000 };
+  function thread() {
+    useThreadStore.getState().replaceThread(chat.id, { activeLeafId: "answer", sourceUpdatedAt: chat.updatedAt,
+      messages: [], usageStats: { ...totals, recordCount: 1, knownCostRecordCount: 1, totalTokens: 10 } });
+    return useThreadStore.getState().threadsByChatId[chat.id]!;
+  }
+  it("refreshes settled spending even when the title is unchanged, preserving a typed draft and thread", async () => {
+    const before = thread();
+    const composer = useComposerSessionStore.getState(); composer.setDraft("Keep my draft");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ pending: false, title: chat.title,
+      updatedAt: "2026-01-01T00:00:01.000Z", usageStats: totals }));
+    renderHook(() => useChatTitleReconciliation({ accountId: "user", chats: [chat] }));
+    await advance(1000);
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat/title?usage=1", expect.any(Object));
+    expect(useThreadStore.getState().threadsByChatId[chat.id]).toEqual({ ...before, usageStats: totals });
+    expect(useComposerSessionStore.getState().sessionsByKey[composer.activeSessionKey]?.draft).toBe("Keep my draft");
+    await advance(30_000); expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each(["stream", "newer thread", "older revision", "account", "revoked"])("does not replace spending after %s changes", async boundary => {
+    const before = thread(); let finish!: (response: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const hook = renderHook(({ accountId }) => useChatTitleReconciliation({ accountId, chats: [chat] }), { initialProps: { accountId: "user" } });
+    await advance(1000);
+    if (boundary === "stream") useRunLifecycleStore.getState().streamStarted({ chatId: chat.id, producer: "new" });
+    if (boundary === "newer thread") useThreadStore.getState().mergeMessages(chat.id, [], { usageStats: { ...totals, totalTokens: 99 } });
+    if (boundary === "account") hook.rerender({ accountId: "different" });
+    const expected = useThreadStore.getState().threadsByChatId[chat.id]!.usageStats;
+    await act(async () => { finish(Response.json({ pending: false, title: chat.title,
+      updatedAt: boundary === "older revision" ? "2025-01-01T00:00:00Z" : "2026-01-01T00:00:01Z", usageStats: totals },
+    { status: boundary === "revoked" ? 404 : 200 })); });
+    expect(useThreadStore.getState().threadsByChatId[chat.id]!.usageStats).toEqual(expected);
+    expect(before.messages).toEqual([]);
+  });
+
+  it("retries accounting at the existing cadence while a manual name and live stream keep their ownership", async () => {
+    thread();
+    useRunLifecycleStore.getState().streamStarted({ chatId: chat.id, producer: "current" });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ pending: false, title: "Manual name", updatedAt: chat.updatedAt, usagePending: true }))
+      .mockImplementation(async () => Response.json({ pending: false, title: "Manual name", updatedAt: chat.updatedAt, usagePending: false, usageStats: totals }));
+    const hook = renderHook(({ chats }) => useChatTitleReconciliation({ accountId: "user", chats }), { initialProps: { chats: [chat] } });
+    await advance(1000);
+    const settled = useWorkspaceStore.getState().chats;
+    hook.rerender({ chats: settled });
+    await advance(2000);
+    expect(useThreadStore.getState().threadsByChatId[chat.id]!.usageStats?.totalTokens).toBe(10);
+    useRunLifecycleStore.getState().streamFinished({ chatId: chat.id, producer: "current" });
+    await advance(4000);
+    expect(useThreadStore.getState().threadsByChatId[chat.id]!.usageStats).toEqual(totals);
+    expect(useWorkspaceStore.getState().chats[0]!.title).toBe("Manual name");
+  });
+
+  it("keeps the bounded accounting refresh when a manual rename removes pending title presentation", async () => {
+    thread();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ pending: false, title: "Manual name",
+      usagePending: false, updatedAt: chat.updatedAt, usageStats: totals }));
+    const hook = renderHook(({ chats }) => useChatTitleReconciliation({ accountId: "user", chats }), { initialProps: { chats: [chat] } });
+    const manuallyRenamed = { ...chat, title: "Manual name", titlePending: false };
+    act(() => useWorkspaceStore.setState({ chats: [manuallyRenamed] }));
+    hook.rerender({ chats: [manuallyRenamed] });
+    await advance(1000);
+    expect(useThreadStore.getState().threadsByChatId[chat.id]!.usageStats).toEqual(totals);
+    expect(useWorkspaceStore.getState().chats[0]).toEqual(manuallyRenamed);
+  });
+
+  it("starts accounting reconciliation after cold entry with a settled-looking title but a pending receipt", async () => {
+    thread();
+    const manuallyNamed = { ...chat, title: "Manual name", titlePending: false };
+    useWorkspaceStore.setState({ chats: [manuallyNamed] });
+    useThreadStore.getState().mergeMessages(chat.id, [], { usageStats: { ...totals, totalTokens: 10, titleUsagePending: true } });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ pending: false, usagePending: false,
+      title: "Manual name", updatedAt: chat.updatedAt, usageStats: totals }));
+    renderHook(() => useChatTitleReconciliation({ accountId: "user", chats: [manuallyNamed] }));
+    await advance(1000);
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat/title?usage=1", expect.anything());
+    expect(useThreadStore.getState().threadsByChatId[chat.id]!.usageStats).toEqual(totals);
+    await advance(30_000);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes a thread opened while the terminal title-only response was in flight", async () => {
+    let finish!: (response: Response) => void;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValue(Response.json({ pending: false, usagePending: false, title: "Settled title",
+        updatedAt: chat.updatedAt, usageStats: totals }));
+    const hook = renderHook(({ chats }) => useChatTitleReconciliation({ accountId: "user", chats }), { initialProps: { chats: [chat] } });
+    await advance(1000);
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/chats/chat/title");
+    thread();
+    await act(async () => { finish(Response.json({ pending: false, title: "Settled title", updatedAt: chat.updatedAt })); });
+    hook.rerender({ chats: useWorkspaceStore.getState().chats });
+    await advance(2000);
+    expect(fetchMock.mock.calls[1]![0]).toBe("/api/chats/chat/title?usage=1");
+    expect(useThreadStore.getState().threadsByChatId[chat.id]!.usageStats).toEqual(totals);
+  });
 
   it("updates an inactive chat's title without changing its controls or the active chat and stops on settlement", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ pending: false, title: "Network protocol comparison" }));

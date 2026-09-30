@@ -382,6 +382,7 @@ export function AdminPanel({ adminEmail, adminUserId, returnPath = "/" }: AdminP
         inert={confirmation.confirmation ? true : undefined}
       >
         <AdminShell
+          accountId={adminUserId}
           accountLabel={adminEmail}
           attentionCounts={{ assistants: assistantsPending.count, users: usersAttention }}
           navigation={navigation}

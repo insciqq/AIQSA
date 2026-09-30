@@ -1,3 +1,4 @@
+import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { estimateCostMicros, normalizeTokenUsage, type TokenUsage } from "../../domain/usage";
 import { storedTokenUsage } from "../usage";
@@ -108,8 +109,8 @@ export function createVisionAnalysisStore(prisma: PrismaClient) {
         if (receipt) {
           const normalized = normalizeTokenUsage(usage);
           const pricing = receipt.providerModelId ? await tx.providerModel.findUnique({ where: { id: receipt.providerModelId },
-            select: { inputTokenPriceMicros: true, outputTokenPriceMicros: true } }) : null;
-          const cost = pricing && (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0) ? estimateCostMicros(normalized, pricing) : null;
+            select: { ...modelTokenPricingSelect } }) : null;
+          const cost = pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null) ? estimateCostMicros(normalized, modelTokenPricing(pricing)) : null;
           await tx.usageEvent.update({ where: { id: receipt.id }, data: { ...storedTokenUsage(normalized), estimatedCostMicros: cost !== null && cost <= 2_147_483_647 ? cost : null } });
         }
         await tx.visionAnalysisAttempt.update({ where: { toolCallId: c.toolCallId }, data: { state: unknown ? "ambiguous" : "settled",

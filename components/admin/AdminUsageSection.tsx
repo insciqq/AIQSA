@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+import { costCoverageNote, formatEstimatedCostMicros } from "@/lib/domain/formatEstimatedCost";
 import { AdminTableRegion } from "@/components/admin/adminPrimitives";
 import { useAdminSectionTopbar } from "@/components/admin/AdminShell";
 import { cardClass, sectionHeadingClass } from "@/components/admin/roles/rolesControls";
@@ -33,7 +35,7 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
 }
 
 function hasReportedUsage(usage: AdminUsageTokenTotals): boolean {
-  return usage.lastUsedAt !== null || usage.runCount > 0 || [
+  return usage.recordCount > 0 || usage.lastUsedAt !== null || usage.runCount > 0 || [
     usage.cachedInputTokens,
     usage.cacheWriteInputTokens,
     usage.inputTokens,
@@ -41,6 +43,16 @@ function hasReportedUsage(usage: AdminUsageTokenTotals): boolean {
     usage.reasoningTokens,
     usage.totalTokens
   ].some((value) => value !== null && value > 0);
+}
+
+function UsageCost({ usage }: Readonly<{ usage: AdminUsageTokenTotals }>) {
+  const note = costCoverageNote(usage.knownCostRecordCount, usage.recordCount);
+  return (
+    <>
+      <span className="font-mono tabular-nums">{formatEstimatedCostMicros(usage.estimatedCostMicros)}</span>
+      {note ? <span className="mt-1 block font-sans text-xs font-normal text-ink-muted">{note}</span> : null}
+    </>
+  );
 }
 
 function UsageFact({ label, value }: Readonly<{ label: string; value: string }>) {
@@ -56,7 +68,7 @@ function UsageFact({ label, value }: Readonly<{ label: string; value: string }>)
 
 function MobileUsageFacts({
   facts
-}: Readonly<{ facts: readonly Readonly<{ label: string; value: string }>[] }>) {
+}: Readonly<{ facts: readonly Readonly<{ label: string; value: ReactNode }>[] }>) {
   return (
     <dl className="mt-3 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3">
       {facts.map((fact) => (
@@ -94,6 +106,12 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
               {formatNumber(usage.totals.totalTokens)}
             </p>
             <p className="mt-1 text-sm text-ink-secondary">Reported tokens</p>
+            <dl className="mt-4">
+              <dt className="text-xs font-medium text-ink-muted">Estimated cost</dt>
+              <dd className="mt-1 text-base font-medium text-ink" data-testid="usage-total-cost">
+                <UsageCost usage={usage.totals} />
+              </dd>
+            </dl>
             <p className="mt-4 max-w-sm text-xs leading-5 text-ink-muted">
               {countLabel(usage.totals.runCount, "retained run")} with usage records across{" "}
               {countLabel(usersWithUsage.length, "user")} and {countLabel(groupsWithUsage.length, "group")}.
@@ -121,9 +139,9 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
         <p className="font-medium text-ink-secondary">How to read these numbers</p>
         <p className="mt-1">
           This view sums provider-reported counts, including usage retained before failure or cancellation.
-          Missing counts remain unavailable. Run counts cover retained run records; token totals can also include older detached
-          usage. Group totals follow current membership: a user in multiple groups is counted once in each group, so
-          this is attribution, not billing reconciliation.
+          Missing counts and costs remain unavailable. Costs are approximate. Run counts cover retained run records;
+          token and cost totals can also include older detached usage. Group totals follow current membership:
+          a user in multiple groups is counted once in each group, so group sums may overlap.
         </p>
       </div>
 
@@ -133,7 +151,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
             <div className="min-w-0">
               <h3 className={sectionHeadingClass}>Group attribution</h3>
               <p className="mt-1 text-xs leading-5 text-ink-muted">
-                Current memberships with provider-reported token totals.
+                Current memberships with provider-reported token totals and estimated cost.
               </p>
             </div>
             <p className="shrink-0 font-mono text-xs tabular-nums text-ink-muted">
@@ -154,6 +172,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                       },
                       { label: "Runs", value: formatNumber(group.runCount) },
                       { label: "Tokens", value: formatNumber(group.totalTokens) },
+                      { label: "Estimated cost", value: <UsageCost usage={group} /> },
                       { label: "Last usage", value: formatDate(group.lastUsedAt) }
                     ]}
                   />
@@ -172,6 +191,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                   <th className="px-3 py-2 font-medium">Users</th>
                   <th className="px-3 py-2 font-medium">Runs</th>
                   <th className="px-3 py-2 font-medium">Tokens</th>
+                  <th className="px-3 py-2 font-medium">Estimated cost</th>
                   <th className="px-3 py-2 font-medium">Last usage</th>
                 </tr>
               </thead>
@@ -189,12 +209,13 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                       </td>
                       <td className="px-3 py-3 font-mono tabular-nums text-ink-secondary">{formatNumber(group.runCount)}</td>
                       <td className="px-3 py-3 font-mono font-medium tabular-nums text-ink">{formatNumber(group.totalTokens)}</td>
+                      <td className="px-3 py-3 text-ink"><UsageCost usage={group} /></td>
                       <td className="px-3 py-3 text-ink-secondary">{formatDate(group.lastUsedAt)}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td className="px-3 py-8 text-center text-ink-muted" colSpan={5}>
+                    <td className="px-3 py-8 text-center text-ink-muted" colSpan={6}>
                       No groups in this installation
                     </td>
                   </tr>
@@ -232,15 +253,19 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                       facts={[
                         { label: "Runs", value: formatNumber(user.runCount) },
                         { label: "Tokens", value: formatNumber(user.totalTokens) },
+                        { label: "Estimated cost", value: <UsageCost usage={user} /> },
                         {
                           label: "Input / output",
                           value: `${formatNumber(user.inputTokens)} / ${formatNumber(user.outputTokens)}`
                         },
                         {
                           label: "Top model",
-                          value: topModel
-                            ? `${usageProviderModelLabel(catalog, topModel)} · ${formatNumber(topModel.totalTokens)}`
-                            : "No reported usage"
+                          value: topModel ? (
+                            <>
+                              {usageProviderModelLabel(catalog, topModel)} · {formatNumber(topModel.totalTokens)} tokens
+                              <span className="mt-1 block">Estimated cost <UsageCost usage={topModel} /></span>
+                            </>
+                          ) : "No reported usage"
                         },
                         { label: "Last usage", value: formatDate(user.lastUsedAt) }
                       ]}
@@ -261,6 +286,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                   <th className="px-3 py-2 font-medium">Groups</th>
                   <th className="px-3 py-2 font-medium">Runs</th>
                   <th className="px-3 py-2 font-medium">Tokens</th>
+                  <th className="px-3 py-2 font-medium">Estimated cost</th>
                   <th className="px-3 py-2 font-medium">Input / output</th>
                   <th className="px-3 py-2 font-medium">Top model</th>
                   <th className="px-3 py-2 font-medium">Last usage</th>
@@ -291,6 +317,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                         </td>
                         <td className="px-3 py-3 font-mono tabular-nums text-ink-secondary">{formatNumber(user.runCount)}</td>
                         <td className="px-3 py-3 font-mono font-medium tabular-nums text-ink">{formatNumber(user.totalTokens)}</td>
+                        <td className="px-3 py-3 text-ink"><UsageCost usage={user} /></td>
                         <td className="px-3 py-3 text-ink-secondary">
                           <span className="font-mono tabular-nums">{formatNumber(user.inputTokens)}</span>
                           {" / "}
@@ -305,6 +332,9 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                               <div className="mt-1 font-mono text-xs tabular-nums text-ink-muted">
                                 {formatNumber(topModel.totalTokens)} tokens
                               </div>
+                              <div className="mt-1 text-xs text-ink-muted">
+                                Estimated cost <UsageCost usage={topModel} />
+                              </div>
                             </>
                           ) : (
                             <span className="text-ink-muted">No reported usage</span>
@@ -316,7 +346,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                   })
                 ) : (
                   <tr>
-                    <td className="px-3 py-8 text-center text-ink-muted" colSpan={7}>
+                    <td className="px-3 py-8 text-center text-ink-muted" colSpan={8}>
                       No users in this installation
                     </td>
                   </tr>

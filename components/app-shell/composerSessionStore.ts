@@ -1,5 +1,8 @@
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { create } from "zustand";
+import { randomUUID } from "@/lib/browser/randomUUID";
+import { MAX_PENDING_COMMENTS, type ComposerCommentRefusal, type PendingComposerComment } from "./composerComments";
+import { composerInputFitsStoredRecord } from "./composerDraftStorage";
 
 type StateUpdate<T> = T | ((current: T) => T);
 
@@ -45,11 +48,13 @@ export type ComposerSessionSnapshot = {
     nonce: string;
     text: string;
     inFlight: boolean;
+    draftChanged?: boolean;
   }> | null;
   agentEnabled?: boolean;
   artifactCreate: Readonly<{ intent: "create" }> | null;
   artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
+  comments: PendingComposerComment[];
   draft: string;
   editGeneration: number;
   editRevision: number;
@@ -64,6 +69,7 @@ export type ComposerSessionSnapshot = {
   pendingEdit: ComposerPendingEdit | null;
   pendingSend: {
     attachments: ComposerAttachment[];
+    comments: PendingComposerComment[];
     clearedRevision: number;
     draft: string;
     generation: number;
@@ -84,6 +90,7 @@ export type ComposerSendToken = {
   artifactCreate: ComposerSessionSnapshot["artifactCreate"];
   artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
+  comments: PendingComposerComment[];
   draft: string;
   generation: number;
   sourceKey: ComposerSessionKey;
@@ -101,6 +108,7 @@ export type ComposerSessionPatch = Partial<
     ComposerSessionSnapshot,
     | "attachments"
     | "draft"
+    | "comments"
     | "editingDraft"
     | "editingError"
     | "editingMessageId"
@@ -121,6 +129,13 @@ type ComposerSessionStore = {
   activeSessionKey: ComposerSessionKey;
   acceptArtifactIntent(token: ComposerSendToken): boolean;
   activateSession(key: ComposerSessionKey): void;
+  /** Adds a pending comment; returns why it was refused, or null when added. */
+  addComment(key: ComposerSessionKey, comment: Pick<PendingComposerComment, "quote" | "text">): ComposerCommentRefusal | null;
+  /** Why a comment on this fragment could not be saved now, before a form opens. */
+  commentRefusal(key: ComposerSessionKey, quote: string): ComposerCommentRefusal | null;
+  /** Changes a pending comment; returns why it was refused, or null when changed. */
+  updateComment(key: ComposerSessionKey, id: string, text: string): ComposerCommentRefusal | null;
+  removeComment(key: ComposerSessionKey, id: string): boolean;
   applyWorkspaceDefault(key: ComposerSessionKey, enabled: boolean): void;
   appendUploadedAttachment(
     key: ComposerSessionKey,
@@ -169,6 +184,7 @@ export const emptyComposerSessionSnapshot = Object.freeze({
   artifactCreate: null,
   artifactEdit: null,
   attachments: emptyAttachments,
+  comments: Object.freeze([]) as unknown as PendingComposerComment[],
   draft: "",
   editGeneration: 0,
   editRevision: 0,
@@ -192,6 +208,7 @@ function newSession(): ComposerSessionSnapshot {
   return {
     ...emptyComposerSessionSnapshot,
     attachments: [],
+    comments: [],
     pendingUploadGenerations: []
   };
 }
@@ -294,6 +311,7 @@ function patchedSession(
   const attachmentsChanged =
     hasOwn(patch, "attachments") && patch.attachments !== current.attachments;
   const draftChanged = hasOwn(patch, "draft") && patch.draft !== current.draft;
+  const commentsChanged = hasOwn(patch, "comments") && patch.comments !== current.comments;
   const editingDraftChanged =
     hasOwn(patch, "editingDraft") && patch.editingDraft !== current.editingDraft;
   const editingErrorChanged =
@@ -313,6 +331,7 @@ function patchedSession(
   if (
     !attachmentsChanged &&
     !draftChanged &&
+    !commentsChanged &&
     !editingDraftChanged &&
     !editingErrorChanged &&
     !editingMessageChanged &&
@@ -326,22 +345,25 @@ function patchedSession(
   return {
     ...current,
     ...(followupChanged ? { followupSubmission: patch.followupSubmission } : {}),
+    ...(!followupChanged && draftChanged && current.followupSubmission
+      ? { followupSubmission: { ...current.followupSubmission, draftChanged: true } } : {}),
     ...(agentChanged ? { agentEnabled: patch.agentEnabled ?? false } : {}),
     ...(artifactEditChanged ? { artifactEdit: patch.artifactEdit ?? null } : {}),
     ...(artifactCreateChanged ? { artifactCreate: patch.artifactCreate ?? null } : {}),
     ...(attachmentsChanged ? { attachments: [...(patch.attachments ?? [])] } : {}),
     ...(draftChanged ? { draft: patch.draft ?? "" } : {}),
+    ...(commentsChanged ? { comments: [...(patch.comments ?? [])] } : {}),
     ...(editingDraftChanged ? { editingDraft: patch.editingDraft ?? "" } : {}),
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
-    ...(attachmentsChanged || draftChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged || errorPatched
+    ...(attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged || errorPatched
       ? { contextRejectionGeneration: null } : {}),
     ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false, workspaceInitialized: true } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
     editRevision:
       current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
-    revision: current.revision + (attachmentsChanged || draftChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged ? 1 : 0)
+    revision: current.revision + (attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged ? 1 : 0)
   };
 }
 
@@ -369,6 +391,24 @@ const initialSessionState = () => ({
   uploadGenerationCounter: 0
 });
 
+const PLACEHOLDER_COMMENT_ID = "00000000-0000-4000-8000-000000000000";
+
+/** Pending comments have a structural count bound and one size bound: the
+ * chat's unsent input must fit one browser record, so it survives a reload. */
+function addCommentRefusal(
+  key: ComposerSessionKey,
+  session: ComposerSessionSnapshot | undefined,
+  comment: PendingComposerComment
+): ComposerCommentRefusal | null {
+  if (!session) return "unavailable";
+  if (session.editingMessageId) return "editing";
+  // A rejected in-flight send returns its comments, so they still count.
+  if (session.comments.length + (session.pendingSend?.comments.length ?? 0) >= MAX_PENDING_COMMENTS) return "count";
+  if (!comment.quote.trim() || !comment.text.trim()) return "empty";
+  if (!composerInputFitsStoredRecord(key, { draft: session.draft, comments: [...session.comments, comment] })) return "too-large";
+  return null;
+}
+
 export const useComposerSessionStore = create<ComposerSessionStore>((set, get) => ({
   ...initialSessionState(),
   activateSession(key) {
@@ -380,13 +420,39 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         : { ...state.sessionsByKey, [key]: newSession() }
     });
   },
+  addComment(key, comment) {
+    const session = get().sessionsByKey[key];
+    const added = { id: randomUUID(), quote: comment.quote, text: comment.text };
+    const refusal = addCommentRefusal(key, session, added);
+    if (refusal || !session) return refusal ?? "unavailable";
+    return get().updateSession(key, { comments: [...session.comments, added] }) ? null : "unavailable";
+  },
+  commentRefusal(key, quote) {
+    // A placeholder of the real id length and a one-character comment: the
+    // smallest comment on this fragment that Save could store.
+    return addCommentRefusal(key, get().sessionsByKey[key], { id: PLACEHOLDER_COMMENT_ID, quote, text: "x" });
+  },
+  updateComment(key, id, text) {
+    const session = get().sessionsByKey[key];
+    if (!session) return "unavailable";
+    if (!text.trim()) return "empty";
+    if (!session.comments.some(comment => comment.id === id)) return "missing";
+    const comments = session.comments.map(comment => comment.id === id ? { ...comment, text } : comment);
+    if (!composerInputFitsStoredRecord(key, { draft: session.draft, comments })) return "too-large";
+    return get().updateSession(key, { comments }) ? null : "unavailable";
+  },
+  removeComment(key, id) {
+    const session = get().sessionsByKey[key];
+    if (!session || !session.comments.some(comment => comment.id === id)) return false;
+    return get().updateSession(key, { comments: session.comments.filter(comment => comment.id !== id) });
+  },
   applyWorkspaceDefault(key, enabled) {
     if (chatIdFromComposerSessionKey(key) || projectIdFromComposerSessionKey(key)) return;
     const session = get().sessionsByKey[key];
     if (!session || session.pendingSend || session.pendingUploadGenerations.length > 0) return;
     // A late catalog may initialize a typed draft, but never replace an
     // initialized draft's execution intent or a file-driven Workspace choice.
-    if (session.workspaceInitialized && (session.draft || session.attachments.length > 0 || session.editingMessageId)) return;
+    if (session.workspaceInitialized && (session.draft || session.comments.length || session.attachments.length > 0 || session.editingMessageId)) return;
     get().updateSession(key, { workspaceEnabled: enabled });
   },
   appendUploadedAttachment(key, generation, attachment) {
@@ -459,7 +525,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         options?.attachmentBlocksSend ??
           ((attachment) => attachment.status !== undefined && attachment.status !== "ready")
       ) ||
-      (!session.draft.trim() && session.attachments.length === 0)
+      (!session.draft.trim() && session.comments.length === 0 && session.attachments.length === 0)
     ) {
       return null;
     }
@@ -470,6 +536,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       artifactCreate: session.artifactCreate,
       artifactEdit: session.artifactEdit,
       attachments: [...session.attachments],
+      comments: [...session.comments],
       draft: session.draft,
       generation,
       sourceKey: key,
@@ -482,6 +549,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         [key]: {
           ...session,
           attachments: [],
+          comments: [],
           draft: "",
           editRevision: session.editRevision + (session.draft ? 1 : 0),
           contextRejectionGeneration: null,
@@ -490,6 +558,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           operationErrorRetryable: false,
           pendingSend: {
             attachments: [...session.attachments],
+            comments: [...session.comments],
             clearedRevision,
             draft: session.draft,
             generation
@@ -646,6 +715,8 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         ? session.attachments.filter((attachment) => !pendingAttachmentIds.has(attachment.id))
         : [])
     ];
+    const pendingCommentIds = new Set(pending.comments.map(comment => comment.id));
+    const restoredComments = [...pending.comments, ...session.comments.filter(comment => !pendingCommentIds.has(comment.id))];
     set({
       sessionsByKey: {
         ...state.sessionsByKey,
@@ -656,6 +727,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           ...(restore
             ? {
                 attachments: restoredAttachments,
+                comments: restoredComments,
                 draft: restoredDraft,
                 editRevision: session.editRevision + (pending.draft ? 1 : 0),
                 revision: session.revision + 1
@@ -773,12 +845,12 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     const target = state.sessionsByKey[targetKey] ?? newSession();
     if (!source || sourceKey === targetKey || source.pendingSend || target.pendingSend ||
       source.pendingUploadGenerations.length > 0 || target.pendingUploadGenerations.length > 0 ||
-      target.draft.length > 0 || target.attachments.length > 0 ||
-      source.draft.length === 0 && source.attachments.length === 0) return false;
+      target.draft.length > 0 || target.comments.length > 0 || target.attachments.length > 0 ||
+      source.draft.length === 0 && source.comments.length === 0 && source.attachments.length === 0) return false;
     set({ sessionsByKey: {
       ...state.sessionsByKey,
-      [sourceKey]: patchedSession(source, { draft: "", attachments: [] }),
-      [targetKey]: patchedSession(target, { draft: source.draft, attachments: source.attachments })
+      [sourceKey]: patchedSession(source, { draft: "", comments: [], attachments: [] }),
+      [targetKey]: patchedSession(target, { draft: source.draft, comments: source.comments, attachments: source.attachments })
     } });
     return true;
   },
@@ -798,10 +870,12 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       ...source,
       artifactEdit: null,
       attachments: [...source.attachments],
+      comments: [...source.comments],
       pendingEdit: source.pendingEdit ? { ...source.pendingEdit } : null,
       pendingSend: source.pendingSend
         ? {
             ...source.pendingSend,
+            comments: [...source.pendingSend.comments],
             attachments: [...source.pendingSend.attachments]
           }
         : null,
@@ -875,7 +949,7 @@ export function pendingSendHasNewerInput(
 function inputAddedDuringSend(session: ComposerSessionSnapshot): boolean {
   return Boolean(session.pendingSend) &&
     session.revision !== session.pendingSend?.clearedRevision &&
-    (session.draft.length > 0 || session.attachments.length > 0);
+    (session.draft.length > 0 || session.comments.length > 0 || session.attachments.length > 0);
 }
 
 export function selectActiveComposerSession(

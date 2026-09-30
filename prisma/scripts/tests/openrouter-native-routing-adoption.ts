@@ -15,7 +15,13 @@ FROM "ProviderModel" model WHERE id IN ('native-upgrade-automatic', 'native-upgr
 export const nativeRoutingProofSql = `
 DO $$ BEGIN
   IF (SELECT count(*) FROM "NativeRoutingAdoptionFixture" fixture JOIN "ProviderModel" model ON model.id = fixture.id
-    WHERE fixture.snapshot = to_jsonb(model) - 'nativeRoutingAdoptionVersion' - 'nativeRoutingAdoptionReason' - 'nativeRoutingAdoptionEvidence'
+    -- The later price migration adds unknown tariffs to these unpriced,
+    -- administrator-owned models. Compare the complete expected expanded row.
+    WHERE fixture.snapshot || jsonb_build_object(
+      'inputTokenPriceUsdPerMillion', NULL, 'cachedInputTokenPriceUsdPerMillion', NULL,
+      'cacheWriteInputTokenPriceUsdPerMillion', NULL, 'outputTokenPriceUsdPerMillion', NULL,
+      'priceSource', 'catalog') =
+      to_jsonb(model) - 'nativeRoutingAdoptionVersion' - 'nativeRoutingAdoptionReason' - 'nativeRoutingAdoptionEvidence'
       AND model."nativeRoutingAdoptionVersion" = 0 AND model."nativeRoutingAdoptionReason" IS NULL
       AND model."nativeRoutingAdoptionEvidence" IS NULL) <> 2 THEN
     RAISE EXCEPTION 'native_migration_changed_routes_or_legacy_models';
@@ -44,7 +50,10 @@ export const nativeRoutingRepeatProofSql = `
 DO $$ BEGIN
   IF (SELECT count(*) FROM "ProviderModel" WHERE id IN ('native-upgrade-automatic', 'native-upgrade-custom')
     AND "nativeRoutingAdoptionVersion" = 1 AND "nativeRoutingAdoptionReason" = 'preserved') <> 2 OR
-    NOT EXISTS (SELECT 1 FROM "ProviderModel" WHERE id = 'native-upgrade-new' AND "nativeRoutingAdoptionVersion" = 1) THEN
+    NOT EXISTS (SELECT 1 FROM "ProviderModel" WHERE id = 'native-upgrade-new' AND "nativeRoutingAdoptionVersion" = 1
+      AND "inputTokenPriceUsdPerMillion" IS NULL AND "cachedInputTokenPriceUsdPerMillion" IS NULL
+      AND "cacheWriteInputTokenPriceUsdPerMillion" IS NULL AND "outputTokenPriceUsdPerMillion" IS NULL
+      AND "priceSource" = 'catalog') THEN
     RAISE EXCEPTION 'native_route_migration_replayed_or_claimed_new_operator_model';
   END IF;
 END $$;

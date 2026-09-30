@@ -406,6 +406,113 @@
   z-index: 65;
 }
 
+.v2-selection-quote {
+  position: fixed;
+  z-index: 65;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: min(30rem, calc(100vw - 1rem));
+  padding: 0.25rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface);
+  color: var(--v2-color-text);
+  box-shadow: var(--v2-shadow-overlay);
+}
+
+.v2-selection-quote-button {
+  min-height: 2.25rem;
+  white-space: nowrap;
+}
+
+.v2-selection-quote[data-touch] {
+  border-radius: 999px;
+}
+
+.v2-selection-quote[data-touch] .v2-selection-quote-button {
+  min-width: 5rem;
+  min-height: 2.75rem;
+  border-radius: 999px;
+}
+
+.v2-selection-quote-notice {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.v2-selection-comment-form {
+  position: fixed;
+  display: grid;
+  width: min(22rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  gap: 0.625rem;
+  padding: 1rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-l);
+  background: var(--v2-color-surface);
+  color: var(--v2-color-text);
+  box-shadow: var(--v2-shadow-overlay);
+}
+
+.v2-selection-comment-layer { position: fixed; inset: 0; z-index: 90; }
+.v2-selection-comment-scrim { position: absolute; inset: 0; border: 0; background: transparent; cursor: default; }
+.v2-selection-comment-hint { margin: 0; color: var(--v2-color-text3); font-size: 0.75rem; }
+.v2-selection-comment-layer[data-layout="sheet"] .v2-selection-comment-form {
+  inset: auto 0.5rem max(0.5rem, env(safe-area-inset-bottom));
+  width: auto;
+}
+
+.v2-selection-comment-quote {
+  max-height: 5.25rem;
+  margin: 0;
+  padding: 0.5rem 0.625rem;
+  overflow: auto;
+  border-left: 2px solid var(--v2-color-accent);
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.v2-selection-comment-form textarea {
+  width: 100%;
+  min-height: 5rem;
+  resize: vertical;
+  padding: 0.625rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface2);
+  font: inherit;
+  line-height: 1.45;
+}
+
+.v2-selection-comment-form textarea:focus {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 1px;
+}
+
+.v2-selection-comment-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-selection-comment-form textarea {
+    min-height: 6rem;
+    font-size: 1rem;
+  }
+
+  .v2-selection-comment-actions .v2-button {
+    min-height: 2.75rem;
+    min-width: 5rem;
+  }
+}
+
 .v2-message-actions .v2-icon-button {
   width: 1.875rem;
   height: 1.875rem;

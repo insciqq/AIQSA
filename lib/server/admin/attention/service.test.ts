@@ -4,6 +4,7 @@ import type { AdminDashboard } from "../../../contracts/admin";
 import { adminAttentionItemSource } from "../../../contracts/adminAttention";
 import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 import type { AdminProviderConnection, AdminProviderModel } from "../../../contracts/adminProviders";
+import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import type { AdminSearchCatalog, AdminSearchIntegration } from "../../../contracts/adminSearch";
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import type { AdminEmailState } from "../../../contracts/email";
@@ -89,6 +90,7 @@ function model(id: string, connectionId = "conn-deepseek"): AdminProviderModel {
   };
   return {
     activatedAt: at, activeConfig: config, activeVersion: 1, connectionId,
+    pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog", catalogPrices: null },
     createdAt: at, displayName: id, draftConfig: config, draftVersion: 1, enabled: true,
     id, modelClass: "answer", updatedAt: at
   };

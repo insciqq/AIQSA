@@ -66,6 +66,20 @@ describe("native first-party System Vision dispatch", () => {
 
 
 describe("native checkpoint publication", () => {
+  it.each([undefined, 1] as const)("keeps an accepted checkpoint description through discovery with guidance version %s", guidanceVersion => {
+    const accepted = { ...request, workspace: { ...request.workspace!, guidanceVersion }, workspaceCheckpoints: true as const };
+    const legacy = agentBuiltinTools(accepted).find(tool => tool.name === "checkpoint_outputs")!;
+    expect(legacy.description).toMatch(/^Save selected deliverables as downloadable intermediate results/);
+    expect(agentBuiltinTools({ ...accepted, workspaceCheckpointToolDescription: "Accepted checkpoint tool text" })
+      .find(tool => tool.name === "checkpoint_outputs")?.description).toBe("Accepted checkpoint tool text");
+  });
+  it("keeps modern checkpoint and Vision capabilities together with external MCP Off, scoped to Workspace admission", () => {
+    const accepted = { ...request, workspace: { ...request.workspace!, guidanceVersion: 1 as const },
+      workspaceCheckpoints: true as const, workspaceCheckpointToolDescription: "Accepted conditional checkpoint instruction" };
+    expect(agentBuiltinTools(accepted).map(tool => tool.name)).toEqual(["checkpoint_outputs", "analyze_image"]);
+    expect(agentBuiltinTools({ ...accepted, workspace: undefined })).toEqual([]);
+    expect(agentBuiltinTools({ ...accepted, workspaceCheckpoints: undefined, visionAnalysis: undefined })).toEqual([]);
+  });
   it.each([true, false])("preserves typed unavailable failures on claimed=%s without a success receipt", async claimed => {
     const call = { id: "save", name: "checkpoint_outputs", arguments: { files: ["project/a.psd"], description: "Draft" } };
     const store = { claimBuiltinTool: vi.fn(async () => ({ claimed, id: "tool", result: null })),

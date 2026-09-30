@@ -239,6 +239,32 @@
   box-shadow: 0 0 0 2px var(--v2-color-surface);
   content: "";
 }
+/* Reasoning effort sets how the model thinks, not which tools it has: a
+   squared outline after the capability pills, never accent-filled, with the
+   raw value in the code face. The value stays in every row state, so the
+   icon-only and narrow rows keep the face as wide as its text. */
+.v2-composer-indicator.v2-composer-reasoning {
+  --v2-chip-border: var(--v2-color-border2);
+  --v2-chip-background: transparent;
+  border-radius: var(--v2-radius-s);
+}
+.v2-composer-indicators .v2-composer-reasoning {
+  width: auto;
+}
+.v2-composer-indicators .v2-composer-reasoning > .v2-composer-indicator-face {
+  width: auto;
+  gap: 0.25rem;
+  padding: 0 0.4375rem;
+}
+.v2-composer-indicators .v2-composer-reasoning .v2-composer-indicator-glyph {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+.v2-composer-reasoning-value {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
+  font-variant-ligatures: none;
+}
 .v2-composer-workspace-toggle[data-workspace-state="failed"] {
   --v2-chip-border: var(--v2-color-danger);
   color: var(--v2-color-danger);
@@ -380,6 +406,11 @@
 
 .v2-composer-layer[data-kind="tools"] {
   width: min(21.25rem, calc(100vw - 2rem));
+}
+
+.v2-composer-layer[data-kind="reasoning"] {
+  left: var(--v2-composer-layer-left, 0px);
+  width: min(15rem, calc(100vw - 2rem));
 }
 
 /* A layer opened from outside the composer (the header model selector) is
@@ -1162,6 +1193,32 @@
   }
 }
 
+/* A labelled row holds six chips. With the reasoning level as the seventh or
+   a later chip (data-compact-labels) the capabilities show their icons, as
+   below 46rem, instead of adding a second row. */
+@container composer (min-width: 46.01rem) {
+  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator-label { display: none; }
+  .v2-composer-indicators[data-compact-labels] > .v2-composer-indicator:not(.v2-composer-reasoning) > .v2-composer-indicator-face {
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+  }
+  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator-icon { position: static; }
+  .v2-composer-indicators[data-compact-labels] > .v2-composer-indicator:not(.v2-composer-reasoning) .v2-composer-indicator-glyph {
+    width: 1rem;
+    height: 1rem;
+  }
+  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator-count { position: absolute; top: -0.25rem; right: -0.25rem; }
+  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator[data-comment-count] .v2-composer-indicator-count {
+    display: inline-flex;
+  }
+  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator-signal { top: -0.0625rem; right: -0.0625rem; }
+  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator[data-provenance="assistant"] > .v2-composer-indicator-face::after {
+    top: auto;
+    bottom: -0.125rem;
+  }
+}
+
 @container composer (max-width: 26rem) {
   .v2-composer-entry {
     display: grid;
@@ -1385,3 +1442,48 @@
 
 .v2-composer-artifact-edit > .v2-icon,
 .v2-composer-artifact-edit > button { flex: 0 0 auto; }
+.v2-composer-comments-overlay { position: fixed; inset: 0; z-index: 90; }
+.v2-composer-indicator[data-comment-count] .v2-composer-indicator-count { display: none; }
+@container composer (max-width: 46rem) {
+  .v2-composer-indicator[data-comment-count] .v2-composer-indicator-count { display: inline-flex; }
+}
+.v2-composer-comments-scrim { position: absolute; inset: 0; border: 0; background: transparent; cursor: default; }
+.v2-composer-comments-panel {
+  position: fixed;
+  width: min(24rem, calc(100vw - 1rem));
+  max-height: min(32rem, calc(100dvh - 2rem));
+  overflow: auto;
+  padding: 0.875rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-l);
+  background: var(--v2-color-surface);
+  color: var(--v2-color-text);
+  box-shadow: var(--v2-shadow-overlay);
+}
+.v2-composer-comments-panel > header { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+.v2-composer-comments-list { display: grid; gap: 1rem; padding: 0; margin: 0.75rem 0 0; list-style: none; }
+.v2-composer-comments-list > li { min-width: 0; padding-block-end: 0.75rem; border-bottom: 1px solid var(--v2-color-border); }
+.v2-composer-comment-quote {
+  max-height: 5rem; overflow: auto; padding: 0.25rem 0.625rem; margin: 0;
+  border-left: 2px solid var(--v2-color-accent); color: var(--v2-color-text2);
+  font-size: 0.8125rem; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.v2-composer-comment-text { margin: 0.5rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.v2-composer-comment-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.v2-composer-comments-panel textarea {
+  box-sizing: border-box; width: 100%; min-height: 5rem; margin-block: 0.5rem; padding: 0.5rem;
+  border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-s);
+  background: var(--v2-color-surface2); color: var(--v2-color-text); font: inherit; resize: vertical;
+}
+.v2-composer-comments-panel textarea:focus { outline: 2px solid var(--v2-color-accent); outline-offset: 1px; }
+@media (max-width: 840px), (max-height: 32rem) {
+  .v2-composer-comments-panel {
+    inset: auto 0.5rem max(0.5rem, env(safe-area-inset-bottom)) !important;
+    width: auto;
+    max-height: calc(100dvh - 2rem) !important;
+  }
+}
+@media (pointer: coarse), (max-width: 840px) {
+  .v2-composer-comments-panel .v2-button, .v2-composer-comments-panel .v2-icon-button { min-height: 2.75rem; min-width: 2.75rem; }
+  .v2-composer-comments-panel textarea { font-size: 1rem; }
+}

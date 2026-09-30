@@ -40,7 +40,7 @@ export type RunCompletionFinalizationResult =
     }>;
 
 function hasUsablePricing(pricing: ModelTokenPricing | null): pricing is ModelTokenPricing {
-  return Boolean(pricing && (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0));
+  return Boolean(pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null));
 }
 
 export async function usageWithEstimatedCost(

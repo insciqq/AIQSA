@@ -157,7 +157,8 @@ describe("Prisma-backed chat repository", () => {
         contextStats: { session: contextSnapshot, sessionMessageId: assistantMessage.id },
         messages: [{ id: userMessage.id }, { id: assistantMessage.id }],
         usageStats: {
-          activeBranchMessageCount: 2
+          hasCompletedAnswer: true,
+          recordCount: 0
         }
       });
     });
@@ -198,7 +199,7 @@ describe("Prisma-backed chat repository", () => {
           beforeCursor: expect.any(String),
           hasOlder: true
         },
-        usageStats: { activeBranchMessageCount: 55 }
+        usageStats: { hasCompletedAnswer: true, recordCount: 0 }
       });
       expect(detail?.contextStats.approximateActiveBranchInputTokens).toBeGreaterThan(0);
       expect(detail?.messages.map(({ id }) => id)).toEqual(ids.slice(5));
@@ -693,7 +694,7 @@ describe("Prisma-backed chat repository", () => {
     });
   });
 
-  it("hydrates token usage stats from the active branch only", async () => {
+  it("does not invent usage receipts from model-run counters while hydrating the active branch", async () => {
     await withFolderUser(async ({ fakeProviderModelId, userId }) => {
       const repository = createPrismaChatRepository(prisma);
       const chat = await prisma.chat.create({
@@ -781,10 +782,12 @@ describe("Prisma-backed chat repository", () => {
 
       expect(detail).toMatchObject({
         usageStats: {
-          activeBranchMessageCount: 2,
-          cachedInputTokens: 3,
-          incompleteRunCount: 1,
-          totalTokens: 0
+          hasCompletedAnswer: true,
+          recordCount: 0,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
+          incompleteRecordCount: 0,
+          totalTokens: null
         }
       });
       const activeMessage = detail?.messages.find(({ id }) => id === activeAssistant.id);

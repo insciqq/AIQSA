@@ -28,6 +28,7 @@ import {
   type RefObject
 } from "react";
 import { createPortal } from "react-dom";
+import { ConversationSelectionV2, type ConversationQuoteV2 } from "./ConversationSelectionV2";
 
 export type ConversationMessageV2 = Readonly<{
   content: string;
@@ -91,6 +92,7 @@ type ConversationTurnV2Props = Readonly<{
   role: "assistant" | "user";
   renderCitation?: MarkdownCitationRenderer;
   resolveHref?: MarkdownHrefResolver;
+  quoteEligible?: boolean;
   streaming?: boolean;
   toolbarLeading?: ReactNode;
 }>;
@@ -229,6 +231,7 @@ export function ConversationTurnV2({
   expandForReadingAnchor = false,
   hideEmptyContent = false,
   role,
+  quoteEligible = true,
   renderCitation,
   resolveHref,
   streaming = false,
@@ -336,7 +339,7 @@ export function ConversationTurnV2({
   }
 
   function toggleControlsOnSurface(event: MouseEvent<HTMLElement>) {
-    if (!hasActions || interactiveTarget(event.target)) return;
+    if (!hasActions || interactiveTarget(event.target) || window.getSelection()?.toString()) return;
     setControlsOpen((open) => !open);
   }
 
@@ -392,7 +395,7 @@ export function ConversationTurnV2({
           <ConversationInlineEditV2 {...edit} onCancel={cancelInlineEdit} />
         ) : (
           <>
-            <div className="v2-conversation-markdown">
+            <div className="v2-conversation-markdown" data-quote-eligible={quoteEligible && !streaming && !editing ? "true" : undefined}>
               {content.trim() ? (
                 <MarkdownMessage
                   content={content}
@@ -557,6 +560,7 @@ type ConversationV2Props = Readonly<{
   onRetry?(): void;
   onScroll?(): void;
   orientationSlot?: ReactNode;
+  quote?: ConversationQuoteV2;
   renderMessage?(message: ConversationMessageV2): ReactNode;
   scrollRef?: RefObject<HTMLDivElement | null>;
   showJumpToLatest?: boolean;
@@ -604,6 +608,7 @@ export function ConversationV2({
   onRetry,
   onScroll,
   orientationSlot,
+  quote,
   renderMessage,
   scrollRef: externalScrollRef,
   showJumpToLatest = false,
@@ -761,6 +766,7 @@ export function ConversationV2({
                       renderCitation={getMessagePresentation?.(message)?.renderCitation}
                       toolbarLeading={getMessagePresentation?.(message)?.toolbarLeading}
                       role={message.role}
+                      quoteEligible={!message.optimistic}
                       streaming={message.streaming}
                     />
                   )}
@@ -771,6 +777,7 @@ export function ConversationV2({
           </div>
         )}
       </div>
+      {quote ? <ConversationSelectionV2 quote={quote} scrollRef={scrollRef} /> : null}
       {showJumpToLatest && onJumpToLatest ? (
         <UiV2IconButton
           className="v2-conversation-jump-latest"

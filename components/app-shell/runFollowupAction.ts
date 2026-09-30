@@ -3,6 +3,7 @@ import { randomUUID } from "@/lib/browser/randomUUID";
 import { chatIdFromComposerSessionKey, selectComposerSession, useComposerSessionStore } from "./composerSessionStore";
 import { selectThreadSnapshot, useThreadStore } from "./threadStore";
 import { shellFetch } from "./shellApi";
+import { buildComposerMessage } from "./composerComments";
 
 class FollowupSubmissionError extends Error {}
 
@@ -12,22 +13,20 @@ export async function submitRunFollowup(runId: string): Promise<void> {
   const key = store.activeSessionKey;
   const chatId = chatIdFromComposerSessionKey(key);
   const session = selectComposerSession(store, key);
-  const text = session.draft.trim();
+  const builtText = buildComposerMessage(session.draft, session.comments);
+  const text = builtText.trim();
   if (!chatId || !text || session.followupSubmission?.inFlight || session.editingMessageId) return;
   const previous = session.followupSubmission;
   const retry = previous?.runId === runId && previous.text === text ? previous : null;
   const message = selectThreadSnapshot(useThreadStore.getState(), chatId).messages.find(entry => entry.runId === runId);
   const assistantMessageId = retry?.assistantMessageId ?? message?.id;
   if (!assistantMessageId) return;
-  if (session.draft.length > RUN_FOLLOWUP_MAX_CHARS) {
-    store.updateSession(key, { operationError: `Keep the follow-up under ${RUN_FOLLOWUP_MAX_CHARS.toLocaleString()} characters.` });
+  if (builtText.length > RUN_FOLLOWUP_MAX_CHARS) {
+    store.updateSession(key, { operationError: `The comments and draft exceed the ${RUN_FOLLOWUP_MAX_CHARS.toLocaleString("en-US")}-character follow-up limit. Shorten the draft or edit or delete a comment.` });
     return;
   }
   const submission = { assistantMessageId, runId, text, nonce: retry?.nonce ?? randomUUID(), inFlight: true };
   store.updateSession(key, { followupSubmission: submission, operationError: null });
-  // updateSession may increment the general session revision; take the draft
-  // fence after recording the pending request, before any asynchronous work.
-  const draftRevision = selectComposerSession(useComposerSessionStore.getState(), key).revision;
   try {
     const response = await shellFetch(`/api/model-runs/${encodeURIComponent(runId)}/followups`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -55,12 +54,14 @@ export async function submitRunFollowup(runId: string): Promise<void> {
     const current = selectComposerSession(useComposerSessionStore.getState(), key);
     if (current.followupSubmission?.nonce === submission.nonce) {
       store.updateSession(key, { followupSubmission: null, operationError: null,
-        ...(current.revision === draftRevision && current.draft === session.draft ? { draft: "" } : {}) });
+        comments: current.comments.filter(comment => !session.comments.some(sent =>
+          sent.id === comment.id && sent.quote === comment.quote && sent.text === comment.text)),
+        ...(!current.followupSubmission.draftChanged && current.draft === session.draft ? { draft: "" } : {}) });
     }
   } catch (error) {
     const current = selectComposerSession(useComposerSessionStore.getState(), key);
     if (current.followupSubmission?.nonce === submission.nonce) store.updateSession(key, {
-      followupSubmission: { ...submission, inFlight: false },
+      followupSubmission: { ...submission, inFlight: false, draftChanged: current.followupSubmission.draftChanged },
       operationError: error instanceof FollowupSubmissionError ? error.message
         : "The follow-up could not be confirmed. Retry to check the same submission."
     });

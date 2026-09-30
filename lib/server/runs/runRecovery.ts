@@ -4,7 +4,7 @@ import { captureMcpObservation, captureWorkspaceObservation, captureSearchObserv
   OBSERVATION_RESTORE_FAILURE, observationRestoreRefused, observationWholeDeliveryBatches, type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
-import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
 import { RunSettlementError, runSettlementFailure } from "./settlementFailure";
 import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage";
@@ -2409,7 +2409,7 @@ async function recoverCheckpointedToolLoop(
     const tools: RunTool[] = [
       ...(clientToolsEnabled && run.normalizedRequest.memorySearch ? [memorySearchTool(run.normalizedRequest.memorySearch)] : []),
       ...skillToolsForRequest(run.normalizedRequest),
-      ...(run.normalizedRequest.workspaceCheckpoints ? [checkpointOutputsTool] : []),
+      ...(run.normalizedRequest.workspaceCheckpoints ? [checkpointOutputsToolForRequest(run.normalizedRequest)] : []),
       ...(run.normalizedRequest.visionAnalysis ? [analyzeImageTool(run.normalizedRequest.visionAnalysis)] : []),
       ...(run.normalizedRequest.workspaceImageView ? [viewWorkspaceImageTool] : []),
       ...(clientToolsEnabled && run.normalizedRequest.imagePlan ? [imageGenerationTool(run.normalizedRequest.imagePlan)] : []),

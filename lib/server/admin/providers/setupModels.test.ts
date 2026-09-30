@@ -1,6 +1,9 @@
+import { catalogModelTokenPricing } from "../../../domain/modelPrices";
 import { describe, expect, it } from "vitest";
 import { providerSetupModels } from "./setupModels";
 import { providerModelTemplateIds } from "../../../domain/providerTemplates";
+import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS } from "../../../contracts/adminProviderQuickSetup";
+import { initialAdminModelPricing } from "./providerModelPricing";
 
 describe("image setup candidates", () => {
   it("offers the four Gemini image candidates with stable unique identities", () => {
@@ -55,5 +58,42 @@ describe("codex-lb catalog candidates", () => {
     expect(providerSetupModels("openai_compatible", {
       apiRoot: "https://fixture.example.test/backend-api/codex", responsesRequestIsolationDetected: false
     })).toEqual([]);
+  });
+});
+
+describe("setup model tariffs", () => {
+  it("copies the matching OpenAI tariff to Codex models and leaves helpers unknown", () => {
+    for (const model of providerSetupModels("openai_compatible", { apiRoot: "https://example.test/backend-api/codex" })) {
+      const expected = catalogModelTokenPricing(`openai:${model.configuration.upstreamModelId}`);
+      expect(model.inputTokenPriceUsdPerMillion).toEqual(expected.inputTokenPriceUsdPerMillion);
+      expect(model.outputTokenPriceUsdPerMillion).toEqual(expected.outputTokenPriceUsdPerMillion);
+      if (model.configuration.modelClass === "answer") expect(model).toMatchObject(expected);
+    }
+    for (const model of providerSetupModels("openrouter").filter(model => model.configuration.modelClass !== "answer")) {
+      expect(model.inputTokenPriceUsdPerMillion).toBeNull();
+      expect(model.outputTokenPriceUsdPerMillion).toBeNull();
+    }
+  });
+});
+
+describe("setup candidates and the stored catalog identity", () => {
+  // Add & check, Test & Save and setup additions copy candidate prices into rows without a
+  // template key on codex-lb and on second connections; the stored rule must agree with them.
+  const cases: Array<[name: string, family: string, endpoint: { apiRoot: string }]> = [
+    ["codex-lb", "openai_compatible", { apiRoot: "https://example.test/backend-api/codex" }],
+    ...ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.map((family): [string, string, { apiRoot: string }] => [family, family, { apiRoot: "https://example.test/v1" }])
+  ];
+  it.each(cases)("prices every %s answer candidate like the row it becomes", (_name, family, endpoint) => {
+    const answers = providerSetupModels(family, endpoint).filter(model => model.configuration.modelClass === "answer");
+    expect(answers.length).toBeGreaterThan(0);
+    for (const candidate of answers) {
+      const pricing = initialAdminModelPricing({ modelClass: "answer", modelId: candidate.configuration.upstreamModelId, templateKey: null },
+        { family, activeConfig: endpoint, draftConfig: endpoint });
+      expect(pricing?.source, candidate.modelId).toBe("catalog");
+      for (const [field, value] of Object.entries(pricing?.prices ?? {})) {
+        expect(candidate[field as keyof NonNullable<typeof pricing>["prices"]] ?? null, `${candidate.modelId} ${field}`)
+          .toEqual(value === null ? null : Number(value));
+      }
+    }
   });
 });

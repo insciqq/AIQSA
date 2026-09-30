@@ -1,6 +1,8 @@
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { resetComposerSessionStoreForTest } from "@/tests/support/appShellStores";
 import { afterEach, describe, expect, it } from "vitest";
+import { buildComposerMessage, MAX_PENDING_COMMENTS } from "./composerComments";
+import { COMPOSER_DRAFT_MAX_RECORD_SIZE } from "./composerDraftStorage";
 import {
   chatIdFromComposerSessionKey,
   composerSessionKey,
@@ -28,6 +30,91 @@ function session(key: ReturnType<typeof composerSessionKey>) {
 }
 
 describe("composer session store", () => {
+  it("queues ordered comments, edits/deletes them and restores a rejected message without duplication", () => {
+    const store = useComposerSessionStore.getState();
+    const key = composerSessionKey("comments");
+    store.activateSession(key);
+    expect(store.addComment(key, { quote: "first\nsecond", text: "note" })).toBeNull();
+    const first = session(key).comments[0]!;
+    expect(store.addComment(key, { quote: "another", text: "another note" })).toBeNull();
+    const second = session(key).comments[1]!;
+    expect(store.updateComment(key, first.id, "edited note")).toBeNull();
+    expect(store.removeComment(key, second.id)).toBe(true);
+    const token = store.beginSend(key)!;
+    expect(token.draft).toBe("");
+    expect(buildComposerMessage(token.draft, token.comments)).toBe("> first\n> second\n\nedited note");
+    expect(session(key).comments).toEqual([]);
+    store.setDraft("new text");
+    store.addComment(key, { quote: "new selection", text: "new comment" });
+    store.finishSend(token, "failed", "refused");
+    expect(session(key).comments.map(comment => comment.text)).toEqual(["edited note", "new comment"]);
+    expect(session(key).draft).toBe("new text");
+    expect(store.finishSend(token, "failed", "duplicate refusal")).toBe(false);
+    expect(session(key).comments).toHaveLength(2);
+    const retry = store.beginSend(key)!;
+    store.finishSend(retry, "succeeded", null, true, "admitted");
+    expect(session(key)).toMatchObject({ draft: "", comments: [] });
+  });
+
+  it("keeps comment-only continuation input and reserves the bound for a rejected pending send", () => {
+    const store = useComposerSessionStore.getState();
+    const source = composerSessionKey("source-comments"), target = composerSessionKey("continuation-comments");
+    store.activateSession(source);
+    for (let index = 0; index < MAX_PENDING_COMMENTS; index++) {
+      expect(store.addComment(source, { quote: `fragment ${index}`, text: `note ${index}` })).toBeNull();
+    }
+    expect(store.addComment(source, { quote: "too many", text: "no" })).toBe("count");
+    expect(store.commentRefusal(source, "too many")).toBe("count");
+    expect(store.moveUnsentInputIfTargetEmpty(source, target)).toBe(true);
+    expect(session(source).comments).toEqual([]);
+    expect(session(target).comments).toHaveLength(MAX_PENDING_COMMENTS);
+    const token = store.beginSend(target)!;
+    expect(store.addComment(target, { quote: "would overflow rejection", text: "no" })).toBe("count");
+    store.finishSend(token, "failed");
+    expect(session(target).comments).toHaveLength(MAX_PENDING_COMMENTS);
+    store.addComment(source, { quote: "separate", text: "own draft" });
+    expect(store.moveUnsentInputIfTargetEmpty(source, target)).toBe(false);
+    expect(session(source).comments[0]?.text).toBe("own draft");
+  });
+  it("keeps twenty long comments in creation order and sends them as one message", () => {
+    const store = useComposerSessionStore.getState();
+    const key = composerSessionKey("twenty-comments");
+    store.activateSession(key);
+    const fragment = "f".repeat(10_000), long = "c".repeat(5_000);
+    expect(store.commentRefusal(key, fragment)).toBeNull();
+    expect(store.addComment(key, { quote: fragment, text: long })).toBeNull();
+    for (let index = 1; index < 20; index++) expect(store.addComment(key, { quote: `fragment ${index}`, text: `note ${index}` })).toBeNull();
+    expect(session(key).comments).toHaveLength(20);
+    expect(session(key).comments[0]).toMatchObject({ quote: fragment, text: long });
+    store.setDraft("closing text");
+    const token = store.beginSend(key)!;
+    expect(buildComposerMessage(token.draft, token.comments)).toBe([
+      `> ${fragment}\n\n${long}`, ...Array.from({ length: 19 }, (_, index) => `> fragment ${index + 1}\n\nnote ${index + 1}`), "closing text"
+    ].join("\n\n"));
+  });
+
+  it("refuses comments beyond the stored-size bound with its own reason and keeps the input unchanged", () => {
+    const store = useComposerSessionStore.getState();
+    const key = composerSessionKey("size-bound");
+    store.activateSession(key);
+    const half = "x".repeat(COMPOSER_DRAFT_MAX_RECORD_SIZE / 2);
+    store.setDraft(half);
+    expect(store.addComment(key, { quote: "fits", text: "small" })).toBeNull();
+    const before = session(key);
+    expect(store.commentRefusal(key, half)).toBe("too-large");
+    expect(store.addComment(key, { quote: "fragment", text: half })).toBe("too-large");
+    expect(store.updateComment(key, before.comments[0]!.id, half)).toBe("too-large");
+    expect(session(key).comments).toBe(before.comments);
+    expect(session(key).draft).toBe(half);
+    expect(store.updateComment(key, "gone", "text")).toBe("missing");
+    expect(store.updateComment(key, before.comments[0]!.id, "   ")).toBe("empty");
+    expect(store.addComment(key, { quote: "fragment", text: " " })).toBe("empty");
+    expect(store.addComment(composerSessionKey("never-opened"), { quote: "fragment", text: "note" })).toBe("unavailable");
+    expect(store.commentRefusal(composerSessionKey("never-opened"), "fragment")).toBe("unavailable");
+    store.updateSession(key, { editingMessageId: "message" });
+    expect(store.addComment(key, { quote: "fragment", text: "note" })).toBe("editing");
+  });
+
   it("transfers creation to an admitted chat, preserves rejected intent and consumes only the exact selection", () => {
     const store = useComposerSessionStore.getState();
     const blank = composerSessionKey(null);
@@ -389,6 +476,7 @@ describe("composer session store", () => {
     expect(store.updateSession(composerSessionKey("deleted"), { draft: "resurrected" })).toBe(false);
     expect(session(chat)).toEqual({
       followupSubmission: null,
+      comments: [],
       agentEnabled: false,
       artifactCreate: null,
       artifactEdit: null,

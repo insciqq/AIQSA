@@ -160,6 +160,17 @@ export async function applySettingsUpdateInTransaction(
   update: UserSettingsUpdate,
   validationModels: SettingsValidationModel[]
 ): Promise<UserSettingsUpdateResult> {
+  // Admission and account/Assistant deletion lock User before its dependent
+  // rows. Reserve the owner's FK key before taking Assistant/UserSettings
+  // locks, including when a nested settings write later needs that same key.
+  const owners = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT owner."id"
+    FROM "User" AS owner
+    WHERE owner."id" = ${userId}
+    FOR KEY SHARE OF owner
+  `;
+  if (owners.length !== 1) return { kind: "not_found" };
+
   // The Assistant is locked before the settings row, in the order Assistant
   // deletion takes them, so a concurrent delete waits instead of failing the
   // foreign key.

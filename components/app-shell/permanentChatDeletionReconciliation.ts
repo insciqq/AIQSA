@@ -1,4 +1,5 @@
 import { composerSessionKey, useComposerSessionStore } from "./composerSessionStore";
+import { removePersistedComposerDraft } from "./composerDraftPersistence";
 import { useRunSurfaceStore } from "./runSurfaceStore";
 import { useThreadStore } from "./threadStore";
 import { chatScopeProjectId, nextChatInScope } from "./workspaceProjectDraftMerge";
@@ -18,6 +19,7 @@ export function removePermanentlyDeletedChat(chatId: string) {
   useThreadStore.getState().removeThread(chatId);
   useRunSurfaceStore.getState().removeSurface(chatId);
   useComposerSessionStore.getState().removeSession(composerSessionKey(chatId));
+  removePersistedComposerDraft(composerSessionKey(chatId));
   return {
     nextChat: nextChatInScope(useWorkspaceStore.getState().chats, chatId, scopeProjectId),
     scopeProjectId,

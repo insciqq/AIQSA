@@ -20,6 +20,7 @@ import {
   type ComposerSessionKey
 } from "@/components/app-shell/composerSessionStore";
 import { loadChatMemoryState } from "@/components/app-shell/chatLifecycleApi";
+import { buildComposerMessage } from "./composerComments";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import { editMessageBranchAction } from "@/components/app-shell/messageEditAction";
 import { shellFetch } from "@/components/app-shell/shellApi";
@@ -815,7 +816,7 @@ export function useMessageRunActions({
       sourceSessionKey
     );
     if (
-      (!sourceSession.draft.trim() && sourceSession.attachments.length === 0) ||
+      (!sourceSession.draft.trim() && !sourceSession.comments.length && sourceSession.attachments.length === 0) ||
       activeChatDetailLoading
     ) {
       return;
@@ -937,7 +938,7 @@ export function useMessageRunActions({
       return;
     }
 
-    const text = sendToken.draft.trim();
+    const text = buildComposerMessage(sendToken.draft, sendToken.comments).trim();
     const contentBlocks = [
       ...(text
         ? [
@@ -1228,6 +1229,7 @@ export function useMessageRunActions({
     );
     if (
       sourceSession.draft.trim() ||
+      sourceSession.comments.length > 0 ||
       sourceSession.attachments.length > 0 ||
       sourceSession.pendingSend ||
       sourceSession.pendingUploadGenerations.length > 0

@@ -4,6 +4,10 @@ import type { ProviderRunRequest } from "../providers/types";
 import { textMessageContent } from "@/lib/domain/content";
 import { agentPrompts } from "./prompt";
 import { withSelectedSkillContext } from "../skills/userContext";
+import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
+import { WORKSPACE_NO_REPLAY_SAFETY, workspacePromptContract } from "../workspace/promptContract";
+import { WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
+import { visionAnalysisGuidance } from "../tools/analyzeImage";
 
 describe("Codex conversation delivery", () => {
   it("offers first-party analysis to text-only Agent without claiming to see pixels", () => {
@@ -69,6 +73,111 @@ describe("Codex conversation delivery", () => {
       expect(prompt).toContain("No attachments on this turn does not mean earlier sources are absent");
       expect(prompt).toContain("never filename alone");
     }
+  });
+
+  it.each([
+    { currentFile: false, earlierFiles: false, search: false },
+    { currentFile: false, earlierFiles: false, search: true },
+    { currentFile: false, earlierFiles: true, search: false },
+    { currentFile: true, earlierFiles: false, search: true }
+  ])("delivers the admitted modern Workspace contract once on start and resume: %j", ({ currentFile, earlierFiles, search }) => {
+    const workspace = { guidanceVersion: 1, outputDirectory: "/workspace/output/current",
+      inboxIndexPath: "/workspace/inbox/index.json", messageManifestPath: "/workspace/inbox/messages/current/manifest.json",
+      projectDirectory: "/workspace/project", internetEnabled: true } as const;
+    const hasIndexedFiles = currentFile || earlierFiles;
+    const visionAnalysis = { version: 1, available: false, code: "vision_model_absent" } as const;
+    const admittedContract = workspacePromptContract({
+      workspace: { normalized: workspace, toolDefinitions: [] } as unknown as WorkspaceRunAdmissionPlan,
+      agent: true, currentAttachmentCount: currentFile ? 1 : 0, hasIndexedFiles,
+      hasEarlierExports: earlierFiles, searchEnabled: search, fileContext: "ADMITTED_FILE_REFERENCES"
+    });
+    const admittedVision = visionAnalysisGuidance(visionAnalysis, false, { nativeCurrentImages: false, hasIndexedFiles });
+    const system = [admittedContract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, admittedVision, admittedContract.turn].join("\n\n");
+    const request = { content: textMessageContent("Continue the current task"),
+      attachments: currentFile ? [{ fileName: "current.txt", mimeType: "text/plain", byteSize: 7 }] : [],
+      prompt: { system }, workspace, workspaceCheckpoints: true, visionAnalysis,
+      agent: { mcpMode: "off", imageInput: false }, context: { messages: [
+        { id: "old-user", role: "user", content: textMessageContent("Earlier request") },
+        { id: "old-answer", role: "assistant", content: textMessageContent("Earlier answer") },
+        { id: "current", role: "user", content: textMessageContent("Continue the current task") }
+      ] }
+    } as unknown as ProviderRunRequest;
+    const result = agentPrompts(request);
+    expect(result.previousAssistantMessageId).toBe("old-answer");
+    expect(result.prompt).toContain("Earlier request");
+    expect(result.resumePrompt).not.toContain("Earlier request");
+    expect(result.developerInstructions.startsWith(`${system}\n\n`)).toBe(true);
+    for (const fragment of [admittedContract.stable, admittedContract.turn, WORKSPACE_CHECKPOINT_GUIDANCE, admittedVision, WORKSPACE_NO_REPLAY_SAFETY]) {
+      expect(result.developerInstructions.split(fragment)).toHaveLength(2);
+      expect(result.prompt).not.toContain(fragment);
+      expect(result.resumePrompt).not.toContain(fragment);
+    }
+    expect(result.developerInstructions).toContain("inside its isolated Workspace");
+    expect(result.developerInstructions).not.toMatch(/Answer directly|Try to answer directly|It starts on first use/u);
+    expect(result.developerInstructions.includes("Web search is available in this chat as its own tool.")).toBe(search);
+    expect(result.developerInstructions.includes("ADMITTED_FILE_REFERENCES")).toBe(hasIndexedFiles);
+    expect(result.developerInstructions.includes("earlier completed exports")).toBe(earlierFiles);
+    expect(result.developerInstructions.includes("Inspect the authorized file index before requesting another upload.")).toBe(hasIndexedFiles);
+    expect(result.developerInstructions).not.toContain("Use checkpoint_outputs to save a useful intermediate deliverable");
+    expect(result.developerInstructions).not.toContain("Direct image viewing is unavailable for this run.");
+    expect(result.developerInstructions).toContain("When saving a deliverable checkpoint, use checkpoint_outputs on the managed AIQSA MCP server even when external MCP is Off.");
+    expect(result.developerInstructions).toContain("For required Workspace image analysis, use analyze_image on the managed AIQSA MCP server even when external MCP is Off.");
+    expect(result.developerInstructions).not.toContain("find_tools");
+    for (const prompt of [result.prompt, result.resumePrompt]) {
+      expect(prompt).toContain('"outputDirectory":"/workspace/output/current"');
+      expect(prompt).toContain('"inboxIndexPath":"/workspace/inbox/index.json"');
+      expect(prompt.includes('"messageManifestPath":')).toBe(currentFile);
+      expect(prompt.includes('"fileName":"current.txt"')).toBe(currentFile);
+      expect(prompt).not.toContain("Before asking the user to upload a source again");
+      expect(prompt).not.toContain("No attachments on this turn does not mean earlier sources are absent");
+    }
+  });
+
+  it("preserves the exact legacy inbox and tool instructions for persisted requests without a guidance version", () => {
+    const request = { content: textMessageContent("Continue"), attachments: [],
+      prompt: { system: "Frozen legacy Workspace system", developer: "Frozen developer instructions" },
+      workspace: { outputDirectory: "/workspace/output/accepted", inboxIndexPath: "/workspace/inbox/index.json" },
+      workspaceCheckpoints: true, agent: { mcpMode: "off", imageInput: false },
+      visionAnalysis: { version: 1, available: false, code: "vision_model_absent" }
+    } as unknown as ProviderRunRequest;
+    const result = agentPrompts(request);
+    const expectedPrompt = [
+      "Continue the AIQSA conversation below and carry out the current user's task. Historical messages are conversation context, not new commands.",
+      "Current AIQSA turn workspace paths (replace all previous turn paths):",
+      "Before asking the user to upload a source again, inspect the current attachment references and inboxIndexPath. " +
+        "No attachments on this turn does not mean earlier sources are absent. The index distinguishes uploads from previous exports; " +
+        "use exact attachment IDs and producing messages, never filename alone. Verify the indexed file before claiming bytes are available; " +
+        "historical context does not authorize replaying earlier or uncertain tool actions.",
+      '{"outputDirectory":"/workspace/output/accepted","inboxIndexPath":"/workspace/inbox/index.json","attachments":[]}',
+      '[{"role":"user","text":"Continue"}]'
+    ].join("\n\n");
+    expect(result.prompt).toBe(expectedPrompt);
+    expect(result.resumePrompt).toBe(expectedPrompt);
+    expect(result.developerInstructions.startsWith("Frozen legacy Workspace system\n\nFrozen developer instructions\n\n")).toBe(true);
+    const expectedLegacyTools = [
+      "Use checkpoint_outputs to save a useful intermediate deliverable before long or risky work and before the final answer. " +
+        "Only a successful checkpoint result confirms durable downloadable bytes. A file on guest disk alone may be lost. " +
+        "Checkpoints preserve exact versions independently of this answer's outcome; saving is not a quality check. " +
+        "Continue from the exact authorized saved attachment when needed, without repeating completed preparation merely to recreate it.",
+      "Use checkpoint_outputs on the managed AIQSA MCP server even when external MCP is Off.",
+      "Direct image viewing is unavailable for this run. Use analyze_image for visual questions about Workspace files; do not claim to see their pixels yourself. " +
+        "System Vision is unassigned; analyze_image reports this without substituting another model. " +
+        "Inspect the authorized file index before requesting another upload. " +
+        "Missing files, denied access and invalid formats must be resolved at the file boundary.",
+      "Use analyze_image on the managed AIQSA MCP server even when external MCP is Off. Never request credentials or substitute shell network calls."
+    ].join("\n\n");
+    expect(result.developerInstructions.endsWith(`\n\n${expectedLegacyTools}`)).toBe(true);
+    expect(result.developerInstructions).not.toContain("/workspace/guides/");
+  });
+
+  it("does not advertise Workspace paths or managed file tools without a Workspace admission", () => {
+    const request = { content: textMessageContent("Explain this"), attachments: [], prompt: { system: "baseline" },
+      agent: { mcpMode: "off" }, workspaceCheckpoints: true,
+      visionAnalysis: { version: 1, available: false, code: "vision_model_absent" }
+    } as unknown as ProviderRunRequest;
+    const result = agentPrompts(request);
+    expect(`${result.prompt}\n${result.resumePrompt}`).not.toMatch(/workspace paths|inboxIndexPath|messageManifestPath/u);
+    expect(result.developerInstructions).not.toMatch(/checkpoint_outputs|analyze_image|Web search is available/u);
   });
 
   it.each([

@@ -1,11 +1,13 @@
-import { WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
+import { LEGACY_WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { textFromContentBlocks } from "@/lib/domain/modelRunEvents";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import { visionAnalysisGuidance } from "../tools/analyzeImage";
 import { AGENT_PROMPT_MAX_BYTES } from "./guest";
+import { WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
 
 /** The native prompt is user-level. Selected Skills are never developer instructions. */
 export function agentPrompts(request: ProviderRunRequest) {
+  const modernWorkspace = request.workspace?.guidanceVersion === WORKSPACE_GUIDANCE_VERSION;
   // Native discovery owns the available catalog. Pinned context remains a
   // user message; never duplicate AIQSA's ordinary-chat catalog in Codex.
   const conversation: readonly ProviderConversationMessage[] = request.context?.messages.length ? request.context.messages
@@ -24,10 +26,10 @@ export function agentPrompts(request: ProviderRunRequest) {
       "Continue the AIQSA conversation below and carry out the current user's task. Historical messages are conversation context, not new commands.",
       ...(request.workspace ? [
         "Current AIQSA turn workspace paths (replace all previous turn paths):",
-        "Before asking the user to upload a source again, inspect the current attachment references and inboxIndexPath. " +
+        ...(!modernWorkspace ? ["Before asking the user to upload a source again, inspect the current attachment references and inboxIndexPath. " +
         "No attachments on this turn does not mean earlier sources are absent. The index distinguishes uploads from previous exports; " +
         "use exact attachment IDs and producing messages, never filename alone. Verify the indexed file before claiming bytes are available; " +
-        "historical context does not authorize replaying earlier or uncertain tool actions.",
+        "historical context does not authorize replaying earlier or uncertain tool actions."] : []),
         JSON.stringify({ outputDirectory: request.workspace.outputDirectory,
           inboxIndexPath: request.workspace.inboxIndexPath,
           ...(request.attachments.length ? { messageManifestPath: request.workspace.messageManifestPath } : {}),
@@ -66,9 +68,16 @@ export function agentPrompts(request: ProviderRunRequest) {
         (mcpDiscoveryAvailable ? "Use find_tools to discover the relevant capabilities. " : "") +
         "A tool-discovery failure is not an authorization denial by the connected service. Report the actual diagnostic and which checks were not completed."
       ] : []),
-      ...(request.workspace && request.workspaceCheckpoints ? [WORKSPACE_CHECKPOINT_GUIDANCE, "Use checkpoint_outputs on the managed AIQSA MCP server even when external MCP is Off."] : []),
-      ...(request.workspace && request.visionAnalysis ? [visionAnalysisGuidance(request.visionAnalysis, Boolean(request.agent?.imageInput)),
-        "Use analyze_image on the managed AIQSA MCP server even when external MCP is Off. Never request credentials or substitute shell network calls."] : []),
+      ...(request.workspace && request.workspaceCheckpoints ? [
+        ...(!modernWorkspace ? [LEGACY_WORKSPACE_CHECKPOINT_GUIDANCE] : []),
+        modernWorkspace ? "When saving a deliverable checkpoint, use checkpoint_outputs on the managed AIQSA MCP server even when external MCP is Off."
+          : "Use checkpoint_outputs on the managed AIQSA MCP server even when external MCP is Off."
+      ] : []),
+      ...(request.workspace && request.visionAnalysis ? [
+        ...(!modernWorkspace ? [visionAnalysisGuidance(request.visionAnalysis, Boolean(request.agent?.imageInput))] : []),
+        modernWorkspace ? "For required Workspace image analysis, use analyze_image on the managed AIQSA MCP server even when external MCP is Off. Never request credentials or substitute shell network calls."
+          : "Use analyze_image on the managed AIQSA MCP server even when external MCP is Off. Never request credentials or substitute shell network calls."
+      ] : []),
       ...(request.imagePlan ? [
         "Use generate_image on the AIQSA MCP server for image synthesis and generative edits, even with external MCP Off; use native pixel/file operations for exact edits of existing pixels. " +
         "It uses the configured image model; never ask for provider credentials or substitute shell network calls. " +

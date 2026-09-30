@@ -18,13 +18,14 @@ const storedSettings = {
   showReasoningBlocks: false
 };
 
-function transaction(assistantAvailable: boolean) {
+function transaction(assistantAvailable: boolean, ownerExists = true) {
   const statements: string[] = [];
   const update = vi.fn(async (_input: Prisma.UserSettingsUpdateArgs) => storedSettings);
   const tx = {
     $queryRaw: async (query: TemplateStringsArray | Prisma.Sql) => {
       const text = "sql" in query ? query.sql : query.join("?");
-      statements.push(text.includes(`"AssistantDefinition"`) ? "assistant" : "settings");
+      statements.push(text.includes('FROM "User"') ? "owner" : text.includes(`"AssistantDefinition"`) ? "assistant" : "settings");
+      if (text.includes('FROM "User"')) return ownerExists ? [{ id: "user-1" }] : [];
       if (text.includes(`"AssistantDefinition"`)) return assistantAvailable ? [{ id: "assistant-1" }] : [];
       return [{ defaultControlValues: {}, defaultProviderModelId: null, defaultSearchPlan: null, id: "settings-1" }];
     },
@@ -34,14 +35,14 @@ function transaction(assistantAvailable: boolean) {
 }
 
 describe("settings transaction", () => {
-  it("locks the default Assistant before the settings row and writes it only while available", async () => {
+  it("locks the owner before the default Assistant and settings, and writes only an available default", async () => {
     const available = transaction(true);
     await expect(applySettingsUpdateInTransaction(available.tx, "user-1", { defaultAssistantId: "assistant-1" }, []))
       .resolves.toMatchObject({
         kind: "updated",
         settings: { defaultAssistantAvailable: true, defaultAssistantId: "assistant-1" }
       });
-    expect(available.statements).toEqual(["assistant", "settings"]);
+    expect(available.statements).toEqual(["owner", "assistant", "settings"]);
     expect(available.update.mock.calls[0]?.[0].data).toMatchObject({
       defaultAssistant: { connect: { id: "assistant-1" } }
     });
@@ -49,7 +50,7 @@ describe("settings transaction", () => {
     const unavailable = transaction(false);
     await expect(applySettingsUpdateInTransaction(unavailable.tx, "user-1", { defaultAssistantId: "assistant-1" }, []))
       .resolves.toEqual({ kind: "assistant_not_available" });
-    expect(unavailable.statements).toEqual(["assistant"]);
+    expect(unavailable.statements).toEqual(["owner", "assistant"]);
     expect(unavailable.update).not.toHaveBeenCalled();
   });
 
@@ -57,13 +58,21 @@ describe("settings transaction", () => {
     const cleared = transaction(false);
     await expect(applySettingsUpdateInTransaction(cleared.tx, "user-1", { defaultAssistantId: null }, []))
       .resolves.toMatchObject({ settings: { defaultAssistantAvailable: false } });
-    expect(cleared.statements).toEqual(["settings"]);
+    expect(cleared.statements).toEqual(["owner", "settings"]);
     expect(cleared.update.mock.calls[0]?.[0].data).toMatchObject({ defaultAssistant: { disconnect: true } });
 
     const untouched = transaction(false);
     const result = await applySettingsUpdateInTransaction(untouched.tx, "user-1", { sendWithEnter: false }, []);
-    expect(untouched.statements).toEqual(["settings"]);
+    expect(untouched.statements).toEqual(["owner", "settings"]);
     expect(result.kind === "updated" ? result.settings : null).not.toHaveProperty("defaultAssistantAvailable");
     expect(untouched.update.mock.calls[0]?.[0].data).not.toHaveProperty("defaultAssistant");
+  });
+
+  it("does not inspect defaults or mutate settings after the owner is removed", async () => {
+    const missing = transaction(true, false);
+    await expect(applySettingsUpdateInTransaction(missing.tx, "user-1", { defaultAssistantId: "assistant-1" }, []))
+      .resolves.toEqual({ kind: "not_found" });
+    expect(missing.statements).toEqual(["owner"]);
+    expect(missing.update).not.toHaveBeenCalled();
   });
 });

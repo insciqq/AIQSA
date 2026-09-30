@@ -577,6 +577,55 @@ describe("summarizeMessageRunArtifacts", () => {
 });
 
 describe("summarizeMessageRunToolActivity", () => {
+  const acceptedMcpRequest = {
+    mcp: {
+      servers: [{ serverId: "server-fixture", revisionId: "revision-fixture", fingerprint: "fingerprint-fixture" }],
+      tools: [{ namespacedName: "mcp_search_fixture", originalName: "search", serverId: "server-fixture",
+        serverName: "Repository Tools" }]
+    }
+  };
+  const referenceCall = {
+    toolName: "mcp_search_fixture", ordinal: 3, roundIndex: 2, state: "complete",
+    startedAt: null, completedAt: null,
+    mcpRunBinding: { runtimeGenerationFingerprint: "fingerprint-fixture" },
+    arguments: { privateRequest: "never projected" }, result: { privateResponse: "never projected" }
+  };
+
+  it.each(["running", "complete", "error", "cancelled"])("offers references for initiator-owned accepted MCP calls in %s state", state => {
+    const activity = summarizeMessageRunToolActivity({ userId: "initiator", errorPayload: null,
+      normalizedRequest: acceptedMcpRequest, status: state, toolCalls: [{ ...referenceCall, state }] }, "initiator");
+    expect(activity?.calls[0]).toEqual({ details: { roundIndex: 2, ordinal: 3 }, origin: "mcp", round: 2,
+      serverName: "Repository Tools", status: state, toolName: "search" });
+    expect(JSON.stringify(activity)).not.toMatch(/private|fingerprint|revision|server-fixture|mcp_search/);
+  });
+
+  it.each([undefined, "other-member", "administrator"])("keeps references unavailable to viewer %s", viewer => {
+    const activity = summarizeMessageRunToolActivity({ userId: "initiator", errorPayload: null,
+      normalizedRequest: acceptedMcpRequest, status: "complete", toolCalls: [referenceCall] }, viewer);
+    expect(activity?.calls[0]).not.toHaveProperty("details");
+  });
+
+  it("requires exact persisted MCP provenance and excludes all native origins", () => {
+    const run = { userId: "initiator", errorPayload: null, normalizedRequest: acceptedMcpRequest, status: "complete" };
+    for (const call of [
+      { ...referenceCall, mcpRunBinding: null },
+      { ...referenceCall, mcpRunBinding: { runtimeGenerationFingerprint: "different-generation" } },
+      { ...referenceCall, toolName: "mcp_prefix_only" },
+      { ...referenceCall, ordinal: -1 },
+      { ...referenceCall, roundIndex: 0 },
+      ...["search", "find_tools", "memory_search", "load_skill", "search_knowledge", "generate_image",
+        "create_artifact", "session", namespacedWorkspaceToolName("sandbox_fs_read")]
+        .map(toolName => ({ ...referenceCall, toolName }))
+    ]) {
+      expect(summarizeMessageRunToolActivity({ ...run, toolCalls: [call] }, "initiator")?.calls[0])
+        .not.toHaveProperty("details");
+    }
+    expect(summarizeMessageRunToolActivity({ ...run, normalizedRequest: {}, toolCalls: [referenceCall] }, "initiator")
+      ?.calls[0]).not.toHaveProperty("details");
+    expect(summarizeMessageRunToolActivity({ ...run, normalizedRequest: { ...acceptedMcpRequest, agent: {} },
+      toolCalls: [referenceCall] }, "initiator")).toBeNull();
+  });
+
   it.each(["results", "no_results", "limited", "failure", "cancelled"])("projects only native Memory search outcome %s", outcome => {
     const activity = summarizeMessageRunToolActivity({ errorPayload: null, status: "complete", normalizedRequest: {},
       toolCalls: [{ ordinal: 2, roundIndex: 1, startedAt: null, completedAt: null,

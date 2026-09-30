@@ -1,3 +1,4 @@
+import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import { encryptProviderCredentialSecret } from "../../providers/credentialSecrets";
@@ -77,6 +78,7 @@ const envelope = encryptProviderCredentialSecret({
 function model(id: string, upstreamModelId: string, overrides: Partial<AdminProviderConnection["models"][number]> = {}) {
   const configuration = modelConfiguration(upstreamModelId);
   return {
+    pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null },
     activatedAt: NOW.toISOString(),
     activeConfig: configuration,
     activeVersion: 1,
@@ -211,6 +213,7 @@ function repository(overrides: Partial<AdminProviderRepository> = {}): AdminProv
     async loadModelActivationCandidate() { return activationCandidate(); },
     async renameCredential() { return "updated"; },
     async renameModelCas() { return "updated"; },
+    async updateModelMetadataCas() { return "not_found"; },
     async recordActiveRefreshFailureCas() { return "stored"; },
     async revokeCredentialVersion() { return "revoked"; },
     async revokeGroupCredential() { return "revoked"; },

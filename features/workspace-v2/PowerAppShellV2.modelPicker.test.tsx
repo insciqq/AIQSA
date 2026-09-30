@@ -44,6 +44,7 @@ function gate(): Gate {
 let gates: Record<string, Gate> = {};
 let defaultAssistantId: string | null = null;
 let modelPolicy: "adjustable" | "fixed" = "adjustable";
+let controlsPolicy: "adjustable" | "fixed" = "adjustable";
 
 function catalogResponse() {
   return {
@@ -68,7 +69,8 @@ function catalogResponse() {
 
 const reviewer = () => assistantContent({
   providerModelId: "gpt-5.5",
-  rows: { ...assistantContent().rows, model: { policy: modelPolicy, value: { mode: "model", modelId: "gpt-5.5" } } }
+  rows: { ...assistantContent().rows, model: { policy: modelPolicy, value: { mode: "model", modelId: "gpt-5.5" } },
+    controls: { policy: controlsPolicy, value: { reasoningEffort: "high" } } }
 });
 
 async function answer(input: RequestInfo | URL): Promise<Response> {
@@ -106,6 +108,7 @@ beforeEach(() => {
   gates = {};
   defaultAssistantId = null;
   modelPolicy = "adjustable";
+  controlsPolicy = "adjustable";
   resetAssistantLibraryStoreForTest();
   resetChatAssistantProjectionStoreForTest();
   resetComposerControlStoreForTest();
@@ -222,6 +225,59 @@ describe("the model parameters layer opened from the picker's Parameters row", (
     close(dialog);
     expect(parameters()).toBeNull();
     await vi.waitFor(() => expect(trigger()).toHaveFocus());
+  });
+
+  // The open Parameters dialog hides the page behind it from assistive technology.
+  const reasoningChip = (behindDialog = false) =>
+    screen.getByRole("button", { hidden: behindDialog, name: /^Reasoning effort:/u });
+
+  it("follows Parameters in the composer chip, changes through it and leaves for a model without reasoning", async () => {
+    defaultAssistantId = "assistant-1";
+    const dialog = await openParameters(() => expect(trigger()).toHaveTextContent("GPT-5.5"));
+    // The header shows the model only; the level lives in the composer.
+    expect(trigger()).toHaveTextContent(/^GPT-5\.5$/u);
+    expect(reasoningChip(true)).toHaveAccessibleName("Reasoning effort: high");
+    fireEvent.change(within(dialog).getByLabelText("Reasoning effort"), { target: { value: "low" } });
+    expect(useComposerControlStore.getState().reasoningEffort).toBe("low");
+    expect(reasoningChip(true)).toHaveAccessibleName("Reasoning effort: low");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close parameters" }));
+
+    // The chip's menu lists the model's levels and uses the same change action.
+    fireEvent.click(reasoningChip());
+    const menu = screen.getByRole("menu", { name: "Reasoning effort" });
+    expect(within(menu).getAllByRole("menuitemradio").map((row) => row.textContent))
+      .toEqual(["none", "minimal", "low", "medium", "high", "xhigh"]);
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: "xhigh" }));
+    expect(useComposerControlStore.getState().reasoningEffort).toBe("xhigh");
+    expect(reasoningChip()).toHaveAccessibleName("Reasoning effort: xhigh");
+
+    await act(async () => {
+      const catalog = useWorkspaceStore.getState().catalog!;
+      useWorkspaceStore.setState({ catalog: { ...catalog, models: catalog.models.map(model => model.modelId === "gpt-5.5"
+        ? { ...model, parameterControls: { ...model.parameterControls,
+          reasoningEffort: { supported: false, options: ["none"], defaultValue: "none" } } } : model) } });
+    });
+    expect(screen.queryByRole("button", { name: /^Reasoning effort/u })).toBeNull();
+  });
+
+  it("locks a fixed Assistant level in the chip as in Parameters", async () => {
+    defaultAssistantId = "assistant-1";
+    modelPolicy = "fixed";
+    controlsPolicy = "fixed";
+    const dialog = await openParameters(() => expect(trigger()).toHaveTextContent("GPT-5.5"));
+    expect(within(dialog).getByLabelText("Reasoning effort")).toBeDisabled();
+    expect(within(dialog).getByLabelText("Reasoning effort")).toHaveValue("high");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close parameters" }));
+
+    expect(reasoningChip()).toHaveAccessibleName("Reasoning effort: high");
+    expect(reasoningChip()).toHaveAttribute("data-locked", "true");
+    expect(reasoningChip()).toHaveAttribute("data-provenance", "assistant");
+    fireEvent.click(reasoningChip());
+    const menu = screen.getByRole("menu", { name: "Reasoning effort" });
+    expect(within(menu).getByRole("menuitemradio", { name: "high" })).toHaveAttribute("aria-disabled", "true");
+    expect(within(menu).getByRole("menuitemradio", { name: "low" })).toBeDisabled();
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: "low" }));
+    expect(useComposerControlStore.getState().reasoningEffort).toBe("high");
   });
 
   it.each(closeWays)("returns focus to the locked model selector of a fixed model when closed by %s", async (_way, close) => {

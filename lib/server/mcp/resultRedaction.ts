@@ -28,6 +28,17 @@ function redactValue(value: unknown, secrets: readonly string[]): unknown {
   ]));
 }
 
+/** Read-time display projection also redacts argument keys and scalar values. */
+export function redactMcpDisplayValue(value: unknown, exactValues: readonly string[]): unknown {
+  return redactValue(value, mcpDisplayRedactionValues(exactValues));
+}
+
+/** Text results can themselves contain serialized JSON. Redact its escaped
+ * representation too, before formatting/truncation can split a secret. */
+export function mcpDisplayRedactionValues(exactValues: readonly string[]): string[] {
+  return normalizedValues(exactValues.flatMap(value => [value, JSON.stringify(value).slice(1, -1)]));
+}
+
 export function redactMcpToolCallResult(
   result: AiqsaMcpToolCallResult,
   exactValues: readonly string[]

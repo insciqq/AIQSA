@@ -13,6 +13,9 @@ import { closeArtifactPanel, openArtifactPanel, useArtifactPanelStore } from "@/
 import { activateArtifactLibraryAccount } from "@/components/app-shell/artifactLibraryStore";
 import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
+import { quoteSelectionInComposer } from "@/components/app-shell/composerQuoteSelection";
+import { composerCommentRefusalMessage } from "@/components/app-shell/composerComments";
+import { composerDraftTooLargeToStore, subscribeComposerDraftRefusals } from "@/components/app-shell/composerDraftStorage";
 import { navigateChatRoute, useChatRoutePath, useControlCenterHref } from "@/components/app-shell/chatRoute";
 import { boundedRouteId, parseChatRoutePath } from "@/lib/domain/chatRoute";
 import { cancelWorkspaceUpload, retryWorkspaceUpload, useWorkspaceUploadProgress } from "@/components/app-shell/workspaceUploadClient";
@@ -186,6 +189,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type ReactNode
 } from "react";
@@ -438,6 +442,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerArtifactCreate = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactCreate ?? null);
   const followupSubmission = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.followupSubmission ?? null);
   const uploadSourceKey = useComposerSessionStore(state => state.activeSessionKey);
+  const composerComments = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.comments);
+  const composerDraftTooLarge = useSyncExternalStore(subscribeComposerDraftRefusals,
+    () => composerDraftTooLargeToStore(session.accountId, uploadSourceKey), () => false);
   const uploadProgress = useWorkspaceUploadProgress(state => state.items);
   const pendingUploads = useMemo(() => uploadProgress.filter(item => item.sourceKey === uploadSourceKey), [uploadProgress, uploadSourceKey]);
   const skillsMode = useComposerControlStore(state => state.skillsMode);
@@ -665,7 +672,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     modelSelection: composer.selectedProvider && composer.selectedModelId
       ? { provider: composer.selectedProvider, modelId: composer.selectedModelId } : undefined,
     uploading: composer.uploading,
-    recommended: Boolean(composer.composerContextStats?.session?.phase === "after_answer" &&
+    recommended: Boolean(composer.composerContextStats?.snapshotSource === "live" &&
+      composer.composerContextStats.session?.phase === "after_answer" &&
       ((composer.composerContextStats.session.droppedMessages > 0) ||
         (composerContextGauge(composer.composerContextStats).inputBudgetFraction ?? 0) >= 0.7)),
     onOpen: async (chat, sourceKey) => {
@@ -941,6 +949,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     composerLayerHost,
     thread.activeChatStreaming
   ]);
+  const canSubmitFollowup = Boolean(latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
+    !activeProjectChat?.archived && (!projectContext || activeProject?.status === "ACTIVE" && activeProject.capabilities.mutateChats) && composer.submitFollowup);
   const composerSurface = (
     <ComposerV2
       sessionKey={skillScopeKey}
@@ -975,9 +985,21 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         ? "Finish or cancel the inline edit first."
         : composer.composerDisabledHint}
       draft={composer.draft}
+      comments={composerComments}
+      draftTooLargeToKeep={composerDraftTooLarge}
+      onUpdateComment={(id, text) => {
+        const refusal = useComposerSessionStore.getState().updateComment(uploadSourceKey, id, text);
+        return refusal ? composerCommentRefusalMessage(refusal, "edit") : null;
+      }}
+      onRemoveComment={id => useComposerSessionStore.getState().removeComment(uploadSourceKey, id)}
       hasReadyAttachments={attachmentItems.some((item) => !item.blocksSend)}
       layerController={attachComposerLayerController}
       modelParametersSummary={modelParametersSummary}
+      reasoningEffort={composer.currentModel && composer.currentParameterControls.reasoningEffort.supported ? {
+        onChange: composer.changeReasoningEffort,
+        options: composer.currentParameterControls.reasoningEffort.options,
+        value: composer.reasoningEffort
+      } : null}
       onAttachmentCountLimitExceeded={composer.composerActions.rejectAttachmentCount}
       onDraftChange={composer.composerActions.changeDraft}
       onLayerChange={setComposerLayer}
@@ -1000,8 +1022,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectSearchPlanMode={mode => composer.selectSearchPlan(composer.selectedSearchOptionIds, mode)}
       onResetSearchPlan={composer.useOrganizationSearchDefault}
       onSend={() => void composer.submitComposer()}
-      onFollowup={latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
-        !activeProjectChat?.archived && (!projectContext || activeProject?.status === "ACTIVE" && activeProject.capabilities.mutateChats) && composer.submitFollowup
+      onFollowup={canSubmitFollowup
           ? runId => void composer.submitFollowup?.(runId) : undefined}
       followupSending={Boolean(followupSubmission?.inFlight)}
       onStop={() => void composer.stopCurrentRun(thread.currentRunId)}
@@ -1085,7 +1106,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   // Quiet rows under the blank composer (PRD 10.5, 10.6): the Assistant strip
   // of a blank personal or temporary chat, or the chosen Assistant's starters
   // while it can send. Both reserve their space while a draft exists.
-  const blankComposerIdle = !composer.draft.trim() && composer.attachments.length === 0 &&
+  const blankComposerIdle = !composer.draft.trim() && !composerComments?.length && composer.attachments.length === 0 &&
     !composer.uploading && !composer.sending;
   // The picker's Parameters row closes with the picker, so the parameters
   // layer returns focus to the header model selector, or to the Assistant
@@ -1193,6 +1214,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             <span className="v2-project-message-author">{source.author.displayName}</span>
           ) : undefined}
           content={messageText(source)}
+          quoteEligible={source.status === "complete"}
           edit={thread.editingMessageId === source.id ? {
             attachmentSlot: <SentAttachmentsV2 blocks={sentAttachments} />,
             draft: thread.editingMessageDraft,
@@ -1437,6 +1459,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           column (PRD §4.1/§4.10, FRONTEND "Chat Composition"). */}
       {(
         <ReadingRoomShellV2
+          accountId={session.accountId}
           accountLabel={session.accountDisplayName.trim() || session.accountEmail}
           adminEntryVisible={session.adminEntryVisible}
           chatActive={Boolean(session.activeChatId)}
@@ -1622,6 +1645,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 />
               )}
               contextStats={composer.composerContextStats}
+              usageStats={thread.usageStats}
               continuation={continuationEligible ? continuation : null}
               continuationFiles={activeChatSummary?.workspace?.continuationFiles}
               crumb={activeChatCrumb}
@@ -1729,6 +1753,32 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               loadingEarlier={thread.loadingOlderMessages}
               messages={conversationMessages}
               olderError={thread.olderMessagesError}
+              quote={{
+                disabled: Boolean(thread.editingMessageId), dockRef: composerDockRef, scopeKey: uploadSourceKey,
+                onComment: (quote, text) => {
+                  const store = useComposerSessionStore.getState();
+                  if (store.activeSessionKey !== uploadSourceKey) return "Return to this conversation before adding its comment.";
+                  const refusal = store.addComment(uploadSourceKey, { quote, text });
+                  return refusal ? composerCommentRefusalMessage(refusal, "add") : null;
+                },
+                onCommentStart: quote => {
+                  const store = useComposerSessionStore.getState();
+                  if (store.activeSessionKey !== uploadSourceKey) return "Return to this conversation before adding its comment.";
+                  const refusal = store.commentRefusal(uploadSourceKey, quote);
+                  return refusal ? composerCommentRefusalMessage(refusal, "start") : null;
+                },
+                onQuote: (markdown, touch) => {
+                  const error = quoteSelectionInComposer({ markdown, sessionKey: uploadSourceKey,
+                    followup: thread.activeChatStreaming && !thread.answerComplete && canSubmitFollowup });
+                  if (!error && !touch) requestAnimationFrame(() => {
+                    if (useComposerSessionStore.getState().activeSessionKey !== uploadSourceKey) return;
+                    const input = composerDockRef.current?.querySelector<HTMLTextAreaElement>("textarea");
+                    input?.focus({ preventScroll: true });
+                    input?.setSelectionRange(input.value.length, input.value.length);
+                  });
+                  return error;
+                }
+              }}
               onJumpToLatest={thread.jumpToLatest}
               onLoadEarlier={thread.loadEarlierMessages}
               onRetry={thread.retryActiveChatDetail}
@@ -1907,6 +1957,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onBusyChange={setAccountBusy}
                 onDirtyChange={setAccountDirty}
                 accountEmail={session.accountEmail}
+                accountId={session.accountId}
                 adminEntryVisible={session.adminEntryVisible}
                 onDisplayNameChange={session.updateAccountDisplayName}
               />
@@ -2061,11 +2112,12 @@ function SettingsPendingDeletionRowV2() {
 
 function SettingsAccountPanelV2({
   accountEmail,
+  accountId,
   adminEntryVisible,
   onDisplayNameChange,
   onDirtyChange,
   onBusyChange
-}: Readonly<{ accountEmail: string | null; adminEntryVisible: boolean;
+}: Readonly<{ accountEmail: string | null; accountId: string; adminEntryVisible: boolean;
   onDisplayNameChange(displayName: string): void;
   onDirtyChange(dirty: boolean): void; onBusyChange(busy: boolean): void;
 }>) {
@@ -2091,7 +2143,7 @@ function SettingsAccountPanelV2({
       ) : null}
       <SettingsGroupLabelV2>Session</SettingsGroupLabelV2>
       <SettingsRowV2
-        description="Ends this browser session. Unsent drafts stay on this device."
+        description="Ends this browser session and removes unsent drafts from this device."
         title="Sign out"
       >
         <UiV2Button
@@ -2100,7 +2152,7 @@ function SettingsAccountPanelV2({
           onClick={() => {
             setSigningOut(true);
             setSignOutError(false);
-            void signOutCurrentSession().then((result) => {
+            void signOutCurrentSession({ accountId }).then((result) => {
               if (!result.ok) {
                 setSignOutError(true);
                 setSigningOut(false);

@@ -743,6 +743,7 @@ export type RunRepository = {
   }): Promise<boolean>;
   isSearchStrategyEnabled(searchStrategyId: string): Promise<boolean>;
   loadAttachments(userId: string, attachmentIds: string[], projectId?: string, runId?: string): Promise<RunAttachmentRecord[]>;
+  loadWorkspaceFileFacts(input: import("../workspace/inboxFacts").WorkspaceInboxFactsInput): Promise<import("../workspace/inboxFacts").WorkspaceInboxFacts>;
   loadKnowledgeFullContextPassages?(
     sources: readonly KnowledgeRunAdmissionSource[]
   ): Promise<readonly KnowledgeFullContextPassage[] | null>;

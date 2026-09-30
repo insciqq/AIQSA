@@ -1,4 +1,5 @@
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
+import { decodeAdminModelPriceChange, type AdminModelPriceChange } from "../../../contracts/adminProviderModelPrices";
 import { applyNativeRoute } from "./nativeRouting";
 import { decodeHostedSearchVerificationEvidence, shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { createImageModelDiscovery } from "../../providers/imageModelDiscovery";
@@ -22,6 +23,7 @@ import type {
   AdminProviderModelConfiguration,
   AdminProviderModelEditGuard,
   AdminProviderModelRename,
+  AdminProviderModelMetadata,
   AdminProviderModel,
   AdminProviderTestEvidence,
   AdminProviderUnassignedPolicy
@@ -118,6 +120,8 @@ export type AdminProviderServiceErrorCode =
   | "provider_group_not_found"
   | "provider_model_class_immutable"
   | "provider_model_not_found"
+  | "provider_model_pricing_invalid"
+  | "provider_model_pricing_unavailable"
   | "provider_name_invalid"
   | "provider_paid_test_confirmation_required"
   | "provider_revoke_confirmation_required"
@@ -138,6 +142,12 @@ export class AdminProviderServiceError extends Error {
 }
 
 export type AdminProviderService = ReturnType<typeof createAdminProviderService>;
+
+function priceChange(value: unknown): AdminModelPriceChange {
+  const decoded = decodeAdminModelPriceChange(value);
+  if (!decoded) throw new AdminProviderServiceError("provider_model_pricing_invalid");
+  return decoded;
+}
 
 function name(value: unknown): string {
   if (
@@ -595,8 +605,10 @@ export function createAdminProviderService(input: Readonly<{
           outcome.nativeRoutes?.[candidate.configuration.upstreamModelId]),
         displayName: candidate.displayName,
         id: connection.id === setupPolicy?.connection.id ? candidate.modelId : idFactory(),
-        inputTokenPriceMicros: candidate.inputTokenPriceMicros,
-        outputTokenPriceMicros: candidate.outputTokenPriceMicros,
+        inputTokenPriceUsdPerMillion: candidate.inputTokenPriceUsdPerMillion,
+        cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
+        cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
+        outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
         templateKey: connection.id === setupPolicy?.connection.id ? candidate.templateKey : null
       }));
     const checkedConnection = {
@@ -992,7 +1004,10 @@ export function createAdminProviderService(input: Readonly<{
             image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image } : candidate.configuration,
             outcome.nativeRoutes?.[candidate.configuration.upstreamModelId])), displayName: candidate.displayName,
           id: connection!.id === policy?.connection.id ? candidate.modelId : idFactory(),
-          inputTokenPriceMicros: candidate.inputTokenPriceMicros, outputTokenPriceMicros: candidate.outputTokenPriceMicros,
+          inputTokenPriceUsdPerMillion: candidate.inputTokenPriceUsdPerMillion,
+          cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
+          cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
+          outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
           templateKey: connection!.id === policy?.connection.id ? candidate.templateKey : null
         }));
         if (additions.length && await input.repository.addSetupModelsCas({
@@ -1285,7 +1300,10 @@ export function createAdminProviderService(input: Readonly<{
             image: outcome?.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image
           } : candidate.configuration),
           displayName: candidate.displayName, id: connection.id === policy?.connection.id ? candidate.modelId : idFactory(),
-          inputTokenPriceMicros: candidate.inputTokenPriceMicros, outputTokenPriceMicros: candidate.outputTokenPriceMicros,
+          inputTokenPriceUsdPerMillion: candidate.inputTokenPriceUsdPerMillion,
+          cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
+          cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
+          outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
           templateKey: connection.id === policy?.connection.id ? candidate.templateKey : null
         }));
         if (additions.length) requireUpdated(await input.repository.addSetupModelsCas({
@@ -1554,11 +1572,13 @@ export function createAdminProviderService(input: Readonly<{
       configuration: AdminProviderModelConfiguration;
       connectionId: string;
       displayName: string;
+      pricing?: AdminModelPriceChange;
     }) {
       const configuration = normalizeAdminProviderModelConfiguration(value.configuration);
       const id = idFactory();
       const displayName = name(value.displayName);
       const result = await input.repository.createModel({
+        ...(value.pricing === undefined ? {} : { pricing: priceChange(value.pricing) }),
         configuration,
         connectionId: value.connectionId,
         displayName,
@@ -1571,7 +1591,8 @@ export function createAdminProviderService(input: Readonly<{
       if (result === "family_mismatch") {
         throw new AdminProviderServiceError("provider_family_adapter_mismatch");
       }
-      return { id, displayName, draftVersion: 1 };
+      if (result === "pricing_unavailable") throw new AdminProviderServiceError("provider_model_pricing_unavailable");
+      return { id, displayName, draftVersion: 1, ...(typeof result === "object" ? { pricing: result.pricing } : {}) };
     },
 
     async renameModel(value: AdminProviderModelRename & { connectionId: string; modelId: string }) {
@@ -1587,14 +1608,26 @@ export function createAdminProviderService(input: Readonly<{
       return { displayName, draftVersion: value.expectedDraftVersion };
     },
 
+    async updateModelMetadata(value: AdminProviderModelMetadata & { connectionId: string; modelId: string }) {
+      const displayName = name(value.displayName);
+      const result = await input.repository.updateModelMetadataCas({ ...value, displayName, pricing: priceChange(value.pricing),
+        expectedUpdatedAt: new Date(value.expectedUpdatedAt), now: now() });
+      if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
+      if (result === "not_found") throw new AdminProviderServiceError("provider_model_not_found");
+      if (result === "pricing_unavailable") throw new AdminProviderServiceError("provider_model_pricing_unavailable");
+      return { displayName, draftVersion: value.expectedDraftVersion, pricing: result.pricing };
+    },
+
     async updateModelDraft(value: AdminProviderModelEditGuard & {
       configuration: AdminProviderModelConfiguration;
       displayName: string;
       modelId: string;
+      pricing?: AdminModelPriceChange;
     }) {
       const configuration = normalizeAdminProviderModelConfiguration(value.configuration);
       const displayName = name(value.displayName);
       const result = await input.repository.updateModelDraft({
+        ...(value.pricing === undefined ? {} : { pricing: priceChange(value.pricing) }),
         configuration,
         displayName,
         expectedActiveVersion: value.expectedActiveVersion,
@@ -1612,7 +1645,8 @@ export function createAdminProviderService(input: Readonly<{
       if (result === "family_mismatch") {
         throw new AdminProviderServiceError("provider_family_adapter_mismatch");
       }
-      return { displayName, draftVersion: value.expectedDraftVersion + 1 };
+      if (result === "pricing_unavailable") throw new AdminProviderServiceError("provider_model_pricing_unavailable");
+      return { displayName, draftVersion: value.expectedDraftVersion + 1, ...(typeof result === "object" ? { pricing: result.pricing } : {}) };
     },
 
     async renameCredential(value: { credentialId: string; label: string }) {

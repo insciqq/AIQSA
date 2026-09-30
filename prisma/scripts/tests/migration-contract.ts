@@ -1,3 +1,4 @@
+import { MODEL_PRICES_MIGRATION, modelPricesFixtureSql, modelPricesProofSql, modelPricesGuardProofSql } from "./model-prices-adoption";
 import { WORKSPACE_CHECKPOINT_MIGRATION, workspaceCheckpointFixtureSql, workspaceCheckpointProofSql } from "./workspace-checkpoint-adoption";
 import { TOOL_OBSERVATION_MIGRATION, toolObservationFixtureSql, toolObservationProofSql } from "./tool-observation-adoption";
 import { TOOL_OBSERVATION_ROLLOUT_POLICY_MIGRATION, toolObservationRolloutPolicyFixtureSql, toolObservationRolloutPolicyProofSql } from "./tool-observation-rollout-policy-adoption";
@@ -7482,6 +7483,14 @@ function main(
   for (const database of databases) {
     deployAndVerify(database, migrations, shadowDatabase);
     psqlScalar(database, `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_index index_catalog
+        JOIN pg_class index_relation ON index_relation.oid = index_catalog.indexrelid
+        WHERE index_relation.relname = 'UsageEvent_chatId_idx' AND index_catalog.indisvalid AND index_catalog.indisready)
+        THEN RAISE EXCEPTION 'chat_usage_index_missing'; END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_index index_catalog
+        JOIN pg_class index_relation ON index_relation.oid = index_catalog.indexrelid
+        WHERE index_relation.relname = 'UsageEvent_modelRunId_idx' AND index_catalog.indisvalid AND index_catalog.indisready)
+        THEN RAISE EXCEPTION 'run_usage_index_missing'; END IF;
       IF EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "visionProviderModelId" IS NOT NULL OR "visionReasoningEffort" IS NOT NULL)
         THEN RAISE EXCEPTION 'fresh_vision_role_not_unassigned'; END IF;
       IF EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "chatTitleProviderModelId" IS NOT NULL
@@ -7623,6 +7632,8 @@ function main(
          AND "chatPdfNativeProviderModelId" IS NULL AND "chatPdfNativeReasoningEffort" IS NULL)
        THEN RAISE EXCEPTION 'pdf_reader_assignment_not_preserved'; END IF;
      END $$;`);
+  runForwardAdoptionProof(shadowDatabase, migrations, MODEL_PRICES_MIGRATION,
+    modelPricesFixtureSql, modelPricesProofSql + modelPricesGuardProofSql, modelPricesProofSql + modelPricesGuardProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

@@ -2776,6 +2776,12 @@ model ProviderModel {
   modelClass                  ProviderModelClass              @default(answer)
   inputTokenPriceMicros       Int                             @default(0)
   outputTokenPriceMicros      Int                             @default(0)
+  /// Retained legacy integer columns above keep previous-release writers valid.
+  inputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
+  cachedInputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
+  cacheWriteInputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
+  outputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
+  priceSource ModelPriceSource @default(catalog)
   supportsVision              Boolean                         @default(false)
   supportsPdf                 Boolean                         @default(false)
   supportsReasoning           Boolean                         @default(false)
@@ -4574,6 +4580,7 @@ model WorkspaceRunBinding {
   toolCatalogHash     String               @db.Char(64)
   toolDefinitions     Json
   outputDirectory     String               @db.VarChar(255)
+  guestUsedAt          DateTime?            @default(now())
   exportState          WorkspaceExportState @default(PENDING)
   exportAttemptCount   Int                  @default(0)
   lastExportErrorCode  String?              @db.VarChar(64)
@@ -4975,6 +4982,8 @@ model UsageEvent {
   user                            User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([knowledgeIndexGenerationId, knowledgeDocumentVersionId, knowledgeBatchIndex])
+  @@index([chatId])
+  @@index([modelRunId])
   @@index([userId, createdAt])
   @@index([provider, modelId])
   @@index([projectId, createdAt])
@@ -7068,4 +7077,21 @@ model SkillStoreOperation {
 
   @@unique([ownerUserId, clientId, operationKey])
   @@index([status, createdAt])
+}
+
+
+enum ModelPriceSource {
+  catalog
+  admin
+}
+
+/// One-time, restart-safe historical accounting adoption; never a price refresh.
+model CatalogCostBackfill {
+  id String @id
+  cutoffAt DateTime @default(now())
+  prices Json
+  usageCursor String?
+  runCursor String?
+  usageFinished Boolean @default(false)
+  completedAt DateTime?
 }

@@ -51,6 +51,7 @@ function RailButton({
  * destinations instead.
  */
 export function RailV2({
+  accountId = null,
   accountLabel,
   active,
   adminEntryVisible = false,
@@ -61,6 +62,7 @@ export function RailV2({
   onProjects,
   onSettings
 }: Readonly<{
+  accountId?: string | null;
   accountLabel?: string | null;
   active: RailSectionV2;
   adminEntryVisible?: boolean;
@@ -100,6 +102,7 @@ export function RailV2({
           </a>
         ) : null}
         <AccountMenuV2
+          accountId={accountId}
           accountLabel={accountLabel}
           adminEntryVisible={adminEntryVisible}
           onSettings={onSettings}

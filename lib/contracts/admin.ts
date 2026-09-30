@@ -93,6 +93,9 @@ export type AdminInviteRecord = {
 export type AdminInviteEmailDelivery = "failed" | "not_requested" | "sent" | "unavailable";
 
 export type AdminUsageTokenTotals = {
+  estimatedCostMicros: number | null;
+  recordCount: number;
+  knownCostRecordCount: number;
   cachedInputTokens: number | null;
   cacheWriteInputTokens: number | null;
   inputTokens: number | null;

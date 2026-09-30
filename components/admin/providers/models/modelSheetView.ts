@@ -17,6 +17,8 @@ import {
 } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 import { defaultProviderModels, type ProviderModelCatalogEntry } from "@/lib/domain/catalog";
+import { ADMIN_MODEL_PRICE_FIELDS, ADMIN_MODEL_PRICE_ERROR, EMPTY_ADMIN_MODEL_PRICES, modelClassUsesTokenPrices,
+  normalizeAdminModelPrice, type AdminModelPriceChange, type AdminModelPriceField, type AdminModelTokenPrices } from "@/lib/contracts/adminProviderModelPrices";
 
 /**
  * Form model of the Add / edit model sheet (PRD 5.4.1): what the fields
@@ -39,16 +41,62 @@ export type ModelForm = Readonly<{
   reasoningModePath: string;
   responseTimeoutSeconds: string;
   upstreamModelId: string;
+  prices: Readonly<Record<AdminModelPriceField, string>>;
+  priceSource: "catalog" | "admin";
 }>;
 
 export type ModelFormBody = Partial<AdminProviderModelEditGuard> & Readonly<{
   configuration: AdminProviderModelConfiguration;
   displayName: string;
+  pricing?: AdminModelPriceChange;
 }>;
 
 export type ModelFormResult =
   | Readonly<{ body: ModelFormBody; ok: true }>
-  | Readonly<{ error: string; field: "defaultParams" | "routing" | "timeout" | "upstreamModelId"; ok: false }>;
+  | Readonly<{ error: string; field: "defaultParams" | "routing" | "timeout" | "upstreamModelId" | AdminModelPriceField; ok: false }>;
+
+export function modelPriceFormValues(prices: AdminModelTokenPrices): ModelForm["prices"] {
+  return Object.fromEntries(ADMIN_MODEL_PRICE_FIELDS.map(field => [field, prices[field] ?? ""])) as ModelForm["prices"];
+}
+
+export function modelFormPricing(form: ModelForm, editing: Pick<AdminProviderModel, "pricing"> | null):
+  { ok: true; pricing?: AdminModelPriceChange } | { ok: false; error: string; field: AdminModelPriceField } {
+  if (!modelClassUsesTokenPrices(form.modelClass)) return { ok: true };
+  const prices = { ...EMPTY_ADMIN_MODEL_PRICES };
+  for (const field of ADMIN_MODEL_PRICE_FIELDS) {
+    const price = normalizeAdminModelPrice(form.prices[field].trim() || null);
+    if (price === undefined) return { ok: false, field, error: ADMIN_MODEL_PRICE_ERROR };
+    prices[field] = price;
+  }
+  if (!editing) return ADMIN_MODEL_PRICE_FIELDS.every(field => prices[field] === null) ? { ok: true } : { ok: true, pricing: { mode: "manual", prices } };
+  const stored = editing.pricing;
+  if (form.priceSource === "catalog" && stored.source === "admin" && stored.catalogPrices) return { ok: true, pricing: { mode: "restore_catalog" } };
+  // The stored values again are no change: the row keeps its source and catalog updates.
+  if (ADMIN_MODEL_PRICE_FIELDS.every(field => prices[field] === stored.prices[field])) return { ok: true };
+  return { ok: true, pricing: { mode: "manual", prices } };
+}
+
+function samePriceText(left: ModelForm["prices"], right: ModelForm["prices"]): boolean {
+  const value = (text: string) => normalizeAdminModelPrice(text.trim() || null) ?? text.trim();
+  return ADMIN_MODEL_PRICE_FIELDS.every(field => value(left[field]) === value(right[field]));
+}
+
+/** Typing a price makes it the administrator's, unless the text again equals the saved prices. */
+export function withModelPrice(form: ModelForm, baseline: ModelForm, field: AdminModelPriceField, text: string): ModelForm {
+  const prices = { ...form.prices, [field]: text };
+  return { ...form, prices, priceSource: samePriceText(prices, baseline.prices) ? baseline.priceSource : "admin" };
+}
+
+/**
+ * The truthful source claim: "Catalog price" needs a catalog identity, and
+ * "Edited by an administrator" needs an administrator's price or an identity
+ * row that an administrator detached. Anything else claims nothing.
+ */
+export function modelPriceSourceLabel(form: ModelForm, catalogPrices: AdminModelTokenPrices | null): string | null {
+  if (form.priceSource === "catalog") return catalogPrices ? "Catalog price" : null;
+  return catalogPrices || ADMIN_MODEL_PRICE_FIELDS.some(field => form.prices[field].trim())
+    ? "Edited by an administrator" : null;
+}
 
 export function adapterForFamily(family: AdminProviderConnection["family"]): AdminProviderAdapterKind {
   if (family === "anthropic") return "anthropic_messages";
@@ -112,6 +160,8 @@ export function blankModelForm(connection: Pick<AdminProviderConnection, "family
     dataCollectionAllowed: false,
     defaultParamsText: "{}",
     displayName: "",
+    prices: modelPriceFormValues(EMPTY_ADMIN_MODEL_PRICES),
+    priceSource: "admin",
     modelClass: "answer",
     openRouterRoutingMode: "automatic",
     providerTags: [],
@@ -134,6 +184,8 @@ export function modelFormFrom(model: AdminProviderModel): ModelForm {
     dataCollectionAllowed: dataCollectionAllowed(configuration.defaultParams),
     defaultParamsText: JSON.stringify(configuration.defaultParams, null, 2),
     displayName: model.displayName,
+    prices: modelPriceFormValues(model.pricing.prices),
+    priceSource: model.pricing.source,
     modelClass: model.modelClass ?? configuration.modelClass ?? "answer",
     ...(configuration.image ? { image: configuration.image } : {}),
     openRouterRoutingMode: configuration.openRouterRouting?.mode ?? "automatic",
@@ -148,7 +200,14 @@ export function modelFormFrom(model: AdminProviderModel): ModelForm {
 }
 
 export function modelFormsEqual(left: ModelForm, right: ModelForm): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const normalized = (form: ModelForm) => ({ ...form, prices: Object.fromEntries(ADMIN_MODEL_PRICE_FIELDS.map(field =>
+    [field, normalizeAdminModelPrice(form.prices[field].trim() || null) ?? form.prices[field].trim()])) });
+  return JSON.stringify(normalized(left)) === JSON.stringify(normalized(right));
+}
+
+export function modelMetadataOnlyChanged(form: ModelForm, baseline: ModelForm): boolean {
+  return !modelFormsEqual(form, baseline) && modelFormsEqual({ ...form, displayName: baseline.displayName,
+    prices: baseline.prices, priceSource: baseline.priceSource }, baseline);
 }
 
 export function modelNameOnlyChanged(form: ModelForm, baseline: ModelForm): boolean {
@@ -266,8 +325,10 @@ export function moveProviderTag(tags: readonly string[], index: number, directio
 export function modelFormBody(
   form: ModelForm,
   connection: Pick<AdminProviderConnection, "family">,
-  editing: Pick<AdminProviderModel, "activeVersion" | "displayName" | "draftConfig" | "draftVersion" | "updatedAt"> | null
+  editing: Pick<AdminProviderModel, "activeVersion" | "displayName" | "draftConfig" | "draftVersion" | "updatedAt" | "pricing"> | null
 ): ModelFormResult {
+  const pricing = modelFormPricing(form, editing);
+  if (!pricing.ok) return pricing;
   if (!form.upstreamModelId.trim()) {
     return { error: "Choose a model first.", field: "upstreamModelId", ok: false };
   }
@@ -329,6 +390,7 @@ export function modelFormBody(
     body: {
       configuration,
       displayName: form.displayName.trim() || form.upstreamModelId.trim(),
+      ...(pricing.pricing ? { pricing: pricing.pricing } : {}),
       ...(editing ? modelEditGuard(editing) : {})
     },
     ok: true

@@ -14,6 +14,7 @@ import {
   getAdminProviderConnections,
   runAdminProviderConnectionAction,
   renameAdminProviderModel,
+  saveAdminProviderModelMetadata,
   runAdminProviderModelAction,
   updateAdminProviderConnection,
   updateAdminProviderCredential,
@@ -31,8 +32,10 @@ import type {
   AdminProviderConnection,
   AdminProviderConnectionConfiguration,
   AdminProviderModelEditGuard,
+  AdminProviderModelMetadata,
   AdminProviderModelRename
 } from "@/lib/contracts/adminProviders";
+import { adminModelPriceChangeMatches, type AdminModelPriceChange } from "@/lib/contracts/adminProviderModelPrices";
 import type { AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -230,7 +233,7 @@ export function useAdminProvidersController(
     operation: () => Promise<AdminProviderModelSaveClientResult>,
     connectionId: string,
     modelId: string | null,
-    body: { displayName: string } & Partial<AdminProviderModelEditGuard>,
+    body: { displayName: string; pricing?: AdminModelPriceChange } & Partial<AdminProviderModelEditGuard>,
     saved: AdminProviderModelSaveReceipt["saved"]
   ): Promise<AdminProviderModelOperationResult> => {
     if (busyRef.current) return failure({ blockers: [], code: "provider_admin_busy", resourceIds: [] });
@@ -241,6 +244,7 @@ export function useAdminProvidersController(
     const candidate = result.ok ? result.data : result.receipt;
     const receipt = candidate && candidate.connectionId === connectionId &&
       (modelId === null || candidate.modelId === modelId) && candidate.displayName === body.displayName && candidate.saved === saved &&
+      (!body.pricing || candidate.pricing && adminModelPriceChangeMatches(body.pricing, candidate.pricing)) &&
       candidate.draftVersion === (modelId === null ? 1 : Number(body.expectedDraftVersion) + (saved === "configuration" ? 1 : 0))
       ? candidate : null;
     const latest = await getAdminProviderConnections();
@@ -251,11 +255,12 @@ export function useAdminProvidersController(
     const current = catalog?.find(({ id }) => id === connectionId)?.models.find(({ id }) => id === resolvedId) ?? null;
     const ambiguous = !result.ok && result.status === undefined;
     const persistence: AdminProviderModelPersistence = { receipt, model: receipt || ambiguous ? current : null };
-    const nameConfirmed = ambiguous && saved === "name" && current?.displayName === body.displayName &&
+    const nameConfirmed = ambiguous && saved !== "configuration" && current?.displayName === body.displayName &&
+      (!body.pricing || adminModelPriceChangeMatches(body.pricing, current.pricing)) &&
       current.draftVersion === body.expectedDraftVersion && current.activeVersion === body.expectedActiveVersion &&
       new Date(current.updatedAt).getTime() > new Date(body.expectedUpdatedAt ?? "").getTime();
     if (catalog && (nameConfirmed || result.ok && receipt &&
-      (saved === "name" || receipt.publication === "active" && ["checked", "skipped"].includes(receipt.checks)))) {
+      (saved !== "configuration" || receipt.publication === "active" && ["checked", "skipped"].includes(receipt.checks)))) {
       return { ...finishSuccess(catalog, null, { quiet: true, scope: connectionId }), persistence };
     }
     const clientError = !result.ok ? result.error : !receipt
@@ -415,6 +420,9 @@ export function useAdminProvidersController(
       () => renameAdminProviderModel(connectionId, modelId, body),
       connectionId, modelId, body, "name"
     ),
+    saveModelMetadata: (connectionId: string, modelId: string, body: AdminProviderModelMetadata) => runModelSave(
+      () => saveAdminProviderModelMetadata(connectionId, modelId, body), connectionId, modelId, body, "metadata"
+    ),
     /**
      * Model `Test & Save` (PRD B2): create or update the model, take it live
      * and check it with the default key in one request. The sheet shows the
@@ -423,7 +431,7 @@ export function useAdminProvidersController(
     saveModel: (
       connectionId: string,
       modelId: string | null,
-      body: Readonly<{ configuration: unknown; displayName: string }> & Partial<AdminProviderModelEditGuard>,
+      body: Readonly<{ configuration: unknown; displayName: string; pricing?: AdminModelPriceChange }> & Partial<AdminProviderModelEditGuard>,
       setupOptions?: Readonly<{ signal?: AbortSignal; onProgress?(value: AdminProviderSetupProgress): void }>
     ) => runModelSave(
       () => modelId === null

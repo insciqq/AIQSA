@@ -278,6 +278,7 @@ export function RunAnswerV2({
       memorySources={settled ? artifact?.memorySources ?? [] : []}
       reasoningTexts={settled && showReasoning ? artifact?.reasoningText ?? [] : []}
       reasoningTruncated={settled && showReasoning && artifact?.reasoningTruncated === true}
+      runId={presentation.runId}
       toolActivity={toolActivity}
       workDurationMs={workDurationMs ?? artifact?.workDurationMs ?? stepDurationSumV2(toolActivity)}
       workspaceActivity={workspaceActivity}
@@ -336,6 +337,7 @@ export function RunAnswerV2({
       content={content}
       hideEmptyContent={!content.trim() && presentation.kind !== "idle"}
       role="assistant"
+      quoteEligible={settledRunPresentationV2(presentation)}
       renderCitation={renderCitation}
       resolveHref={resolveHref}
       streaming={presentation.kind === "streaming"}

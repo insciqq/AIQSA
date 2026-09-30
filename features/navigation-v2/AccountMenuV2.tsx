@@ -28,11 +28,14 @@ export function accountInitialsV2(label: string | null | undefined): string {
  * footer shows it as a row with the account label.
  */
 export function AccountMenuV2({
+  accountId,
   accountLabel,
   adminEntryVisible = false,
   onSettings,
   variant = "row"
 }: Readonly<{
+  /** The authenticated viewer; sign-out clears its browser drafts. */
+  accountId: string | null;
   accountLabel?: string | null;
   adminEntryVisible?: boolean;
   onSettings?(): void;
@@ -50,7 +53,7 @@ export function AccountMenuV2({
     if (signingOut) return;
     setSigningOut(true);
     setSignOutError(null);
-    const result = await signOutCurrentSession();
+    const result = await signOutCurrentSession({ accountId });
     if (!result.ok) {
       setSignOutError(result.error);
       setSigningOut(false);

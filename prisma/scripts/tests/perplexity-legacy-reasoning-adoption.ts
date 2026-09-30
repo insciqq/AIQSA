@@ -18,6 +18,9 @@ const EXPLICIT_OFF = `{"effort":"low","enabled":false,"exclude":true,"maxTokens"
 const ENABLED = `{"effort":"high","enabled":true,"exclude":true,"maxTokens":0}`;
 const NEAR_LEGACY = `{"effort":"medium","enabled":false,"exclude":true,"maxTokens":1024}`;
 const LEGACY_UPDATED_AT = "2026-09-01 00:00:00";
+// The contract deploys every later migration too. Strip only the independently
+// asserted price expansion when comparing predecessor columns below.
+const priceColumns = "ARRAY['inputTokenPriceUsdPerMillion', 'cachedInputTokenPriceUsdPerMillion', 'cacheWriteInputTokenPriceUsdPerMillion', 'outputTokenPriceUsdPerMillion', 'priceSource']";
 
 type Place = "column" | "active" | "draft";
 type Scenario = Readonly<{
@@ -67,6 +70,13 @@ const scenarios: readonly Scenario[] = [
 
 const rowId = (name: string) => `perplexity-reasoning-${name}`;
 const scenarioIds = scenarios.map(({ name }) => `'${rowId(name)}'`).join(", ");
+// The later price migration gives every answer row on the OpenRouter (Quick Setup)
+// connection the tariff of `openrouter:<modelId>`, template key or not. Only these
+// rows have no catalog identity: `perplexity/sonar` has no tariff, and an
+// openai_compatible connection without a codex-lb endpoint is no catalog family.
+const unpricedScenarios: ReadonlySet<string> = new Set(["other_model", "other_provider"]);
+const pricedIds = scenarios.filter(({ name }) => !unpricedScenarios.has(name))
+  .map(({ name }) => `'${rowId(name)}'`).join(", ");
 
 function params(reasoning: string | null, temperature = 1): string {
   return `{"maxTokens":8192,"provider":{"allowFallbacks":true,"dataCollection":"deny","order":["perplexity"],` +
@@ -138,7 +148,7 @@ function scenarioProof(scenario: Scenario): string {
       AND to_jsonb(m) -> 'activeConfig' = ${expected("active", changes.has("active"))}
       AND to_jsonb(m) -> 'draftConfig' = ${expected("draft", changes.has("draft"))}
       AND m."updatedAt" ${changes.size > 0 ? ">" : "="} (f.snapshot ->> 'updatedAt')::timestamp
-      AND (to_jsonb(m) - ARRAY['defaultParams', 'activeConfig', 'draftConfig', 'updatedAt']) =
+      AND (to_jsonb(m) - ${priceColumns} - ARRAY['defaultParams', 'activeConfig', 'draftConfig', 'updatedAt']) =
         (f.snapshot - ARRAY['defaultParams', 'activeConfig', 'draftConfig', 'updatedAt']))
     THEN RAISE EXCEPTION 'perplexity_reasoning_${scenario.name}_diff_wrong'; END IF;`;
 }
@@ -214,9 +224,16 @@ INSERT INTO "PerplexityReasoningFixture" VALUES ('related', 'state', (${relatedS
 
 export const perplexityLegacyReasoningProofSql = `
 DO $$ BEGIN${scenarios.map(scenarioProof).join("")}
+  IF EXISTS (SELECT 1 FROM "ProviderModel" m WHERE m.id IN (${scenarioIds}) AND (
+    m."priceSource" <> 'catalog' OR m."cachedInputTokenPriceUsdPerMillion" IS NOT NULL OR
+    m."cacheWriteInputTokenPriceUsdPerMillion" IS NOT NULL OR
+    CASE WHEN m.id IN (${pricedIds}) THEN
+      m."inputTokenPriceUsdPerMillion" IS DISTINCT FROM 3::numeric OR m."outputTokenPriceUsdPerMillion" IS DISTINCT FROM 15::numeric
+    ELSE m."inputTokenPriceUsdPerMillion" IS NOT NULL OR m."outputTokenPriceUsdPerMillion" IS NOT NULL END))
+    THEN RAISE EXCEPTION 'perplexity_reasoning_later_price_adoption_wrong'; END IF;
   IF (SELECT count(*) FROM "ProviderModel") <> (SELECT count(*) FROM "PerplexityReasoningFixture" WHERE phase = 'before')
     OR EXISTS (SELECT 1 FROM "PerplexityReasoningFixture" f LEFT JOIN "ProviderModel" m ON m.id = f.id
-      WHERE f.phase = 'before' AND f.id NOT IN (${scenarioIds}) AND to_jsonb(m) IS DISTINCT FROM f.snapshot)
+      WHERE f.phase = 'before' AND f.id NOT IN (${scenarioIds}) AND (to_jsonb(m) - ${priceColumns}) IS DISTINCT FROM f.snapshot)
     THEN RAISE EXCEPTION 'perplexity_reasoning_changed_unrelated_models'; END IF;
   IF NOT EXISTS (SELECT 1 FROM "ProviderModel" WHERE id = '${rowId("adoption_pending")}'
     AND "nativeRoutingAdoptionVersion" = 0 AND "nativeRoutingAdoptionReason" IS NULL

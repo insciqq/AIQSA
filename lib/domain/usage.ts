@@ -17,9 +17,11 @@ export type NormalizedTokenUsage = Record<TokenUsageField, number | null> & {
 };
 
 export type ModelTokenPricing = {
-  inputTokenPriceMicros: number;
-  outputTokenPriceMicros: number;
-  reasoningTokenPriceMicros?: number;
+  inputTokenPriceUsdPerMillion: number | null;
+  outputTokenPriceUsdPerMillion: number | null;
+  cachedInputTokenPriceUsdPerMillion?: number | null;
+  cacheWriteInputTokenPriceUsdPerMillion?: number | null;
+  reasoningTokenPriceUsdPerMillion?: number | null;
 };
 
 export function reportedTokenCount(value: unknown): number | null {
@@ -106,10 +108,27 @@ export function subtractTokenUsage(total: TokenUsage, subtrahend: TokenUsage): N
 export function estimateCostMicros(usage: TokenUsage, pricing: ModelTokenPricing): number | null {
   const normalized = normalizeTokenUsage(usage);
   if (normalized.completeness !== "complete" || normalized.inputTokens === null || normalized.outputTokens === null) return null;
-  const reasoningPrice = pricing.reasoningTokenPriceMicros ?? pricing.outputTokenPriceMicros;
-  if (reasoningPrice !== pricing.outputTokenPriceMicros && normalized.reasoningTokens === null) return null;
+  const inputPrice = pricing.inputTokenPriceUsdPerMillion;
+  const outputPrice = pricing.outputTokenPriceUsdPerMillion;
+  if (inputPrice === null || outputPrice === null) return null;
+  const cachedPrice = pricing.cachedInputTokenPriceUsdPerMillion ?? inputPrice;
+  const cacheWritePrice = pricing.cacheWriteInputTokenPriceUsdPerMillion ?? inputPrice;
+  const reasoningPrice = pricing.reasoningTokenPriceUsdPerMillion ?? outputPrice;
+  if ([inputPrice, outputPrice, cachedPrice, cacheWritePrice, reasoningPrice]
+    .some((price) => !Number.isFinite(price) || price < 0 || price >= 10_000_000_000)) return null;
+  if (reasoningPrice !== pricing.outputTokenPriceUsdPerMillion && normalized.reasoningTokens === null) return null;
   const reasoningTokens = Math.min(normalized.reasoningTokens ?? 0, normalized.outputTokens);
-  const cost = normalized.inputTokens * pricing.inputTokenPriceMicros +
-    (normalized.outputTokens - reasoningTokens) * pricing.outputTokenPriceMicros + reasoningTokens * reasoningPrice;
-  return Number.isFinite(cost) && cost >= 0 ? cost : null;
+  const cachedTokens = normalized.cachedInputTokens ?? 0;
+  const cacheWriteTokens = normalized.cacheWriteInputTokens ?? 0;
+  const uncachedTokens = Math.max(0, normalized.inputTokens - cachedTokens - cacheWriteTokens);
+  // Decimal(18,8) prices use exact integer arithmetic so binary floats cannot
+  // turn a half-micro boundary (for example 50 * 0.29) into a downward round.
+  const charge = (tokens: number, price: number) => BigInt(tokens) * BigInt(price.toFixed(8).replace(".", ""));
+  const scaledCost = charge(uncachedTokens, inputPrice) + charge(cachedTokens, cachedPrice) +
+    charge(cacheWriteTokens, cacheWritePrice) + charge(normalized.outputTokens - reasoningTokens, outputPrice) +
+    charge(reasoningTokens, reasoningPrice);
+  // USD per million tokens is numerically micro-dollars per token.
+  const cost = Number((scaledCost + 50_000_000n) / 100_000_000n);
+  // Durable cost columns are signed 32-bit integers. Unrepresentable cost is unknown.
+  return Number.isSafeInteger(cost) && cost >= 0 && cost <= 2_147_483_647 ? cost : null;
 }

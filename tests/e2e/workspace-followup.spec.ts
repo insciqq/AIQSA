@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { expect, test, type Page } from "@playwright/test";
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { signInWithLocalToken } from "./support/localAuth";
+import { prepareWorkspaceFakeContext, configureWorkspaceOnlyTools, waitForWorkspaceExport, cleanupWorkspaceFixtureChat } from "./support/workspaceFixture";
 import {
   RAW_WORKSPACE_IDENTIFIERS,
   activeChatId,
@@ -25,7 +26,7 @@ import {
  */
 const prisma = new PrismaClient();
 let originalPolicy: { enabled: boolean; internetEnabled: boolean } | null = null;
-const createdChatIds: string[] = [];
+let restoreFakeContext: (() => Promise<void>) | null = null;
 
 test.describe.configure({ mode: "default" });
 test.setTimeout(360_000);
@@ -51,10 +52,12 @@ async function newWorkspaceChat(page: Page): Promise<void> {
   await startNewChat(page);
   await selectFakeModel(page);
   await turnWorkspaceOn(page);
+  await configureWorkspaceOnlyTools(page);
 }
 
 async function expectStaging(page: Page, bodies: number, last: number): Promise<void> {
   await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:staging_probe]", "Staging metrics:");
+  await waitForWorkspaceExport(prisma, await activeChatId(page));
   // Export ownership also verifies staging. Only transferred originals and
   // the current admission's delta matter to the incremental-staging contract.
   await expect(lastAnswer(page)).toContainText(new RegExp(`Staging metrics: bodies=${bodies} calls=\\d+ last=${last}\\.`));
@@ -69,11 +72,12 @@ async function attach(page: Page, files: readonly { buffer: Buffer; name: string
   const attachments = page.getByRole("region", { name: "Attachments" });
   for (const file of files) {
     await expect(attachments.getByRole("listitem").filter({ hasText: file.name }))
-      .toContainText("Ready", { timeout: 15_000 });
+      .toHaveAttribute("data-attachment-status", "ready", { timeout: 15_000 });
   }
 }
 
 test.beforeAll(async ({ browser }) => {
+  restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
   const adminContext = await browser.newContext();
   try {
     await enableWorkspacePolicy(await adminContext.newPage());
@@ -83,11 +87,11 @@ test.beforeAll(async ({ browser }) => {
 });
 
 test.afterAll(async () => {
+  await restoreFakeContext?.();
   if (originalPolicy) {
     await prisma.workspacePolicy.update({ data: originalPolicy, where: { id: "installation" } })
       .catch(() => undefined);
   }
-  await prisma.$disconnect();
 });
 
 test("shows a human-readable timeline, resolves exact sandbox links, and keeps downloads after reset", async ({ browser }) => {
@@ -99,21 +103,23 @@ test("shows a human-readable timeline, resolves exact sandbox links, and keeps d
     await attach(page, [{ buffer: Buffer.from([0, 1, 2, 3, 254, 255]), name: "opaque-input.aiqsa-e2e" }]);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:activity_probe]", "Workspace activity probe finished.");
     const chatId = await activeChatId(page);
-    createdChatIds.push(chatId);
+
+    await waitForWorkspaceExport(prisma, chatId);
 
     const activity = await openLastActivity(page);
     await expect(activity).toContainText("Worked in Workspace");
     await expect(activity).toContainText("Workspace ready");
     await expect(activity).toContainText("Prepared 1 attachment");
-    await expect(activity).toContainText("Ran pwd");
+    await expect(activity).toContainText("Explored pwd");
     await expect(activity).toContainText("Read inbox/index.json");
     await expect(activity).toContainText("Wrote output/");
     await expect(activity).toContainText("Exported 1 file", { timeout: 30_000 });
-    // The direct-exec mistake from the dev stand: rejected before the runtime, shown as an open failure card.
+    // Rejected before the runtime; terminal command cards start collapsed.
     const failedCard = activity.locator("details.v2-workspace-command[data-phase='failed']");
-    await expect(failedCard).toHaveAttribute("open", "");
-    await expect(failedCard).toContainText("pwd && ls -la && cat > script.py <<'PY' failed");
-    await expect(failedCard).toContainText("Use sandbox_shell");
+    await expect(failedCard).not.toHaveAttribute("open", "");
+    await failedCard.locator("summary").click();
+    await expect(failedCard.locator("summary")).toContainText(/pwd && ls -la && cat > script\.py[\s\S]*failed/u);
+    await expect(failedCard).toContainText(/Use (?:mcp_workspace_)?sandbox_shell/u);
     const okCard = activity.locator("details.v2-workspace-command[data-phase='succeeded']").first();
     await expect(okCard).not.toHaveAttribute("open", "");
     await okCard.locator("summary").click();
@@ -145,7 +151,7 @@ test("shows a human-readable timeline, resolves exact sandbox links, and keeps d
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
     const reloaded = await openLastActivity(page);
-    await expect(reloaded).toContainText("Ran pwd");
+    await expect(reloaded).toContainText("Explored pwd");
     await expect(reloaded).toContainText("Exported 1 file");
     await expect(lastAnswer(page).getByTestId("markdown-resolved-link")).toHaveAttribute("href", href!);
 
@@ -155,12 +161,12 @@ test("shows a human-readable timeline, resolves exact sandbox links, and keeps d
     const reset = page.getByRole("dialog", { name: "Reset workspace" });
     await reset.getByRole("button", { name: "Confirm reset workspace" }).click();
     await expect(reset).toHaveCount(0);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace has not started");
+    await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Workspace has not started/u);
     const afterReset = await page.request.get(href!);
     expect(afterReset.status()).toBe(200);
     expect((await afterReset.body()).equals(bytes)).toBe(true);
   } finally {
-    await context.close();
+    try { await cleanupWorkspaceFixtureChat(prisma, page); } finally { await context.close(); }
   }
 });
 
@@ -175,7 +181,6 @@ test("stages only new originals on later turns and restages everything after the
       { buffer: Buffer.from("second original\n"), name: "second.aiqsa-e2e" }
     ]);
     await expectStaging(page, 2, 2);
-    createdChatIds.push(await activeChatId(page));
     await expectStaging(page, 2, 0);
     // Nothing transferred on the second turn: no "Prepared" row at all.
     await expect(lastActivity(page)).not.toContainText("Prepared");
@@ -208,7 +213,49 @@ test("stages only new originals on later turns and restages everything after the
     if (await restoredTimeline.getAttribute("open") === null) await restoredTimeline.locator(":scope > summary").click();
     await expect(page.getByText("Workspace was recreated")).toBeVisible();
   } finally {
-    await context.close();
+    try { await cleanupWorkspaceFixtureChat(prisma, page); } finally { await context.close(); }
+  }
+});
+
+test("an ordinary second answer leaves the stopped guest untouched and defers its attachment until guest use", async ({ browser }, testInfo) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await loginWithPassword(page, LOCAL_MCP_MEMBER);
+    await newWorkspaceChat(page);
+    await expectStaging(page, 0, 0);
+    const chatId = await activeChatId(page);
+    const before = await prisma.workspaceSession.findUniqueOrThrow({ where: { chatId } });
+    expect(before.state).toBe("STOPPED");
+    expect(before.runtimeSandboxId).not.toBeNull();
+
+    await attach(page, [{ buffer: Buffer.from("deferred original\n"), name: "deferred.aiqsa-e2e" }]);
+    await sendAndExpect(page, "Explain this briefly without inspecting files.", "Fake answer:");
+    await waitForWorkspaceExport(prisma, chatId);
+    const run = await prisma.modelRun.findFirstOrThrow({ where: { chatId }, orderBy: { createdAt: "desc" },
+      include: { workspaceRunBinding: true } });
+    expect(run.status).toBe("complete");
+    expect(run.workspaceRunBinding).toMatchObject({ guestUsedAt: null, exportState: "COMPLETE" });
+    expect(await prisma.modelRunToolCall.count({ where: { modelRunId: run.id } })).toBe(0);
+    expect(await prisma.workspaceRunOutput.count({ where: { workspaceRunBindingId: run.id } })).toBe(0);
+    expect(await prisma.modelRunEvent.count({ where: { modelRunId: run.id, eventType: "artifact",
+      payload: { path: ["artifactType"], equals: "workspace_activity" } } })).toBe(0);
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { chatId } })).toMatchObject({
+      state: "STOPPED", runtimeSandboxId: before.runtimeSandboxId, lastActiveAt: before.lastActiveAt,
+      expiresAt: before.expiresAt, stoppedAt: before.stoppedAt, operationOwner: null
+    });
+    await expect(lastAnswer(page).getByTestId("workspace-activity-section")).toHaveCount(0);
+    await page.reload();
+    await expect(lastAnswer(page)).toContainText("Fake answer:");
+    await expect(lastAnswer(page).getByTestId("workspace-activity-section")).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath("untouched-second-turn-integrated.png") });
+
+    await expectStaging(page, 1, 1);
+    await expect(lastActivity(page)).toContainText("Prepared 1 attachment");
+    expect((await prisma.workspaceSession.findUniqueOrThrow({ where: { chatId } })).runtimeSandboxId)
+      .toBe(before.runtimeSandboxId);
+  } finally {
+    try { await cleanupWorkspaceFixtureChat(prisma, page); } finally { await context.close(); }
   }
 });
 
@@ -219,17 +266,15 @@ test("Stop prevents synchronous, async, forgotten-handle and descendant side eff
     await loginWithPassword(page, LOCAL_MCP_MEMBER);
     await newWorkspaceChat(page);
     await sendAndStop(page, "[AIQSA_WORKSPACE_E2E:async_stop]", async () => {
-      const live = lastActivity(page);
-      await expect(live).toHaveAttribute("open", "", { timeout: 15_000 });
+      const live = await openLastActivity(page);
       await expect(live).toContainText("Running sleep 300", { timeout: 15_000 });
       await expect(live).toContainText("Running sleep 12 && echo late");
-      await expect(page.locator(".v2-composer-workspace-state")).toContainText("Running a command");
+      await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Running a command/u);
     });
     const chatId = await activeChatId(page);
-    createdChatIds.push(chatId);
-    await expect(page.locator(".v2-composer-workspace-state")).not.toContainText("Running a command", { timeout: 15_000 });
+    await expect(page.getByRole("button", { name: /^Workspace details\./u })).not.toHaveAccessibleName(/Running a command/u, { timeout: 15_000 });
     const stopped = await openLastActivity(page);
-    await expect(stopped).toContainText("Stopped sleep 300");
+    await expect(stopped).toContainText("sleep 300; echo late > /workspace/project/sync-after-stop.txt · exit not observed");
     await expect(stopped).toContainText("Workspace work stopped");
     await expect.poll(async () => (await prisma.workspaceSession.findUniqueOrThrow({
       select: { state: true },
@@ -237,17 +282,18 @@ test("Stop prevents synchronous, async, forgotten-handle and descendant side eff
     })).state, { timeout: 30_000 }).toBe("STOPPED");
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
+    await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Workspace stopped/u, { timeout: 30_000 });
     await expect(openLastActivity(page)).resolves.toBeDefined();
-    await expect(lastActivity(page)).toContainText("Stopped sleep 300");
+    await expect(lastActivity(page)).toContainText("sleep 300; echo late > /workspace/project/sync-after-stop.txt · exit not observed");
     await page.waitForTimeout(13_000);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:marker_probe]", "Late marker absent after Stop.");
+    await waitForWorkspaceExport(prisma, chatId);
 
     // Both lost observation and a terminal leader with a surviving child
     // require the disk-preserving VM fallback before another turn can run.
     for (const scenario of ["forget_executions_stop", "descendant_stop"]) {
       await sendAndStop(page, `[AIQSA_WORKSPACE_E2E:${scenario}]`, async () => {
-        await expect(lastActivity(page)).toContainText("Running sleep 300", { timeout: 15_000 });
+        await expect(await openLastActivity(page)).toContainText("Running sleep 300", { timeout: 15_000 });
       });
       const session = await prisma.workspaceSession.findUniqueOrThrow({
         select: { id: true },
@@ -263,14 +309,15 @@ test("Stop prevents synchronous, async, forgotten-handle and descendant side eff
       expect(await prisma.workspaceExecution.count({
         where: { state: "LOST", workspaceSessionId: session.id }
       })).toBeGreaterThan(0);
-      await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
+      await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Workspace stopped/u, { timeout: 30_000 });
       await page.waitForTimeout(13_000);
       await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:marker_probe]", "Late marker absent after Stop.");
-      await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
+      await waitForWorkspaceExport(prisma, chatId);
+      await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Workspace stopped/u, { timeout: 30_000 });
     }
 
   } finally {
-    await context.close();
+    try { await cleanupWorkspaceFixtureChat(prisma, page); } finally { await context.close(); }
   }
 });
 
@@ -282,7 +329,6 @@ test("a failed export keeps the answer complete and recovery finishes the remain
     await newWorkspaceChat(page);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:export_fault]", "Two outputs were written; the export fault is armed.");
     const chatId = await activeChatId(page);
-    createdChatIds.push(chatId);
     const runsBefore = await prisma.modelRun.count({ where: { chatId } });
     expect(runsBefore).toBe(1);
     await expect(lastAnswer(page)).toHaveAttribute("data-role", "assistant");
@@ -315,12 +361,10 @@ test("a failed export keeps the answer complete and recovery finishes the remain
     expect(await prisma.modelRun.count({ where: { chatId } })).toBe(runsBefore);
     expect(await prisma.workspaceRunOutput.count({ where: { workspaceRunBindingId: run.id } })).toBe(2);
   } finally {
-    await context.close();
+    try { await cleanupWorkspaceFixtureChat(prisma, page); } finally { await context.close(); }
   }
 });
 
 test.afterAll(async () => {
-  for (const chatId of createdChatIds) {
-    await prisma.modelRun.deleteMany({ where: { chatId } }).catch(() => undefined);
-  }
+  await prisma.$disconnect();
 });

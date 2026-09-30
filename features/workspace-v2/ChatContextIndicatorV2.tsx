@@ -7,9 +7,12 @@ import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { UiV2Button } from "@/components/ui-v2";
 import type { ChatContinuationControl } from "@/components/app-shell/useChatContinuation";
 import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
+import type { ChatUsageStats } from "@/lib/contracts/chats";
+import { costCoverageNote, formatEstimatedCostMicros } from "@/lib/domain/formatEstimatedCost";
 
-export function ChatContextIndicatorV2({ stats, continuation, continuationFiles }: Readonly<{
+export function ChatContextIndicatorV2({ stats, usageStats, continuation, continuationFiles }: Readonly<{
   stats: ComposerContextStats; continuation?: ChatContinuationControl | null;
+  usageStats?: ChatUsageStats | null;
   continuationFiles?: ChatWorkspaceState["continuationFiles"];
 }>) {
   const [manualOpen, setOpen] = useState(false);
@@ -23,13 +26,20 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
   const label = stats.requestRejected ? "This request exceeds the model context capacity" : gauge.percent === null
     ? "Chat context size is unavailable"
     : `Chat context is approximately ${gauge.percent}% full`;
-  const estimateDescription = stats.session
-    ? `${stats.session.phase === "after_answer" ? "Estimated from the last request and completed answer" : "Estimated from the current request"}${stats.draftInputTokens ? ", plus your draft and attachments" : ""}.`
-    : "Preliminary estimate. Tools and private context are included when a request runs.";
+  const measured = Boolean(stats.session) && stats.basis !== "preliminary";
+  // "Current" only while its run is in flight; a stopped or failed run keeps
+  // only its request measurement, which then describes the last request.
+  const estimateDescription = !measured ? "Preliminary estimate."
+    : stats.session?.phase === "request" && stats.requestInFlight ? "Based on the current request."
+      : `Based on the last ${stats.session?.phase === "request" ? "request" : "reply"}${stats.draftInputTokens ? " and your draft" : ""}.${stats.basis === "settings_changed" ? " Settings changed since." : ""}`;
+  const recommended = Boolean(continuation?.suggested || gauge.tone === "warning" ||
+    gauge.tone === "critical" || stats.session?.droppedMessages);
+  const continuationDescription = "A new chat starts with a summary of this one and takes your draft, files and settings (and Workspace files, if on). This chat stays as it is.";
   const circumference = 2 * Math.PI * 9;
   const remaining = stats.safeInputBudgetTokens === null ? null :
     Math.max(0, stats.safeInputBudgetTokens - stats.approximateInputTokens);
   const count = (value: number | null) => value === null ? "Unavailable" : formatTokenCount(value);
+  const costNote = usageStats ? costCoverageNote(usageStats.knownCostRecordCount, usageStats.recordCount) : null;
   const continuationFailure = continuationFiles?.status === "failed"
     ? continuationFiles.reason === "source_disk_missing" ? "The source Workspace disk was already gone." :
       continuationFiles.reason === "archive_limit" ? "The project archive exceeded the Workspace limit." :
@@ -48,10 +58,10 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
         ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={`${label}${stats.session || stats.requestRejected ? "" : ". Preliminary estimate"}`}
+        aria-label={`${label}${measured || stats.requestRejected ? "" : ". Preliminary estimate"}`}
         className="v2-chat-context-trigger v2-focusable"
         data-context-tone={gauge.tone}
-        data-context-estimate={stats.session ? "snapshot" : "preliminary"}
+        data-context-estimate={measured ? "snapshot" : "preliminary"}
         data-testid="header-context-indicator"
         title={`${label}. ${estimateDescription}`}
         type="button"
@@ -64,57 +74,74 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
               strokeDashoffset={circumference * (1 - (gauge.fraction ?? 0))} />
           </mask></defs>
           <circle className="v2-chat-context-track" cx="12" cy="12" fill="none" r="9" strokeWidth="3"
-            strokeDasharray={stats.session ? undefined : "3 3"} />
+            strokeDasharray={measured ? undefined : "3 3"} />
           <circle cx="12" cy="12" fill="none" r="9" stroke="currentColor" strokeWidth="3"
-            mask={`url(#${fillMaskId})`} strokeDasharray={stats.session ? undefined : "3 3"} />
+            mask={`url(#${fillMaskId})`} strokeDasharray={measured ? undefined : "3 3"} />
         </svg>
         <span>{stats.requestRejected && gauge.percent === null ? "!" : gauge.percent === null ? "?" : `${gauge.percent}%`}</span>
       </button>
       {open ? (
         <section ref={menuRef} aria-label="Chat context" className="v2-chat-context-popover" role="dialog">
-          <strong>{label}.</strong>
-          <p>{estimateDescription}</p>
-          <p>The percentage estimates how much of the full model context window is used. Space for its next answer is reserved; the answer reserve and safety margin reduce the safe input budget.</p>
-          {gauge.tone === "critical" ? <p role="alert">{stats.requestRejected ? "The server could not fit this request in the model context window." : "There is no safe input room for the current request."} Shorten the message, remove attachments, or continue in a new chat with a summary.</p> : null}
-          {gauge.tone === "warning" ? <p>The safe input budget is nearly full. You can keep working here or continue in a new chat with a summary.</p> : null}
-          {continuation ? <div className="v2-chat-context-continuation">
-            <p>Continue in a new chat with a short summary of this conversation. Your composer settings, unsent text and attached files come along. When Workspace is on, its project files are copied too. Earlier messages and their attachments stay in this chat.</p>
-            {continuation.uploading ? <p role="status">Wait for uploads to finish.</p> : null}
-            {continuation.error ? <p role="alert">{continuation.error}</p> : null}
-            {continuation.busy ? <>
-              <p role="status">{continuation.progress ?? "Preparing your summary…"}</p>
-              <UiV2Button onClick={continuation.onCancel}>Cancel</UiV2Button>
-            </> : <div className="v2-chat-context-actions">
-              <UiV2Button tone="primary" disabled={continuation.uploading} onClick={continuation.onContinue}>Summarize and open new chat</UiV2Button>
-              <UiV2Button onClick={close}>Stay here</UiV2Button>
-            </div>}
-          </div> : null}
-          {continuationFiles ? <p role={continuationFiles.status === "failed" ? "alert" : "status"}>
-            {continuationFiles.status === "ready" ? "Workspace project files were restored in this chat." :
-              continuationFiles.status === "pending" ? "Workspace project files are waiting to be restored." :
-                continuationFiles.status === "failed" ? `Workspace starts without the previous chat’s project files. ${continuationFailure}` :
-                  "The previous chat had no Workspace project disk to copy."}
-          </p> : null}
-          {stats.session?.droppedMessages ? <p>{stats.session.droppedMessages} earlier {stats.session.droppedMessages === 1 ? "message is" : "messages are"} still in this chat, but were omitted from the model request. You can continue in a new chat with a summary.</p> : null}
-          <details>
-            <summary>Advanced details</summary>
+          <div aria-label="Context" role="group">
+            <h2 className="v2-chat-context-group-title">Context</h2>
+            <strong>{label}.</strong>
+            <p>{estimateDescription}</p>
+            {gauge.tone === "critical" ? <p role="alert">{stats.requestRejected ? "This request doesn't fit the model's context." : "No room left for this request."} Shorten it, remove attachments, or continue in a new chat with a summary.</p> : null}
+            {gauge.tone === "warning" ? <p>Almost full. You can keep going here or continue in a new chat with a summary.</p> : null}
+            {continuation ? <div className="v2-chat-context-continuation">
+              {recommended ? <p>{continuationDescription}</p> : null}
+              {continuation.uploading ? <p role="status">Wait for uploads to finish.</p> : null}
+              {continuation.error ? <p role="alert">{continuation.error}</p> : null}
+              {continuation.busy ? <>
+                <p role="status">{continuation.progress ?? "Preparing your summary…"}</p>
+                <UiV2Button onClick={continuation.onCancel}>Cancel</UiV2Button>
+              </> : <div className="v2-chat-context-actions">
+                <UiV2Button tone={recommended ? "primary" : "ghost"} disabled={continuation.uploading}
+                  aria-label="Summarize and open new chat" aria-description={recommended ? undefined : continuationDescription}
+                  data-tooltip={recommended ? undefined : continuationDescription} data-tooltip-side="top"
+                  onClick={continuation.onContinue}>Summarize and open new chat</UiV2Button>
+                {/* Without hover the tooltip never shows; the button already carries it as its description. */}
+                {recommended ? <UiV2Button onClick={close}>Stay here</UiV2Button>
+                  : <p aria-hidden="true" className="v2-chat-context-touch-note">{continuationDescription}</p>}
+              </div>}
+            </div> : null}
+            {continuationFiles ? <p role={continuationFiles.status === "failed" ? "alert" : "status"}>
+              {continuationFiles.status === "ready" ? "Workspace project files were restored in this chat." :
+                continuationFiles.status === "pending" ? "Workspace project files are waiting to be restored." :
+                  continuationFiles.status === "failed" ? `Workspace starts without the previous chat’s project files. ${continuationFailure}` :
+                    "The previous chat had no Workspace project disk to copy."}
+            </p> : null}
+            {stats.session?.droppedMessages ? <p>{stats.session.droppedMessages} earlier {stats.session.droppedMessages === 1 ? "message is" : "messages are"} still in this chat, but were omitted from the model request. You can continue in a new chat with a summary.</p> : null}
+            <details>
+              <summary>Advanced details</summary>
+              <dl>
+                <div><dt>Context tokens</dt><dd>~{count(stats.approximateInputTokens)}</dd></div>
+                {stats.session ? <>
+                  <div><dt>{stats.session.phase === "after_answer" ? "Request and answer estimate" : "Request estimate"}</dt><dd>~{count(stats.session.approximateInputTokens)}</dd></div>
+                  <div><dt>Draft and attachments estimate</dt><dd>~{count(stats.draftInputTokens ?? 0)}</dd></div>
+                </> : null}
+                <div><dt>Safe input budget</dt><dd>{count(stats.safeInputBudgetTokens)}</dd></div>
+                <div><dt>Available input tokens</dt><dd>{count(remaining)}</dd></div>
+                <div><dt>Model context limit</dt><dd>{count(stats.totalContextTokens)}</dd></div>
+                <div><dt>Answer reserve</dt><dd>{count(stats.answerReserveTokens === undefined ? stats.session?.maxOutputTokens ?? null : stats.answerReserveTokens)}</dd></div>
+                <div><dt>Safety margin</dt><dd>{count(stats.safetyMarginTokens === undefined ? stats.session?.safetyMarginTokens ?? null : stats.safetyMarginTokens)}</dd></div>
+                {stats.session ? <>
+                  <div><dt>Loaded tools</dt><dd>{stats.session.loadedTools}</dd></div>
+                  <div><dt>Earlier messages omitted</dt><dd>{stats.session.droppedMessages}</dd></div>
+                </> : null}
+              </dl>
+              <p>Share of the model&apos;s full context window. Room for the answer and a safety margin is reserved, so the usable input budget is smaller. Tools and private context are added when a request runs.</p>
+            </details>
+          </div>
+          {usageStats?.hasCompletedAnswer && usageStats.recordCount > 0 ? <div aria-label="Spent" className="v2-chat-context-spent" role="group">
+            <h2 className="v2-chat-context-group-title">Spent</h2>
             <dl>
-              <div><dt>Context tokens</dt><dd>~{count(stats.approximateInputTokens)}</dd></div>
-              {stats.session ? <>
-                <div><dt>{stats.session.phase === "after_answer" ? "Request and answer estimate" : "Request estimate"}</dt><dd>~{count(stats.session.approximateInputTokens)}</dd></div>
-                <div><dt>Draft and attachments estimate</dt><dd>~{count(stats.draftInputTokens ?? 0)}</dd></div>
-              </> : null}
-              <div><dt>Safe input budget</dt><dd>{count(stats.safeInputBudgetTokens)}</dd></div>
-              <div><dt>Available input tokens</dt><dd>{count(remaining)}</dd></div>
-              <div><dt>Model context limit</dt><dd>{count(stats.totalContextTokens)}</dd></div>
-              <div><dt>Answer reserve</dt><dd>{count(stats.answerReserveTokens ?? stats.session?.maxOutputTokens ?? null)}</dd></div>
-              <div><dt>Safety margin</dt><dd>{count(stats.safetyMarginTokens ?? stats.session?.safetyMarginTokens ?? null)}</dd></div>
-              {stats.session ? <>
-                <div><dt>Loaded tools</dt><dd>{stats.session.loadedTools}</dd></div>
-                <div><dt>Earlier messages omitted</dt><dd>{stats.session.droppedMessages}</dd></div>
-              </> : null}
+              <div><dt>Tokens spent</dt><dd>{usageStats.totalTokens === null ? "—" : usageStats.totalTokens.toLocaleString("en-US")}</dd></div>
+              <div><dt>Approximate cost</dt><dd>{formatEstimatedCostMicros(usageStats.estimatedCostMicros)}</dd></div>
             </dl>
-          </details>
+            {costNote ? <p>{costNote}</p> : null}
+            {usageStats.incompleteRecordCount > 0 ? <p>Token usage is incomplete for {usageStats.incompleteRecordCount} of {usageStats.recordCount} requests.</p> : null}
+          </div> : null}
         </section>
       ) : null}
     </span>

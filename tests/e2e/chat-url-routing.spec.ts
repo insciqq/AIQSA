@@ -340,6 +340,8 @@ test("sign-in and an expired session return to the chat address with its draft",
     await expect(page).toHaveURL(new RegExp(`/login\\?next=%2Fc%2F${chatId}$`, "u"));
     await submitPasswordSignIn(page, LOCAL_MCP_MEMBER);
     await expect(page).toHaveURL(exactPath(`/c/${chatId}`), { timeout: 30_000 });
+    await expect(page.getByTestId("header-title")).toHaveText(title, { timeout: 30_000 });
+    await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Keep this question through sign-in");
     await expectNoHorizontalOverflow(page);
   } finally {
     await deleteChats(page, [chatId]);

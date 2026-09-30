@@ -49,6 +49,8 @@ import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runt
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
+import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
+import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
@@ -99,8 +101,17 @@ type LocalSession = {
   runtimeSandboxId: string;
   sandbox: Sandbox;
   sandboxName: string;
+  /** One release-guide installation per VM boot; its outcome is remembered. */
+  guides?: GuideInstallation;
   secretEnvironment?: Readonly<{ modelRunId: string; values: Record<string, string> }>;
 };
+
+type GuideInstallation = { state: "installing" | "ready" | "failed"; promise: Promise<void> };
+/** Guide delivery: "reuse" a known outcome, "refresh" a ready one per run, or install on a (re)started boot. */
+type GuidePreparation = "reuse" | "refresh" | Readonly<{ boot: GuideInstallation | undefined }>;
+
+const GUIDE_INSTALL_TIMEOUT_MS = 30_000;
+const GUIDE_RETIRE_TIMEOUT_MS = 2_000;
 
 const EXEC_SESSION_TOOL_SET = new Set<WorkspaceMcpToolName>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
 const EXEC_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
@@ -430,6 +441,47 @@ async function openSelectedFiles(sandbox: Sandbox, selection: WorkspaceFileSelec
   }
 }
 
+/**
+ * Install release guides with one bounded guest helper. Failure retires only
+ * that helper, never the VM. The helper publishes each file atomically from a
+ * complete request; a truncated request is invalid and publishes nothing, so
+ * closing its pipe during retirement or a late native settlement is harmless.
+ */
+async function installWorkspaceGuides(sandbox: Sandbox): Promise<void> {
+  const deadline = AbortSignal.timeout(GUIDE_INSTALL_TIMEOUT_MS);
+  const input = workspaceGuideInput();
+  let handle: ExecHandle | undefined;
+  let sink: Awaited<ReturnType<ExecHandle["takeStdin"]>> = null;
+  let abandoned = false;
+  const retire = () => {
+    const current = handle;
+    if (!current) return;
+    void readStreamWithAbort(async () => {
+      await current.kill().catch(() => undefined);
+      await sink?.[Symbol.asyncDispose]().catch(() => undefined);
+      await current[Symbol.asyncDispose]().catch(() => undefined);
+    }, AbortSignal.timeout(GUIDE_RETIRE_TIMEOUT_MS)).catch(() => undefined);
+  };
+  // The SDK command timeout kills the helper but does not bound its native
+  // promises; a launch that settles after the deadline is retired, never used.
+  const launch = Promise.resolve().then(() => sandbox.execStreamWith("/usr/bin/python3", builder => builder
+    .args(["-I", "-c", INSTALL_WORKSPACE_GUIDES]).timeout(GUIDE_INSTALL_TIMEOUT_MS).stdinPipe()));
+  void launch.then(late => { if (abandoned && !handle) { handle = late; retire(); } }, () => undefined);
+  try {
+    handle = await readStreamWithAbort(() => launch, deadline);
+    sink = await readStreamWithAbort(() => handle!.takeStdin(), deadline);
+    if (!sink) throw new Error("guide_stdin_unavailable");
+    await readStreamWithAbort(() => sink!.write(input), deadline);
+    await readStreamWithAbort(() => sink!.close(), deadline);
+    const status = await readStreamWithAbort(() => handle!.wait(), deadline);
+    if (status.code !== 0) throw new Error("guide_install_failed");
+  } catch (error) {
+    abandoned = true;
+    retire();
+    throw error;
+  }
+}
+
 async function consumeGuestFile(
   sandbox: Sandbox, path: string, byteSize: number, consume: (chunk: Uint8Array) => void, signal?: AbortSignal
 ): Promise<void> {
@@ -731,6 +783,41 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     return operation;
   }
 
+  /**
+   * Release guides are reference material, not an execution precondition. A
+   * failed, late or cancelled installation never stops the guest or fails the
+   * caller's tool call; concurrent operations share one installation, and a
+   * failure is remembered until the VM boots again.
+   */
+  private async prepareGuides(session: LocalSession, signal: AbortSignal | undefined, mode: GuidePreparation): Promise<void> {
+    const current = session.guides;
+    const install = !current ? true
+      : current.state === "installing" ? false
+        : mode === "reuse" ? false
+          : mode === "refresh" ? current.state === "ready"
+            // Any installation begun after the observed stop ran on this boot.
+            : current === mode.boot;
+    const installation = install ? this.startGuideInstallation(session) : current!;
+    try {
+      await readStreamWithAbort(() => installation.promise, signal);
+    } catch {
+      // The shared installation continues and is bounded by its own deadline.
+      throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    }
+  }
+
+  private startGuideInstallation(session: LocalSession): GuideInstallation {
+    const startedAt = Date.now();
+    const installation: GuideInstallation = { state: "installing", promise: Promise.resolve() };
+    installation.promise = installWorkspaceGuides(session.sandbox).then(() => { installation.state = "ready"; }, () => {
+      installation.state = "failed";
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "prepare", outcome: "degraded", action: "degrade",
+        code: "workspace_guides_unavailable", duration_ms: Date.now() - startedAt });
+    });
+    session.guides = installation;
+    return installation;
+  }
+
   private async initializeSession(input: Parameters<WorkspaceRuntime["ensureSession"]>[0]): Promise<WorkspaceRuntimeSession> {
     if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
     const existing = this.sessions.get(input.sessionId);
@@ -746,11 +833,14 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         if (handle.id !== existing.runtimeSandboxId) {
           throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
+        const booting = ["created", "stopped", "crashed"].includes(handle.status);
+        const observedGuides = existing.guides;
         const reconnected = await handle.connectOrStart({ detached: true });
         if (reconnected.id !== existing.runtimeSandboxId || reconnected.name !== existing.sandboxName) {
           throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
         existing.sandbox = reconnected;
+        await this.prepareGuides(existing, input.signal, booting ? { boot: observedGuides } : "refresh");
         return {
           runtimeSandboxId: existing.runtimeSandboxId,
           sandboxName: existing.sandboxName,
@@ -825,8 +915,11 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (acquired) {
         try {
           await acquired.sandbox.stopWithTimeout(10_000);
-        } catch {
-          throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+        } catch (stopError) {
+          // Preserve the original failure when this stop observes an exited VM.
+          if (!(stopError instanceof SandboxNotRunningError)) {
+            throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+          }
         }
       }
       if (error instanceof WorkspaceRuntimeError) throw error;
@@ -835,7 +928,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       }
       throw new WorkspaceRuntimeError("workspace_session_create_failed");
     }
-
+    // Outside initialization cleanup: guides never stop the new guest.
+    await this.prepareGuides(acquired!, input.signal, "reuse");
     return { runtimeSandboxId: sandbox.id, sandboxName: sandbox.name, state: "ready" };
   }
 
@@ -866,9 +960,12 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       // One structured observation and at most one start. Never infer loss
       // from an MCP error or restart a draining/paused VM. Connecting has an
       // explicit timeout rather than an unbounded wait-for-status loop.
-      const sandbox = handle.status === "running" || handle.status === "starting"
+      const observedState = handle.status;
+      const restarting = ["created", "stopped", "crashed"].includes(observedState);
+      const observedGuides = this.sessions.get(input.sessionId)?.guides;
+      const sandbox = observedState === "running" || observedState === "starting"
         ? await handle.connectWithTimeout(10_000)
-        : handle.status === "created" || handle.status === "stopped" || handle.status === "crashed"
+        : restarting
           ? await handle.connectOrStart({ detached: true })
           : null;
       if (!sandbox) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
@@ -876,7 +973,10 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
       if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
-      const session: LocalSession = cached ?? {
+      // A concurrent operation may have registered this exact guest while we
+      // connected; share its calls, owners and guide installation.
+      const current = this.sessions.get(input.sessionId);
+      const session: LocalSession = (current?.runtimeSandboxId === input.runtimeSandboxId ? current : cached) ?? {
         activeCalls: new Map(),
         execOwners: new Map(),
         runtimeSandboxId: input.runtimeSandboxId,
@@ -885,6 +985,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       };
       session.sandbox = sandbox;
       this.sessions.set(input.sessionId, session);
+      await this.prepareGuides(session, input.signal, restarting ? { boot: observedGuides } : "reuse");
       return session;
     } catch (error) {
       if (error instanceof SandboxNotFoundError) {

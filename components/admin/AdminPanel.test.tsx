@@ -199,6 +199,9 @@ const dashboard: AdminDashboard = {
   usage: {
     byGroup: [
       {
+        estimatedCostMicros: null,
+        recordCount: 0,
+        knownCostRecordCount: 0,
         incompleteUsageCount: 0,
         archivedAt: null,
         cachedInputTokens: 40,
@@ -215,6 +218,9 @@ const dashboard: AdminDashboard = {
         userCount: 1
       },
       {
+        estimatedCostMicros: null,
+        recordCount: 0,
+        knownCostRecordCount: 0,
         incompleteUsageCount: 0,
         archivedAt: null,
         cachedInputTokens: 0,
@@ -233,6 +239,9 @@ const dashboard: AdminDashboard = {
     ],
     byUser: [
       {
+        estimatedCostMicros: null,
+        recordCount: 0,
+        knownCostRecordCount: 0,
         incompleteUsageCount: 0,
         cachedInputTokens: 40,
         cacheWriteInputTokens: 5,
@@ -250,6 +259,9 @@ const dashboard: AdminDashboard = {
         outputTokens: 500,
         providerModels: [
           {
+            estimatedCostMicros: null,
+            recordCount: 0,
+            knownCostRecordCount: 0,
             incompleteUsageCount: 0,
             cachedInputTokens: 40,
             cacheWriteInputTokens: 5,
@@ -269,6 +281,9 @@ const dashboard: AdminDashboard = {
         userId: "active-1"
       },
       {
+        estimatedCostMicros: null,
+        recordCount: 0,
+        knownCostRecordCount: 0,
         incompleteUsageCount: 0,
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
@@ -286,6 +301,9 @@ const dashboard: AdminDashboard = {
       }
     ],
     totals: {
+      estimatedCostMicros: null,
+      recordCount: 0,
+      knownCostRecordCount: 0,
       incompleteUsageCount: 0,
       cachedInputTokens: 40,
       cacheWriteInputTokens: 5,
@@ -393,6 +411,9 @@ const emptyDashboard: AdminDashboard = {
     byGroup: [],
     byUser: [],
     totals: {
+      estimatedCostMicros: null,
+      recordCount: 0,
+      knownCostRecordCount: 0,
       incompleteUsageCount: 0,
       cachedInputTokens: 0,
       cacheWriteInputTokens: 0,
@@ -1024,7 +1045,7 @@ describe("AdminPanel", () => {
     expect(within(mobileUsers).getByText("Active User")).toBeInTheDocument();
     expect(within(mobileUsers).getByText(/OpenAI \/ GPT 5\.5/)).toBeInTheDocument();
     expect(within(mobileUsers).getByText("No reported usage")).toBeInTheDocument();
-    expect(within(usage).queryByText(/cost/i)).not.toBeInTheDocument();
+    expect(within(usage).getByTestId("usage-total-cost")).toHaveTextContent("—");
   });
 
   it("keeps primary admin workflows list-led while bounding analytical tables", async () => {

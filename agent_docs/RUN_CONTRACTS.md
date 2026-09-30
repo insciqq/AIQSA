@@ -1,9 +1,7 @@
 # RUN CONTRACTS
 
 Owner: Run pipeline maintainers
-Scope: Accepted execution, context, tools, evidence, recovery and outputs.
-
-[Critical invariants](CRITICAL_INVARIANTS.md) owns historical immutability, tenancy and privacy.
+Scope: Accepted execution, context, tools, Knowledge, recovery, outputs and usage.
 
 ## Admission And Context
 
@@ -15,13 +13,13 @@ Observation policy defaults to `v1`; admission freezes it, with absent/off stayi
 
 Personal presets supplement personal/temporary chats, never Assistants/Projects. They, like Assistant answer rules, may replace default answer rules without authority; date/time uses baseline zone. Assistants own hidden user-level reminders after current content/attachments. Presets and Assistant reminders are irreducible, frozen through recovery, and excluded from previews/utility prompts. Knowledge keeps accepted instructions/effective question; instructions are not Memory facts.
 
-Acceptance transfers execution server-side; disconnect never cancels preparation/commands. Stop/deadlines/authority remain. Recovery uses live owners without replay; PDF gates eligible Memory and final admission refreezes authority/evidence. Preparation forbids provider/tool I/O. Optional Memory failure cannot bypass authority. Temporary/Project bypass Memory; inbound Memory MCP stays independent. [Memory](MEMORY.md) owns preparation.
+Acceptance transfers execution server-side; disconnect never cancels preparation/commands. Stop/deadlines/authority remain. Recovery uses live owners without replay; PDF gates eligible Memory and final admission refreezes authority/evidence. Preparation forbids provider/tool I/O. Optional Memory failure cannot bypass authority. Temporary/Project bypass Memory; inbound Memory MCP stays independent.
 
 Follow-up orders user input within accepted bindings/budgets without repeating preparation. Acceptance races publication; delivery proves receipt, not obedience. Preserve partial text, settle dispatched tools, skip obsolete decisions, fence old generations. Recovery closes admission; executor loss ends clarified tasks. Regeneration re-admits them.
 
-Continuation summarizes active-branch text through the admitted System Model, excluding tools/attachments/Workspace inspection. Enabled Workspace may copy project files unread into a private single-use seed. Preserve ownership/retention/source/conversation; never repeat interrupted provider work. [Frontend](FRONTEND.md) owns draft transfer.
+Continuation summarizes active-branch text through the admitted System Model, excluding tools/attachments/Workspace inspection. Enabled Workspace may copy project files unread into a private single-use seed. Preserve ownership/retention/source/conversation; never repeat interrupted provider work.
 
-Skills grant no capabilities. Peers/Projects require approved revisions and audience authority. Off preserves pins; Projects ignore personal preferences. Filtering cannot hide required dependencies. Reads reauthorize; settled results replay privately. [Security](SECURITY.md) owns redaction.
+Skills grant no capabilities. Peers/Projects require approved revisions and audience authority. Off preserves pins; Projects ignore personal preferences. Filtering cannot hide required dependencies. Reads reauthorize; settled results replay privately.
 
 Catalog relevance defaults off and receives only user text/authorized metadata; complete evidence may filter/order Skills. Provider failure preserves the catalog; authority loss/cancellation fails closed. Recovery reuses accepted selection/dispatch evidence.
 
@@ -33,7 +31,7 @@ Off removes Agent time/call/token/output caps, preserving accounting/leases/Stop
 
 ## Search And Documents
 
-Search freezes exact logical sources and hosted/query-only routes. No source is silently dropped or substituted. Attachments do not disable selected Search; [Providers](PROVIDERS.md) keeps file data out of client Search. Findings are untrusted data.
+Search freezes exact logical sources and hosted/query-only routes. No source is silently dropped or substituted. Attachments do not disable selected Search. Findings are untrusted data.
 
 Chat PDF admission selects a verified route and freezes its destination before preparation. Required document work gates answer/Search/Knowledge/MCP dispatch and final context budgeting. The preparation model only transcribes, never answering or creating Knowledge. Local extraction carries a reading-quality caveat. An admitted Workspace run may survive classified transcription failure with its verified original and an explicit unread-content notice; access, integrity, cancellation and budget failures remain blocking. Explicit retry creates a sibling, revalidates that route and may reuse compatible settled pages. Browser navigation never owns worker lifetime.
 
@@ -73,7 +71,7 @@ Workspace admission freezes ready runtime/image, official catalog, network, path
 
 Mid-run capture requires coherent bytes and current authority; unsupported coherence fails closed. Preserve the running executor and final-export quiescence. Shared image validation is model-independent; transformations retain source identity/geometry. Consumers own publication/provider delivery.
 
-New Workspace runs use independently admitted System Vision regardless of answer model/provider. Native/direct viewing is disabled. Only ordered selected images and a focused question reach Vision; results stay untrusted. Unavailability never substitutes routes. Accepted runs retain frozen modality and recovery evidence.
+Current image attachments reach vision-capable answer models natively; Workspace guest files reach models only through independently admitted System Vision, which receives only ordered selected images and a focused question; results stay untrusted. Unavailability never substitutes routes. Accepted runs retain frozen modality/recovery evidence.
 
 Exact image edits preserve pixels; generative edits synthesize requested changes. Source/reference/version provenance determines identity. Saving, visual inspection and application validation stay separate claims.
 
@@ -87,7 +85,7 @@ Completion requires provider terminal proof. Failures preserve accepted partial 
 
 Unknown command exit, confirmed environment stop and durable cleanup are distinct. Local publication/accounting failures preserve reported usage without authorizing replay or proving provider failure. Never infer causes from exception prose.
 
-Client/Project streams expose lifecycle, answers, semantic activity, safe sources/outputs, errors and usage; never raw payloads, provider parameters, private evidence/identifiers or receipts. Expired invalidation streams require canonical resync; access loss closes them.
+Client/Project streams expose lifecycle, answers, semantic activity, safe sources/outputs, errors and usage; never raw payloads, provider parameters, private evidence/identifiers or receipts. MCP details require bounded, redacted initiator-authorized reads. Expired invalidation streams require canonical resync; access loss closes them.
 
 Artifact edits never rebase; reads/hints stay private. Agent bundles grant no host-path authority. Context changes invalidate continuation. Atomic settlement respects revocation/resource ceilings. Received images retain accounting after Stop; verified Workspace staging grants no paid replay.
 

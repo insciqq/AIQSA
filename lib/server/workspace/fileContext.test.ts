@@ -21,6 +21,8 @@ describe("Workspace source discovery context", () => {
     expect(rows[0]).toMatchObject({ relevance: "current_message", locator: { index: "/workspace/inbox/index.json", attachmentId: "two" } });
     expect(rows[2]).toMatchObject({ relevance: "selected_branch", locator: { attachmentId: "one" } });
     expect(context).not.toContain('"gone"');
+    // The no-replay rule lives in the stable Workspace contract, once per prompt.
+    expect(context).not.toContain("Historical context");
   });
 
   it("bounds metadata independently of history and renders filenames as data", () => {

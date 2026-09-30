@@ -12,6 +12,7 @@ import { removeWorkspaceForDeletion } from "../../lib/server/workspace/removal";
 import { RemoteWorkspaceRuntime } from "../../lib/server/workspace/remoteRuntime";
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { signInWithLocalToken } from "./support/localAuth";
+import { prepareWorkspaceFakeContext, configureWorkspaceOnlyTools } from "./support/workspaceFixture";
 import { activeChatId, loginWithPassword, selectFakeModel, startNewChat, turnWorkspaceOn } from "./support/workspace";
 
 // Run alone in disposable Compose. The proxy delays the real application /
@@ -39,6 +40,7 @@ let proxy: Server | null = null;
 let originalPolicy: { enabled: boolean; internetEnabled: boolean } | null = null;
 let collections = 0;
 let destructiveRequests = 0;
+let restoreFakeContext: (() => Promise<void>) | null = null;
 
 async function close(server: Server | null) {
   if (!server) return;
@@ -49,6 +51,7 @@ async function close(server: Server | null) {
 }
 
 test.beforeAll(async ({ browser }) => {
+  restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
   expect(process.env.AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME).toBe("0");
   const receiver = new URL(process.env.AIQSA_WORKSPACE_RUNNER_URL!);
   expect(receiver.hostname).toBe("127.0.0.1");
@@ -75,12 +78,25 @@ test.beforeAll(async ({ browser }) => {
       }
       if (request.method === "DELETE" || path.endsWith("/stop") || path.endsWith("/archive")) destructiveRequests += 1;
       let discardCapturedResponse = false;
+      let listBody: Buffer | null = null;
       if (request.method === "POST" && path.endsWith("/outputs/list")) {
-        collections += 1;
-        // The foreground handoff closes the set before answer completion.
-        // Interrupt the first background transfer, then hold its recovery.
-        if (collections === 2) discardCapturedResponse = true;
-        if (collections === 3) { entered.release(); await release.wait; }
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        for await (const chunk of request) {
+          bytes += chunk.length;
+          if (bytes > 64 * 1024) throw new Error("fixture_list_request_too_large");
+          chunks.push(Buffer.from(chunk));
+        }
+        listBody = Buffer.concat(chunks);
+        // Browser-session autosave and selected-file captures share this route.
+        // Inject the fault only into the run's ordinary output transfer.
+        if (JSON.parse(listBody.toString("utf8")).purpose === undefined) {
+          collections += 1;
+          // The foreground handoff closes the set before answer completion.
+          // Interrupt the first background transfer, then hold its recovery.
+          if (collections === 2) discardCapturedResponse = true;
+          if (collections === 3) { entered.release(); await release.wait; }
+        }
       }
       // Preserve streaming and backpressure; never record credentials/bodies.
       const forwarded = httpRequest(new URL(path, upstream), {
@@ -101,7 +117,8 @@ test.beforeAll(async ({ browser }) => {
       });
       response.on("close", () => { if (!response.writableFinished) forwarded.destroy(); });
       forwarded.on("error", () => response.destroy());
-      await pipeline(request, forwarded);
+      if (listBody) forwarded.end(listBody);
+      else await pipeline(request, forwarded);
     })().catch(() => response.destroy());
   });
   await new Promise<void>((resolve) => proxy!.listen(Number(receiver.port), "127.0.0.1", resolve));
@@ -125,10 +142,13 @@ test.beforeAll(async ({ browser }) => {
 
 test.afterAll(async () => {
   release.release();
-  if (originalPolicy) await prisma.workspacePolicy.update({ data: originalPolicy, where: { id: "installation" } });
-  await close(proxy);
-  await close(local);
-  await prisma.$disconnect();
+  try {
+    if (originalPolicy) await prisma.workspacePolicy.update({ data: originalPolicy, where: { id: "installation" } });
+    await close(proxy);
+    await close(local);
+  } finally {
+    try { await restoreFakeContext?.(); } finally { await prisma.$disconnect(); }
+  }
 });
 
 test("completed answer survives reset and archive attempts during recovered export", async ({ browser }) => {
@@ -142,9 +162,10 @@ test("completed answer survives reset and archive attempts during recovered expo
     await startNewChat(page);
     await selectFakeModel(page);
     await turnWorkspaceOn(page);
+    await configureWorkspaceOnlyTools(page);
     await page.getByLabel("Attach files").setInputFiles({ buffer: inputBytes, mimeType: "application/x-aiqsa-workspace-e2e", name: "input.bin" });
     await expect(page.getByRole("region", { name: "Attachments" }).getByRole("listitem").filter({ hasText: "input.bin" }))
-      .toContainText("Ready", { timeout: 15_000 });
+      .toHaveAttribute("data-attachment-status", "ready", { timeout: 15_000 });
     const answerText = "Workspace read the staged input and created result.zip.";
     const composer = page.getByRole("textbox", { name: "Message" });
     await composer.fill("[AIQSA_WORKSPACE_E2E:deterministic_prepare]");
@@ -153,7 +174,8 @@ test("completed answer survives reset and archive attempts during recovered expo
     await expect(page.locator('article[data-role="assistant"]').last()).toContainText(answerText, { timeout: 90_000 });
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
     const run = await prisma.modelRun.findFirstOrThrow({ where: { chatId }, orderBy: { createdAt: "desc" } });
-    expect(run.status).toBe("complete");
+    await expect.poll(async () => (await prisma.modelRun.findUniqueOrThrow({ where: { id: run.id }, select: { status: true } })).status,
+      { timeout: 30_000 }).toBe("complete");
     const answer = await prisma.message.findUniqueOrThrow({ where: { id: run.assistantMessageId! } });
     await entered.wait;
     const session = await prisma.workspaceSession.findUniqueOrThrow({ where: { chatId } });

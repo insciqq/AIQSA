@@ -380,9 +380,9 @@ function captureProviderRequest(
 function createMemoryRepository(
   entitlements: ResolvedEntitlements = entitledFakeModel,
   conversationContext: ProviderConversationMessage[] = [],
-  modelPricing: { inputTokenPriceMicros: number; outputTokenPriceMicros: number } | null = {
-    inputTokenPriceMicros: 2,
-    outputTokenPriceMicros: 8
+  modelPricing: { inputTokenPriceUsdPerMillion: number | null; outputTokenPriceUsdPerMillion: number | null } | null = {
+    inputTokenPriceUsdPerMillion: 2,
+    outputTokenPriceUsdPerMillion: 8
   },
   modelCapabilities: ProviderModelCapabilities = {
     nativePdfInput: false,
@@ -741,6 +741,7 @@ function createMemoryRepository(
         role: "user"
       }
     ],
+    loadWorkspaceFileFacts: async () => ({ hasFiles: false, hasEarlierExports: false }),
     loadAttachments: async (_userId, attachmentIds) =>
       attachmentIds.map((id) => ({
         byteSize: 512,
@@ -1670,7 +1671,7 @@ describe("model run route handlers", () => {
     const { repository, state } = createMemoryRepository(
       entitledFakeModel,
       [],
-      { inputTokenPriceMicros: 2, outputTokenPriceMicros: 8 },
+      { inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 8 },
       directCapabilities
     );
     const bytes = Buffer.from("%PDF-private");
@@ -1954,8 +1955,8 @@ describe("model run route handlers", () => {
       entitledFakeModel,
       [],
       {
-        inputTokenPriceMicros: 2,
-        outputTokenPriceMicros: 8
+        inputTokenPriceUsdPerMillion: 2,
+        outputTokenPriceUsdPerMillion: 8
       },
       {
         nativePdfInput: false,
@@ -2128,8 +2129,8 @@ describe("model run route handlers", () => {
       entitledFakeModel,
       [],
       {
-        inputTokenPriceMicros: 2,
-        outputTokenPriceMicros: 8
+        inputTokenPriceUsdPerMillion: 2,
+        outputTokenPriceUsdPerMillion: 8
       },
       {
         nativePdfInput: true,
@@ -2818,10 +2819,10 @@ describe("model run route handlers", () => {
     expect(state.created).toBeNull();
   });
 
-  it("uses null estimated cost metadata for zero-priced models", async () => {
+  it("uses null estimated cost metadata for models with unknown prices", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], {
-      inputTokenPriceMicros: 0,
-      outputTokenPriceMicros: 0
+      inputTokenPriceUsdPerMillion: null,
+      outputTokenPriceUsdPerMillion: null
     });
     const POST = createSendMessageHandler({
       ...authDeps,

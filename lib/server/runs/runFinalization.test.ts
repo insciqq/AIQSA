@@ -140,13 +140,25 @@ describe("run finalization", () => {
     });
   });
 
+  it("persists the cached-input cost snapshot at finalization", async () => {
+    const completeRun = vi.fn(async () => true);
+    const repository = { completeRun, loadModelPricing: async () => ({
+      inputTokenPriceUsdPerMillion: 2, cachedInputTokenPriceUsdPerMillion: 0.2, outputTokenPriceUsdPerMillion: 10
+    }) };
+    const input = completionInput(repository);
+    const result = await finalizeRunCompletion({ ...input, result: { ...input.result,
+      usage: { inputTokens: 10_000, cachedInputTokens: 8_000, outputTokens: 1_000, totalTokens: 11_000 } } });
+    expect(result).toMatchObject({ status: "completed", usage: { estimatedCostMicros: 15_600 } });
+    expect(completeRun).toHaveBeenCalledWith(expect.objectContaining({ estimatedCostMicros: 15_600 }));
+  });
+
   it("uses configured pricing after normalizing provider usage", async () => {
     const usage = await usageWithEstimatedCost(
       {
         loadModelPricing: async () => ({
-          inputTokenPriceMicros: 2,
-          outputTokenPriceMicros: 5,
-          reasoningTokenPriceMicros: 7
+          inputTokenPriceUsdPerMillion: 2,
+          outputTokenPriceUsdPerMillion: 5,
+          reasoningTokenPriceUsdPerMillion: 7
         })
       },
       {
@@ -173,9 +185,9 @@ describe("run finalization", () => {
     const repository = {
       completeRun,
       loadModelPricing: async () => ({
-        inputTokenPriceMicros: 2,
-        outputTokenPriceMicros: 5,
-        reasoningTokenPriceMicros: 7
+        inputTokenPriceUsdPerMillion: 2,
+        outputTokenPriceUsdPerMillion: 5,
+        reasoningTokenPriceUsdPerMillion: 7
       })
     };
 

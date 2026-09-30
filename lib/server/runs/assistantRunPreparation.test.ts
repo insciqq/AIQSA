@@ -33,6 +33,7 @@ const fakeAdapter = {
 
 function repository() {
   return {
+    loadWorkspaceFileFacts: async () => ({ hasFiles: false, hasEarlierExports: false }),
     loadAttachments: vi.fn(async () => []),
     loadConversationContextForExpectedLeaf: vi.fn(async () => []),
     loadConversationContextForLeaf: vi.fn(async () => []),

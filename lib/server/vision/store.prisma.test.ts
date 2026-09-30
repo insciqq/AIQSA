@@ -8,6 +8,7 @@ import { createVisionAnalysisStore } from "./store";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { ToolExecutionResult } from "../tools/types";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
+import { loadChatUsageTotals } from "../chats/usageTotals";
 import { persistCompletedAnswerUsage } from "../runs/prismaRepositoryAnswer";
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { agentLimits } from "../agents/config";
@@ -30,7 +31,7 @@ async function createFixture(db: PrismaClient) {
   const modelConfig = { adapterKind: "openai_responses_compatible" as const, modelClass: "answer" as const, upstreamModelId: "vision", answerSelectable: true, defaultParams: {},
     capabilities: { vision: true, nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true } };
   const model = await db.providerModel.create({ data: { id: randomUUID(), connectionId: connection.id, provider: "openai_compatible", modelId: "vision", modelClass: "answer", displayName: "Vision",
-    activeConfig: modelConfig, activeVersion: 1, activatedAt: new Date(), capabilities: modelConfig.capabilities, defaultParams: {}, inputTokenPriceMicros: 1, outputTokenPriceMicros: 2 } });
+    activeConfig: modelConfig, activeVersion: 1, activatedAt: new Date(), capabilities: modelConfig.capabilities, defaultParams: {}, inputTokenPriceUsdPerMillion: 1, outputTokenPriceUsdPerMillion: 2 } });
   const plan: AvailableVisionAnalysisPlan = { version: 1, available: true, policyVersion: 1, reasoningEffort: null, verifiedVisionInput: true,
     authority: { connectionId: connection.id, providerModelId: model.id, credentialId: credential.id, credentialVersionId: version.id, modelVersion: 1, connectionVersion: 1 },
     snapshot: { version: 1, connectionId: connection.id, providerModelId: model.id, credentialId: credential.id, credentialVersionId: version.id,
@@ -253,6 +254,9 @@ describe("durable auxiliary Vision accounting", () => {
     expect(await f.store.restore(f.context)).toEqual(f.result);
     expect(await f.db.usageEvent.count({ where: { modelRunId: f.context.runId } })).toBe(1);
     expect(await f.db.usageEvent.findUnique({ where: { id: unknown.id } })).toMatchObject({ inputTokens: 3, outputTokens: 2, totalTokens: 5, usageCompleteness: "COMPLETE", estimatedCostMicros: 7 });
+    expect(await f.db.$transaction(tx => loadChatUsageTotals(tx, f.context.chatId))).toMatchObject({
+      recordCount: 1, knownCostRecordCount: 1, totalTokens: 5, estimatedCostMicros: 7
+    });
     expect(await createPrismaRunRepository(f.db).loadRunUsageAttributions({ runId: f.context.runId, userId: f.context.userId })).toEqual([]);
   }));
   it("settles received usage after Stop without publishing success or permitting another dispatch", async () => fixture(async f => {

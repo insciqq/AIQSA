@@ -8,6 +8,7 @@ import { createPrismaRetentionRepository } from "../retention/prune";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { getWorkspaceConfig } from "./config";
+import { createPrismaWorkspaceCoordinatorRepository } from "./coordinator";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import { createWorkspaceSelectedCaptures, type WorkspaceCaptureReference } from "./selectedCapture";
@@ -73,6 +74,7 @@ async function fixture(project = false) {
   await prisma.workspaceSession.update({ where: { id: session.id }, data: { runtimeSandboxId: live.runtimeSandboxId } });
   const catalog = await runtime.loadBoundTools({ operation, sessionId: session.id, runtimeSandboxId: live.runtimeSandboxId });
   const bind = (runId: string) => prisma.workspaceRunBinding.create({ data: {
+    guestUsedAt: null,
     modelRunId: runId, workspaceSessionId: session.id, imageRef: config.imageRef, internetEnabled: false, policyRevision: 1,
     runtimeVersion: catalog.runtimeVersion, mcpVersion: catalog.mcpVersion, toolCatalogHash: catalog.hash,
     toolDefinitions: JSON.parse(JSON.stringify(catalog.tools)), outputDirectory: workspaceRunOutputDirectory(runId)
@@ -129,6 +131,7 @@ describe("selected capture durable ownership", () => {
     await f.write("project", "данные.txt", "original");
     const collect = vi.spyOn(f.runtime, "collectOutputs");
     const ref = await create(f);
+    expect((await prisma.workspaceRunBinding.findUniqueOrThrow({ where: { modelRunId: f.current.runId } })).guestUsedAt).not.toBeNull();
     await f.write("project", "данные.txt", "changed later");
     expect(await create(f)).toEqual(ref);
     expect(collect).toHaveBeenCalledTimes(1);
@@ -143,6 +146,17 @@ describe("selected capture durable ownership", () => {
     await f.service.release(second);
     await f.service.release(second);
     await expect(f.service.lookup(second)).rejects.toThrow("workspace_capture_unavailable");
+  });
+
+  it("records capture-only guest use before an ambiguous dispatch and preserves it across service restart", async () => {
+    const f = await fixture();
+    vi.spyOn(f.runtime, "collectOutputs").mockImplementationOnce(async () => {
+      expect((await prisma.workspaceRunBinding.findUniqueOrThrow({ where: { modelRunId: f.current.runId } })).guestUsedAt).not.toBeNull();
+      throw new Error("synthetic_lost_capture_response");
+    });
+    await expect(create(f)).rejects.toThrow("synthetic_lost_capture_response");
+    const restarted = createPrismaWorkspaceCoordinatorRepository(prisma);
+    expect((await restarted.binding({ runId: f.current.runId, userId: f.userId }))!.guestUsed).toBe(true);
   });
 
   it("recovers a runner-committed capture after a lost response without replaying its source read", async () => {

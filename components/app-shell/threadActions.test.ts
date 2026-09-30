@@ -303,13 +303,14 @@ describe("thread actions", () => {
     expect(thread().activeLeafId).toBe("message-1");
   });
 
-  it("refreshes active-branch usage after the summary-only checkout response", async () => {
+  it("refreshes cumulative chat usage after the summary-only checkout response", async () => {
     const messages = threadMessages();
     const usageStats = {
-      incompleteRunCount: 0,
-      activeBranchMessageCount: 2,
-      cachedInputTokens: 5,
-      cacheWriteInputTokens: 3,
+      hasCompletedAnswer: true,
+      incompleteRecordCount: 0,
+      recordCount: 2,
+      knownCostRecordCount: 0,
+      estimatedCostMicros: null,
       totalTokens: 21
     };
     vi.stubGlobal(

@@ -26,7 +26,8 @@ DO $$ BEGIN
     SELECT 1 FROM "_WorkspaceCaptureUpgradeFixture" fixture
     JOIN "WorkspaceRunBinding" binding ON binding."modelRunId" = 'capture-adoption-run'
     JOIN "WorkspaceSession" session ON session.id = binding."workspaceSessionId"
-    WHERE fixture.binding = to_jsonb(binding) AND fixture.session = to_jsonb(session)
+    WHERE fixture.binding = to_jsonb(binding) - 'guestUsedAt' AND binding."guestUsedAt" IS NOT NULL
+      AND fixture.session = to_jsonb(session)
   ) THEN RAISE EXCEPTION 'capture_upgrade_changed_existing_workspace'; END IF;
   IF EXISTS (SELECT 1 FROM "WorkspaceSelectedCapture")
     THEN RAISE EXCEPTION 'capture_upgrade_invented_evidence'; END IF;

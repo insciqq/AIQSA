@@ -25,6 +25,7 @@ import {
 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { MemorySourcesV2 } from "./MemorySourcesV2";
 import { presentMemorySourcesV2 } from "./memorySourcePresentation";
+import { McpCallDetailsV2 } from "./McpCallDetailsV2";
 
 type ToolCallV2 = ThreadToolActivity["calls"][number];
 
@@ -103,6 +104,7 @@ export type AnswerProcessV2Props = Readonly<{
   reasoningTexts?: readonly string[];
   /** Part of the thinking was too long to keep or show; the fold says so. */
   reasoningTruncated?: boolean;
+  runId?: string | null;
   toolActivity?: ThreadToolActivity | null;
   /** Send → first answer token; null when the run recorded none. */
   workDurationMs?: number | null;
@@ -128,6 +130,7 @@ export function AnswerProcessV2({
   memorySources = [],
   reasoningTexts = [],
   reasoningTruncated = false,
+  runId = null,
   toolActivity = null,
   workDurationMs = null,
   workspaceActivity = null
@@ -159,7 +162,9 @@ export function AnswerProcessV2({
   }));
   const compactionLabel = compaction?.label ?? earlierCompactionFailures.at(-1)?.label ?? null;
 
-  if (liveLabel && !timeline && !searchSummary && !calls.some(call => call.origin === "memory" && call.toolName === "memory_search") && !contextCompaction && earlierCompactionFailures.length === 0) {
+  if (liveLabel && !timeline && !searchSummary && !calls.some(call =>
+    (call.origin === "memory" && call.toolName === "memory_search") || (call.origin === "mcp" && call.details && runId)
+  ) && !contextCompaction && earlierCompactionFailures.length === 0) {
     return (
       <div className="v2-answer-process" data-live="true" data-testid="run-status-line">
         <span className="v2-answer-process-slot" aria-hidden="true">
@@ -256,22 +261,30 @@ export function AnswerProcessV2({
               <h3>Steps</h3>
               <ol className="v2-answer-process-steps">
                 {calls.map((call, index) => (
-                  <li key={`${call.round}:${index}:${call.toolName}`} data-status={call.status}>
+                  <li key={call.origin === "mcp" && call.details && runId ? `${runId}:${call.details.roundIndex}:${call.details.ordinal}` : `${call.round}:${index}:${call.toolName}`}
+                    className={call.origin === "mcp" && call.details && runId ? "v2-mcp-call-row" : undefined} data-status={call.status}>
                     <ToolCallMarkV2 status={call.status} />
-                    <span className="v2-answer-process-step">
-                      <span className="v2-answer-process-step-name">
-                        {describeToolCallV2(
-                          call,
-                          call.status === "running"
-                            ? "running"
-                            : call.status === "error" ? "failed"
-                            : call.status === "cancelled" ? "cancelled" : "settled"
-                        )}
+                    {call.origin === "mcp" && call.details && runId ? (
+                      <McpCallDetailsV2 runId={runId} reference={call.details} status={call.status}
+                        label={describeToolCallV2(call, call.status === "running" ? "running"
+                          : call.status === "error" ? "failed" : call.status === "cancelled" ? "cancelled" : "settled")}
+                        meta={toolMeta(call)} />
+                    ) : (
+                      <span className="v2-answer-process-step">
+                        <span className="v2-answer-process-step-name">
+                          {describeToolCallV2(
+                            call,
+                            call.status === "running"
+                              ? "running"
+                              : call.status === "error" ? "failed"
+                              : call.status === "cancelled" ? "cancelled" : "settled"
+                          )}
+                        </span>
+                        <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>
+                        {onPinSkill && call.origin === "skill" && call.toolName === "load_skill" && call.status === "complete" && call.skillId
+                          ? <SkillPinV2 skillId={call.skillId} pinned={pinnedSkillIds.includes(call.skillId)} onPin={onPinSkill} /> : null}
                       </span>
-                      <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>
-                      {onPinSkill && call.origin === "skill" && call.toolName === "load_skill" && call.status === "complete" && call.skillId
-                        ? <SkillPinV2 skillId={call.skillId} pinned={pinnedSkillIds.includes(call.skillId)} onPin={onPinSkill} /> : null}
-                    </span>
+                    )}
                   </li>
                 ))}
               </ol>

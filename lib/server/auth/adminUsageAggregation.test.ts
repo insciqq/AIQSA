@@ -8,6 +8,8 @@ import {
 
 type AggregateFixture = Readonly<{
   count: number;
+  recordCount?: number;
+  knownCostRecordCount?: number;
   lastUsedAt: Date | null;
   sums: AdminUsageAggregateSums;
   userId: string;
@@ -15,6 +17,8 @@ type AggregateFixture = Readonly<{
 
 function aggregate(fixture: AggregateFixture): AdminUsageAggregateSource {
   return {
+    recordCount: fixture.recordCount ?? fixture.count,
+    knownCostRecordCount: fixture.knownCostRecordCount ?? 0,
     incompleteUsageCount: 0,
     _count: {
       _all: fixture.count
@@ -38,6 +42,39 @@ function providerModelAggregate(
 }
 
 describe("admin usage aggregation", () => {
+  it("sums known costs and coverage independently of retained runs across users, groups and models", () => {
+    const mixed = aggregate({ count: 1, recordCount: 3, knownCostRecordCount: 2,
+      lastUsedAt: new Date("2026-09-30T10:00:00.000Z"),
+      sums: { estimatedCostMicros: 12_345, totalTokens: 15 }, userId: "mixed" });
+    const unknown = aggregate({ count: 0, recordCount: 2, lastUsedAt: mixed._max.createdAt,
+      sums: { totalTokens: 8 }, userId: "unknown" });
+    const result = serializeAdminUsageDashboard({
+      groups: [{ id: "group", name: "Team", archivedAt: null, _count: { users: 2 } }],
+      users: ["mixed", "unknown"].map((id) => ({ id, displayName: id, email: null,
+        groups: [{ groupId: "group", role: "member" }] })),
+      userRows: [mixed, unknown],
+      providerModelRows: [
+        { ...mixed, recordCount: 2, knownCostRecordCount: 1, provider: "fixture", modelId: "paid-model" },
+        { ...unknown, provider: "fixture", modelId: "unknown-model" },
+        providerModelAggregate({ userId: "mixed", count: 0, recordCount: 1, knownCostRecordCount: 1,
+          lastUsedAt: mixed._max.createdAt, provider: "fixture", modelId: "zero-cost-model",
+          sums: { estimatedCostMicros: 0, totalTokens: 0 } })
+      ]
+    });
+    const expected = { estimatedCostMicros: 12_345, recordCount: 5, knownCostRecordCount: 2, runCount: 1 };
+    expect(result.totals).toMatchObject(expected);
+    expect(result.byGroup[0]).toMatchObject(expected);
+    expect(result.byUser.find((user) => user.userId === "mixed")).toMatchObject({
+      estimatedCostMicros: 12_345, recordCount: 3, knownCostRecordCount: 2, runCount: 1,
+      providerModels: [expect.objectContaining({ estimatedCostMicros: 12_345, recordCount: 2, knownCostRecordCount: 1 }),
+        expect.objectContaining({ estimatedCostMicros: 0, recordCount: 1, knownCostRecordCount: 1, runCount: 0 })]
+    });
+    expect(result.byUser.find((user) => user.userId === "unknown")).toMatchObject({
+      estimatedCostMicros: null, recordCount: 2, knownCostRecordCount: 0, runCount: 0,
+      providerModels: [expect.objectContaining({ estimatedCostMicros: null, recordCount: 2, knownCostRecordCount: 0 })]
+    });
+  });
+
   it("exposes incomplete usage while retaining known sums and explicit zero", () => {
     const row = aggregate({ count: 1, lastUsedAt: new Date("2026-07-12T10:00:00.000Z"),
       sums: { inputTokens: 0, outputTokens: 4, totalTokens: 4 }, userId: "known" });
@@ -211,6 +248,9 @@ describe("admin usage aggregation", () => {
           outputTokens: 11,
           reasoningTokens: 2,
           runCount: 3,
+          recordCount: 3,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: 25,
           userCount: 2
         },
@@ -227,6 +267,9 @@ describe("admin usage aggregation", () => {
           outputTokens: 5,
           reasoningTokens: 2,
           runCount: 2,
+          recordCount: 2,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: 0,
           userCount: 1
         },
@@ -243,6 +286,9 @@ describe("admin usage aggregation", () => {
           outputTokens: null,
           reasoningTokens: null,
           runCount: 0,
+          recordCount: 0,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: null,
           userCount: 0
         },
@@ -259,6 +305,9 @@ describe("admin usage aggregation", () => {
           outputTokens: null,
           reasoningTokens: null,
           runCount: 0,
+          recordCount: 0,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: null,
           userCount: 1
         }
@@ -292,11 +341,17 @@ describe("admin usage aggregation", () => {
               provider: "openrouter",
               reasoningTokens: null,
               runCount: 1,
+              recordCount: 1,
+              knownCostRecordCount: 0,
+              estimatedCostMicros: null,
               totalTokens: 25
             }
           ],
           reasoningTokens: null,
           runCount: 1,
+          recordCount: 1,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: 25,
           userId: "user-b"
         },
@@ -333,6 +388,9 @@ describe("admin usage aggregation", () => {
               provider: "anthropic",
               reasoningTokens: 2,
               runCount: 1,
+              recordCount: 1,
+              knownCostRecordCount: 0,
+              estimatedCostMicros: null,
               totalTokens: 10
             },
             {
@@ -346,11 +404,17 @@ describe("admin usage aggregation", () => {
               provider: "openai",
               reasoningTokens: null,
               runCount: 1,
+              recordCount: 1,
+              knownCostRecordCount: 0,
+              estimatedCostMicros: null,
               totalTokens: 0
             }
           ],
           reasoningTokens: 2,
           runCount: 2,
+          recordCount: 2,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: 0,
           userId: "user-a"
         },
@@ -373,6 +437,9 @@ describe("admin usage aggregation", () => {
           providerModels: [],
           reasoningTokens: null,
           runCount: 0,
+          recordCount: 0,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: null,
           userId: "user-zero"
         }
@@ -386,6 +453,9 @@ describe("admin usage aggregation", () => {
         outputTokens: 11,
         reasoningTokens: 2,
         runCount: 3,
+        recordCount: 3,
+        knownCostRecordCount: 0,
+        estimatedCostMicros: null,
         totalTokens: 25
       }
     });

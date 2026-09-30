@@ -1,3 +1,4 @@
+import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import type { AuthenticatedSession, RequestAuthResolver } from "../../auth/requestAuth";
@@ -50,6 +51,7 @@ const connection: AdminProviderConnection = {
   family: "openrouter",
   id: "connection-1",
   models: [{
+    pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null },
     activatedAt: null,
     activeConfig: null,
     activeVersion: 0,

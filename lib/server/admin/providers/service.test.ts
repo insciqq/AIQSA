@@ -1,3 +1,4 @@
+import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -109,6 +110,7 @@ function repository(
     async loadModelActivationCandidate() { return null; },
     async renameCredential() { return "updated"; },
     async renameModelCas() { return "updated"; },
+    async updateModelMetadataCas() { return "not_found"; },
     async recordActiveRefreshFailureCas() { return "stored"; },
     async revokeCredentialVersion() { return "revoked"; },
     async revokeGroupCredential() { return "revoked"; },
@@ -334,10 +336,13 @@ describe("admin provider service", () => {
       configuration: geminiConfiguration,
       connectionId: "gemini-connection-1",
       displayName: "Gemini 3.6 Flash"
-    })).resolves.toEqual({ id: "gemini-model-1", displayName: "Gemini 3.6 Flash", draftVersion: 1 });
+    })).resolves.toEqual({ id: "gemini-model-1", displayName: "Gemini 3.6 Flash", draftVersion: 1,
+      // A Quick Setup family row without explicit prices takes its catalog tariff.
+      pricing: expect.objectContaining({ source: "catalog", prices: expect.objectContaining({ inputTokenPriceUsdPerMillion: "0.75" }) }) });
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         connectionId: "gemini-connection-1",
+        priceSource: "catalog",
         draftConfig: expect.objectContaining({
           adapterKind: "gemini_interactions_native",
           upstreamModelId: "gemini-3.6-flash"
@@ -408,6 +413,7 @@ describe("admin provider service", () => {
     const connection: AdminProviderConnection = {
       ...adminConnection(),
       models: ["vendor/model", "vendor/unavailable"].map((upstreamModelId, index) => ({
+        pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null },
         activatedAt: null,
         activeConfig: null,
         activeVersion: 0,
@@ -451,7 +457,7 @@ describe("admin provider service", () => {
       ...adminConnection(), id: policy.connection.id, family: "openrouter", enabled: version > 0,
       activeVersion: version, draftConfig: adminProviderConnectionConfiguration(policy.connection.configuration),
       activeConfig: version ? adminProviderConnectionConfiguration(policy.connection.configuration) : null,
-      models: [{ id: seeded ? approvedRerankerDeployments[0]!.providerModelId : "operator-reranker", connectionId: policy.connection.id, modelClass: "reranker",
+      models: [{ pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null }, id: seeded ? approvedRerankerDeployments[0]!.providerModelId : "operator-reranker", connectionId: policy.connection.id, modelClass: "reranker",
         displayName: "Reranker", draftConfig: reranker, draftVersion: 1, activeConfig: version ? reranker : null,
         activeVersion: version, enabled: true, activatedAt: null, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString() }]
     };
@@ -494,6 +500,7 @@ describe("admin provider service", () => {
       activeConfig: { ...connectionConfiguration, apiRoot: "https://active.example.test/v1/" },
       activeVersion: 2,
       models: [{
+        pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null },
         activatedAt: NOW.toISOString(),
         activeConfig: modelConfiguration,
         activeVersion: 1,
@@ -1407,7 +1414,7 @@ describe("Responses isolation catalog refresh", () => {
         activeVersion: { id: `${id}-version`, version: 1, revokedAt: null,
           activatedAt: NOW.toISOString(), testedAt: NOW.toISOString() }
       })),
-      models: [{ id: "model-1", connectionId: "connection-1", displayName: "Model", modelClass: "answer",
+      models: [{ pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null }, id: "model-1", connectionId: "connection-1", displayName: "Model", modelClass: "answer",
         activeConfig: modelConfiguration, activeVersion: 1, draftConfig: modelConfiguration, draftVersion: 2,
         enabled: true, activatedAt: NOW.toISOString(), createdAt: NOW.toISOString(), updatedAt: NOW.toISOString() }]
     };

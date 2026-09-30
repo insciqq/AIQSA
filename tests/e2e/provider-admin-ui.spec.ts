@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { EMPTY_ADMIN_MODEL_PRICES } from "../../lib/contracts/adminProviderModelPrices";
 import type {
   AdminProviderConnection,
   AdminProviderModelConfiguration
@@ -277,9 +278,9 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
         draftVersion: 1,
         enabled: true,
         id: fixture.modelId,
-        inputTokenPriceMicros: candidate.model.inputTokenPriceMicros,
+        inputTokenPriceUsdPerMillion: candidate.model.inputTokenPriceUsdPerMillion,
         modelId: candidate.model.modelId,
-        outputTokenPriceMicros: candidate.model.outputTokenPriceMicros,
+        outputTokenPriceUsdPerMillion: candidate.model.outputTokenPriceUsdPerMillion,
         provider: candidate.model.provider,
         supportsNativeSearch: candidate.model.capabilities.nativeSearch,
         supportsPdf: candidate.model.capabilities.pdf,
@@ -569,6 +570,7 @@ function customConnectionFixture(input: {
     };
     return {
       activatedAt: now,
+      pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null },
       activeConfig: modelConfiguration,
       activeVersion: 1,
       connectionId: input.id,
@@ -1347,6 +1349,7 @@ test("administrator rotates a Custom provider key in one step and deletes the pr
     family: "openai_compatible",
     id: "custom-lifecycle",
     models: [{
+      pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog", catalogPrices: null },
       activatedAt: now,
       activeConfig: modelConfiguration,
       activeVersion: 1,
@@ -1499,6 +1502,7 @@ test("administrator saves a rejected and then a working OpenRouter key with one 
     family: "openrouter",
     id: "provider-e2e",
     models: [{
+      pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog", catalogPrices: null },
       activatedAt: now,
       activeConfig: modelConfiguration,
       activeVersion: 1,
@@ -1691,6 +1695,7 @@ test("administrator adds a model with one Test & Save, follows the background ch
   });
   const model = (id: string, displayName: string, upstreamModelId: string) => ({
     activatedAt: now,
+    pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null },
     activeConfig: modelConfiguration(upstreamModelId),
     activeVersion: 1,
     connectionId: "provider-models-e2e",

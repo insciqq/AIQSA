@@ -18,7 +18,8 @@ import type {
 } from "@/lib/contracts/assistants";
 import type {
   ChatAssistantOverrideValues,
-  ChatAssistantRowValues
+  ChatAssistantRowValues,
+  ChatUsageStats
 } from "@/lib/contracts/chats";
 import type {
   ComposerConfigKnowledgeBase,
@@ -140,6 +141,7 @@ export type ShellWorkspaceView = {
 };
 
 export type ShellThreadView = {
+  usageStats?: ChatUsageStats | null;
   artifactDrafts?: readonly import("@/components/artifacts/artifactGenerationState").ArtifactGenerationDraft[];
   artifactDraftMessageId?: string;
   activeChatDetailError: string | null;

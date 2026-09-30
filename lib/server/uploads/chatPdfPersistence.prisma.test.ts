@@ -3,6 +3,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
+import { loadChatUsageTotals } from "../chats/usageTotals";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import { scheduleTemporaryChatDeletion } from "../memory/temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
@@ -38,7 +39,7 @@ async function fixture(vision = false, temporary = false, workspace = false, nat
       structuredOutput: true, forcedToolCalling: true, validatedAutoToolCalling: true };
     const model = await prisma.providerModel.create({ data: {
       id: randomUUID(), connectionId: connection.id, provider: "openai_compatible", modelId: "fixture", displayName: "PDF test",
-      capabilities, defaultParams: {}, inputTokenPriceMicros: 2, outputTokenPriceMicros: 8
+      capabilities, defaultParams: {}, inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 8
     } });
     binding = { authority: { connectionId: connection.id, connectionVersion: 1, credentialId: credential.id,
       credentialVersionId: version.id, modelVersion: 1, providerModelId: model.id }, snapshot: {
@@ -299,6 +300,9 @@ describe("chat PDF database lifecycle", () => {
     expect(reserved.kind).toBe("reserved"); if (reserved.kind !== "reserved") throw new Error("reservation missing");
     const dispatch = await attempts.dispatch(h.claim, reserved.attemptId);
     expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } })).toMatchObject({ inputTokens: null, outputTokens: null, estimatedCostMicros: null });
+    expect(await prisma.$transaction(tx => loadChatUsageTotals(tx, h.chatId))).toMatchObject({
+      hasCompletedAnswer: false, recordCount: 1, totalTokens: null, estimatedCostMicros: null
+    });
     await attempts.recordUsage(dispatch, {});
     expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } })).toMatchObject({ inputTokens: null, totalTokens: null, usageCompleteness: "UNAVAILABLE" });
     await expect(attempts.dispatch(h.claim, reserved.attemptId)).rejects.toThrow();
@@ -307,6 +311,9 @@ describe("chat PDF database lifecycle", () => {
     expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } })).toMatchObject({ inputTokens: 30, outputTokens: 5, totalTokens: 35 });
     expect(await attempts.reserve(h.claim, work)).toEqual({ kind: "ambiguous" });
     expect(await prisma.usageEvent.count({ where: { modelRunId: h.runId } })).toBe(1);
+    expect(await prisma.$transaction(tx => loadChatUsageTotals(tx, h.chatId))).toMatchObject({
+      hasCompletedAnswer: false, recordCount: 1, knownCostRecordCount: 1, totalTokens: 35, estimatedCostMicros: 100
+    });
   });
 
   it.each(["zero", "partial"] as const)("preserves %s usage once, including receipts with unknown input", async (kind) => {

@@ -1,3 +1,4 @@
+import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminProviderConnection, AdminProviderTestEvidence } from "../../../contracts/adminProviders";
@@ -75,7 +76,7 @@ function fixture() {
         enabled: true, id: plan.credential.id, label: "Main", testedAt: stamp, updatedAt: stamp }],
       createdAt: stamp, defaultCredentialId: plan.credential.id, displayName: "Custom", draftChecks: [], enabled: true,
       family: "openai_compatible", id: plan.connection.id, unassignedPolicy: "use_default", updatedAt: stamp, userAssignments: [],
-      models: plan.models.map((model) => ({ activatedAt: stamp, activeConfig: adminProviderModelConfiguration(model.configuration),
+      models: plan.models.map((model) => ({ pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null }, activatedAt: stamp, activeConfig: adminProviderModelConfiguration(model.configuration),
         activeVersion: 1, connectionId: plan.connection.id, createdAt: stamp, displayName: model.displayName,
         draftConfig: adminProviderModelConfiguration(model.configuration), draftVersion: 1, enabled: true, id: model.id, updatedAt: stamp })),
       activeChecks: plan.models.map((model) => ({ checkedAt: stamp, connectionVersion: 1, credentialId: plan.credential.id,

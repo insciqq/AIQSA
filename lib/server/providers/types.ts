@@ -111,6 +111,8 @@ export type ProviderImageProvenance = Readonly<
  * and is never accepted from the browser as configuration. */
 export type NormalizedRunWorkspace = Readonly<{
   enabled: true;
+  /** Absent historical turns retain their inline-guide Agent contract. */
+  guidanceVersion?: 1;
   imageRef: string;
   inboxIndexPath: string;
   internetEnabled: boolean;
@@ -147,6 +149,8 @@ export type NormalizedRunRequest = {
   /** Verified image-input and supported Responses tool-output route, frozen at admission. */
   workspaceImageView?: true;
   workspaceCheckpoints?: true;
+  /** Exact server-owned tool text; absent accepted rows use the legacy text. */
+  workspaceCheckpointToolDescription?: string;
   visionAnalysis?: import("../providerRuntime/visionAnalysis").AcceptedVisionAnalysisPlan;
   imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;
   imageReferences?: import("../../contracts/imageGeneration").ConversationImageReference[];

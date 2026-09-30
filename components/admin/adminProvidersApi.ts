@@ -9,8 +9,10 @@ import type {
   AdminOpenRouterDiscoveredModel,
   AdminProviderCheckRun,
   AdminProviderConnection,
+  AdminProviderModelMetadata,
   AdminProviderModelRename
 } from "@/lib/contracts/adminProviders";
+import { decodeAdminModelPricing } from "@/lib/contracts/adminProviderModelPrices";
 import { normalizeImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { adminProviderSetupFailureCode, readAdminProviderSetupResponse } from "./adminProviderSetupStream";
@@ -26,6 +28,8 @@ type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respons
 export type AdminProviderClientError = Readonly<{
   blockers: ReadonlyArray<{ count: number; kind: string }>;
   code: string;
+  /** The rejected form field, when the server names one. */
+  field?: string;
   resourceIds: string[];
 }>;
 
@@ -81,6 +85,7 @@ function isCredential(value: unknown): boolean {
 function isModel(value: unknown): boolean {
   return record(value) && typeof value.id === "string" && typeof value.displayName === "string" &&
     typeof value.enabled === "boolean" && typeof value.draftVersion === "number" &&
+    decodeAdminModelPricing(value.pricing) !== null &&
     record(value.draftConfig) && typeof value.draftConfig.adapterKind === "string" &&
     typeof value.draftConfig.answerSelectable === "boolean" &&
     (value.draftConfig.modelClass === "answer" ||
@@ -240,6 +245,7 @@ function clientError(value: unknown, fallback: string): AdminProviderClientError
   return {
     blockers,
     code: typeof body.error === "string" ? body.error : fallback,
+    ...(typeof body.error === "string" && typeof body.field === "string" ? { field: body.field } : {}),
     resourceIds: stringArray(body.resourceIds) ? body.resourceIds : []
   };
 }
@@ -500,6 +506,12 @@ export function runAdminProviderModelAction(connectionId: string, modelId: strin
   return request(`/api/admin/providers/${encoded(connectionId)}/models/${encoded(modelId)}`, json("PATCH", body), catalog, fetcher);
 }
 
+export function saveAdminProviderModelMetadata(connectionId: string, modelId: string,
+  body: AdminProviderModelMetadata, fetcher: Fetcher = fetch) {
+  return modelSetupRequest(`/api/admin/providers/${encoded(connectionId)}/models/${encoded(modelId)}`,
+    json("PATCH", { ...body, action: "metadata" }), fetcher);
+}
+
 async function modelSetupRequest(
   url: string,
   init: RequestInit,
@@ -556,6 +568,8 @@ export function getAdminProviderCheckRun(
 
 export function adminProviderErrorMessage(error: AdminProviderClientError): string {
   const messages: Record<string, string> = {
+    provider_model_pricing_invalid: "One or more prices are invalid. Review the decimal values and try again.",
+    provider_model_pricing_unavailable: "These prices cannot be applied to this model. Refresh its settings and try again.",
     forbidden: "Your account no longer has permission to manage providers.",
     json_required: "The provider request format was not accepted. Refresh and try again.",
     network_error: "Could not reach the provider administration API.",

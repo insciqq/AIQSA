@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { EMPTY_ADMIN_MODEL_PRICES } from "@/lib/contracts/adminProviderModelPrices";
 import {
   addAdminProviderCatalogModels,
   adminProviderErrorMessage,
@@ -7,8 +8,10 @@ import {
   getAdminProviderConnections,
   isAdminProviderCheckRun,
   renameAdminProviderModel,
+  saveAdminProviderModelMetadata,
   runAdminProviderConnectionAction
 } from "./adminProvidersApi";
+import { fixtureModel } from "./providers/providerFixtures";
 
 const safeConnection = {
   activatedAt: null,
@@ -66,6 +69,38 @@ describe("admin provider bootstrap result decoding", () => {
 });
 
 describe("admin provider browser API", () => {
+  it("validates exact admin prices and sends metadata without activating a model", async () => {
+    const model = fixtureModel({ connectionId: "connection-1", id: "model", displayName: "Model" });
+    for (const pricing of [undefined, { ...model.pricing, source: "unknown" },
+      { ...model.pricing, prices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: 0.25 } }]) {
+      expect(await getAdminProviderConnections(async () => Response.json({ connections: [{ ...safeConnection, models: [{ ...model, pricing }] }] })))
+        .toMatchObject({ ok: false, error: { code: "provider_admin_response_invalid" } });
+    }
+    const prices = { ...EMPTY_ADMIN_MODEL_PRICES, inputTokenPriceUsdPerMillion: "9999999999.99999999" };
+    const pricing = { prices, source: "admin", catalogPrices: null };
+    const body = { displayName: "Model", expectedActiveVersion: 1, expectedDraftVersion: 1,
+      expectedDisplayName: "Model", expectedUpdatedAt: model.updatedAt, pricing: { mode: "manual" as const, prices } };
+    const fetcher = vi.fn(async () => Response.json({ receipt: { connectionId: "connection-1", modelId: "model", displayName: "Model",
+      draftVersion: 1, saved: "metadata", publication: "not_requested", checks: "not_requested", pricing } }));
+    expect(await saveAdminProviderModelMetadata("connection-1", "model", body, fetcher)).toMatchObject({ ok: true, data: { pricing } });
+    expect(fetcher).toHaveBeenCalledWith("/api/admin/providers/connection-1/models/model", expect.objectContaining({
+      method: "PATCH", body: JSON.stringify({ ...body, action: "metadata" })
+    }));
+  });
+
+  it("keeps the field of a server price rejection", async () => {
+    const body = { displayName: "Model", expectedActiveVersion: 1, expectedDraftVersion: 1, expectedDisplayName: "Model",
+      expectedUpdatedAt: "2026-09-30T00:00:00.000Z", pricing: { mode: "manual" as const, prices: EMPTY_ADMIN_MODEL_PRICES } };
+    const rejected = async (value: unknown) => saveAdminProviderModelMetadata("connection-1", "model", body,
+      async () => Response.json(value, { status: 400 }));
+    expect(await rejected({ error: "provider_model_pricing_invalid", field: "outputTokenPriceUsdPerMillion" })).toMatchObject({
+      ok: false, status: 400, error: { code: "provider_model_pricing_invalid", field: "outputTokenPriceUsdPerMillion" } });
+    for (const value of [{ error: "provider_model_pricing_invalid" }, { field: "outputTokenPriceUsdPerMillion" }, { error: "provider_model_pricing_invalid", field: 1 }]) {
+      const result = await rejected(value);
+      expect(result.ok ? null : result.error).not.toHaveProperty("field");
+    }
+  });
+
   it("posts exact selected catalog identities and rejects unrelated unavailable IDs or malformed suggestions", async () => {
     const body = { credentialId: "key", expectedConnectionVersion: 3, expectedCredentialVersionId: "version", modelIds: ["builtin"] };
     const fetcher = vi.fn(async () => Response.json({ connections: [safeConnection], unavailableModelIds: ["builtin"] }));
@@ -92,6 +127,7 @@ describe("admin provider browser API", () => {
       connections: [{
         ...safeConnection,
         models: [{
+          pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog", catalogPrices: null },
           displayName: "Inherited timeout model",
           draftConfig: {
             adapterKind: "openai_responses_compatible",

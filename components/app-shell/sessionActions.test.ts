@@ -1,22 +1,104 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { signOutCurrentSession } from "./sessionActions";
+import { clearSignedOutComposerDrafts, startComposerDraftPersistence } from "./composerDraftPersistence";
+import { composerDraftEpochKey, composerDraftStorageKey, readComposerDraftEpoch, readComposerDrafts, replaceComposerDraftEpoch,
+  writeComposerDrafts } from "./composerDraftStorage";
+import { composerSessionKey, selectComposerSession, useComposerSessionStore } from "./composerSessionStore";
+import { AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY } from "./shellStorage";
+
+const root = composerSessionKey(null);
+const comments = [{ id: "pending-comment", quote: "selected fragment", text: "pending comment" }];
+const signedOut = () => vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 
 afterEach(() => {
+  clearSignedOutComposerDrafts();
   localStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe("signOutCurrentSession", () => {
+  it("preserves pending drafts on failed logout and clears them before successful navigation", async () => {
+    startComposerDraftPersistence("logout-account");
+    useComposerSessionStore.getState().setDraft("Unsent text");
+    window.dispatchEvent(new Event("pagehide"));
+    await signOutCurrentSession({ accountId: "logout-account", fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 503 })), navigate: vi.fn() });
+    expect(readComposerDrafts("logout-account")[0]?.draft).toBe("Unsent text");
+    useComposerSessionStore.getState().setDraft("Debounced change");
+    const navigate = vi.fn(() => {
+      window.dispatchEvent(new Event("pagehide"));
+      expect(readComposerDrafts("logout-account")).toEqual([]);
+      expect(localStorage.getItem("aiqsa.composerDrafts.v1:logout-account")).toBeNull();
+    });
+    await expect(signOutCurrentSession({ accountId: "logout-account", fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), navigate })).resolves.toEqual({ ok: true });
+    expect(navigate).toHaveBeenCalledWith("/login");
+  });
+
+  it("clears the named account's drafts, fence and handoff in a document without chat-shell draft state", async () => {
+    // Control Center is a full page load: no draft observer ever started here.
+    const adminEpoch = replaceComposerDraftEpoch("admin-account");
+    const otherEpoch = replaceComposerDraftEpoch("other-account");
+    writeComposerDrafts("admin-account", new Map([[root, { draft: "Admin draft", comments }]]));
+    writeComposerDrafts("other-account", new Map([[root, "Other account draft"]]));
+    sessionStorage.setItem(AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY, "{}");
+    const navigate = vi.fn();
+
+    await expect(signOutCurrentSession({ accountId: "admin-account", fetcher: signedOut(), navigate })).resolves.toEqual({ ok: true });
+
+    expect(localStorage.getItem(composerDraftStorageKey("admin-account"))).toBeNull();
+    expect(readComposerDraftEpoch("admin-account")).toMatch(/^[a-f\d-]{36}$/u);
+    expect(readComposerDraftEpoch("admin-account")).not.toBe(adminEpoch);
+    expect(sessionStorage.getItem(AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY)).toBeNull();
+    expect(readComposerDrafts("other-account").map(record => record.draft)).toEqual(["Other account draft"]);
+    expect(readComposerDraftEpoch("other-account")).toBe(otherEpoch);
+    expect(navigate).toHaveBeenCalledWith("/login");
+  });
+
+  it.each(["timer", "storage"])("keeps another tab of the signed-out account from writing its draft back (%s)", async (trigger) => {
+    vi.useFakeTimers();
+    // This module instance is the chat tab; a reset module graph is the
+    // freshly loaded Control Center document sharing the same localStorage.
+    startComposerDraftPersistence("admin-account");
+    useComposerSessionStore.getState().updateSession(root, { draft: "Chat tab text", comments });
+    window.dispatchEvent(new Event("pagehide"));
+    expect(readComposerDrafts("admin-account")[0]?.draft).toBe("Chat tab text");
+    vi.resetModules();
+    const controlCenter = await import("./sessionActions");
+
+    await controlCenter.signOutCurrentSession({ accountId: "admin-account", fetcher: signedOut(), navigate: vi.fn() });
+    expect(localStorage.getItem(composerDraftStorageKey("admin-account"))).toBeNull();
+
+    if (trigger === "timer") {
+      useComposerSessionStore.getState().setDraft("Typed in the chat tab after sign-out");
+      vi.advanceTimersByTime(250);
+    } else {
+      window.dispatchEvent(new StorageEvent("storage", { key: composerDraftEpochKey("admin-account") }));
+    }
+    window.dispatchEvent(new Event("pagehide"));
+    expect(localStorage.getItem(composerDraftStorageKey("admin-account"))).toBeNull();
+    expect(selectComposerSession(useComposerSessionStore.getState(), root)).toMatchObject({ draft: "", comments: [] });
+  });
+
+  it("clears every account's drafts and fences when the surface cannot name the account", async () => {
+    replaceComposerDraftEpoch("first-account");
+    writeComposerDrafts("first-account", new Map([[root, "First draft"]]));
+    writeComposerDrafts("second-account", new Map([[root, { draft: "", comments }]]));
+    localStorage.setItem("aiqsa.theme", "dark");
+
+    await signOutCurrentSession({ accountId: null, fetcher: signedOut(), navigate: vi.fn() });
+
+    expect(Object.keys(localStorage)).toEqual(["aiqsa.theme"]);
+  });
+
   it("clears private and public artifact state only after successful logout, preserving other browser preferences", async () => {
     localStorage.setItem("aiqsa.artifact.state.private-id", "private progress");
     localStorage.setItem("aiqsa.artifact.state.pub.abcdef0123456789", "viewer progress");
     localStorage.setItem("aiqsa.artifact.state.$index", "[]");
     localStorage.setItem("aiqsa.theme", "dark");
     const navigate = vi.fn();
-    await signOutCurrentSession({ fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 503 })), navigate });
+    await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 503 })), navigate });
     expect(localStorage.getItem("aiqsa.artifact.state.private-id")).toBe("private progress");
-    await signOutCurrentSession({ fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), navigate });
+    await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), navigate });
     expect(localStorage.length).toBe(1);
     expect(localStorage.getItem("aiqsa.theme")).toBe("dark");
     expect(navigate).toHaveBeenCalledWith("/login");
@@ -26,7 +108,7 @@ describe("signOutCurrentSession", () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     const navigate = vi.fn();
 
-    await expect(signOutCurrentSession({ fetcher, navigate })).resolves.toEqual({ ok: true });
+    await expect(signOutCurrentSession({ accountId: "account-1", fetcher, navigate })).resolves.toEqual({ ok: true });
 
     expect(fetcher).toHaveBeenCalledWith("/api/auth/logout", {
       body: "{}",
@@ -49,7 +131,7 @@ describe("signOutCurrentSession", () => {
     );
     const navigate = vi.fn();
 
-    const result = await signOutCurrentSession({ fetcher, navigate });
+    const result = await signOutCurrentSession({ accountId: "account-1", fetcher, navigate });
 
     expect(result).toEqual({
       error: "Your session is no longer valid. Refresh the page or sign in again. (unauthorized)",
@@ -62,7 +144,7 @@ describe("signOutCurrentSession", () => {
     const fetcher = vi.fn().mockRejectedValue(new Error("offline"));
     const navigate = vi.fn();
 
-    const result = await signOutCurrentSession({ fetcher, navigate });
+    const result = await signOutCurrentSession({ accountId: "account-1", fetcher, navigate });
 
     expect(result).toEqual({
       error: "Could not reach the server. Check your connection and try signing out again. (network_error)",
@@ -81,7 +163,7 @@ describe("signOutCurrentSession", () => {
     );
     const navigate = vi.fn();
 
-    const pending = signOutCurrentSession({ fetcher, navigate, timeoutMs: 250 });
+    const pending = signOutCurrentSession({ accountId: "account-1", fetcher, navigate, timeoutMs: 250 });
     const signal = fetcher.mock.calls[0]?.[1]?.signal as AbortSignal;
 
     expect(signal.aborted).toBe(false);
@@ -100,7 +182,9 @@ describe("signOutCurrentSession", () => {
     vi.useFakeTimers();
     const navigate = vi.fn();
 
+    // No stored drafts: a fence write would add jsdom's storage-event timer.
     await signOutCurrentSession({
+      accountId: null,
       fetcher: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
       navigate,
       timeoutMs: 250
@@ -108,6 +192,7 @@ describe("signOutCurrentSession", () => {
     expect(vi.getTimerCount()).toBe(0);
 
     await signOutCurrentSession({
+      accountId: null,
       fetcher: vi.fn().mockRejectedValue(new Error("offline")),
       navigate,
       timeoutMs: 250

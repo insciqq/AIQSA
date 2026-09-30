@@ -1,3 +1,4 @@
+import { catalogModelTokenPricing } from "./modelPrices";
 import {
   DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
   maxOutputTokensFromParams,
@@ -35,8 +36,10 @@ export type ProviderModelCatalogEntry = {
   upstreamModelId: string;
   displayName: string;
   contextWindow: number | null;
-  inputTokenPriceMicros: number;
-  outputTokenPriceMicros: number;
+  inputTokenPriceUsdPerMillion: number | null;
+  cachedInputTokenPriceUsdPerMillion?: number | null;
+  cacheWriteInputTokenPriceUsdPerMillion?: number | null;
+  outputTokenPriceUsdPerMillion: number | null;
   capabilities: {
     backgroundStreaming?: boolean;
     nativePdfInput: boolean;
@@ -81,7 +84,8 @@ export type SearchStrategyCatalogEntry = {
 
 type ProviderModelTemplate = Omit<
   ProviderModelCatalogEntry,
-  "adapterKind" | "providerDisplayName" | "providerFamily" | "upstreamModelId"
+  "adapterKind" | "providerDisplayName" | "providerFamily" | "upstreamModelId" |
+  "inputTokenPriceUsdPerMillion" | "cachedInputTokenPriceUsdPerMillion" | "cacheWriteInputTokenPriceUsdPerMillion" | "outputTokenPriceUsdPerMillion"
 > & {
   provider: ProviderId;
 };
@@ -140,8 +144,6 @@ function openAIReasoningModel(modelId: string, displayName: string): ProviderMod
     modelId,
     displayName,
     contextWindow: 1_050_000,
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     capabilities: {
       backgroundStreaming: true,
       nativeBackground: true,
@@ -202,8 +204,6 @@ function anthropicClaude5Model(modelId: string, displayName: string): ProviderMo
     modelId,
     displayName,
     contextWindow: 1_000_000,
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     capabilities: {
       ...(catalogNativeForcedToolChoice("anthropic_messages", modelId) === false
         ? { nativeForcedToolChoice: false } : {}),
@@ -261,8 +261,6 @@ function geminiModel(input: Readonly<{
     modelId: input.modelId,
     displayName: input.displayName,
     contextWindow: 1_000_000,
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,
@@ -318,8 +316,6 @@ function deepSeekModel(input: Readonly<{
     modelId: input.modelId,
     displayName: input.displayName,
     contextWindow: 1_048_576,
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,
@@ -360,7 +356,6 @@ function deepSeekModel(input: Readonly<{
 function openRouterModel(
   source: ProviderModelTemplate,
   modelId: string,
-  prices: readonly [number, number] = [0, 0],
   options: Readonly<{ temperature?: boolean }> = {}
 ): ProviderModelTemplate {
   const { temperature, ...routerParams } = openRouterParams;
@@ -369,8 +364,6 @@ function openRouterModel(
     ...source,
     provider: "openrouter",
     modelId,
-    inputTokenPriceMicros: prices[0],
-    outputTokenPriceMicros: prices[1],
     capabilities: {
       ...source.capabilities,
       backgroundStreaming: false,
@@ -405,8 +398,6 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     modelId: "fake-qsa",
     displayName: "Fake QSA",
     contextWindow: 8192,
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,
@@ -447,8 +438,6 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     modelId: "gpt-5.5",
     displayName: "GPT-5.5",
     contextWindow: 1_050_000,
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     capabilities: {
       backgroundStreaming: true,
       nativeBackground: true,
@@ -503,8 +492,6 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     modelId: "claude-opus-4-8",
     displayName: "Claude Opus 4.8",
     contextWindow: 1000000,
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,
@@ -593,27 +580,23 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     deepSeekModel({ displayName: "DeepSeek V4 Pro 0813", modelId: "deepseek-v4-pro" }),
     "deepseek/deepseek-v4-pro-0813"
   ),
-  openRouterModel(anthropicClaude5Model("claude-opus-5-5", "Claude Opus 5.5"), "anthropic/claude-opus-5.5", [4, 20]),
-  openRouterModel(anthropicClaude5Model("claude-opus-5", "Claude Opus 5"), "anthropic/claude-opus-5", [5, 25]),
-  openRouterModel(anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"), "anthropic/claude-fable-5.1", [10, 50]),
+  openRouterModel(anthropicClaude5Model("claude-opus-5-5", "Claude Opus 5.5"), "anthropic/claude-opus-5.5"),
+  openRouterModel(anthropicClaude5Model("claude-opus-5", "Claude Opus 5"), "anthropic/claude-opus-5"),
+  openRouterModel(anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"), "anthropic/claude-fable-5.1"),
   openRouterModel(
     geminiModel({ displayName: "Gemini 3.8 Flash", effort: "medium", modelId: "gemini-3.8-flash" }),
     "google/gemini-3.8-flash"
   ),
-  openRouterModel(openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"), "openai/gpt-6-astra", [10, 50]),
-  openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"), "openai/gpt-6-sol", [2, 10], { temperature: false }),
-  openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol Pro"), "openai/gpt-6-sol-pro", [2, 10], { temperature: false }),
-  // Legacy integer-micro prices cannot represent Luna's sub-micro token rates;
-  // leave the estimate unavailable instead of rounding provider-reported cost.
-  openRouterModel(openAIReasoningModel("gpt-6-luna", "GPT-6 Luna"), "openai/gpt-6-luna", [0, 0], { temperature: false }),
-  openRouterModel(openAIReasoningModel("gpt-6-luna", "GPT-6 Luna Pro"), "openai/gpt-6-luna-pro", [0, 0], { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"), "openai/gpt-6-astra"),
+  openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"), "openai/gpt-6-sol", { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol Pro"), "openai/gpt-6-sol-pro", { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6-luna", "GPT-6 Luna"), "openai/gpt-6-luna", { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6-luna", "GPT-6 Luna Pro"), "openai/gpt-6-luna-pro", { temperature: false }),
   {
     provider: "openrouter",
     modelId: "anthropic/claude-opus-4.8",
     displayName: "Claude Opus 4.8",
     contextWindow: 1000000,
-    inputTokenPriceMicros: 5,
-    outputTokenPriceMicros: 25,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,
@@ -666,8 +649,6 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     modelId: "google/gemini-3.5-flash",
     displayName: "Gemini 3.5 Flash",
     contextWindow: 1048576,
-    inputTokenPriceMicros: 2,
-    outputTokenPriceMicros: 9,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,
@@ -717,8 +698,6 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     modelId: "~google/gemini-pro-latest",
     displayName: "Gemini Pro Latest",
     contextWindow: 1048576,
-    inputTokenPriceMicros: 2,
-    outputTokenPriceMicros: 12,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,
@@ -769,8 +748,6 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     answerSelectable: false,
     displayName: "Perplexity Sonar Pro Search",
     contextWindow: 200000,
-    inputTokenPriceMicros: 3,
-    outputTokenPriceMicros: 15,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,
@@ -837,6 +814,7 @@ const providerAdapterKinds: Record<ProviderId, CatalogAdapterKind> = {
 export const defaultProviderModels: ProviderModelCatalogEntry[] =
   defaultProviderModelTemplates.map((model) => ({
     ...model,
+    ...catalogModelTokenPricing(`${model.provider}:${model.modelId}`),
     adapterKind: providerAdapterKinds[model.provider],
     providerDisplayName: providerDisplayNames[model.provider],
     providerFamily: model.provider,

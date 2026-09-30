@@ -5,6 +5,7 @@ import type {
   AdminProviderCredential,
   AdminProviderModel
 } from "@/lib/contracts/adminProviders";
+import { EMPTY_ADMIN_MODEL_PRICES } from "@/lib/contracts/adminProviderModelPrices";
 
 /** Small content-safe catalog fixtures shared by the Providers tests. */
 
@@ -51,6 +52,7 @@ export function fixtureModel(
   };
   return {
     activatedAt: FIXTURE_NOW,
+    pricing: { prices: { ...EMPTY_ADMIN_MODEL_PRICES }, source: "catalog", catalogPrices: null },
     activeConfig: config,
     activeVersion: 1,
     createdAt: FIXTURE_NOW,

@@ -121,12 +121,44 @@ test("verified PDF pages survive upload, refresh and Library reuse and admit a l
     await expect(page.getByTestId("header-context-indicator")).toHaveAccessibleName("Chat context is approximately 0% full. Preliminary estimate");
     await sendAndExpect(page, "PDF budget fixture question", "PDF budget fixture answer.");
     expect(received).toEqual([digest]);
+    // The answer can show, with Stop gone, before the run's completion commits.
+    // That commit also persists the context snapshot the chat read below uses.
+    await expect.poll(async () => (await prisma.modelRun.findFirstOrThrow({
+      where: { userId }, select: { status: true }
+    })).status, { timeout: 15_000 }).toBe("complete");
     const run = await prisma.modelRun.findFirstOrThrow({ where: { userId } });
-    expect(run.status).toBe("complete");
-    await page.reload();
+    const indicator = page.getByTestId("header-context-indicator");
+    await expect(indicator).toHaveAttribute("data-context-estimate", "snapshot");
+    const beforeReload = await page.request.get(`/api/chats/${run.chatId}`);
+    const measured = (await beforeReload.json()).chat.contextStats.session.approximateInputTokens;
+    expect(measured).toBeGreaterThan(1024);
+    const percentage = await indicator.textContent();
+    const dialog = page.getByRole("dialog", { name: "Chat context" });
+    const shownTokens = dialog.getByText("Context tokens", { exact: true }).locator("..").locator("dd");
+    await indicator.click();
+    const tokensBeforeReload = await shownTokens.textContent();
+    await page.keyboard.press("Escape");
+    // Listen only once the reload has committed: until then the previous
+    // document still refreshes this chat after the run settles, and such a
+    // read's body is discarded with that document. A cold development route
+    // can return its shell before the authenticated chat read starts, so the
+    // reloaded read is bounded separately from the short rendering assertion.
+    await page.reload({ waitUntil: "commit" });
+    const afterReload = await page.waitForResponse((response) => response.request().method() === "GET" &&
+      new URL(response.url()).pathname === `/api/chats/${run.chatId}`, { timeout: 30_000 });
+    expect(afterReload.ok()).toBe(true);
+    expect((await afterReload.json()).chat.contextStats.session.approximateInputTokens).toBe(measured);
     await expect(page.getByText("PDF budget fixture answer.", { exact: true })).toBeVisible();
+    await expect(indicator).toHaveAttribute("data-context-estimate", "snapshot");
+    await expect(indicator).toHaveText(percentage!);
+    await expect(dialog).toBeHidden();
+    await indicator.click();
+    await expect(shownTokens).toHaveText(tokensBeforeReload!);
   } finally {
     try {
+      // Leave the chat before its account is deleted: a still-loading page
+      // would otherwise answer this cleanup with a session-expired sign-in.
+      await page.goto("about:blank", { timeout: 10_000 }).catch(() => undefined);
       const objects = await prisma.attachment.findMany({ where: { userId }, select: { storageKey: true } });
       await prisma.$transaction(async (tx) => {
         await tx.systemModelPolicy.update({ where: { id: "installation" }, data: {

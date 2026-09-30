@@ -67,9 +67,9 @@ function catalogModel(): ProviderModelCatalogEntry {
     contextWindow: 128_000,
     defaultParams: {},
     displayName: "Luna",
-    inputTokenPriceMicros: 0,
+    inputTokenPriceUsdPerMillion: 0,
     modelId: "model-1",
-    outputTokenPriceMicros: 0,
+    outputTokenPriceUsdPerMillion: 0,
     parameterControls: {
       background: { defaultValue: false, supported: true },
       maxOutputTokens: { defaultValue: 4096, maxValue: 128_000 },

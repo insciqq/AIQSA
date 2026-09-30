@@ -218,6 +218,67 @@ describe("Knowledge citation viewer", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it.each(["hover", "focus"] as const)("dismisses the %s preview during selection and restores previews after it clears", async (mode) => {
+    shellFetch.mockImplementation(async () => jsonResponse({ citation: citation() }));
+    render(
+      <KnowledgeCitationViewerProvider>
+        <p><span>Selectable answer text.</span> <KnowledgeCitationControl reference={{
+          handle: "K1", messageId: "message-1", runId: "run-1"
+        }} /></p>
+      </KnowledgeCitationViewerProvider>
+    );
+    const trigger = screen.getByRole("button", { name: "Open document K1" });
+    const selection = window.getSelection()!;
+    const previousRanges = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange());
+    const selectAnswer = () => act(() => {
+      const range = document.createRange();
+      range.selectNodeContents(screen.getByText("Selectable answer text."));
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    const preview = () => mode === "hover" ? fireEvent.mouseEnter(trigger) : fireEvent.focus(trigger);
+
+    try {
+      act(() => selection.removeAllRanges());
+      preview();
+      expect(await screen.findByRole("tooltip")).toHaveTextContent("Maximum file size: 25 MB.");
+      expect(trigger).toHaveAttribute("aria-describedby", "knowledge-citation-preview");
+      selectAnswer();
+      expect(selection.toString()).toBe("Selectable answer text.");
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(trigger).not.toHaveAttribute("aria-describedby");
+
+      fireEvent.mouseEnter(trigger);
+      fireEvent.focus(trigger);
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(shellFetch).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        selection.removeAllRanges();
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      preview();
+      expect(await screen.findByRole("tooltip")).toHaveTextContent("Maximum file size: 25 MB.");
+      expect(shellFetch).toHaveBeenCalledTimes(2);
+
+      // Selecting an answer suppresses passive previews, but explicit source
+      // inspection still opens the document viewer.
+      selectAnswer();
+      fireEvent.click(trigger);
+      expect(await screen.findByRole("dialog", { name: "Knowledge document viewer" })).toBeVisible();
+      expect(await screen.findByRole("cell", { name: "25 MB" })).toBeVisible();
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(shellFetch).toHaveBeenCalledTimes(3);
+    } finally {
+      act(() => {
+        selection.removeAllRanges();
+        for (const range of previousRanges) selection.addRange(range);
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+    }
+  });
+
   it("does not draw stored coordinates on a blank surrogate when the original is unavailable", async () => {
     shellFetch.mockImplementation(async () => jsonResponse({
       citation: { ...citation(), originalKind: null }

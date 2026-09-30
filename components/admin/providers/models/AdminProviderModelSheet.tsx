@@ -32,7 +32,12 @@ import {
   modelFormsEqual,
   modelEditGuard,
   modelNameOnlyChanged,
+  modelMetadataOnlyChanged,
+  modelFormPricing,
+  modelPriceFormValues,
+  modelPriceSourceLabel,
   moveProviderTag,
+  withModelPrice,
   type ModelForm
 } from "@/components/admin/providers/models/modelSheetView";
 import {
@@ -56,6 +61,11 @@ import type {
 import { ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS, ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS, ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { ADMIN_MODEL_PRICE_ERROR, ADMIN_MODEL_PRICE_FIELDS, isAdminModelPriceField, modelClassUsesTokenPrices,
+  type AdminModelPriceField } from "@/lib/contracts/adminProviderModelPrices";
+
+const priceLabels: Record<AdminModelPriceField, string> = { inputTokenPriceUsdPerMillion: "Input",
+  cachedInputTokenPriceUsdPerMillion: "Cached input", cacheWriteInputTokenPriceUsdPerMillion: "Cache write", outputTokenPriceUsdPerMillion: "Output" };
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 block text-xs leading-5 text-ink-muted";
@@ -307,6 +317,7 @@ function SheetBody({
   const abortRef = useRef<AbortController | null>(null);
   const jsonTriggerRef = useRef<HTMLButtonElement>(null);
   const timeoutRef = useRef<HTMLInputElement>(null);
+  const priceRefs = useRef<Partial<Record<AdminModelPriceField, HTMLInputElement | null>>>({});
   const formId = useId();
   const keyHelpId = useId();
   const errorId = useId();
@@ -341,8 +352,14 @@ function SheetBody({
   const hints = useMemo(() => openRouter || compatible ? [] : catalogHintsFor(family), [compatible, family, openRouter]);
   const dirty = !modelFormsEqual(form, baseline);
   const nameOnly = editing !== null && modelNameOnlyChanged(form, baseline);
+  const metadataOnly = editing !== null && modelMetadataOnlyChanged(form, baseline);
+  const catalogPrices = editing?.pricing.catalogPrices ?? null;
+  const priceSourceLabel = modelPriceSourceLabel(form, catalogPrices);
+  const restorable = form.priceSource === "admin" ? catalogPrices : null;
 
   useEffect(() => { formRef.current = form; }, [form]);
+  // A rejected price takes focus once its field is enabled again after the save.
+  useEffect(() => { if (!busy && isAdminModelPriceField(errorField)) priceRefs.current[errorField]?.focus(); }, [busy, errorField]);
   useEffect(() => () => { attemptRef.current += 1; abortRef.current?.abort(); }, []);
 
   useEffect(() => {
@@ -414,23 +431,33 @@ function SheetBody({
       ? nameOnly ? "Display name saved. " : "Model settings saved. "
       : "Some fields are saved; other changes are still unsaved. "
       : uncertain ? "Save status could not be confirmed. Your draft is kept. " : "";
-    setError(`${prefix}${saved.message}`);
+    // A price the server rejected stays in its field with the field's message.
+    const priceField = saved.error.code === "provider_model_pricing_invalid" && isAdminModelPriceField(saved.error.field) &&
+      modelClassUsesTokenPrices(submitted.modelClass) ? saved.error.field : null;
+    setError(`${prefix}${priceField ? ADMIN_MODEL_PRICE_ERROR : saved.message}`);
     if (uncertain || saved.persistence?.receipt) setInterrupted(true);
-    setErrorField(saved.error.code === "provider_configuration_invalid" ? "configuration" : null);
+    setErrorField(priceField ?? (saved.error.code === "provider_configuration_invalid" ? "configuration" : null));
   };
 
   const submit = async () => {
     if (busy || interrupted || jsonEditing || discarding || needsKeyForNewModel) return;
     const attempt = ++attemptRef.current;
     const submitted = form;
-    if (nameOnly) {
+    const priceResult = modelFormPricing(form, editing);
+    if (!priceResult.ok) {
+      setError(priceResult.error); setErrorField(priceResult.field); priceRefs.current[priceResult.field]?.focus(); return;
+    }
+    if (metadataOnly) {
       if (!form.displayName.trim()) { setError("Enter a display name."); return; }
       setError(null);
       setSaving(true);
-      const saved = await controller.actions.renameModel(connection.id, editing.id, {
+      const body = {
         ...modelEditGuard(editing),
         displayName: form.displayName.trim()
-      });
+      };
+      const saved = priceResult.pricing
+        ? await controller.actions.saveModelMetadata(connection.id, editing.id, { ...body, pricing: priceResult.pricing })
+        : await controller.actions.renameModel(connection.id, editing.id, body);
       if (attempt !== attemptRef.current) return;
       setSaving(false);
       applySaveResult(saved, submitted);
@@ -487,12 +514,12 @@ function SheetBody({
       footer={(
         <>
           {interrupted ? <UiV2Button onClick={() => dirty ? requestClose() : onSaved()} tone="primary" type="button">View model results</UiV2Button> : <UiV2Button aria-describedby={keyHelpId} busy={busy} disabled={!canSave} form={formId} tone="primary" type="submit">
-            {nameOnly ? "Save" : "Test & Save"}
+            {metadataOnly ? "Save" : "Test & Save"}
           </UiV2Button>}
-          {saving && !nameOnly ? <UiV2Button onClick={() => abortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
+          {saving && !metadataOnly ? <UiV2Button onClick={() => abortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
             : <UiV2Button disabled={busy || jsonEditing || discarding} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>}
           <span className="min-w-0 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere] sm:ml-auto sm:text-right" id={keyHelpId}>
-            {nameOnly ? "Saves the display name without changing model settings or checking the provider." : needsKeyForNewModel ? providerKeyFirstHelp : checkKeyLabel
+            {metadataOnly ? "Saves the display name and prices without changing model settings or checking the provider." : needsKeyForNewModel ? providerKeyFirstHelp : checkKeyLabel
               ? model ? `Checks the model with key ${checkKeyLabel} and preserves your capability choices`
                 : `Checks supported capabilities with key ${checkKeyLabel} and enables verified features, including PDF`
               : "Turns the model on without a check — add a key first to check it"}
@@ -672,6 +699,27 @@ function SheetBody({
               value={form.displayName}
             />
           </label>
+
+          {modelClassUsesTokenPrices(form.modelClass) ? <fieldset className="min-w-0 border-y border-trace-subtle py-4">
+            <legend className="px-1 text-sm font-semibold text-ink">Prices</legend>
+            <p className="mb-3 text-xs text-ink-secondary">US dollars per 1M tokens</p>
+            <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+              {ADMIN_MODEL_PRICE_FIELDS.map(field => <div className="min-w-0" key={field}>
+                <label className={fieldLabel} htmlFor={`${formId}-${field}`}>{priceLabels[field]}</label>
+                <input className={inputClass} id={`${formId}-${field}`} type="text" inputMode="decimal" maxLength={64} disabled={busy}
+                  aria-invalid={errorField === field || undefined} aria-describedby={errorField === field ? `${formId}-${field}-error` : `${formId}-price-note`}
+                  ref={element => { priceRefs.current[field] = element; }} value={form.prices[field]}
+                  onChange={event => update(withModelPrice(form, baseline, field, event.currentTarget.value))} />
+                {errorField === field ? <span className="mt-1 block text-xs text-critical" id={`${formId}-${field}-error`}>{error}</span> : null}
+              </div>)}
+            </div>
+            <p className={helpText} id={`${formId}-price-note`}>An empty Cached input or Cache write is charged as regular input. An empty Input or Output means no cost is estimated for this model.</p>
+            {priceSourceLabel || restorable ? <div className="mt-3 flex flex-wrap items-center gap-3">
+              {priceSourceLabel ? <span className="text-xs text-ink-muted">{priceSourceLabel}</span> : null}
+              {restorable ? <UiV2Button disabled={busy} type="button" tone="ghost"
+                onClick={() => update({ prices: modelPriceFormValues(restorable), priceSource: "catalog" })}>Use catalog price</UiV2Button> : null}
+            </div> : null}
+          </fieldset> : null}
 
           {openRouter && !imageModel ? (
             <div className="min-w-0">

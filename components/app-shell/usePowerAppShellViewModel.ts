@@ -17,10 +17,10 @@ import type {
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
-import { decodeSessionContextStatus, sessionContextCapacity } from "@/lib/contracts/sessionStatus";
+import { decodeSessionContextStatus } from "@/lib/contracts/sessionStatus";
 import { pdfPageCountFromMetadata } from "@/lib/contracts/uploads";
 import { isRecord } from "./shellValues";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type PowerAppShellViewModelInput = {
   activeChatId: string | null;
@@ -203,8 +203,7 @@ export function usePowerAppShellViewModel({
         provider: currentModel?.providerFamily
       })
     : null, [currentContextWindow, currentModel?.providerFamily, selectedMaxOutputTokens]);
-  // Drafts add to a matching request; only the branch and execution controls
-  // determine whether its server-side context is still a useful base.
+  // Rejection applies only to the exact attempted inputs, including its draft.
   const requestInputKey = JSON.stringify({
     activeChatId, attachments, draft, renderActiveLeafId, contextConfigurationKey,
     selectedAssistantPromptCharacterCount, selectedMaxOutputTokens,
@@ -221,12 +220,42 @@ export function usePowerAppShellViewModel({
   } else if (contextRejectionGeneration !== null && !rejectedSource.rejected) {
     setRejectedSource({ ...rejectedSource, rejected: true });
   }
-  // Persisted context status has no accepted-control fingerprint. A cold load
-  // stays preliminary: current controls cannot establish a historical binding.
-  const unchangedConfiguration = Boolean(contextConfigurationKey &&
-    runSurface.contextMessageId === lastAssistant?.id &&
-    runSurface.contextConfigurationKey === contextConfigurationKey &&
-    rejectedSource.sourceKey === sourceKey && !rejectedSource.rejected);
+  // The description only; the server-owned measured base never depends on it.
+  // A send from this page binds the exact submitted controls to its answer.
+  const sendBound = Boolean(lastAssistant && runSurface.contextConfigurationKey &&
+    runSurface.contextMessageId === lastAssistant.id);
+  // Otherwise (reload, cache eviction, another branch) the controls of the
+  // historical run are unknown to the browser. The controls in place when the
+  // user first interacts with the loaded chat stand for it, so defaults the
+  // system applies while the chat loads never read as a change.
+  const loadedSourceKey = lastAssistant ? sourceKey : null;
+  const [interactionBaseline, setInteractionBaseline] =
+    useState<{ sourceKey: string; configurationKey: string | undefined } | null>(null);
+  if (interactionBaseline && interactionBaseline.sourceKey !== loadedSourceKey) {
+    setInteractionBaseline(null);
+  }
+  const latestConfigurationRef = useRef({ configurationKey: contextConfigurationKey, sourceKey: loadedSourceKey });
+  useEffect(() => {
+    latestConfigurationRef.current = { configurationKey: contextConfigurationKey, sourceKey: loadedSourceKey };
+  });
+  useEffect(() => {
+    // Capture phase: the baseline records the controls before the handler of
+    // the control that the user is about to change runs.
+    const recordBaseline = () => {
+      const { configurationKey, sourceKey: loaded } = latestConfigurationRef.current;
+      if (loaded === null) return;
+      setInteractionBaseline((current) => current?.sourceKey === loaded ? current : { configurationKey, sourceKey: loaded });
+    };
+    const types = ["pointerdown", "keydown", "click"] as const;
+    for (const type of types) document.addEventListener(type, recordBaseline, true);
+    return () => {
+      for (const type of types) document.removeEventListener(type, recordBaseline, true);
+    };
+  }, []);
+  const baseline = interactionBaseline?.sourceKey === loadedSourceKey ? interactionBaseline : null;
+  const unchangedConfiguration = sendBound
+    ? runSurface.contextConfigurationKey === contextConfigurationKey
+    : !baseline || baseline.configurationKey === contextConfigurationKey;
   const [rejection, setRejection] = useState({ contextRejectionGeneration, requestInputKey });
   if (rejection.contextRejectionGeneration !== contextRejectionGeneration) {
     setRejection({ contextRejectionGeneration, requestInputKey });
@@ -243,27 +272,48 @@ export function usePowerAppShellViewModel({
       ? decodeSessionContextStatus(liveStatus.data.payload)
       : null;
     const onAnswerLeaf = Boolean(lastAssistant && lastAssistant.id === renderActiveLeafId);
-    const snapshot = unchangedConfiguration && onAnswerLeaf && !requestRejected
-      ? liveSnapshot ?? (sessionMessageId === lastAssistant?.id ? sessionSnapshot : null)
+    const persistedMatchesBranch = activeThreadContextStats?.sessionBranchLeafId
+      ? activeThreadContextStats.sessionBranchLeafId === renderActiveLeafId
+      : onAnswerLeaf && sessionMessageId === lastAssistant?.id;
+    // Recovery may settle the answer after the browser loses its stream. Its
+    // canonical final phase supersedes an earlier live request measurement.
+    const settledSnapshot = persistedMatchesBranch && sessionMessageId === lastAssistant?.id &&
+      sessionSnapshot?.phase === "after_answer" && liveSnapshot?.phase === "request"
+      ? sessionSnapshot : null;
+    const preferredLiveSnapshot = onAnswerLeaf && !settledSnapshot ? liveSnapshot : null;
+    const rejectedBranch = rejectedSource.sourceKey === sourceKey && rejectedSource.rejected;
+    const snapshot = !requestRejected && !rejectedBranch
+      ? preferredLiveSnapshot ?? (persistedMatchesBranch ? sessionSnapshot : null)
       : null;
+    const snapshotSource = preferredLiveSnapshot ? "live" : "persisted";
+    const afterSnapshotTokens = snapshotSource === "persisted"
+      ? activeThreadContextStats?.approximateInputTokensAfterSession ?? 0 : 0;
     // A draft can already exhaust the model window. Bound low-fidelity file
     // proxies to one full window while preserving the measured base unchanged.
     const deltaLimit = currentContextWindow || Number.MAX_SAFE_INTEGER;
     const draftInputTokens = Math.min(deltaLimit, estimateApproxTokens(draft.trim()) +
       stagedAttachmentTokens(attachments, currentModel, deltaLimit));
-    if (snapshot &&
-      snapshot.modelId === (currentModel?.upstreamModelId ?? currentModel?.modelId) &&
-      snapshot.provider === (currentModel?.providerFamily ?? currentModel?.provider) &&
-      snapshot.contextWindow === (currentContextWindow || null) &&
-      sessionContextCapacity(snapshot).budgetTokens === (contextLimits?.budgetTokens ?? null)) {
+    if (snapshot) {
+      const sameModelLimits = snapshot.modelId === (currentModel?.upstreamModelId ?? currentModel?.modelId) &&
+        snapshot.provider === (currentModel?.providerFamily ?? currentModel?.provider) &&
+        snapshot.contextWindow === (currentContextWindow || null) &&
+        snapshot.maxOutputTokens === contextLimits?.maxOutputTokens &&
+        snapshot.safetyMarginTokens === contextLimits?.safetyMarginTokens;
+      const earlierSnapshot = snapshotSource === "persisted" &&
+        (sessionMessageId !== lastAssistant?.id || afterSnapshotTokens > 0);
       return {
-        approximateInputTokens: Math.min(Number.MAX_SAFE_INTEGER, snapshot.approximateInputTokens + draftInputTokens),
+        approximateInputTokens: Math.min(Number.MAX_SAFE_INTEGER,
+          snapshot.approximateInputTokens + afterSnapshotTokens + draftInputTokens),
+        approximateInputTokensAfterSession: afterSnapshotTokens,
+        basis: earlierSnapshot ? "preliminary" : unchangedConfiguration && sameModelLimits ? "measured" : "settings_changed",
+        requestInFlight: snapshot.phase === "request" && (activeChatStreaming || lastAssistant?.status === "streaming"),
+        snapshotSource,
         draftInputTokens,
-        safeInputBudgetTokens: sessionContextCapacity(snapshot).budgetTokens,
-        answerReserveTokens: snapshot.maxOutputTokens,
-        safetyMarginTokens: snapshot.safetyMarginTokens,
+        safeInputBudgetTokens: contextLimits?.budgetTokens ?? null,
+        answerReserveTokens: contextLimits?.maxOutputTokens ?? null,
+        safetyMarginTokens: contextLimits?.safetyMarginTokens ?? null,
         session: snapshot,
-        totalContextTokens: snapshot.contextWindow
+        totalContextTokens: currentContextWindow || null
       };
     }
     // Approximation only: the authoritative prompt is resolved server-side (the
@@ -289,14 +339,15 @@ export function usePowerAppShellViewModel({
 
     return {
       approximateInputTokens: currentTokens,
+      basis: "preliminary",
       answerReserveTokens: contextLimits?.maxOutputTokens ?? null,
       safetyMarginTokens: contextLimits?.safetyMarginTokens ?? null,
       safeInputBudgetTokens: contextLimits?.budgetTokens ?? null,
       requestRejected,
       totalContextTokens: currentContextWindow || null
     };
-  }, [activeThreadContextStats, attachments, contextLimits, currentContextWindow, currentModel, draft,
-    lastAssistant, liveSource, liveStartIndex, renderActiveLeafId, requestRejected, runEvents, selectedAssistantPromptCharacterCount,
+  }, [activeChatStreaming, activeThreadContextStats, attachments, contextLimits, currentContextWindow, currentModel, draft,
+    lastAssistant, liveSource, liveStartIndex, rejectedSource, renderActiveLeafId, requestRejected, runEvents, selectedAssistantPromptCharacterCount, sourceKey,
     selectedSkillPromptCharacterCount, sessionMessageId, sessionSnapshot, unchangedConfiguration, visibleMessages]);
   return {
     activeChat,

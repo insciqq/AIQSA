@@ -51,6 +51,8 @@ The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains 
 
 ## Retention And Deletion
 
+Keep every run’s final context measurement for its lifetime; earlier measurements may expire.
+
 `npm run prune -- --dry-run` is read-only and precedes any explicitly authorized `--execute`. Never prune active sessions/runs, retrieval-visible evidence without a proven cutoff, or referenced objects.
 
 Deletion first fences future admission/recall/sharing and creates a durable obligation before acknowledgment. Handlers reauthorize the exact aggregate, settle active work, and retry idempotently; administrator-blocked obligations are not abandoned. Object staging locks/rechecks every reference, deletion uses leased per-key jobs, and concurrent attachment linking has one transactional winner. Failures retain value-free retry evidence.

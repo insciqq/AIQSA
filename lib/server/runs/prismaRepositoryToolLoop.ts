@@ -582,6 +582,7 @@ const normalizedRequestKeys = new Set([
   "visionAnalysis",
   "workspaceImageView",
   "workspaceCheckpoints",
+  "workspaceCheckpointToolDescription",
   "imagePlan",
   "imageReferences",
   "knowledgePlan",
@@ -703,6 +704,7 @@ function validWorkspace(value: unknown, runId: string): boolean {
   if (value === undefined) return true;
   if (!isRecord(value) || !onlyKnownKeys(value, new Set([
     "enabled",
+    "guidanceVersion",
     "imageRef",
     "inboxIndexPath",
     "internetEnabled",
@@ -717,7 +719,8 @@ function validWorkspace(value: unknown, runId: string): boolean {
     "syncToolTimeoutSeconds",
     "toolCatalogHash",
     "turnTimeoutSeconds"
-  ])) || value.enabled !== true || typeof value.internetEnabled !== "boolean" ||
+  ])) || value.enabled !== true || (value.guidanceVersion !== undefined && value.guidanceVersion !== 1) ||
+    typeof value.internetEnabled !== "boolean" ||
     value.inboxIndexPath !== WORKSPACE_INBOX_INDEX_PATH ||
     value.projectDirectory !== WORKSPACE_PROJECT_DIRECTORY ||
     value.outputDirectory !== workspaceRunOutputDirectory(runId) ||
@@ -964,6 +967,8 @@ function decodeProviderDispatchRecoveryRequest(
     value.knowledgeQueryAnchorVersion !== undefined && value.knowledgeQueryAnchorVersion !== 2 ||
     value.visionAnalysis !== undefined && (!value.workspace || !decodeAcceptedVisionAnalysisPlan(value.visionAnalysis)) ||
     value.workspaceCheckpoints !== undefined && (value.workspaceCheckpoints !== true || !value.workspace) ||
+    value.workspaceCheckpointToolDescription !== undefined &&
+      (value.workspaceCheckpoints !== true || !nonBlank(value.workspaceCheckpointToolDescription, 16_384)) ||
     value.workspaceImageView !== undefined && (value.workspaceImageView !== true || !value.workspace || value.agent !== undefined) ||
     value.imagePlan !== undefined && !decodeAcceptedImageGenerationPlan(value.imagePlan) ||
     (value.artifactTool !== undefined && value.artifactTool !== true) ||
@@ -977,7 +982,7 @@ function decodeProviderDispatchRecoveryRequest(
     (value.artifactEdit !== undefined && (!decodeArtifactEdit(value.artifactEdit) || !Array.isArray(value.artifactReferences) ||
       !value.artifactReferences.some((reference) => isRecord(reference) && isRecord(value.artifactEdit) &&
         reference.artifactId === value.artifactEdit.artifactId && reference.versionId === value.artifactEdit.versionId))) ||
-    value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
+    value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true && !value.workspace || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
     (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 0 && value.toolObservationVersion !== 1) ||

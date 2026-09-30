@@ -7,7 +7,7 @@ import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceRunOutputDirectory } from "@/lib
 import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
 import { prisma } from "@/lib/server/prisma";
 import { getWorkspaceConfig } from "./config";
-import { createPrismaWorkspaceCoordinatorRepository, WORKSPACE_EXPORT_MAX_ATTEMPTS, type WorkspaceExportLease } from "./coordinator";
+import { createPrismaWorkspaceCoordinatorRepository, createWorkspaceCoordinator, WORKSPACE_EXPORT_MAX_ATTEMPTS, type WorkspaceExportLease } from "./coordinator";
 import type { WorkspaceOutputIdentity } from "./outputManifest";
 import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
@@ -222,6 +222,79 @@ describe("Prisma Workspace export lease", () => {
   afterAll(async () => {
     await cleanupFixtures();
     await prisma.$disconnect();
+  });
+
+  it.each(["STOPPED", "READY"] as const)("recovers an untouched run without changing its %s guest or activity window", async state => {
+    const f = await createFixture();
+    await prisma.modelRunToolCall.delete({ where: { id: f.toolCallId } });
+    await prisma.workspaceRunBinding.update({ where: { modelRunId: f.runId }, data: { guestUsedAt: null } });
+    const before = await prisma.workspaceSession.update({ where: { id: f.sessionId },
+      data: { state, stoppedAt: state === "STOPPED" ? new Date() : null, operationOwner: null } });
+    const runtime = fenceDeterministicWorkspaceRuntime(new DeterministicWorkspaceRuntime(config));
+    const ensure = vi.spyOn(runtime, "ensureSession");
+    const retire = vi.spyOn(runtime, "retireSessionOperation");
+    const collect = vi.spyOn(runtime, "collectOutputs");
+    const stage = vi.spyOn(runtime, "stageAttachments");
+    const onActivity = vi.fn();
+    const restarted = createWorkspaceCoordinator({ config, repository: createPrismaWorkspaceCoordinatorRepository(prisma),
+      registry: createPrismaWorkspaceExecutionRegistry(prisma), runtime, storage: createMemoryStorageAdapter() });
+    await expect(restarted.finalize({ recovery: true, runId: f.runId, userId: f.userId, onActivity }))
+      .resolves.toEqual({ status: "complete", files: [] });
+    expect(ensure).not.toHaveBeenCalled();
+    expect(retire).not.toHaveBeenCalled();
+    expect(collect).not.toHaveBeenCalled();
+    expect(stage).not.toHaveBeenCalled();
+    expect(onActivity).not.toHaveBeenCalled();
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: f.sessionId } })).toMatchObject({
+      state, runtimeSandboxId: before.runtimeSandboxId, lastActiveAt: before.lastActiveAt,
+      expiresAt: before.expiresAt, stoppedAt: before.stoppedAt, operationOwner: null
+    });
+    expect(await bindingState(f.runId)).toMatchObject({ exportState: "COMPLETE" });
+    expect(await createPrismaWorkspaceCoordinatorRepository(prisma).outputHandoffReady({ runId: f.runId, sessionId: f.sessionId })).toBe(true);
+  });
+
+  it("persists guest use before dispatch and refuses stale or unused retirement", async () => {
+    const f = await createFixture();
+    await prisma.modelRunToolCall.delete({ where: { id: f.toolCallId } });
+    await prisma.workspaceRunBinding.update({ where: { modelRunId: f.runId }, data: { guestUsedAt: null } });
+    await prisma.workspaceSession.update({ where: { id: f.sessionId }, data: { operationOwner: `run:${f.runId}` } });
+    const binding = (await repository.binding({ runId: f.runId, userId: f.userId }))!;
+    expect(binding.guestUsed).toBe(false);
+    expect(await repository.markGuestUsed({ ...binding, operationGeneration: binding.operationGeneration - 1 })).toBe(false);
+    expect(await repository.markGuestUsed(binding)).toBe(true);
+    const restarted = createPrismaWorkspaceCoordinatorRepository(prisma);
+    expect((await restarted.binding({ runId: f.runId, userId: f.userId }))!.guestUsed).toBe(true);
+    expect(await restarted.retireUnusedRun(binding)).toBe(false);
+    expect((await prisma.workspaceSession.findUniqueOrThrow({ where: { id: f.sessionId } })).operationOwner).toBe(binding.operationOwner);
+  });
+
+  it("retires an untouched export after a crash between empty capture publication and retirement", async () => {
+    const f = await createFixture();
+    await prisma.modelRunToolCall.delete({ where: { id: f.toolCallId } });
+    await prisma.workspaceRunBinding.update({ where: { modelRunId: f.runId }, data: { guestUsedAt: null } });
+    await prisma.workspaceSession.update({ where: { id: f.sessionId }, data: { state: "STOPPED", operationOwner: `run:${f.runId}` } });
+    const claim = await repository.claimExport({ ...f, leaseMs: 60_000,
+      operation: { generation: f.generation, owner: `run:${f.runId}` } });
+    if (claim.status !== "claimed") throw new Error("fixture_export_claim_failed");
+    const lease = { ...f, operation: claim.operation, token: claim.token };
+    await captureOutputs(lease);
+    expect(await repository.markExportComplete(lease)).toBe(true);
+    expect(await repository.outputHandoffReady({ runId: f.runId, sessionId: f.sessionId })).toBe(false);
+    const runtime = fenceDeterministicWorkspaceRuntime(new DeterministicWorkspaceRuntime(config));
+    const retire = vi.spyOn(runtime, "retireSessionOperation");
+    const restarted = createWorkspaceCoordinator({ config, repository: createPrismaWorkspaceCoordinatorRepository(prisma),
+      registry: createPrismaWorkspaceExecutionRegistry(prisma), runtime, storage: createMemoryStorageAdapter() });
+    await expect(restarted.finalize({ recovery: true, runId: f.runId, userId: f.userId }))
+      .resolves.toEqual({ status: "complete", files: [] });
+    expect(retire).not.toHaveBeenCalled();
+    expect(await repository.outputHandoffReady({ runId: f.runId, sessionId: f.sessionId })).toBe(true);
+  });
+
+  it.each(["pending", "running", "error"] as const)("treats persisted %s tool calls as guest use without an initialization receipt", async state => {
+    const f = await createFixture();
+    await prisma.workspaceRunBinding.update({ where: { modelRunId: f.runId }, data: { guestUsedAt: null } });
+    await prisma.modelRunToolCall.update({ where: { id: f.toolCallId }, data: { state } });
+    expect((await createPrismaWorkspaceCoordinatorRepository(prisma).binding({ runId: f.runId, userId: f.userId }))!.guestUsed).toBe(true);
   });
 
   it("reports a failed handoff after its capture owner has retired", async () => {
