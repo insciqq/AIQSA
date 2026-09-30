@@ -63,10 +63,12 @@ function createDefaultChatPdf() {
       // Retry keeps the admitted reader and answer bindings. The repository
       // revalidates Assistant provenance, grants and exact provider authority
       // for the new sibling; changing an Assistant cannot silently reroute it.
+      // The handler re-admits Workspace and rebuilds its derived request before
+      // this accepted snapshot can be used to create the new sibling.
       try {
         const runtime = await providerRuntimeResolver.resolve(job.modelRunId, "answer");
         return { adapter: runtime.adapter, ...(runtime.toolBridge ? { toolBridge: runtime.toolBridge } : {}),
-          prepared: { ...snapshot.prepared, sourceKind: "regenerate" as const, defaults: null, expectedActiveLeafId: null } };
+          prepared: snapshot.prepared };
       } catch { return null; }
     },
     async findAdmission(admissionKey: string, userId: string) {

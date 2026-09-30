@@ -21,6 +21,7 @@ export type RunSurfaceStore = {
   appendEvent(chatId: string, event: RunEventView): void;
   endArtifactStream(chatId: string, status: "complete" | "error" | "cancelled" | "interrupted"): void;
   bindContextMessage(chatId: string, previousMessageId: string, messageId: string): void;
+  discardRejectedAttempt(chatId: string, assistantMessageId: string): void;
   removeSurface(chatId: string): void;
   resetSurface(chatId: string, contextConfigurationKey?: string, contextMessageId?: string): void;
 };
@@ -102,6 +103,18 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
         [chatId]: { ...current, contextMessageId: messageId } } };
     });
   },
+  discardRejectedAttempt(chatId, assistantMessageId) {
+    set((state) => {
+      const current = state.surfacesByChatId[chatId];
+      if (current?.contextMessageId !== assistantMessageId) return state;
+      return { surfacesByChatId: { ...state.surfacesByChatId, [chatId]: {
+        ...emptyRunSurfaceSnapshot,
+        // Keep the captured controls for a reviewed retry, but no activity
+        // from the answer that the server refused and the thread removed.
+        ...(current.contextConfigurationKey ? { contextConfigurationKey: current.contextConfigurationKey } : {})
+      } } };
+    });
+  },
   removeSurface(chatId) {
     set((state) => {
       if (!(chatId in state.surfacesByChatId)) {
@@ -117,7 +130,8 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
       surfacesByChatId: {
         ...state.surfacesByChatId,
         [chatId]: { ...emptyRunSurfaceSnapshot, startedAt: Date.now(),
-          ...(contextConfigurationKey ? { contextConfigurationKey, contextMessageId } : {}) }
+          ...(contextConfigurationKey ? { contextConfigurationKey } : {}),
+          ...(contextMessageId ? { contextMessageId } : {}) }
       }
     }));
   }

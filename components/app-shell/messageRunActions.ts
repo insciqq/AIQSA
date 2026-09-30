@@ -132,6 +132,8 @@ type MessageRunActionsInput = {
   refreshProjectWorkspace?(): Promise<boolean>;
   resolveCatalog?(): Catalog | null;
   resetThreadToLatest(): void;
+  /** Clears a run notice owned by the current chat before a new attempt. */
+  clearNoticeForChat?(chatId: string): void;
   setNotice(input: Notice): void;
   activeChatStreaming: boolean;
 };
@@ -243,6 +245,7 @@ export function useMessageRunActions({
   refreshProjectWorkspace,
   resolveCatalog,
   resetThreadToLatest,
+  clearNoticeForChat,
   setNotice
 }: MessageRunActionsInput) {
   async function showMemoryTargetSelection(): Promise<void> {
@@ -684,6 +687,8 @@ export function useMessageRunActions({
           : [input.optimisticAssistantMessageId]
       )
     });
+    // A refused attempt must not mark a reconciled, active sibling as failed.
+    useRunSurfaceStore.getState().discardRejectedAttempt(input.chatId, input.optimisticAssistantMessageId);
     useWorkspaceStore.getState().updateChats((current) =>
       current.map((chat) =>
         chat.id === input.chatId &&
@@ -709,7 +714,7 @@ export function useMessageRunActions({
     const reason = assistantChangedRefusal(chatId, result)
       ? ASSISTANT_CHANGED_RUN_COPY
       : result.rejectionMessage ?? result.failureMessage;
-    if (reason) setNotice({ kind: "error", text: reason });
+    if (reason) setNotice({ chatId, kind: "error", text: reason });
   }
 
   /**
@@ -1441,6 +1446,7 @@ export function useMessageRunActions({
     ) {
       return;
     }
+    clearNoticeForChat?.(chatIdForRegenerate);
     const runControlSnapshot = captureRunControlSnapshot();
     if (assistantBlocksRun(runControlSnapshot)) {
       return;

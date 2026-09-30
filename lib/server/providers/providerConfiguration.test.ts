@@ -51,10 +51,12 @@ describe("model forced-choice restrictions", () => {
   ])("preserves accepted %s model metadata while discarding unverified capability claims", (adapterKind, upstreamModelId) => {
     const model = normalizeProviderModelConfiguration({ adapterKind, upstreamModelId, defaultParams: {},
       ...(adapterKind === "openrouter_chat_completions" ? { openRouterRouting: { mode: "only_selected", providers: ["anthropic"] } } : {}),
-      capabilities: { ...capabilities, nativeForcedToolChoice: true, forcedToolCalling: true, validatedAutoToolCalling: true } });
+      capabilities: { ...capabilities, nativeForcedToolChoice: true, structuredOutput: true,
+        forcedToolCalling: true, validatedAutoToolCalling: true } });
     // Adapter compatibility policy owns current wire restrictions. Snapshot
     // decoding must not inject today's catalog metadata into accepted state.
     expect(model.capabilities.nativeForcedToolChoice).toBe(true);
+    expect(model.capabilities).not.toHaveProperty("structuredOutput");
     expect(model.capabilities).not.toHaveProperty("forcedToolCalling");
     expect(model.capabilities).not.toHaveProperty("validatedAutoToolCalling");
   });

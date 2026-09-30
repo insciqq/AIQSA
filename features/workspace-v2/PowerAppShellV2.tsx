@@ -724,6 +724,11 @@ export function PowerAppShellV2({
   const uploading = composerSession.pendingUploadGenerations.length > 0;
   const [notice, setNotice] = useState<Notice | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<Notice | null>(null);
+  useEffect(() => useWorkspaceStore.subscribe((current, previous) => {
+    if (current.activeChatId !== previous.activeChatId) {
+      setNotice((shown) => shown?.chatId && shown.chatId !== current.activeChatId ? null : shown);
+    }
+  }), []);
   const [workspaceInstallation, setWorkspaceInstallation] =
     useState<ChatWorkspaceState | null>(null);
   const [workspaceCapabilityBusy, setWorkspaceCapabilityBusy] = useState(false);
@@ -1822,6 +1827,9 @@ export function PowerAppShellV2({
     createChat: createChatForSend,
     createStreamTokenBuffer,
     currentModel,
+    clearNoticeForChat: (chatId) => setNotice((current) =>
+      current?.chatId === chatId ? null : current
+    ),
     fetchRun,
     notifyAnswerReady,
     openMemorySettings: openMemoryLibraryDestination,

@@ -39,6 +39,7 @@ import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
 import {
   materializePreparedRunData,
+  preparePdfRetry,
   prepareRun,
   type RunPreparationDeps,
   type MaterializedPreparedRunData,
@@ -854,7 +855,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     }
     const scopeFingerprint = chatPdfFingerprint({ chatId: source.chat.id, project: source.chat.project ?? null,
       memoryMode: source.chat.memoryMode ?? null, userMessage: source.userMessage });
-    const preparation = retry ? { ok: true as const, ...retry } : await prepareRun(deps, {
+    const preparation = retry ? await preparePdfRetry(deps, { ...retry, signal: request.signal,
+      userMessageId: source.userMessage.id }) : await prepareRun(deps, {
       body,
       skillCatalogDecision: {
         operationKey: admissionKey,

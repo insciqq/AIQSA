@@ -67,6 +67,8 @@ export type Notice = {
   action?: NoticeAction;
   /** Error notices stay until dismissed unless this opts into the standard timeout. */
   autoDismiss?: boolean;
+  /** Optional chat owner for notices that must not leak across chat navigation. */
+  chatId?: string;
   href?: string;
   kind: "error" | "success";
   persistent?: boolean;

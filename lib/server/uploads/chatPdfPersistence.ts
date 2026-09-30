@@ -45,10 +45,14 @@ export async function insertChatPdfAdmissions(tx: Prisma.TransactionClient, inpu
   runId: string;
 }>): Promise<void> {
   if (!input.admissions.length) return;
-  const current = await createChatPdfRouteResolver(tx).resolve(input.answer);
+  const resolved = await createChatPdfRouteResolver(tx).resolve(input.answer);
+  const current = { ...resolved, snapshot: resolved.snapshot ? normalizeProviderExecutionSnapshot(resolved.snapshot) : null };
   const deferred = input.admissions.some(({ route }) => route !== "direct_pdf");
   if (deferred !== Boolean(input.deferred)) throw new ChatPdfPreparationError("pdf_preparation_invalid");
-  for (const admitted of input.admissions) {
+  for (const candidate of input.admissions) {
+    // Freeze and hash the same accepted representation that the worker decodes.
+    // Existing rows retain their original keys; proof flags survive decoding.
+    const admitted = { ...candidate, snapshot: candidate.snapshot ? normalizeProviderExecutionSnapshot(candidate.snapshot) : null };
     const { attachmentId: _attachmentId, byteSize: _byteSize, pageCount: _pageCount,
       sourceChecksum: _sourceChecksum, ...route } = admitted;
     void _attachmentId; void _byteSize; void _pageCount; void _sourceChecksum;

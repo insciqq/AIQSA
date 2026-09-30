@@ -113,6 +113,55 @@ async function collect(
 }
 
 describe("provider runtime factory", () => {
+  it("round-trips accepted verified answer capabilities without trusting mutable config", () => {
+    const raw = snapshot("deepseek_responses_native");
+    const recovered = normalizeProviderExecutionSnapshot({
+      ...raw,
+      model: { ...raw.model, capabilities: {
+        ...raw.model.capabilities,
+        forcedToolCalling: true,
+        structuredOutput: true,
+        validatedAutoToolCalling: true
+      } }
+    });
+    expect(recovered.model.capabilities).toMatchObject({
+      forcedToolCalling: true,
+      structuredOutput: true,
+      validatedAutoToolCalling: true
+    });
+    expect(() => normalizeProviderExecutionSnapshot({
+      ...raw,
+      model: { ...raw.model, capabilities: {
+        ...raw.model.capabilities, structuredOutput: "true"
+      } }
+    })).toThrow("provider_execution_snapshot_invalid");
+  });
+
+  it.each(runtimeAdapterKinds)("round-trips accepted capability evidence for %s without changing the snapshot", (adapterKind) => {
+    const base = snapshot(adapterKind);
+    const normalized = normalizeProviderExecutionSnapshot(base);
+    for (const proof of [true, false, undefined]) {
+      const admitted = { ...normalized, model: { ...normalized.model, capabilities: {
+        ...normalized.model.capabilities,
+        ...(proof === undefined ? {} : {
+          structuredOutput: proof, forcedToolCalling: proof, validatedAutoToolCalling: proof
+        })
+      } } };
+      const restored = normalizeProviderExecutionSnapshot(JSON.parse(JSON.stringify(admitted)));
+      expect(restored).toEqual(admitted);
+      expect(normalizeProviderExecutionSnapshot(restored)).toEqual(restored);
+    }
+  });
+
+  it.each(["structuredOutput", "forcedToolCalling", "validatedAutoToolCalling"])(
+    "rejects malformed accepted %s evidence", (key) => {
+      const base = snapshot("deepseek_responses_native");
+      for (const value of ["true", 1, null, {}]) expect(() => normalizeProviderExecutionSnapshot({
+        ...base, model: { ...base.model, capabilities: { ...base.model.capabilities, [key]: value } }
+      })).toThrow("provider_execution_snapshot_invalid");
+    }
+  );
+
   it.each<ImageProviderProfile>(["openai", "gemini", "openrouter", "codex_lb", "openai_compatible"])(
     "retains the exact image adapter family in accepted and recovered snapshots (%s)", (profile) => {
       const providerFamily = profile === "codex_lb" ? "openai_compatible" : profile;
@@ -718,6 +767,9 @@ describe("provider runtime factory", () => {
       providerModelId: "fake-model",
       version: 1
     };
+    expect(normalizeProviderExecutionSnapshot({ ...fake, model: { ...fake.model, capabilities: {
+      ...fake.model.capabilities, structuredOutput: true, forcedToolCalling: true, validatedAutoToolCalling: true
+    } } }).model.capabilities).toEqual(fake.model.capabilities);
 
     expect(() => createProviderRuntimeBinding({
       options: { allowFake: false },

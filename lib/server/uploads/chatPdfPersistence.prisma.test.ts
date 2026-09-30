@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { createHash, randomUUID } from "node:crypto";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -10,7 +10,7 @@ import { createPrismaTemporaryChatDeletionHandler } from "../memory/temporaryDel
 import type { MemoryDeletionClaim } from "../memory/coordinator/types";
 import { createChatPdfAttempts } from "./chatPdfAttempts";
 import { createChatPdfRepository, chatPdfJson, chatPdfAdmissionFromRow } from "./chatPdfPersistence";
-import { chatPdfCompatibilityKey, encodeChatPdfArtifact, type ChatPdfWorkPlan } from "./chatPdfCore";
+import { chatPdfCompatibilityKey, createChatPdfCore, encodeChatPdfArtifact, type ChatPdfWorkPlan } from "./chatPdfCore";
 import type { ChatPdfAttachmentAdmission } from "./chatPdfAdmission";
 
 let previousPdfPolicy: Awaited<ReturnType<typeof prisma.systemModelPolicy.findUnique>> | null = null;
@@ -22,7 +22,8 @@ const attempts = createChatPdfAttempts(prisma);
 
 async function fixture(vision = false, temporary = false, workspace = false, nativeReader = false) {
   const userId = randomUUID(); owners.push(userId);
-  const sourceChecksum = "a".repeat(64);
+  const sourceBytes = Buffer.from("%PDF-1.7\n\n");
+  const sourceChecksum = createHash("sha256").update(sourceBytes).digest("hex");
   const attachmentId = randomUUID();
   attachmentIds.push(attachmentId);
   let binding: Pick<ChatPdfAttachmentAdmission, "snapshot" | "authority"> = { snapshot: null, authority: null };
@@ -33,7 +34,8 @@ async function fixture(vision = false, temporary = false, workspace = false, nat
     const version = await prisma.providerCredentialVersion.create({ data: {
       id: randomUUID(), credentialId: credential.id, version: 1, testEvidence: { authenticationMode: "none" }, testedAt: new Date(), activatedAt: new Date()
     } });
-    const capabilities = { nativePdfInput: nativeReader, nativeSearch: false, pdf: true, vision: true, reasoning: false };
+    const capabilities = { nativePdfInput: nativeReader, nativeSearch: false, pdf: true, vision: true, reasoning: false,
+      structuredOutput: true, forcedToolCalling: true, validatedAutoToolCalling: true };
     const model = await prisma.providerModel.create({ data: {
       id: randomUUID(), connectionId: connection.id, provider: "openai_compatible", modelId: "fixture", displayName: "PDF test",
       capabilities, defaultParams: {}, inputTokenPriceMicros: 2, outputTokenPriceMicros: 8
@@ -117,7 +119,7 @@ async function fixture(vision = false, temporary = false, workspace = false, nat
     const local = await artifact("local");
     await repository.savePlan(claim!, { localArtifactId: local.id, plan, preparationId: accepted.preparationId });
   }
-  return { ...accepted, admission, artifact, claim: claim!, plan, savePlan, userId };
+  return { ...accepted, admission, artifact, claim: claim!, plan, savePlan, sourceBytes, userId };
 }
 
 afterEach(async () => {
@@ -154,6 +156,24 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("chat PDF database lifecycle", () => {
+  it("preserves accepted capability proofs and the compatibility key through PostgreSQL before planning", async () => {
+    const h = await fixture(true);
+    const loaded = await repository.load(h.claim);
+    const row = loaded.modelRun.chatPdfAttachments[0]!;
+    const restored = chatPdfAdmissionFromRow(row);
+    expect(restored).toEqual(h.admission);
+    expect(restored.snapshot?.model.capabilities).toMatchObject({
+      structuredOutput: true, forcedToolCalling: true, validatedAutoToolCalling: true
+    });
+    expect(chatPdfCompatibilityKey(restored)).toBe(row.compatibilityKey);
+    const core = createChatPdfCore({ inspect: vi.fn().mockResolvedValue({ pageCount: 2 }),
+      extractGeometry: vi.fn().mockRejectedValue(new Error("synthetic_native_text_unavailable")), parseDocling: null });
+    const planned = await core.plan({ admission: restored, acceptedCompatibilityKey: row.compatibilityKey,
+      bytes: h.sourceBytes, onPageCount: (count) => repository.pageCount(h.claim, row.id, count) });
+    expect(planned.plan.compatibilityKey).toBe(row.compatibilityKey);
+    expect(planned.plan.units.map(({ route }) => route)).toEqual(["vision_required", "vision_required"]);
+  });
+
   it.each(["pdf", "vision"] as const)("keeps accepted PDF work immutable after an administrator changes future %s routing", async (changedRole) => {
     const h = await fixture(true, false, false, true);
     const row = await prisma.chatPdfAttachmentPreparation.findUniqueOrThrow({ where: { id: h.preparationId } });
