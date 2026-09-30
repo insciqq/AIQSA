@@ -127,9 +127,73 @@
 }
 .v2-chat-continuation-source { font-size: 0.8125rem; color: var(--v2-color-text2); }
 
+/* Phones have no room for the gauge: "⋯" opens its panel as a bottom sheet. */
 @media (max-width: 767px) {
-  .v2-chat-context { position: absolute; top: 3rem; right: 0; }
-  .v2-chat-context-trigger { background: var(--v2-color-surface); box-shadow: var(--v2-shadow-float); }
+  .v2-chat-context { display: none; }
+}
+
+.v2-chat-context-sheet-layer {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  min-width: 0;
+  /* One definite row, so a tall panel scrolls inside the sheet. */
+  grid-template-rows: minmax(0, 1fr);
+  padding-top: max(2.75rem, calc(env(safe-area-inset-top) + 1.75rem));
+  place-items: end stretch;
+}
+
+.v2-chat-context-sheet-scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: var(--v2-color-scrim);
+  animation: v2-scrim-enter var(--v2-motion-fast) both;
+}
+
+.v2-chat-context-popover[data-layout="sheet"] {
+  position: relative;
+  z-index: 1;
+  top: auto;
+  right: auto;
+  width: 100%;
+  max-height: 100%;
+  padding: 0 calc(1rem + env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: var(--v2-radius-l) var(--v2-radius-l) 0 0;
+  font-size: 0.875rem;
+  animation: v2-sheet-enter var(--v2-motion-base) both;
+}
+
+/* The handle and Close stay in reach while the sheet scrolls. */
+.v2-chat-context-sheet-bar {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  margin: 0 -0.5rem 0.25rem;
+  padding: 0.375rem 0 0.125rem;
+  background: var(--v2-color-surface);
+}
+
+.v2-chat-context-sheet-handle {
+  grid-column: 2;
+  width: 2rem;
+  height: 0.1875rem;
+  border-radius: 999px;
+  background: var(--v2-color-border2);
+}
+
+.v2-chat-context-sheet-bar > .v2-icon-button {
+  justify-self: end;
 }
 
 /* A header without any content (no model selector, title, or actions)

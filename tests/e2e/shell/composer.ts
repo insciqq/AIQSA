@@ -9,7 +9,9 @@ export async function openModelPicker(page: Page): Promise<Locator> {
   if (await picker.isVisible()) return picker;
   await composerRunSummary(page).click();
   await expect(picker).toBeVisible();
-  await expect(picker.getByRole("searchbox", { name: "Search models" })).toBeFocused();
+  // A touch screen opens the picker on itself, so no keyboard covers the list.
+  const touch = await page.evaluate(() => matchMedia("(hover: none), (pointer: coarse)").matches);
+  await expect(touch ? picker : picker.getByRole("searchbox", { name: "Search models" })).toBeFocused();
   return picker;
 }
 
