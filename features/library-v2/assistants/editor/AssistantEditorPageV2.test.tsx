@@ -473,12 +473,52 @@ describe("Assistant editor page", () => {
     fireEvent.click(within(picker).getByRole("radio", { name: "Hexagon" }));
     expect(view.onChange).toHaveBeenCalledWith({ avatar: { ...avatar, foregroundShape: "hexagon" } });
     fireEvent.click(within(picker).getByRole("button", { name: "Rotate" }));
-    expect(view.onChange).toHaveBeenCalledWith({ avatar: { ...avatar, rotations: [0, 3] } });
+    expect(view.onChange).toHaveBeenCalledWith({ avatar: { ...avatar, accents: [2, 6], rotations: [1, 3] } });
     fireEvent.click(within(picker).getByRole("button", { name: "Randomize" }));
     expect(view.onGenerateAvatar).toHaveBeenCalledOnce();
     act(() => { fireEvent.keyDown(document, { key: "Escape" }); });
     expect(screen.queryByRole("dialog", { name: "Avatar" })).toBeNull();
     expect(screen.getByRole("button", { name: "Change" })).toHaveFocus();
+  });
+
+  it("keeps the popover open when a press moves focus to the nearest focusable ancestor (Safari)", () => {
+    const view = editor();
+    render(
+      <section tabIndex={0}>
+        <AssistantEditorPageV2
+          busy={false}
+          editor={view}
+          notice={null}
+          onDismissNotice={vi.fn()}
+          onOpenSharing={vi.fn()}
+          onRequestClose={vi.fn()}
+        />
+      </section>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    const picker = screen.getByRole("dialog", { name: "Avatar" });
+    const randomize = within(picker).getByRole("button", { name: "Randomize" });
+    // Safari does not focus a clicked button; it focuses the nearest focusable ancestor.
+    fireEvent.pointerDown(randomize);
+    const focusTarget = randomize.closest<HTMLElement>("[tabindex]") ?? document.body;
+    expect(focusTarget).toBe(picker);
+    act(() => { focusTarget.focus(); });
+
+    expect(screen.getByRole("dialog", { name: "Avatar" })).toBeInTheDocument();
+    fireEvent.click(randomize);
+    expect(view.onGenerateAvatar).toHaveBeenCalledOnce();
+  });
+
+  it("disables Rotate only when a quarter turn would be invisible", () => {
+    renderPage(editor());
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    expect(screen.getByRole("button", { name: "Rotate" })).toBeEnabled();
+    act(() => { fireEvent.keyDown(document, { key: "Escape" }); });
+
+    renderPage(editor({ draft: draft({ avatar: { ...avatar, accents: [], backgroundShape: "square", foregroundShape: "ring" } }) }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Change" })[1]!);
+    expect(screen.getByRole("button", { name: "Rotate" })).toBeDisabled();
   });
 
   it("names an unavailable adjustable value without blocking the row", () => {

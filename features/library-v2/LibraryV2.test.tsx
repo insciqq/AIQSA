@@ -309,6 +309,42 @@ describe("Library sub-views", () => {
     expect(screen.getByRole("button", { name: "Back to chat" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "Knowledge" })).toHaveFocus();
   });
+
+  it("leaves the sub-view from the selected tab and the crumb root without the guard", () => {
+    const guard = vi.fn<LibraryNavigationGuardV2>((_intent, proceed) => proceed());
+    const onBack = vi.fn();
+    const exit = vi.fn();
+    const tabs = [
+      { content: <p>Assistant owner</p>, id: "assistants" as const, label: "Assistants" },
+      { content: <p>Knowledge owner</p>, id: "knowledge" as const, label: "Knowledge" }
+    ];
+    const subview = { backLabel: "Back to Assistants", key: "editor:assistant-1", label: "Stylist Agent", onBack: exit };
+    const { rerender } = render(
+      <LibraryV2 navigationGuard={guard} onBack={onBack} subview={subview} tabs={tabs} />
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Assistants" }));
+    expect(exit).toHaveBeenCalledOnce();
+
+    const root = screen.getByRole("button", { name: "Assistants" });
+    expect(screen.getByRole("navigation", { name: "Studio location" })).toContainElement(root);
+    fireEvent.click(root);
+    expect(exit).toHaveBeenCalledTimes(2);
+    expect(onBack).not.toHaveBeenCalled();
+    expect(guard).not.toHaveBeenCalled();
+
+    rerender(<LibraryV2 busy navigationGuard={guard} onBack={onBack} subview={subview} tabs={tabs} />);
+    expect(screen.getByRole("button", { name: "Assistants" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "Assistants" }));
+    expect(exit).toHaveBeenCalledTimes(2);
+
+    rerender(<LibraryV2 navigationGuard={guard} onBack={onBack} subview={null} tabs={tabs} />);
+    expect(screen.queryByRole("button", { name: "Assistants" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Assistants" }));
+    expect(guard).not.toHaveBeenCalled();
+    expect(onBack).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("Library resource panels", () => {

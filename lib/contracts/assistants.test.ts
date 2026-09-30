@@ -22,6 +22,7 @@ import {
   decodeAssistantSkillsValue,
   decodeAssistantSummary,
   decodeAssistantToolsValue,
+  rotateAssistantAvatarRecipe,
   type AssistantAvatarRecipe
 } from "./assistants";
 
@@ -92,6 +93,12 @@ describe("assistant avatar recipe", () => {
     expect(decodeAssistantAvatarRecipe({ ...validRecipe, rotations: [0] })).toBeNull();
     expect(decodeAssistantAvatarRecipe({ ...validRecipe, rotations: [0, 4] })).toBeNull();
     expect(decodeAssistantAvatarRecipe("recipe")).toBeNull();
+  });
+
+  it("turns the whole composition a quarter clockwise and wraps rotations and accents", () => {
+    const turned = rotateAssistantAvatarRecipe({ ...validRecipe, accents: [7, 1], rotations: [3, 1] });
+    expect(turned).toEqual({ ...validRecipe, accents: [1, 3], rotations: [0, 2] });
+    expect(decodeAssistantAvatarRecipe(JSON.parse(JSON.stringify(turned)))).toEqual(turned);
   });
 });
 

@@ -65,6 +65,37 @@
   white-space: nowrap;
 }
 
+/* The crumb root is a control while a sub-view is open: it reads as the
+   plain root text and leaves the sub-view like Back does (issue #31). */
+.v2-library-crumb-root {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  color: inherit;
+  background: none;
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-library-crumb-root:hover:not(:disabled) {
+  color: var(--v2-color-text);
+}
+
+.v2-library-crumb-root:disabled {
+  color: inherit;
+  cursor: default;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-library-crumb-root {
+    min-height: 2.75rem;
+  }
+}
+
 .v2-library-column-title,
 .v2-library-column-label {
   display: none;
@@ -150,7 +181,7 @@
   }
 
   /* Compact: a sub-view keeps only its own name in the crumb. */
-  .v2-library-crumb[data-subview] > span {
+  .v2-library-crumb[data-subview] > :is(span, button) {
     display: none;
   }
 }
@@ -302,6 +333,11 @@
 
 .v2-library-panel {
   --v2-library-overflow-fade: 2rem;
+  /* The containing block for absolutely positioned descendants, the visually
+     hidden `.v2-sr-only` helpers among them. Without it they sit at their
+     static position under the document and stretch the page past the
+     viewport-tall shell, so the whole shell scrolls (issue #33). */
+  position: relative;
   container-type: inline-size;
   min-width: 0;
   min-height: 0;

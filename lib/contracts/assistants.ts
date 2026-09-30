@@ -168,6 +168,24 @@ export function decodeAssistantAvatarRecipe(value: unknown): AssistantAvatarReci
   };
 }
 
+/**
+ * One clockwise quarter turn of the whole composition: both shape rotations
+ * step by 90° and every accent moves two of the eight slots the same way, so
+ * the turn stays visible when the foreground shape is 90°-symmetric. A uniform
+ * shift keeps the accent slots unique, so the result still decodes.
+ */
+export function rotateAssistantAvatarRecipe(recipe: AssistantAvatarRecipe): AssistantAvatarRecipe {
+  const accentStep = ASSISTANT_AVATAR_ACCENT_SLOTS / 4;
+  return {
+    ...recipe,
+    accents: recipe.accents.map((slot) => (slot + accentStep) % ASSISTANT_AVATAR_ACCENT_SLOTS),
+    rotations: [
+      ((recipe.rotations[0] + 1) % 4) as AssistantAvatarRotation,
+      ((recipe.rotations[1] + 1) % 4) as AssistantAvatarRotation
+    ]
+  };
+}
+
 /** Bounded display-only identity captured once with an accepted run. */
 export type AssistantIdentity = { avatar: AssistantAvatarRecipe; name: string };
 

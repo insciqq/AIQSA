@@ -163,6 +163,14 @@ export function LibraryV2({
     else onBack();
   };
 
+  // The selected section's tab and the crumb root both mean "back to the
+  // list" while a sub-view is open (issue #31). The sub-view's own onBack
+  // owns any unsaved-changes confirmation, so this bypasses navigationGuard.
+  const leaveSubview = () => {
+    if (!subview || busy || subview.busy) return;
+    subview.onBack();
+  };
+
   const handleTabKeyDown = (
     event: ReactKeyboardEvent<HTMLButtonElement>,
     id: LibraryTabIdV2
@@ -196,7 +204,14 @@ export function LibraryV2({
           <nav className="v2-library-crumb" aria-label="Studio location" data-subview={subview ? "true" : undefined}>
             {subview ? (
               <>
-                <span>{selected.label}</span>
+                <button
+                  className="v2-library-crumb-root v2-focusable"
+                  disabled={busy || subview.busy}
+                  type="button"
+                  onClick={leaveSubview}
+                >
+                  {selected.label}
+                </button>
                 {[...(subview.trail ?? []), subview.label].map((part, index, parts) => (
                   <Fragment key={`${part}:${index}`}>
                     <span aria-hidden="true"> / </span>
@@ -235,7 +250,7 @@ export function LibraryV2({
                       role="tab"
                       tabIndex={tab.id === selected.id ? 0 : -1}
                       type="button"
-                      onClick={() => commitTab(tab.id)}
+                      onClick={() => (tab.id === selected.id ? leaveSubview() : commitTab(tab.id))}
                       onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
                     >
                       <UiV2Icon name={tabIcons[tab.id]} />

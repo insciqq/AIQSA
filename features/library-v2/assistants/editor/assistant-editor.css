@@ -544,19 +544,11 @@
 
 .v2-assistant-model { display: grid; gap: 0.375rem; }
 .v2-assistant-model > small { color: var(--v2-color-text3); font-size: 0.6875rem; line-height: 1.45; }
-.v2-assistant-model-picker { position: relative; display: flex; align-items: center; }
-
-.v2-assistant-model-picker > :first-child {
-  position: absolute;
-  z-index: 1;
-  left: 0.625rem;
-  pointer-events: none;
-}
-
-/* Room for the provider mark (0.625rem inset, 1rem wide). The selector
-   outweighs the shared field rule, so its padding shorthand no longer puts
-   the name under the mark. */
-.v2-assistant-editor-page .v2-assistant-model .v2-assistant-model-picker select { padding-left: 2rem; }
+/* The provider mark sits beside the select, not over it: Safari resets the
+   padding of a native select, so an overlaid mark covered the name (issue #34). */
+.v2-assistant-model-picker { display: flex; align-items: center; gap: 0.5rem; }
+.v2-assistant-model-picker > :first-child { flex: 0 0 auto; }
+.v2-assistant-model-picker > select { flex: 1 1 auto; min-width: 0; }
 
 /* Reasoning & parameters */
 .v2-assistant-parameters { display: grid; gap: 0.875rem; }
