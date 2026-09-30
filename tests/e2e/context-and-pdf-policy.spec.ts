@@ -68,6 +68,14 @@ for (const viewport of [
     const composer = page.getByRole("textbox", { name: "Message" });
     const lastReply = dialog.getByText("Based on the last reply.", { exact: true });
     const settingsChanged = dialog.getByText("Based on the last reply. Settings changed since.", { exact: true });
+    // A phone has no gauge: "⋯" opens the context panel as a bottom sheet.
+    const phone = viewport.width < 768;
+    const more = page.getByTestId("header-more-trigger");
+    async function openContext() {
+      if (!phone) return trigger.click();
+      await more.click();
+      await page.getByRole("menuitem", { name: /^Context/u }).click();
+    }
     async function captureMatrix(state: string) {
       if (viewport.width !== 1440) return;
       for (const theme of ["light", "dark"]) {
@@ -95,7 +103,7 @@ for (const viewport of [
     await expect(trigger.locator(".v2-chat-context-track")).not.toHaveAttribute("stroke-dasharray");
     // A persisted warning never opens a continuation automatically.
     await expect(dialog).toBeHidden();
-    await trigger.click();
+    await openContext();
     // A cold load changed nothing: the chat's own defaults are not "settings changed".
     await expect(lastReply).toBeVisible();
     await expect(dialog).not.toContainText("Settings changed since.");
@@ -105,7 +113,7 @@ for (const viewport of [
     await page.keyboard.press("Escape");
     await chooseReasoningEffort(page, "high");
     await expect(trigger).toHaveText("60%");
-    await trigger.click();
+    await openContext();
     await expect(settingsChanged).toBeVisible();
     await expect(lastReply).toHaveCount(0);
     await captureMatrix("settings-changed");
@@ -113,7 +121,7 @@ for (const viewport of [
     await selectModel(page, widerModel.provider, widerModel.displayName);
     await expect(trigger).toHaveText("30%");
     await expect(trigger).toHaveAttribute("data-context-estimate", "snapshot");
-    await trigger.click();
+    await openContext();
     await expect(settingsChanged).toBeVisible();
     await dialog.getByText("Advanced details", { exact: true }).click();
     await expect(dialog.locator("dl > div").filter({ has: page.getByText("Context tokens", { exact: true }) })).toContainText("~6k");
@@ -122,7 +130,7 @@ for (const viewport of [
     await selectModel(page, unknownModel.provider, unknownModel.displayName);
     await expect(trigger).toHaveText("?");
     await expect(trigger).toHaveAttribute("data-context-estimate", "snapshot");
-    await trigger.click();
+    await openContext();
     await captureMatrix("unknown");
     await page.keyboard.press("Escape");
     await selectModel(page, model.provider, model.displayName);
@@ -135,7 +143,7 @@ for (const viewport of [
       await chooseChat(other.title);
       await expect(trigger).toHaveAttribute("data-context-estimate", "preliminary");
     }
-    await trigger.click();
+    await openContext();
     await expect(dialog).toContainText("Preliminary estimate");
     await captureMatrix("preliminary");
     await page.keyboard.press("Escape");
@@ -143,7 +151,7 @@ for (const viewport of [
     await expect(trigger).toHaveText("60%");
     await expect(trigger).toHaveAttribute("data-context-estimate", "snapshot");
     // Returning after cache eviction is a fresh load, not a settings change.
-    await trigger.click();
+    await openContext();
     await expect(lastReply).toBeVisible();
     await expect(dialog).not.toContainText("Settings changed since.");
     await page.keyboard.press("Escape");
@@ -194,12 +202,12 @@ for (const viewport of [
     await expect(trigger).toHaveText("60%");
     await expect(trigger).toHaveAttribute("data-context-estimate", "snapshot");
     await expect(trigger.locator(".v2-chat-context-track")).not.toHaveAttribute("stroke-dasharray");
-    await trigger.click();
+    await openContext();
     await expect(dialog).toContainText("4 earlier messages are still in this chat");
     await expect(dialog.getByText("A new chat starts with a summary of this one and takes your draft, files and settings (and Workspace files, if on). This chat stays as it is.")).toBeVisible();
     expect(continuations).toBe(0);
     await dialog.getByRole("button", { name: "Stay here" }).click();
-    await trigger.click();
+    await openContext();
     await dialog.getByText("Advanced details").click();
     await expect(dialog).toContainText("Safe input budget");
     await expect(dialog).toContainText("Answer reserve");
@@ -208,12 +216,12 @@ for (const viewport of [
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ path: testInfo.outputPath("context-capacity.png") });
     await page.keyboard.press("Escape");
-    await expect(trigger).toBeFocused();
+    await expect(phone ? more : trigger).toBeFocused();
     await composer.fill("a".repeat(4000));
     await expect(trigger).toHaveText("70%");
     await expect(trigger).toHaveAttribute("data-context-estimate", "snapshot");
     await expect(trigger).toHaveAttribute("data-context-tone", "warning");
-    await trigger.click();
+    await openContext();
     await expect(dialog).toContainText("Based on the last reply and your draft.");
     await expect(dialog).toContainText("Draft and attachments estimate");
     await page.screenshot({ path: testInfo.outputPath("context-with-draft.png") });
@@ -226,7 +234,7 @@ for (const viewport of [
     await composer.fill("界".repeat(4000));
     await expect(trigger).toHaveText("100%");
     await expect(trigger).toHaveAttribute("data-context-tone", "critical");
-    await trigger.click();
+    await openContext();
     await expect(dialog.getByRole("alert")).toContainText("No room left for this request.");
     await captureMatrix("critical");
     await page.keyboard.press("Escape");
@@ -236,7 +244,7 @@ for (const viewport of [
     await expect(trigger).toHaveText("60%");
     await expect(trigger).toHaveAttribute("data-context-estimate", "snapshot");
     await expect(dialog).toBeHidden();
-    await trigger.click();
+    await openContext();
     await expect(lastReply).toBeVisible();
     await expect(dialog).not.toContainText("Settings changed since.");
     await page.keyboard.press("Escape");
@@ -245,14 +253,20 @@ for (const viewport of [
     }));
     await composer.fill("a request rejected after private context is measured");
     await composer.press("Enter");
+    if (phone) {
+      // On a phone each rejected request opens the modal sheet by itself.
+      await expect(dialog).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
     await expect(composer).toHaveValue("a request rejected after private context is measured");
-    await expect(trigger).toHaveAccessibleName("This request exceeds the model context capacity");
+    if (phone) await expect(trigger).toHaveAttribute("aria-label", "This request exceeds the model context capacity");
+    else await expect(trigger).toHaveAccessibleName("This request exceeds the model context capacity");
     await expect(trigger).toHaveAttribute("data-context-tone", "critical");
     await expect(trigger).toHaveAttribute("data-context-estimate", "preliminary");
     await expect(trigger.locator(".v2-chat-context-track")).toHaveAttribute("stroke-dasharray", "3 3");
     await expect(trigger.locator("svg")).toHaveCSS("animation-name", "none");
     await expect(trigger.locator(".v2-chat-context-track")).toHaveCSS("animation-name", "none");
-    await trigger.click();
+    await openContext();
     await expect(dialog.getByRole("alert")).toContainText("Shorten it, remove attachments");
     await expect(dialog).toContainText("Preliminary estimate");
     await page.screenshot({ path: testInfo.outputPath("context-preliminary-rejected.png") });
@@ -332,7 +346,11 @@ test.describe("touch context popover", () => {
     expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(true);
     const trigger = page.getByTestId("header-context-indicator");
     const dialog = page.getByRole("dialog", { name: "Chat context" });
-    await trigger.tap();
+    // A phone has no gauge: "⋯" opens the panel as a bottom sheet.
+    await expect(trigger).toBeHidden();
+    await page.getByTestId("header-more-trigger").tap();
+    await page.getByRole("menuitem", { name: /^Context · \d+%$/u }).tap();
+    await expect(dialog).toHaveAttribute("data-layout", "sheet");
     const action = dialog.getByRole("button", { name: "Summarize and open new chat", exact: true });
     await expect(action).toHaveAttribute("data-tone", "ghost");
     await expect(dialog.getByRole("button", { name: "Stay here" })).toHaveCount(0);
@@ -344,6 +362,12 @@ test.describe("touch context popover", () => {
     await expectWithinViewport(page, dialog);
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ path: testInfo.outputPath("context-ordinary-touch-phone.png") });
+    await dialog.getByRole("button", { name: "Close chat context" }).tap();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByTestId("header-more-trigger")).toBeFocused();
+    // A touch tablet keeps the gauge in its header.
+    await page.setViewportSize({ width: 820, height: 1180 });
+    await expect(trigger).toBeVisible();
   });
 });
 

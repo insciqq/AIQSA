@@ -1637,6 +1637,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             <div className="v2-live-conversation">
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
+              chatKey={session.activeChatId}
               assistantSelector={(
                 <HeaderAssistantSelectorV2
                   assistant={composer.assistant}

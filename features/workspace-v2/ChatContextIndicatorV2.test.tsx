@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { ChatContextIndicatorV2 } from "./ChatContextIndicatorV2";
+import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
+import { ChatContextIndicatorV2, useChatContextPanelV2 } from "./ChatContextIndicatorV2";
 
 describe("header context indicator", () => {
   const stats = { approximateInputTokens: 4400, safeInputBudgetTokens: 10000, totalContextTokens: 12000 };
@@ -241,4 +242,104 @@ describe("header context indicator", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Shorten it, remove attachments");
   });
 
+  it("is a modal bottom sheet on phones that closes from its Close control", () => {
+    const onOpenChange = vi.fn();
+    const continuation = { busy: false, error: null, progress: null, suggested: false, uploading: false,
+      onCancel: vi.fn(), onContinue: vi.fn(), onDismiss: vi.fn() };
+    render(<ChatContextIndicatorV2 continuation={continuation} open sheet stats={stats} onOpenChange={onOpenChange} />);
+    const sheet = screen.getByRole("dialog", { name: "Chat context" });
+    expect(sheet).toHaveAttribute("aria-modal", "true");
+    expect(sheet).toHaveAttribute("data-layout", "sheet");
+    expect(within(sheet).getByRole("group", { name: "Context" })).toHaveTextContent("37% full");
+    expect(within(sheet).getByRole("button", { name: "Summarize and open new chat" })).toBeVisible();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Close chat context" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(continuation.onDismiss).toHaveBeenCalledOnce();
+  });
+
+  it("stays open when the window narrows the popover into the sheet and widens it back", async () => {
+    const onOpenChange = vi.fn();
+    const view = render(<ChatContextIndicatorV2 open stats={stats} onOpenChange={onOpenChange} />);
+    expect(screen.getByRole("dialog", { name: "Chat context" })).not.toHaveAttribute("data-layout");
+    fireEvent.click(screen.getByText("Advanced details"));
+    expect(screen.getByText("Advanced details").closest("details")).toHaveAttribute("open");
+    // The toggle event arrives as its own task.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    view.rerender(<ChatContextIndicatorV2 open sheet stats={stats} onOpenChange={onOpenChange} />);
+    const sheet = screen.getByRole("dialog", { name: "Chat context" });
+    expect(sheet).toHaveAttribute("data-layout", "sheet");
+    // The unfolded technical detail survives the switch.
+    expect(within(sheet).getByText("Advanced details").closest("details")).toHaveAttribute("open");
+    expect(within(sheet).getByRole("button", { name: "Close chat context" })).toHaveFocus();
+    view.rerender(<ChatContextIndicatorV2 open stats={stats} onOpenChange={onOpenChange} />);
+    expect(screen.getByRole("dialog", { name: "Chat context" })).not.toHaveAttribute("data-layout");
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("opens the phone sheet once for a suggested continuation", () => {
+    const continuation = { busy: false, error: null, progress: null, suggested: true, uploading: false,
+      onCancel: vi.fn(), onContinue: vi.fn(), onDismiss: vi.fn() };
+    const view = render(<ChatContextIndicatorV2 continuation={continuation} open={false} sheet stats={stats} onOpenChange={vi.fn()} />);
+    const sheet = screen.getByRole("dialog", { name: "Chat context" });
+    expect(sheet).toHaveAttribute("aria-modal", "true");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Stay here" }));
+    expect(continuation.onDismiss).toHaveBeenCalledOnce();
+    view.rerender(<ChatContextIndicatorV2 continuation={{ ...continuation, suggested: false }} open={false} sheet stats={stats} onOpenChange={vi.fn()} />);
+    expect(screen.queryByRole("dialog", { name: "Chat context" })).toBeNull();
+  });
+});
+
+describe("chat context panel state", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubPhone(phone: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      addEventListener: vi.fn(), matches: phone && query === "(max-width: 767px)", media: query, removeEventListener: vi.fn()
+    }));
+  }
+
+  const calm = { approximateInputTokens: 620, safeInputBudgetTokens: 10000, totalContextTokens: 12000 };
+
+  it("offers a phone-only menu entry in the gauge's tone and closes with its chat", () => {
+    stubPhone(true);
+    const view = renderHook(({ chatKey, contextStats }) => useChatContextPanelV2(chatKey, contextStats), {
+      initialProps: { chatKey: null as string | null, contextStats: calm as ComposerContextStats | null }
+    });
+    expect(view.result.current.sheet).toBe(true);
+    // A chat that only now gets its id (a reload settling) keeps the panel open.
+    act(() => view.result.current.setOpen(true));
+    view.rerender({ chatKey: "chat-a", contextStats: calm });
+    expect(view.result.current.open).toBe(true);
+    act(() => view.result.current.setOpen(false));
+    expect(view.result.current.menuAction).toMatchObject({ icon: "chart", label: "Context · 5%", mobileOnly: true });
+    expect(view.result.current.menuAction).not.toHaveProperty("tone");
+    act(() => view.result.current.menuAction!.onSelect!());
+    expect(view.result.current.open).toBe(true);
+    view.rerender({ chatKey: "chat-a", contextStats: { ...calm, approximateInputTokens: 7500 } });
+    expect(view.result.current.menuAction).toMatchObject({ label: "Context · 63%", tone: "warning" });
+    expect(view.result.current.open).toBe(true);
+    view.rerender({ chatKey: "chat-b", contextStats: calm });
+    expect(view.result.current.open).toBe(false);
+    view.rerender({ chatKey: "chat-b", contextStats: { ...calm, approximateInputTokens: 11000 } });
+    expect(view.result.current.menuAction).toMatchObject({ tone: "critical" });
+    view.rerender({ chatKey: "chat-b", contextStats: null });
+    expect(view.result.current.menuAction).toBeNull();
+  });
+
+  it.each([true, false])("opens for each rejected request only on a phone (phone=%s)", (phone) => {
+    stubPhone(phone);
+    const rejected = { approximateInputTokens: 400, safeInputBudgetTokens: null, totalContextTokens: null, requestRejected: true };
+    const view = renderHook(({ contextStats }) => useChatContextPanelV2("chat-a", contextStats), {
+      initialProps: { contextStats: calm as ComposerContextStats }
+    });
+    view.rerender({ contextStats: rejected });
+    expect(view.result.current.open).toBe(phone);
+    expect(view.result.current.menuAction?.label).toBe("Context · too large");
+    act(() => view.result.current.setOpen(false));
+    view.rerender({ contextStats: calm });
+    view.rerender({ contextStats: rejected });
+    expect(view.result.current.open).toBe(phone);
+  });
 });

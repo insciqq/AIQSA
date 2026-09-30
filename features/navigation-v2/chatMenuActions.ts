@@ -27,6 +27,8 @@ export function flattenFolderTree<
 
 export type ChatMenuActionsInputV2 = Readonly<{
   archiveDisabled?: boolean;
+  /** Header only: the chat context entry after Share (phones, where no gauge shows). */
+  context?: UiV2MenuAction;
   deleteDisabled?: boolean;
   favorite?: boolean;
   folders: readonly Readonly<{ id: string; name: string; parentId: string | null }>[];
@@ -64,6 +66,7 @@ export type ChatMenuActionsInputV2 = Readonly<{
  */
 export function chatMenuActionsV2({
   archiveDisabled = false,
+  context,
   deleteDisabled = false,
   favorite = false,
   folders,
@@ -135,6 +138,7 @@ export function chatMenuActionsV2({
           onSelect: onShare
         }] as const
       : []),
+    ...(surface === "header" && context ? [context] : []),
     ...(surface === "header" && onBranches
       ? [{ icon: "branch", label: "Branches", onSelect: onBranches }] as const
       : []),
