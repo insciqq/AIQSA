@@ -2,6 +2,7 @@
 
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
+import { touchInputPrimaryV2 } from "@/components/ui-v2/touchInputV2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import type { AssistantSummary } from "@/lib/contracts/assistants";
 import {
@@ -113,9 +114,11 @@ function rowButtons(dialog: HTMLElement | null): HTMLButtonElement[] {
 /**
  * The Assistant picker (PRD 10.5): a dialog anchored under the header's
  * Assistant selector on desktop and a bottom sheet on phones and short touch
- * screens. A tap anywhere in the search band puts the caret in the field. It
- * keeps focus inside, closes on Escape or an outside press, and returns focus
- * to its opener, or to the selector when the opener is gone.
+ * screens. It opens with the caret in its search field, or on itself when
+ * touch is the primary input, and a tap anywhere in the search band puts the
+ * caret in the field. It keeps focus inside, closes on Escape or an outside
+ * press, and returns focus to its opener, or to the selector when the opener
+ * is gone.
  */
 export function AssistantPickerV2({
   anchorRef,
@@ -175,8 +178,10 @@ export function AssistantPickerV2({
   }, [place, portalReady]);
 
   useLayoutEffect(() => {
-    if (portalReady) searchRef.current?.focus();
-  }, [portalReady]);
+    if (!portalReady) return;
+    if (touchInputPrimaryV2()) dialogRef.current?.focus();
+    else searchRef.current?.focus();
+  }, [dialogRef, portalReady]);
 
   // Declared after the modal layer, so this runs after its focus restore: an
   // opener that left the page (a menu item) hands focus to the selector.
@@ -200,7 +205,7 @@ export function AssistantPickerV2({
     const rows = rowButtons(dialogRef.current);
     if (rows.length === 0) return;
     const index = rows.indexOf(document.activeElement as HTMLButtonElement);
-    if (index < 0 && event.target !== searchRef.current) return;
+    if (index < 0 && event.target !== searchRef.current && event.target !== dialogRef.current) return;
     event.preventDefault();
     if (index < 0) {
       rows[event.key === "ArrowDown" ? 0 : rows.length - 1]?.focus();
@@ -233,6 +238,7 @@ export function AssistantPickerV2({
         data-testid="assistant-picker"
         ref={dialogRef}
         role="dialog"
+        tabIndex={-1}
         onKeyDown={(event) => {
           moveBetweenRows(event);
           onDialogKeyDown(event);
