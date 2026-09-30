@@ -267,7 +267,7 @@ test("v2 mobile drawer fits all three destinations on one row", async ({ page })
     await page.getByRole("button", { name: "Open sidebar" }).click();
     const destinations = page.locator(".v2-navigation-destinations > .v2-navigation-destination");
     await expect(destinations).toHaveCount(3);
-    await expect(destinations).toHaveText(["Projects", "Library", "Settings"]);
+    await expect(destinations).toHaveText(["Projects", "Studio", "Settings"]);
     const boxes = await destinations.evaluateAll((items) => items.map((item) => {
       const box = item.getBoundingClientRect();
       return { left: box.left, right: box.right, top: box.top };
