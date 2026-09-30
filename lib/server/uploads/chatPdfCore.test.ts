@@ -7,6 +7,7 @@ import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { isLongChatPdf, decodeChatPdfPreparation } from "../../contracts/chatPdfPreparation";
 import { chatPdfFingerprint, resolveChatPdfRoute, type ChatPdfAttachmentAdmission } from "./chatPdfAdmission";
 import { chatPdfCompatibilityKey, createChatPdfCore, decodeChatPdfArtifact, encodeChatPdfArtifact } from "./chatPdfCore";
+import { chatPdfAdmissionFromRow, chatPdfJson } from "./chatPdfPersistence";
 
 function role(verifiedVisionInput = false, nativePdfInput = false): ProviderAdmissionRole {
   const capabilities = { nativePdfInput, nativeSearch: false, pdf: true, reasoning: false,
@@ -114,6 +115,40 @@ describe("chat PDF admission and artifacts", () => {
 });
 
 describe("chat PDF adaptive preparation", () => {
+  it.each([
+    { proof: true }, { proof: false }, { proof: undefined },
+    { proof: true, versions: { parserVersion: 14, promptVersion: 6, renderVersion: 1 } },
+    { proof: true, versions: { parserVersion: 19, promptVersion: 8, renderVersion: 1 } }
+  ])("plans historical DeepSeek page-image admissions after JSON restoration ($proof, $versions)", async ({ proof, versions }) => {
+    const bytes = await source();
+    const reader = role(true);
+    if (reader.snapshot.model.adapterKind === "fake") throw new Error("Real reader fixture required");
+    const snapshot = { ...reader.snapshot, providerFamily: "deepseek", model: { ...reader.snapshot.model,
+      adapterKind: "deepseek_responses_native" as const, capabilities: { ...reader.snapshot.model.capabilities,
+        ...(proof === undefined ? {} : { structuredOutput: proof, forcedToolCalling: proof, validatedAutoToolCalling: proof })
+      } } };
+    // Reproduce rows emitted before snapshot canonicalization: the key and JSON
+    // both include the evidence attached by provider admission.
+    const admitted: ChatPdfAttachmentAdmission = { ...admission(bytes), snapshot,
+      route: "system_vision", mode: "read_page_images", fallbackMethod: "page_images", policyVersion: 7 };
+    const acceptedCompatibilityKey = chatPdfCompatibilityKey(admitted, versions);
+    const restored = chatPdfAdmissionFromRow({ attachmentId: admitted.attachmentId,
+      bindingAuthority: chatPdfJson(admitted.authority), bindingSnapshot: chatPdfJson(snapshot),
+      pageCount: admitted.pageCount, policyVersion: admitted.policyVersion, route: admitted.route,
+      processingMode: admitted.mode, fallbackMethod: admitted.fallbackMethod,
+      sourceByteSize: admitted.byteSize, sourceChecksum: admitted.sourceChecksum });
+    expect(restored).toEqual(admitted);
+    expect(chatPdfCompatibilityKey(restored, versions)).toBe(acceptedCompatibilityKey);
+    const core = createChatPdfCore({ inspect: vi.fn().mockResolvedValue({ pageCount: 2 }),
+      extractGeometry: vi.fn().mockRejectedValue(new Error("synthetic_native_text_unavailable")), parseDocling: null });
+    const planned = await core.plan({ admission: restored, acceptedCompatibilityKey, bytes, onPageCount: vi.fn() });
+    expect(planned.plan.compatibilityKey).toBe(acceptedCompatibilityKey);
+    expect(planned.plan.units.map(({ route }) => route)).toEqual(["vision_required", "vision_required"]);
+    // Restoring evidence must not erase a changed accepted destination either.
+    await expect(core.plan({ admission: { ...restored, snapshot: { ...snapshot, providerModelId: "different-reader" } },
+      acceptedCompatibilityKey, bytes, onPageCount: vi.fn() })).rejects.toThrow("pdf_preparation_invalid");
+  });
+
   it("prepares every native-reader page as an isolated PDF and requires complete transcription coverage", async () => {
     const bytes = await source();
     const reader = role(false, true);

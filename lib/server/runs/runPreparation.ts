@@ -683,23 +683,21 @@ function resolveWorkspaceEnabled(
   return (value as { enabled: boolean }).enabled;
 }
 
-function promptWithWorkspaceContract(
-  prompt: NormalizedRunRequest["prompt"],
+function workspacePromptContract(
   workspace: WorkspaceRunAdmissionPlan,
-  attachments: readonly ProviderAttachment[],
-  fileContext: string,
+  hasAttachments: boolean,
   agentEnabled = false
-): NormalizedRunRequest["prompt"] {
+): string {
   const providerToolName = (originalName: string): string =>
     workspace.toolDefinitions.find((tool) => tool.originalName === originalName)?.namespacedName ?? originalName;
   const shellToolName = providerToolName("sandbox_shell");
   const execToolName = providerToolName("sandbox_exec");
-  const contract = [
+  return [
     "Workspace is active.",
     `Working directory: ${workspace.normalized.projectDirectory}`,
     "Original attachments: /workspace/inbox",
     `Attachment index: ${workspace.normalized.inboxIndexPath}`,
-    attachments.length === 0 ? "This message has no attachments; no current message manifest is present."
+    !hasAttachments ? "This message has no attachments; no current message manifest is present."
       : agentEnabled ? "Read messageManifestPath from the current AIQSA turn workspace paths."
         : `Current message manifest: ${workspace.normalized.messageManifestPath}`,
     "Do not modify originals in inbox; copy files that need changes into project.",
@@ -716,15 +714,104 @@ function promptWithWorkspaceContract(
     WORKSPACE_BROWSER_GUIDANCE,
     WORKSPACE_PSD_GUIDANCE,
     "The inbox index also lists earlier completed exports from this conversation, marked source=export with their producing message and date. Read that index to find the requested earlier result; the current output directory starts fresh and does not describe export history. Use the indexed canonical copy when revising an earlier export, then write a new result to the current output directory. Never claim previous exports are lost solely because the current output directory is empty.",
-    "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface publishes successfully exported files automatically.",
-    fileContext
+    "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface publishes successfully exported files automatically."
   ].join("\n");
+}
+
+function promptWithWorkspaceContract(
+  prompt: NormalizedRunRequest["prompt"],
+  workspace: WorkspaceRunAdmissionPlan,
+  attachments: readonly ProviderAttachment[],
+  fileContext: string,
+  agentEnabled = false
+): NormalizedRunRequest["prompt"] {
+  const contract = `${workspacePromptContract(workspace, attachments.length > 0, agentEnabled)}\n${fileContext}`;
   return {
     ...prompt,
     system: [prompt.system, contract]
       .filter((part): part is string => Boolean(part?.trim()))
       .join("\n\n") || null
   };
+}
+
+/** Explicit document retry retains the accepted reader/answer authority, but a
+ * sibling needs its own current Workspace admission and derived request. */
+export async function preparePdfRetry(
+  deps: Pick<RunPreparationDeps, "workspace" | "runPolicy">,
+  input: Readonly<{
+    adapter: ProviderAdapter;
+    prepared: PreparedRun;
+    signal?: AbortSignal;
+    toolBridge?: ProviderToolBridge;
+    userMessageId: string;
+  }>
+): Promise<RunPreparationResult> {
+  const prepared = materializePreparedRunData(input.prepared);
+  prepared.sourceKind = "regenerate";
+  prepared.defaults = null;
+  prepared.expectedActiveLeafId = null;
+  delete prepared.initialChatMode;
+  const prior = prepared.workspaceAdmissionPlan;
+  if (Boolean(prior) !== Boolean(prepared.normalizedRequest.workspace?.enabled) ||
+    prior && (prior.userMessageId !== input.userMessageId || prior.chatId !== prepared.normalizedRequest.chatId)) {
+    return failure("pdf_preparation_unavailable", 409);
+  }
+  if (prior) {
+    if (!deps.workspace) return failure("workspace_runtime_unavailable", 503);
+    const request = prepared.normalizedRequest;
+    const agentEnabled = Boolean(request.agent);
+    const admission = await deps.workspace.prepare({
+      ...(agentEnabled ? { agentEnabled: true } : {}),
+      assistantMessageId: randomUUID(), chatId: request.chatId, enabled: true,
+      modelSupportsTools: request.modelCapabilities.toolCalling === true && (agentEnabled ||
+        input.toolBridge?.supportsToolCalling({ modelId: request.modelId, provider: request.provider }) === true),
+      runId: randomUUID(), ...(input.signal ? { signal: input.signal } : {}), userMessageId: input.userMessageId
+    });
+    if (!admission.ok) return failure(admission.code, admission.status);
+    const oldContract = workspacePromptContract(prior, request.attachmentIds.length > 0, agentEnabled);
+    const newContract = workspacePromptContract(admission.plan, request.attachmentIds.length > 0, agentEnabled);
+    const oldSystem = request.prompt.system;
+    // Replace only the server-owned segment; the accepted user/Assistant
+    // instructions, file references and unrelated tool authority stay frozen.
+    if (!oldSystem?.includes(oldContract) || oldSystem.indexOf(oldContract) !== oldSystem.lastIndexOf(oldContract)) {
+      return failure("pdf_preparation_unavailable", 409);
+    }
+    const budgets = deps.runPolicy ? await deps.runPolicy.load() : DEFAULT_TOOL_RUN_BUDGETS;
+    const toolBudgets = { ...request.toolBudgets,
+      maxToolCalls: Math.max(budgets.maxToolCalls, admission.plan.normalized.maxToolCalls),
+      maxToolRounds: Math.max(budgets.maxToolRounds, admission.plan.normalized.maxToolRounds) };
+    const prompt = { ...request.prompt, system: oldSystem.replace(oldContract, newContract) };
+    let agent = request.agent;
+    if (agent) {
+      if (!admission.plan.normalized.internetEnabled) return failure("agent_internet_required", 400);
+      // A changed image cannot inherit a native thread's old compatibility
+      // proof. Per-run output paths do not invalidate an otherwise usable thread.
+      if (prior.normalized.imageRef !== admission.plan.normalized.imageRef) {
+        agent = { ...agent, compatibilityHash: hashCanonicalMcpValue({
+          prior: agent.compatibilityHash, image: admission.plan.normalized.imageRef
+        }) };
+      }
+    }
+    prepared.workspaceAdmissionPlan = admission.plan;
+    prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: admission.plan.normalized,
+      ...(agent ? { agent } : {}) };
+    const priorWorkspaceToolNames = new Set(prior.toolDefinitions.map(tool => tool.namespacedName));
+    const providerRequest: ProviderRunRequest = { ...prepared.providerRequest, ...prepared.normalizedRequest,
+      tools: [...(prepared.providerRequest.tools ?? []).filter(tool => !priorWorkspaceToolNames.has(tool.name)), ...admission.tools] };
+    const budget = applyProviderRequestContextBudget({ request: providerRequest,
+      ...(input.toolBridge ? { bridge: input.toolBridge } : {}) });
+    if (!budget.ok) return { ...failure(budget.error.code, budget.status, budget.error.message),
+      ...(budget.error.skillBudget ? { skillBudget: budget.error.skillBudget } : {}) };
+    prepared.contextTruncation = budget.contextTruncation;
+    prepared.normalizedRequest = { ...prepared.normalizedRequest, context: budget.request.context! };
+    prepared.providerRequest = budget.request;
+    if (agent) {
+      try { agentPrompts(budget.request); } catch { return failure("agent_context_too_large", 413); }
+    }
+    prepared.providerRequestPreview = input.adapter.buildRequestPreview(budget.request);
+  }
+  return Object.freeze({ ok: true, adapter: input.adapter, toolBridge: input.toolBridge,
+    prepared: immutablePreparedData(prepared) });
 }
 
 function contentFromStored(value: unknown): NormalizedRunRequest["content"] {

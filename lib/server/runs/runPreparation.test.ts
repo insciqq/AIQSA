@@ -25,7 +25,7 @@ import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import type { ProjectRunAdmission, RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
-import { materializePreparedRunData, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
+import { materializePreparedRunData, preparePdfRetry, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
@@ -1042,6 +1042,10 @@ describe("run preparation", () => {
         expect(prepared.normalizedRequest.prompt.system).toContain("no current message manifest is present");
         expect(prepared.normalizedRequest.prompt.system).toContain(WORKSPACE_PSD_GUIDANCE);
         expect(prepared.normalizedRequest.prompt.system).not.toContain("Read messageManifestPath");
+        const retry = preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared,
+          userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }));
+        expect(retry.normalizedRequest.agent?.compatibilityHash).toBe(prepared.normalizedRequest.agent?.compatibilityHash);
+        expect(retry.workspaceAdmissionPlan!.runId).not.toBe(prepared.workspaceAdmissionPlan!.runId);
         configs.push(prepared.normalizedRequest.agent!);
       }
       expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
@@ -1253,6 +1257,101 @@ describe("run preparation", () => {
       expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_BROWSER_GUIDANCE);
       expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_PSD_GUIDANCE);
     }
+  });
+
+  async function workspacePdfRetryFixture() {
+    const bytes = Buffer.from("%PDF-synthetic-document");
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true },
+      attachments: [runAttachment({ id: "retry-pdf", kind: "pdf", mimeType: "application/pdf", storageKey: "synthetic/pdf",
+        checksum: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.length, metadata: { pdfPageCount: 1 } })],
+      storageObjects: { "synthetic/pdf": { body: bytes, contentType: "application/pdf" } } });
+    let revision = 1;
+    const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => {
+      const name = revision === 1 ? "workspace_exec_old" : "workspace_exec_current";
+      const tool = { description: "Execute a command", inputSchema: { type: "object" }, namespacedName: name, originalName: "sandbox_exec" };
+      return { ok: true as const, tools: [{ ...tool, capability: "workspace" as const, name }], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60_000).toISOString(), policyRevision: revision,
+        sandboxName: "synthetic-retry", sessionId: "ws_retry", toolDefinitions: [tool],
+        normalized: { enabled: true as const, imageRef: `synthetic-image-${revision}`, inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: revision === 1,
+          maxToolCalls: revision * 70, maxToolRounds: revision * 20, mcpVersion: "0.6.16",
+          messageManifestPath: `/workspace/inbox/messages/${input.userMessageId}/manifest.json`,
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_retry",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: String(revision).repeat(64), turnTimeoutSeconds: 300 }
+      } };
+    }) };
+    const deps: RunPreparationDeps = { ...harness.deps, workspace,
+      chatPdf: { resolve: async () => ({ route: "local_text", authority: null, snapshot: null, policyVersion: null }) } };
+    const result = await prepareRun(deps, sendInput(successBody({ content: { blocks: [{ type: "file", attachmentId: "retry-pdf" }] },
+      workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" })));
+    if (!result.ok) throw new Error(result.code);
+    const prepared = JSON.parse(JSON.stringify(result.prepared)) as import("./runPreparation").MaterializedPreparedRunData;
+    prepared.providerRequest.attachments = []; // persisted preparation snapshot
+    const buildRequestPreview = vi.fn((request: ProviderRunRequest) => ({ workspace: request.workspace, prompt: request.prompt, tools: request.tools }));
+    return { deps, input: { ...result, adapter: { ...result.adapter, buildRequestPreview }, prepared,
+      userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }, buildRequestPreview,
+      changeWorkspace: () => { revision = 2; }, workspace };
+  }
+
+  it("re-admits a persisted Workspace PDF retry with fresh sibling IDs and rebuilt execution data", async () => {
+    const fixture = await workspacePdfRetryFixture();
+    const before = structuredClone(fixture.input.prepared);
+    fixture.changeWorkspace();
+    const retried = preparedFrom(await preparePdfRetry(fixture.deps, fixture.input));
+    const plan = retried.workspaceAdmissionPlan!;
+    expect(fixture.workspace.prepare).toHaveBeenCalledTimes(2);
+    expect(plan.runId).not.toBe(before.workspaceAdmissionPlan!.runId);
+    expect(plan.assistantMessageId).not.toBe(before.workspaceAdmissionPlan!.assistantMessageId);
+    expect(plan).toMatchObject({ policyRevision: 2, userMessageId: before.workspaceAdmissionPlan!.userMessageId,
+      sessionId: before.workspaceAdmissionPlan!.sessionId, sandboxName: before.workspaceAdmissionPlan!.sandboxName });
+    expect(retried.normalizedRequest.workspace).toEqual(plan.normalized);
+    expect(retried.providerRequest.workspace).toEqual(plan.normalized);
+    expect(retried.normalizedRequest.prompt.system).toContain(plan.normalized.outputDirectory);
+    expect(retried.normalizedRequest.prompt.system).not.toContain(before.workspaceAdmissionPlan!.normalized.outputDirectory);
+    expect(retried.normalizedRequest.prompt.system).toContain("Internet inside the workspace: disabled.");
+    expect(retried.normalizedRequest.prompt.system).toContain("workspace_exec_current runs one program");
+    expect(retried.normalizedRequest.prompt.system).not.toContain("workspace_exec_old");
+    expect(retried.providerRequest.prompt).toEqual(retried.normalizedRequest.prompt);
+    expect(retried.providerRequest.tools?.map(tool => tool.name)).toContain("workspace_exec_current");
+    expect(retried.providerRequest.tools?.map(tool => tool.name)).not.toContain("workspace_exec_old");
+    expect(retried.providerRequest.tools?.filter(tool => tool.name !== "workspace_exec_current"))
+      .toEqual(before.providerRequest.tools?.filter(tool => tool.name !== "workspace_exec_old"));
+    expect(retried.normalizedRequest.toolBudgets).toMatchObject({ maxToolCalls: 140, maxToolRounds: 40 });
+    expect(retried.providerRequest.toolBudgets).toEqual(retried.normalizedRequest.toolBudgets);
+    expect(fixture.buildRequestPreview).toHaveBeenCalledWith(retried.providerRequest);
+    expect(retried.providerRequestPreview).toEqual(fixture.buildRequestPreview.mock.results[0]!.value);
+    expect(retried.providerAdmissionPlan).toEqual(before.providerAdmissionPlan);
+    expect(retried.chatPdfAdmissions).toEqual(before.chatPdfAdmissions);
+    expect(retried.normalizedRequest.content).toEqual(before.normalizedRequest.content);
+    expect(retried).toMatchObject({ sourceKind: "regenerate", defaults: null, expectedActiveLeafId: null });
+    expect(fixture.input.prepared).toEqual(before);
+  });
+
+  it.each([
+    ["workspace_disabled", 409], ["workspace_runtime_unavailable", 503], ["workspace_runtime_incompatible", 503]
+  ] as const)("fails a PDF retry before persistence when current admission returns %s", async (code, status) => {
+    const fixture = await workspacePdfRetryFixture();
+    const prepare = vi.fn(async () => ({ ok: false as const, code, status }));
+    expect(await preparePdfRetry({ ...fixture.deps, workspace: { prepare } }, fixture.input)).toEqual({ ok: false, code, status });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(fixture.buildRequestPreview).not.toHaveBeenCalled();
+  });
+
+  it("uses the current session after Workspace reset and refuses a retry for another user message", async () => {
+    const fixture = await workspacePdfRetryFixture();
+    const prepare = vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async input => {
+      const admitted = await fixture.workspace.prepare(input);
+      if (!admitted.ok) return admitted;
+      return { ...admitted, plan: { ...admitted.plan, sandboxName: "recreated", sessionId: "ws_recreated",
+        normalized: { ...admitted.plan.normalized, sessionId: "ws_recreated" } } };
+    });
+    const deps = { ...fixture.deps, workspace: { prepare } };
+    expect(preparedFrom(await preparePdfRetry(deps, fixture.input)).workspaceAdmissionPlan).toMatchObject({
+      sandboxName: "recreated", sessionId: "ws_recreated", normalized: { sessionId: "ws_recreated" }
+    });
+    expect(await preparePdfRetry(deps, { ...fixture.input, userMessageId: "other-question" })).toMatchObject({
+      ok: false, code: "pdf_preparation_unavailable"
+    });
+    expect(prepare).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])("discovers the prior opaque source after failure, including trimmed history: %s", async (trimmed) => {

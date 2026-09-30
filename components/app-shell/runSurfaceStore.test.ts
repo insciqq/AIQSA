@@ -139,4 +139,27 @@ describe("run surface store", () => {
     useRunSurfaceStore.getState().resetSurface("chat-a");
     expect(surface("chat-a").contextConfigurationKey).toBeUndefined();
   });
+
+  it("discards a refused answer's activity without clearing newer attempts or another chat", () => {
+    const store = useRunSurfaceStore.getState();
+    store.resetSurface("chat-a", "reviewed-controls", "current-answer");
+    store.appendEvent("chat-a", { type: "error", data: { message: "active_run_in_progress" } });
+    store.appendEvent("chat-b", { type: "run_start", data: {} });
+    store.discardRejectedAttempt("chat-a", "older-answer");
+    expect(surface("chat-a").events).toHaveLength(1);
+
+    store.discardRejectedAttempt("chat-a", "current-answer");
+    expect(surface("chat-a")).toEqual({
+      ...emptyRunSurfaceSnapshot, contextConfigurationKey: "reviewed-controls"
+    });
+    expect(surface("chat-b").events).toHaveLength(1);
+  });
+
+  it("retains attempt ownership without a captured configuration", () => {
+    const store = useRunSurfaceStore.getState();
+    store.resetSurface("chat-a", undefined, "refused-answer");
+    store.appendEvent("chat-a", { type: "error", data: { message: "active_run_in_progress" } });
+    store.discardRejectedAttempt("chat-a", "refused-answer");
+    expect(surface("chat-a")).toEqual(emptyRunSurfaceSnapshot);
+  });
 });

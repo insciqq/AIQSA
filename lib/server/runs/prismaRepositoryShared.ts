@@ -153,28 +153,42 @@ export function runControlRecord(run: {
   };
 }
 
-function isPrismaUniqueViolation(error: unknown): boolean {
+const activeRunIndexes = new Set([
+  "ModelRun_one_active_per_chat_idx",
+  "ModelRun_one_workspace_wait_per_chat_idx"
+]);
+
+function namesActiveRunIndex(value: unknown): boolean {
+  return typeof value === "string" && activeRunIndexes.has(value);
+}
+
+function isPrismaActiveRunUniqueViolation(error: unknown): boolean {
   if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-    return true;
+    const meta = isRecord(error.meta) ? error.meta : null;
+    if (meta?.modelName !== undefined && meta.modelName !== "ModelRun") return false;
+    const target = meta?.target;
+    if (namesActiveRunIndex(target)) return true;
+    return Array.isArray(target) && target.length === 1 &&
+      (namesActiveRunIndex(target[0]) || meta?.modelName === "ModelRun" && target[0] === "chatId");
   }
 
-  if (!(error instanceof Error)) {
-    return false;
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return error.code === "P2010" && isRecord(error.meta) && error.meta.code === "23505" &&
+      typeof error.meta.message === "string" &&
+      /\bconstraint "(ModelRun_one_active_per_chat_idx|ModelRun_one_workspace_wait_per_chat_idx)"/u.test(error.meta.message);
   }
-
-  return (
-    error.message.includes("ModelRun_one_active_per_chat_idx") ||
-    error.message.includes("ModelRun_one_active_per_user_idx") ||
-    error.message.includes("Unique constraint failed") ||
-    error.message.includes("duplicate key value violates unique constraint")
-  );
+  // Raw connector failures lack P2002 metadata. Only an exact known index in
+  // a uniqueness diagnostic proves this conflict; generic duplicate keys do not.
+  return error instanceof Error &&
+    /(?:Unique constraint failed|duplicate key value violates unique constraint)/u.test(error.message) &&
+    /["`'](ModelRun_one_active_per_chat_idx|ModelRun_one_workspace_wait_per_chat_idx)["`']/u.test(error.message);
 }
 
 export async function mapActiveRunConflict<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (isPrismaUniqueViolation(error)) {
+    if (isPrismaActiveRunUniqueViolation(error)) {
       throw new ActiveRunConflictError();
     }
 

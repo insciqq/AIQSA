@@ -133,6 +133,8 @@ function snapshotSize(value: unknown): number {
   }
 }
 
+/** Decode server-owned accepted execution state. Mutable model configuration
+ * uses its own normalizer and cannot grant these already-verified capabilities. */
 export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExecutionSnapshot {
   if (
     !isRecord(value) ||
@@ -151,7 +153,7 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
   }
 
   const connection = normalizeProviderConnectionConfiguration(value.connection);
-  const model = isRecord(value.model) && value.model.adapterKind === "fake"
+  const configuredModel = isRecord(value.model) && value.model.adapterKind === "fake"
     ? {
         adapterKind: "fake" as const,
         capabilities: normalizeProviderModelCapabilities(value.model.capabilities),
@@ -161,6 +163,22 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
           : (() => { throw new Error("provider_execution_snapshot_invalid"); })()
       }
     : normalizeProviderModelConfiguration(value.model);
+  const acceptedCapabilities = configuredModel.adapterKind !== "fake" && configuredModel.modelClass === "answer" &&
+    isRecord(value.model) && isRecord(value.model.capabilities)
+    ? value.model.capabilities : {};
+  const verifiedCapabilities = ["structuredOutput", "forcedToolCalling", "validatedAutoToolCalling"] as const;
+  if (verifiedCapabilities.some((key) => acceptedCapabilities[key] !== undefined &&
+    typeof acceptedCapabilities[key] !== "boolean")) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
+  const model = {
+    ...configuredModel,
+    capabilities: {
+      ...configuredModel.capabilities,
+      ...Object.fromEntries(verifiedCapabilities.filter((key) => typeof acceptedCapabilities[key] === "boolean")
+        .map((key) => [key, acceptedCapabilities[key]]))
+    }
+  };
 
   if (model.adapterKind === "fake" && (value.credentialId !== null || value.providerFamily !== "fake")) {
     throw new Error("provider_execution_snapshot_invalid");

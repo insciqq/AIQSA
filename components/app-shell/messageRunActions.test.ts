@@ -4214,9 +4214,13 @@ describe("message run actions", () => {
     // text, and the surface event has no run to render under; the reason
     // stays visible as a notice beside the preserved original answer.
     expect(actions.setNotice).toHaveBeenCalledExactlyOnceWith({
+      chatId: "chat-a",
       kind: "error",
       text: "Regeneration failed with HTTP 500 (regenerate_failed_500)"
     });
+    // The rejected attempt no longer has an answer in the thread. Its error
+    // must not classify the canonical sibling restored by a later refresh.
+    expect(actions.surface("chat-a").events).toEqual([]);
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages.at(-1)).toMatchObject({
       content: "Original answer", id: "assistant-original"
     });
@@ -4240,6 +4244,7 @@ describe("message run actions", () => {
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
     expect(chatRouteForState()).toEqual({ chatId: null, projectId: null });
     expect(actions.setNotice).toHaveBeenCalledExactlyOnceWith({
+      chatId: "chat-a",
       kind: "error",
       text: "12 Skills are pinned; the limit is 10, including Assistant Skills. Unpin Skills and try again."
     });
