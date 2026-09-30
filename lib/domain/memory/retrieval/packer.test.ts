@@ -1123,18 +1123,126 @@ describe("Personal Memory context pack", () => {
     expect(pack.omissionCounts).toMatchObject({ pattern_support_missing: 1 });
   });
 
-  it("keeps generalizations as evidence but leaves combined memories in the list", () => {
+  it("uses a supported overlap combination as lower-authority answer evidence", () => {
     const fixture = supportedPattern();
     expect(packMemoryPersonalContext(fixture).items).toHaveLength(1);
     const pack = packMemoryPersonalContext({
       ...fixture,
+      expanded: fixture.expanded.map((entry) => ({ ...entry, patternSourceCount: 3 })),
       ranked: fixture.ranked.map((candidate) => ({
         ...candidate,
-        metadata: { ...candidate.metadata, combinedMemory: true }
+        metadata: { ...candidate.metadata, combinedMemory: true,
+          combinedMemoryReason: "combined_overlapping_facts" as const }
       }))
     });
-    expect(pack.items).toEqual([]);
-    expect(pack.omissionCounts.combined_memory_display_only).toBe(1);
+    expect(pack.items).toMatchObject([{ derived: true, evidenceType: "pattern",
+      combinedMemoryReason: "combined_overlapping_facts" }]);
+    expect(pack.text).toContain("combination_kind");
+    expect(pack.text).toContain("lower-authority compact projection");
+  });
+
+  it("admits a two-source episode with exact per-claim support from one message", () => {
+    const fixture = supportedPattern(2);
+    const first = "The user reported a short-lived symptom.";
+    const second = "The user later reported the symptom had changed.";
+    const expanded = {
+      ...fixture.expanded[0]!,
+      safeText: `${first} ${second}`,
+      patternSourceCount: 2,
+      patternSupportingEvidence: fixture.expanded[0]!.patternSupportingEvidence!.map(
+        (support) => ({ ...support, confidence: 0.6,
+          sourceAuthority: "DIRECT_AUTOMATIC" as const, sourceRootHash: "a".repeat(64) })
+      )
+    };
+    const candidate = fixture.ranked[0]!;
+    const pack = packMemoryPersonalContext({
+      ...fixture,
+      expanded: [expanded],
+      ranked: [{ ...candidate, metadata: {
+        ...candidate.metadata,
+        combinedMemory: true,
+        combinedMemoryReason: "combined_episode_facts",
+        combinedClaims: [
+          { statement: first, sourceVersionIds: ["support-0"] },
+          { statement: second, sourceVersionIds: ["support-1"] }
+        ]
+      } }]
+    });
+
+    expect(pack.items).toHaveLength(1);
+    const [item] = renderedEvidence(pack);
+    expect(item?.combination_claims).toEqual([
+      { statement: first, support_refs: ["P1"] },
+      { statement: second, support_refs: ["P2"] }
+    ]);
+    expect(pack.text).not.toContain("support-0");
+    expect(pack.items[0]?.patternSupportingEvidence?.map(({ sourceAuthority }) => sourceAuthority))
+      .toEqual(["supporting_observation", "supporting_observation"]);
+    expect(pack.text).not.toContain('"source_authority":"learned_from_user"');
+  });
+
+  it("rejects a combination with missing source or unsupported claim mapping", () => {
+    const fixture = supportedPattern(2);
+    const candidate = fixture.ranked[0]!;
+    const rankedCombination = [{ ...candidate, metadata: {
+      ...candidate.metadata,
+      combinedMemory: true,
+      combinedMemoryReason: "combined_refined_facts" as const,
+      combinedClaims: [{ statement: "A shared detail.", sourceVersionIds: ["support-0"] }]
+    } }];
+    const missingSource = packMemoryPersonalContext({
+      ...fixture,
+      expanded: fixture.expanded.map((entry) => ({ ...entry, patternSourceCount: 3 })),
+      ranked: rankedCombination
+    });
+    const missingClaim = packMemoryPersonalContext({
+      ...fixture,
+      expanded: fixture.expanded.map((entry) => ({ ...entry, patternSourceCount: 2 })),
+      ranked: rankedCombination
+    });
+
+    expect(missingSource.omissionCounts.combined_support_missing).toBe(1);
+    expect(missingClaim.omissionCounts.combined_support_missing).toBe(1);
+    expect(missingSource.items).toEqual([]);
+    expect(missingClaim.items).toEqual([]);
+  });
+
+  it("keeps a protected direct source ahead of its combined parent", () => {
+    const fixture = supportedPattern(2);
+    const parent = fixture.ranked[0]!;
+    const direct = ranked("support-0");
+    const pack = packMemoryPersonalContext({
+      ...fixture,
+      expanded: [
+        { ...fixture.expanded[0]!, patternSourceCount: 2 },
+        expansion("support-0", false, "I wrote a checklist for workshop 1.")
+      ],
+      ranked: [{ ...parent, metadata: { ...parent.metadata, combinedMemory: true,
+        combinedMemoryReason: "combined_overlapping_facts" } }, direct]
+    });
+
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(["support-0"]);
+    expect(pack.omissionCounts.combined_source_already_selected).toBe(1);
+  });
+
+  it("selects a supported combination before overlapping automatic sources", () => {
+    const fixture = supportedPattern(2);
+    const parent = fixture.ranked[0]!;
+    const source = ranked("support-0");
+    const pack = packMemoryPersonalContext({
+      ...fixture,
+      expanded: [
+        expansion("support-0", false, "I wrote a checklist for workshop 1."),
+        { ...fixture.expanded[0]!, patternSourceCount: 2 }
+      ],
+      ranked: [{ ...source, metadata: { ...source.metadata,
+        sourceAuthority: "DIRECT_AUTOMATIC", sourceMode: "AUTOMATIC" } },
+        { ...parent, metadata: { ...parent.metadata, combinedMemory: true,
+          combinedMemoryReason: "combined_overlapping_facts" } }]
+    });
+
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(["pattern"]);
+    expect(pack.omissionCounts.source_covered_by_combination).toBe(1);
   });
 
   it.each([0, 2, 3, 8, 9])("keeps pattern support cardinality bounded: %i", (count) => {

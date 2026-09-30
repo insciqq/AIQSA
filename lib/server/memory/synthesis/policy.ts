@@ -1,20 +1,32 @@
 import type {
   MemoryDirectness,
   MemoryFactModality,
-  MemoryFactSourceMode
+  MemoryFactSourceMode,
+  MemorySensitivityClass
 } from "@prisma/client";
 import { memorySha256 } from "../persistence/lexical";
+import { MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS } from "../../../domain/memory/retrieval/config";
 
 export const MEMORY_SYNTHESIS_PIPELINE_VERSION = "memory-synthesis-v2";
-export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v5";
-export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v7";
-export const MEMORY_SYNTHESIS_SCHEMA_VERSION = "memory-synthesis-schema-v3";
+export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v6";
+export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v9";
+export const MEMORY_SYNTHESIS_SCHEMA_VERSION = "memory-synthesis-schema-v4";
 export const MEMORY_SYNTHESIS_RETRIEVAL_CONFIG_FINGERPRINT =
   "memory-synthesis-retrieval-none-v1";
 
 export const MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES = 3;
+export const MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES = 2;
 export const MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES =
-  MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES;
+  MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES;
+export const MEMORY_SYNTHESIS_COMBINED_REASONS = [
+  "combined_overlapping_facts",
+  "combined_refined_facts",
+  "combined_episode_facts"
+] as const;
+
+export function memorySynthesisIsCombination(reasonCode: string): boolean {
+  return (MEMORY_SYNTHESIS_COMBINED_REASONS as readonly string[]).includes(reasonCode);
+}
 export const MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER = 8;
 export const MEMORY_SYNTHESIS_NEW_FACT_TRIGGER = 12;
 export const MEMORY_SYNTHESIS_QUIET_PERIOD_MS = 30 * 60 * 1_000;
@@ -121,6 +133,7 @@ export function decideMemorySynthesisSchedule(
 export type MemorySynthesisSource = Readonly<{
   canonicalKey: string;
   category: string;
+  confidence: number;
   directness: MemoryDirectness;
   displayText: string;
   eligibilityHash: string;
@@ -134,6 +147,10 @@ export type MemorySynthesisSource = Readonly<{
   sourceChatIds: readonly string[];
   sourceMessageIds: readonly string[];
   sourceMode: MemoryFactSourceMode;
+  sensitivityClass: MemorySensitivityClass;
+  /** Exact current-source temporal bounds; observedAt is testimony time only. */
+  validFrom?: Date | null;
+  validTo?: Date | null;
   /** Stored semantic scope, used to keep relationship subjects isolated. */
   subjectScope?: "CURRENT_USER" | "USER_RELATIONSHIP_CONTEXT" | null;
   /** Root entity ids linked with role SUBJECT, preserving the grounded anchor. */
@@ -304,6 +321,29 @@ export function memorySynthesisDistinctSupportRootCount(
   return assignedFactByRoot.size;
 }
 
+/** Consolidation changes presentation, never the certainty of its sources.
+ * Recurrence still needs three high-confidence facts with independent roots. */
+export function memorySynthesisSourcesSupportReason(
+  sources: readonly MemorySynthesisSource[],
+  reasonCode: string
+): boolean {
+  const combined = memorySynthesisIsCombination(reasonCode);
+  const minimum = combined
+    ? MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES
+    : MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES;
+  if (new Set(sources.map(({ factId }) => factId)).size < minimum ||
+    (combined && sources.length > MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS) ||
+    sources.some((source) => !Number.isFinite(source.confidence) ||
+      source.confidence <= 0 || source.confidence > 1 ||
+      source.sourceMessageIds.length === 0 ||
+      (!combined && source.confidence !== 1))) return false;
+  if (reasonCode === "combined_episode_facts") {
+    return sources[0]!.sourceChatIds.some((chatId) =>
+      sources.every((source) => source.sourceChatIds.includes(chatId)));
+  }
+  return memorySynthesisDistinctSupportRootCount(sources) >= minimum;
+}
+
 /** Deterministic, bounded clustering is deliberately conservative. The model
  * may propose wording only inside one supplied cluster and cannot join sources
  * that the server did not already group. */
@@ -323,6 +363,9 @@ function buildMemorySynthesisPlanWithMinimum(input: Readonly<{
       source.memoryGeneration !== input.generation ||
       source.modality === "PATTERN" ||
       source.directness === "INFERRED" ||
+      !Number.isFinite(source.confidence) ||
+      source.confidence <= 0 || source.confidence > 1 ||
+      source.sourceMessageIds.length === 0 ||
       !source.displayText.trim() || source.displayText.includes("\u0000") ||
       source.displayText.length > 2_000 ||
       !/^[a-f0-9]{64}$/u.test(source.eligibilityHash) ||
@@ -373,10 +416,11 @@ function buildMemorySynthesisPlanWithMinimum(input: Readonly<{
     window.sources.push(source);
   }
   const clusters = [...groups.values()].flat()
-    .filter(({ sources }) =>
-      sources.length >= MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES &&
-      memorySynthesisDistinctSupportRootCount(sources) >=
-        MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES)
+    .filter(({ sources }) => sources.length >= MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES && (
+      memorySynthesisDistinctSupportRootCount(sources) >= MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES ||
+      sources.some((source, index) => sources.slice(index + 1).some((other) =>
+        source.sourceChatIds.some((chatId) => other.sourceChatIds.includes(chatId))))
+    ))
     .map(({ key, sources, subjectKey }) => ({
       entityRefs: [...new Set(sources.flatMap(({ entityRefs }) => entityRefs))]
         .sort().slice(0, 8),
@@ -400,12 +444,20 @@ function buildMemorySynthesisPlanWithMinimum(input: Readonly<{
     sourceSnapshotHash: memorySha256({
       clusters: clusters.map(({ key, sources }) => ({
         key,
-        refs: sources.map(({ ref }) => ref)
+        refs: sources.map(({ ref }) => ref),
+        sourceMetadata: sources.map((source) => ({
+          confidence: source.confidence,
+          ref: source.ref,
+          sourceChatIds: [...source.sourceChatIds].sort(),
+          sourceMessageIds: [...source.sourceMessageIds].sort(),
+          validFrom: source.validFrom?.toISOString() ?? null,
+          validTo: source.validTo?.toISOString() ?? null
+        }))
       })),
       domain: "aiqsa.memory.synthesis-source-snapshot",
       entityBindings,
       sourceSetFingerprint,
-      version: 1
+      version: 2
     }),
     sources: Object.freeze(bound)
   });
@@ -424,7 +476,7 @@ export function buildMemorySynthesisPlan(input: Readonly<{
 
 /** A source invalidation may authorize one replacement attempt for only the
  * affected cluster. It keeps every normal plan fence while lowering the
- * corpus-wide scheduling threshold to the pattern's three-source minimum. */
+ * corpus-wide scheduling threshold to the consolidation minimum. */
 export function buildMemoryTargetedSynthesisPlan(input: Readonly<{
   boundary: Date;
   generation: number;
@@ -432,6 +484,6 @@ export function buildMemoryTargetedSynthesisPlan(input: Readonly<{
 }>): MemorySynthesisPlan | null {
   return buildMemorySynthesisPlanWithMinimum(
     input,
-    MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES
+    MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES
   );
 }

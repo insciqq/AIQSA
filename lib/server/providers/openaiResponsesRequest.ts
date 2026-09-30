@@ -67,7 +67,9 @@ export type OpenAIResponsesRequestBody = {
     summary?: Exclude<OpenAIResponsesParams["reasoning"]["summary"], "none">;
   };
   store: boolean;
-  stream: boolean;
+  /** Omit false for compatible gateways that reject an explicit stream:false.
+   * A true value remains explicit because streaming is an active transport mode. */
+  stream?: boolean;
   temperature?: number;
   tool_choice?: "auto" | "none" | "required";
   tools?: Record<string, unknown>[];
@@ -339,7 +341,7 @@ function buildOpenAIResponsesBody(
       ? { prompt_cache_options: { ttl: "30m" } }
       : { prompt_cache_retention: "24h" }),
     store: background ? true : params.store,
-    stream,
+    ...(stream ? { stream: true } : {}),
     ...(isGpt6Model(model) && params.reasoning.effort !== "none"
       ? {}
       : { temperature: params.temperature })

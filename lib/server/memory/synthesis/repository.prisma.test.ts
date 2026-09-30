@@ -5,17 +5,21 @@ import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createMemoryClientRefService } from "../actions/clientRef";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
-import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../learning/extraction/contract";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION
+} from "../learning/extraction/contract";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import type { MemoryJobClaim } from "../coordinator/types";
 import {
   createPrismaMemoryFactRepository,
   type MemoryFactSaveInput
 } from "../persistence/facts";
-import { memorySha256 } from "../persistence/lexical";
+import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { memorySafetyLiteFactClassification } from "../safetyLite";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
-import { withLockedMemoryTransaction } from "../persistence/transaction";
+import { ensureActiveLexicalGeneration, withLockedMemoryTransaction } from "../persistence/transaction";
 import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "../learning/relations/explicitPolicy";
 import { createMemoryRebuildHandler } from "../rebuild/handler";
 import { createPrismaMemoryRebuildRepository } from "../rebuild/repository";
@@ -91,6 +95,7 @@ async function cleanupOwner(userId: string): Promise<void> {
 }
 
 function sourceInput(input: Readonly<{
+  confidence?: number;
   index: number;
   observedAt: Date;
   scopeId: string;
@@ -123,7 +128,7 @@ function sourceInput(input: Readonly<{
     value: {
       canonicalKey: `synthesis.source.${input.index}.${fingerprint.slice(0, 16)}`,
       category: "habits",
-      confidence: 1,
+      confidence: input.confidence ?? 1,
       directness: "DIRECT",
       displayText: statement,
       importance: 0.7,
@@ -246,14 +251,15 @@ async function classifySources(
 async function attachDirectMessage(
   userId: string,
   versionId: string,
-  index: number
+  index: number,
+  client: Pick<Prisma.TransactionClient, "chat" | "message" | "memoryEvidence"> = prisma
 ): Promise<void> {
   const statement = `I use the review workflow step ${index} every week.`;
   const observedAt = new Date();
-  const chat = await prisma.chat.create({
+  const chat = await client.chat.create({
     data: { title: "Memory synthesis evidence", userId }
   });
-  const message = await prisma.message.create({
+  const message = await client.message.create({
     data: {
       chatId: chat.id,
       content: textMessageContent(statement),
@@ -263,12 +269,12 @@ async function attachDirectMessage(
       updatedAt: observedAt
     }
   });
-  await prisma.chat.update({
+  await client.chat.update({
     data: { activeLeafMessageId: message.id, memorySourceRevision: 1 },
     where: { id: chat.id }
   });
   const sourceHash = memorySha256(statement);
-  await prisma.memoryEvidence.create({
+  await client.memoryEvidence.create({
     data: {
       branchGeneration: 0,
       chatId: chat.id,
@@ -298,24 +304,26 @@ async function attachDirectMessage(
 async function createScheduleSources(
   userId: string,
   withPlan: boolean,
-  sourceCount = 3
+  sourceCount = 3,
+  confidence = 1,
+  sourceMode: "EXPLICIT" | "AUTOMATIC" = "EXPLICIT"
 ): Promise<readonly { factId: string; versionId: string }[]> {
   const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
   const facts = createPrismaMemoryFactRepository(keyring, prisma, {
     consumeExplicitAuthorization: async () => undefined
   });
-  const sources = [];
+  const sources: Array<{ factId: string; versionId: string }> = [];
   for (let index = 0; index < sourceCount; index += 1) {
-    sources.push(await facts.save(userId, sourceInput({
-      index,
-      observedAt: new Date(),
-      scopeId: scope.id
-    })));
+    sources.push(sourceMode === "AUTOMATIC"
+      ? await createAutomaticScheduleSource(userId, scope.id, index, confidence)
+      : await facts.save(userId, sourceInput({
+          confidence, index, observedAt: new Date(), scopeId: scope.id
+        })));
   }
   await classifySources(userId, sources.map(({ versionId }) => versionId));
   if (withPlan) {
     for (const [index, source] of sources.entries()) {
-      await attachDirectMessage(userId, source.versionId, index);
+      if (sourceMode === "EXPLICIT") await attachDirectMessage(userId, source.versionId, index);
     }
     const entityId = `memory-synthesis-entity-${randomUUID()}`;
     await prisma.memoryEntity.create({
@@ -337,8 +345,51 @@ async function createScheduleSources(
         userId
       }))
     });
+    if (sourceMode === "AUTOMATIC") {
+      await withLockedMemoryTransaction(prisma, userId, async (tx, settings) => {
+        await ensureActiveLexicalGeneration(tx, settings, settings.memoryRevision);
+        for (const { versionId } of sources) {
+          await ensureClassifiedSearchEntry(tx, settings, versionId, memorySha256(versionId), new Date());
+        }
+      });
+    }
   }
   return sources;
+}
+
+/** Direct synthetic testimony with no owner-save/edit lineage. A genuine
+ * automatic fixture is needed to exercise UI collapsing of unprotected facts. */
+async function createAutomaticScheduleSource(
+  userId: string, scopeId: string, index: number, confidence = 1
+): Promise<{ factId: string; versionId: string }> {
+  const factId = randomUUID(), versionId = randomUUID(), eventId = randomUUID();
+  const observedAt = new Date();
+  const statement = `I use the review workflow step ${index} every week.`;
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryFact.create({ data: {
+      id: factId, userId, scopeId, canonicalKey: `automatic-synthesis:${factId}`,
+      category: "habits", currentVersionId: versionId
+    } });
+    await tx.memoryEvent.create({ data: {
+      id: eventId, userId, factId, factVersionId: versionId,
+      actorType: "JOB", operation: "PROMOTE"
+    } });
+    await tx.memoryFactVersion.create({ data: {
+      id: versionId, userId, factId, createdByEventId: eventId,
+      category: "habits", displayText: statement,
+      normalizedSearchText: normalizeMemorySearchText(statement),
+      structuredValue: { kind: "habit", step: index }, languageCode: "en",
+      modality: "HABIT", sourceMode: "AUTOMATIC", directness: "DIRECT",
+      confidence, importance: 0.7, sensitivityClass: "NORMAL", observedAt,
+      pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+      ingestionFingerprint: memorySha256({ factId, versionId }),
+      ...memorySafetyLiteFactClassification(observedAt)
+    } });
+    // vNext source authority is a deferred transaction invariant: exact source
+    // message/span evidence must exist before the fact transaction commits.
+    await attachDirectMessage(userId, versionId, index, tx);
+  });
+  return { factId, versionId };
 }
 
 function claimFromJob(job: Awaited<ReturnType<typeof prisma.memoryJob.update>>): MemoryJobClaim {
@@ -371,7 +422,11 @@ function claimFromJob(job: Awaited<ReturnType<typeof prisma.memoryJob.update>>):
 async function applySyntheticProposals(
   userId: string,
   plan: MemorySynthesisPlan,
-  proposals: readonly Readonly<{ sourceRefs: readonly string[]; statement: string }>[],
+  proposals: readonly Readonly<{
+    claims?: readonly Readonly<{ sourceRefs: readonly string[]; statement: string }>[];
+    sourceRefs: readonly string[];
+    statement: string;
+  }>[],
   reasonCode: MemorySynthesisReasonCode = "combined_overlapping_facts"
 ): Promise<Readonly<{
   applied: number;
@@ -407,7 +462,10 @@ async function applySyntheticProposals(
   });
   const claim = claimFromJob(job);
   const output = decodeMemorySynthesisOutput({
-    patterns: proposals.map(({ sourceRefs, statement }) => ({
+    patterns: proposals.map(({ claims, sourceRefs, statement }) => ({
+      ...(claims ? { claims: claims.map((claim) => ({
+        source_refs: claim.sourceRefs, statement: claim.statement
+      })) } : {}),
       confidence_band: "HIGH",
       entity_refs: [],
       reason_code: reasonCode,
@@ -425,7 +483,7 @@ async function applySyntheticProposals(
     pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
     policyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
     promptVersion: MEMORY_SYNTHESIS_PROMPT_VERSION,
-    schemaVersion: "memory-synthesis-schema-v3",
+    schemaVersion: "memory-synthesis-schema-v4",
     userId
   });
   const result = {
@@ -652,7 +710,63 @@ describe("Prisma Memory Dream synthesis", () => {
           userId
         }))
       });
-      expect((await loadMemorySynthesisSnapshot(prisma, userId))?.plan).toBeNull();
+      const plan = (await loadMemorySynthesisSnapshot(prisma, userId))?.plan;
+      expect(plan?.clusters).toHaveLength(1);
+      if (!plan) throw new Error("memory_synthesis_episode_plan_missing");
+      const refs = plan.sources.map(({ ref }) => ref);
+      expect(() => decodeMemorySynthesisOutput({ patterns: [{
+        confidence_band: "HIGH", entity_refs: [], reason_code: "repeated_workflow_pattern",
+        source_refs: refs, statement: "The user tends to follow this workflow."
+      }] }, plan)).toThrow();
+      const claims = plan.sources.slice(0, 2).map((source) => ({
+        sourceRefs: [source.ref], statement: source.displayText
+      }));
+      expect((await applySyntheticProposals(userId, plan, [{
+        claims, sourceRefs: refs.slice(0, 2), statement: claims.map(({ statement }) => statement).join(" ")
+      }], "combined_episode_facts")).applied).toBe(1);
+      const projection = await prisma.memoryFactVersion.findFirstOrThrow({
+        where: { modality: "PATTERN", userId }
+      });
+      expect(projection.structuredValue).toMatchObject({
+        claims: claims.map((claim) => ({
+          sourceVersionIds: [plan.sources.find(({ ref }) => ref === claim.sourceRefs[0])!.versionId],
+          statement: claim.statement
+        })),
+        reasonCode: "combined_episode_facts"
+      });
+      expect(await prisma.$queryRaw<Array<{ valid: boolean }>>(Prisma.sql`
+        SELECT aiqsa_memory_synthesis_claims_valid(${userId}, ${projection.id}) AS valid
+      `)).toEqual([{ valid: true }]);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("persists a pairwise display combination while retaining both direct sources", async () => {
+    const userId = await createOwner();
+    try {
+      const sources = await createScheduleSources(userId, true, 2, 0.6);
+      const plan = (await loadMemorySynthesisSnapshot(prisma, userId))?.plan;
+      if (!plan) throw new Error("memory_synthesis_pair_plan_missing");
+      const applied = await applySyntheticProposals(userId, plan, [{
+        sourceRefs: plan.sources.map(({ ref }) => ref), statement: "The user follows a weekly review workflow."
+      }]);
+      expect(applied.applied).toBe(1);
+      expect(await prisma.memoryFact.count({ where: {
+        id: { in: sources.map(({ factId }) => factId) }, state: "ACTIVE", userId
+      } })).toBe(2);
+      const projection = await prisma.memoryFactVersion.findFirstOrThrow({
+        where: { modality: "PATTERN", userId }
+      });
+      expect(projection.confidence).toBe(0.6);
+      expect(await loadMemoryReusableFactVersionIds(prisma, userId, [projection.id], {
+        includePatterns: true
+      })).toEqual(new Set([projection.id]));
+      const protectedList = await createPrismaExplicitMemoryRepository(prisma).list(userId, {
+        scope: { type: "GLOBAL_USER" }, state: "ACTIVE"
+      });
+      expect(protectedList.memories.map(({ id }) => id))
+        .toEqual(expect.arrayContaining(sources.map(({ factId }) => factId)));
     } finally {
       await cleanupOwner(userId);
     }
@@ -661,7 +775,7 @@ describe("Prisma Memory Dream synthesis", () => {
   it("keeps disjoint conclusions and replaces only a conclusion with shared facts", async () => {
     const userId = await createOwner();
     try {
-      const sources = await createScheduleSources(userId, true, 6);
+      const sources = await createScheduleSources(userId, true, 6, 1, "AUTOMATIC");
       const initialPlan = (await loadMemorySynthesisSnapshot(prisma, userId))?.plan;
       if (!initialPlan) throw new Error("memory_synthesis_overlap_plan_missing");
       const refs = new Map(initialPlan.sources.map(({ factId, ref }) => [factId, ref]));
@@ -1085,7 +1199,7 @@ describe("Prisma Memory Dream synthesis", () => {
         pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
         policyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
         promptVersion: MEMORY_SYNTHESIS_PROMPT_VERSION,
-        schemaVersion: "memory-synthesis-schema-v3",
+        schemaVersion: "memory-synthesis-schema-v4",
         userId
       });
       const result = {
@@ -1687,15 +1801,28 @@ describe("Prisma Memory Dream synthesis", () => {
       const targetedJobs = await prisma.memoryJob.findMany({
         where: {
           kind: "SYNTHESIZE_MEMORIES",
+          pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
           targetFactVersionId: { in: [pattern.id, shortPattern.id] },
           userId
         }
       });
-      expect(targetedJobs).toHaveLength(1);
-      expect(targetedJobs[0]).toMatchObject({
+      // Both source sets can now be reconsidered: the smaller one retains two
+      // facts and may combine them, but cannot recreate a recurring pattern.
+      expect(targetedJobs).toHaveLength(2);
+      const mainTarget = targetedJobs.find(({ targetFactVersionId }) => targetFactVersionId === pattern.id)!;
+      expect(mainTarget).toMatchObject({
         state: "QUEUED",
         targetFactVersionId: pattern.id
       });
+      const shorterTarget = targetedJobs.find(({ targetFactVersionId }) => targetFactVersionId === shortPattern.id)!;
+      expect(shorterTarget).toMatchObject({ state: "QUEUED", targetFactVersionId: shortPattern.id });
+      const shorterPlan = (await loadMemorySynthesisSnapshot(prisma, userId, shortPattern.id))?.plan;
+      expect(shorterPlan?.sources).toHaveLength(2);
+      expect(() => decodeMemorySynthesisOutput({ patterns: [{
+        confidence_band: "HIGH", entity_refs: [], reason_code: "repeated_habit_pattern",
+        source_refs: shorterPlan!.sources.map(({ ref }) => ref),
+        statement: "The user often repeats the same weekly review steps."
+      }] }, shorterPlan!)).toThrow();
       const replacementLeaseToken = `memory-synthesis-replacement-${randomUUID()}`;
       const replacementRow = await prisma.memoryJob.update({
         data: {
@@ -1704,7 +1831,7 @@ describe("Prisma Memory Dream synthesis", () => {
           leaseToken: replacementLeaseToken,
           state: "CLAIMED"
         },
-        where: { id: targetedJobs[0]!.id }
+        where: { id: mainTarget.id }
       });
       const replacementClaim = claimFromJob(replacementRow);
       const replacementSnapshot = await repository.snapshot(replacementClaim);
@@ -1739,7 +1866,7 @@ describe("Prisma Memory Dream synthesis", () => {
         pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
         policyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
         promptVersion: MEMORY_SYNTHESIS_PROMPT_VERSION,
-        schemaVersion: "memory-synthesis-schema-v3",
+        schemaVersion: "memory-synthesis-schema-v4",
         userId
       });
       const replacementResult = {

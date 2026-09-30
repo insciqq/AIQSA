@@ -92,9 +92,11 @@ async function dispatch(runtime: ProviderExecutionSnapshot) {
   const [, init] = fetchProvider.mock.calls[0]!;
   const body = JSON.parse(String(init?.body));
   expect(body).toMatchObject({
-    model: "synthetic-control-model", stream: false,
+    model: "synthetic-control-model",
     tool_choice: "required"
   });
+  if (body.input) expect(body).not.toHaveProperty("stream");
+  else expect(body).toHaveProperty("stream", false);
   if (runtime.model.adapterKind === "openrouter_chat_completions") {
     expect(body).not.toHaveProperty("parallel_tool_calls");
   } else {

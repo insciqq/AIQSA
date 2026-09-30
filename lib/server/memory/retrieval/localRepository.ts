@@ -92,6 +92,7 @@ import {
   memoryPersonalFactEvidencePredicate
 } from "../persistence/eligibility";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
 import {
   memoryHistoryChunkSourceAuthorityPredicate,
   memoryHistoryRoundSourceAuthorityPredicate
@@ -396,6 +397,7 @@ type ExpandedRow = Readonly<{
   sourceMessageIds?: string[];
   userSpans?: Prisma.JsonValue;
   patternSupportingEvidence: Prisma.JsonValue;
+  patternSourceCount?: number;
   supportingEvidence: Prisma.JsonValue;
   supportingItemId: string | null;
 }>;
@@ -533,13 +535,30 @@ function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
       ].includes(row.safeContentHash)
     )
   ) throw new Error("memory_retrieval_result_invalid");
+  const synthesisValue = isRecord(row.structuredValue) ? row.structuredValue : null;
+  const combinedReason: MemoryCandidateMetadata["combinedMemoryReason"] =
+    row.modality === "PATTERN" &&
+    (synthesisValue?.reasonCode === "combined_overlapping_facts" ||
+      synthesisValue?.reasonCode === "combined_refined_facts" ||
+      synthesisValue?.reasonCode === "combined_episode_facts")
+    ? synthesisValue.reasonCode
+    : null;
+  const combinedClaims = Array.isArray(synthesisValue?.claims) &&
+    synthesisValue.claims.every((claim) => isRecord(claim) &&
+      typeof claim.statement === "string" &&
+      Array.isArray(claim.sourceVersionIds) &&
+      claim.sourceVersionIds.every((id: unknown) => typeof id === "string" && validToken(id)))
+    ? synthesisValue.claims.map((claim) => ({
+        sourceVersionIds: [...(claim as { sourceVersionIds: string[] }).sourceVersionIds],
+        statement: (claim as { statement: string }).statement
+      }))
+    : null;
   return {
     canonicalKey: row.canonicalKey,
     category: row.category,
-    combinedMemory: row.modality === "PATTERN" &&
-      row.structuredValue !== null && typeof row.structuredValue === "object" &&
-      !Array.isArray(row.structuredValue) &&
-      row.structuredValue.reasonCode === "combined_overlapping_facts",
+    combinedMemory: combinedReason !== null,
+    combinedMemoryReason: combinedReason,
+    combinedClaims,
     confidence: row.confidence,
     conflict: row.conflict,
     coreEligible: row.coreEligible,
@@ -703,11 +722,13 @@ function decodedPatternSupportingEvidence(
   }
   const decoded = row.patternSupportingEvidence.flatMap((value) => {
     if (!isRecord(value) ||
-      Object.keys(value).sort().join("\u0000") !==
+      Object.keys(value).filter((key) => key !== "confidence").sort().join("\u0000") !==
         "itemId\u0000observedAt\u0000safeText\u0000sourceAuthority\u0000sourceChatId\u0000sourceRootHash" ||
       !validToken(value.itemId) || typeof value.safeText !== "string" ||
       (value.sourceAuthority !== "DIRECT_AUTOMATIC" &&
         value.sourceAuthority !== "EXPLICIT") ||
+      (value.confidence !== undefined && (typeof value.confidence !== "number" ||
+        !Number.isFinite(value.confidence) || value.confidence <= 0 || value.confidence > 1)) ||
       (value.sourceChatId !== null && !validToken(value.sourceChatId)) ||
       typeof value.sourceRootHash !== "string" ||
       !fingerprintPattern.test(value.sourceRootHash) ||
@@ -716,6 +737,7 @@ function decodedPatternSupportingEvidence(
     const safeText = safeMemoryProjectionText(value.safeText);
     return safeText && !Number.isNaN(observedAt.getTime())
       ? [{
+          ...(value.confidence === undefined ? {} : { confidence: value.confidence }),
           itemId: value.itemId,
           observedAt,
           safeText,
@@ -727,8 +749,7 @@ function decodedPatternSupportingEvidence(
       : [];
   });
   if (decoded.length !== row.patternSupportingEvidence.length ||
-    new Set(decoded.map(({ itemId }) => itemId)).size !== decoded.length ||
-    new Set(decoded.map(({ sourceRootHash }) => sourceRootHash)).size !== decoded.length) {
+    new Set(decoded.map(({ itemId }) => itemId)).size !== decoded.length) {
     return Object.freeze([]);
   }
   return Object.freeze(decoded);
@@ -775,7 +796,9 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
       new Set(sourceMessageIds).size !== sourceMessageIds.length
     )) ||
     (row.supportingItemId !== null && !validToken(row.supportingItemId)) ||
-    !validDate(row.occurredFrom) || !validDate(row.occurredTo)
+    !validDate(row.occurredFrom) || !validDate(row.occurredTo) ||
+    (row.patternSourceCount !== undefined &&
+      (!Number.isSafeInteger(row.patternSourceCount) || row.patternSourceCount < 0))
   ) throw new Error("memory_expansion_result_invalid");
   const safeText = safeMemoryProjectionText(row.safeText);
   if (!safeText) return null;
@@ -798,6 +821,8 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
       : {}),
     itemType: row.itemType as MemoryExpandedCandidate["itemType"],
     ...(patternSupportingEvidence.length > 0 ? { patternSupportingEvidence } : {}),
+    ...(row.patternSourceCount === undefined
+      ? {} : { patternSourceCount: row.patternSourceCount }),
     retrievalHint: contextual.retrievalHint,
     safeText,
     ...(sourceMessageIds !== undefined
@@ -1600,6 +1625,39 @@ function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot, limit: number)
         includePatterns: false,
         lifecycle: "CURRENT"
       })}
+      -- A current episode remains available to targeted and historical reads.
+      -- New automatic versions carry usefulness directly. An older unclassified
+      -- version needs an exact current-policy KEEP review. Explicit and
+      -- owner-touched facts retain standing use.
+      AND (
+        version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+        OR fact."pinned" = TRUE
+        OR EXISTS (
+          SELECT 1 FROM "MemoryEvent" AS owner_event
+          WHERE owner_event."userId" = fact."userId"
+            AND owner_event."factId" = fact."id"
+            AND owner_event."actorType" = 'USER'::"MemoryActorType"
+        )
+        OR COALESCE((
+          SELECT CASE WHEN review."disposition" = 'KEEP'
+            THEN review."usefulness" ELSE NULL END
+          FROM "MemoryMaintenanceReview" AS review
+          WHERE review."userId" = version."userId"
+            AND review."factVersionId" = version."id"
+            AND review."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
+            AND review."disposition" <> 'PENDING'
+            AND review."reviewedAt" IS NOT NULL
+            AND review."evidenceThrough" >= (
+              SELECT MAX(evidence."createdAt")
+              FROM "MemoryEvidence" AS evidence
+              WHERE evidence."userId" = version."userId"
+                AND evidence."factVersionId" = version."id"
+                AND evidence."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
+            )
+          ORDER BY review."reviewedAt" DESC, review."id" DESC
+          LIMIT 1
+        ), version."usefulness", 'UNKNOWN') <> 'EPISODIC'
+      )
       AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
       AND ${memoryFactConversationFeedbackPredicate(snapshot)}
     ORDER BY (version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode") DESC,
@@ -4932,11 +4990,18 @@ function currentFactExpansionSql(
       NULL::text AS "supportingItemId", NULL::timestamp AS "occurredFrom",
       NULL::timestamp AS "occurredTo", NULL::text AS "retrievalHint",
       COALESCE(pattern_supports."evidence", '[]'::jsonb) AS "patternSupportingEvidence",
+      CASE WHEN version."modality" = 'PATTERN'::"MemoryFactModality" THEN (
+        SELECT COUNT(*)::integer FROM "MemoryFactVersionRelation" AS all_sources
+        WHERE all_sources."userId" = version."userId"
+          AND all_sources."sourceVersionId" = version."id"
+          AND all_sources."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
+      ) ELSE 0 END AS "patternSourceCount",
       '[]'::jsonb AS "supportingEvidence"
     FROM eligible INNER JOIN "MemoryFactVersion" AS version
       ON version."userId" = ${snapshot.userId} AND version."id" = eligible."itemId"
     LEFT JOIN LATERAL (
       SELECT COALESCE(jsonb_agg(jsonb_build_object(
+        'confidence', bounded."confidence",
         'itemId', bounded."itemId",
         'observedAt', bounded."observedAt",
         'safeText', bounded."safeText",
@@ -4945,7 +5010,7 @@ function currentFactExpansionSql(
         'sourceRootHash', bounded."sourceRootHash"
       ) ORDER BY bounded."observedAt" DESC, bounded."itemId"), '[]'::jsonb) AS "evidence"
       FROM (
-        SELECT ranked."itemId", ranked."observedAt", ranked."safeText",
+        SELECT ranked."itemId", ranked."observedAt", ranked."safeText", ranked."confidence",
           ranked."sourceAuthority", ranked."sourceChatId", ranked."sourceRootHash"
         FROM (
           SELECT support_source.*,
@@ -4955,6 +5020,7 @@ function currentFactExpansionSql(
             ) AS "rootOrdinal"
           FROM (
             SELECT source_version."id" AS "itemId",
+              source_version."confidence",
               source_version."displayText" AS "safeText",
               source_version."observedAt",
               CASE WHEN source_version."sourceMode" =
@@ -5006,7 +5072,11 @@ function currentFactExpansionSql(
               )
           ) AS support_source
         ) AS ranked
-        WHERE ranked."rootOrdinal" = 1
+        WHERE ranked."rootOrdinal" = 1 OR
+          version."structuredValue"->>'reasonCode' IN (
+            'combined_overlapping_facts', 'combined_refined_facts',
+            'combined_episode_facts'
+          )
         ORDER BY ranked."observedAt" DESC, ranked."itemId"
         LIMIT ${MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS}
       ) AS bounded

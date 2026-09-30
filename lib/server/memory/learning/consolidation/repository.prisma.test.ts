@@ -378,7 +378,7 @@ function consolidationRepository() {
 function preferencePacket(text: string) {
   return { observations: [{
     candidate_ref: "C1", confidence_band: "HIGH", dependency_refs: [], entities: [],
-    evidence: { occurrence_index: 0, text }, future_useful: true,
+    evidence: { occurrence_index: 0, text }, future_useful: true, usefulness: "DURABLE",
     identity: {
       dimension_key: null, mode: "PROPOSITION", predicate_key: null,
       subject: { canonical_label: null, entity_type: "NONE", qualifiers: { brand: null, model: null } }

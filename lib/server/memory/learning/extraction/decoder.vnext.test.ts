@@ -110,6 +110,7 @@ function observation(
     entities: [],
     evidence: textRef(quote),
     future_useful: true,
+    usefulness: "DURABLE",
     identity: {
       dimension_key: null,
       mode: "PROPOSITION",
@@ -223,7 +224,7 @@ function decode(
   }], input(sourceText, contextRefs, redactionSpans, priorMessages, languageCode));
 }
 
-describe("Memory v5 semantic-frame decoder", () => {
+describe("Memory v6 usefulness-aware semantic-frame decoder", () => {
   it("admits a durable command preference only through semantic review", () => {
     const quote = "Always explain architecture to me with a concrete example.";
     const proposed = observation(quote, {
@@ -1840,5 +1841,50 @@ describe("Memory v5 semantic-frame decoder", () => {
     expect(result.rejections).toEqual([
       { candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }
     ]);
+  });
+
+  it("retains usefulness separately from confidence and rejects transient output", () => {
+    const quote = "A bounded but meaningful event.";
+    const durable = decode(quote, [observation(quote, { usefulness: "EPISODIC" })]);
+    expect(durable.rejections).toEqual([]);
+    expect(durable.candidates[0]?.usefulness).toBe("EPISODIC");
+
+    const transient = decode(quote, [observation(quote, { usefulness: "TRANSIENT" })]);
+    expect(transient.candidates).toEqual([]);
+    expect(transient.rejections).toEqual([{
+      candidateOrdinal: 0,
+      reasonCode: "REJECT_NOT_USEFUL"
+    }]);
+  });
+
+  it("requires usefulness on v6 and accepts v5 only with explicit retained authority", () => {
+    const quote = "A legacy bounded event.";
+    const { usefulness: _legacyUsefulness, ...legacyObservation } = observation(quote);
+    const legacyCall = [{
+      arguments: { observations: [legacyObservation] },
+      id: "legacy-call",
+      name: "submit_memory_fact_observations_v5"
+    }];
+    expect(() => decodeMemoryFactExtraction(
+      legacyCall,
+      input(quote)
+    )).toThrow();
+    const retained = decodeMemoryFactExtraction(
+      legacyCall,
+      input(quote),
+      { retainedContract: true }
+    );
+    expect(retained.rejections).toEqual([]);
+
+    const mixed = decodeMemoryFactExtraction([{
+      arguments: { observations: [observation(quote), legacyObservation] },
+      id: "mixed-call",
+      name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+    }], input(quote));
+    expect(mixed.candidates).toHaveLength(1);
+    expect(mixed.rejections).toContainEqual({
+      candidateOrdinal: 1,
+      reasonCode: "REJECT_UNSUPPORTED"
+    });
   });
 });

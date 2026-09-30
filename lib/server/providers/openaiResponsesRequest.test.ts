@@ -156,7 +156,6 @@ describe("OpenAI Responses request builder", () => {
         summary: "concise"
       },
       store: true,
-      stream: false,
       temperature: 1,
       tool_choice: "auto",
       tools: [{ type: "web_search" }]
@@ -346,7 +345,6 @@ describe("OpenAI Responses request builder", () => {
         mode: "pro"
       },
       store: false,
-      stream: false
     });
     expect(forced.reasoning).not.toHaveProperty("summary");
 

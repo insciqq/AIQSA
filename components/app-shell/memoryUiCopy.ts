@@ -224,6 +224,7 @@ export function memoryCategoryLabel(value: string): string {
       return memoryUiCopy("manager.categoryGoals");
     case "constraint":
     case "constraints":
+    case "constraints_routines":
     case "constraints_and_routines":
     case "habit":
     case "routine":

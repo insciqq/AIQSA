@@ -2,6 +2,7 @@ import type { MemoryJobDescriptor } from "../../coordinator/types";
 import type { MemoryExecutionVersions } from "../../execution";
 import { memorySha256 } from "../../persistence/lexical";
 import type { MemoryTextLanguage } from "../../history/language";
+import type { MemoryUsefulness } from "../../../../domain/memory/usefulness";
 import { MEMORY_TEMPORAL_RESOLVER_VERSION } from "../temporal/resolver";
 import {
   MEMORY_DEFAULT_IDENTITY_PROFILE,
@@ -12,11 +13,11 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v35";
+  "memory-fact-extraction-policy-v37";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v47";
+  "memory-fact-extraction-prompt-v49";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
-  "memory-fact-extraction-schema-v5";
+  "memory-fact-extraction-schema-v6";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
   MEMORY_TEMPORAL_RESOLVER_VERSION;
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
@@ -230,6 +231,16 @@ export const MEMORY_FACT_EXTRACTION_VERSIONS: MemoryExecutionVersions =
     schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION
   });
 
+/** Only settled outputs and ambiguous calls may retain this exact contract.
+ * New dispatches always use the current selective-admission schema. */
+export const MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS: MemoryExecutionVersions =
+  Object.freeze({
+    ...MEMORY_FACT_EXTRACTION_VERSIONS,
+    policyVersion: "memory-fact-extraction-policy-v35",
+    promptVersion: "memory-fact-extraction-prompt-v47",
+    schemaVersion: "memory-fact-extraction-schema-v5"
+  });
+
 export type MemoryFactSourceIdentity = Readonly<{
   activeLeafMessageId: string;
   branchGeneration: number;
@@ -360,6 +371,8 @@ export type MemoryExtractedCandidate = Readonly<{
   confidenceBand?: MemoryFactConfidenceBand;
   correction?: boolean;
   futureUseful?: boolean;
+  /** Absent only on accepted outputs predating selective admission. */
+  usefulness?: MemoryUsefulness;
   /** Server-derived routing metadata; fallback must retain SLOT adjudication. */
   proposedIdentityKind?: "PROPOSITION" | "SLOT";
   /** Unsupported optional entity metadata was discarded; require HIGH entailment. */
@@ -694,14 +707,30 @@ export function memoryFactTargetSourceHash(
 }
 
 export function memoryFactExtractionInputHash(
-  input: Omit<MemoryFactExtractionInput, "inputHash">
+  input: Omit<MemoryFactExtractionInput, "inputHash">,
+  versions: Pick<MemoryExecutionVersions,
+    "policyVersion" | "promptVersion" | "schemaVersion"> = MEMORY_FACT_EXTRACTION_VERSIONS
 ): string {
   return memorySha256({
     ...input,
-    policyVersion: MEMORY_FACT_EXTRACTION_POLICY_VERSION,
-    promptVersion: MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
-    schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION
+    policyVersion: versions.policyVersion,
+    promptVersion: versions.promptVersion,
+    schemaVersion: versions.schemaVersion
   });
+}
+
+/** Revalidate every source field under the accepted contract without changing
+ * its frozen hash or treating the current policy as authority to replay it. */
+export function memoryFactExtractionRetainedInput(
+  input: MemoryFactExtractionInput,
+  acceptedInputHash: string
+): MemoryFactExtractionInput | null {
+  if (input.inputHash === acceptedInputHash) return input;
+  const { inputHash: _inputHash, ...source } = input;
+  return memoryFactExtractionInputHash(source, MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS) ===
+    acceptedInputHash
+    ? { ...input, inputHash: acceptedInputHash }
+    : null;
 }
 
 export function memoryFactCandidateId(
@@ -718,6 +747,7 @@ export function memoryFactCandidateId(
     confidenceBand: _confidenceBand,
     correction: _correction,
     futureUseful: _futureUseful,
+    usefulness: _usefulness,
     proposedIdentityKind: _proposedIdentityKind,
     entityAnnotationReviewRequired: _entityAnnotationReviewRequired,
     quote: _quote,
