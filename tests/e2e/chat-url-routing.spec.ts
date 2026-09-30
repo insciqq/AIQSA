@@ -110,6 +110,27 @@ test("the new chat takes its own address on first send without remounting, and /
   }
 });
 
+test("New chat chosen while the shell still loads its catalog opens a usable chat", async ({ page }) => {
+  test.setTimeout(90_000);
+  await signInWithLocalToken(page);
+  // Hold the address resolution in its catalog wait; the shell is hydrated
+  // once it has asked for the catalog.
+  let releaseCatalog = () => {};
+  const held = new Promise<void>((resolve) => { releaseCatalog = resolve; });
+  await page.route("**/api/me/catalog", async (route) => { await held; await route.continue(); });
+  const catalogRequested = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/me/catalog");
+  await page.goto("/");
+  await catalogRequested;
+  await page.getByRole("complementary", { name: "Chat navigation" })
+    .getByRole("button", { name: "New chat", exact: true })
+    .click();
+  releaseCatalog();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("conversation-loading")).toHaveCount(0);
+  await expect(page.getByTestId("header-model-trigger")).toBeEnabled();
+  await expect(page).toHaveURL(exactPath("/"));
+});
+
 test("chats keep their address through reload, sidebar history and an independent second tab", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   await useAppearance(page, context, baseURL!, "dark");

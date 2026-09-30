@@ -192,7 +192,18 @@ test("accepted Memory survives closing its tab, reconnects once, and still honor
     await observer.goto(`/c/${stopped.chatId}`);
     await expect(observer.getByTestId("app-shell")).toBeVisible();
     expect((await prisma.modelRun.findUniqueOrThrow({ where: { id: stopped.id } })).status).toBe("cancelled");
-    expect(controlCalls).toBe(1);
+    // Stop does not own the stopped turn's command: it is classified exactly
+    // once as no command, and the first command is never classified again.
+    const stoppedCommand = await prisma.memoryJob.findFirstOrThrow({ where: {
+      userId, kind: "MEMORY_COMMAND", sourceMessageId: stopped.userMessageId
+    } });
+    await expect.poll(async () => {
+      const current = await prisma.memoryJob.findUniqueOrThrow({ where: { id: stoppedCommand.id } });
+      return { commandStatus: current.commandStatus, commandResult: current.commandResult, state: current.state };
+    }, { timeout: 25_000 }).toEqual({ commandStatus: "REJECTED", commandResult: { classification: "NONE" }, state: "SUCCEEDED" });
+    expect(controlCalls).toBe(2);
+    expect(await prisma.memoryOperationReceipt.count({ where: { userId, modelRunId: stopped.id } })).toBe(0);
+    expect(await prisma.memoryFactVersion.count({ where: { userId, state: "ACTIVE" } })).toBe(1);
   } finally {
     releaseControl?.();
     releaseAnswer?.();

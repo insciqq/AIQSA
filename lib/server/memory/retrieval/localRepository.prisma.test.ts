@@ -2436,12 +2436,22 @@ describe("local Memory retrieval on PostgreSQL", () => {
       select: { entityId: true },
       where: { factVersionId: fixture.entityFactVersionId, userId: fixture.userId }
     });
+    // Other stateful files share this database. Plan from current statistics,
+    // not ones sampled while an earlier file's rows filled these tables:
+    // stale ones let equally ordered keys (for example the entity primary key)
+    // win over the owner indexes this qualification proves.
+    await prisma.$executeRaw(Prisma.sql`
+      ANALYZE "Chat", "Message", "UserMemorySettings", "MemoryScope", "MemoryFact",
+        "MemoryFactVersion", "MemoryFactVersionEntity", "MemorySearchEntry", "MemoryEvidence",
+        "MemorySuppression", "MemoryPauseInterval", "MemorySourceBarrier"
+    `);
     const plans = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw(Prisma.sql`SET LOCAL enable_seqscan = off`);
       // Stabilize the qualification around the indexes that satisfy each
       // bounded ORDER BY directly. Otherwise full-suite statistics can make
       // PostgreSQL prefer a different owner index plus an in-memory sort.
       await tx.$executeRaw(Prisma.sql`SET LOCAL enable_sort = off`);
+      await tx.$executeRaw(Prisma.sql`SET LOCAL enable_incremental_sort = off`);
       const pointer = await tx.$queryRaw<unknown[]>(Prisma.sql`
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         SELECT fact."currentVersionId"
@@ -2546,11 +2556,11 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(indexes.fts, planEvidence).toContain("MemorySearchEntry_simple_gin_idx");
     expect(indexes.trigram, planEvidence)
       .toContain("MemorySearchEntry_normalizedSearchText_trgm_idx");
-    expect(indexes.entity).toContain(
+    expect(indexes.entity, planEvidence).toContain(
       "MemoryFactVersionEntity_userId_entityId_role_factVersionId_idx"
     );
-    expect(indexes.history).toContain("MemoryFactVersion_retrieval_lifecycle_idx");
-    expect(indexes.expiry).toContain("MemoryFactVersion_retrieval_expiry_idx");
+    expect(indexes.history, planEvidence).toContain("MemoryFactVersion_retrieval_lifecycle_idx");
+    expect(indexes.expiry, planEvidence).toContain("MemoryFactVersion_retrieval_expiry_idx");
     const evidence = Object.freeze({
       explainedPlanKinds: Object.keys(plans).sort(),
       indexBackedPlanKinds: Object.values(indexes).filter((names) => names.length > 0).length,

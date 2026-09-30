@@ -241,8 +241,11 @@ for (const theme of ["dark", "light"] as const) {
       await page.goto("/?library=memory");
       const settings = page.getByRole("complementary", { name: "How Memory works" });
       const disclosure = settings.getByRole("button", { name: /^How Memory works/ });
-      if (await disclosure.isVisible()) await disclosure.click();
+      // The panel renders only after its settings load; a narrow container
+      // then collapses the settings behind their disclosure.
       await expect(page.locator(".v2-memory-state")).toContainText("Memory is on");
+      if (mode.name === "mobile") await disclosure.click();
+      else await expect(disclosure).toBeHidden();
       await expect(settings.getByRole("switch")).toHaveCount(5);
       await expect(settings.getByRole("button", { name: "Pause" })).toHaveCount(0);
       await expect(settings.getByRole("button", { name: "Open in Library" })).toHaveCount(0);
