@@ -655,6 +655,29 @@ describe("AdminPanel", () => {
     await waitFor(() => expect(document.title).toBe("Groups · Control Center · AIQSA"));
   });
 
+  it("labels the account menu with the display name while admin sections keep the e-mail", async () => {
+    mockAdminFetch();
+    render(
+      <AdminPanel
+        accountLabel="Ada Lovelace"
+        adminEmail="grace_hopper@example.com"
+        adminUserId="admin-1"
+      />
+    );
+
+    await screen.findByTestId("admin-section-users");
+    const triggers = screen.getAllByRole("button", { name: "Account menu" });
+    expect(triggers.length).toBeGreaterThan(0);
+    for (const trigger of triggers) {
+      expect(trigger.querySelector(".v2-navigation-account-avatar")).toHaveTextContent("AL");
+      expect(trigger.getAttribute("data-tooltip") ?? trigger.textContent).toContain("Ada Lovelace");
+    }
+
+    fireEvent.click(screen.getByRole("link", { name: "Email" }));
+    const section = await screen.findByTestId("admin-section-email");
+    expect(await within(section).findByLabelText("Send a test to")).toHaveValue("grace_hopper@example.com");
+  });
+
   it("opens the Overview by default inside the rail, section column and topbar shell", async () => {
     mockAdminFetch(seededAttention);
     window.history.replaceState(null, "", "/admin");
