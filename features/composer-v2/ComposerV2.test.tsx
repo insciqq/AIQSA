@@ -461,6 +461,25 @@ describe("Composer v2", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
+  it("opens the model layer on itself on a touch screen, without the search caret", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      addEventListener: vi.fn(),
+      matches: query === "(hover: none), (pointer: coarse)",
+      media: query,
+      removeEventListener: vi.fn()
+    }));
+    try {
+      render(<ComposerWithModelOpener />);
+      fireEvent.click(screen.getByRole("button", { name: "GPT-5.2" }));
+      const layer = screen.getByRole("dialog", { name: "Choose model" });
+      await waitFor(() => expect(layer).toHaveFocus());
+      fireEvent.keyDown(layer, { key: "ArrowDown" });
+      expect(screen.getByRole("option", { name: /^GPT-5\.2Reasoning/ })).toHaveFocus();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("closes each layer from the sheet scrim, the sticky close control, and Escape", async () => {
     render(<ComposerWithModelOpener />);
     const plus = screen.getByRole("button", { name: "Add" });

@@ -1,5 +1,6 @@
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { isImeCompositionEvent } from "@/components/keyboard";
+import { touchInputPrimaryV2 } from "@/components/ui-v2/touchInputV2";
 import {
   useCallback,
   useEffect,
@@ -130,7 +131,9 @@ export function useComposerPickerSession<T>({
       }
 
       wasOpenRef.current = true;
-      if (initialFocus === "search") {
+      // A search field would open the touch keyboard over the list: a touch
+      // screen opens on the selected item instead.
+      if (initialFocus === "search" && !touchInputPrimaryV2()) {
         searchRef.current?.focus();
       } else {
         itemRefs.current[navigableIndex]?.focus();
