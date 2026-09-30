@@ -52,6 +52,8 @@ import type { AdminAttentionTarget } from "@/lib/contracts/adminAttention";
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 type AdminPanelProps = Readonly<{
+  /** Account menu label: the saved display name first, the e-mail as fallback (issue #35). */
+  accountLabel?: string | null;
   adminEmail: string;
   adminUserId: string;
   /** The validated chat route this Control Center visit returns to. */
@@ -242,7 +244,7 @@ function AdminSectionContent({
   return assertNeverSection(activeSection);
 }
 
-export function AdminPanel({ adminEmail, adminUserId, returnPath = "/" }: AdminPanelProps) {
+export function AdminPanel({ accountLabel, adminEmail, adminUserId, returnPath = "/" }: AdminPanelProps) {
   const navigationBlockedRef = useRef(false);
   const canSelectSection = useCallback(() => !navigationBlockedRef.current, []);
   const canExitAdmin = useCallback(() => !navigationBlockedRef.current, []);
@@ -383,7 +385,7 @@ export function AdminPanel({ adminEmail, adminUserId, returnPath = "/" }: AdminP
       >
         <AdminShell
           accountId={adminUserId}
-          accountLabel={adminEmail}
+          accountLabel={accountLabel || adminEmail}
           attentionCounts={{ assistants: assistantsPending.count, users: usersAttention }}
           navigation={navigation}
           navigationBlocked={navigationLocked}

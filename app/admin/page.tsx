@@ -99,6 +99,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps = {}) {
   const requestedReturn = params.return;
   return (
     <AdminPanel
+      accountLabel={user.displayName.trim() || user.email}
       adminEmail={user.email ?? user.displayName}
       adminUserId={session.userId}
       returnPath={chatReturnPath(typeof requestedReturn === "string" ? requestedReturn : null)}
