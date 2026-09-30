@@ -250,8 +250,13 @@
 
 /* The danger color is the only destructive marker; the item keeps its
    place at the end of the menu's last group. */
-.v2-menu-item[data-tone="destructive"]:not(:disabled) {
+.v2-menu-item:is([data-tone="destructive"], [data-tone="critical"]):not(:disabled) {
   color: var(--v2-color-danger);
+}
+
+/* A status entry (the chat context gauge) reads in its gauge's color. */
+.v2-menu-item[data-tone="warning"]:not(:disabled) {
+  color: var(--v2-color-warn);
 }
 
 .v2-menu-item-check {
@@ -270,7 +275,7 @@
   color: var(--v2-color-text3);
 }
 
-.v2-menu-item[data-tone="destructive"]:not(:disabled) .v2-menu-item-icon {
+.v2-menu-item[data-tone]:not(:disabled) .v2-menu-item-icon {
   color: inherit;
 }
 

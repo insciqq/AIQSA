@@ -183,7 +183,14 @@ test("continues a Workspace chat with its project files and runs in the new chat
         projection = value;
         await page.reload();
         const stateIndicator = page.getByTestId("header-context-indicator");
-        if (await stateIndicator.getAttribute("aria-expanded") !== "true") await stateIndicator.click();
+        if (await stateIndicator.getAttribute("aria-expanded") !== "true") {
+          if (width === 1440) await stateIndicator.click();
+          else {
+            // A phone has no gauge: "⋯" opens the context panel as a bottom sheet.
+            await page.getByTestId("header-more-trigger").click();
+            await page.getByRole("menuitem", { name: /^Context/u }).click();
+          }
+        }
         await expect(page.getByRole("dialog", { name: "Chat context" })).toContainText(message);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       }

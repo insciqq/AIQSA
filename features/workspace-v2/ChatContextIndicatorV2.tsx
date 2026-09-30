@@ -1,26 +1,124 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useCallback, useId, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { composerContextGauge, type ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
-import { UiV2Button } from "@/components/ui-v2";
+import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
+import { UiV2Button, UiV2IconButton, type UiV2MenuAction } from "@/components/ui-v2";
 import type { ChatContinuationControl } from "@/components/app-shell/useChatContinuation";
 import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
 import type { ChatUsageStats } from "@/lib/contracts/chats";
 import { costCoverageNote, formatEstimatedCostMicros } from "@/lib/domain/formatEstimatedCost";
 
-export function ChatContextIndicatorV2({ stats, usageStats, continuation, continuationFiles }: Readonly<{
+/** Below this width the header has no room for the gauge (workspace.css). */
+const PHONE_QUERY = "(max-width: 767px)";
+
+function phoneSnapshot(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia(PHONE_QUERY).matches;
+}
+
+function subscribeToPhone(change: () => void): () => void {
+  if (typeof window.matchMedia !== "function") return () => undefined;
+  const media = window.matchMedia(PHONE_QUERY);
+  media.addEventListener?.("change", change);
+  return () => media.removeEventListener?.("change", change);
+}
+
+/**
+ * The chat context panel of one chat. Phones have no gauge: the header "⋯"
+ * entry opens the panel as a bottom sheet, and so does each request the model
+ * context rejects. The panel closes when another chat opens.
+ */
+export function useChatContextPanelV2(chatKey: string | null, stats: ComposerContextStats | null | undefined) {
+  const sheet = useSyncExternalStore(subscribeToPhone, phoneSnapshot, () => false);
+  const rejected = Boolean(stats?.requestRejected);
+  const [state, setState] = useState({ chatKey, open: false, rejected });
+  // A chat that only now gets its id (a reload, a first message) keeps the panel.
+  if (state.chatKey !== chatKey) setState({ chatKey, open: state.chatKey === null && state.open, rejected });
+  else if (state.rejected !== rejected) setState({ chatKey, open: state.open || (rejected && sheet), rejected });
+  const setOpen = useCallback((open: boolean) => setState((current) => ({ ...current, open })), []);
+  const gauge = stats ? composerContextGauge(stats) : null;
+  const menuAction: UiV2MenuAction | null = stats && gauge ? {
+    icon: "chart",
+    label: gauge.percent !== null ? `Context · ${gauge.percent}%` : stats.requestRejected ? "Context · too large" : "Context",
+    mobileOnly: true,
+    onSelect: () => setOpen(true),
+    ...(gauge.tone === "warning" || gauge.tone === "critical" ? { tone: gauge.tone } : {})
+  } : null;
+  return { menuAction, open: state.chatKey === chatKey && state.open, setOpen, sheet };
+}
+
+function ChatContextSheetV2({ children, onClose, panelRef }: Readonly<{
+  children: ReactNode;
+  onClose(): void;
+  /**
+   * The popover's dismissal target: a popover that turns into the sheet (the
+   * window narrowed) still owns the focus the sheet takes, so it stays open.
+   */
+  panelRef: RefObject<HTMLElement | null>;
+}>) {
+  const { dialogRef, initialFocusRef, onDialogKeyDown, portalReady } = useModalLayerV2({ onClose });
+  if (!portalReady) return null;
+  return createPortal(
+    <div className="v2-chat-context-sheet-layer">
+      <button
+        aria-label="Close chat context"
+        className="v2-chat-context-sheet-scrim"
+        tabIndex={-1}
+        type="button"
+        onClick={onClose}
+      />
+      <section
+        aria-label="Chat context"
+        aria-modal="true"
+        className="v2-chat-context-popover"
+        data-layout="sheet"
+        ref={(node) => { dialogRef.current = node; panelRef.current = node; }}
+        role="dialog"
+        onKeyDown={onDialogKeyDown}
+      >
+        <div className="v2-chat-context-sheet-bar">
+          <span aria-hidden="true" className="v2-chat-context-sheet-handle" />
+          <UiV2IconButton icon="close" label="Close chat context" ref={initialFocusRef} onClick={onClose} />
+        </div>
+        {children}
+      </section>
+    </div>,
+    document.body
+  );
+}
+
+/**
+ * The header's context gauge and its panel: an anchored popover beside the
+ * gauge, or a bottom sheet on phones (`sheet`), where the gauge stays hidden
+ * and the header "⋯" menu opens the panel instead. A suggested continuation
+ * opens it on every width.
+ */
+export function ChatContextIndicatorV2({
+  stats, usageStats, continuation, continuationFiles, open: openProp, onOpenChange, sheet = false
+}: Readonly<{
   stats: ComposerContextStats; continuation?: ChatContinuationControl | null;
   usageStats?: ChatUsageStats | null;
   continuationFiles?: ChatWorkspaceState["continuationFiles"];
+  /** Opened by the person; owned by the header (`useChatContextPanelV2`) when given. */
+  open?: boolean;
+  onOpenChange?(open: boolean): void;
+  sheet?: boolean;
 }>) {
-  const [manualOpen, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const manualOpen = openProp ?? ownOpen;
+  const setOpen = onOpenChange ?? setOwnOpen;
   const fillMaskId = useId();
   const open = manualOpen || Boolean(continuation?.suggested);
+  // Owned here so the popover and the sheet share it across a width change;
+  // a closed panel reopens folded.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  if (!open && detailsOpen) setDetailsOpen(false);
   const close = () => { setOpen(false); continuation?.onDismiss(); };
   const { menuRef, triggerRef } = useMenuDismissalV2<HTMLButtonElement, HTMLElement>({
-    onClose: close, open
+    onClose: close, open: open && !sheet
   });
   const gauge = composerContextGauge(stats);
   const label = stats.requestRejected ? "This request exceeds the model context capacity" : gauge.percent === null
@@ -52,6 +150,71 @@ export function ChatContextIndicatorV2({ stats, usageStats, continuation, contin
                 "The Workspace archive could not be restored."
     : null;
 
+  const panel = (
+    <>
+      <div aria-label="Context" role="group">
+        <h2 className="v2-chat-context-group-title">Context</h2>
+        <strong>{label}.</strong>
+        <p>{estimateDescription}</p>
+        {gauge.tone === "critical" ? <p role="alert">{stats.requestRejected ? "This request doesn't fit the model's context." : "No room left for this request."} Shorten it, remove attachments, or continue in a new chat with a summary.</p> : null}
+        {gauge.tone === "warning" ? <p>Almost full. You can keep going here or continue in a new chat with a summary.</p> : null}
+        {continuation ? <div className="v2-chat-context-continuation">
+          {recommended ? <p>{continuationDescription}</p> : null}
+          {continuation.uploading ? <p role="status">Wait for uploads to finish.</p> : null}
+          {continuation.error ? <p role="alert">{continuation.error}</p> : null}
+          {continuation.busy ? <>
+            <p role="status">{continuation.progress ?? "Preparing your summary…"}</p>
+            <UiV2Button onClick={continuation.onCancel}>Cancel</UiV2Button>
+          </> : <div className="v2-chat-context-actions">
+            <UiV2Button tone={recommended ? "primary" : "ghost"} disabled={continuation.uploading}
+              aria-label="Summarize and open new chat" aria-description={recommended ? undefined : continuationDescription}
+              data-tooltip={recommended ? undefined : continuationDescription} data-tooltip-side="top"
+              onClick={continuation.onContinue}>Summarize and open new chat</UiV2Button>
+            {/* Without hover the tooltip never shows; the button already carries it as its description. */}
+            {recommended ? <UiV2Button onClick={close}>Stay here</UiV2Button>
+              : <p aria-hidden="true" className="v2-chat-context-touch-note">{continuationDescription}</p>}
+          </div>}
+        </div> : null}
+        {continuationFiles ? <p role={continuationFiles.status === "failed" ? "alert" : "status"}>
+          {continuationFiles.status === "ready" ? "Workspace project files were restored in this chat." :
+            continuationFiles.status === "pending" ? "Workspace project files are waiting to be restored." :
+              continuationFiles.status === "failed" ? `Workspace starts without the previous chat’s project files. ${continuationFailure}` :
+                "The previous chat had no Workspace project disk to copy."}
+        </p> : null}
+        {stats.session?.droppedMessages ? <p>{stats.session.droppedMessages} earlier {stats.session.droppedMessages === 1 ? "message is" : "messages are"} still in this chat, but were omitted from the model request. You can continue in a new chat with a summary.</p> : null}
+        <details open={detailsOpen} onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
+          <summary>Advanced details</summary>
+          <dl>
+            <div><dt>Context tokens</dt><dd>~{count(stats.approximateInputTokens)}</dd></div>
+            {stats.session ? <>
+              <div><dt>{stats.session.phase === "after_answer" ? "Request and answer estimate" : "Request estimate"}</dt><dd>~{count(stats.session.approximateInputTokens)}</dd></div>
+              <div><dt>Draft and attachments estimate</dt><dd>~{count(stats.draftInputTokens ?? 0)}</dd></div>
+            </> : null}
+            <div><dt>Safe input budget</dt><dd>{count(stats.safeInputBudgetTokens)}</dd></div>
+            <div><dt>Available input tokens</dt><dd>{count(remaining)}</dd></div>
+            <div><dt>Model context limit</dt><dd>{count(stats.totalContextTokens)}</dd></div>
+            <div><dt>Answer reserve</dt><dd>{count(stats.answerReserveTokens === undefined ? stats.session?.maxOutputTokens ?? null : stats.answerReserveTokens)}</dd></div>
+            <div><dt>Safety margin</dt><dd>{count(stats.safetyMarginTokens === undefined ? stats.session?.safetyMarginTokens ?? null : stats.safetyMarginTokens)}</dd></div>
+            {stats.session ? <>
+              <div><dt>Loaded tools</dt><dd>{stats.session.loadedTools}</dd></div>
+              <div><dt>Earlier messages omitted</dt><dd>{stats.session.droppedMessages}</dd></div>
+            </> : null}
+          </dl>
+          <p>Share of the model&apos;s full context window. Room for the answer and a safety margin is reserved, so the usable input budget is smaller. Tools and private context are added when a request runs.</p>
+        </details>
+      </div>
+      {usageStats?.hasCompletedAnswer && usageStats.recordCount > 0 ? <div aria-label="Spent" className="v2-chat-context-spent" role="group">
+        <h2 className="v2-chat-context-group-title">Spent</h2>
+        <dl>
+          <div><dt>Tokens spent</dt><dd>{usageStats.totalTokens === null ? "—" : usageStats.totalTokens.toLocaleString("en-US")}</dd></div>
+          <div><dt>Approximate cost</dt><dd>{formatEstimatedCostMicros(usageStats.estimatedCostMicros)}</dd></div>
+        </dl>
+        {costNote ? <p>{costNote}</p> : null}
+        {usageStats.incompleteRecordCount > 0 ? <p>Token usage is incomplete for {usageStats.incompleteRecordCount} of {usageStats.recordCount} requests.</p> : null}
+      </div> : null}
+    </>
+  );
+
   return (
     <span className="v2-chat-context">
       <button
@@ -80,70 +243,10 @@ export function ChatContextIndicatorV2({ stats, usageStats, continuation, contin
         </svg>
         <span>{stats.requestRejected && gauge.percent === null ? "!" : gauge.percent === null ? "?" : `${gauge.percent}%`}</span>
       </button>
-      {open ? (
-        <section ref={menuRef} aria-label="Chat context" className="v2-chat-context-popover" role="dialog">
-          <div aria-label="Context" role="group">
-            <h2 className="v2-chat-context-group-title">Context</h2>
-            <strong>{label}.</strong>
-            <p>{estimateDescription}</p>
-            {gauge.tone === "critical" ? <p role="alert">{stats.requestRejected ? "This request doesn't fit the model's context." : "No room left for this request."} Shorten it, remove attachments, or continue in a new chat with a summary.</p> : null}
-            {gauge.tone === "warning" ? <p>Almost full. You can keep going here or continue in a new chat with a summary.</p> : null}
-            {continuation ? <div className="v2-chat-context-continuation">
-              {recommended ? <p>{continuationDescription}</p> : null}
-              {continuation.uploading ? <p role="status">Wait for uploads to finish.</p> : null}
-              {continuation.error ? <p role="alert">{continuation.error}</p> : null}
-              {continuation.busy ? <>
-                <p role="status">{continuation.progress ?? "Preparing your summary…"}</p>
-                <UiV2Button onClick={continuation.onCancel}>Cancel</UiV2Button>
-              </> : <div className="v2-chat-context-actions">
-                <UiV2Button tone={recommended ? "primary" : "ghost"} disabled={continuation.uploading}
-                  aria-label="Summarize and open new chat" aria-description={recommended ? undefined : continuationDescription}
-                  data-tooltip={recommended ? undefined : continuationDescription} data-tooltip-side="top"
-                  onClick={continuation.onContinue}>Summarize and open new chat</UiV2Button>
-                {/* Without hover the tooltip never shows; the button already carries it as its description. */}
-                {recommended ? <UiV2Button onClick={close}>Stay here</UiV2Button>
-                  : <p aria-hidden="true" className="v2-chat-context-touch-note">{continuationDescription}</p>}
-              </div>}
-            </div> : null}
-            {continuationFiles ? <p role={continuationFiles.status === "failed" ? "alert" : "status"}>
-              {continuationFiles.status === "ready" ? "Workspace project files were restored in this chat." :
-                continuationFiles.status === "pending" ? "Workspace project files are waiting to be restored." :
-                  continuationFiles.status === "failed" ? `Workspace starts without the previous chat’s project files. ${continuationFailure}` :
-                    "The previous chat had no Workspace project disk to copy."}
-            </p> : null}
-            {stats.session?.droppedMessages ? <p>{stats.session.droppedMessages} earlier {stats.session.droppedMessages === 1 ? "message is" : "messages are"} still in this chat, but were omitted from the model request. You can continue in a new chat with a summary.</p> : null}
-            <details>
-              <summary>Advanced details</summary>
-              <dl>
-                <div><dt>Context tokens</dt><dd>~{count(stats.approximateInputTokens)}</dd></div>
-                {stats.session ? <>
-                  <div><dt>{stats.session.phase === "after_answer" ? "Request and answer estimate" : "Request estimate"}</dt><dd>~{count(stats.session.approximateInputTokens)}</dd></div>
-                  <div><dt>Draft and attachments estimate</dt><dd>~{count(stats.draftInputTokens ?? 0)}</dd></div>
-                </> : null}
-                <div><dt>Safe input budget</dt><dd>{count(stats.safeInputBudgetTokens)}</dd></div>
-                <div><dt>Available input tokens</dt><dd>{count(remaining)}</dd></div>
-                <div><dt>Model context limit</dt><dd>{count(stats.totalContextTokens)}</dd></div>
-                <div><dt>Answer reserve</dt><dd>{count(stats.answerReserveTokens === undefined ? stats.session?.maxOutputTokens ?? null : stats.answerReserveTokens)}</dd></div>
-                <div><dt>Safety margin</dt><dd>{count(stats.safetyMarginTokens === undefined ? stats.session?.safetyMarginTokens ?? null : stats.safetyMarginTokens)}</dd></div>
-                {stats.session ? <>
-                  <div><dt>Loaded tools</dt><dd>{stats.session.loadedTools}</dd></div>
-                  <div><dt>Earlier messages omitted</dt><dd>{stats.session.droppedMessages}</dd></div>
-                </> : null}
-              </dl>
-              <p>Share of the model&apos;s full context window. Room for the answer and a safety margin is reserved, so the usable input budget is smaller. Tools and private context are added when a request runs.</p>
-            </details>
-          </div>
-          {usageStats?.hasCompletedAnswer && usageStats.recordCount > 0 ? <div aria-label="Spent" className="v2-chat-context-spent" role="group">
-            <h2 className="v2-chat-context-group-title">Spent</h2>
-            <dl>
-              <div><dt>Tokens spent</dt><dd>{usageStats.totalTokens === null ? "—" : usageStats.totalTokens.toLocaleString("en-US")}</dd></div>
-              <div><dt>Approximate cost</dt><dd>{formatEstimatedCostMicros(usageStats.estimatedCostMicros)}</dd></div>
-            </dl>
-            {costNote ? <p>{costNote}</p> : null}
-            {usageStats.incompleteRecordCount > 0 ? <p>Token usage is incomplete for {usageStats.incompleteRecordCount} of {usageStats.recordCount} requests.</p> : null}
-          </div> : null}
-        </section>
+      {open && !sheet ? (
+        <section ref={menuRef} aria-label="Chat context" className="v2-chat-context-popover" role="dialog">{panel}</section>
       ) : null}
+      {open && sheet ? <ChatContextSheetV2 panelRef={menuRef} onClose={close}>{panel}</ChatContextSheetV2> : null}
     </span>
   );
 }
