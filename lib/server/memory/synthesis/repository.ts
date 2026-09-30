@@ -39,11 +39,13 @@ import {
   buildMemorySynthesisPlan,
   buildMemoryTargetedSynthesisPlan,
   memorySynthesisJobFingerprint,
-  memorySynthesisDistinctSupportRootCount,
+  memorySynthesisSourcesSupportReason,
+  memorySynthesisIsCombination,
   memorySynthesisPatternFingerprint,
   memorySynthesisSourceEligibilityHash,
   MEMORY_SYNTHESIS_MAX_SOURCES,
-  MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES,
+  MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES,
+  MEMORY_SYNTHESIS_COMBINED_REASONS,
   MEMORY_SYNTHESIS_PIPELINE_VERSION,
   MEMORY_SYNTHESIS_POLICY_VERSION,
   type MemorySynthesisBoundSource,
@@ -60,6 +62,7 @@ type SynthesisQueryClient = Pick<
 type SynthesisSourceRow = Readonly<{
   canonicalKey: string;
   category: string;
+  confidence: number;
   directness: MemorySynthesisSource["directness"];
   displayText: string;
   entityIds: string[];
@@ -73,10 +76,13 @@ type SynthesisSourceRow = Readonly<{
   sourceChatIds: string[];
   sourceMessageIds: string[];
   sourceMode: MemorySynthesisSource["sourceMode"];
+  sensitivityClass: MemorySynthesisSource["sensitivityClass"];
   subjectScope: MemorySynthesisSource["subjectScope"];
   subjectEntityIds: string[];
   structuredValue: Prisma.JsonValue;
   subjectKey: string | null;
+  validFrom: Date | null;
+  validTo: Date | null;
   versionId: string;
 }>;
 
@@ -132,6 +138,7 @@ function source(row: SynthesisSourceRow): MemorySynthesisSource | null {
   return Object.freeze({
     canonicalKey: row.canonicalKey,
     category: row.category,
+    confidence: row.confidence,
     directness: row.directness,
     displayText: redaction.redactedText,
     eligibilityHash: memorySynthesisSourceEligibilityHash({
@@ -156,10 +163,13 @@ function source(row: SynthesisSourceRow): MemorySynthesisSource | null {
     sourceChatIds: Object.freeze(row.sourceChatIds),
     sourceMessageIds: Object.freeze(row.sourceMessageIds),
     sourceMode: row.sourceMode,
+    sensitivityClass: row.sensitivityClass,
     subjectScope: row.subjectScope,
     subjectEntityIds: Object.freeze(row.subjectEntityIds),
     structuredValue: redactStructuredValue(row.structuredValue),
     subjectKey: row.subjectKey,
+    validFrom: row.validFrom,
+    validTo: row.validTo,
     versionId: row.versionId
   });
 }
@@ -180,11 +190,12 @@ async function loadSources(
   const rows = await client.$queryRaw<SynthesisSourceRow[]>(Prisma.sql`
     SELECT
       source_version."id" AS "versionId", source_version."factId",
-      source_version."displayText", source_version."structuredValue",
+      source_version."displayText", source_version."structuredValue", source_version."confidence",
       source_version."modality"::text AS "modality",
       source_version."sourceMode"::text AS "sourceMode",
+      source_version."sensitivityClass"::text AS "sensitivityClass",
       source_version."directness"::text AS "directness",
-      source_version."observedAt", source_version."ingestionFingerprint",
+      source_version."observedAt", source_version."validFrom", source_version."validTo", source_version."ingestionFingerprint",
       source_version."pipelineVersion", source_fact."canonicalKey",
       source_fact."category", source_fact."subjectKey", source_fact."predicateKey",
       source_version."semanticFrame"->>'subjectScope' AS "subjectScope",
@@ -312,7 +323,7 @@ async function loadTargetedPlan(
     ORDER BY relation."targetVersionId"
     LIMIT ${MEMORY_SYNTHESIS_MAX_SOURCES + 1}
   `);
-  if (relations.length < 3 || relations.length > MEMORY_SYNTHESIS_MAX_SOURCES) {
+  if (relations.length < MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES || relations.length > MEMORY_SYNTHESIS_MAX_SOURCES) {
     return null;
   }
   const storedHash = new Map(relations.map((relation) => [
@@ -324,7 +335,7 @@ async function loadTargetedPlan(
     userId,
     relations.map(({ targetVersionId }) => targetVersionId)
   )).filter((entry) => storedHash.get(entry.versionId) === entry.eligibilityHash);
-  if (new Set(sources.map(({ factId }) => factId)).size < 3) return null;
+  if (new Set(sources.map(({ factId }) => factId)).size < MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES) return null;
   return buildMemoryTargetedSynthesisPlan({
     boundary: settings.synthesisEnabledAt,
     generation: settings.memoryGeneration,
@@ -429,6 +440,12 @@ function sourceBindings(plan: MemorySynthesisPlan): Prisma.InputJsonValue {
 function persistedOutput(output: MemorySynthesisOutput): Prisma.InputJsonValue {
   return {
     patterns: output.patterns.map((pattern) => ({
+      ...(pattern.claims ? {
+        claims: pattern.claims.map((claim) => ({
+          source_refs: [...claim.sourceRefs],
+          statement: claim.statement
+        }))
+      } : {}),
       confidence_band: pattern.confidenceBand,
       entity_refs: [...pattern.entityRefs],
       reason_code: pattern.reasonCode,
@@ -596,13 +613,16 @@ async function overlappingCurrentPatterns(
       ON relation."userId" = version."userId"
      AND relation."sourceVersionId" = version."id"
      AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-     AND relation."reasonCode" = ${reasonCode}
+     AND relation."reasonCode" IN (${Prisma.join(memorySynthesisIsCombination(reasonCode)
+       ? MEMORY_SYNTHESIS_COMBINED_REASONS
+       : [reasonCode])})
     INNER JOIN "MemoryFactVersion" AS source_version
       ON source_version."userId" = relation."userId"
      AND source_version."id" = relation."targetVersionId"
     WHERE version."userId" = ${userId}
       AND version."modality" = 'PATTERN'::"MemoryFactModality"
       AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND fact."pinned" = FALSE
       AND source_version."factId" IN (${Prisma.join(sourceFactIds)})
     ORDER BY fact."id", version."id"
     FOR UPDATE OF fact, version
@@ -844,16 +864,16 @@ export function createPrismaMemorySynthesisRepository(
         entry.entityId
       ]));
       let applied = 0;
-      for (const pattern of result.output.patterns) {
+      // Revalidate claim coverage and reason-specific source thresholds after
+      // taking the owner lock, including results supplied by a custom provider.
+      const output = decodeMemorySynthesisOutput(persistedOutput(result.output), plan);
+      for (const pattern of output.patterns) {
         const cluster = clusterFor(plan, pattern.sourceRefs);
         const sources = pattern.sourceRefs.map((ref) => sourceByRef.get(ref)).filter(
           (entry): entry is MemorySynthesisBoundSource => Boolean(entry)
         );
         if (!cluster || sources.length !== pattern.sourceRefs.length ||
-          new Set(sources.map(({ factId }) => factId)).size <
-            MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES ||
-          memorySynthesisDistinctSupportRootCount(sources) <
-            MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES) {
+          !memorySynthesisSourcesSupportReason(sources, pattern.reasonCode)) {
           throw new Error("memory_synthesis_source_stale");
         }
         const entityIds = pattern.entityRefs.map((ref) => entityIdByRef.get(ref)).filter(
@@ -874,15 +894,17 @@ export function createPrismaMemorySynthesisRepository(
           canonicalKey: string;
           currentVersionId: string | null;
           id: string;
+          pinned: boolean;
           state: string;
         }> | null = await tx.memoryFact.findFirst({
-          select: { canonicalKey: true, currentVersionId: true, id: true, state: true },
+          select: { canonicalKey: true, currentVersionId: true, id: true, pinned: true, state: true },
           where: {
             canonicalKey: proposedCanonicalKey,
             scopeId: scope.id,
             userId: claim.userId
           }
         });
+        if (fact?.pinned) continue;
         if (fact && fact.state !== "ACTIVE" && (
           fact.state !== "RETRACTED" ||
           !(await serviceRetractedPattern(tx, claim.userId, fact.id))
@@ -945,7 +967,7 @@ export function createPrismaMemorySynthesisRepository(
               state: "ORPHANED",
               userId: claim.userId
             },
-            select: { canonicalKey: true, currentVersionId: true, id: true, state: true }
+            select: { canonicalKey: true, currentVersionId: true, id: true, pinned: true, state: true }
           });
         }
         if (!fact) throw new Error("memory_synthesis_pattern_identity_unavailable");
@@ -968,7 +990,7 @@ export function createPrismaMemorySynthesisRepository(
         await tx.memoryFactVersion.create({
           data: {
             category: "patterns",
-            confidence: 0.8,
+            confidence: Math.min(0.8, ...sources.map((source) => source.confidence)),
             coreEligible: false,
             coreSalience: "NONE",
             createdByEventId: eventId,
@@ -984,12 +1006,19 @@ export function createPrismaMemorySynthesisRepository(
             observedAt: now,
             pipelineVersion: MEMORY_SYNTHESIS_PIPELINE_VERSION,
             ...memorySafetyLiteFactClassification(now),
-            sensitivityClass: "NORMAL",
+            sensitivityClass: sources.some((source) => source.sensitivityClass === "SENSITIVE")
+              ? "SENSITIVE" : "NORMAL",
             sourceMode: "AUTOMATIC",
             state: "ACTIVE",
             structuredValue: {
               kind: "pattern",
-              reasonCode: pattern.reasonCode
+              reasonCode: pattern.reasonCode,
+              ...(pattern.claims?.length ? {
+                claims: pattern.claims.map((claim) => ({
+                  sourceVersionIds: claim.sourceRefs.map((ref) => sourceByRef.get(ref)!.versionId),
+                  statement: claim.statement
+                }))
+              } : {})
             },
             synthesisDepth: 1,
             synthesisGeneration: settings.memoryGeneration,

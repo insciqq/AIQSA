@@ -1323,7 +1323,7 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     patternDirectSupportCount,
     patternMissingSupportContextCount: patternItems.filter((item) =>
       (item.patternSupportingEvidence?.length ?? 0) <
-        MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS).length,
+        (item.combinedMemoryReason ? 2 : MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS)).length,
     patternOnlyContextCount: patternItems.length > 0 &&
       input.pack.items.every((item) => item.evidenceType === "pattern") &&
       patternDirectSupportCount === 0

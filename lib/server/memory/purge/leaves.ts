@@ -145,7 +145,16 @@ function candidateTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
 
 function feedbackTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
   if (target.kind === "MEMORY_FACT") {
-    return Prisma.sql`feedback."memoryFactId" IN (${memoryExplicitEquivalentFactIdsSql(target.userId, [target.targetId])})`;
+    // A logical fact may receive a new independently authorized version after
+    // its old purge completed. Retrying that obligation still owns every
+    // forgotten version, including late feedback, but never the new version.
+    return Prisma.sql`EXISTS (
+      SELECT 1 FROM "MemoryFactVersion" AS version
+      WHERE version."userId" = feedback."userId"
+        AND version."factId" = feedback."memoryFactId"
+        AND version."id" = feedback."memoryFactVersionId"
+        AND ${memoryPurgeVersionCondition(target)}
+    )`;
   }
   if (target.kind === "AUTOMATIC_SET") {
     return Prisma.sql`

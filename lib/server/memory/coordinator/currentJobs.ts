@@ -27,6 +27,7 @@ export function currentMemoryJobsSql(now: Date): Prisma.Sql {
         LEFT JOIN "Message" AS source ON source.id = job."sourceMessageId" AND source."chatId" = chat.id
         WHERE job.state NOT IN ('CANCELLED', 'STALE') AND job."createdAt" <= ${now}
           AND (job.state = 'SUCCEEDED' OR job.kind NOT IN ('RECLASSIFY_FACTS', 'SYNTHESIZE_MEMORIES')
+            OR job."pipelineVersion" = 'memory-maintenance-v1'
             OR job."memoryRevisionSnapshot" = settings."memoryRevision")
           AND CASE
             WHEN job.kind = 'INDEX_HISTORY' THEN settings."useMemoryFacts" AND settings."referenceChatHistory"

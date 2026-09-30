@@ -884,6 +884,27 @@ function automaticValue(
   };
 }
 
+async function createLateFactFeedback(userId: string, factId: string, versionId: string) {
+  const feedbackId = randomUUID();
+  const requestId = randomUUID();
+  const eventId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryEvent.create({ data: {
+      actorType: "USER", actorUserId: userId, factId, factVersionId: versionId,
+      id: eventId, operation: "USER_FEEDBACK", userId,
+      metadata: { feedbackId, feedbackType: "INCORRECT", schemaVersion: "memory-feedback-event-v1" }
+    } });
+    await tx.memoryFeedback.create({ data: {
+      comment: "Late feedback attached after the old obligation completed.",
+      feedbackType: "INCORRECT", id: feedbackId,
+      idempotencyFingerprint: memoryFeedbackIdempotencyFingerprint(userId, requestId),
+      memoryEventId: eventId, memoryFactId: factId, memoryFactVersionId: versionId,
+      requestId, targetKind: "FACT_VERSION", userId
+    } });
+  });
+  return feedbackId;
+}
+
 async function makeConflictedFact(
   userId: string,
   factId: string,
@@ -1290,44 +1311,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         messageId: attempt.messageId,
         userId: ownerUserId
       });
-      const delayedFeedbackId = randomUUID();
-      const delayedFeedbackRequestId = randomUUID();
-      const delayedFeedbackEventId = randomUUID();
-      await prisma.$transaction(async (tx) => {
-        await tx.memoryEvent.create({
-          data: {
-            actorType: "USER",
-            actorUserId: ownerUserId,
-            factId,
-            factVersionId: versionId,
-            id: delayedFeedbackEventId,
-            metadata: {
-              feedbackId: delayedFeedbackId,
-              feedbackType: "INCORRECT",
-              schemaVersion: "memory-feedback-event-v1"
-            },
-            operation: "USER_FEEDBACK",
-            userId: ownerUserId
-          }
-        });
-        await tx.memoryFeedback.create({
-          data: {
-            comment: "Late feedback attached after the old obligation completed.",
-            feedbackType: "INCORRECT",
-            id: delayedFeedbackId,
-            idempotencyFingerprint: memoryFeedbackIdempotencyFingerprint(
-              ownerUserId,
-              delayedFeedbackRequestId
-            ),
-            memoryEventId: delayedFeedbackEventId,
-            memoryFactId: factId,
-            memoryFactVersionId: versionId,
-            requestId: delayedFeedbackRequestId,
-            targetKind: "FACT_VERSION",
-            userId: ownerUserId
-          }
-        });
-      });
+      const delayedFeedbackId = await createLateFactFeedback(ownerUserId, factId, versionId);
       const replayed = await auditMemoryDeletion(
         registry,
         deletion.id,
@@ -1396,6 +1380,29 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         sourceMode: "EXPLICIT"
       });
       expect(revived.memory.currentVersionId).not.toBe(versionId);
+      const freshFeedback = await createMemoryReviewService(
+        createPrismaMemoryFeedbackRepository(prisma)
+      ).feedback(ownerUserId, factId, {
+        comment: "Feedback on the newly established version must survive old cleanup.",
+        expectedVersionId: revived.memory.currentVersionId!,
+        feedbackType: "NOT_USEFUL",
+        requestId: randomUUID()
+      });
+      const freshFeedbackBefore = await prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: freshFeedback.feedbackId }
+      });
+      await expect(auditMemoryDeletion(registry, deletion.id, ownerUserId, prisma))
+        .resolves.toMatchObject({ state: "SUCCEEDED", progress: { complete: true } });
+      const lateOldFeedbackId = await createLateFactFeedback(ownerUserId, factId, versionId);
+      await expect(auditMemoryDeletion(registry, deletion.id, ownerUserId, prisma))
+        .resolves.toMatchObject({ state: "PENDING", progress: { complete: false } });
+      await commitDeletion(registry, ownerUserId, deletion.id, new Date());
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({ where: { id: lateOldFeedbackId } }))
+        .resolves.toMatchObject({ comment: null, contentPurgedAt: expect.any(Date), memoryFactVersionId: null });
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({ where: { id: freshFeedback.feedbackId } }))
+        .resolves.toEqual(freshFeedbackBefore);
+      await expect(auditMemoryDeletion(registry, deletion.id, ownerUserId, prisma))
+        .resolves.toMatchObject({ state: "SUCCEEDED", progress: { complete: true } });
 
       const upgraded = upgradedRegistry();
       const reopened = await auditMemoryDeletion(
@@ -1433,6 +1440,8 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
           factState: "ACTIVE"
         }
       });
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({ where: { id: freshFeedback.feedbackId } }))
+        .resolves.toEqual(freshFeedbackBefore);
     } finally {
       await cleanupUsers([ownerUserId, foreignUserId]);
     }

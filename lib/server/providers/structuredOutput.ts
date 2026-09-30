@@ -526,7 +526,6 @@ export function buildOpenAIResponsesStructuredOutputRequest(
     max_output_tokens: maxOutputTokens,
     model: model.upstreamModelId,
     store: false,
-    stream: false,
     text: {
       format: {
         name: normalized.name,

@@ -439,9 +439,9 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       entity: ["memory-entity-resolution-v3", "slot-v3"],
       extraction: [
         "memory-fact-extraction-vnext-v8",
-        "memory-fact-extraction-policy-v35",
-        "memory-fact-extraction-prompt-v47",
-        "memory-fact-extraction-schema-v5"
+        "memory-fact-extraction-policy-v37",
+        "memory-fact-extraction-prompt-v49",
+        "memory-fact-extraction-schema-v6"
       ],
       history: "memory-history-incremental-v10",
       relation: [
@@ -453,9 +453,9 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       retrieval: "memory-personal-retrieval-v70",
       synthesis: [
         "memory-synthesis-v2",
-        "memory-synthesis-policy-v5",
-        "memory-synthesis-prompt-v7",
-        "memory-synthesis-schema-v3"
+        "memory-synthesis-policy-v6",
+        "memory-synthesis-prompt-v9",
+        "memory-synthesis-schema-v4"
       ],
       temporal: "memory-temporal-resolution-v3"
     });

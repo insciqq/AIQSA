@@ -380,6 +380,60 @@ describe("preparing Memory item finalization", () => {
     expect($queryRaw).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["combined_overlapping_facts", "combined_episode_facts"])(
+    "freezes two exact lower-certainty supports for %s without promoting their authority", async (reasonCode) => {
+      const episode = reasonCode === "combined_episode_facts";
+      const displayText = "The user reported a dated personal event.";
+      const structuredValue = { kind: "pattern", reasonCode,
+        ...(episode ? { claims: [{ statement: displayText,
+          sourceVersionIds: ["source-version-1", "source-version-2"] }] } : {}) };
+      const patternRow = {
+        ...automaticFactRow, coreEligible: false, coreSalience: "NONE", displayText,
+        factCanonicalKey: `prop:v1:${"a".repeat(64)}`, factCategory: "patterns",
+        modality: "PATTERN", structuredValue,
+        searchSafeContentHash: memorySha256({ displayText, structuredValue })
+      };
+      const relations = Array.from({ length: 2 }, (_, index) => ({
+        pipelineVersion: "memory-synthesis-v2", sourceEligibilityHash: String(index + 1).repeat(64),
+        targetConfidence: 0.6, targetDisplayText: automaticSourceText,
+        targetObservedAt: new Date(`2026-08-${10 + index}T10:00:00.000Z`),
+        targetSourceMode: "AUTOMATIC", targetVersionId: `source-version-${index + 1}`
+      }));
+      const supports = relations.map((relation, index) => ({
+        factVersionId: relation.targetVersionId, observedAt: relation.targetObservedAt.toISOString(),
+        sourceAuthority: "supporting_observation",
+        sourceRootHash: memorySha256(`message:source-message-${episode ? 1 : index + 1}`),
+        textHash: memorySha256(relation.targetDisplayText)
+      }));
+      const evidence = relations.map((relation, index) => ({
+        ...automaticEvidenceRow({ evidenceId: `evidence-${index + 1}`,
+          messageId: `source-message-${episode ? 1 : index + 1}` }),
+        evidenceObservedAt: relation.targetObservedAt, targetVersionId: relation.targetVersionId
+      }));
+      const resolve = (sourceAuthority: string, extraRelation = false) => {
+        const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+          .mockResolvedValueOnce([patternRow])
+          .mockResolvedValueOnce(extraRelation ? [...relations, { ...relations[0], targetVersionId: "missing-support" }] : relations)
+          .mockResolvedValueOnce(evidence).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+        return resolvePreparingMemoryItem({ $queryRaw } as unknown as Prisma.TransactionClient,
+          { ...authority, indexGenerationId: "generation-1" }, "Recall my event", {
+            ...item, exactSafeText: displayText,
+            featureSnapshot: { directFactAuthority: false, historical: false, includePatterns: true,
+              patternSupportingEvidence: supports.map((support) => ({ ...support, sourceAuthority })),
+              retrievalMode: "TARGETED_CURRENT", tier: "DYNAMIC" },
+            selectionReason: "rrf+pattern_relevance"
+          });
+      };
+      await expect(resolve("supporting_observation")).resolves.toMatchObject({
+        sourceSnapshot: { patternSupportingEvidence: supports }
+      });
+      await expect(resolve("learned_from_user")).rejects.toMatchObject({ code: "memory_attempt_item_stale" });
+      await expect(resolve("supporting_observation", true)).rejects.toMatchObject({
+        code: "memory_attempt_item_pattern_support_invalid"
+      });
+    }
+  );
+
   it.each([
     {
       label: "message content hash",

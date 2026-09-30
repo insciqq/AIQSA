@@ -1858,6 +1858,7 @@ describe("local Memory retrieval repository", () => {
       }
     };
     const patternSupportingEvidence = Array.from({ length: 3 }, (_, index) => ({
+      confidence: index === 0 ? 0.6 : 1,
       itemId: `source-version-${index + 1}`,
       observedAt: `2026-08-${10 + index}T10:00:00.000Z`,
       safeText: `The user directly described workflow occurrence ${index + 1}.`,
@@ -1891,6 +1892,9 @@ describe("local Memory retrieval repository", () => {
       .strings?.join("?") ?? "";
     expect(expansionSql).toContain('FROM "MemoryFactVersionRelation" AS relation');
     expect(expansionSql).toContain('PARTITION BY support_source."sourceRootHash"');
+    expect(expansionSql).toContain('AS "patternSourceCount"');
+    expect(expansionSql).toContain('source_version."confidence"');
+    expect(expansionSql).toContain('combined_episode_facts');
     expect(expansionSql).toContain('AS "patternSupportingEvidence"');
     expect(expansionSql).toContain('support."messageId"');
   });
@@ -2398,6 +2402,10 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('standing_chat."projectId" IS NULL');
     expect(sql).toContain('version."safetyClassificationState"');
     expect(sql).toContain('version."modality" <> \'PATTERN\'');
+    expect(sql).toContain('CASE WHEN review."disposition" = \'KEEP\'');
+    expect(sql).toContain('review."evidenceThrough" >=');
+    expect(sql).toContain('version."usefulness", \'UNKNOWN\') <> \'EPISODIC\'');
+    expect(sql).toContain('owner_event."actorType" = \'USER\'');
     expect(sql).toContain('FROM "MemorySuppression"');
     expect(sql).toContain('FROM "MemoryFeedback"');
     expect(sql).toContain('root_fact."lastConfirmedAt" DESC NULLS LAST');

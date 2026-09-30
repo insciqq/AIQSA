@@ -63,6 +63,7 @@ function syntheticSources(input: Readonly<{
     const source = {
       canonicalKey: `slot:person:self:workflow:context-${index + 1}`,
       category: "habits",
+      confidence: 1,
       directness: "DIRECT" as const,
       displayText:
         `I consistently use a checklist before starting recurring workflow ${index + 1}.`,
@@ -81,6 +82,7 @@ function syntheticSources(input: Readonly<{
       sourceChatIds: [`synthesis-smoke-chat-${index + 1}`],
       sourceMessageIds: [`synthesis-smoke-message-${index + 1}`],
       sourceMode: "AUTOMATIC" as const,
+      sensitivityClass: "NORMAL" as const,
       structuredValue: { checklist: true, context: index + 1 },
       subjectKey: "person:self",
       versionId

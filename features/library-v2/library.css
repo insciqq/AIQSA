@@ -1285,6 +1285,10 @@
     grid-row: 1;
   }
 
+  #v2-library-panel-memory .v2-resource-heading-action > .v2-button[data-tone="primary"] {
+    min-height: 2.75rem;
+  }
+
 
   .v2-memory-toolbar {
     display: grid;

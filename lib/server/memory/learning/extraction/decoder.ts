@@ -1,4 +1,5 @@
 import type { ModelToolCall } from "../../../tools/types";
+import { decodeMemoryUsefulness } from "../../../../domain/memory/usefulness";
 import { MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE } from
   "../../../../contracts/memory";
 import {
@@ -92,11 +93,12 @@ const changeIntents = new Set([
 ]);
 const memoryDirectives = new Set(["NONE", "EXPLICIT_REMEMBER", "UNKNOWN"]);
 
-const observationKeys = [
+const legacyObservationKeys = [
   "candidate_ref", "confidence_band", "dependency_refs", "entities", "evidence",
   "future_useful", "identity", "memory_type", "reason_code", "semantic_frame",
   "sensitivity", "statement", "temporal", "temporary", "value"
 ].sort();
+const observationKeys = [...legacyObservationKeys, "usefulness"].sort();
 const identityKeys = ["dimension_key", "mode", "predicate_key", "subject"].sort();
 const subjectKeys = ["canonical_label", "entity_type", "qualifiers"].sort();
 const qualifierKeys = ["brand", "model"].sort();
@@ -694,9 +696,13 @@ function temporalDisplayText(
 
 function decodeObservation(
   value: unknown,
-  input: MemoryFactExtractionInput
+  input: MemoryFactExtractionInput,
+  retained = false
 ): MemoryExtractedCandidate {
-  if (!isRecord(value) || !hasExactKeys(value, observationKeys)) fail();
+  if (!isRecord(value) || !hasExactKeys(
+    value,
+    retained ? legacyObservationKeys : observationKeys
+  )) fail();
   const source = targetSource(input);
   const candidateRef = boundedString(value.candidate_ref, 64);
   if (!boundedMachineToken.test(candidateRef)) fail();
@@ -730,6 +736,10 @@ function decodeObservation(
     fail("memory_fact_sensitivity_ambiguous");
   }
   if (!requiredBoolean(value.future_useful)) fail("memory_fact_not_useful");
+  if (value.usefulness === "TRANSIENT") fail("memory_fact_not_useful");
+  const usefulness = value.usefulness === undefined
+    ? undefined
+    : decodeMemoryUsefulness(value.usefulness) ?? fail();
   boundedString(value.reason_code, 64);
   const rawIdentity = parseIdentity(value.identity);
   const valueProposal = parseValue(value.value);
@@ -859,6 +869,7 @@ function decodeObservation(
     expirationIntent: temporalProposal.expirationIntent,
     expiresAt: temporal.expiresAt,
     futureUseful: true,
+    ...(usefulness === undefined ? {} : { usefulness }),
     identityProfile: input.identityProfile,
     identityKind: resolvedIdentity.identityKind,
     identityVersion: resolvedIdentity.identityVersion,
@@ -1065,14 +1076,21 @@ function packetPlan(
  * shape, or more observations than receipts can record, fails the output. */
 export function decodeMemoryFactExtraction(
   calls: readonly ModelToolCall[] | undefined,
-  input: MemoryFactExtractionInput
+  input: MemoryFactExtractionInput,
+  options: Readonly<{ retainedContract?: boolean }> = {}
 ): MemoryFactExtractionPlan {
   assertMemoryIdentityWritable(input.identityProfile);
+  const retained = options.retainedContract === true;
   if (!calls || calls.length !== 1 ||
-    calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME ||
+    (calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME &&
+      !(retained && calls[0]?.name === "submit_memory_fact_observations_v5")) ||
     !isRecord(calls[0].arguments) ||
     !hasExactKeys(calls[0].arguments, ["observations"]) ||
     !Array.isArray(calls[0].arguments.observations) ||
     calls[0].arguments.observations.length > MEMORY_FACT_MAX_RAW_OBSERVATIONS) fail();
-  return packetPlan(calls[0].arguments.observations, input, decodeObservation);
+  return packetPlan(
+    calls[0].arguments.observations,
+    input,
+    (value, source) => decodeObservation(value, source, retained)
+  );
 }

@@ -24,6 +24,7 @@ function synthesisPlan(): MemorySynthesisPlan {
     const base = {
       canonicalKey: `habit:${index}`,
       category: "habits",
+      confidence: 1,
       directness: "DIRECT" as const,
       displayText: `I repeatedly use workflow ${index}.`,
       entityIds: ["entity-workflow"],
@@ -37,6 +38,7 @@ function synthesisPlan(): MemorySynthesisPlan {
       sourceChatIds: [`chat-${index % 2}`],
       sourceMessageIds: [`message-${index}`],
       sourceMode: "AUTOMATIC" as const,
+      sensitivityClass: "NORMAL" as const,
       structuredValue: { index },
       subjectKey: "user",
       versionId: `version-${index}`

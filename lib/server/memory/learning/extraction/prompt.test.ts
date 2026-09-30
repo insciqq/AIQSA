@@ -16,13 +16,13 @@ import { MEMORY_PREFERENCE_DIMENSION_PREFIXES } from "../identity/registry";
 import { memorySha256 } from "../../persistence/lexical";
 
 describe("Memory semantic-frame extraction prompt", () => {
-  it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
+  it("locks the v6 usefulness-aware forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v47");
+      .toBe("memory-fact-extraction-prompt-v49");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
-      .toBe("memory-fact-extraction-schema-v5");
+      .toBe("memory-fact-extraction-schema-v6");
     expect(memoryFactExtractionTool).toMatchObject({
-      name: "submit_memory_fact_observations_v5",
+      name: "submit_memory_fact_observations_v6",
       strict: true
     });
     const observation = (memoryFactExtractionTool.inputSchema as {
@@ -31,7 +31,7 @@ describe("Memory semantic-frame extraction prompt", () => {
     expect(Object.keys(observation).sort()).toEqual([
       "candidate_ref", "confidence_band", "dependency_refs", "entities",
       "evidence", "future_useful", "identity", "memory_type", "reason_code",
-      "semantic_frame", "sensitivity", "statement", "temporal", "temporary",
+      "semantic_frame", "sensitivity", "statement", "temporal", "temporary", "usefulness",
       "value"
     ]);
   });
@@ -112,6 +112,11 @@ describe("Memory semantic-frame extraction prompt", () => {
       "active license or subscription with no matching state",
       "imperative addressed to the assistant may still assert a durable response preference",
       "current assistant task or artifact",
+      "A recurring activity or commitment spanning multiple sessions is ONGOING",
+      "even with a stated end date or limited duration",
+      "EPISODIC describes a single bounded occurrence or a completed experience",
+      "Classify the complete assertion",
+      "Preserve the recurrence and time bounds without inferring completion or expiration",
       "A need to change an arrangement that only explains why the user wants the assistant to prepare documents",
       "independently stated dated vacation",
       "cannot form an employment_status SLOT",

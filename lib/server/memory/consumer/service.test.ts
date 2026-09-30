@@ -8,6 +8,7 @@ import {
 import { createMemoryConsumerService } from "./service";
 import type { MemoryConsumerRefService } from "./ref";
 import { ExplicitMemoryServiceError } from "../explicit/service";
+import { MEMORY_CONSUMER_CATEGORIES } from "../../../contracts/memoryConsumer";
 
 const now = new Date("2026-08-21T10:00:00.000Z");
 
@@ -307,6 +308,62 @@ describe("Memory consumer service", () => {
       sourceMode: "EXPLICIT",
       state: "ACTIVE"
     });
+  });
+
+  it("round-trips every canonical category through filters and item projection", async () => {
+    const deps = dependencies();
+    const service = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never,
+      readResetState: deps.readResetState,
+      refs: refs(),
+      settingsService: deps.settingsService as never
+    });
+    const storageCategories = [
+      "about_you", "preferences", "work", "goals", "constraints_routines", "other"
+    ] as const;
+
+    for (const [index, stored] of storageCategories.entries()) {
+      const category = MEMORY_CONSUMER_CATEGORIES[index]!;
+      const summary = memorySummaryFixture({
+        category: stored,
+        sourceMode: index % 2 === 0 ? "AUTOMATIC" : "EXPLICIT"
+      });
+      deps.explicitService.list.mockResolvedValueOnce({ memories: [summary], nextCursor: null });
+      const result = await service.list("user-1", { category });
+
+      expect(deps.explicitService.list).toHaveBeenLastCalledWith("user-1", expect.objectContaining({
+        category: stored
+      }));
+      expect(result.items).toEqual([expect.objectContaining({
+        category,
+        provenance: index % 2 === 0 ? "LEARNED" : "SAVED"
+      })]);
+    }
+  });
+
+  it("projects the legacy constraints alias without changing provenance", async () => {
+    const deps = dependencies();
+    deps.explicitService.list.mockResolvedValueOnce({
+      memories: [memorySummaryFixture({
+        category: "constraints_and_routines",
+        sourceMode: "EXPLICIT"
+      })],
+      nextCursor: null
+    });
+    const service = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never,
+      readResetState: deps.readResetState,
+      refs: refs(),
+      settingsService: deps.settingsService as never
+    });
+
+    expect((await service.list("user-1", {})).items).toEqual([
+      expect.objectContaining({ category: "CONSTRAINTS_AND_ROUTINES", provenance: "SAVED" })
+    ]);
   });
 
   it("keeps available Memory on while history indexing runs in the background", async () => {
