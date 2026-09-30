@@ -20,7 +20,9 @@ import { memoryExecutionSha256 } from "../../execution/canonical";
 import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
 import { withLockedMemoryTransaction } from "../../persistence/transaction";
 import {
+  MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS,
   MEMORY_FACT_EXTRACTION_VERSIONS,
+  memoryFactExtractionRetainedInput,
   memoryFactExtractionClaimIsValid,
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan
@@ -137,6 +139,12 @@ function bindingUsesVersions(
     binding.schemaVersion === versions.schemaVersion;
 }
 
+function bindingUsesRetainedFactVersions(
+  binding: Awaited<ReturnType<MemoryFactExtractionRepository["bindings"]>>[number]
+): boolean {
+  return bindingUsesVersions(binding, MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS);
+}
+
 async function recoverPriorExecution(
   deps: MemoryFactExtractionHandlerDependencies,
   job: MemoryJobDescriptor,
@@ -148,21 +156,30 @@ async function recoverPriorExecution(
 > {
   const bindings = await deps.repository.bindings(job.userId, job.id);
   const extractionBindings = bindings.filter((binding) =>
-    bindingUsesVersions(binding, MEMORY_FACT_EXTRACTION_VERSIONS));
-  const compatibleBindings = bindings.filter((binding) =>
     bindingUsesVersions(binding, MEMORY_FACT_EXTRACTION_VERSIONS) ||
+    bindingUsesRetainedFactVersions(binding));
+  const compatibleBindings = bindings.filter((binding) =>
+    extractionBindings.includes(binding) ||
     bindingUsesVersions(binding, MEMORY_SEMANTIC_ADJUDICATION_VERSIONS));
   const replaySensitiveBindings = extractionBindings.filter((binding) =>
     binding.state === "RUNNING" || binding.state === "OUTCOME_UNKNOWN" ||
     binding.state === "SUCCEEDED");
+  const retainedInputs = new Map(
+    extractionBindings
+      .filter((binding) => bindingUsesRetainedFactVersions(binding))
+      .map((binding) => [binding.id, memoryFactExtractionRetainedInput(input, binding.inputHash)])
+  );
   if (compatibleBindings.length !== bindings.length ||
     replaySensitiveBindings.some((binding) =>
-      binding.inputHash !== input.inputHash)) {
+      bindingUsesVersions(binding, MEMORY_FACT_EXTRACTION_VERSIONS)
+        ? binding.inputHash !== input.inputHash
+        : !retainedInputs.get(binding.id))) {
     await deps.repository.discardStale(job, "source_stale");
     throw new MemoryCoordinatorError("memory_fact_binding_stale", false);
   }
   const succeeded = extractionBindings.find((binding) => binding.state === "SUCCEEDED");
   if (succeeded?.acceptedOutputHash) {
+    const acceptedInput = retainedInputs.get(succeeded.id) ?? input;
     const applied = await deps.repository.applied(job, succeeded.id);
     if (applied !== null) {
       return {
@@ -177,7 +194,7 @@ async function recoverPriorExecution(
         )
       };
     }
-    const plan = await deps.repository.staged(job, succeeded.id, input, deps.now());
+    const plan = await deps.repository.staged(job, succeeded.id, acceptedInput, deps.now());
     if (!plan || plan.outputHash !== succeeded.acceptedOutputHash) {
       throw new MemoryCoordinatorError("memory_fact_staged_result_missing", true);
     }

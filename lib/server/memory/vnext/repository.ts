@@ -25,6 +25,9 @@ import {
 } from "../learning/relations/policy";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
+import { isMemoryMaintenanceEvidenceSuppressed } from "../maintenance/suppression";
+import { isSupportedMemoryMaintenancePolicy } from "../maintenance/policy";
+import { memoryPurgeTargetType } from "../purge/contract";
 import { memorySafetyLiteFactClassification } from "../safetyLite";
 import { memoryExactVNextDirectAuthorityPredicate } from
   "../persistence/eligibility";
@@ -49,10 +52,12 @@ import {
 type LockedFact = Readonly<{
   canonicalKey: string;
   currentVersionId: string | null;
+  forgottenAt: Date | null;
   id: string;
   lastConfirmedAt: Date | null;
   movedToFactId: string | null;
   state: string;
+  pinned: boolean;
 }>;
 
 type StoredVersion = Readonly<{
@@ -293,9 +298,9 @@ async function lockedFact(
     ...(legacyIsUnambiguous && legacyKey !== undefined ? [legacyKey] : [])
   ])];
   const rows = await tx.$queryRaw<LockedFact[]>(Prisma.sql`
-    SELECT "id", "canonicalKey", "currentVersionId", "lastConfirmedAt",
+    SELECT "id", "canonicalKey", "currentVersionId", "forgottenAt", "lastConfirmedAt",
       "movedToFactId",
-      "state"::text AS "state"
+      "pinned", "state"::text AS "state"
     FROM "MemoryFact"
     WHERE "userId" = ${userId}
       AND "scopeId" = ${scopeId}
@@ -743,6 +748,7 @@ async function insertVersion(
       sourceMode: "AUTOMATIC",
       sourceTimezone: input.inputTimeZone,
       state: input.state,
+      usefulness: candidate.usefulness ?? null,
       structuredValue: candidate.proposedValue === null
         ? Prisma.JsonNull
         : candidate.proposedValue as Prisma.InputJsonValue,
@@ -1121,6 +1127,94 @@ async function relatedContextTargetVersionId(
   return targets.length === 1 ? targets[0]!.id : null;
 }
 
+function automaticCleanupMetadata(value: Prisma.JsonValue): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const metadata = value as Record<string, unknown>;
+  return isSupportedMemoryMaintenancePolicy(metadata.policyVersion) &&
+    metadata.reasonCode === "automatic_transient_cleanup";
+}
+
+/** A forgotten logical identity may be re-established only after the entire
+ * automatic cleanup transaction completed. Explicit/user lineage, pending
+ * purge, retained plaintext, old testimony, pins and source tombstones all
+ * keep the old identity closed. */
+async function automaticForgottenFactCanRelearn(
+  tx: MemoryTransaction,
+  userId: string,
+  fact: LockedFact,
+  candidate: MemoryExtractedCandidate,
+  evidence: ExactEvidence
+): Promise<boolean> {
+  if (fact.state !== "FORGOTTEN" || fact.pinned || fact.currentVersionId !== null ||
+    fact.forgottenAt === null || candidate.usefulness === undefined ||
+    evidence.observedAt.getTime() <= fact.forgottenAt.getTime()) return false;
+  const versions = await tx.memoryFactVersion.findMany({
+    select: {
+      contentPurgedAt: true,
+      displayText: true,
+      normalizedSearchText: true,
+      rawTemporalExpression: true,
+      semanticAdjudication: true,
+      semanticFrame: true,
+      sourceMode: true,
+      structuredValue: true,
+      temporalResolutionEvidence: true
+    },
+    where: { factId: fact.id, userId }
+  });
+  if (versions.length === 0 || versions.some((version) =>
+    version.contentPurgedAt === null ||
+    version.displayText !== null ||
+    version.normalizedSearchText !== null ||
+    version.rawTemporalExpression !== null ||
+    version.semanticAdjudication !== null ||
+    version.semanticFrame !== null ||
+    version.sourceMode === "EXPLICIT" ||
+    version.structuredValue !== null ||
+    version.temporalResolutionEvidence !== null
+  )) return false;
+  if (await tx.memoryEvent.count({
+    where: { actorType: "USER", factId: fact.id, userId }
+  }) > 0) return false;
+  const automaticForget = await tx.memoryEvent.findFirst({
+    orderBy: { createdAt: "desc" },
+    select: { metadata: true },
+    where: { actorType: "JOB", factId: fact.id, operation: "FORGET", userId }
+  });
+  if (!automaticForget || !automaticCleanupMetadata(automaticForget.metadata)) return false;
+  const purge = await tx.memoryDeletionOutbox.findFirst({
+    select: { completedAt: true, id: true },
+    where: {
+      operation: "FORGET_PURGE",
+      state: "SUCCEEDED",
+      targetId: fact.id,
+      targetType: memoryPurgeTargetType("MEMORY_FACT"),
+      userId,
+      completedAt: { gte: fact.forgottenAt }
+    },
+    orderBy: { completedAt: "desc" }
+  });
+  if (!purge?.completedAt) return false;
+  if (await tx.memoryDeletionOutbox.count({
+    where: {
+      operation: "FORGET_PURGE",
+      state: { not: "SUCCEEDED" },
+      targetId: fact.id,
+      targetType: memoryPurgeTargetType("MEMORY_FACT"),
+      userId
+    }
+  }) > 0) return false;
+  return !(await isMemoryMaintenanceEvidenceSuppressed(tx, {
+    evidence: [{
+      endOffset: evidence.endOffset,
+      messageId: evidence.messageId,
+      sourceTextHash: evidence.sourceTextHash,
+      startOffset: evidence.startOffset
+    }],
+    userId
+  }));
+}
+
 async function createObservation(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -1137,6 +1231,21 @@ async function createObservation(
   }
   const evidence = exactEvidence(plan.input, candidate);
   if (evidence.length !== 1) throw new Error("memory_vnext_evidence_invalid");
+  if (await isMemoryMaintenanceEvidenceSuppressed(tx, {
+    evidence: evidence.map(({ endOffset, messageId, sourceTextHash, startOffset }) => ({
+      endOffset,
+      messageId,
+      sourceTextHash,
+      startOffset
+    })),
+    userId: settings.userId
+  })) {
+    return {
+      attachedEvidence: 0,
+      createdVersions: 0,
+      reasonCode: "maintenance_source_suppressed"
+    };
+  }
   if (candidate.expiresAt !== null && new Date(candidate.expiresAt) <= now) {
     return { attachedEvidence: 0, createdVersions: 0 };
   }
@@ -1389,8 +1498,23 @@ async function createObservation(
       scope.id, null, semanticAdjudication
     );
   }
-  if (fact.state === "FORGOTTEN" || fact.state === "ORPHANED" ||
-    fact.state === "CONFLICTED" || fact.movedToFactId !== null) {
+  if (fact.state === "FORGOTTEN") {
+    if (await automaticForgottenFactCanRelearn(
+      tx,
+      settings.userId,
+      fact,
+      candidate,
+      evidence[0]!
+    )) {
+      return createFirstOrReactivatedVersion(
+        tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
+        scope.id, fact, semanticAdjudication
+      );
+    }
+    return { attachedEvidence: 0, createdVersions: 0, reasonCode: "forgotten_identity_closed" };
+  }
+  if (fact.state === "ORPHANED" || fact.state === "CONFLICTED" ||
+    fact.movedToFactId !== null) {
     return { attachedEvidence: 0, createdVersions: 0 };
   }
 

@@ -1,11 +1,11 @@
 # MEMORY
 
-Owner: Native Memory maintainers
-Scope: Personal Memory authority, evidence, retrieval, learning, and lifecycle.
+Owner: Memory maintainers
+Scope: Personal Memory authority and lifecycle.
 
 [Critical invariants](CRITICAL_INVARIANTS.md) owns safety; [Memory code](../lib/server/memory/) owns implementation.
 
-Inspect mature open-source engines before repairs; record upstream revisions, mechanisms and AIQSA constraints. Pursue practical parity within operator scope/budgets without weakening ownership, evidence or deletion. Verify independent scenarios and guarantees; retain hypotheses, outcomes and costs. Reference failures prove neither impossibility nor parity. Deferrals require defect evidence. Stress scores are optional; deadlines, resource safety and authority are mandatory.
+Inspect mature engines before repairs; record revisions, mechanisms and AIQSA constraints. Pursue practical parity without weakening ownership, evidence or deletion. Verify independent scenarios; retain hypotheses, outcomes and costs. Reference failures prove neither impossibility nor parity. Deferrals require defect evidence. Respect scope, budgets, deadlines and resource limits.
 
 ## Product And Authority
 
@@ -17,7 +17,7 @@ Verified Knowledge embeddings may bootstrap untouched Memory settings after owne
 
 Personal Memory is user-global. Saved Memories remain directly manageable while Memory is paused; pausing stops new use and work without deleting retained data. Archive is organization only. Resume admits only messages after its server-owned cutoff, never automatic historical backfill. Temporary and Project chats create or receive no Memory context, sources, bindings, counters or jobs. Legacy non-global and Project data is not silently broadened into Personal Memory. Public shares strip the entire private Memory surface.
 
-Memory retains directly reported personal context without a closed ontology. Owner scopes access; subject identifies attribution; source records testimony. Other subjects retain their identity, without authorizing unrelated dossiers. Team environment is the user's work context, not ownership. Tools, versions, skills, lasting preferences and goals remain eligible beyond the current assistant task; its instructions, requirements and transient implementation state do not. Mixed messages retain independent personal plans while omitting requested work.
+Memory retains useful directly reported personal context without a closed ontology. Owner scopes access; subject identifies attribution; source records testimony. Other subjects retain their identity without authorizing unrelated dossiers. Team environment is work context, not ownership. Durable traits, ongoing circumstances and independently meaningful episodes remain eligible beyond the current task; transient updates, local reactions and requested work remain in chat history. Confidence proves neither usefulness nor durability. Categories organize topics, never authorize retention or deletion.
 
 New ordinary personal turns admit current direct facts through a short fixed local bound, without dynamic retrieval or external Memory calls. Deeper recall is an optional read-only answer-model tool, available independently of Workspace/external MCP. Tools-off or incapable models retain standing context without costly fallback. Agent, temporary, excluded and Project chats remain ineligible. Master Memory pause forbids both reads; history off still permits facts. Accepted older runs retain their frozen contract.
 
@@ -35,7 +35,7 @@ Only the exact direct-user target supplies automatic testimony. Bounded context 
 
 Direct personal reports retain attribution and uncertainty: “my brother told me he works nights” attests the user's report about the brother, never independent testimony or the user's schedule. Quotations, external material and assistant text alone cannot attest facts; reported speech within the user's own assertion remains eligible.
 
-Explicit Saved Memory outranks automatic evidence. High-confidence durable observations may become current state; lower-confidence propositions cannot supersede authoritative state or feed patterns. Authority-critical uncertainty fails closed. Exact evidence and immutable versions commit atomically and idempotently before optional embedding work. Repeated evidence has no semantic side effect; independent corroboration reinforces without inventing competing truth. Rejecting a candidate cannot remove an older safe current version.
+Explicit Saved Memory outranks automatic evidence. High-confidence durable observations may become current state; lower-confidence propositions cannot supersede authoritative state or feed generalizations. Authority-critical uncertainty fails closed. Exact evidence and immutable versions commit atomically and idempotently before optional embedding work. Repeated evidence has no semantic side effect; independent corroboration reinforces without inventing competing truth. Rejecting a candidate cannot remove an older safe current version.
 
 Identity is server-owned, Unicode-preserving and independent of search folding, transliteration, category or provider labels. Missing identity dimensions are never guessed; weak identity remains a proposition. Named third parties do not become the user's self subject. Entities and aliases aid identity and retrieval, never confer semantic authority. Lexical similarity alone cannot merge entities; loss of exact source support fences reuse, and retracted roots are not revived. Current-pointer changes, merges and corrections require fresh exact targets and the bounded semantic adjudication authority; ambiguity becomes conflict. Retrospective state does not silently replace current state.
 
@@ -43,9 +43,9 @@ Safety Lite is local and independent from semantic classification. It redacts re
 
 Expiration requires grounded source language and validated calendar interpretation. Unresolved explicit TTL rejects the candidate. Reads enforce expiration synchronously; cleanup is not authorization. Expiration or supersession never resurrects older versions. Current reads label elapsed or long-unconfirmed structured plans and past events without inferring expiry or completion. Historical reads and untyped explicit facts remain unchanged.
 
-Dream defaults on, forward-only from first enable. It combines overlapping facts or cautiously generalizes recurring tendencies; each source must support the whole result. Unrelated or contradictory sources yield none. Results need three direct facts from three independently verified user messages about one grounded subject; unknown subjects are not assigned to the owner. Results remain depth-one, lower-authority evidence, never current-state/history/profile/aggregation authority or support for another result. Reads rejoin supports and immediately reject invalid ones. Disable preserves valid results. Post-release review governs continuation.
+Dream defaults on. Versioned maintenance reviews existing/changed automatic facts against exact sources. Explicit saves, owner edits and pins are protected. Independently verified useless automatic observations may be removed; age, confidence or retrieval frequency alone never authorize deletion. Atomic source fences prevent resurrection while preserving independent testimony and original chat. Settings/source/version/protection changes invalidate decisions; settled or ambiguous provider calls never replay.
 
-Combined results appear in Saved Memories with nested sources and no parent editing. Forget restores source rows; only direct sources enter answers. Generalizations retain their source rows and existing answer rules.
+Synthesis combines overlapping assertions about one grounded subject or generalizes independent tendencies. Combinations need two sources; complementary details retain per-claim sources and episode scope. Generalizations need three direct high-confidence facts from independent messages; one episode is not recurrence. Depth-one derivatives grant no mutation authority. Reads rejoin supports and reject unsupported derivatives. Combined display/context avoids duplicate sources while preserving source access and protected memories. Junk need not become a summary.
 
 ## Retrieval And Presentation
 
@@ -55,7 +55,7 @@ Independent candidate lanes contribute ranks, not directly comparable raw scores
 
 A governed reranker scores safe candidates only. Approved fallback stays within the accepted route and deadline; model scores never mix. Invalid coverage preserves fused ordering. A calibrated relevance floor protects exact-text and exact-alias anchors; uncalibrated models have no floor. Useful-memory prioritization affects ordering only, never authority or lifecycle. Frozen versions receive idempotent access touches only when independently retrieved; standing-only inclusion neither touches usage nor lists an answer source. Touch failure cannot fail the answer.
 
-Standing context prioritizes explicit facts and caps compact text at 50 facts/10,000 estimated tokens, without limiting stored facts. Preserve authority, dates and currentness, recheck mutations, and use facts only when relevant. Patterns stay excluded. Absence from this partial set is not absence from Memory: search before claiming an unknown personal detail.
+Standing context prioritizes protected and durable/ongoing facts, capped at 50 facts/10,000 estimated tokens. Episodic details remain available to relevant recall. Preserve authority, dates and currentness; age never proves recovery/completion. Generalized patterns stay excluded. Search before claiming a personal detail is unknown: this partial set is not all Memory.
 
 Memory search queries allowed facts and history within ordinary tool budgets, at most three calls per answer and 6,000 estimated tokens per result (12,000 for explicit comparison/counting). The administrator limit applies per call, independently of standing admission. No synchronous per-passage LLM relevance check runs by default. Optional-stage failures preserve usable evidence; empty, limited, failed and cancelled searches remain distinct, never proving exhaustive absence.
 

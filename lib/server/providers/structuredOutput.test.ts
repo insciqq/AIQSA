@@ -463,7 +463,6 @@ describe("provider structured output", () => {
       max_output_tokens: 64,
       model: "gpt-test",
       store: false,
-      stream: false,
       text: {
         format: {
           name: "strict_result",
@@ -473,6 +472,7 @@ describe("provider structured output", () => {
         }
       }
     });
+    expect(body).not.toHaveProperty("stream");
     if (adapterKind === "openai_responses_native") {
       expect(body).toHaveProperty("background", false);
     } else {

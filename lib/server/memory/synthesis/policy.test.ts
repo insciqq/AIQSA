@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS } from "../../../domain/memory/retrieval/config";
 import {
   buildMemorySynthesisPlan,
   decideMemorySynthesisSchedule,
   memorySynthesisPatternFingerprint,
   memorySynthesisSourceEligibilityHash,
   memorySynthesisSourceSetFingerprint,
+  memorySynthesisSourcesSupportReason,
   MEMORY_SYNTHESIS_CLUSTER_WINDOW_MS,
   MEMORY_SYNTHESIS_COOLDOWN_MS,
   MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS,
@@ -26,6 +28,7 @@ function source(
   const base = {
     canonicalKey: `habit:${index}`,
     category: "habits",
+    confidence: 1,
     directness: "DIRECT" as const,
     displayText: `I follow durable workflow step ${index}.`,
     entityIds: ["entity-shared"],
@@ -39,6 +42,7 @@ function source(
     sourceChatIds: [`chat-${index % 4}`],
     sourceMessageIds: [`message-${index}`],
     sourceMode: "AUTOMATIC" as const,
+    sensitivityClass: "NORMAL" as const,
     structuredValue: { index },
     subjectKey: "user",
     versionId: `version-${index}`,
@@ -52,6 +56,14 @@ function source(
 }
 
 describe("Dream synthesis policy", () => {
+  it("bounds combined sources to the exact reader evidence capacity", () => {
+    const sources = Array.from({ length: MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS + 1 },
+      (_, index) => source(index));
+    expect(memorySynthesisSourcesSupportReason(sources.slice(0, MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS),
+      "combined_refined_facts")).toBe(true);
+    expect(memorySynthesisSourcesSupportReason(sources, "combined_refined_facts")).toBe(false);
+    expect(memorySynthesisSourcesSupportReason(sources, "repeated_habit_pattern")).toBe(true);
+  });
   it("binds per-pattern ingestion to canonical identity instead of model wording", () => {
     const input = {
       canonicalPatternIdentity: `prop:v1:${"a".repeat(64)}`,
@@ -71,7 +83,7 @@ describe("Dream synthesis policy", () => {
     })).toBe(fingerprint);
   });
 
-  it("requires three distinct eligible direct facts after the forward boundary", () => {
+  it("requires two distinct eligible direct facts after the forward boundary", () => {
     expect(buildMemorySynthesisPlan({
       boundary,
       generation: 3,
@@ -106,14 +118,21 @@ describe("Dream synthesis policy", () => {
   });
 
   it("does not treat several facts extracted from one message as independent support", () => {
-    expect(buildMemorySynthesisPlan({
+    const sameMessage = buildMemorySynthesisPlan({
       boundary,
       generation: 3,
       sources: Array.from({ length: 3 }, (_, index) => source(index, {
         sourceChatIds: ["chat-shared"],
         sourceMessageIds: ["message-shared"]
       }))
-    })).toBeNull();
+    });
+    expect(sameMessage?.clusters).toHaveLength(1);
+    expect(memorySynthesisSourcesSupportReason(sameMessage!.sources, "combined_episode_facts"))
+      .toBe(true);
+    expect(memorySynthesisSourcesSupportReason(sameMessage!.sources, "repeated_habit_pattern"))
+      .toBe(false);
+    expect(memorySynthesisSourcesSupportReason(sameMessage!.sources, "combined_overlapping_facts"))
+      .toBe(false);
 
     expect(buildMemorySynthesisPlan({
       boundary,
@@ -131,18 +150,16 @@ describe("Dream synthesis policy", () => {
       sourceMessageIds: ["shared-message"],
       subjectScope: "CURRENT_USER"
     }));
-    expect(buildMemorySynthesisPlan({ boundary, generation: 3, sources: explicit }))
-      .toBeNull();
-    expect(buildMemorySynthesisPlan({
-      boundary,
-      generation: 3,
-      sources: explicit.map((entry, index) => ({
+    expect(memorySynthesisSourcesSupportReason(explicit, "repeated_habit_pattern"))
+      .toBe(false);
+    expect(memorySynthesisSourcesSupportReason(
+      explicit.map((entry, index) => ({
         ...entry,
         sourceMessageIds: index === 0
           ? ["message-a", "message-b", "message-c"]
           : ["message-a"]
-      }))
-    })).toBeNull();
+      })), "repeated_habit_pattern"
+    )).toBe(false);
     expect(buildMemorySynthesisPlan({
       boundary,
       generation: 3,
@@ -220,7 +237,7 @@ describe("Dream synthesis policy", () => {
     })).not.toBe(first?.sourceSetFingerprint);
   });
 
-  it("does not admit a provider job when no cluster has three facts", () => {
+  it("does not admit a provider job when no grounded subject has two facts", () => {
     const sources = Array.from({ length: 20 }, (_, index) => source(index, {
       entityIds: [`entity-${index}`],
       predicateKey: `predicate-${index}`,
@@ -311,11 +328,16 @@ describe("Dream synthesis policy", () => {
       )),
       ...isolated.slice(3)
     ];
-    expect(buildMemorySynthesisPlan({
+    const separated = buildMemorySynthesisPlan({
       boundary,
       generation: 3,
       sources: tooWide
-    })).toBeNull();
+    });
+    expect(separated?.clusters).toHaveLength(1);
+    expect(separated?.clusters[0]?.sources).toHaveLength(2);
+    expect(Math.max(...separated!.clusters[0]!.sources.map(({ observedAt }) => observedAt.getTime())) -
+      Math.min(...separated!.clusters[0]!.sources.map(({ observedAt }) => observedAt.getTime())))
+      .toBeLessThanOrEqual(MEMORY_SYNTHESIS_CLUSTER_WINDOW_MS);
 
     const withinWindow = [
       ...tooWide.slice(0, 2),

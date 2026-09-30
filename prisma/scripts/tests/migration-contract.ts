@@ -57,7 +57,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "c6854dab0e0f91b21cf417488959bc900852dc07973a68dc1f8df6d71b3a8dd8";
+  "912a3607bd66a0dc51a9e819c234b1dd16090db324c522d6c09900124785c94b";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -623,7 +623,7 @@ function runBootstrapProof(database: string): void {
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" s JOIN "User" u ON u.id = s."userId"
     WHERE u.email = 'baseline-admin@example.invalid' AND s."useMemoryFacts" AND s."referenceChatHistory"
       AND s."learnAutomatically" AND s."synthesisEnabled" AND s."decayEnabled"
-      AND s."synthesisEnabledAt" IS NOT NULL AND s."synthesisPolicyVersion" = 'memory-synthesis-policy-v5'
+      AND s."synthesisEnabledAt" IS NOT NULL AND s."synthesisPolicyVersion" = 'memory-synthesis-policy-v6'
       AND s."decayPolicyVersion" = 'memory-decay-v1' AND s."lastSynthesisAt" IS NULL;`), "1", "initial administrator Memory defaults");
   psqlScalar(database, `UPDATE "UserMemorySettings" SET "synthesisEnabled" = false, "decayEnabled" = false;`);
   const freshDigest = bootstrapFoundationDigest(database);

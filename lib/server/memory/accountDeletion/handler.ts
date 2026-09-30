@@ -184,6 +184,9 @@ async function purgeReusableAndPrivateMemory(
   await tx.memoryFactExtractionCandidateReceipt.deleteMany({ where: { userId } });
   await tx.memoryFactExtractionExecution.deleteMany({ where: { userId } });
   await tx.memorySynthesisExecution.deleteMany({ where: { userId } });
+  await tx.memoryMaintenanceExecution.deleteMany({ where: { userId } });
+  await tx.memoryMaintenanceReview.deleteMany({ where: { userId } });
+  await tx.memoryMaintenanceSuppression.deleteMany({ where: { userId } });
   await tx.memoryCandidate.deleteMany({ where: { userId } });
   await tx.memoryMutationAuthorization.deleteMany({ where: { userId } });
   await tx.memoryOperationReceipt.deleteMany({ where: { userId } });
@@ -357,6 +360,9 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
       UNION ALL SELECT 'fact-extraction-executions', COUNT(*)::integer FROM "MemoryFactExtractionExecution" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'fact-extraction-candidate-receipts', COUNT(*)::integer FROM "MemoryFactExtractionCandidateReceipt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'synthesis-executions', COUNT(*)::integer FROM "MemorySynthesisExecution" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'maintenance-executions', COUNT(*)::integer FROM "MemoryMaintenanceExecution" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'maintenance-reviews', COUNT(*)::integer FROM "MemoryMaintenanceReview" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'maintenance-suppressions', COUNT(*)::integer FROM "MemoryMaintenanceSuppression" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'history-executions', COUNT(*)::integer FROM "MemoryHistoryExecution" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'auxiliary-semantic-calls', COUNT(*)::integer FROM "MemoryAuxiliarySemanticCall" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'evidence', COUNT(*)::integer FROM "MemoryEvidence" WHERE "userId" = ${input.userId}

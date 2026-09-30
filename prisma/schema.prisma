@@ -5389,8 +5389,10 @@ model UserMemorySettings {
   acceptedUtilityEgressAt          DateTime?
   synthesisEnabled                 Boolean                        @default(true)
   synthesisEnabledAt               DateTime?                      @default(now())
-  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v5") @db.VarChar(64)
+  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v6") @db.VarChar(64)
   lastSynthesisAt                  DateTime?
+  maintenanceCursor                String?
+  maintenanceScannedAt             DateTime?
   decayEnabled                     Boolean                        @default(true)
   decayPolicyVersion               String?                        @default("memory-decay-v1") @db.VarChar(64)
   createdAt                        DateTime                       @default(now())
@@ -5927,6 +5929,7 @@ model MemoryFactVersion {
   semanticAdjudication           Json?
   confidence                     Float
   importance                     Float
+  usefulness                     String?                         @db.VarChar(16)
   directness                     MemoryDirectness
   sensitivityClass               MemorySensitivityClass
   safetyClassificationState      MemorySafetyClassificationState @default(PENDING)
@@ -6011,6 +6014,62 @@ model MemorySynthesisExecution {
   @@unique([userId, memoryJobId])
   @@unique([userId, executionBindingId])
   @@index([userId, appliedAt, createdAt])
+}
+
+/// Content-free, versioned maintenance checkpoint. Independent new evidence
+/// may authorize another review; an unchanged source set never does.
+model MemoryMaintenanceReview {
+  id                 String    @id @default(uuid())
+  userId             String
+  factVersionId      String
+  memoryJobId        String
+  policyVersion      String    @db.VarChar(64)
+  sourceSnapshotHash String    @db.Char(64)
+  evidenceThrough    DateTime
+  disposition        String    @default("PENDING") @db.VarChar(16)
+  usefulness         String?   @db.VarChar(16)
+  createdAt          DateTime  @default(now())
+  reviewedAt         DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, factVersionId, policyVersion, sourceSnapshotHash], map: "MemoryMaintenanceReview_source_key")
+  @@index([userId, memoryJobId])
+  @@index([userId, factVersionId, policyVersion, evidenceThrough], map: "MemoryMaintenanceReview_coverage_idx")
+}
+
+/// Strict decoded enums/opaque refs only; no prompts or source content.
+model MemoryMaintenanceExecution {
+  id                 String    @id @default(uuid())
+  userId             String
+  memoryJobId        String
+  executionBindingId String
+  ordinal            Int
+  inputHash          String    @db.Char(64)
+  acceptedOutputHash String    @db.Char(64)
+  acceptedOutput     Json?
+  createdAt          DateTime  @default(now())
+  appliedAt          DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, memoryJobId, ordinal], map: "MemoryMaintenanceExecution_job_ordinal_key")
+  @@unique([userId, executionBindingId])
+}
+
+/// Narrow anti-resurrection fence for an automatically removed source span.
+/// Independent assertions elsewhere in the original message remain eligible.
+model MemoryMaintenanceSuppression {
+  id                       String   @id @default(uuid())
+  userId                   String
+  sourceMessageId          String
+  sourceMessageContentHash String   @db.VarChar(128)
+  sourceStartOffset        Int
+  sourceEndOffset          Int
+  memoryReviewId           String
+  createdAt                DateTime @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, sourceMessageId, sourceMessageContentHash, sourceStartOffset, sourceEndOffset], map: "MemoryMaintenanceSuppression_span_key")
+  @@index([userId, sourceMessageId])
 }
 
 /// Strict decoded history outputs retained only until local apply or expiry.

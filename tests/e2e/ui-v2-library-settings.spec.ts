@@ -1,6 +1,7 @@
 import { expect, test, type BrowserContext } from "@playwright/test";
 import { memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
+import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 
 const modes = [
   { height: 900, name: "desktop", width: 1440 },
@@ -102,6 +103,41 @@ test("administrator-disabled Memory preserves its exact-fact management entry po
   expect((await page.locator("body").innerText()).toLocaleLowerCase()).not.toContain("temperature");
   expect((await page.locator("body").innerText()).toLocaleLowerCase()).not.toContain("profile");
 });
+
+for (const viewport of [
+  { width: 1440, height: 900, theme: "dark" },
+  { width: 768, height: 1024, theme: "light" },
+  { width: 1024, height: 768, theme: "dark" },
+  { width: 390, height: 844, theme: "light" },
+  { width: 844, height: 390, theme: "dark" }
+] as const) {
+  test(`Memory category and combined sources remain readable · ${viewport.width}x${viewport.height}`, async ({ context, page }, info) => {
+    await setTheme(context, viewport.theme);
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.goto("/ui-v2-fixture?fixture=library&state=memory");
+
+    const panel = page.getByTestId("library-memory-panel");
+    const routines = panel.getByRole("list", { name: "Constraints and routines memories" });
+    await expect(panel.getByRole("heading", { name: "Constraints and routines 2" })).toBeVisible();
+    await expect(routines.locator("li.v2-memory-row")).toHaveCount(2);
+    await expect(routines.getByText("Never suggests emoji in commit messages.")).toBeVisible();
+    const combined = panel.locator("li.v2-memory-row").filter({
+      hasText: "Combined from 3 memories"
+    });
+    await expect(combined).toHaveCount(1);
+    const disclosure = combined.getByRole("button", { name: /(?:Show|Hide) source memories/ });
+    await disclosure.scrollIntoViewIfNeeded();
+    await expectWithinViewport(page, disclosure);
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    await expect(combined.locator(".v2-memory-combined-sources > li")).toHaveCount(3);
+    await expect(combined.getByText("Uses a written release checklist to review tests.")).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: info.outputPath(
+      `memory-category-combined-${viewport.width}x${viewport.height}-${viewport.theme}.png`
+    ), fullPage: true });
+  });
+}
 
 for (const theme of ["dark", "light"] as const) {
   for (const mode of modes) {

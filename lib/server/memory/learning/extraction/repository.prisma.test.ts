@@ -46,6 +46,7 @@ import {
 } from "../../explicit/service";
 import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS,
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
   MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
@@ -88,6 +89,8 @@ import {
 import { createPrismaMemoryRelationRepository } from "../relations/repository";
 import { commitMemoryVNextExtractionPlan } from "../../vnext/repository";
 import { loadMemoryFactContextRefs } from "../dependencies/context";
+import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../../maintenance/policy";
+import { memoryPurgeTargetType } from "../../purge/contract";
 
 const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 101));
 const keyring = MemorySuppressionKeyring.parse(
@@ -327,6 +330,7 @@ function extractionPlan(
         }],
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: {
           dimension_key: null,
           mode: "SLOT",
@@ -383,6 +387,7 @@ function preferencePlan(
         entities: [],
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: {
           dimension_key: null,
           mode: "PROPOSITION",
@@ -437,6 +442,7 @@ function pureWithdrawalPlan(
         entities: [],
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: identityKind === "SLOT" ? {
           dimension_key: "format:layouts",
           mode: "SLOT",
@@ -535,6 +541,7 @@ function scheduledPropositionPlan(
         entities,
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: {
           dimension_key: null,
           mode: weakSubjectType ? "SLOT" : "PROPOSITION",
@@ -592,6 +599,7 @@ function slotPreferencePlan(
         entities: [],
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: {
           dimension_key: dimension,
           mode: "SLOT",
@@ -772,6 +780,7 @@ function contextualProductPlan(
         }],
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: {
           dimension_key: null,
           mode: "SLOT",
@@ -848,6 +857,7 @@ function supportingContextPlan(
         entities: [],
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: {
           dimension_key: null,
           mode: "PROPOSITION",
@@ -900,6 +910,7 @@ function relationshipTemporalPlan(
         }],
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: {
           dimension_key: null,
           mode: "PROPOSITION",
@@ -972,6 +983,7 @@ function relationshipCurrentPlan(
         }] : [])],
         evidence: exactTextRef(quote),
         future_useful: true,
+        usefulness: "DURABLE",
         identity: {
           dimension_key: null,
           mode: "PROPOSITION",
@@ -1049,7 +1061,18 @@ async function createSucceededBinding(
   userId: string,
   claim: MemoryJobClaim,
   inputHash: string,
-  _outputHash: string
+  _outputHash: string,
+  versions: Readonly<{
+    pipelineVersion: string;
+    policyVersion: string;
+    promptVersion: string;
+    schemaVersion: string;
+  }> = {
+    pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+    policyVersion: MEMORY_FACT_EXTRACTION_POLICY_VERSION,
+    promptVersion: MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
+    schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION
+  }
 ): Promise<string> {
   const id = `fact-binding-${randomUUID()}`;
   const completedAt = new Date();
@@ -1070,14 +1093,14 @@ async function createSucceededBinding(
       memoryJobId: claim.id,
       ordinal: 0,
       ownerType: "JOB",
-      pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
-      policyVersion: MEMORY_FACT_EXTRACTION_POLICY_VERSION,
-      promptVersion: MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
+      pipelineVersion: versions.pipelineVersion,
+      policyVersion: versions.policyVersion,
+      promptVersion: versions.promptVersion,
       providerId: "openai_compatible",
       providerModelId: authority.providerModelId,
       recoverableUntil: null,
       relationsDetachedAt: null,
-      schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+      schemaVersion: versions.schemaVersion,
       secretFreeExecutionSnapshot: {},
       startedAt: createdAt,
       state: "RUNNING",
@@ -1330,6 +1353,117 @@ async function activateHybridIndex(userId: string): Promise<void> {
       where: { id: generation.id }
     });
   });
+}
+
+async function seedAutomaticallyPurgedFact(
+  label: string,
+  options: Readonly<{
+    cleanupPolicyVersion?: string;
+    outboxState?: "PENDING" | "SUCCEEDED";
+    pinned?: boolean;
+    sourceMode?: "AUTOMATIC" | "EXPLICIT";
+    userEvent?: boolean;
+  }> = {}
+) {
+  const userId = await createOwner(`relearn-${label}`);
+  try {
+    const chat = await prisma.chat.create({ data: { title: `Relearn ${label}`, userId } });
+    const text = "I prefer quiet rooms.";
+    const turn = await createTurn({
+      assistantText: "Noted.",
+      chatId: chat.id,
+      createdAt: new Date("2026-09-01T10:00:00.000Z"),
+      parentMessageId: null,
+      userId,
+      userText: text
+    });
+    await settleChat(userId, chat.id, turn);
+    const claim = await claimFactJob(userId, turn.userMessage.id);
+    const input = await prepare(claim);
+    const plan = preferencePlan(input, text, text);
+    const binding = await createSucceededBinding(userId, claim, input.inputHash, plan.outputHash);
+    await expect(applyPlan(userId, claim, plan, binding)).resolves.toBe("APPLIED");
+    const original = await prisma.memoryFact.findFirstOrThrow({ where: { userId } });
+    const originalVersion = await prisma.memoryFactVersion.findFirstOrThrow({
+      select: { systemFrom: true },
+      where: { factId: original.id, userId }
+    });
+    const forgottenAt = new Date(originalVersion.systemFrom.getTime() + 60_000);
+    await prisma.$transaction(async (tx) => {
+      await tx.memoryFactVersion.updateMany({
+        data: {
+          contentPurgedAt: forgottenAt,
+          displayText: null,
+          normalizedSearchText: null,
+          rawTemporalExpression: null,
+          occurredAt: null,
+          expectedAt: null,
+          expiresAt: null,
+          validFrom: null,
+          validTo: null,
+          sourceTimezone: null,
+          temporalResolverVersion: null,
+          semanticAdjudication: Prisma.DbNull,
+          semanticFrame: Prisma.DbNull,
+          state: "FORGOTTEN",
+          structuredValue: Prisma.DbNull,
+          systemTo: forgottenAt,
+          temporalResolutionEvidence: Prisma.DbNull
+        },
+        where: { factId: original.id, userId }
+      });
+      await tx.memoryFact.update({
+        data: {
+          currentVersionId: null,
+          forgottenAt,
+          pinned: options.pinned ?? false,
+          state: "FORGOTTEN"
+        },
+        where: { id: original.id, userId }
+      });
+      await tx.memoryEvent.create({
+        data: {
+          actorType: "JOB",
+          factId: original.id,
+          factVersionId: original.currentVersionId,
+          metadata: {
+            policyVersion: options.cleanupPolicyVersion ?? MEMORY_MAINTENANCE_POLICY_VERSION,
+            reasonCode: "automatic_transient_cleanup"
+          },
+          operation: "FORGET",
+          userId
+        }
+      });
+      if (options.sourceMode === "EXPLICIT") {
+        await tx.memoryEvent.create({
+          data: { actorType: "USER", factId: original.id, factVersionId: original.currentVersionId,
+            operation: "EDIT", userId }
+        });
+      }
+      if (options.userEvent) {
+        await tx.memoryEvent.create({
+          data: { actorType: "USER", factId: original.id, operation: "FORGET", userId }
+        });
+      }
+      await tx.memoryDeletionOutbox.create({
+        data: {
+          id: randomUUID(),
+          memoryGeneration: 0,
+          operation: "FORGET_PURGE",
+          completedAt: options.outboxState === "PENDING" ? null : forgottenAt,
+          lastAuditAt: options.outboxState === "PENDING" ? null : forgottenAt,
+          state: options.outboxState ?? "SUCCEEDED",
+          targetId: original.id,
+          targetType: memoryPurgeTargetType("MEMORY_FACT"),
+          userId
+        }
+      });
+    });
+    return { chat, factId: original.id, forgottenAt, text, turn, userId };
+  } catch (error) {
+    await cleanupOwner(userId);
+    throw error;
+  }
 }
 
 describe("Prisma Memory vNext source-message ingestion", () => {
@@ -2381,11 +2515,17 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         const decoded = preferencePlan(modernInput, text, text);
         const { inputHash: _inputHash, ...inputFields } = modernInput;
         const oldFields = { ...inputFields, identityProfile: "LEGACY_V1" as const };
-        const oldInput = { ...oldFields, inputHash: memoryFactExtractionInputHash(oldFields) };
+        const oldInput = {
+          ...oldFields,
+          inputHash: memoryFactExtractionInputHash(
+            oldFields,
+            MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS
+          )
+        };
         // Seed the accepted storage boundary. No retired calculator or provider
         // is used to manufacture a historical result in the current runtime.
         const canonicalKey = `prop:v1:${"a".repeat(64)}`;
-        const { id: _id, ...candidateFields } = decoded.candidates[0]!;
+        const { id: _id, usefulness: _usefulness, ...candidateFields } = decoded.candidates[0]!;
         const oldCandidate = { ...candidateFields, canonicalKey,
           identityProfile: "LEGACY_V1" as const, identityVersion: "proposition-v1" as const,
           legacyCanonicalKey: canonicalKey, legacyProposedValue: candidateFields.proposedValue };
@@ -2396,8 +2536,13 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           idempotencyFingerprint: memoryFactExtractionJobFingerprint(modernInput.source, "LEGACY_V1") };
         await prisma.memoryJob.update({ where: { id: oldClaim.id },
           data: { idempotencyFingerprint: oldClaim.idempotencyFingerprint } });
-        expect(await prepare(oldClaim)).toEqual(oldInput);
-        const oldBinding = await createSucceededBinding(userId, oldClaim, oldInput.inputHash, oldPlan.outputHash);
+        const oldBinding = await createSucceededBinding(
+          userId,
+          oldClaim,
+          oldInput.inputHash,
+          oldPlan.outputHash,
+          MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS
+        );
         await expect(applyPlan(userId, oldClaim, oldPlan, oldBinding)).resolves.toBe("APPLIED");
         const retained = await prisma.memoryFact.findFirstOrThrow({ where: { userId, canonicalKey } });
         if (mapping === "unmapped") {
@@ -2460,6 +2605,61 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         await expect(prisma.memoryFact.count({ where: { userId, state: "FORGOTTEN", canonicalKey: legacyKey } }))
           .resolves.toBe(1);
       } finally { await cleanupOwner(userId); }
+    }
+  );
+
+  it.each([
+    ["success", {}, 1, "APPLIED"],
+    ["retained-v1", { cleanupPolicyVersion: "memory-maintenance-policy-v1" }, 1, "APPLIED"],
+    ["unrecognized-policy", { cleanupPolicyVersion: "memory-maintenance-policy-v0" }, 1, "EMPTY"],
+    ["pinned", { pinned: true }, 1, "EMPTY"],
+    ["pending-purge", { outboxState: "PENDING" }, 1, "EMPTY"],
+    ["old-source", {}, -1, "EMPTY"],
+    ["explicit-lineage", { sourceMode: "EXPLICIT", userEvent: true }, 1, "EMPTY"]
+  ] as const)(
+    "relearns only after completed automatic cleanup (%s)",
+    async (_label, options, observedOffsetMinutes, expected) => {
+      const fixture = await seedAutomaticallyPurgedFact(_label, options);
+      try {
+        const observedAt = new Date(
+          fixture.forgottenAt.getTime() + observedOffsetMinutes * 60_000
+        );
+        const second = await createTurn({
+          assistantText: "Noted again.",
+          chatId: fixture.chat.id,
+          createdAt: observedAt,
+          parentMessageId: fixture.turn.assistantMessage.id,
+          userId: fixture.userId,
+          userText: fixture.text
+        });
+        await settleChat(fixture.userId, fixture.chat.id, second);
+        const claim = await claimFactJob(fixture.userId, second.userMessage.id);
+        const input = await prepare(claim);
+        const plan = preferencePlan(input, fixture.text, fixture.text);
+        const beforeVersions = await prisma.memoryFactVersion.count({
+          where: { factId: fixture.factId, userId: fixture.userId }
+        });
+        const binding = await createSucceededBinding(
+          fixture.userId,
+          claim,
+          input.inputHash,
+          plan.outputHash
+        );
+        await expect(applyPlan(fixture.userId, claim, plan, binding)).resolves.toBe(expected);
+        const fact = await prisma.memoryFact.findUniqueOrThrow({
+          where: { userId_id: { id: fixture.factId, userId: fixture.userId } }
+        });
+        expect(await prisma.memoryFactVersion.count({
+          where: { factId: fixture.factId, userId: fixture.userId }
+        })).toBe(expected === "APPLIED" ? beforeVersions + 1 : beforeVersions);
+        if (expected === "APPLIED") {
+          expect(fact.currentVersionId).toEqual(expect.any(String));
+        } else {
+          expect(fact.currentVersionId).toBeNull();
+        }
+      } finally {
+        await cleanupOwner(fixture.userId);
+      }
     }
   );
 
@@ -5407,6 +5607,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
             entities: [],
             evidence: exactTextRef(quote),
             future_useful: true,
+            usefulness: "DURABLE",
             identity: {
               dimension_key: null,
               mode: "PROPOSITION",
@@ -5569,7 +5770,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           .toEqual([1_000, 19_990]);
         expect(firstPlan.rejections).toEqual([
           { candidateOrdinal: 2, reasonCode: "REJECT_OUTSIDE_PAGE" },
-          { candidateOrdinal: 3, reasonCode: "REJECT_UNSUPPORTED" }
+          { candidateOrdinal: 3, reasonCode: "REJECT_EVIDENCE_NOT_IN_TARGET" }
         ]);
         const firstBinding = await createSucceededBinding(
           userId, first, firstInput.inputHash, firstPlan.outputHash
@@ -5600,7 +5801,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           [late, "The user prefers dark editor themes."]
         ]);
         expect(secondPlan.rejections).toEqual([
-          { candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }
+          { candidateOrdinal: 0, reasonCode: "REJECT_EVIDENCE_NOT_IN_TARGET" }
         ]);
         await expect(applyPlan(userId, second, secondPlan, await createSucceededBinding(
           userId, second, secondInput.inputHash, secondPlan.outputHash
@@ -5700,7 +5901,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           [statements[8]!, statements[8]!]
         ]);
         expect(secondPlan.rejections).toEqual([
-          { candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }
+          { candidateOrdinal: 0, reasonCode: "REJECT_EVIDENCE_NOT_IN_TARGET" }
         ]);
         const secondBinding = await createSucceededBinding(
           userId, second, secondInput.inputHash, secondPlan.outputHash

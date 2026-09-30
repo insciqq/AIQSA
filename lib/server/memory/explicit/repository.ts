@@ -25,6 +25,10 @@ import {
   memorySynthesisPatternAuthorityPredicate,
   memorySynthesisSourceAuthorityPredicate
 } from "../synthesis/eligibility";
+import {
+  MEMORY_SYNTHESIS_COMBINED_REASONS,
+  memorySynthesisIsCombination
+} from "../synthesis/policy";
 
 const DEFAULT_PAGE_SIZE = 20;
 const SEARCH_OFFSET_MAX = 10_000;
@@ -406,7 +410,8 @@ async function summariesByIds(
       )
   `);
   const combinedVersions = rows.flatMap((row) => row.factState === "ACTIVE" &&
-    row.modality === "PATTERN" && row.reasonCode === "combined_overlapping_facts" &&
+    row.modality === "PATTERN" &&
+    memorySynthesisIsCombination(row.reasonCode ?? "") &&
     row.currentVersionId ? [row.currentVersionId] : []);
   const sources = combinedVersions.length ? await client.$queryRaw<CombinedSourceRow[]>(Prisma.sql`
     SELECT pattern_version."id" AS "patternVersionId",
@@ -443,10 +448,10 @@ async function summariesByIds(
     sourcesByVersion.set(source.patternVersionId, group);
   }
   return new Map(rows.flatMap((row) => {
-    const combined = row.reasonCode === "combined_overlapping_facts" &&
+    const combined = memorySynthesisIsCombination(row.reasonCode ?? "") &&
       row.modality === "PATTERN" && row.currentVersionId
       ? sourcesByVersion.get(row.currentVersionId) ?? [] : null;
-    if (combined && (combined.length < 3 || combined.length !== row.sourceCount)) return [];
+    if (combined && (combined.length < 2 || combined.length !== row.sourceCount)) return [];
     return [[row.id, {
       ...summaryFromRow(row),
       ...(combined ? { combinedSources: combined.map((source) => ({
@@ -476,14 +481,49 @@ function uncollapsedSourcePredicate(
   userId: string,
   parentSearchQuery: string | null = null
 ): Prisma.Sql {
-  return Prisma.sql`NOT EXISTS (
+  return Prisma.sql`(
+    NOT (
+      version."modality" = 'PATTERN'::"MemoryFactModality"
+      AND version."structuredValue"->>'reasonCode' IN
+        (${Prisma.join(MEMORY_SYNTHESIS_COMBINED_REASONS)})
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemoryFactVersionRelation" AS parent_relation
+        INNER JOIN "MemoryFactVersion" AS source_version
+          ON source_version."userId" = parent_relation."userId"
+          AND source_version."id" = parent_relation."targetVersionId"
+        INNER JOIN "MemoryFact" AS source_fact
+          ON source_fact."userId" = source_version."userId"
+          AND source_fact."id" = source_version."factId"
+        WHERE parent_relation."userId" = ${userId}
+          AND parent_relation."sourceVersionId" = version."id"
+          AND parent_relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
+          AND source_version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+          AND source_fact."pinned" = FALSE
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemoryEvent" AS protected_event
+            WHERE protected_event."userId" = source_fact."userId"
+              AND protected_event."factId" = source_fact."id"
+              AND protected_event."actorType" = 'USER'::"MemoryActorType"
+          )
+      )
+    )
+    AND (
+    version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+    OR fact."pinned" = TRUE
+    OR EXISTS (
+      SELECT 1 FROM "MemoryEvent" AS owner_event
+      WHERE owner_event."userId" = fact."userId"
+        AND owner_event."factId" = fact."id"
+        AND owner_event."actorType" = 'USER'::"MemoryActorType"
+    )
+    OR NOT EXISTS (
     SELECT 1
     FROM "MemoryFactVersionRelation" AS combined_relation
     INNER JOIN "MemoryFactVersion" AS pattern_version
       ON pattern_version."userId" = combined_relation."userId"
      AND pattern_version."id" = combined_relation."sourceVersionId"
-     AND pattern_version."structuredValue"->>'reasonCode' =
-       'combined_overlapping_facts'
+     AND pattern_version."structuredValue"->>'reasonCode' IN
+       (${Prisma.join(MEMORY_SYNTHESIS_COMBINED_REASONS)})
     INNER JOIN "MemoryFact" AS pattern_fact
       ON pattern_fact."userId" = pattern_version."userId"
      AND pattern_fact."id" = pattern_version."factId"
@@ -519,6 +559,8 @@ function uncollapsedSourcePredicate(
             )
         )
       `}
+    )
+    )
   )`;
 }
 

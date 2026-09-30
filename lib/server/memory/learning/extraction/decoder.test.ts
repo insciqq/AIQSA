@@ -74,6 +74,7 @@ describe("Memory fact extraction decoder", () => {
           entities: [],
           evidence: { occurrence_index: 0, text: quote },
           future_useful: true,
+          usefulness: "DURABLE",
           identity: {
             dimension_key: null,
             mode: "PROPOSITION",

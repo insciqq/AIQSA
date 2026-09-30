@@ -116,6 +116,7 @@ function providerOutput(
           entities: [],
           evidence: { occurrence_index: 0, text: quote },
           future_useful: true,
+          usefulness: "DURABLE",
           identity: {
             dimension_key: "topic:tea",
             mode: "SLOT",

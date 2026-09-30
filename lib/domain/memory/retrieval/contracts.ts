@@ -162,8 +162,14 @@ export type MemoryRetrievalSourceAuthority =
 export type MemoryCandidateMetadata = Readonly<{
   canonicalKey: string | null;
   category: string | null;
-  /** A display-only Dream combination; its direct sources remain answer evidence. */
+  /** A source-backed Dream combination, never independent current-state authority. */
   combinedMemory?: boolean;
+  combinedMemoryReason?: "combined_overlapping_facts" | "combined_refined_facts" |
+    "combined_episode_facts" | null;
+  combinedClaims?: readonly Readonly<{
+    sourceVersionIds: readonly string[];
+    statement: string;
+  }>[] | null;
   confidence: number;
   conflict: boolean;
   coreEligible: boolean;
@@ -340,6 +346,8 @@ export type MemoryExpandedCandidate = Readonly<{
    */
   sourceMessageIds?: readonly string[];
   patternSupportingEvidence?: readonly Readonly<{
+    /** Absent only on retained projections predating lower-certainty combinations. */
+    confidence?: number;
     itemId: string;
     observedAt: Date;
     safeText: string;
@@ -347,6 +355,8 @@ export type MemoryExpandedCandidate = Readonly<{
     sourceChatId: string | null;
     sourceRootHash: string;
   }>[];
+  /** Number of canonical source versions, before bounded projection. */
+  patternSourceCount?: number;
   retrievalHint?: string | null;
   safeText: string;
   sourceChatId: string | null;
@@ -378,10 +388,16 @@ export type MemoryPackedItem = Readonly<{
     documentTime: string;
     itemId: string;
     rawSafeText: string;
-    sourceAuthority: "learned_from_user" | "user_saved";
+    sourceAuthority: "learned_from_user" | "supporting_observation" | "user_saved";
     sourceRootHash: string;
     sourceSessionHandle: string;
   }>[];
+  combinedClaims?: readonly Readonly<{
+    sourceVersionIds: readonly string[];
+    statement: string;
+  }>[];
+  combinedMemoryReason?: "combined_overlapping_facts" | "combined_refined_facts" |
+    "combined_episode_facts";
   projectionKind: MemorySafeProjectionKind;
   rawSafeText: string;
   retrievalHint?: string | null;

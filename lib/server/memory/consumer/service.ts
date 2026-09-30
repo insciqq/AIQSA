@@ -175,6 +175,8 @@ function category(value: string): MemoryConsumerItem["category"] {
       return "GOALS";
     case "constraint":
     case "constraints":
+    case "constraints_routines":
+    case "constraints_and_routines":
     case "habit":
     case "routine":
     case "routines":
