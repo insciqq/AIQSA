@@ -11,13 +11,22 @@ import {
   ASSISTANT_CATEGORY_LABELS,
   ASSISTANT_DESCRIPTION_MAX_LENGTH,
   ASSISTANT_NAME_MAX_LENGTH,
+  rotateAssistantAvatarRecipe,
   type AssistantAvatarRecipe,
-  type AssistantAvatarRotation,
+  type AssistantAvatarShape,
   type AssistantCategory
 } from "@/lib/contracts/assistants";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 
 const capitalized = (value: string) => value.charAt(0).toLocaleUpperCase() + value.slice(1);
+
+/** Shapes that look the same after a quarter turn; only accents or the other shape can show it. */
+const QUARTER_TURN_SYMMETRIC_SHAPES: ReadonlySet<AssistantAvatarShape> = new Set(["circle", "ring", "square", "diamond"]);
+
+const quarterTurnVisible = (recipe: AssistantAvatarRecipe) =>
+  recipe.accents.length > 0 ||
+  !QUARTER_TURN_SYMMETRIC_SHAPES.has(recipe.backgroundShape) ||
+  !QUARTER_TURN_SYMMETRIC_SHAPES.has(recipe.foregroundShape);
 
 /** One recipe choice at a time; arrows move and choose, as a radio group does. */
 function RecipeChoiceGroup<T extends string>({ label, onChange, options, preview, value }: Readonly<{
@@ -74,7 +83,6 @@ function AvatarRecipePickerV2({ disabled, onChange, onRandomize, recipe }: Reado
   useEffect(() => {
     if (open) menuRef.current?.querySelector<HTMLElement>("[role='radio'][aria-checked='true']")?.focus();
   }, [menuRef, open]);
-  const rotation = recipe.rotations[1];
   return (
     <div className="v2-assistant-avatar-picker">
       <AssistantAvatarV2 recipe={recipe} size={64} />
@@ -90,8 +98,10 @@ function AvatarRecipePickerV2({ disabled, onChange, onRandomize, recipe }: Reado
       >
         <UiV2Icon name="wand" />Change
       </button>
+      {/* tabIndex -1: Safari focuses the nearest focusable ancestor on a button
+          mousedown; keeping that inside menuRef stops the focus-out dismissal. */}
       {open ? (
-        <div aria-label="Avatar" className="v2-assistant-recipe-popover" id={panelId} ref={menuRef} role="dialog">
+        <div aria-label="Avatar" className="v2-assistant-recipe-popover" id={panelId} ref={menuRef} role="dialog" tabIndex={-1}>
           <p>Color</p>
           <RecipeChoiceGroup
             label="Color"
@@ -109,12 +119,11 @@ function AvatarRecipePickerV2({ disabled, onChange, onRandomize, recipe }: Reado
             onChange={(foregroundShape) => onChange({ ...recipe, foregroundShape })}
           />
           <div className="v2-assistant-recipe-actions">
+            {/* Disabled only when a turn would be invisible: symmetric shapes and no accents. */}
             <UiV2Button
+              disabled={!quarterTurnVisible(recipe)}
               icon="regenerate"
-              onClick={() => onChange({
-                ...recipe,
-                rotations: [recipe.rotations[0], ((rotation + 1) % 4) as AssistantAvatarRotation]
-              })}
+              onClick={() => onChange(rotateAssistantAvatarRecipe(recipe))}
             >
               Rotate
             </UiV2Button>
