@@ -111,9 +111,9 @@ describe("compatible Responses adapter", () => {
 
     expect(body).toMatchObject({
       model: "compatible-model",
-      store: false,
-      stream: false
+      store: false
     });
+    expect(body).not.toHaveProperty("stream");
     expect(body).not.toHaveProperty("background");
     expect(body).not.toHaveProperty("previous_response_id");
     expect(body).not.toHaveProperty("prompt_cache_key");
