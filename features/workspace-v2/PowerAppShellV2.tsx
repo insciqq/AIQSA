@@ -1652,7 +1652,14 @@ export function PowerAppShellV2({
     catalogOverride: Catalog | null
   ): Promise<ChatRoute | null> {
     routeResolutionRef.current = resolution;
-    if (!isCurrentChatRouteResolution(resolution)) return null;
+    if (!isCurrentChatRouteResolution(resolution)) {
+      // A navigation made while the shell loads supersedes this address, not
+      // the personal workspace every address needs: load it, apply nothing.
+      if (!useWorkspaceStore.getState().workspaceReady && !workspaceRefreshPromiseRef.current) {
+        await refreshWorkspace(null, { catalogOverride, isCurrent: () => false });
+      }
+      return null;
+    }
     if (
       (!route || isAssistantEntry(route) || !route.chatId || route.projectId) &&
       !useWorkspaceStore.getState().workspaceReady

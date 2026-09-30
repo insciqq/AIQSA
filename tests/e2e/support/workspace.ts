@@ -147,8 +147,10 @@ export function lastAnswer(page: Page) {
   return page.locator('article[data-role="assistant"]').last();
 }
 
+/** The latest answer's own fold. A live answer shows a plain status line until
+ * its first Workspace step, so a page-wide last fold can be the previous answer's. */
 export function lastActivity(page: Page) {
-  return page.getByTestId("tool-activity-disclosure").last();
+  return lastAnswer(page).getByTestId("tool-activity-disclosure");
 }
 
 export async function openLastActivity(page: Page) {

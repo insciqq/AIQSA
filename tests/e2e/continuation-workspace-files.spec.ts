@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test } from "@playwright/test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -30,8 +30,11 @@ test("continues a Workspace chat with its project files and runs in the new chat
   let sourceChatId: string | null = null;
   let destinationChatId: string | null = null;
   let connectionId: string | null = null;
-  const previousSystemModel = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" },
-    select: { providerModelId: true, reasoningEffort: true } });
+  // Custom setup adopts its model into every empty default and role; restore
+  // them all before the fixture connection is deleted.
+  const priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const priorPolicy = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const priorMemory = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   // Summary admission uses a real structured-output protocol. Its tiny local
   // provider keeps this ordinary browser test independent of paid services.
   const server = createServer((request, response) => {
@@ -221,9 +224,14 @@ test("continues a Workspace chat with its project files and runs in the new chat
       });
     }
     await prisma.workspacePolicy.update({ where: { id: "installation" }, data: policy });
-    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { ...previousSystemModel, version: { increment: 1 } } });
     const ownedConnectionId = connectionId;
-    if (ownedConnectionId) await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
+      await tx.systemModelPolicy.update({ where: { id: "installation" }, data: { ...priorRoles,
+        decisionFeaturesJson: priorRoles.decisionFeaturesJson as Prisma.InputJsonValue,
+        imageParamsJson: priorRoles.imageParamsJson as Prisma.InputJsonValue } });
+      await tx.modelPolicy.update({ where: { id: "installation" }, data: priorPolicy });
+      await tx.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: priorMemory });
+      if (!ownedConnectionId) return;
       const connectionId = ownedConnectionId;
       await tx.accessGrant.deleteMany({ where: { OR: [{ providerConnectionId: connectionId }, { providerModel: { connectionId } }] } });
       await tx.providerUserCredentialAssignment.deleteMany({ where: { connectionId } });
