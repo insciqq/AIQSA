@@ -1,5 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PendingComposerComment } from "@/components/app-shell/composerComments";
+import { commentTextFingerprint } from "./commentAnchors";
+import type { ConversationQuoteV2 } from "./ConversationSelectionV2";
 import { ConversationV2 } from "./ConversationV2";
 
 function select(element: Element) {
@@ -26,6 +29,10 @@ function fixture(touch = false) {
   const markdown = (id: string) => result.container.querySelector(`[data-message-id="${id}"] .v2-conversation-markdown`)!;
   return { ...result, markdown, messages, onQuote, onComment, onCommentStart, quote };
 }
+
+/** The whole finished answer, anchored in its message's content text. */
+const answerAnchor = { messageId: "assistant", start: 0, end: "A finished answer.".length,
+  fingerprint: commentTextFingerprint("A finished answer.") };
 
 afterEach(() => { window.getSelection()?.removeAllRanges(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -104,7 +111,7 @@ describe("transcript Quote selection", () => {
     expect(field).toHaveFocus();
     fireEvent.change(field, { target: { value: "Check this claim" } });
     fireEvent.keyDown(field, { key: "Enter" });
-    expect(f.onComment).toHaveBeenCalledExactlyOnceWith("A finished answer.", "Check this claim", false);
+    expect(f.onComment).toHaveBeenCalledExactlyOnceWith("A finished answer.", "Check this claim", false, answerAnchor);
     expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
   });
 
@@ -112,7 +119,7 @@ describe("transcript Quote selection", () => {
     const f = fixture(); f.onCommentStart.mockReturnValue("This chat already has 100 pending comments. Send them or delete one before adding another.");
     select(f.markdown("assistant"));
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
-    expect(f.onCommentStart).toHaveBeenCalledExactlyOnceWith("A finished answer.");
+    expect(f.onCommentStart).toHaveBeenCalledExactlyOnceWith("A finished answer.", answerAnchor);
     expect(screen.queryByRole("dialog", { name: "Add comment" })).toBeNull();
     expect(screen.getByRole("alert")).toHaveTextContent("100 pending comments. Send them or delete one");
     expect(window.getSelection()!.toString()).toBe("A finished answer.");
@@ -132,7 +139,7 @@ describe("transcript Quote selection", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Shorten it or the message text, or send the pending comments first.");
     expect(field).toHaveAccessibleDescription(/too large to keep/u);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(f.onComment).toHaveBeenLastCalledWith("A finished answer.", long, false);
+    expect(f.onComment).toHaveBeenLastCalledWith("A finished answer.", long, false, answerAnchor);
     expect(screen.queryByRole("dialog", { name: "Add comment" })).toBeNull();
   });
 
@@ -171,7 +178,7 @@ describe("transcript Quote selection", () => {
     select(f.markdown("assistant")); fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Comment" }), { target: { value: "Saved outside" } });
     fireEvent.pointerDown(document.body);
-    expect(f.onComment).toHaveBeenCalledWith("A finished answer.", "Saved outside", false);
+    expect(f.onComment).toHaveBeenCalledWith("A finished answer.", "Saved outside", false, answerAnchor);
   });
 
   it("keeps Shift+Enter and IME entry local, cancels typed text, and discards empty outside clicks", () => {
@@ -202,6 +209,107 @@ describe("transcript Quote selection", () => {
     expect(f.onComment).not.toHaveBeenCalled();
     fireEvent.keyDown(field, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Add comment" })).toBeNull();
+    await waitFor(() => expect(f.markdown("assistant")).toHaveFocus());
+  });
+});
+
+describe("pending comment marks", () => {
+  type FakeHighlight = { ranges: Range[] };
+  const clientRects = Object.getOwnPropertyDescriptor(Range.prototype, "getClientRects");
+
+  function marked(comments: PendingComposerComment[], quoteOverrides: Partial<ConversationQuoteV2> = {}) {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener() {}, removeEventListener() {} })));
+    const registry = new Map<string, FakeHighlight>();
+    vi.stubGlobal("Highlight", class { ranges: Range[]; constructor(...ranges: Range[]) { this.ranges = ranges; } });
+    vi.stubGlobal("CSS", { highlights: registry });
+    // Every marked range occupies the first 200x20 px of the viewport.
+    Object.defineProperty(Range.prototype, "getClientRects", { configurable: true,
+      value: () => [{ left: 0, right: 200, top: 0, bottom: 20, width: 200, height: 20 }] });
+    const onCommentUpdate = vi.fn((): string | null => null);
+    const onCommentRemove = vi.fn();
+    const messages = [{ id: "user", role: "user" as const, content: "A user question." },
+      { id: "assistant", role: "assistant" as const, content: "A finished answer." }];
+    const quote: ConversationQuoteV2 = { comments, onQuote: vi.fn(() => null), onComment: vi.fn(() => null),
+      onCommentUpdate, onCommentRemove, scopeKey: "chat:one", ...quoteOverrides };
+    const result = render(<ConversationV2 messages={messages} quote={quote} getMessageActions={() => ({ onCopy: vi.fn() })} />);
+    const markdown = (id: string) => result.container.querySelector<HTMLElement>(`[data-message-id="${id}"] .v2-conversation-markdown`)!;
+    const marks = (name: string) => registry.get(name)?.ranges.map(range => range.toString()) ?? [];
+    return { ...result, markdown, marks, messages, onCommentRemove, onCommentUpdate, quote, registry };
+  }
+
+  const note: PendingComposerComment = { id: "c1", quote: "A finished answer.", text: "Original note", anchor: answerAnchor };
+
+  afterEach(() => {
+    if (clientRects) Object.defineProperty(Range.prototype, "getClientRects", clientRects);
+    else delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+  });
+
+  it("marks anchored comments that still match and opens one for editing on click", () => {
+    const f = marked([note, { id: "legacy", quote: "A user question.", text: "No anchor" },
+      { id: "stale", quote: "gone", text: "Changed", anchor: { ...answerAnchor, fingerprint: "00000000" } }]);
+    expect(f.marks("aiqsa-comment")).toEqual(["A finished answer."]);
+    fireEvent.click(f.markdown("assistant"), { clientX: 10, clientY: 10 });
+    const dialog = screen.getByRole("dialog", { name: "Edit comment" });
+    const field = screen.getByRole("textbox", { name: "Comment" });
+    expect(field).toHaveValue("Original note");
+    expect(field).toHaveFocus();
+    expect(dialog).toHaveTextContent("A finished answer.");
+    expect(f.markdown("assistant").closest("article")).not.toHaveAttribute("data-controls-open");
+    expect(f.marks("aiqsa-comment-active")).toEqual(["A finished answer."]);
+    expect(f.registry.has("aiqsa-comment")).toBe(false);
+    fireEvent.change(field, { target: { value: "Edited note" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(f.onCommentUpdate).toHaveBeenCalledExactlyOnceWith("c1", "Edited note");
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+    expect(f.marks("aiqsa-comment")).toEqual(["A finished answer."]);
+  });
+
+  it("leaves an unchanged edit, cancels on Escape, keeps a refused edit and deletes from the form", () => {
+    const f = marked([note]);
+    const open = () => fireEvent.click(f.markdown("assistant"), { clientX: 10, clientY: 10 });
+    open(); fireEvent.keyDown(screen.getByRole("textbox", { name: "Comment" }), { key: "Enter" });
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+    open(); fireEvent.change(screen.getByRole("textbox", { name: "Comment" }), { target: { value: "Discarded" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Comment" }), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+    expect(f.onCommentUpdate).not.toHaveBeenCalled();
+    f.onCommentUpdate.mockReturnValueOnce("This comment was already sent or deleted.");
+    open(); fireEvent.change(screen.getByRole("textbox", { name: "Comment" }), { target: { value: "Refused" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("already sent or deleted");
+    expect(screen.getByRole("textbox", { name: "Comment" })).toHaveValue("Refused");
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(f.onCommentRemove).toHaveBeenCalledExactlyOnceWith("c1");
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+  });
+
+  it("keeps selections, clicks beside a mark, links and disabled scopes on their own behavior", () => {
+    const f = marked([note]);
+    select(f.markdown("assistant"));
+    fireEvent.click(f.markdown("assistant"), { clientX: 10, clientY: 10 });
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Comment" })).toBeVisible();
+    act(() => { window.getSelection()!.removeAllRanges(); document.dispatchEvent(new Event("selectionchange")); });
+    fireEvent.click(f.markdown("assistant"), { clientX: 500, clientY: 500 });
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+    expect(f.markdown("assistant").closest("article")).toHaveAttribute("data-controls-open", "true");
+    const link = document.createElement("a");
+    link.href = "#fragment"; link.textContent = "link";
+    f.markdown("assistant").append(link);
+    fireEvent.click(link, { clientX: 10, clientY: 10 });
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+    f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, disabled: true }} />);
+    fireEvent.click(f.markdown("user"), { clientX: 10, clientY: 10 });
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+  });
+
+  it("closes the form and clears marks when the comment is sent or deleted elsewhere", async () => {
+    const f = marked([note]);
+    fireEvent.click(f.markdown("assistant"), { clientX: 10, clientY: 10 });
+    expect(screen.getByRole("dialog", { name: "Edit comment" })).toBeVisible();
+    f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, comments: [] }} />);
+    expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+    expect(f.registry.size).toBe(0);
     await waitFor(() => expect(f.markdown("assistant")).toHaveFocus());
   });
 });

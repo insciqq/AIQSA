@@ -36,8 +36,11 @@ describe("composer session store", () => {
     store.activateSession(key);
     expect(store.addComment(key, { quote: "first\nsecond", text: "note" })).toBeNull();
     const first = session(key).comments[0]!;
-    expect(store.addComment(key, { quote: "another", text: "another note" })).toBeNull();
+    const anchor = { messageId: "answer", start: 0, end: 7, fingerprint: "0a1b2c3d" };
+    expect(store.addComment(key, { quote: "another", text: "another note", anchor })).toBeNull();
     const second = session(key).comments[1]!;
+    expect(second.anchor).toEqual(anchor);
+    expect(first).not.toHaveProperty("anchor");
     expect(store.updateComment(key, first.id, "edited note")).toBeNull();
     expect(store.removeComment(key, second.id)).toBe(true);
     const token = store.beginSend(key)!;

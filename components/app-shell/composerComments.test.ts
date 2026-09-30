@@ -30,6 +30,16 @@ describe("composer comments", () => {
     expect(decodeComposerComments({ id: "not an array" })).toEqual([]);
   });
 
+  it("keeps a valid fragment anchor and drops only an unusable one", () => {
+    const anchor = { messageId: "message-1", start: 4, end: 12, fingerprint: "0a1b2c3d" };
+    const invalid = [{ ...anchor, fingerprint: "ZZ" }, { ...anchor, end: 4 }, { ...anchor, start: -1 },
+      { ...anchor, messageId: "" }, { ...anchor, start: 1.5 }, "anchor"];
+    expect(decodeComposerComments([{ id: "anchored", quote: "q", text: "c", anchor, extra: true }]))
+      .toEqual([{ id: "anchored", quote: "q", text: "c", anchor }]);
+    expect(decodeComposerComments(invalid.map((value, index) => ({ id: String(index), quote: "q", text: "c", anchor: value }))))
+      .toEqual(invalid.map((_, index) => ({ id: String(index), quote: "q", text: "c" })));
+  });
+
   it("decodes at most the structural comment bound", () => {
     expect(MAX_PENDING_COMMENTS).toBe(100);
     const value = Array.from({ length: MAX_PENDING_COMMENTS + 2 }, (_, index) => ({ id: String(index), quote: "q", text: "c" }));

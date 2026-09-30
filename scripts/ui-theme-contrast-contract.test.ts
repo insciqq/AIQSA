@@ -69,6 +69,20 @@ describe("UI theme contrast", () => {
     }
   });
 
+  it.each(["dark", "light"] as const)("keeps pending comment marks visible and readable in %s", (theme) => {
+    for (const surface of ["canvas", "surface", "bubble", "code-bg"]) {
+      const background = token(theme, surface);
+      const mark = composite(token(theme, "comment-mark"), background);
+      const active = composite(token(theme, "comment-mark-active"), background);
+      expect(contrast(mark, background), `${surface} mark`).toBeGreaterThanOrEqual(theme === "dark" ? 1.6 : 1.15);
+      expect(contrast(active, background), `${surface} open mark`).toBeGreaterThan(contrast(mark, background) + 0.08);
+      // A resting mark keeps text and link colors; the open mark uses primary text.
+      expect(contrast(token(theme, "text"), mark), `${surface} marked text`).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(token(theme, "accent"), mark), `${surface} marked link`).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(token(theme, "text"), active), `${surface} open marked text`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
   it.each(["dark", "light"] as const)("keeps syntax colors readable on code selections in %s", (theme) => {
     const background = token(theme, "code-bg");
     const selection = composite(token(theme, "selection-code"), background);
