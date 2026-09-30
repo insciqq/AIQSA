@@ -501,6 +501,26 @@
   gap: 0.5rem;
 }
 
+.v2-selection-comment-actions .v2-selection-comment-delete { margin-inline-end: auto; }
+
+/* Pending comments marked in the transcript (useCommentMarks). The open
+   comment's mark is stronger and keeps its text in the primary color. */
+::highlight(aiqsa-comment) { background-color: var(--v2-color-comment-mark); }
+::highlight(aiqsa-comment-active) {
+  background-color: var(--v2-color-comment-mark-active);
+  color: var(--v2-color-text);
+}
+[data-comment-hover] .v2-conversation-markdown,
+[data-comment-hover] .v2-conversation-markdown * { cursor: pointer; }
+
+@media (forced-colors: active) {
+  ::highlight(aiqsa-comment),
+  ::highlight(aiqsa-comment-active) {
+    background-color: Mark;
+    color: MarkText;
+  }
+}
+
 @media (hover: none), (pointer: coarse) {
   .v2-selection-comment-form textarea {
     min-height: 6rem;
