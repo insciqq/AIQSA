@@ -501,6 +501,23 @@ describe("message run actions", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("submits comment-only input as ordinary Markdown and restores its separate comments on rejection", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({ error: "model_unavailable" }, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    const key = composerSessionKey("chat-a");
+    const store = useComposerSessionStore.getState();
+    store.addComment(key, { quote: "first fragment\nsecond line", text: "first comment" });
+    store.addComment(key, { quote: "second fragment", text: "second comment" });
+    const comments = actions.session(key).comments;
+    await actions.submitComposer();
+    expect(fetchMock).toHaveBeenCalled();
+    const [, request] = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/messages"))! as unknown as [string, RequestInit];
+    const body = JSON.parse(String(request.body));
+    expect(body.content).toEqual({ blocks: [{ type: "text", text: "> first fragment\n> second line\n\nfirst comment\n\n> second fragment\n\nsecond comment" }] });
+    expect(actions.session(key)).toMatchObject({ draft: "", comments, pendingSend: null });
+  });
+
   it("routes an ambiguous Memory target to Manage Memories without claiming a mutation", async () => {
     const openMemorySettings = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({

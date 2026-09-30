@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
-import { summarizeMessageRunArtifacts, summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository";
+import { createPrismaChatRepository, summarizeMessageRunArtifacts, summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository";
 import { createPrismaKnowledgeUploadRepository } from "../knowledge/uploadRepository";
 import { prisma } from "../prisma";
 import { appendRunOutputEvents } from "../runs/prismaRepositoryToolLoop";
@@ -1071,6 +1071,7 @@ describe("Prisma attachment retention outbox", () => {
       const active = await createRunFixture({ status: "streaming", userId: user.id });
       await prisma.$transaction((tx) => appendRunOutputEvents(tx, complete.id, answerOutputEvents));
       await appendContextStatus(complete.id);
+      await appendContextStatus(complete.id);
       await appendContextStatus(active.id);
       await ageRunEvents(complete.id);
       await ageRunEvents(active.id);
@@ -1090,8 +1091,8 @@ describe("Prisma attachment retention outbox", () => {
       expect(completeKinds).toEqual(expect.arrayContaining([
         "artifact:context_status", WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT
       ]));
-      const expectedKept = completeKinds.filter((kind) =>
-        kind !== "artifact:context_status" && kind !== WORKSPACE_ACTIVITY_RECEIPT);
+      const expectedKept = [...completeKinds.filter((kind) =>
+        kind !== "artifact:context_status" && kind !== WORKSPACE_ACTIVITY_RECEIPT), "artifact:context_status"].sort();
       const activeKinds = await runEventKinds(active.id);
       const repository = createPrismaRetentionRepository(prisma);
       const storage = { async deleteObject() {} };
@@ -1113,4 +1114,64 @@ describe("Prisma attachment retention outbox", () => {
       await cleanupUser(user.id, []);
     }
   });
+
+  it("preserves the final meter for every terminal status and reloads it after pruning", async () => {
+    const user = await createUser();
+    const repository = createPrismaRetentionRepository(prisma);
+    try {
+      for (const status of ["complete", "cancelled", "error"] as const) {
+        const run = await createRunFixture({ status: "complete", userId: user.id });
+        await prisma.modelRun.update({ where: { id: run.id }, data: { status } });
+        await prisma.chat.update({ where: { id: run.chatId }, data: { activeLeafMessageId: run.assistantMessageId } });
+        await appendContextStatus(run.id);
+        await appendContextStatus(run.id);
+        await ageRunEvents(run.id);
+        const meters = await prisma.modelRunEvent.findMany({
+          where: { modelRunId: run.id }, orderBy: { sequence: "asc" }, select: { id: true }
+        });
+        const finalId = meters.at(-1)!.id;
+        const cutoff = new Date("2000-02-01T00:00:00.000Z");
+        const candidates = await repository.findPrunableModelRunEventIds({ cutoff, limit: 1_000 });
+        expect(candidates).toContain(meters[0]!.id);
+        expect(candidates).not.toContain(finalId);
+        // Deletion rechecks final-meter protection even for explicit ids.
+        expect(await repository.deleteModelRunEvents(meters.map((row) => row.id))).toBe(1);
+        expect(await repository.deleteModelRunEvents([finalId])).toBe(0);
+        const detail = await createPrismaChatRepository(prisma).getChat({ chatId: run.chatId, userId: user.id });
+        expect(detail?.contextStats).toMatchObject({
+          session: { approximateInputTokens: 1_000 }, sessionMessageId: run.assistantMessageId,
+          approximateInputTokensAfterSession: 0
+        });
+      }
+    } finally {
+      await prisma.modelRun.deleteMany({ where: { userId: user.id } });
+      await cleanupUser(user.id, []);
+    }
+  });
+
+  it("keeps unclassified output and the latest meter regardless of age while older meters expire", async () => {
+    const user = await createUser();
+    const repository = createPrismaRetentionRepository(prisma);
+    try {
+      const run = await createRunFixture({ status: "complete", userId: user.id });
+      await appendContextStatus(run.id);
+      await ageRunEvents(run.id);
+      await appendContextStatus(run.id);
+      await prisma.modelRunEvent.createMany({ data: [
+        { modelRunId: run.id, sequence: 3, eventType: "artifact", payload: { payload: {} }, createdAt: oldDate },
+        { modelRunId: run.id, sequence: 4, eventType: "legacy_delta", payload: { artifactType: "context_status" }, createdAt: oldDate },
+        { modelRunId: run.id, sequence: 5, eventType: "artifact", payload: { artifactType: "unknown_future_type" }, createdAt: oldDate }
+      ] });
+      const events = await prisma.modelRunEvent.findMany({ where: { modelRunId: run.id }, orderBy: { sequence: "asc" } });
+      const cutoff = new Date("2000-02-01T00:00:00.000Z");
+      const candidates = await repository.findPrunableModelRunEventIds({ cutoff, limit: 1_000 });
+      expect(events.filter((event) => candidates.includes(event.id)).map((event) => event.sequence)).toEqual([0]);
+      expect(await repository.deleteModelRunEvents(events.map((event) => event.id))).toBe(1);
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: run.id } })).toBe(4);
+    } finally {
+      await prisma.modelRun.deleteMany({ where: { userId: user.id } });
+      await cleanupUser(user.id, []);
+    }
+  });
+
 });

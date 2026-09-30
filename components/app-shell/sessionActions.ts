@@ -1,4 +1,5 @@
 import { clearAllArtifactSavedState } from "@/components/artifacts/artifactBrowserStorage";
+import { clearSignedOutComposerDrafts } from "./composerDraftPersistence";
 
 export type SignOutResult =
   | {
@@ -10,6 +11,10 @@ export type SignOutResult =
     };
 
 type SignOutOptions = {
+  /** The authenticated account of the signing-out surface; its browser drafts
+   * are cleared. `null` when the surface cannot name it: drafts of every
+   * account in this browser profile are cleared instead. */
+  accountId: string | null;
   fetcher?: typeof fetch;
   navigate?: (href: string) => void;
   timeoutMs?: number;
@@ -28,7 +33,7 @@ function signOutErrorMessage(code: string): string {
   return `${messages[code] ?? "Could not sign out. Try again."} (${code})`;
 }
 
-export async function signOutCurrentSession(options: SignOutOptions = {}): Promise<SignOutResult> {
+export async function signOutCurrentSession(options: SignOutOptions): Promise<SignOutResult> {
   const fetcher = options.fetcher ?? fetch;
   const navigate = options.navigate ?? ((href: string) => window.location.assign(href));
   const controller = new AbortController();
@@ -73,6 +78,7 @@ export async function signOutCurrentSession(options: SignOutOptions = {}): Promi
       };
     }
 
+    clearSignedOutComposerDrafts(options.accountId);
     await clearAllArtifactSavedState();
     navigate("/login");
     return { ok: true };

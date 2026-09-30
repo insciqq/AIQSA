@@ -13,7 +13,7 @@ export function createContinuationSourceHandler(deps: Readonly<{
     const session = await deps.resolveAuth(request);
     if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
     const href = await deps.sourceHref((await context.params).chatId, session.userId);
-    return href ? new Response(null, { status: 303, headers: { Location: new URL(href, request.url).href, "Cache-Control": "no-store" } })
+    return href ? new Response(null, { status: 303, headers: { Location: href, "Cache-Control": "no-store" } })
       : Response.json({ error: "chat_not_found" }, { status: 404 });
   };
 }

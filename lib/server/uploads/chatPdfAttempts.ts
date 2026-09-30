@@ -1,3 +1,4 @@
+import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
 import { storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
@@ -120,11 +121,11 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
         if (normalized.completeness === "unavailable") return false;
         const pricing = event.providerModelId ? await tx.providerModel.findUnique({
           where: { id: event.providerModelId },
-          select: { inputTokenPriceMicros: true, outputTokenPriceMicros: true }
+          select: { ...modelTokenPricingSelect }
         }) : null;
         const estimatedCostMicros = pricing &&
-          (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0)
-          ? estimateCostMicros(normalized, pricing) : null;
+          (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
+          ? estimateCostMicros(normalized, modelTokenPricing(pricing)) : null;
         const usage = { ...storedTokenUsage(normalized), estimatedCostMicros };
         await tx.usageEvent.update({
           where: { id: event.id }, data: usage

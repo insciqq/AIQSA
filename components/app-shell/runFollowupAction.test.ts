@@ -4,6 +4,8 @@ import { composerSessionKey, selectComposerSession, useComposerSessionStore } fr
 import { selectThreadSnapshot, useThreadStore } from "./threadStore";
 import { submitRunFollowup } from "./runFollowupAction";
 import { shellFetch } from "./shellApi";
+import { buildComposerMessage } from "./composerComments";
+import { RUN_FOLLOWUP_MAX_CHARS } from "@/lib/contracts/runFollowups";
 
 vi.mock("./shellApi", () => ({ shellFetch: vi.fn() }));
 afterEach(() => { resetComposerSessionStoreForTest(); resetThreadStoreForTest(); vi.resetAllMocks(); });
@@ -26,6 +28,52 @@ function deferredResponse() {
 }
 
 describe("follow-up composer submission", () => {
+  it("counts all quotes and comments against the follow-up limit and preserves an oversized message", async () => {
+    setup();
+    const store = useComposerSessionStore.getState();
+    store.setDraft("x".repeat(RUN_FOLLOWUP_MAX_CHARS - 5));
+    store.addComment(key, { quote: "quoted text", text: "comment text" });
+    await submitRunFollowup("run");
+    expect(shellFetch).not.toHaveBeenCalled();
+    expect(session().comments).toHaveLength(1);
+    expect(session().operationError).toContain("edit or delete a comment");
+  });
+
+  it.each(["", "accepted draft"])("sends comments with draft %j and keeps newly added comments after acknowledgment", async draft => {
+    setup();
+    const store = useComposerSessionStore.getState();
+    store.setDraft(draft);
+    store.addComment(key, { quote: "one", text: "first comment" });
+    const expected = buildComposerMessage(draft, session().comments);
+    const response = deferredResponse();
+    vi.mocked(shellFetch).mockReturnValue(response.promise);
+    const sending = submitRunFollowup("run");
+    expect(JSON.parse(String(vi.mocked(shellFetch).mock.calls[0]![1]!.body)).text).toBe(expected);
+    store.addComment(key, { quote: "two", text: "next comment" });
+    response.resolve(Response.json({ followup: { ...receipt, text: expected } }));
+    await sending;
+    expect(session().draft).toBe("");
+    expect(session().comments.map(comment => comment.text)).toEqual(["next comment"]);
+  });
+
+  it("retains separate comments and text exactly after a rejected follow-up", async () => {
+    setup();
+    useComposerSessionStore.getState().addComment(key, { quote: "line1\nline2", text: "note" });
+    const comments = session().comments;
+    vi.mocked(shellFetch).mockResolvedValue(Response.json({ error: "followup_closed" }, { status: 409 }));
+    await submitRunFollowup("run");
+    expect(session()).toMatchObject({ draft: "Use three points", comments });
+  });
+
+  it("does not clear text edited back to the same value while a follow-up is pending", async () => {
+    setup();
+    const response = deferredResponse(); vi.mocked(shellFetch).mockReturnValue(response.promise);
+    const sending = submitRunFollowup("run");
+    const store = useComposerSessionStore.getState();
+    store.setDraft("new wording"); store.setDraft("Use three points");
+    response.resolve(Response.json({ followup: receipt })); await sending;
+    expect(session().draft).toBe("Use three points");
+  });
   it("clears only acknowledged text, keeping files and choices for the next send", async () => {
     setup(); const response = deferredResponse();
     vi.mocked(shellFetch).mockReturnValue(response.promise);

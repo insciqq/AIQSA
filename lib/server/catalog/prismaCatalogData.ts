@@ -1,3 +1,4 @@
+import { modelTokenPricing } from "../providers/modelTokenPricing";
 import { isAnswerSoundId } from "../../contracts/answerSound";
 import {
   type CatalogAdapterKind,
@@ -432,9 +433,8 @@ export function providerModelToCatalogEntry(
     contextWindow: resolvedCapabilities.contextWindow ?? null,
     defaultParams: configuration.defaultParams,
     displayName: model.displayName,
-    inputTokenPriceMicros: model.inputTokenPriceMicros,
+    ...modelTokenPricing(model),
     modelId: model.id,
-    outputTokenPriceMicros: model.outputTokenPriceMicros,
     parameterControls: configuredModelParameterControls(configuration, model.connection.family),
     provider: model.connectionId,
     providerDisplayName: model.connection.displayName,

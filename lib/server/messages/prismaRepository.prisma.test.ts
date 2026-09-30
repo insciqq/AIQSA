@@ -329,6 +329,10 @@ describe("Prisma-backed message branch repository", () => {
         }
       });
       if (runStatus === "preparing") {
+        await prisma.user.update({ where: { id: userId }, data: { status: "active" } });
+        await prisma.userMemorySettings.upsert({ where: { userId }, update: {}, create: {
+          userId, useMemoryFacts: false, referenceChatHistory: false, learnAutomatically: false
+        } });
         await createPrismaRunRepository(prisma).admitPreparingRun({
           ...createRunInput({
             chatId: sourceChat.id,
@@ -1090,9 +1094,12 @@ describe("Prisma-backed message branch repository", () => {
           }
         });
         expect(detail?.defaultKnowledgePlan).toEqual(knowledgePlan);
-        expect(detail?.usageStats).toMatchObject({
-          cachedInputTokens: null,
-          cacheWriteInputTokens: null,
+        expect(detail?.usageStats).toEqual({
+          hasCompletedAnswer: true,
+          recordCount: 0,
+          knownCostRecordCount: 0,
+          incompleteRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: null
         });
         await expect(prisma.modelRun.count({ where: { chatId: branched.id } })).resolves.toBe(0);
@@ -1316,9 +1323,18 @@ describe("Prisma-backed message branch repository", () => {
           messageId: userMessage.id,
           userId
         });
+        // Retention is installation-wide. Bound this fixture to its historical
+        // rows and prove their identities before staging any deletion.
+        const cutoff = new Date("2000-01-02T00:00:00.000Z");
+        await expect(prisma.attachment.findMany({
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: { id: true },
+          take: 3,
+          where: { createdAt: { lt: cutoff }, messageId: null, savedAt: null }
+        })).resolves.toEqual([imageId, documentId].sort().map((id) => ({ id })));
         const staged = await createPrismaRetentionRepository(prisma).stageOrphanedAttachments({
-          cutoff: new Date(),
-          limit: 10
+          cutoff,
+          limit: 2
         });
 
         expect(staged).toMatchObject({
@@ -1327,6 +1343,12 @@ describe("Prisma-backed message branch repository", () => {
           rowsDeleted: 2,
           sharedRowsDeleted: 2
         });
+        await expect(prisma.attachment.count({
+          where: { id: { in: [imageId, documentId] } }
+        })).resolves.toBe(0);
+        await expect(prisma.attachmentDeletionJob.count({
+          where: { storageKey: { in: [imageStorageKey, documentStorageKey] } }
+        })).resolves.toBe(0);
         await expect(
           createPrismaRunRepository(prisma).loadAttachments(userId, [
             clonedImageId!,
@@ -1339,6 +1361,9 @@ describe("Prisma-backed message branch repository", () => {
           ])
         );
       } finally {
+        await prisma.attachment.deleteMany({
+          where: { userId, storageKey: { in: [imageStorageKey, documentStorageKey] } }
+        });
         await prisma.attachmentDeletionJob.deleteMany({
           where: {
             storageKey: { in: [imageStorageKey, documentStorageKey] }

@@ -2,7 +2,15 @@ const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_u
 import { buildOpenAICompatibleChatRequest } from "../providers/openaiCompatibleChatRequest";
 import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
 import { WORKSPACE_PSD_GUIDANCE } from "../workspace/psdGuidance";
+import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
+import { WORKSPACE_WEBSITE_ACTION_SAFETY } from "../workspace/browserGuidance";
+import { WORKSPACE_NO_REPLAY_SAFETY } from "../workspace/promptContract";
+import { WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
+import { buildAnthropicMessagesRequest } from "../providers/anthropicMessages";
+import { buildGeminiInteractionsRequest } from "../providers/geminiInteractionsRequest";
+import { IMAGE_EDITING_GUIDANCE } from "../tools/imageGeneration";
+import { WORKSPACE_OFFICE_GUIDANCE } from "../workspace/officeGuidance";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { EMPTY_KNOWLEDGE_SELECTION, type KnowledgeSelection } from "../../contracts/knowledge";
@@ -544,6 +552,7 @@ function createHarness(options: HarnessOptions = {}) {
   const providerIds = options.providerIds ?? ["fake", "openai", "openrouter"];
   const providers = Object.fromEntries(providerIds.map((provider) => [provider, adapter]));
   const repository: RunPreparationDeps["repository"] = {
+    loadWorkspaceFileFacts: async () => ({ hasFiles: attachments.some(file => Boolean(file.checksum)), hasEarlierExports: false }),
     async loadAttachments(userId, attachmentIds) {
       calls.push("attachments");
       attachmentLoads.push({ attachmentIds: [...attachmentIds], userId });
@@ -875,6 +884,19 @@ function preparedFrom(result: RunPreparationResult): PreparedRun {
   return result.prepared;
 }
 
+function contractWorkspace(): NonNullable<RunPreparationDeps["workspace"]> {
+  return { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
+    ...input, expiresAt: new Date(Date.now() + 60_000).toISOString(), policyRevision: 1,
+    sandboxName: "contract-fixture", sessionId: "ws-contract", toolDefinitions: [],
+    normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json",
+      internetEnabled: true, maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "fixture",
+      messageManifestPath: `/workspace/inbox/messages/${input.userMessageId}/manifest.json`,
+      outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project",
+      runtimeVersion: "fixture", sessionId: "ws-contract", syncToolTimeoutSeconds: 30,
+      toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+  } })) };
+}
+
 describe("standing Memory and optional search admission", () => {
   const snapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const,
     resultTokens: 6000 as const, comparisonResultTokens: 12000 as const, timeoutSeconds: 30,
@@ -1039,13 +1061,19 @@ describe("run preparation", () => {
         }, sendInput(body)));
         expect(prepared.normalizedRequest.agent).toMatchObject({ limitsEnabled, timeoutSeconds: limitsEnabled ? 3600 : null,
           maxOutputTokens: limitsEnabled ? 256 : 2048, policyVersion: limitsEnabled ? 2 : 1 });
-        expect(prepared.normalizedRequest.prompt.system).toContain("no current message manifest is present");
-        expect(prepared.normalizedRequest.prompt.system).toContain(WORKSPACE_PSD_GUIDANCE);
+        expect(prepared.normalizedRequest.prompt.system).not.toContain("no current message manifest is present");
+        expect(prepared.normalizedRequest.prompt.system).toContain(WORKSPACE_GUIDE_PATHS.psd);
+        expect(prepared.normalizedRequest.prompt.system).not.toContain(WORKSPACE_PSD_GUIDANCE);
+        expect(prepared.normalizedRequest.prompt.system).not.toContain("Try to answer directly first");
+        expect(prepared.normalizedRequest.prompt.system?.split(WORKSPACE_NO_REPLAY_SAFETY)).toHaveLength(2);
+        expect(prepared.normalizedRequest.workspace?.guidanceVersion).toBe(1);
         expect(prepared.normalizedRequest.prompt.system).not.toContain("Read messageManifestPath");
         const retry = preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared,
           userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }));
         expect(retry.normalizedRequest.agent?.compatibilityHash).toBe(prepared.normalizedRequest.agent?.compatibilityHash);
         expect(retry.workspaceAdmissionPlan!.runId).not.toBe(prepared.workspaceAdmissionPlan!.runId);
+        expect(retry.normalizedRequest.workspace?.guidanceVersion).toBe(1);
+        expect(retry.normalizedRequest.prompt.system).toBe(prepared.normalizedRequest.prompt.system);
         configs.push(prepared.normalizedRequest.agent!);
       }
       expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
@@ -1096,8 +1124,11 @@ describe("run preparation", () => {
         expect(result.providerRequest).toMatchObject({ provider: "openai", modelId: "gpt-fixture", modelCapabilities: { vision } });
         expect(result.providerRequest.tools?.some(tool => tool.name === "analyze_image")).toBe(!agentEnabled);
         expect(result.providerRequest.tools?.some(tool => tool.name === "view_workspace_image")).toBe(false);
-        expect(result.normalizedRequest.prompt.system).toContain("Direct image viewing is unavailable");
+        expect(result.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer in this run");
         expect(result.normalizedRequest.prompt.system).not.toContain("direct image viewer first");
+        const system = result.normalizedRequest.prompt.system!;
+        expect(system.indexOf("There is no direct Workspace file viewer")).toBeLessThan(
+          system.indexOf(agentEnabled ? "Read outputDirectory from the current AIQSA turn" : "This turn's output directory:"));
         if (!plan.available) expect(result.normalizedRequest.prompt.system).toContain("without substituting another model");
         if (agentEnabled) {
           const configuration = result.normalizedRequest.agent!;
@@ -1113,7 +1144,7 @@ describe("run preparation", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
-  it("keeps the pre-observation Agent thread identity under Off and separates observation-v1 threads", async () => {
+  it("separates guide-contract Agent threads while keeping observation Off out of the identity", async () => {
     vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
     try {
       const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
@@ -1138,10 +1169,13 @@ describe("run preparation", () => {
         identities.set(policy, { hash: prepared.normalizedRequest.agent!.compatibilityHash, input: input! });
       }
       const off = identities.get("off")!, v1 = identities.get("v1")!;
-      // Off hashes exactly the v0.2.24 identity shape, so arm() still finds a
-      // compatible completed predecessor thread accepted before the upgrade.
+      // Observation Off introduces no extra identity field. The changed
+      // developer contract must nevertheless start a fresh native thread.
       expect(off.input.managedProfileVersion).toBe(7);
       expect(off.input).not.toHaveProperty("toolObservationVersion");
+      expect(off.input.workspace).toMatchObject({ guidanceVersion: 1 });
+      const { guidanceVersion: _guidance, ...legacyWorkspace } = off.input.workspace as Record<string, unknown>;
+      expect(hashCanonicalMcpValue({ ...off.input, workspace: legacyWorkspace })).not.toBe(off.hash);
       expect(v1.input).toMatchObject({ managedProfileVersion: 7, toolObservationVersion: 1 });
       const { toolObservationVersion: _version, ...withoutObservation } = v1.input;
       expect(hashCanonicalMcpValue(withoutObservation)).toBe(off.hash);
@@ -1231,7 +1265,135 @@ describe("run preparation", () => {
     ]);
   });
 
-  it.each([true, false])("freezes browser guidance only when Workspace is enabled: %s", async (enabled) => {
+  it.each([
+    { hasFiles: false, hasEarlierExports: false },
+    { hasFiles: true, hasEarlierExports: false },
+    { hasFiles: true, hasEarlierExports: true }
+  ])("uses authorized inbox facts beyond bounded prompt references: %j", async facts => {
+    const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const loadWorkspaceFileFacts = vi.fn(async () => facts);
+    const deps = { ...h.deps, workspace: contractWorkspace(),
+      repository: { ...h.deps.repository, loadWorkspaceFileFacts } };
+    const body = successBody({ workspace: { enabled: true } });
+    for (const input of [sendInput(body), regenerateInput(body)]) {
+      const request = preparedFrom(await prepareRun(deps, input)).normalizedRequest;
+      expect(request.prompt.system?.includes("Bounded file references")).toBe(facts.hasFiles);
+      expect(request.prompt.system?.includes("earlier completed exports")).toBe(facts.hasEarlierExports);
+      expect(request.prompt.system).not.toContain("Current message manifest");
+      expect(request.prompt.system).not.toContain(IMAGE_EDITING_GUIDANCE);
+      expect(request.prompt.system).not.toContain("Web search is available");
+      // Every run receives the no-replay rule once, with or without files, and
+      // the per-run output directory follows the stable checkpoint guidance.
+      const system = request.prompt.system ?? "";
+      expect(system.split(WORKSPACE_NO_REPLAY_SAFETY)).toHaveLength(2);
+      expect(system.indexOf(WORKSPACE_CHECKPOINT_GUIDANCE)).toBeGreaterThan(system.indexOf(WORKSPACE_NO_REPLAY_SAFETY));
+      expect(system.indexOf("This turn's output directory:")).toBeGreaterThan(system.indexOf(WORKSPACE_CHECKPOINT_GUIDANCE));
+      expect(loadWorkspaceFileFacts).toHaveBeenLastCalledWith({ chatId: "chat-1", userId: "user-1",
+        leafMessageId: input.source.kind === "send" ? "prior-user-message" : "stored-user-message", imageIds: [] });
+    }
+  });
+
+  it("includes the current attachment before it has an inbox database binding", async () => {
+    const file = runAttachment({ id: "current-document", kind: "document", mimeType: "text/plain",
+      storageKey: "synthetic/document", extractedText: "Document body", checksum: "a".repeat(64) });
+    const h = createHarness({ attachments: [file], capabilities: { ...baseCapabilities, toolCalling: true } });
+    const prepared = preparedFrom(await prepareRun({ ...h.deps, workspace: contractWorkspace(),
+      repository: { ...h.deps.repository, loadWorkspaceFileFacts: async () => ({ hasFiles: false, hasEarlierExports: false }) }
+    }, sendInput(successBody({ workspace: { enabled: true }, content: { blocks: [
+      { type: "text", text: "Read this" }, { type: "file", attachmentId: file.id }
+    ] } }))));
+    expect(prepared.normalizedRequest.prompt.system).toContain("Bounded file references");
+    expect(prepared.normalizedRequest.prompt.system).toContain('"attachmentId":"current-document"');
+    expect(prepared.normalizedRequest.prompt.system).toContain("Current message manifest");
+    expect(prepared.normalizedRequest.prompt.system).not.toContain("earlier completed exports");
+  });
+
+  it.each(["openai", "anthropic", "gemini"] as const)(
+    "delivers current native image pixels with Workspace on through the %s request builder", async provider => {
+      const bytes = Buffer.from("synthetic native image bytes");
+      const image = runAttachment({ id: "current-image", kind: "image", mimeType: "image/png",
+        byteSize: bytes.length, storageKey: "synthetic/current-image", checksum: sha256(bytes) });
+      const h = createHarness({ attachments: [image], capabilities: { ...baseCapabilities, toolCalling: true },
+        storageObjects: { [image.storageKey]: { body: bytes, contentType: image.mimeType } } });
+      const native = provider === "openai" ? undefined : providerNeutralOpenAISearchPlan(
+        provider === "anthropic" ? "anthropic_messages" : "gemini_interactions_native");
+      const deps = { ...h.deps, workspace: contractWorkspace(),
+        vision: { resolve: async () => ({ version: 1 as const, available: false as const, code: "vision_model_absent" as const }) },
+        ...(native ? { providerAdmission: { load: async () => ({ ...native,
+          requestedSearchPlan: { mode: "all_selected" as const, optionIds: [] }, searches: [] }) } } : {}) };
+      const prepared = materializePreparedRunData(preparedFrom(await prepareRun(deps, sendInput(successBody({
+        workspace: { enabled: true }, provider: native?.selection.providerConnectionId ?? "openai",
+        modelId: native?.selection.providerModelId ?? "gpt-fixture", params: {},
+        content: { blocks: [{ type: "text", text: "Describe this" }, { type: "image", attachmentId: image.id }] }
+      })))));
+      const request = prepared.providerRequest;
+      expect(request.workspace?.guidanceVersion).toBe(1);
+      expect(request.prompt.system).toContain("image attachments are present in your model input");
+      expect(request.prompt.system).toContain(IMAGE_EDITING_GUIDANCE);
+      expect(request.prompt.system).not.toContain("Direct image viewing is unavailable");
+      expect(request.tools?.some(tool => tool.name === "view_workspace_image")).toBe(false);
+      const base64 = bytes.toString("base64");
+      if (provider === "openai") {
+        const body = buildOpenAIResponsesRequest(request);
+        expect(body.input).toEqual(expect.arrayContaining([expect.objectContaining({ role: "user",
+          content: expect.arrayContaining([expect.objectContaining({ type: "input_image", image_url: `data:image/png;base64,${base64}` })]) })]));
+      } else if (provider === "anthropic") {
+        const body = buildAnthropicMessagesRequest(request);
+        expect(body.messages).toEqual(expect.arrayContaining([expect.objectContaining({ role: "user",
+          content: expect.arrayContaining([{ type: "image", source: { type: "base64", media_type: "image/png", data: base64 } }]) })]));
+      } else {
+        const body = buildGeminiInteractionsRequest(request);
+        expect(body.input).toEqual(expect.arrayContaining([expect.objectContaining({ type: "user_input",
+          content: expect.arrayContaining([{ type: "image", mime_type: "image/png", data: base64 }]) })]));
+      }
+    });
+
+  it.each(["history", "nonvisual", "agent", "image-plan", "empty"] as const)(
+    "distinguishes image editing from actually visible current pixels: %s", async mode => {
+      vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+      try {
+        const bytes = Buffer.from("synthetic conditional image");
+        const image = runAttachment({ id: "image", kind: "image", mimeType: "image/png", byteSize: bytes.length,
+          storageKey: "synthetic/image", checksum: sha256(bytes) });
+        const imageContent = { blocks: [{ type: "text" as const, text: "Image question" }, { type: "image" as const, attachmentId: image.id }] };
+        const hasImage = !["empty", "image-plan"].includes(mode);
+        const h = createHarness({ attachments: hasImage ? [image] : [],
+          capabilities: { ...baseCapabilities, toolCalling: true, vision: mode !== "nonvisual" },
+          ...(mode === "history" ? { sendContext: [{ id: "prior-user-message", role: "user", content: imageContent }] } : {}),
+          storageObjects: { [image.storageKey]: { body: bytes, contentType: image.mimeType } } });
+        const prepared = preparedFrom(await prepareRun({ ...h.deps, workspace: contractWorkspace(),
+          vision: { resolve: async () => ({ version: 1 as const, available: false as const, code: "vision_model_absent" as const }) },
+          agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
+          ...(mode === "image-plan" ? { images: { resolve: async () => syntheticImagePlan() } } : {})
+        }, sendInput(successBody({ workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture",
+          ...(mode === "agent" ? { agentEnabled: true } : {}),
+          ...(mode === "agent" || mode === "nonvisual" ? { content: imageContent } : {}) }))));
+        expect(prepared.normalizedRequest.prompt.system?.includes(IMAGE_EDITING_GUIDANCE)).toBe(mode !== "empty");
+        expect(prepared.normalizedRequest.prompt.system).not.toContain("image attachments are present in your model input");
+        expect(prepared.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer");
+        expect(prepared.normalizedRequest.prompt.system?.includes("Inspect the authorized file index")).toBe(hasImage);
+        if (mode === "history") expect(h.storageReads).toEqual([]);
+        if (mode === "agent") expect(prepared.normalizedRequest.agent?.imageInput).toBe(false);
+      } finally { vi.unstubAllEnvs(); }
+    });
+
+  it.each(["anthropic_messages", "gemini_interactions_native"] as const)(
+    "describes Search only after its admitted Workspace coexistence route (%s)", async adapterKind => {
+      const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
+      const h = createHarness();
+      const load = vi.fn(async (input: { requiresClientToolCoexistence?: boolean }) =>
+        input.requiresClientToolCoexistence ? client : hosted);
+      const result = materializePreparedRunData(preparedFrom(await prepareRun({ ...h.deps,
+        workspace: contractWorkspace(), providerAdmission: { load }
+      }, sendInput(successBody({ workspace: { enabled: true }, modelId: hosted.selection.providerModelId,
+        provider: hosted.selection.providerConnectionId, params: {}, searchPlan: { mode: "model_choice", optionIds: [optionId] } })))));
+      expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ requiresClientToolCoexistence: true }));
+      expect(result.normalizedRequest.searchPlan.options).toEqual([expect.objectContaining({ adapterKind: "provider_model_client", optionId })]);
+      expect(result.normalizedRequest.prompt.system).toContain("Web search is available in this chat as its own tool.");
+      expect(result.providerRequest.tools?.some(tool => tool.capability === "web_search")).toBe(true);
+    });
+
+  it.each([true, false])("freezes guide references and inline website safety only when Workspace is enabled: %s", async (enabled) => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
       ...input, expiresAt: new Date(Date.now() + 60_000).toISOString(), policyRevision: 1, sandboxName: "synthetic-browser", sessionId: "ws_browser", toolDefinitions: [],
@@ -1246,14 +1408,21 @@ describe("run preparation", () => {
     expect(accepted.normalizedRequest.followupContextReserveTokens).toBe(accepted.followupAdmission?.budgetTokens);
     if (enabled) {
       expect(workspace.prepare).toHaveBeenCalledOnce();
-      expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_BROWSER_GUIDANCE);
-      expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_PSD_GUIDANCE);
+      expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_GUIDE_PATHS.browser);
+      expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_GUIDE_PATHS.psd);
+      expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
+      expect(accepted.normalizedRequest.workspace?.guidanceVersion).toBe(1);
       expect(accepted.providerRequest.prompt.system).toBe(accepted.normalizedRequest.prompt.system);
-      expect(accepted.normalizedRequest.prompt.system).toContain("aria_snapshot()");
-      expect(accepted.normalizedRequest.prompt.system).toContain("no current message manifest is present");
+      expect(accepted.normalizedRequest.prompt.system).not.toContain("aria_snapshot()");
+      expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_BROWSER_GUIDANCE);
+      expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_PSD_GUIDANCE);
+      expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_OFFICE_GUIDANCE);
+      expect(accepted.normalizedRequest.prompt.system).not.toContain("no current message manifest is present");
       expect(accepted.normalizedRequest.prompt.system).not.toContain("Current message manifest:");
     } else {
       expect(workspace.prepare).not.toHaveBeenCalled();
+      expect(accepted.normalizedRequest.workspace).toBeUndefined();
+      expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_GUIDE_PATHS.browser);
       expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_BROWSER_GUIDANCE);
       expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_PSD_GUIDANCE);
     }
@@ -1305,11 +1474,18 @@ describe("run preparation", () => {
       sessionId: before.workspaceAdmissionPlan!.sessionId, sandboxName: before.workspaceAdmissionPlan!.sandboxName });
     expect(retried.normalizedRequest.workspace).toEqual(plan.normalized);
     expect(retried.providerRequest.workspace).toEqual(plan.normalized);
+    expect(plan.normalized.guidanceVersion).toBe(1);
     expect(retried.normalizedRequest.prompt.system).toContain(plan.normalized.outputDirectory);
     expect(retried.normalizedRequest.prompt.system).not.toContain(before.workspaceAdmissionPlan!.normalized.outputDirectory);
     expect(retried.normalizedRequest.prompt.system).toContain("Internet inside the workspace: disabled.");
     expect(retried.normalizedRequest.prompt.system).toContain("workspace_exec_current runs one program");
     expect(retried.normalizedRequest.prompt.system).not.toContain("workspace_exec_old");
+    // Only admission values change; file references and other frozen text stay byte-identical.
+    expect(before.normalizedRequest.prompt.system).toContain("Bounded file references");
+    expect(retried.normalizedRequest.prompt.system).toBe(before.normalizedRequest.prompt.system!
+      .replace("workspace_exec_old", "workspace_exec_current")
+      .replace(before.workspaceAdmissionPlan!.normalized.outputDirectory, plan.normalized.outputDirectory)
+      .replace("Internet inside the workspace: enabled (public destinations only).", "Internet inside the workspace: disabled."));
     expect(retried.providerRequest.prompt).toEqual(retried.normalizedRequest.prompt);
     expect(retried.providerRequest.tools?.map(tool => tool.name)).toContain("workspace_exec_current");
     expect(retried.providerRequest.tools?.map(tool => tool.name)).not.toContain("workspace_exec_old");
@@ -1333,6 +1509,21 @@ describe("run preparation", () => {
     const prepare = vi.fn(async () => ({ ok: false as const, code, status }));
     expect(await preparePdfRetry({ ...fixture.deps, workspace: { prepare } }, fixture.input)).toEqual({ ok: false, code, status });
     expect(prepare).toHaveBeenCalledOnce();
+    expect(fixture.buildRequestPreview).not.toHaveBeenCalled();
+  });
+
+  it.each(["legacy", "duplicated", "missing"] as const)("fails a PDF retry closed without exactly one accepted Workspace contract: %s", async mode => {
+    const fixture = await workspacePdfRetryFixture();
+    const prepared = fixture.input.prepared;
+    const system = prepared.normalizedRequest.prompt.system!;
+    if (mode === "legacy") {
+      const { guidanceVersion: _version, ...legacy } = prepared.workspaceAdmissionPlan!.normalized;
+      prepared.workspaceAdmissionPlan = { ...prepared.workspaceAdmissionPlan!, normalized: legacy };
+      prepared.normalizedRequest.workspace = legacy;
+    }
+    prepared.normalizedRequest.prompt.system = mode === "duplicated" ? `${system}\n\n${system}`
+      : mode === "missing" ? system.replace("Internet inside the workspace:", "Internet:") : system;
+    expect(await preparePdfRetry(fixture.deps, fixture.input)).toEqual({ ok: false, code: "pdf_preparation_unavailable", status: 409 });
     expect(fixture.buildRequestPreview).not.toHaveBeenCalled();
   });
 

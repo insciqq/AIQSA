@@ -3,6 +3,8 @@
 import { mcpReadinessPresentation } from "@/components/app-shell/mcpReadiness";
 import type { ComposerMcpSelection } from "@/components/app-shell/composerControlStore";
 import type { ComposerArtifactEdit } from "@/components/app-shell/composerSessionStore";
+import { buildComposerMessage, type PendingComposerComment } from "@/components/app-shell/composerComments";
+import { ComposerCommentsV2 } from "./ComposerCommentsV2";
 import {
   AssistantRowNoticeV2,
   assistantRowDescription,
@@ -79,7 +81,8 @@ import {
   type CSSProperties
 } from "react";
 
-export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | "skills" | "workspace" | null;
+export type ComposerV2Layer =
+  "add" | "files" | "knowledge" | "model" | "reasoning" | "search" | "tools" | "skills" | "workspace" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -96,6 +99,7 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   files: "Saved files",
   knowledge: "Knowledge",
   model: "Choose model",
+  reasoning: "Reasoning effort",
   search: "Web search",
   workspace: "Workspace",
   skills: "Skills",
@@ -106,6 +110,7 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
   files: "Saved files",
   knowledge: "Knowledge",
   model: "Model",
+  reasoning: "Reasoning effort",
   search: "Web search",
   workspace: "Workspace",
   skills: "Skills",
@@ -118,6 +123,7 @@ const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   files: 380,
   knowledge: 380,
   model: 380,
+  reasoning: 240,
   search: 330,
   workspace: 340,
   skills: 340,
@@ -250,12 +256,28 @@ export type ComposerV2Props = Readonly<{
   configError?: boolean;
   disabledReason?: string | null;
   draft: string;
+  comments?: readonly PendingComposerComment[];
+  /** The latest text and comments exceed the browser record bound; a reload restores the last stored copy. */
+  draftTooLargeToKeep?: boolean;
+  /** Returns the refusal message, or null when the comment was changed. */
+  onUpdateComment?(id: string, text: string): string | null;
+  onRemoveComment?(id: string): void;
   hasReadyAttachments?: boolean;
   initialLayer?: ComposerV2Layer;
   /** Lets an opener outside the composer (the header model selector) toggle a layer. */
   layerController?: Ref<ComposerV2LayerController | null>;
   /** "Reasoning medium · Temp 1.0" for the picker's Parameters row. */
   modelParametersSummary?: string | null;
+  /**
+   * The next message's reasoning effort as a raw identifier, the levels the
+   * current model offers and the existing change action. Absent when the
+   * model has no reasoning control: the composer then shows no level.
+   */
+  reasoningEffort?: Readonly<{
+    onChange(value: string): void;
+    options: readonly string[];
+    value: string;
+  }> | null;
   onAttachmentCountLimitExceeded?(input: {
     attemptedCount: number;
     currentCount: number;
@@ -479,10 +501,15 @@ export function ComposerV2({
   configError = false,
   disabledReason = null,
   draft,
+  comments = [],
+  draftTooLargeToKeep = false,
+  onUpdateComment,
+  onRemoveComment,
   hasReadyAttachments = false,
   initialLayer = null,
   layerController,
   modelParametersSummary = null,
+  reasoningEffort = null,
   onAttachmentCountLimitExceeded,
   onDraftChange,
   onLayerChange,
@@ -608,17 +635,18 @@ export function ComposerV2({
   );
   const effectiveSkillIds = resolveEffectiveSkillIds(includedSkills.filter(skill => skill.mode !== "available").map(({ id }) => id), selectedSkillIds);
   const effectiveSkillsMode = skillsMode;
-  const followupTooLong = draft.length > RUN_FOLLOWUP_MAX_CHARS;
-  const sendDisabled = followupMode ? Boolean(followupSending || stopping || inputDisabled || !draft.trim() || followupTooLong) : Boolean(
-    sending || inputDisabled || artifactBlockReason || agentBlockReason || attachmentBlockReason || (!draft.trim() && !readyAttachment)
+  const builtText = buildComposerMessage(draft, comments);
+  const followupTooLong = builtText.length > RUN_FOLLOWUP_MAX_CHARS;
+  const sendDisabled = followupMode ? Boolean(followupSending || stopping || inputDisabled || !builtText.trim() || followupTooLong) : Boolean(
+    sending || inputDisabled || artifactBlockReason || agentBlockReason || attachmentBlockReason || (!builtText.trim() && !readyAttachment)
   );
   const sendDisabledReason = followupMode
     ? followupSending ? "Sending follow-up…" : bootstrapReason ?? (followupTooLong
-      ? `Keep the follow-up under ${RUN_FOLLOWUP_MAX_CHARS.toLocaleString()} characters.` : !draft.trim() ? "Type a follow-up." : null)
+      ? `Keep the follow-up under ${RUN_FOLLOWUP_MAX_CHARS.toLocaleString()} characters. Shorten the draft or edit or delete a comment.` : !builtText.trim() ? "Type a follow-up." : null)
     : sending
     ? "Sending message…"
     : bootstrapReason ?? artifactBlockReason ?? agentBlockReason ?? attachmentBlockReason ??
-      (!draft.trim() && !readyAttachment ? "Type a message." : null);
+      (!builtText.trim() && !readyAttachment ? "Type a message." : null);
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
   const attachmentSelectionDisabled = Boolean(
@@ -1215,6 +1243,37 @@ export function ComposerV2({
     ? agentNotice.kind === "blocked" ? agentDisabledReason : agent.enabled ? "Agent on · Codex in Workspace. Memory and Knowledge are unavailable." : "Agent off."
     : null;
   const workspaceDescription = workspace ? `Workspace: ${workspace.busy ? "Saving" : workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}` : "";
+  // Reasoning effort: how the model thinks, not which tools it has. The
+  // Assistant's parameters row governs it only while the Assistant's own
+  // model is in use, as in the Parameters dialog; it speaks for the level
+  // when it fixes the row or chose a level.
+  const reasoningChip = reasoningEffort && reasoningEffort.options.length > 0 ? reasoningEffort : null;
+  const assistantModelValue = boundAssistant?.rows.model.assistantValue;
+  const reasoningOtherModel = Boolean(boundAssistant && currentModel && assistantModelValue?.mode === "model" &&
+    assistantModelValue.modelId !== currentModel.modelId);
+  const controlsProvenance = reasoningOtherModel ? null : assistantRowProvenance(boundAssistant, "controls");
+  const assistantReasoningEffort = reasoningOtherModel
+    ? null
+    : boundAssistant?.rows.controls.assistantValue.reasoningEffort ?? null;
+  const reasoningProvenance = controlsProvenance &&
+    (controlsProvenance.kind !== "adjustable" || assistantReasoningEffort) ? controlsProvenance : null;
+  const reasoningFixed = reasoningProvenance?.kind === "fixed";
+  const reasoningMarked = Boolean(reasoningProvenance?.marker && (reasoningFixed || assistantReasoningEffort));
+  const reasoningNotice = assistantRowNoticeText(reasoningProvenance, assistantReasoningEffort);
+  const reasoningDescription = reasoningChip
+    ? `Reasoning effort: ${reasoningChip.value}${assistantRowDescription(reasoningProvenance)}`
+    : "";
+  // A labelled row holds six chips: the level as the seventh (or later) chip
+  // turns every capability into its icon instead of adding a second row.
+  const otherChipCount = (comments.length > 0 ? 1 : 0) + (agent ? 1 : 0) + (workspace ? 1 : 0) +
+    (searchChipVisible ? 1 : 0) + (knowledgeChipVisible ? 1 : 0) + 2;
+  const compactChipLabels = Boolean(reasoningChip) && otherChipCount >= 6;
+  // A refreshed model without a reasoning control takes the level away with
+  // its open menu (user actions elsewhere already dismiss it).
+  if (layer === "reasoning" && !reasoningChip) {
+    setLayer(null);
+    setExternalAnchor(null);
+  }
 
   return (
     <div className="v2-composer-wrap" data-testid="composer-v2">
@@ -1276,6 +1335,11 @@ export function ComposerV2({
           <p className="v2-composer-status">Only your text is sent as a follow-up. Files and artifact choices are kept for your next message.</p>
         ) : null}
         {followupMode && followupTooLong ? <p className="v2-composer-status" role="alert">{sendDisabledReason}</p> : null}
+        {draftTooLargeToKeep ? (
+          <p className="v2-composer-status" role="status">
+            Too large to keep after a reload: only the last version that fit would come back. Send this message, or shorten its text or comments.
+          </p>
+        ) : null}
 
         {bootstrapReason ? (
           <div className="v2-composer-status" id={statusId} role={configError ? "alert" : "status"}>
@@ -1320,7 +1384,9 @@ export function ComposerV2({
 
             {/* The model is chosen in the header (operator, 2026-09-02); the
                 composer row holds only this message's tools. */}
-            <div className="v2-composer-indicators" aria-label="Active capabilities">
+            <div className="v2-composer-indicators" aria-label="Active capabilities"
+              data-compact-labels={compactChipLabels || undefined}>
+              <ComposerCommentsV2 key={sessionKey} comments={comments} onUpdate={onUpdateComment} onRemove={onRemoveComment} />
               {agent ? (
                 <button type="button" className="v2-composer-indicator v2-focusable"
                   data-glyph="bot" data-quiet={agent.enabled ? undefined : ""}
@@ -1396,6 +1462,30 @@ export function ComposerV2({
                 <CapabilityChipContent label="Skills" icon="wand" count={effectiveSkillIds.length}
                   description={skillsDescription} descriptionId={`${layerId}-skills-description`} />
               </button>
+              {/* After the tools: a squared outline chip whose raw value stays
+                  visible when the capabilities are icons. A fixed level still
+                  opens its menu, which says why nothing can change. */}
+              {reasoningChip ? (
+                <button className="v2-composer-indicator v2-composer-reasoning v2-focusable" type="button"
+                  data-glyph="sliders" data-quiet="" data-locked={reasoningFixed || undefined}
+                  data-provenance={reasoningMarked ? "assistant" : undefined}
+                  data-tooltip={reasoningDescription} data-tooltip-side="top"
+                  disabled={activeRun}
+                  aria-label={`Reasoning effort: ${reasoningChip.value}`}
+                  aria-describedby={reasoningNotice ? `${layerId}-reasoning-description` : undefined}
+                  aria-controls={`${layerId}-reasoning`} aria-expanded={layer === "reasoning"} aria-haspopup="menu"
+                  onClick={event => openLayer("reasoning", event.currentTarget)}>
+                  <span className="v2-composer-indicator-face" aria-hidden="true">
+                    <span className="v2-composer-indicator-icon">
+                      <UiV2Icon className="v2-composer-indicator-glyph" name="sliders" />
+                    </span>
+                    <span className="v2-composer-reasoning-value">{reasoningChip.value}</span>
+                  </span>
+                  {reasoningNotice ? (
+                    <span className="v2-sr-only" id={`${layerId}-reasoning-description`}>{reasoningNotice}</span>
+                  ) : null}
+                </button>
+              ) : null}
             </div>
 
             <span className="v2-composer-spacer" />
@@ -1491,6 +1581,31 @@ export function ComposerV2({
                     closeLayer();
                   }}
                 />
+              ) : layer === "reasoning" ? (
+                reasoningChip ? (
+                  <div className="v2-composer-layer-scroll">
+                    <p className="v2-composer-layer-title">Reasoning effort</p>
+                    {reasoningNotice && reasoningProvenance
+                      ? <AssistantRowNoticeV2 kind={reasoningProvenance.kind} text={reasoningNotice} />
+                      : null}
+                    {reasoningChip.options.map((option) => (
+                      <CapabilityRow
+                        key={option}
+                        selectionRole="radio"
+                        selected={option === reasoningChip.value}
+                        current={reasoningFixed && option === reasoningChip.value}
+                        disabled={reasoningFixed || activeRun}
+                        onClick={() => {
+                          if (option !== reasoningChip.value) reasoningChip.onChange(option);
+                          closeLayer();
+                        }}
+                      >
+                        {option}
+                      </CapabilityRow>
+                    ))}
+                    <p className="v2-composer-layer-note">Applies to your next message.</p>
+                  </div>
+                ) : null
               ) : layer === "search" ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">Web search</p>

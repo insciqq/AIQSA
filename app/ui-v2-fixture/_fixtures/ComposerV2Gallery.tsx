@@ -48,6 +48,7 @@ export type ComposerGalleryState =
   | "attachments"
   | "capabilities"
   | "chips-wide"
+  | "chips-wide-comments"
   | "chips-off"
   | "chips-off-pinned"
   | "chips-agent"
@@ -58,6 +59,10 @@ export type ComposerGalleryState =
   | "model"
   | "knowledge"
   | "project-knowledge"
+  | "reasoning"
+  | "reasoning-hidden"
+  | "reasoning-locked"
+  | "reasoning-running"
   | "zero";
 
 const avatar = {
@@ -517,6 +522,9 @@ function galleryAssistantSetup(state: ComposerGalleryState): GalleryAssistantSet
         assistantValues: { knowledge: { baseIds: [], hiddenCount: 2, mode: "explicit", sourceIds: [] } },
         origins: {}
       };
+    // Fixed parameters need a fixed model; the Assistant's level is "high".
+    case "reasoning-locked":
+      return { origins: {}, policies: { controls: "fixed", model: "fixed" } };
     default:
       return null;
   }
@@ -540,14 +548,44 @@ const INITIAL_LAYER_TRIGGERS: Readonly<Record<Exclude<ComposerV2Layer, null>, st
   files: 'button[aria-label="Add"]',
   knowledge: 'button[aria-label="Choose Knowledge"]',
   model: '[data-testid="header-model-trigger"]',
+  reasoning: 'button[aria-label^="Reasoning effort"]',
   search: 'button[aria-label^="Choose web search"]',
   skills: 'button[aria-label="Change Skills mode"]',
   tools: 'button[aria-label="Change MCP mode"]',
   workspace: 'button[aria-label^="Workspace details"]'
 };
 
+/** A full raw level list, so the chip is measured with its widest values. */
+const GALLERY_REASONING_OPTIONS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+
+/* The reasoning chip appears where a state shows it: the reasoning states and
+   the worst-case chip rows. `reasoning-hidden` uses a model without it. */
+function galleryReasoningConfig(config: ComposerConfig, state: ComposerGalleryState): ComposerConfig {
+  const hidden = state === "reasoning-hidden";
+  return {
+    ...config,
+    catalog: {
+      ...config.catalog,
+      models: config.catalog.models.map((model) => model.modelId !== "gpt-5.2" ? model : {
+        ...model,
+        capabilities: { ...model.capabilities, reasoning: !hidden },
+        parameterControls: {
+          ...model.parameterControls,
+          reasoningEffort: hidden
+            ? { defaultValue: "none", options: ["none"], supported: false }
+            : { defaultValue: "medium", options: GALLERY_REASONING_OPTIONS, supported: true }
+        }
+      })
+    }
+  };
+}
+
 export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalleryState }) {
-  const wideChips = state === "chips-wide";
+  const wideChips = state === "chips-wide" || state === "chips-wide-comments";
+  const reasoningFixture = wideChips || state.startsWith("reasoning");
+  const reasoningRunning = state === "reasoning-running";
+  const [comments, setComments] = useState(() => state === "chips-wide-comments"
+    ? [1, 2, 3].map(index => ({ id: String(index), quote: `Selected fragment ${index}`, text: `Pending comment ${index}` })) : []);
   const offChips = state === "chips-off" || state === "chips-off-pinned";
   const chipFixture = wideChips || offChips || state === "chips-agent";
   const projectFallback = state === "assistant-project-fallback";
@@ -572,9 +610,13 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
       }
     : projectFallback
       ? composerGalleryProjectConfig
-      : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
-          wideChips || offChips ? { ...server, enabled: true } : server
-        ) });
+      : reasoningFixture
+        ? galleryReasoningConfig({ ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
+            wideChips ? { ...server, enabled: true } : server
+          ) }, state)
+        : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
+            wideChips || offChips ? { ...server, enabled: true } : server
+          ) });
   const [workspaceEnabled, setWorkspaceEnabled] = useState(!offChips);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const allCapabilities = chipFixture || ["capabilities", "workspace-running", "workspace-failed"].includes(state);
@@ -618,6 +660,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
     ? structuredClone(composerGalleryAssistantValues.tools as ComposerMcpSelection)
     : { mode: wideChips ? "load_all" : offChips ? "off" : "auto" });
   const [skillsMode, setSkillsMode] = useState<"auto" | "off">(offChips || assistantChanged ? "off" : "auto");
+  const [reasoningEffort, setReasoningEffort] = useState(wideChips ? "xhigh" : "high");
   const [attachmentItems, setAttachmentItems] = useState<ComposerAttachmentItemV2[]>(
     state === "attachments" ? attachmentGalleryItems : []
   );
@@ -672,6 +715,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   const currentProvider = config.catalog.providers.find((provider) => provider.id === currentModel?.provider);
   const noModels = config.catalog.models.length === 0;
   const modelName = currentModel?.displayName ?? (noModels ? "No models available" : "Choose model");
+  const reasoningControl = currentModel?.parameterControls.reasoningEffort;
 
   // Gallery states open the same real trigger a user would. Supplying only
   // `initialLayer` skips anchor measurement and can make a healthy popover
@@ -755,7 +799,15 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               draft={draft}
               layerController={layerController}
               mcpSelection={mcpSelection}
-              modelParametersSummary="Reasoning medium · Temp 1.0"
+              modelParametersSummary={`Reasoning ${reasoningFixture ? reasoningEffort : "medium"} · Temp 1.0`}
+              reasoningEffort={reasoningFixture && reasoningControl?.supported ? {
+                onChange: (value) => { if (changeRow("controls")) setReasoningEffort(value); },
+                options: reasoningControl.options,
+                value: reasoningEffort
+              } : null}
+              activeRun={reasoningRunning}
+              runId={reasoningRunning ? "gallery-run" : null}
+              onStop={() => undefined}
               onAttachmentCountLimitExceeded={() => undefined}
               onDraftChange={setDraft}
               onLayerChange={setOpenLayer}
@@ -803,7 +855,13 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                 if (changeRow("model")) setSelectedModel({ modelId: model.modelId, provider: model.provider });
               }}
               onSelectSearchOptionIds={(ids) => { if (changeRow("search")) setSearchIds([...ids]); }}
-              onSend={() => setDraft("")}
+              comments={comments}
+              onUpdateComment={(id, text) => {
+                setComments(current => current.map(comment => comment.id === id ? { ...comment, text } : comment));
+                return null;
+              }}
+              onRemoveComment={id => setComments(current => current.filter(comment => comment.id !== id))}
+              onSend={() => { setDraft(""); setComments([]); }}
               onToggleMcpServer={(serverId, enabled) => setConfig((current) => ({
                 ...current,
                 mcpServers: current.mcpServers.map((server) =>

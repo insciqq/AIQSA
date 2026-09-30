@@ -8,10 +8,8 @@ import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
-import { WORKSPACE_OFFICE_GUIDANCE } from "../workspace/officeGuidance";
-import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
-import { WORKSPACE_PSD_GUIDANCE } from "../workspace/psdGuidance";
 import { workspaceFileContext, workspaceFileReferences } from "../workspace/fileContext";
+import { workspacePromptContract, WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
@@ -177,6 +175,7 @@ export function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily
 type RunPreparationRepository = Pick<
   RunRepository,
   | "loadAttachments"
+  | "loadWorkspaceFileFacts"
   | "loadConversationContextForExpectedLeaf"
   | "loadConversationContextForLeaf"
 > & Partial<Pick<
@@ -683,57 +682,6 @@ function resolveWorkspaceEnabled(
   return (value as { enabled: boolean }).enabled;
 }
 
-function workspacePromptContract(
-  workspace: WorkspaceRunAdmissionPlan,
-  hasAttachments: boolean,
-  agentEnabled = false
-): string {
-  const providerToolName = (originalName: string): string =>
-    workspace.toolDefinitions.find((tool) => tool.originalName === originalName)?.namespacedName ?? originalName;
-  const shellToolName = providerToolName("sandbox_shell");
-  const execToolName = providerToolName("sandbox_exec");
-  return [
-    "Workspace is active.",
-    `Working directory: ${workspace.normalized.projectDirectory}`,
-    "Original attachments: /workspace/inbox",
-    `Attachment index: ${workspace.normalized.inboxIndexPath}`,
-    !hasAttachments ? "This message has no attachments; no current message manifest is present."
-      : agentEnabled ? "Read messageManifestPath from the current AIQSA turn workspace paths."
-        : `Current message manifest: ${workspace.normalized.messageManifestPath}`,
-    "Do not modify originals in inbox; copy files that need changes into project.",
-    `Internet inside the workspace: ${workspace.normalized.internetEnabled ? "enabled (public destinations only)" : "disabled"}.`,
-    "You may install required packages through available package managers.",
-    agentEnabled ? "Put user-downloadable files only in outputDirectory from the current AIQSA turn workspace paths. These paths change each user turn."
-      : `Put user-downloadable files only in ${workspace.normalized.outputDirectory}.`,
-    "After changes, run appropriate tests or checks.",
-    "Do not claim that a file was created or a check passed until a tool verified it.",
-    agentEnabled ? "Use your native Codex shell and file tools inside this Workspace."
-      : `Use ${shellToolName} for pipelines, redirects, &&, ||, globbing and heredocs; ${execToolName} runs one program directly without shell parsing.`,
-    "Saved personal Workspace accesses are prepared automatically for personal chats; shared Projects do not receive personal secrets. SSH is configured for noninteractive use, and saved environment variables are available in each command and its child processes. Read /workspace/SECRETS.md for text secrets, environment names and exact original file/key paths. Use the accesses needed for the user's task. Values are not automatically included in this prompt. Do not copy managed secrets or the guide into project files or downloads unless the user requests it.",
-    WORKSPACE_OFFICE_GUIDANCE,
-    WORKSPACE_BROWSER_GUIDANCE,
-    WORKSPACE_PSD_GUIDANCE,
-    "The inbox index also lists earlier completed exports from this conversation, marked source=export with their producing message and date. Read that index to find the requested earlier result; the current output directory starts fresh and does not describe export history. Use the indexed canonical copy when revising an earlier export, then write a new result to the current output directory. Never claim previous exports are lost solely because the current output directory is empty.",
-    "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface publishes successfully exported files automatically."
-  ].join("\n");
-}
-
-function promptWithWorkspaceContract(
-  prompt: NormalizedRunRequest["prompt"],
-  workspace: WorkspaceRunAdmissionPlan,
-  attachments: readonly ProviderAttachment[],
-  fileContext: string,
-  agentEnabled = false
-): NormalizedRunRequest["prompt"] {
-  const contract = `${workspacePromptContract(workspace, attachments.length > 0, agentEnabled)}\n${fileContext}`;
-  return {
-    ...prompt,
-    system: [prompt.system, contract]
-      .filter((part): part is string => Boolean(part?.trim()))
-      .join("\n\n") || null
-  };
-}
-
 /** Explicit document retry retains the accepted reader/answer authority, but a
  * sibling needs its own current Workspace admission and derived request. */
 export async function preparePdfRetry(
@@ -768,32 +716,46 @@ export async function preparePdfRetry(
       runId: randomUUID(), ...(input.signal ? { signal: input.signal } : {}), userMessageId: input.userMessageId
     });
     if (!admission.ok) return failure(admission.code, admission.status);
-    const oldContract = workspacePromptContract(prior, request.attachmentIds.length > 0, agentEnabled);
-    const newContract = workspacePromptContract(admission.plan, request.attachmentIds.length > 0, agentEnabled);
-    const oldSystem = request.prompt.system;
-    // Replace only the server-owned segment; the accepted user/Assistant
+    // Only the current contract version can be rebuilt; the sibling keeps it.
+    if (prior.normalized.guidanceVersion !== WORKSPACE_GUIDANCE_VERSION) return failure("pdf_preparation_unavailable", 409);
+    const plan = { ...admission.plan, normalized: { ...admission.plan.normalized, guidanceVersion: WORKSPACE_GUIDANCE_VERSION } };
+    // Changing admission values (tool names, per-run paths, network) render
+    // only in the stable part and the leading turn lines. Chat facts (file
+    // references, exports, Search) follow them and stay frozen, so neutral
+    // facts render exactly the replaced parts.
+    const segments = (workspace: WorkspaceRunAdmissionPlan) => {
+      const contract = workspacePromptContract({ workspace, agent: agentEnabled,
+        currentAttachmentCount: request.attachmentIds.length, hasIndexedFiles: false,
+        hasEarlierExports: false, searchEnabled: false, fileContext: "" });
+      return [contract.stable, contract.turn] as const;
+    };
+    const newSegments = segments(plan);
+    let system = request.prompt.system ?? "";
+    // Replace only the server-owned segments; the accepted user/Assistant
     // instructions, file references and unrelated tool authority stay frozen.
-    if (!oldSystem?.includes(oldContract) || oldSystem.indexOf(oldContract) !== oldSystem.lastIndexOf(oldContract)) {
-      return failure("pdf_preparation_unavailable", 409);
+    for (const [index, oldSegment] of segments(prior).entries()) {
+      const at = system.indexOf(oldSegment);
+      if (at < 0 || at !== system.lastIndexOf(oldSegment)) return failure("pdf_preparation_unavailable", 409);
+      system = system.slice(0, at) + newSegments[index] + system.slice(at + oldSegment.length);
     }
     const budgets = deps.runPolicy ? await deps.runPolicy.load() : DEFAULT_TOOL_RUN_BUDGETS;
     const toolBudgets = { ...request.toolBudgets,
-      maxToolCalls: Math.max(budgets.maxToolCalls, admission.plan.normalized.maxToolCalls),
-      maxToolRounds: Math.max(budgets.maxToolRounds, admission.plan.normalized.maxToolRounds) };
-    const prompt = { ...request.prompt, system: oldSystem.replace(oldContract, newContract) };
+      maxToolCalls: Math.max(budgets.maxToolCalls, plan.normalized.maxToolCalls),
+      maxToolRounds: Math.max(budgets.maxToolRounds, plan.normalized.maxToolRounds) };
+    const prompt = { ...request.prompt, system };
     let agent = request.agent;
     if (agent) {
-      if (!admission.plan.normalized.internetEnabled) return failure("agent_internet_required", 400);
+      if (!plan.normalized.internetEnabled) return failure("agent_internet_required", 400);
       // A changed image cannot inherit a native thread's old compatibility
       // proof. Per-run output paths do not invalidate an otherwise usable thread.
-      if (prior.normalized.imageRef !== admission.plan.normalized.imageRef) {
+      if (prior.normalized.imageRef !== plan.normalized.imageRef) {
         agent = { ...agent, compatibilityHash: hashCanonicalMcpValue({
-          prior: agent.compatibilityHash, image: admission.plan.normalized.imageRef
+          prior: agent.compatibilityHash, image: plan.normalized.imageRef
         }) };
       }
     }
-    prepared.workspaceAdmissionPlan = admission.plan;
-    prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: admission.plan.normalized,
+    prepared.workspaceAdmissionPlan = plan;
+    prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized,
       ...(agent ? { agent } : {}) };
     const priorWorkspaceToolNames = new Set(prior.toolDefinitions.map(tool => tool.namespacedName));
     const providerRequest: ProviderRunRequest = { ...prepared.providerRequest, ...prepared.normalizedRequest,
@@ -1963,7 +1925,23 @@ async function prepareRunWith(
     );
   }
 
+  // The conversation path already ends with the current message; appending it
+  // again would list each of its images twice.
+  const currentReferenceMessageId = input.source.kind === "send" ? currentSendMessageId : input.source.source.userMessage.id;
+  const referenceMessages = contextMessages.some((message) => message.id === currentReferenceMessageId)
+    ? contextMessages
+    : [...contextMessages, { id: currentReferenceMessageId, role: "user" as const, content }];
+  const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
+  const imageRecords = (imagePlan || artifactToolAvailable || workspaceEnabled) && imageReferenceIds.length
+    ? await deps.repository.loadAttachments(input.userId, imageReferenceIds, project?.projectId)
+    : [];
+  const imageReferences = referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks).flatMap((id) => {
+    const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
+    return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
+  })).slice(-256);
+  let hasWorkspaceIndexedFiles = false;
   let workspaceAdmissionPlan: WorkspaceRunAdmissionPlan | undefined;
+  let workspaceTurnContract = "";
   let workspaceTools: readonly import("../tools/types").RunTool[] = [];
   if (workspaceEnabled) {
     if (!deps.workspace) return failure("workspace_runtime_unavailable", 503);
@@ -1989,7 +1967,8 @@ async function prepareRunWith(
     if (!workspaceAdmission.ok) {
       return failure(workspaceAdmission.code, workspaceAdmission.status);
     }
-    workspaceAdmissionPlan = workspaceAdmission.plan;
+    workspaceAdmissionPlan = { ...workspaceAdmission.plan, normalized: { ...workspaceAdmission.plan.normalized,
+      guidanceVersion: WORKSPACE_GUIDANCE_VERSION } };
     workspaceTools = workspaceAdmission.tools;
     const references = workspaceFileReferences(conversationMessages).map(reference => ({
       ...reference,
@@ -2005,7 +1984,16 @@ async function prepareRunWith(
       currentMessageId: userMessageId,
       inboxIndexPath: workspaceAdmission.plan.normalized.inboxIndexPath
     });
-    prompt = promptWithWorkspaceContract(prompt, workspaceAdmission.plan, attachments, fileContext, agentEnabled);
+    const facts = await deps.repository.loadWorkspaceFileFacts({ chatId: chat.id, userId: input.userId,
+      ...(project ? { projectId: project.projectId } : {}),
+      leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
+      imageIds: imageReferences.map(reference => reference.attachmentId) });
+    hasWorkspaceIndexedFiles = attachments.length > 0 || facts.hasFiles;
+    const contract = workspacePromptContract({ workspace: workspaceAdmissionPlan, agent: agentEnabled,
+      currentAttachmentCount: attachments.length, hasIndexedFiles: hasWorkspaceIndexedFiles,
+      hasEarlierExports: facts.hasEarlierExports, searchEnabled: admissionPlan.searches.length > 0, fileContext });
+    prompt = { ...prompt, system: [prompt.system, contract.stable].filter(part => Boolean(part?.trim())).join("\n\n") || null };
+    workspaceTurnContract = contract.turn;
   }
 
   const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
@@ -2014,22 +2002,13 @@ async function prepareRunWith(
     ? await deps.vision?.resolve() : undefined;
   // New Workspace runs use only the independently admitted Vision role. Direct
   // image flags remain decodable for already accepted execution and recovery.
-  if (visionAnalysis) prompt = { ...prompt, system: [prompt.system, visionAnalysisGuidance(visionAnalysis, false)].filter(Boolean).join("\n\n") };
-  // The conversation path already ends with the current message; appending it
-  // again would list each of its images twice.
-  const currentReferenceMessageId = input.source.kind === "send" ? currentSendMessageId : input.source.source.userMessage.id;
-  const referenceMessages = contextMessages.some((message) => message.id === currentReferenceMessageId)
-    ? contextMessages
-    : [...contextMessages, { id: currentReferenceMessageId, role: "user" as const, content }];
-  const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
-  const imageRecords = (imagePlan || artifactToolAvailable) && imageReferenceIds.length
-    ? await deps.repository.loadAttachments(input.userId, imageReferenceIds, project?.projectId)
-    : [];
-  const imageReferences = referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks).flatMap((id) => {
-    const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
-    return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
-  })).slice(-256);
-  if (imagePlan || workspaceAdmissionPlan) {
+  if (visionAnalysis) prompt = { ...prompt, system: [prompt.system, visionAnalysisGuidance(visionAnalysis, false, {
+    nativeCurrentImages: !agentEnabled && modelCapabilities.vision && attachments.some(file => file.kind === "image" && Boolean(file.base64Data || file.dataUrl)),
+    hasIndexedFiles: hasWorkspaceIndexedFiles
+  })].filter(Boolean).join("\n\n") };
+  // Turn paths and chat facts follow the stable checkpoint and Vision guidance.
+  if (workspaceTurnContract) prompt = { ...prompt, system: [prompt.system, workspaceTurnContract].filter(Boolean).join("\n\n") };
+  if (imagePlan || imageReferences.length > 0) {
     prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
   }
   if (imagePlan || artifactToolAvailable) {
@@ -2086,7 +2065,7 @@ async function prepareRunWith(
       compatibilityHash: hashCanonicalMcpValue({
         version: limits.codexVersion, managedProfileVersion: CODEX_MANAGED_PROFILE_VERSION,
         provider: admissionPlan.answer.snapshot, imageInput: false,
-        workspace: { image: workspaceAdmissionPlan.normalized.imageRef, internet: true },
+        workspace: { image: workspaceAdmissionPlan.normalized.imageRef, internet: true, guidanceVersion: WORKSPACE_GUIDANCE_VERSION },
         gateway: limits.gatewayOrigin, reasoning: acceptedReasoning.reasoningEffort ?? null,
         personalInstructions: personalInstructions ?? null,
         skills: { mode: frozenSkills.manifest.mode,
@@ -2122,7 +2101,8 @@ async function prepareRunWith(
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
     toolObservationVersion,
-    ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const } : {}),
+    ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const,
+      workspaceCheckpointToolDescription: checkpointOutputsTool.description } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
     ...(agent ? { agent } : {}),
     ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription, artifactResourcePolicy } : {}),

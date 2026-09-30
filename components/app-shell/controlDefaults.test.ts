@@ -123,12 +123,33 @@ describe("control defaults", () => {
     );
 
     expect(coerceReasoningEffort("high", controls)).toBe("high");
-    expect(coerceReasoningEffort("unsupported", controls)).toBe("low");
+    expect(coerceReasoningEffort("unsupported", controls)).toBe("medium");
     expect(coerceReasoningMode("pro", controls)).toBe("pro");
     expect(coerceReasoningMode("unsupported", controls)).toBe("standard");
     expect(clampedNumber("8", 4, 1, 6)).toBe(6);
     expect(clampedNumber("invalid", 4, 1, 6)).toBe(4);
     expect(clampedNumber("-2", 4, 1)).toBe(1);
+  });
+
+  it("uses the model default when a saved reasoning level is no longer offered", () => {
+    const selected = model({ modelId: "gpt", provider: "openai" });
+    selected.parameterControls.reasoningEffort = {
+      defaultValue: "medium", options: ["none", "low", "medium", "high"], supported: true
+    };
+    const saved = { [modelControlKey(selected)]: { reasoningEffort: "xhigh" } };
+
+    expect(resolveModelControlDefaults(selected, saved).reasoningEffort).toBe("medium");
+    expect(saved[modelControlKey(selected)]).toEqual({ reasoningEffort: "xhigh" });
+    expect(coerceReasoningEffort("none", selected.parameterControls)).toBe("none");
+    expect(coerceReasoningEffort("high", selected.parameterControls)).toBe("high");
+  });
+
+  it("uses the first option only when the model default is unavailable too", () => {
+    const controls = defaultParameterControls(null);
+    controls.reasoningEffort = { defaultValue: "max", options: ["low", "medium"], supported: true };
+    expect(coerceReasoningEffort("xhigh", controls)).toBe("low");
+    controls.reasoningEffort.options = [];
+    expect(coerceReasoningEffort("xhigh", controls)).toBe("none");
   });
 
   it("selects preferred, default, non-fake, then first catalog models", () => {

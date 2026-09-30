@@ -1,3 +1,4 @@
+import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminProviderConnection, AdminProviderTestEvidence } from "../../../contracts/adminProviders";
@@ -22,7 +23,7 @@ function connectionFrom(plan: AdminProviderCustomSetupCommitPlan): AdminProvider
     credentials: [{ activatedAt: timestamp, activeVersion: { activatedAt: timestamp, id: plan.credential.versionId,
       revokedAt: null, testedAt: timestamp, version: 1 }, createdAt: timestamp, draftSecretConfigured: false,
       draftVersion: 1, enabled: true, id: plan.credential.id, label: plan.credential.label, testedAt: timestamp, updatedAt: timestamp }],
-    models: plan.models.map((model) => ({ activatedAt: timestamp, activeConfig: adminProviderModelConfiguration(model.configuration),
+    models: plan.models.map((model) => ({ pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog" as const, catalogPrices: null }, activatedAt: timestamp, activeConfig: adminProviderModelConfiguration(model.configuration),
       activeVersion: 1, connectionId: plan.connection.id, createdAt: timestamp, displayName: model.displayName,
       draftConfig: adminProviderModelConfiguration(model.configuration), draftVersion: 1, enabled: true, id: model.id, updatedAt: timestamp })),
     activeChecks: plan.models.map((model) => ({ checkedAt: timestamp, connectionVersion: 1, credentialId: plan.credential.id,

@@ -66,15 +66,200 @@ function discovery(): AdminOpenRouterDiscoverySession {
   };
 }
 
-function controller(saveModel: Mock = vi.fn(async () => ({ ok: true as const })), renameModel: Mock = vi.fn(async () => ({ ok: true as const }))) {
+function controller(saveModel: Mock = vi.fn(async () => ({ ok: true as const })), renameModel: Mock = vi.fn(async () => ({ ok: true as const })),
+  saveModelMetadata: Mock = vi.fn(async () => ({ ok: true as const }))) {
   return {
-    actions: { saveModel, renameModel },
+    actions: { saveModel, renameModel, saveModelMetadata },
     state: { busy: false }
   } as unknown as AdminProvidersController;
 }
 
 describe("AdminProviderModelSheet", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("saves four decimal prices as metadata with no key, activation or provider check", async () => {
+    const connection = workingConnection(); connection.credentials = []; connection.defaultCredentialId = null;
+    const model = { ...connection.models[0]!, enabled: false };
+    const actions = controller(); const onSaved = vi.fn();
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={onSaved} open />);
+    expect(screen.getByLabelText("Input", { exact: true })).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Input", { exact: true }), { target: { value: "0.25" } });
+    fireEvent.change(screen.getByLabelText("Cached input", { exact: true }), { target: { value: "0.025" } });
+    fireEvent.change(screen.getByLabelText("Output", { exact: true }), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(actions.actions.saveModelMetadata).toHaveBeenCalledWith(connection.id, model.id, expect.objectContaining({
+      pricing: { mode: "manual", prices: { inputTokenPriceUsdPerMillion: "0.25", cachedInputTokenPriceUsdPerMillion: "0.025",
+        cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "2" } }
+    }));
+    expect(actions.actions.saveModel).not.toHaveBeenCalled();
+    expect(actions.actions.renameModel).not.toHaveBeenCalled();
+  });
+
+  it.each(["-1", "bad", "1e3", "0.000000001", "10000000000"])("keeps invalid price %s with its field error and focus", value => {
+    const connection = workingConnection(); const actions = controller();
+    render(<AdminProviderModelSheet connection={connection} model={connection.models[0]!} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    const input = screen.getByLabelText("Cached input", { exact: true });
+    fireEvent.change(input, { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(input).toHaveValue(value); expect(input).toHaveAttribute("aria-invalid", "true"); expect(input).toHaveFocus();
+    expect(screen.getByLabelText("Cached input", { exact: true })).toBe(input);
+    expect(input).toHaveAccessibleName("Cached input");
+    expect(input).toHaveAccessibleDescription(/non-negative decimal/);
+    expect(actions.actions.saveModelMetadata).not.toHaveBeenCalled(); expect(actions.actions.saveModel).not.toHaveBeenCalled();
+  });
+
+  it("restores only the server-projected catalog prices with dirty-discard protection", async () => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    model.pricing = { source: "admin", prices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "9" },
+      catalogPrices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "0.1", outputTokenPriceUsdPerMillion: "1" } };
+    const actions = controller();
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    fireEvent.click(screen.getByRole("button", { name: "Use catalog price" }));
+    expect(screen.getByLabelText("Input", { exact: true })).toHaveValue("0.1");
+    expect(screen.getByLabelText("Cache write", { exact: true })).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByTestId("provider-model-discard")).toBeVisible();
+    fireEvent.click(within(screen.getByTestId("provider-model-discard")).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(actions.actions.saveModelMetadata).toHaveBeenCalledWith(connection.id, model.id,
+      expect.objectContaining({ pricing: { mode: "restore_catalog" } })));
+  });
+
+  it.each(["embedding", "reranker", "image"] as const)("does not show token prices for %s", modelClass => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    model.modelClass = modelClass; model.draftConfig = { ...model.draftConfig, modelClass };
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    expect(screen.queryByLabelText("Input", { exact: true })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use catalog price" })).toBeNull();
+  });
+
+  it("keeps mixed price and configuration edits in a single Test & Save request", async () => {
+    const connection = workingConnection(); const actions = controller();
+    render(<AdminProviderModelSheet connection={connection} model={connection.models[0]!} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    fireEvent.change(screen.getByLabelText("Input", { exact: true }), { target: { value: "0.25" } });
+    fireEvent.change(screen.getByLabelText("Response timeout (seconds)"), { target: { value: "120" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
+    await waitFor(() => expect(actions.actions.saveModel).toHaveBeenCalledWith(connection.id, connection.models[0]!.id,
+      expect.objectContaining({ configuration: expect.objectContaining({ responseTimeoutSeconds: 120 }),
+        pricing: { mode: "manual", prices: expect.objectContaining({ inputTokenPriceUsdPerMillion: "0.25" }) } }), expect.anything()));
+    expect(actions.actions.saveModelMetadata).not.toHaveBeenCalled();
+  });
+
+  it("has no price section for a Jev decision model, whose cost is provider-reported", () => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    model.modelClass = "decision"; model.draftConfig = { ...model.draftConfig, modelClass: "decision" };
+    model.pricing = { ...model.pricing, source: "admin", catalogPrices: { ...model.pricing.prices } };
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    expect(screen.queryByRole("group", { name: "Prices" })).toBeNull();
+    expect(screen.queryByLabelText("Input", { exact: true })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use catalog price" })).toBeNull();
+  });
+
+  it("claims no source for rows without catalog identity until an administrator prices them", async () => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    // A custom model created without prices, and a row the upgrade left on the column default.
+    for (const source of ["admin", "catalog"] as const) {
+      model.pricing = { prices: { ...model.pricing.prices }, source, catalogPrices: null };
+      const view = render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+      expect(screen.queryByText("Catalog price")).toBeNull(); expect(screen.queryByText("Edited by an administrator")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Use catalog price" })).toBeNull();
+      view.unmount();
+    }
+    model.pricing = { ...model.pricing, source: "catalog", prices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "2", outputTokenPriceUsdPerMillion: "9" } };
+    const legacy = render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    expect(screen.queryByText("Catalog price")).toBeNull();
+    legacy.unmount();
+    model.pricing = { prices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null }, source: "admin", catalogPrices: null };
+    const actions = controller();
+    const view = render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    fireEvent.change(screen.getByLabelText("Output", { exact: true }), { target: { value: "2" } });
+    expect(screen.getByText("Edited by an administrator")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(actions.actions.saveModelMetadata).toHaveBeenCalledWith(connection.id, model.id, expect.objectContaining({
+      pricing: { mode: "manual", prices: { ...model.pricing.prices, outputTokenPriceUsdPerMillion: "2" } } })));
+    view.unmount();
+    model.pricing = { ...model.pricing, prices: { ...model.pricing.prices, outputTokenPriceUsdPerMillion: "2" } };
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    expect(screen.getByText("Edited by an administrator")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Use catalog price" })).toBeNull();
+  });
+
+  it("keeps a catalog row clean when the stored price is typed again", () => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    const catalog = { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: "0.2",
+      cacheWriteInputTokenPriceUsdPerMillion: "2.5", outputTokenPriceUsdPerMillion: "12" };
+    model.pricing = { source: "catalog", prices: catalog, catalogPrices: catalog };
+    const onClose = vi.fn(); const actions = controller();
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={discovery()} onClose={onClose} onSaved={vi.fn()} open />);
+    const input = screen.getByLabelText("Input", { exact: true });
+    expect(screen.getByText("Catalog price")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Use catalog price" })).toBeNull();
+    fireEvent.change(input, { target: { value: "3" } });
+    expect(screen.getByText("Edited by an administrator")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Use catalog price" })).toBeVisible();
+    fireEvent.change(input, { target: { value: "2.000" } });
+    expect(input).toHaveValue("2.000");
+    expect(screen.getByText("Catalog price")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Use catalog price" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Test & Save" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByTestId("provider-model-discard")).toBeNull();
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(actions.actions.saveModelMetadata).not.toHaveBeenCalled(); expect(actions.actions.renameModel).not.toHaveBeenCalled();
+  });
+
+  it("keeps the source when a name change is saved with retyped stored prices", async () => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    const catalog = { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "2", outputTokenPriceUsdPerMillion: "12" };
+    model.pricing = { source: "catalog", prices: catalog, catalogPrices: catalog };
+    const actions = controller();
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    fireEvent.change(screen.getByLabelText("Output", { exact: true }), { target: { value: "12.0" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(actions.actions.renameModel).toHaveBeenCalledWith(connection.id, model.id, expect.objectContaining({ displayName: "Renamed" })));
+    expect(actions.actions.renameModel).toHaveBeenCalledWith(connection.id, model.id, expect.not.objectContaining({ pricing: expect.anything() }));
+    expect(actions.actions.saveModelMetadata).not.toHaveBeenCalled();
+  });
+
+  it("attaches a server price rejection to its field and keeps the entered text", async () => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    const saveMetadata = vi.fn(async () => ({ ok: false as const, message: "One or more prices are invalid.",
+      error: { blockers: [], code: "provider_model_pricing_invalid", field: "outputTokenPriceUsdPerMillion", resourceIds: [] } }));
+    const onSaved = vi.fn();
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={controller(undefined, undefined, saveMetadata)}
+      discovery={discovery()} onClose={vi.fn()} onSaved={onSaved} open />);
+    const output = screen.getByLabelText("Output", { exact: true });
+    fireEvent.change(output, { target: { value: "12.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(output).toHaveAttribute("aria-invalid", "true"));
+    expect(output).toHaveValue("12.5"); expect(output).toHaveAccessibleName("Output");
+    expect(output).toHaveAccessibleDescription(/non-negative decimal/);
+    await waitFor(() => expect(output).toHaveFocus());
+    expect(screen.getByLabelText("Input", { exact: true })).not.toHaveAttribute("aria-invalid");
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it("keeps later price text when a prior saved receipt arrives", async () => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    let resolve!: (value: { ok: true; persistence: { model: typeof model; receipt: null } }) => void;
+    const saveMetadata = vi.fn(() => new Promise<{ ok: true; persistence: { model: typeof model; receipt: null } }>(done => { resolve = done; }));
+    const onSaved = vi.fn();
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={controller(undefined, undefined, saveMetadata)}
+      discovery={discovery()} onClose={vi.fn()} onSaved={onSaved} open />);
+    const input = screen.getByLabelText("Input", { exact: true });
+    fireEvent.change(input, { target: { value: "0.25" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    // A local draft update can outlive the request which captured the previous value.
+    fireEvent.change(input, { target: { value: "0.5" } });
+    resolve({ ok: true, persistence: { receipt: null, model: { ...model, pricing: { ...model.pricing,
+      source: "admin", prices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "0.25" } } } } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    expect(input).toHaveValue("0.5"); expect(onSaved).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByTestId("provider-model-discard")).toBeVisible();
+  });
 
   it("keeps rejected native-route details collapsed without marking the working model unavailable", () => {
     const connection = workingConnection();

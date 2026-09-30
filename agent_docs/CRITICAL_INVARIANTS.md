@@ -15,7 +15,7 @@ Mandatory safety read. [INDEX](INDEX.md) routes the narrower owners.
 ## Privacy And External Effects
 
 - Validate and bound untrusted route, provider, tool, and file input before mutation or external I/O. Provider/storage SDKs and secrets stay server-side. Uploads require server-owned type/content, size, ownership, and storage-settlement checks.
-- Attachments and Knowledge originals, text, queries, evidence, and internal identifiers remain private. Expose only deliberately reviewed authenticated projections. Repository objects and raw request/tool/event histories are not browser contracts.
+- Attachments, Knowledge originals, text, queries, evidence and internal identifiers remain private. Only reviewed authenticated projections—including bounded, redacted MCP details for their initiator—reach browsers; repository objects and other raw request/tool/event histories do not.
 - Anonymous shares are sanitized immutable snapshots, never live private chat access. Reads remain repository-authorized and non-cacheable. The bearer token and expiry/revocation authorize access; crawler directives do not.
 - Never put secrets, credentials, bearer tokens, or private operator notes in public Git, application/access logs, previews, analytics, or shares. [Security](SECURITY.md) owns content-free logging and the narrow exceptional Nginx error-diagnostic rule. Persist raw bodies only when an execution, recovery, safety, or accounting consumer requires them; inspection alone is insufficient.
 - Usage and cost derive from persisted provider-reported accounting, never text length or placeholder prices. Recovery must not repeat settled or crash-ambiguous external side effects.

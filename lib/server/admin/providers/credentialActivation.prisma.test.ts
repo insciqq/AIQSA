@@ -101,7 +101,7 @@ describe("scoped credential activation CAS", () => {
       const write = {
         catalogAdditions: [{
           configuration: latestConfiguration, displayName: "Latest fixture model", id: latestId,
-          inputTokenPriceMicros: 0, outputTokenPriceMicros: 0, templateKey: null
+          inputTokenPriceUsdPerMillion: 0, outputTokenPriceUsdPerMillion: 0, templateKey: null
         }],
         bootstrap: {
           configuration: normalizeProviderConnectionConfiguration(connectionConfiguration),

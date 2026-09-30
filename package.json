@@ -97,7 +97,8 @@
     "task:park": "node scripts/task-ledger.mjs park",
     "task:restore": "node scripts/task-ledger.mjs restore",
     "task:complete": "node scripts/task-ledger.mjs complete",
-    "smoke:workspace-user-paid": "tsx scripts/smoke-workspace-user-paid.ts"
+    "smoke:workspace-user-paid": "tsx scripts/smoke-workspace-user-paid.ts",
+    "experiment:workspace-activation": "tsx scripts/experiment-workspace-activation.ts"
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "5.2.0",

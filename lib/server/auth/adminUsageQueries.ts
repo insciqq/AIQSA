@@ -10,12 +10,14 @@ export async function loadAdminUsageQueryRows(prisma: PrismaClient): Promise<Adm
   const [userRows, providerModelRows, modelRunRows, linkedProviderModelRuns, incompleteRows] = await Promise.all([
     prisma.usageEvent.groupBy({
       _count: {
-        _all: true
+        _all: true,
+        estimatedCostMicros: true
       },
       _max: {
         createdAt: true
       },
       _sum: {
+        estimatedCostMicros: true,
         cachedInputTokens: true,
         cacheWriteInputTokens: true,
         inputTokens: true,
@@ -27,12 +29,14 @@ export async function loadAdminUsageQueryRows(prisma: PrismaClient): Promise<Adm
     }),
     prisma.usageEvent.groupBy({
       _count: {
-        _all: true
+        _all: true,
+        estimatedCostMicros: true
       },
       _max: {
         createdAt: true
       },
       _sum: {
+        estimatedCostMicros: true,
         cachedInputTokens: true,
         cacheWriteInputTokens: true,
         inputTokens: true,
@@ -83,6 +87,8 @@ export async function loadAdminUsageQueryRows(prisma: PrismaClient): Promise<Adm
   return {
     providerModelRows: providerModelRows.map((row) => ({
       ...row,
+      recordCount: row._count._all,
+      knownCostRecordCount: row._count.estimatedCostMicros,
       incompleteUsageCount: incompleteByModel.get(`${row.userId}\u0000${row.provider}\u0000${row.modelId}`) ?? 0,
       _count: {
         _all: runCountByProviderModel.get(`${row.userId}\u0000${row.provider}\u0000${row.modelId}`) ?? 0
@@ -90,6 +96,8 @@ export async function loadAdminUsageQueryRows(prisma: PrismaClient): Promise<Adm
     })),
     userRows: userRows.map((row) => ({
       ...row,
+      recordCount: row._count._all,
+      knownCostRecordCount: row._count.estimatedCostMicros,
       incompleteUsageCount: incompleteByUser.get(row.userId) ?? 0,
       _count: {
         _all: runCountByUserId.get(row.userId) ?? 0

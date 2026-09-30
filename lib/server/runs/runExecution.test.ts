@@ -1896,7 +1896,7 @@ describe("run execution", () => {
     expect(events.some(event => event.type === "artifact" && event.data.artifactType === "context_compaction")).toBe(false);
   });
 
-  it("keeps a checkpoint visible when the subsequent answer provider fails", async () => {
+  it.each([undefined, "Frozen checkpoint wording"])("keeps a checkpoint visible and its accepted tool text after provider failure (saved=%s)", async workspaceCheckpointToolDescription => {
     const view = { id: "checkpoint-1", description: "Intermediate design", createdAt: "2026-09-24T00:00:00.000Z" };
     const execute = vi.fn(async (call: import("../tools/types").ModelToolCall) => workspaceCheckpointResult(call, view, "a".repeat(32), [{
       attachmentId: "draft-attachment", byteSize: 20, fileName: "draft.psd", mimeType: "application/octet-stream",
@@ -1905,13 +1905,16 @@ describe("run execution", () => {
     const service = vi.spyOn(workspaceCheckpoints, "defaultWorkspaceCheckpoints").mockResolvedValue({ execute, restore: execute, recover: vi.fn() });
     try {
       const base = preparedData({ provider: "openai", modelId: "gpt-tool-model" });
-      const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, workspaceCheckpoints: true as const, workspace: completionWorkspace },
+      const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, workspaceCheckpoints: true as const, workspace: completionWorkspace,
+        ...(workspaceCheckpointToolDescription ? { workspaceCheckpointToolDescription } : {}) },
         providerRequest: { ...base.providerRequest, workspaceCheckpoints: true as const, workspace: completionWorkspace } };
       let rounds = 0;
       let checkpointMessage = "";
+      let checkpointDescription: string | undefined;
       const adapter = createAdapter(async function* (request) {
         if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ id: "save", name: "checkpoint_outputs",
           arguments: { files: ["project/draft.psd"], description: "Intermediate design" } }] });
+        checkpointDescription = request.tools?.find(tool => tool.name === "checkpoint_outputs")?.description;
         checkpointMessage = JSON.stringify(request.providerToolMessages);
         throw new Error("synthetic_provider_failure_after_checkpoint");
       });
@@ -1922,6 +1925,8 @@ describe("run execution", () => {
       }).text();
       expect(execute).toHaveBeenCalledOnce();
       expect(rounds).toBe(2);
+      if (workspaceCheckpointToolDescription) expect(checkpointDescription).toBe(workspaceCheckpointToolDescription);
+      else expect(checkpointDescription).toMatch(/^Save selected deliverables as downloadable intermediate results/);
       expect(repository.completeRuns).toHaveLength(0);
       expect(repository.failedRuns).toHaveLength(1);
       expect(checkpointMessage).toContain("saved");

@@ -1,4 +1,7 @@
 import { createPrismaShareRepository } from "../shares/prismaRepository";
+import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
+import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "../workspace/config";
+import type { NormalizedRunRequest } from "../providers/types";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { decodeAssistantIdentity, type AssistantIdentity } from "../../contracts/assistants";
@@ -737,6 +740,35 @@ describe("Prisma-backed run repository", () => {
         status: "failed",
         storageKey
       })]);
+    });
+  });
+
+  it.each([undefined, 1] as const)("loads exact persisted Workspace recovery instructions and image references (%s)", async guidanceVersion => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({ data: { userId, title: "Workspace recovery fixture", memoryMode: "EXCLUDED" } });
+      const question = await prisma.message.create({ data: { chatId: chat.id, role: "user", content: textMessageContent("Synthetic question") } });
+      const answer = await prisma.message.create({ data: { chatId: chat.id, parentMessageId: question.id, role: "assistant",
+        status: "complete", content: textMessageContent("Synthetic answer") } });
+      const runId = randomUUID();
+      const accepted: NormalizedRunRequest = {
+        ...createRunInput({ chatId: chat.id, userId, question: "Synthetic question" }).normalizedRequest,
+        prompt: { developer: null, system: "Accepted Workspace system text, independent of current release wording." },
+        workspace: { enabled: true, ...(guidanceVersion === undefined ? {} : { guidanceVersion }),
+          imageRef: "synthetic:fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: false,
+          mcpVersion: WORKSPACE_MCP_VERSION, runtimeVersion: WORKSPACE_RUNTIME_VERSION, maxToolCalls: 30, maxToolRounds: 12,
+          messageManifestPath: `/workspace/inbox/messages/${question.id}/manifest.json`,
+          outputDirectory: workspaceRunOutputDirectory(runId), projectDirectory: "/workspace/project", sessionId: `ws_${randomUUID()}`,
+          syncToolTimeoutSeconds: 60, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 600 },
+        workspaceCheckpoints: true,
+        ...(guidanceVersion === undefined ? {} : { workspaceCheckpointToolDescription: "Accepted checkpoint wording." }),
+        imageReferences: [{ attachmentId: "synthetic-image", messageId: question.id, fileName: "synthetic.png", origin: "upload" }]
+      };
+      await prisma.modelRun.create({ data: { id: runId, chatId: chat.id, userId, userMessageId: question.id,
+        assistantMessageId: answer.id, provider: "fake", modelId: "fake-qsa", status: "complete",
+        normalizedRequest: accepted as unknown as Prisma.InputJsonValue } });
+      const repository = createPrismaRunRepository(prisma);
+      await expect(repository.loadProviderDispatchRecoveryRequest!({ runId, userId })).resolves.toEqual(accepted);
+      await expect(repository.loadProviderDispatchRecoveryRequest!({ runId, userId: randomUUID() })).resolves.toBeNull();
     });
   });
 
@@ -2535,9 +2567,9 @@ describe("Prisma-backed run repository", () => {
         defaultParams: {},
         displayName: "First pricing model",
         id: modelIds[0],
-        inputTokenPriceMicros: 11,
+        inputTokenPriceUsdPerMillion: 11,
         modelId,
-        outputTokenPriceMicros: 12,
+        outputTokenPriceUsdPerMillion: 12,
         provider
       }
     });
@@ -2546,8 +2578,10 @@ describe("Prisma-backed run repository", () => {
       const repository = createPrismaRunRepository(prisma);
 
       await expect(repository.loadModelPricing(provider, modelId)).resolves.toEqual({
-        inputTokenPriceMicros: 11,
-        outputTokenPriceMicros: 12
+        inputTokenPriceUsdPerMillion: 11,
+        cachedInputTokenPriceUsdPerMillion: null,
+        cacheWriteInputTokenPriceUsdPerMillion: null,
+        outputTokenPriceUsdPerMillion: 12
       });
 
       await prisma.providerModel.create({
@@ -2557,9 +2591,9 @@ describe("Prisma-backed run repository", () => {
           defaultParams: {},
           displayName: "Second pricing model",
           id: modelIds[1],
-          inputTokenPriceMicros: 21,
+          inputTokenPriceUsdPerMillion: 21,
           modelId,
-          outputTokenPriceMicros: 22,
+          outputTokenPriceUsdPerMillion: 22,
           provider
         }
       });
@@ -3652,7 +3686,8 @@ describe("Prisma-backed run repository", () => {
         usageCompleteness: "PARTIAL", estimatedCostMicros: null
       });
       const chat = await createPrismaChatRepository(prisma).getChat({ chatId: active.chatId, userId });
-      expect(chat?.usageStats).toMatchObject({ totalTokens: 0, incompleteRunCount: 1, cachedInputTokens: null, cacheWriteInputTokens: null });
+      expect(chat?.usageStats).toMatchObject({ totalTokens: 0, incompleteRecordCount: 2, recordCount: 3,
+        knownCostRecordCount: 0, estimatedCostMicros: null });
       const aggregate = await loadAdminUsageQueryRows(prisma);
       expect(aggregate.userRows.find((row) => row.userId === userId)).toMatchObject({
         _count: { _all: 1 }, incompleteUsageCount: 2,

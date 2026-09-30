@@ -70,14 +70,44 @@ const message = {
 };
 
 const usageStats = {
-  incompleteRunCount: 0,
-  activeBranchMessageCount: 1,
-  cachedInputTokens: 2,
-  cacheWriteInputTokens: 3,
+  hasCompletedAnswer: true,
+  incompleteRecordCount: 0,
+  recordCount: 1,
+  knownCostRecordCount: 0,
+  estimatedCostMicros: null,
   totalTokens: 10
 };
 
 const contextStats = { approximateActiveBranchInputTokens: 7 };
+
+describe("chat cumulative accounting contract", () => {
+  it("keeps only bounded aggregate fields", () => {
+    const totals = { hasCompletedAnswer: true, recordCount: 3, knownCostRecordCount: 2, incompleteRecordCount: 1,
+      totalTokens: 100, estimatedCostMicros: 0 };
+    expect(decodeChatDetailResponse({ chat: detailChat({ messages: [message], usageStats: {
+      ...totals, rows: [{ private: true }]
+    } }) })?.usageStats).toEqual(totals);
+  });
+  it.each([
+    { hasCompletedAnswer: undefined }, { hasCompletedAnswer: null }, { hasCompletedAnswer: 1 }, { titleUsagePending: "yes" },
+    { recordCount: -1 }, { knownCostRecordCount: 2 }, { incompleteRecordCount: 2 },
+    { estimatedCostMicros: 1 }, { totalTokens: Number.MAX_SAFE_INTEGER + 1 },
+    { knownCostRecordCount: 1, estimatedCostMicros: null }
+  ])("rejects inconsistent accounting %j", patch => {
+    expect(decodeChatDetailResponse({ chat: detailChat({ messages: [message], usageStats: {
+      ...usageStats, ...patch
+    } }) })).toBeNull();
+  });
+  it("preserves server eligibility independently of receipts or the current message page", () => {
+    for (const hasCompletedAnswer of [false, true]) {
+      const decoded = decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...message, role: "user" }], usageStats: {
+        ...usageStats, hasCompletedAnswer
+      } }) });
+      expect(decoded?.usageStats?.hasCompletedAnswer).toBe(hasCompletedAnswer);
+      expect(decoded?.usageStats?.recordCount).toBe(1);
+    }
+  });
+});
 const pageInfo = {
   activeLeafMessageId: summary.activeLeafMessageId,
   beforeCursor: null,
@@ -98,9 +128,18 @@ describe("chat wire contracts", () => {
       chat: detailChat({ messages: [message], usageStats, contextStats: stats })
     });
     expect(decode({ ...contextStats, session, sessionMessageId: message.id })?.contextStats)
-      .toEqual({ ...contextStats, session, sessionMessageId: message.id });
+      .toEqual({ ...contextStats, session, sessionMessageId: message.id, approximateInputTokensAfterSession: 0 });
     for (const id of [12, {}, ""]) expect(decode({ ...contextStats, session, sessionMessageId: id })).toBeNull();
     expect(decode({ ...contextStats, sessionMessageId: message.id })).toBeNull();
+    const fallback = { ...contextStats, session, sessionMessageId: "earlier-answer",
+      sessionBranchLeafId: message.id, approximateInputTokensAfterSession: 321 };
+    expect(decode(fallback)?.contextStats).toEqual(fallback);
+    for (const approximateInputTokensAfterSession of [-1, 1.5, "321", null, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(decode({ ...fallback, approximateInputTokensAfterSession })).toBeNull();
+    }
+    for (const sessionBranchLeafId of [12, {}, ""]) expect(decode({ ...fallback, sessionBranchLeafId })).toBeNull();
+    expect(decode({ ...fallback, session: null })).toBeNull();
+    expect(decode({ ...fallback, sessionMessageId: null })).toBeNull();
   });
 
   it("preserves authoritative activity origin and rejects unknown origins", () => {
@@ -116,6 +155,27 @@ describe("chat wire contracts", () => {
     for (const origin of ["unknown", "", null, { kind: "mcp" }]) {
       expect(decode(origin)).toBeNull();
     }
+  });
+
+  it("preserves bounded MCP call references and refuses references on other origins", () => {
+    const call = { origin: "mcp", round: 2, status: "running", toolName: "search" };
+    const decode = (details: unknown, origin: unknown = "mcp") => decodeChatDetailResponse({
+      chat: detailChat({ messages: [{ ...message, toolActivity: { calls: [{ ...call, origin, details }] } }], usageStats })
+    });
+    expect(decode({ roundIndex: 2, ordinal: 0, privateId: "discarded" })?.messages[0]?.toolActivity?.calls[0])
+      .toEqual({ ...call, details: { roundIndex: 2, ordinal: 0 } });
+    for (const details of [null, true, {}, { roundIndex: 1, ordinal: 0 }, { roundIndex: 0, ordinal: 0 },
+      { roundIndex: 2, ordinal: -1 }, { roundIndex: 2, ordinal: 0.5 },
+      { roundIndex: 2, ordinal: Number.MAX_SAFE_INTEGER + 1 }, { roundIndex: "2", ordinal: 0 }]) {
+      expect(decode(details)).toBeNull();
+    }
+    for (const origin of [undefined, "workspace", "memory", "skill", "discovery", "tool", "web_search",
+      "knowledge", "session", "artifact", "image"]) {
+      const row = { ...call, origin, details: { roundIndex: 2, ordinal: 0 } };
+      expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...message,
+        toolActivity: { calls: [row] } }], usageStats }) })).toBeNull();
+    }
+    expect(decode(undefined)?.messages[0]?.toolActivity?.calls[0]).not.toHaveProperty("details");
   });
 
   it("decodes the exact content-free navigation page", () => {

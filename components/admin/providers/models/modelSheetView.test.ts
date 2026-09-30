@@ -12,13 +12,76 @@ import {
   modelFormBody,
   modelFormFrom,
   modelNameOnlyChanged,
+  modelMetadataOnlyChanged,
+  modelFormPricing,
+  modelFormsEqual,
+  modelPriceSourceLabel,
   moveProviderTag,
-  withDataCollection
+  withDataCollection,
+  withModelPrice
 } from "./modelSheetView";
 
 const openRouter = fixtureConnection({ displayName: "OpenRouter", family: "openrouter", id: "conn-or" });
 
 describe("model sheet form", () => {
+  it("keeps exact prices on the metadata path and includes them atomically with mixed edits", () => {
+    const model = fixtureModel({ id: "prices", connectionId: "conn-or", displayName: "Prices" });
+    const baseline = modelFormFrom(model);
+    const form = { ...baseline, priceSource: "admin" as const, prices: { ...baseline.prices,
+      inputTokenPriceUsdPerMillion: "0.25000000", cachedInputTokenPriceUsdPerMillion: "0.025", outputTokenPriceUsdPerMillion: "2" } };
+    const pricing = { mode: "manual", prices: { inputTokenPriceUsdPerMillion: "0.25",
+      cachedInputTokenPriceUsdPerMillion: "0.025", cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "2" } };
+    expect(modelMetadataOnlyChanged(form, baseline)).toBe(true);
+    expect(modelNameOnlyChanged(form, baseline)).toBe(false);
+    expect(modelFormPricing(form, model)).toEqual({ ok: true, pricing });
+    expect(modelFormBody({ ...form, responseTimeoutSeconds: "120" }, openRouter, model))
+      .toMatchObject({ ok: true, body: { pricing, configuration: { responseTimeoutSeconds: 120 } } });
+    expect(modelFormPricing({ ...form, modelClass: "embedding" }, model)).toEqual({ ok: true });
+  });
+
+  it("treats the stored prices typed again as no change and keeps their source", () => {
+    const catalog = { inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: "0.2",
+      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "12" };
+    const model = fixtureModel({ id: "catalog", connectionId: "conn-or", displayName: "Catalog",
+      pricing: { source: "catalog", prices: catalog, catalogPrices: catalog } });
+    const baseline = modelFormFrom(model);
+    const edited = withModelPrice(baseline, baseline, "inputTokenPriceUsdPerMillion", "3");
+    expect(edited.priceSource).toBe("admin");
+    const retyped = withModelPrice(edited, baseline, "inputTokenPriceUsdPerMillion", " 2.000 ");
+    expect(retyped.priceSource).toBe("catalog");
+    expect(modelFormsEqual(retyped, baseline)).toBe(true);
+    expect(modelFormPricing(retyped, model)).toEqual({ ok: true });
+    // Even a form that lost its source sends nothing while the values equal the stored ones.
+    expect(modelFormPricing({ ...retyped, priceSource: "admin" }, model)).toEqual({ ok: true });
+    expect(modelFormPricing(edited, model)).toEqual({ ok: true, pricing: { mode: "manual", prices: { ...catalog, inputTokenPriceUsdPerMillion: "3" } } });
+    const admin = { ...model, pricing: { ...model.pricing, source: "admin" as const } };
+    expect(modelFormPricing({ ...modelFormFrom(admin), priceSource: "catalog" }, admin)).toEqual({ ok: true, pricing: { mode: "restore_catalog" } });
+    expect(modelFormPricing(modelFormFrom(admin), admin)).toEqual({ ok: true });
+  });
+
+  it("labels the price source only when the claim holds", () => {
+    const catalog = { inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: null,
+      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "12" };
+    const form = blankModelForm(openRouter);
+    const priced = { ...form, prices: { ...form.prices, outputTokenPriceUsdPerMillion: "2" } };
+    expect(modelPriceSourceLabel({ ...form, priceSource: "catalog" }, catalog)).toBe("Catalog price");
+    expect(modelPriceSourceLabel({ ...priced, priceSource: "catalog" }, null)).toBeNull();
+    expect(modelPriceSourceLabel({ ...form, priceSource: "catalog" }, null)).toBeNull();
+    expect(modelPriceSourceLabel(form, null)).toBeNull();
+    expect(modelPriceSourceLabel({ ...form, prices: { ...form.prices, inputTokenPriceUsdPerMillion: "  " } }, null)).toBeNull();
+    expect(modelPriceSourceLabel(priced, null)).toBe("Edited by an administrator");
+    expect(modelPriceSourceLabel(form, catalog)).toBe("Edited by an administrator");
+  });
+
+  it("retains invalid text and identifies its exact price field", () => {
+    const form = blankModelForm(openRouter);
+    for (const text of ["-1", "1e3", "no", "0.000000001", "10000000000"]) {
+      const invalid = { ...form, prices: { ...form.prices, cachedInputTokenPriceUsdPerMillion: text } };
+      expect(modelFormPricing(invalid, null)).toMatchObject({ ok: false, field: "cachedInputTokenPriceUsdPerMillion" });
+      expect(invalid.prices.cachedInputTokenPriceUsdPerMillion).toBe(text);
+    }
+  });
+
   it("preserves long overrides and blank inheritance while rejecting invalid timeout text", () => {
     const model = fixtureModel({ id: "timeout-model", connectionId: "conn-or", displayName: "Model" });
     const form = modelFormFrom(model);

@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { textMessageContent } from "../../domain/content";
-import { createPrismaChatRepository } from "./prismaRepository";
+import { estimateApproxTokens } from "../../domain/contextBudget";
+import { createPrismaChatRepository, loadChatBranchSnapshotStats } from "./prismaRepository";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 
 afterAll(() => prisma.$disconnect());
@@ -44,6 +45,41 @@ it("reloads the active branch's context snapshot without leaking sibling or othe
     expect(await repo.getChat({ chatId, userId: randomUUID() })).toBeNull();
     await prisma.chat.update({ where: { id: chatId }, data: { activeLeafMessageId: siblingId } });
     expect((await repo.getChat({ chatId, userId }))?.contextStats.session?.approximateInputTokens).toBe(9000);
+    // A failed/newer answer has no measurement. The nearest measured ancestor
+    // remains the base, even when it lies outside the browser's loaded page.
+    let parentId = answerId;
+    let laterTokens = 0;
+    for (let index = 0; index < 62; index += 1) {
+      const id = randomUUID();
+      const content = textMessageContent(index % 2 === 0 ? "A later question" : "A later incomplete answer");
+      await prisma.message.create({ data: {
+        id, chatId, parentMessageId: parentId, content,
+        role: index % 2 === 0 ? "user" : "assistant", status: index % 2 === 0 ? "complete" : "error"
+      } });
+      laterTokens += estimateApproxTokens(content);
+      parentId = id;
+    }
+    await prisma.chat.update({ where: { id: chatId }, data: { activeLeafMessageId: parentId } });
+    const fallback = await repo.getChat({ chatId, userId });
+    expect(fallback?.contextStats).toMatchObject({
+      session: status, sessionMessageId: answerId, sessionBranchLeafId: parentId,
+      approximateInputTokensAfterSession: laterTokens
+    });
+    expect(fallback?.messages.map((message) => message.id)).not.toContain(answerId);
+    expect(fallback?.pageInfo.hasOlder).toBe(true);
+    expect((await prisma.$transaction((tx) => loadChatBranchSnapshotStats(tx, {
+      activeLeafMessageId: parentId, chatId
+    }))).contextStats).toEqual(fallback?.contextStats);
+    // An edited branch with no measured ancestor cannot borrow a sibling meter.
+    const editedId = randomUUID();
+    await prisma.message.create({ data: {
+      id: editedId, chatId, parentMessageId: questionId, role: "assistant",
+      status: "error", content: textMessageContent("")
+    } });
+    await prisma.chat.update({ where: { id: chatId }, data: { activeLeafMessageId: editedId } });
+    expect((await repo.getChat({ chatId, userId }))?.contextStats).toMatchObject({
+      session: null, sessionMessageId: null
+    });
   } finally {
     await prisma.user.delete({ where: { id: userId } });
   }

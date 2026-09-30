@@ -38,6 +38,7 @@ import {
 } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { Catalog, ChatDetail, WorkspaceChatSummary, ThreadMessage } from "./types";
+import { replaceComposerDraftEpoch } from "./composerDraftStorage";
 import { rememberSessionExpiredDraft, storedSessionExpiredDraft } from "./shellStorage";
 
 function continuationDetail(): ChatDetail {
@@ -49,14 +50,14 @@ function continuationDetail(): ChatDetail {
 }
 
 describe("opening a continuation", () => {
-  afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); resetComposerControlStoreForTest(); window.history.replaceState(null, "", "/"); });
+  afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); localStorage.clear(); resetComposerControlStoreForTest(); window.history.replaceState(null, "", "/"); });
 
   it("opens the summary, preserves controls and moves current text and attachments with their handoff", async () => {
     window.history.replaceState(null, "", "/c/chat-a?message=source-message&artifactEdit=edit&artifactId=artifact&versionId=version&library=mcp");
     const attachments: ComposerAttachment[] = [{ id: "one", fileName: "one.pdf", kind: "pdf" }, { id: "two", fileName: "two.pdf", kind: "pdf" }];
     const setup = useWorkspaceActionsForTest({ attachments, draft: "Unsent source draft" });
     const source = composerSessionKey("chat-a");
-    rememberSessionExpiredDraft({ accountEmail: "owner@example.test", draft: "Unsent source draft", sessionKey: source, savedAt: Date.now() });
+    rememberSessionExpiredDraft({ accountId: "account-a", epoch: replaceComposerDraftEpoch("account-a")!, draft: "Unsent source draft", sessionKey: source, savedAt: Date.now() });
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     useComposerControlStore.setState({ selectedProvider: "other", selectedModelId: "chosen", temperature: "0.4",
@@ -90,7 +91,7 @@ describe("opening a continuation", () => {
     const setup = useWorkspaceActionsForTest({ attachments: [], draft: "Keep source" });
     const source = composerSessionKey("chat-a");
     const target = composerSessionKey("continuation");
-    rememberSessionExpiredDraft({ accountEmail: "owner@example.test", draft: "Keep source", sessionKey: source, savedAt: Date.now() });
+    rememberSessionExpiredDraft({ accountId: "account-a", epoch: replaceComposerDraftEpoch("account-a")!, draft: "Keep source", sessionKey: source, savedAt: Date.now() });
     useComposerSessionStore.getState().activateSession(target);
     useComposerSessionStore.getState().setDraft(condition === "non-empty destination" ? "Keep destination" : "");
     useComposerSessionStore.getState().activateSession(source);
@@ -1156,10 +1157,11 @@ describe("workspace actions", () => {
         chat: {
           ...apiChatDetail(state.chatA, [message({ id: "old-leaf" })]),
           usageStats: {
-            incompleteRunCount: 0,
-            activeBranchMessageCount: 1,
-            cachedInputTokens: 1,
-            cacheWriteInputTokens: 0,
+            hasCompletedAnswer: true,
+            incompleteRecordCount: 0,
+            recordCount: 1,
+            knownCostRecordCount: 0,
+            estimatedCostMicros: null,
             totalTokens: 4
           }
         }
@@ -1171,10 +1173,11 @@ describe("workspace actions", () => {
         chat: {
           ...apiChatDetail(state.chatA, [message({ id: "new-leaf" })]),
           usageStats: {
-            incompleteRunCount: 0,
-            activeBranchMessageCount: 1,
-            cachedInputTokens: 2,
-            cacheWriteInputTokens: 0,
+            hasCompletedAnswer: true,
+            incompleteRecordCount: 0,
+            recordCount: 1,
+            knownCostRecordCount: 0,
+            estimatedCostMicros: null,
             totalTokens: 8
           }
         }
@@ -2359,10 +2362,11 @@ describe("workspace actions", () => {
       messages: tail,
       sourceUpdatedAt: summary.updatedAt,
       usageStats: {
-        incompleteRunCount: 0,
-        activeBranchMessageCount: 4,
-        cachedInputTokens: 12,
-        cacheWriteInputTokens: 3,
+        hasCompletedAnswer: true,
+        incompleteRecordCount: 0,
+        recordCount: 4,
+        knownCostRecordCount: 0,
+        estimatedCostMicros: null,
         totalTokens: 88
       }
     });
@@ -2396,10 +2400,11 @@ describe("workspace actions", () => {
         loading: false
       },
       usageStats: {
-        incompleteRunCount: 0,
-        activeBranchMessageCount: 4,
-        cachedInputTokens: 12,
-        cacheWriteInputTokens: 3,
+        hasCompletedAnswer: true,
+        incompleteRecordCount: 0,
+        recordCount: 4,
+        knownCostRecordCount: 0,
+        estimatedCostMicros: null,
         totalTokens: 88
       }
     });

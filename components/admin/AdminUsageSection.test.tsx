@@ -17,6 +17,9 @@ const catalog: AdminCatalog = {
 
 function emptyTotals() {
   return {
+    estimatedCostMicros: null,
+    recordCount: 0,
+    knownCostRecordCount: 0,
     incompleteUsageCount: 0,
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,
@@ -103,6 +106,45 @@ function populatedUsage(): AdminUsageDashboard {
 }
 
 describe("AdminUsageSection", () => {
+  it("shows the same known cost and partial coverage in every desktop and mobile usage surface", () => {
+    const usage = populatedUsage();
+    const cost = { estimatedCostMicros: 456_789, recordCount: 5, knownCostRecordCount: 3 };
+    Object.assign(usage.totals, cost);
+    Object.assign(usage.byGroup[0], cost);
+    Object.assign(usage.byUser[0], cost);
+    Object.assign(usage.byUser[0].providerModels[0], cost);
+    render(<AdminUsageSection catalog={catalog} usage={usage} />);
+
+    const summary = screen.getByRole("region", { name: "Usage summary" });
+    expect(within(summary).getByTestId("usage-total-cost")).toHaveTextContent("≈ $0.457");
+    expect(within(summary).getByText("cost known for 3 of 5 requests")).toBeVisible();
+    for (const region of [
+      screen.getByRole("region", { name: "Group usage table" }),
+      screen.getByRole("region", { name: "User usage table" }),
+      screen.getByTestId("admin-usage-groups-mobile"),
+      screen.getByTestId("admin-usage-users-mobile")
+    ]) {
+      expect(within(region).getAllByText("≈ $0.457").length).toBeGreaterThan(0);
+      expect(within(region).getAllByText("cost known for 3 of 5 requests").length).toBeGreaterThan(0);
+    }
+    const userRow = within(screen.getByRole("region", { name: "User usage table" }))
+      .getByText("Alice Operator").closest("tr")!;
+    expect(within(userRow).getAllByText("≈ $0.457")).toHaveLength(2);
+    expect(within(userRow).getAllByText("cost known for 3 of 5 requests")).toHaveLength(2);
+  });
+
+  it("keeps unknown costs unavailable and displays reported zero without a partial-coverage note", () => {
+    const usage = populatedUsage();
+    Object.assign(usage.totals, { estimatedCostMicros: 0, recordCount: 2, knownCostRecordCount: 2 });
+    Object.assign(usage.byUser[0], { recordCount: 2 });
+    render(<AdminUsageSection catalog={catalog} usage={usage} />);
+    expect(screen.getByTestId("usage-total-cost")).toHaveTextContent("≈ <$0.01");
+    expect(screen.queryByText(/cost known for/)).not.toBeInTheDocument();
+    const userRow = within(screen.getByRole("region", { name: "User usage table" }))
+      .getByText("Alice Operator").closest("tr")!;
+    expect(within(userRow).getAllByText("—")).toHaveLength(2);
+  });
+
   it("renders the complete read-only usage ledger and native comparison tables", () => {
     render(<AdminUsageSection catalog={catalog} usage={populatedUsage()} />);
 
@@ -132,6 +174,7 @@ describe("AdminUsageSection", () => {
       "Users",
       "Runs",
       "Tokens",
+      "Estimated cost",
       "Last usage"
     ]);
     expect(within(userRegion).getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
@@ -139,6 +182,7 @@ describe("AdminUsageSection", () => {
       "Groups",
       "Runs",
       "Tokens",
+      "Estimated cost",
       "Input / output",
       "Top model",
       "Last usage"
@@ -153,7 +197,7 @@ describe("AdminUsageSection", () => {
     expect(within(mobileUsers).getByText(/OpenAI \/ GPT 5\.5/)).toBeVisible();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
-    expect(screen.queryByText(/cost/i)).not.toBeInTheDocument();
+    expect(within(summary).getByTestId("usage-total-cost")).toHaveTextContent("—");
   });
 
   it("keeps both table regions and deliberate empty rows mounted", () => {
@@ -167,8 +211,8 @@ describe("AdminUsageSection", () => {
     expect(within(screen.getByRole("region", { name: "Usage summary" })).getByText("Never")).toBeVisible();
     const groupTable = screen.getByRole("region", { name: "Group usage table" });
     const userTable = screen.getByRole("region", { name: "User usage table" });
-    expect(within(groupTable).getByText("No groups in this installation").closest("td")).toHaveAttribute("colspan", "5");
-    expect(within(userTable).getByText("No users in this installation").closest("td")).toHaveAttribute("colspan", "7");
+    expect(within(groupTable).getByText("No groups in this installation").closest("td")).toHaveAttribute("colspan", "6");
+    expect(within(userTable).getByText("No users in this installation").closest("td")).toHaveAttribute("colspan", "8");
     expect(within(screen.getByTestId("admin-usage-groups-mobile")).getByText("No groups in this installation")).toBeVisible();
     expect(within(screen.getByTestId("admin-usage-users-mobile")).getByText("No users in this installation")).toBeVisible();
   });

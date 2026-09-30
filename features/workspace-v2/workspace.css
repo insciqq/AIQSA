@@ -107,8 +107,24 @@
 .v2-chat-context-popover dl { display: grid; gap: 0.375rem; margin: 0; }
 .v2-chat-context-popover dl > div { display: flex; justify-content: space-between; gap: 1rem; }
 .v2-chat-context-popover dd { margin: 0; font-family: var(--font-mono), monospace; }
+.v2-chat-context-group-title { margin: 0 0 0.5rem; font-size: inherit; font-weight: 600; }
+.v2-chat-context-spent { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--v2-color-border); }
+.v2-chat-context-spent dd { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.v2-chat-context-spent p { margin-bottom: 0; font-size: 0.75rem; }
 .v2-chat-context-continuation { margin-bottom: 1rem; }
 .v2-chat-context-actions { display: flex; align-items: flex-start; flex-direction: column; gap: 0.5rem; }
+.v2-chat-context-actions [data-tooltip]::after {
+  left: 0;
+  width: min(18rem, calc(100vw - 4rem));
+  white-space: normal;
+  text-align: left;
+  transform: translate(0, 0.125rem);
+}
+.v2-chat-context-actions [data-tooltip]:is(:hover, :focus-visible)::after { transform: translate(0, 0); }
+.v2-chat-context-popover .v2-chat-context-touch-note { display: none; margin: 0; font-size: 0.75rem; }
+@media (hover: none) {
+  .v2-chat-context-popover .v2-chat-context-touch-note { display: block; }
+}
 .v2-chat-continuation-source { font-size: 0.8125rem; color: var(--v2-color-text2); }
 
 @media (max-width: 767px) {

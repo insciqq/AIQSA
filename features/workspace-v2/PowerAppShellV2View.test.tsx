@@ -461,6 +461,23 @@ describe("Workspace header v2", () => {
     } satisfies Parameters<typeof WorkspaceHeaderV2>[0];
   }
 
+  it("refreshes cumulative spending in the open header popover without resetting its context", () => {
+    const props = headerProps({ contextStats: { approximateInputTokens: 100,
+      safeInputBudgetTokens: 1000, totalContextTokens: 2000 },
+      usageStats: { hasCompletedAnswer: true, totalTokens: 1500, estimatedCostMicros: 100000,
+        recordCount: 2, knownCostRecordCount: 2, incompleteRecordCount: 0 } });
+    const view = render(<WorkspaceHeaderV2 {...props} />);
+    const trigger = screen.getByTestId("header-context-indicator");
+    fireEvent.click(trigger);
+    expect(screen.getByRole("group", { name: "Spent" })).toHaveTextContent("Tokens spent1,500");
+    view.rerender(<WorkspaceHeaderV2 {...props} usageStats={{ ...props.usageStats!, totalTokens: 4000,
+      estimatedCostMicros: 250000, recordCount: 3, knownCostRecordCount: 3 }} />);
+    expect(trigger).toHaveTextContent("5%");
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("group", { name: "Spent" })).toHaveTextContent("Tokens spent4,000");
+    expect(screen.getByRole("group", { name: "Spent" })).toHaveTextContent("Approximate cost≈ $0.250");
+  });
+
   it("keeps one kicker-free header: Share plus a single complete ⋯ menu", () => {
     const props = headerProps({
       favorite: true,

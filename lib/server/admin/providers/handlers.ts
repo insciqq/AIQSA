@@ -1,4 +1,5 @@
 import { setupProgressResponse } from "./setupProgressResponse";
+import { decodeAdminModelPriceChange, invalidAdminModelPriceField, type AdminModelPricing } from "../../../contracts/adminProviderModelPrices";
 import { logEvent, type LifecycleStage } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { AdminProviderModelSaveReceipt } from "../../../contracts/adminProviderModelSave";
@@ -106,6 +107,12 @@ function errorJson(error: string, status: number, details?: Record<string, unkno
   return Response.json({ error, ...details }, { status });
 }
 
+/** A rejected price names its field so the sheet keeps the message beside the entered text. */
+function pricingInvalid(value: unknown): Response {
+  const field = invalidAdminModelPriceField(value);
+  return errorJson("provider_model_pricing_invalid", 400, field ? { field } : undefined);
+}
+
 async function requireAdmin(request: Request, deps: AdminProviderHandlerDeps): Promise<Response | null> {
   const session = await deps.resolveAuth(request);
   if (!session) return errorJson("unauthorized", 401);
@@ -190,7 +197,7 @@ async function catalog(service: AdminProviderService, status = 200): Promise<Res
 async function modelSaveResponse(input: {
   service: AdminProviderService;
   connectionId: string;
-  write(): Promise<{ id: string; displayName: string; draftVersion: number }>;
+  write(): Promise<{ id: string; displayName: string; draftVersion: number; pricing?: AdminModelPricing }>;
   activate: boolean;
   signal: AbortSignal;
   onProgress?: (value: AdminProviderSetupProgress) => void;
@@ -200,7 +207,8 @@ async function modelSaveResponse(input: {
   const response = await safely(async () => {
     const saved = await input.write();
     receipt = { connectionId: input.connectionId, modelId: saved.id, displayName: saved.displayName,
-      draftVersion: saved.draftVersion, saved: "configuration", publication: "draft", checks: "not_requested" };
+      draftVersion: saved.draftVersion, saved: "configuration", publication: "draft", checks: "not_requested",
+      ...(saved.pricing ? { pricing: saved.pricing } : {}) };
     if (input.activate) {
       const outcome = await input.service.activateModel({ connectionId: input.connectionId, modelId: saved.id,
         expectedDraftVersion: saved.draftVersion,
@@ -598,14 +606,17 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
     if (bodyError) return bodyError;
     const displayName = text(body?.displayName, 160);
     if (!body || !displayName || !isRecord(body.configuration) ||
-      (body.activate !== undefined && typeof body.activate !== "boolean")) {
+      (body.activate !== undefined && typeof body.activate !== "boolean") ||
+      Object.keys(body).some(key => !["displayName", "configuration", "activate", "pricing"].includes(key))) {
       return errorJson("provider_configuration_invalid", 400);
     }
+    const pricing = body.pricing === undefined ? undefined : decodeAdminModelPriceChange(body.pricing);
+    if (pricing === null) return pricingInvalid(body.pricing);
     const { connectionId } = await context.params;
     return setupProgressResponse(request, (signal, onProgress) => modelSaveResponse({
       service: deps.service, connectionId, signal, onProgress, status: 201, activate: body.activate === true,
       write: () => deps.service.createModelDraft({ configuration: body.configuration as AdminProviderModelConfiguration,
-        connectionId, displayName })
+        connectionId, displayName, ...(pricing ? { pricing } : {}) })
     }));
   };
 }
@@ -620,6 +631,20 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
     const action = text(body?.action, 64);
     if (!body || !action) return errorJson("provider_action_invalid", 400);
     const { connectionId, modelId } = await context.params;
+    if (action === "metadata") {
+      const guard = modelEditGuard(body);
+      if (!guard || typeof body.displayName !== "string" || Object.keys(body).some(key => ![
+        "action", "displayName", "pricing", "expectedActiveVersion", "expectedDisplayName", "expectedDraftVersion", "expectedUpdatedAt"
+      ].includes(key))) return errorJson("provider_configuration_invalid", 400);
+      const pricing = decodeAdminModelPriceChange(body.pricing);
+      if (!pricing) return pricingInvalid(body.pricing);
+      return safely(async () => {
+        const saved = await deps.service.updateModelMetadata({ ...guard, connectionId, displayName: body.displayName as string, modelId, pricing });
+        const receipt: AdminProviderModelSaveReceipt = { ...saved, connectionId, modelId,
+          saved: "metadata", publication: "not_requested", checks: "not_requested" };
+        return Response.json({ receipt });
+      });
+    }
     if (action === "rename") {
       const guard = modelEditGuard(body);
       if (!guard || typeof body.displayName !== "string" || Object.keys(body).some((key) => ![
@@ -640,12 +665,17 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
         const displayName = text(body.displayName, 160);
         const guard = modelEditGuard(body);
         if (!displayName || !guard || !isRecord(body.configuration) ||
-          (body.activate !== undefined && typeof body.activate !== "boolean")) {
+          (body.activate !== undefined && typeof body.activate !== "boolean") || Object.keys(body).some(key => ![
+            "action", "displayName", "configuration", "activate", "pricing", "expectedActiveVersion", "expectedDisplayName", "expectedDraftVersion", "expectedUpdatedAt"
+          ].includes(key))) {
           return errorJson("provider_configuration_invalid", 400);
         }
+        const pricing = body.pricing === undefined ? undefined : decodeAdminModelPriceChange(body.pricing);
+        if (pricing === null) return pricingInvalid(body.pricing);
         return modelSaveResponse({ service: deps.service, connectionId, signal, onProgress, activate: body.activate === true,
           write: async () => ({ ...await deps.service.updateModelDraft({ ...guard,
-            configuration: body.configuration as AdminProviderModelConfiguration, displayName, modelId }), id: modelId }) });
+            configuration: body.configuration as AdminProviderModelConfiguration, displayName, modelId,
+            ...(pricing ? { pricing } : {}) }), id: modelId }) });
       } else if (action === "enable" || action === "disable") {
         await deps.service[action]("model", modelId);
       } else {

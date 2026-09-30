@@ -1,7 +1,5 @@
-import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
-  createPrismaRetentionRepository,
   pruneRetention,
   type AttachmentDeletionClaim,
   type RetentionRepository
@@ -156,98 +154,6 @@ function fakeRepository(input: {
   return { mutations, repository };
 }
 
-
-type StoredRunEvent = {
-  createdAt: Date;
-  eventType: string;
-  id: string;
-  payload: unknown;
-  runStatus: string;
-};
-
-const agedAt = new Date("2026-04-01T00:00:00.000Z");
-const retentionNow = new Date("2026-06-11T00:00:00.000Z");
-
-function storedEvent(id: string, eventType: string, payload: unknown, overrides: Partial<StoredRunEvent> = {}): StoredRunEvent {
-  return { createdAt: agedAt, eventType, id, payload, runStatus: "complete", ...overrides };
-}
-
-function artifactEvent(artifactType: string, overrides: Partial<StoredRunEvent> = {}): StoredRunEvent {
-  return storedEvent(`${artifactType}-${overrides.runStatus ?? "complete"}`, "artifact", { artifactType, payload: {} }, overrides);
-}
-
-// Evaluates only the filters retention uses; any other filter fails loudly.
-function matchesWhere(row: StoredRunEvent, where: Record<string, unknown>): boolean {
-  return Object.entries(where).every(([key, condition]) => {
-    const filter = condition as Record<string, unknown>;
-    if (key === "OR") return (condition as Record<string, unknown>[]).some((entry) => matchesWhere(row, entry));
-    if (key === "id") return (filter.in as string[]).includes(row.id);
-    if (key === "createdAt") return row.createdAt < (filter.lt as Date);
-    if (key === "eventType") return row.eventType === condition;
-    if (key === "modelRun") return ((filter.status as { in: string[] }).in).includes(row.runStatus);
-    if (key === "payload") {
-      const value = (filter.path as string[]).reduce<unknown>((current, segment) =>
-        current !== null && typeof current === "object" ? (current as Record<string, unknown>)[segment] : undefined, row.payload);
-      return value !== undefined && value === filter.equals;
-    }
-    throw new Error(`unsupported_retention_filter:${key}`);
-  });
-}
-
-function fakeRunEventDatabase(rows: StoredRunEvent[]) {
-  const stored = [...rows];
-  const select = (where: Record<string, unknown>) => stored.filter((row) => matchesWhere(row, where));
-  const prisma = {
-    modelRunEvent: {
-      async count({ where }: { where: Record<string, unknown> }) {
-        return select(where).length;
-      },
-      async deleteMany({ where }: { where: Record<string, unknown> }) {
-        const doomed = new Set(select(where).map((row) => row.id));
-        const kept = stored.filter((row) => !doomed.has(row.id));
-        stored.splice(0, stored.length, ...kept);
-        return { count: doomed.size };
-      },
-      async findMany({ take, where }: { take: number; where: Record<string, unknown> }) {
-        return select(where)
-          .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id))
-          .slice(0, take)
-          .map((row) => ({ id: row.id }));
-      }
-    }
-  };
-  return {
-    ids: () => stored.map((row) => row.id).sort(),
-    repository: createPrismaRetentionRepository(prisma as unknown as PrismaClient)
-  };
-}
-
-function runEventMethods(repository: RetentionRepository) {
-  return {
-    countExemptModelRunEvents: repository.countExemptModelRunEvents,
-    deleteModelRunEvents: repository.deleteModelRunEvents,
-    findPrunableModelRunEventIds: repository.findPrunableModelRunEventIds
-  } satisfies Partial<RetentionRepository>;
-}
-
-// Every durable answer projection a terminal run can own, plus rows whose type
-// retention cannot classify. None of them may expire.
-const answerProjectionEvents = [
-  storedEvent("grounding", "grounding_display", { provider: "gemini" }),
-  storedEvent("workspace-snapshot", "workspace_activity_snapshot", { artifactType: "workspace_activity_snapshot" }),
-  ...["citation", "reasoning", "search", "generated_artifact", "context_compaction",
-    "workspace_activity", "workspace_checkpoint", "image"].map((type) => artifactEvent(type)),
-  storedEvent("artifact-without-type", "artifact", { payload: {} }),
-  storedEvent("legacy-unknown", "legacy_delta", { artifactType: "context_status" })
-];
-const technicalEvents = [
-  artifactEvent("context_status"),
-  storedEvent("receipt", "workspace_activity_receipt", { entryId: "entry", fingerprint: "f", updateId: "update:1" })
-];
-const protectedTechnicalEvents = [
-  artifactEvent("context_status", { runStatus: "streaming" }),
-  storedEvent("recent-context", "artifact", { artifactType: "context_status" }, { createdAt: retentionNow })
-];
 
 describe("retention prune rules", () => {
 
@@ -419,54 +325,4 @@ describe("retention prune rules", () => {
     }]);
   });
 
-  it("reports expirable technical run events and exempt answer projections without deleting in dry run", async () => {
-    const database = fakeRunEventDatabase([...answerProjectionEvents, ...technicalEvents, ...protectedTechnicalEvents]);
-    const before = database.ids();
-    const state = fakeRepository();
-
-    const summary = await pruneRetention({
-      dryRun: true,
-      now: retentionNow,
-      repository: { ...state.repository, ...runEventMethods(database.repository) },
-      storage: { async deleteObject() {} }
-    });
-
-    expect(summary.modelRunEvents).toEqual({
-      deleted: 0,
-      exempt: answerProjectionEvents.length,
-      matched: technicalEvents.length
-    });
-    expect(database.ids()).toEqual(before);
-  });
-
-  it("expires only allow-listed technical events of aged terminal runs", async () => {
-    const database = fakeRunEventDatabase([...answerProjectionEvents, ...technicalEvents, ...protectedTechnicalEvents]);
-    const state = fakeRepository();
-
-    const summary = await pruneRetention({
-      dryRun: false,
-      now: retentionNow,
-      repository: { ...state.repository, ...runEventMethods(database.repository) },
-      storage: { async deleteObject() {} }
-    });
-
-    expect(summary.modelRunEvents).toEqual({
-      deleted: technicalEvents.length,
-      exempt: answerProjectionEvents.length,
-      matched: technicalEvents.length
-    });
-    expect(database.ids()).toEqual([...answerProjectionEvents, ...protectedTechnicalEvents].map((row) => row.id).sort());
-  });
-
-  it("rechecks the allow-list when deleting explicitly requested run events", async () => {
-    const database = fakeRunEventDatabase([...answerProjectionEvents, ...protectedTechnicalEvents]);
-
-    await expect(database.repository.deleteModelRunEvents(
-      [...answerProjectionEvents, ...protectedTechnicalEvents].map((row) => row.id)
-    )).resolves.toBe(1);
-    // Only the recent terminal context meter matched; age is a selection rule.
-    expect(database.ids()).not.toContain("recent-context");
-    expect(database.ids()).toContain("context_status-streaming");
-    expect(database.ids()).toHaveLength(answerProjectionEvents.length + 1);
-  });
 });

@@ -1,3 +1,5 @@
+import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
+import { loadWorkspaceInboxFacts } from "../workspace/inboxFacts";
 import { decodeSearchPlan } from "../../domain/search";
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
 import { interruptExpiredAgentRun } from "../agents/store";
@@ -1473,6 +1475,7 @@ export function createPrismaRunRepository(
                     }
                   },
                   normalizedRequest: true,
+                  userId: true,
                   status: true,
                   workspaceExecutions: { take: 512, orderBy: { startedAt: "desc" },
                     select: { modelRunToolCallId: true, state: true, lastErrorCode: true } },
@@ -1483,6 +1486,7 @@ export function createPrismaRunRepository(
                   toolCalls: {
                     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
                     select: {
+                      mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
                       completedAt: true,
                       ordinal: true,
                       result: true,
@@ -1620,7 +1624,7 @@ export function createPrismaRunRepository(
                 projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
                   ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
                       retryable: modelRun.status === "error" && modelRun.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
-              toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null,
+              toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun, userId) : null,
               workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
             };
           })
@@ -1668,6 +1672,7 @@ export function createPrismaRunRepository(
       });
       return context.messages;
     },
+    loadWorkspaceFileFacts: input => loadWorkspaceInboxFacts(prismaClient, input).catch(retainRunPrismaCode),
     loadAttachments: async (userId, attachmentIds, projectId, runId) => {
       if (attachmentIds.length === 0) {
         return [];
@@ -1805,18 +1810,14 @@ export function createPrismaRunRepository(
     loadModelPricing: async (provider, modelId, providerModelId) => {
       const models = await prismaClient.providerModel.findMany({
         select: {
-          inputTokenPriceMicros: true,
-          outputTokenPriceMicros: true
+          ...modelTokenPricingSelect
         },
         take: 2,
         where: { modelClass: "answer", ...(providerModelId ? { id: providerModelId } : { modelId, provider }) }
       }).catch(retainRunPrismaCode);
 
       return models.length === 1
-        ? {
-            inputTokenPriceMicros: models[0].inputTokenPriceMicros,
-            outputTokenPriceMicros: models[0].outputTokenPriceMicros
-          }
+        ? modelTokenPricing(models[0])
         : null;
     },
     loadRunUsageAttributions: async (input) => {

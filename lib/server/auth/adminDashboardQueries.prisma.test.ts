@@ -917,6 +917,8 @@ describe("Prisma-backed admin dashboard queries", () => {
       const providerModelRows = usageRows.providerModelRows.filter((row) => row.userId === user.id);
 
       expect(userRow).toEqual({
+        recordCount: 2,
+        knownCostRecordCount: 0,
         incompleteUsageCount: 2,
         _count: {
           _all: 0
@@ -925,6 +927,7 @@ describe("Prisma-backed admin dashboard queries", () => {
           createdAt: new Date("2026-07-12T11:00:00.000Z")
         },
         _sum: {
+          estimatedCostMicros: null,
           cachedInputTokens: 7,
           cacheWriteInputTokens: 2,
           inputTokens: 17,

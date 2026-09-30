@@ -14,7 +14,7 @@ import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { chatMenuActionsV2 } from "@/features/navigation-v2/chatMenuActions";
 import { NameFieldFormV2, type NameSaveOutcome } from "@/features/navigation-v2/NameFieldFormV2";
-import { CHAT_TITLE_MAX_LENGTH } from "@/lib/contracts/chats";
+import { CHAT_TITLE_MAX_LENGTH, type ChatUsageStats } from "@/lib/contracts/chats";
 import { useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { ChatContextIndicatorV2 } from "./ChatContextIndicatorV2";
@@ -220,6 +220,7 @@ export function WorkspaceHeaderV2({
   active,
   assistantSelector = null,
   contextStats,
+  usageStats,
   continuation,
   continuationFiles,
   archiveDisabled = false,
@@ -261,6 +262,7 @@ export function WorkspaceHeaderV2({
    */
   assistantSelector?: ReactNode;
   contextStats?: ComposerContextStats | null;
+  usageStats?: ChatUsageStats | null;
   continuation?: ChatContinuationControl | null;
   continuationFiles?: ChatWorkspaceState["continuationFiles"];
   archiveDisabled?: boolean;
@@ -402,7 +404,7 @@ export function WorkspaceHeaderV2({
         ) : null}
       </div>
       <div className="v2-live-header-actions">
-        {contextStats ? <ChatContextIndicatorV2 stats={contextStats} continuation={continuation} continuationFiles={continuationFiles} /> : null}
+        {contextStats ? <ChatContextIndicatorV2 stats={contextStats} usageStats={usageStats} continuation={continuation} continuationFiles={continuationFiles} /> : null}
         {temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
         {/* The account menu lives in the sidebar footer (one entry, UX audit
             F11); the header carries only the chat's own actions. */}

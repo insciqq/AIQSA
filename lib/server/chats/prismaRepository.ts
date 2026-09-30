@@ -1,7 +1,7 @@
 import { decodeSearchPlan } from "../../domain/search";
 import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
-import { sumTokenUsage } from "../../domain/usage";
+import { loadChatUsageTotals } from "./usageTotals";
 import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
@@ -131,6 +131,7 @@ import type {
 } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
 import { activityName, toolActivityDescriptors, skillToolActivityFacts, memorySearchActivityFacts } from "../tools/activityDescriptors";
+import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import {
@@ -204,11 +205,13 @@ const assistantRunDetailSelect = {
     }
   },
   normalizedRequest: true,
+  userId: true,
   status: true,
   toolCalls: {
     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
     select: {
       arguments: true,
+      mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
       completedAt: true,
       ordinal: true,
       result: true,
@@ -278,12 +281,14 @@ function latestSessionStatus(messages: readonly {
   assistantModelRuns?: readonly { events?: readonly { payload: unknown }[] }[];
   branchSourceModelRun?: { events?: readonly { payload: unknown }[] } | null;
 }[]): Pick<ChatContextStats, "session" | "sessionMessageId"> {
-  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
-  const run = lastAssistant?.assistantModelRuns?.[0] ?? lastAssistant?.branchSourceModelRun;
-  for (const event of run?.events ?? []) {
-    if (isRecord(event.payload) && event.payload.artifactType === "context_status") {
-      const status = decodeSessionContextStatus(event.payload.payload);
-      if (status && lastAssistant) return { session: status, sessionMessageId: lastAssistant.id };
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    const run = message.assistantModelRuns?.[0] ?? message.branchSourceModelRun;
+    for (const event of run?.events ?? []) {
+      if (isRecord(event.payload) && event.payload.artifactType === "context_status") {
+        const status = decodeSessionContextStatus(event.payload.payload);
+        if (status) return { session: status, sessionMessageId: message.id };
+      }
     }
   }
   return { session: null, sessionMessageId: null };
@@ -293,14 +298,7 @@ const lightweightMessageSelect = {
   assistantModelRuns: {
     orderBy: { createdAt: "desc" },
     select: {
-      cachedInputTokens: true,
       events: sessionStatusEventsSelect,
-      cacheWriteInputTokens: true,
-      inputTokens: true,
-      outputTokens: true,
-      status: true,
-      usageCompleteness: true,
-      totalTokens: true
     },
     take: 1
   },
@@ -427,12 +425,14 @@ function runWorkDurationMs(run: ArtifactSummaryRun): number | null {
 }
 
 type ToolActivityRun = {
+  userId?: string | null;
   errorPayload: unknown;
   events?: readonly Readonly<{ payload: unknown }>[];
   normalizedRequest: unknown;
   status: string;
   searchRuns?: readonly Readonly<{ invocationId?: string | null; status?: string; strategyId?: string }>[];
   toolCalls: {
+    mcpRunBinding?: { runtimeGenerationFingerprint: string } | null;
     arguments?: unknown;
     result?: unknown;
     completedAt: Date | null;
@@ -442,21 +442,6 @@ type ToolActivityRun = {
     state: string;
     toolName: string;
   }[];
-};
-
-type UsageStatsMessage = {
-  assistantModelRuns: {
-    cachedInputTokens: number | null;
-    cacheWriteInputTokens: number | null;
-    inputTokens: number | null;
-    outputTokens: number | null;
-    status: string;
-    usageCompleteness: "COMPLETE" | "PARTIAL" | "UNAVAILABLE";
-    totalTokens: number | null;
-  }[];
-  id: string;
-  parentMessageId: string | null;
-  role: string;
 };
 
 function storedKnowledgeDefault(value: unknown): KnowledgePlan | null {
@@ -747,32 +732,12 @@ async function approximateActiveBranchInputTokens(
   );
 }
 
-function summarizeChatUsageStats(input: {
-  activeLeafMessageId: string | null;
-  messages: UsageStatsMessage[];
-}): ChatUsageStats {
-  const activeMessages = activeBranchPath(input.messages, input.activeLeafMessageId);
-  const runs = activeMessages.flatMap((message) => {
-    const run = message.role === "assistant" ? message.assistantModelRuns[0] : null;
-    return run && ["complete", "error", "cancelled"].includes(run.status) ? [run] : [];
-  });
-  const total = sumTokenUsage(runs.map((run) => ({ ...run,
-    completeness: run.usageCompleteness === "COMPLETE" ? "complete" :
-      run.usageCompleteness === "PARTIAL" ? "partial" : "unavailable" })));
-  return {
-    activeBranchMessageCount: activeMessages.length,
-    incompleteRunCount: runs.filter((run) => run.usageCompleteness !== "COMPLETE").length,
-    cachedInputTokens: total.cachedInputTokens,
-    cacheWriteInputTokens: total.cacheWriteInputTokens,
-    totalTokens: total.totalTokens
-  };
-}
-
 function serializeHydratedMessage(
   message: HydratedMessageRow,
   memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>,
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>,
-  memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>
+  memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>,
+  viewerUserId: string
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const followups = projectMessageFollowups(message);
@@ -817,7 +782,7 @@ function serializeHydratedMessage(
     provider: message.provider,
     role: message.role,
     status: message.status,
-    toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null,
+    toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun, viewerUserId) : null,
     workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
   };
 }
@@ -839,11 +804,12 @@ function chatWorkspaceProjection(input: Readonly<{
 }
 
 function serializeChatDetail(input: {
+  viewerUserId: string;
   availability: WorkspaceAvailabilityService;
   chat: ChatSummaryRow;
-  contextInputTokens: number;
+  contextStats: ChatContextStats;
   hasOlder: boolean;
-  lightweightMessages: LightweightMessageRow[];
+  usageStats: ChatUsageStats;
   messages: HydratedMessagePath;
   projectDefaultAuthority?: ProjectChatDefaultAuthority;
   workspaceSnapshot: WorkspaceAvailabilitySnapshot;
@@ -871,10 +837,7 @@ function serializeChatDetail(input: {
       : chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.projectFolderId ?? chat.folderId,
     id: chat.id,
-    contextStats: {
-      approximateActiveBranchInputTokens: input.contextInputTokens,
-      ...latestSessionStatus(activeBranchPath(input.lightweightMessages, chat.activeLeafMessageId))
-    },
+    contextStats: input.contextStats,
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     messageCount: chat._count.messages,
     messages: input.messages.messages.map((message) =>
@@ -882,7 +845,8 @@ function serializeChatDetail(input: {
         message,
         input.messages.memoryActionsByRun,
         input.messages.memorySourcesByRun,
-        input.messages.memoryStatusesByRun
+        input.messages.memoryStatusesByRun,
+        input.viewerUserId
       )),
     pageInfo: {
       activeLeafMessageId: chat.activeLeafMessageId,
@@ -901,10 +865,7 @@ function serializeChatDetail(input: {
     title: chat.title,
     ...(chatTitlePending(chat) ? { titlePending: true } : {}),
     updatedAt: chat.updatedAt,
-    usageStats: summarizeChatUsageStats({
-      activeLeafMessageId: chat.activeLeafMessageId,
-      messages: input.lightweightMessages
-    }),
+    usageStats: input.usageStats,
     workspace: chatWorkspaceProjection({
       availability: input.availability,
       chat,
@@ -978,11 +939,12 @@ function serializeArchivedChatSummary(
 }
 
 function serializeArchivedChatDetail(input: {
+  viewerUserId: string;
   availability: WorkspaceAvailabilityService;
   chat: ArchivedChatSummaryRow;
-  contextInputTokens: number;
+  contextStats: ChatContextStats;
   hasOlder: boolean;
-  lightweightMessages: LightweightMessageRow[];
+  usageStats: ChatUsageStats;
   messages: HydratedMessagePath;
   workspaceSnapshot: WorkspaceAvailabilitySnapshot;
 }): ArchivedChatDetailRecord {
@@ -1058,9 +1020,10 @@ function toolBudgetWarning(
     : undefined;
 }
 
-/** Owner-safe activity only: no arguments, results, internal ids, or raw events. */
+/** Safe activity plus initiator-only MCP references; no arguments, results, or raw events. */
 export function summarizeMessageRunToolActivity(
-  run: ToolActivityRun
+  run: ToolActivityRun,
+  viewerUserId?: string
 ): ThreadToolActivity | null {
   // Agent actions have one JSONL-backed Workspace feed, including MCP/search.
   if (isRecord(run.normalizedRequest) && isRecord(run.normalizedRequest.agent)) return null;
@@ -1081,7 +1044,15 @@ export function summarizeMessageRunToolActivity(
       call.state === "cancelled"
       ? call.state
       : "running";
+    const fingerprint = call.mcpRunBinding?.runtimeGenerationFingerprint;
+    const details = viewerUserId && viewerUserId === run.userId && descriptor.origin === "mcp" &&
+      fingerprint && Number.isSafeInteger(call.roundIndex) && call.roundIndex > 0 &&
+      Number.isSafeInteger(call.ordinal) && call.ordinal >= 0 &&
+      acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, fingerprint)
+      ? { roundIndex: call.roundIndex, ordinal: call.ordinal }
+      : undefined;
     return {
+      ...(details ? { details } : {}),
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
       ...memorySearch,
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
@@ -1453,6 +1424,27 @@ async function wouldCreateFolderCycle(input: {
   return false;
 }
 
+async function loadActiveBranchContextStats(
+  tx: Prisma.TransactionClient,
+  messages: LightweightMessageRow[]
+): Promise<ChatContextStats> {
+  const snapshot = latestSessionStatus(messages);
+  const snapshotIndex = snapshot.sessionMessageId
+    ? messages.findIndex((message) => message.id === snapshot.sessionMessageId) : -1;
+  const [approximateActiveBranchTokens, approximateInputTokensAfterSession] = await Promise.all([
+    approximateActiveBranchInputTokens(tx, messages),
+    snapshotIndex >= 0 ? approximateActiveBranchInputTokens(tx, messages.slice(snapshotIndex + 1)) : 0
+  ]);
+  return {
+    approximateActiveBranchInputTokens: approximateActiveBranchTokens,
+    ...snapshot,
+    ...(snapshot.session ? {
+      sessionBranchLeafId: messages.at(-1)?.id ?? null,
+      approximateInputTokensAfterSession
+    } : {})
+  };
+}
+
 export async function loadChatBranchSnapshotStats(
   tx: Prisma.TransactionClient,
   input: { activeLeafMessageId: string | null; chatId: string }
@@ -1468,17 +1460,8 @@ export async function loadChatBranchSnapshotStats(
   });
   const activeMessages = activeBranchPath(messages, input.activeLeafMessageId);
   return {
-    contextStats: {
-      approximateActiveBranchInputTokens: await approximateActiveBranchInputTokens(
-        tx,
-        activeMessages
-      ),
-      ...latestSessionStatus(activeMessages)
-    },
-    usageStats: summarizeChatUsageStats({
-      activeLeafMessageId: input.activeLeafMessageId,
-      messages
-    })
+    contextStats: await loadActiveBranchContextStats(tx, activeMessages),
+    usageStats: await loadChatUsageTotals(tx, input.chatId)
   };
 }
 
@@ -1823,16 +1806,18 @@ export function createPrismaChatRepository(
         });
         const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
         const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
-        const [messages, contextInputTokens] = await Promise.all([
+        const [messages, contextStats, usageStats] = await Promise.all([
           hydrateMessagePath(tx, chatId, pageMessages, userId),
-          approximateActiveBranchInputTokens(tx, activeMessages)
+          loadActiveBranchContextStats(tx, activeMessages),
+          loadChatUsageTotals(tx, chatId)
         ]);
         return serializeArchivedChatDetail({
+          viewerUserId: userId,
           availability: workspaceAvailability,
           chat,
-          contextInputTokens,
+          contextStats,
           hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
-          lightweightMessages,
+          usageStats,
           messages,
           workspaceSnapshot
         });
@@ -1884,7 +1869,8 @@ export function createPrismaChatRepository(
                 message,
                 messages.memoryActionsByRun,
                 messages.memorySourcesByRun,
-                messages.memoryStatusesByRun
+                messages.memoryStatusesByRun,
+                userId
               )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
@@ -1922,9 +1908,10 @@ export function createPrismaChatRepository(
         });
         const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
         const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
-        const [messages, contextInputTokens] = await Promise.all([
+        const [messages, contextStats, usageStats] = await Promise.all([
           hydrateMessagePath(tx, chatId, pageMessages, userId),
-          approximateActiveBranchInputTokens(tx, activeMessages)
+          loadActiveBranchContextStats(tx, activeMessages),
+          loadChatUsageTotals(tx, chatId)
         ]);
         const projectDefaultAuthority = access.kind === "project"
           ? await loadProjectChatDefaultAuthority(tx, access.project.projectId)
@@ -1932,11 +1919,12 @@ export function createPrismaChatRepository(
         return {
           binding: chat,
           detail: serializeChatDetail({
+            viewerUserId: userId,
             availability: workspaceAvailability,
             chat,
-            contextInputTokens,
+            contextStats,
             hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
-            lightweightMessages,
+            usageStats,
             messages,
             ...(projectDefaultAuthority ? { projectDefaultAuthority } : {}),
             workspaceSnapshot
@@ -2032,7 +2020,8 @@ export function createPrismaChatRepository(
                 message,
                 messages.memoryActionsByRun,
                 messages.memorySourcesByRun,
-                messages.memoryStatusesByRun
+                messages.memoryStatusesByRun,
+                userId
               )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,

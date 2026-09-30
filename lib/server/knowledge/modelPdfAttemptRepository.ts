@@ -1,3 +1,4 @@
+import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
 import { decodeTokenUsage, TOKEN_USAGE_FIELDS } from "../../domain/usage";
 import { storedTokenUsage } from "../usage";
 import { createHash } from "node:crypto";
@@ -215,13 +216,13 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
       try {
         return await prisma.$transaction(async (tx) => {
           const pricing = await tx.providerModel.findUnique({
-            select: { inputTokenPriceMicros: true, outputTokenPriceMicros: true },
+            select: { ...modelTokenPricingSelect },
             where: { id: input.snapshot.providerModelId }
           });
           const normalized = normalizeTokenUsage(input.usage);
           const estimatedCostMicros = pricing &&
-            (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0)
-            ? estimateCostMicros(normalized, pricing)
+            (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
+            ? estimateCostMicros(normalized, modelTokenPricing(pricing))
             : null;
           const usage: ModelRunUsage = { ...normalized, estimatedCostMicros };
           const updated = await tx.knowledgePdfProcessingAttempt.updateMany({

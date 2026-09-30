@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react";
+import { act, fireEvent, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { usePowerAppShellViewModel } from "./usePowerAppShellViewModel";
 import { estimateApproxTokens } from "@/lib/domain/contextBudget";
@@ -113,7 +113,7 @@ describe("usePowerAppShellViewModel", () => {
     }
   });
 
-  it("uses the server snapshot for its selected model and rejects a stale model snapshot", () => {
+  it("uses a branch-bound server snapshot and rejects an unbound measurement", () => {
     const snapshot: SessionContextStatus = {
       approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 0, loadedTools: 4,
       maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",
@@ -138,7 +138,7 @@ describe("usePowerAppShellViewModel", () => {
     });
     expect(stale.result.current.composerContextStats.session).toBeUndefined();
   });
-  it("adds drafts and attachments to a completed estimate across refresh and invalidates control or branch changes", () => {
+  it("adds drafts and attachments while keeping measured tokens across refresh and control changes", () => {
     const snapshot: SessionContextStatus = {
       approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 2, loadedTools: 4,
       maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",
@@ -190,13 +190,17 @@ describe("usePowerAppShellViewModel", () => {
         contextConfigurationKey: configurationKey({ selectedModelId: "other-deployment", selectedProvider: "other-connection" }), catalog: {
         ...input.catalog!, models: [...input.catalog!.models, { ...input.catalog!.models[0]!,
           modelId: "other-deployment", provider: "other-connection", upstreamModelId: "gpt-5.5", providerFamily: "openai" as const }]
-      } },
-      { renderActiveLeafId: "another-answer", visibleMessages: [{ id: "another-answer", parentMessageId: null,
-        role: "assistant" as const, status: "complete" as const, content: "Answer" }] }
+      } }
     ]) {
       view.rerender({ ...refresh(), ...change });
-      expect(view.result.current.composerContextStats.session).toBeUndefined();
+      expect(view.result.current.composerContextStats).toMatchObject({
+        session: snapshot, approximateInputTokens: 6000, basis: "settings_changed"
+      });
     }
+    view.rerender({ ...refresh(), renderActiveLeafId: "another-answer", visibleMessages: [{
+      id: "another-answer", parentMessageId: null, role: "assistant", status: "complete", content: "Other branch"
+    }] });
+    expect(view.result.current.composerContextStats.session).toBeUndefined();
     const pending = renderViewModel({ ...input, draft: "already typed" });
     expect(pending.result.current.composerContextStats).toMatchObject({
       session: snapshot, approximateInputTokens: 6000 + estimateApproxTokens("already typed")
@@ -218,7 +222,7 @@ describe("usePowerAppShellViewModel", () => {
     expect(view.result.current.composerContextStats.session).toBeUndefined();
   });
 
-  it("keeps a cold-loaded snapshot preliminary without assuming that current settings were accepted", () => {
+  it("describes a cold-loaded or evicted snapshot as measured until the user changes a control", () => {
     const snapshot: SessionContextStatus = {
       approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 2, loadedTools: 4,
       maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",
@@ -231,27 +235,85 @@ describe("usePowerAppShellViewModel", () => {
         contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
         parameterControls: defaultParameterControls(), searchStrategyIds: []
       }] }, maxOutputTokens: "1024", renderActiveLeafId: "answer",
-      contextConfigurationKey: configurationKey({ mcpSelection: { mode: "off" } }),
+      contextConfigurationKey: configurationKey(),
       visibleMessages: [{ id: "answer", parentMessageId: null, role: "assistant", status: "complete", content: "Answer" }],
       activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: snapshot, sessionMessageId: "answer" }
     };
     const view = renderViewModel(input);
-    expect(view.result.current.composerContextStats.session).toBeUndefined();
-    expect(view.result.current.composerContextStats.approximateInputTokens).toBe(1021);
-    view.rerender({ ...input, contextConfigurationKey: configurationKey(), draft: "next" });
-    expect(view.result.current.composerContextStats.session).toBeUndefined();
-    expect(view.result.current.composerContextStats.approximateInputTokens).toBe(1022);
-    // Even a matching message event cannot mint an accepted-control binding on reconnect.
-    view.rerender({ ...input, contextConfigurationKey: configurationKey(), activeChatStreaming: true,
+    expect(view.result.current.composerContextStats).toMatchObject({
+      session: snapshot, approximateInputTokens: 6000, basis: "measured", snapshotSource: "persisted", requestInFlight: false
+    });
+    // Chat defaults and the Assistant projection land while the chat loads,
+    // before the user touches anything: they are not a change.
+    const loadedKey = configurationKey({ mcpSelection: { mode: "off" } });
+    view.rerender({ ...input, contextConfigurationKey: loadedKey });
+    expect(view.result.current.composerContextStats.basis).toBe("measured");
+    act(() => { fireEvent.pointerDown(document.body); });
+    view.rerender({ ...input, contextConfigurationKey: loadedKey, draft: "next" });
+    expect(view.result.current.composerContextStats).toMatchObject({ approximateInputTokens: 6001, basis: "measured" });
+    // The first interaction fixed the loaded controls; a change after it is reported.
+    act(() => { fireEvent.keyDown(document.body, { key: "Enter" }); });
+    view.rerender({ ...input, contextConfigurationKey: configurationKey({ reasoningEffort: "high" }) });
+    expect(view.result.current.composerContextStats).toMatchObject({ approximateInputTokens: 6000, basis: "settings_changed" });
+    view.rerender({ ...input, contextConfigurationKey: loadedKey });
+    expect(view.result.current.composerContextStats.basis).toBe("measured");
+    // A model with other limits is a change without any baseline.
+    const wider = renderViewModel({ ...input, catalog: { ...input.catalog!, models: [{ ...input.catalog!.models[0]!, contextWindow: 20000 }] } });
+    expect(wider.result.current.composerContextStats).toMatchObject({ approximateInputTokens: 6000, basis: "settings_changed" });
+    // Reconnection restores live measurement priority under the same page baseline.
+    const reconnected = { ...input, contextConfigurationKey: configurationKey({ reasoningEffort: "high" }), activeChatStreaming: true,
       runSurface: { answerStartedAt: null, startedAt: 100, events: [
         { type: "message_start", data: { assistantMessageId: "answer" } },
-        { type: "artifact", data: { artifactType: "context_status", payload: { ...snapshot, phase: "request" } } }
-      ] }
+        { type: "artifact", data: { artifactType: "context_status", payload: { ...snapshot, approximateInputTokens: 6100, phase: "after_answer" } } }
+      ] } };
+    view.rerender(reconnected);
+    expect(view.result.current.composerContextStats).toMatchObject({
+      approximateInputTokens: 6100, snapshotSource: "live", basis: "settings_changed"
     });
-    expect(view.result.current.composerContextStats.session).toBeUndefined();
+    // Leaving the chat drops its baseline; returning is a fresh load.
+    for (let index = 0; index < 3; index += 1) {
+      view.rerender({ activeChatId: `other-${index}` });
+      expect(view.result.current.composerContextStats.session).toBeUndefined();
+    }
+    view.rerender({ ...input, contextConfigurationKey: configurationKey({ reasoningEffort: "high" }) });
+    expect(view.result.current.composerContextStats).toMatchObject({ approximateInputTokens: 6000, basis: "measured" });
   });
 
-  it("keeps live and persisted status on the same request and invalidates changes made during a run", () => {
+  it("describes a stopped run's request measurement as the last request and a running one as current", () => {
+    const snapshot: SessionContextStatus = {
+      approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 0, loadedTools: 4,
+      maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "request", provider: "openai",
+      safetyMarginTokens: 1000, version: 1
+    };
+    const input: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
+      catalog: { ...emptyCatalog, models: [{
+        capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
+          openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+        contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
+        parameterControls: defaultParameterControls(), searchStrategyIds: []
+      }] }, maxOutputTokens: "1024", renderActiveLeafId: "answer",
+      visibleMessages: [{ id: "answer", parentMessageId: null, role: "assistant", status: "cancelled", content: "Partial" }],
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: snapshot, sessionMessageId: "answer" }
+    };
+    const view = renderViewModel(input);
+    expect(view.result.current.composerContextStats).toMatchObject({
+      session: snapshot, approximateInputTokens: 6000, basis: "measured", snapshotSource: "persisted", requestInFlight: false
+    });
+    // A reload during a run: the persisted request belongs to the running answer.
+    view.rerender({ ...input, visibleMessages: [{ ...input.visibleMessages![0]!, status: "streaming" }] });
+    expect(view.result.current.composerContextStats.requestInFlight).toBe(true);
+    // A Stop in this page keeps the live request measurement of the ended run.
+    const live = { ...input, runSurface: { ...acceptedSurface(), events: [
+      { type: "message_start", data: { assistantMessageId: "answer" } },
+      { type: "artifact", data: { artifactType: "context_status", payload: snapshot } }
+    ] } };
+    view.rerender({ ...live, activeChatStreaming: true, visibleMessages: [{ ...input.visibleMessages![0]!, status: "streaming" }] });
+    expect(view.result.current.composerContextStats).toMatchObject({ snapshotSource: "live", requestInFlight: true });
+    view.rerender(live);
+    expect(view.result.current.composerContextStats).toMatchObject({ snapshotSource: "live", requestInFlight: false });
+  });
+
+  it("keeps live and persisted measurements while describing controls changed during a run", () => {
     const snapshot: SessionContextStatus = {
       approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 0, loadedTools: 4,
       maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "request", provider: "openai",
@@ -272,16 +334,34 @@ describe("usePowerAppShellViewModel", () => {
     };
     const view = renderViewModel(input);
     expect(view.result.current.composerContextStats.session).toEqual(snapshot);
+    // The browser misses the final context event; polling reloads the durable
+    // answer while the old live request event remains in the surface store.
+    view.rerender({ ...input, activeChatStreaming: false, activeThreadContextStats: {
+      approximateActiveBranchInputTokens: 1000, sessionMessageId: "answer", sessionBranchLeafId: "answer",
+      session: { ...snapshot, phase: "after_answer", approximateInputTokens: 6500 }
+    } });
+    expect(view.result.current.composerContextStats).toMatchObject({
+      approximateInputTokens: 6500, snapshotSource: "persisted", session: { phase: "after_answer" }
+    });
+    view.rerender({ ...input, activeThreadContextStats: {
+      approximateActiveBranchInputTokens: 1000, sessionMessageId: "another-answer", sessionBranchLeafId: "another-answer",
+      session: { ...snapshot, phase: "after_answer", approximateInputTokens: 9000 }
+    } });
+    expect(view.result.current.composerContextStats).toMatchObject({
+      approximateInputTokens: 6000, snapshotSource: "live", session: { phase: "request" }
+    });
     const completed = { ...input, activeChatStreaming: false, runSurface: { ...input.runSurface!, events: [
       input.runSurface!.events[0]!, { type: "artifact" as const, data: { artifactType: "context_status", payload: { ...snapshot, phase: "after_answer" } } }
     ] } };
     view.rerender(completed);
     expect(view.result.current.composerContextStats.session?.phase).toBe("after_answer");
     view.rerender({ ...completed, contextConfigurationKey: configurationKey({ reasoningEffort: "high" }) });
-    expect(view.result.current.composerContextStats.session).toBeUndefined();
+    expect(view.result.current.composerContextStats.basis).toBe("settings_changed");
+    expect(view.result.current.composerContextStats.session?.phase).toBe("after_answer");
     view.rerender({ ...completed, contextConfigurationKey: configurationKey({ reasoningEffort: "high" }),
       activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: { ...snapshot, phase: "after_answer" }, sessionMessageId: "answer" } });
-    expect(view.result.current.composerContextStats.session).toBeUndefined();
+    expect(view.result.current.composerContextStats.basis).toBe("settings_changed");
+    expect(view.result.current.composerContextStats.session?.phase).toBe("after_answer");
 
     const preparing = { ...input, contextConfigurationKey: "accepted-controls",
       renderActiveLeafId: "optimistic-answer",
@@ -295,7 +375,7 @@ describe("usePowerAppShellViewModel", () => {
       runSurface: { ...input.runSurface!, contextConfigurationKey: "accepted-controls", contextMessageId: "answer" }
     };
     preparingView.rerender(admitted);
-    expect(preparingView.result.current.composerContextStats.session).toBeUndefined();
+    expect(preparingView.result.current.composerContextStats).toMatchObject({ session: snapshot, basis: "settings_changed" });
     preparingView.rerender({ ...admitted, contextConfigurationKey: "accepted-controls", draft: "next" });
     expect(preparingView.result.current.composerContextStats).toMatchObject({
       session: snapshot, approximateInputTokens: 6001
@@ -304,6 +384,47 @@ describe("usePowerAppShellViewModel", () => {
       ...admitted.runSurface, events: [input.runSurface!.events[1]!, input.runSurface!.events[0]!]
     } });
     expect(preparingView.result.current.composerContextStats.session).toBeUndefined();
+  });
+
+  it("recalculates current model limits without losing the measurement or off-page branch fallback", () => {
+    const snapshot: SessionContextStatus = {
+      approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 0, loadedTools: 4,
+      maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",
+      safetyMarginTokens: 1000, version: 1
+    };
+    const model = {
+      capabilities: { background: false, documentInputMode: "none" as const, imageInput: false, nativeWebSearch: false,
+        openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+      contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
+      parameterControls: defaultParameterControls(), searchStrategyIds: []
+    };
+    const input: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
+      maxOutputTokens: "1024", renderActiveLeafId: "answer", runSurface: acceptedSurface(),
+      catalog: { ...emptyCatalog, models: [model] },
+      visibleMessages: [{ id: "answer", parentMessageId: null, role: "assistant", status: "complete", content: "Answer" }],
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000,
+        session: snapshot, sessionMessageId: "answer", sessionBranchLeafId: "answer", approximateInputTokensAfterSession: 0 }
+    };
+    const view = renderViewModel(input);
+    expect(view.result.current.composerContextStats.basis).toBe("measured");
+    for (const [contextWindow, percent, tone, budget] of [
+      [20000, 30, "proof", 16976], [7000, 86, "critical", 5276], [0, null, "neutral", null]
+    ] as const) {
+      view.rerender({ ...input, catalog: { ...emptyCatalog, models: [{ ...model, contextWindow }] } });
+      expect(view.result.current.composerContextStats).toMatchObject({
+        approximateInputTokens: 6000, safeInputBudgetTokens: budget,
+        totalContextTokens: contextWindow || null, basis: "settings_changed", session: snapshot
+      });
+      expect(composerContextGauge(view.result.current.composerContextStats)).toMatchObject({ percent, tone });
+    }
+    view.rerender({ ...input, draft: "next", activeThreadContextStats: {
+      ...input.activeThreadContextStats!, sessionMessageId: "off-page-answer", approximateInputTokensAfterSession: 321
+    } });
+    expect(view.result.current.composerContextStats).toMatchObject({
+      session: snapshot, approximateInputTokens: 6322, basis: "preliminary", snapshotSource: "persisted"
+    });
+    view.rerender({ ...input, renderActiveLeafId: "edited-branch" });
+    expect(view.result.current.composerContextStats.session).toBeUndefined();
   });
 
   it("retains a rejected-request state only for the exact rejected inputs", () => {

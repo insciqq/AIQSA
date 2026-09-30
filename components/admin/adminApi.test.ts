@@ -33,6 +33,9 @@ function emptyDashboard(): AdminDashboard {
       byGroup: [],
       byUser: [],
       totals: {
+        estimatedCostMicros: null,
+        recordCount: 0,
+        knownCostRecordCount: 0,
         incompleteUsageCount: 0,
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,

@@ -1,5 +1,6 @@
 import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND, isAnswerSoundId } from "../../../lib/contracts/answerSound";
 import type { Page, Route } from "@playwright/test";
+import type { Catalog } from "../../../lib/contracts/catalog";
 import {
   decodeOptionalChatDefaults,
   INSTALLATION_CHAT_DEFAULTS
@@ -64,7 +65,7 @@ function normalizeFixtureWorkspace(value: unknown): unknown {
 export async function installMatrixCatalogFixture(
   page: Page,
   workspace?: unknown,
-  options: { catalog?: typeof matrixCatalog; onSettingsPatch?(): void } = {}
+  options: { catalog?: Catalog; onSettingsPatch?(): void } = {}
 ): Promise<void> {
   const fixtureCatalog = options.catalog ?? matrixCatalog;
   const fixtureWorkspace = normalizeFixtureWorkspace(

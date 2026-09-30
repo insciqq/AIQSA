@@ -113,7 +113,7 @@ describe("Prisma run repository search evidence", () => {
         role: "assistant"
       }
     ]);
-    const transactionRawRead = vi.fn().mockResolvedValue([
+    const transactionRawRead = vi.fn().mockResolvedValueOnce([
       {
         blockOrdinal: 1,
         blockValue: null,
@@ -130,7 +130,8 @@ describe("Prisma run repository search evidence", () => {
         messageId: "assistant-active",
         occurrences: 1
       }
-    ]);
+    ]).mockResolvedValueOnce([{ hasCompletedAnswer: true, recordCount: 2n, knownCostRecordCount: 1n, incompleteRecordCount: 0n,
+      estimatedCostMicros: 15000n, totalTokens: 7n }]);
     const tx = {
       $queryRaw: transactionRawRead,
       chat: {
@@ -196,10 +197,11 @@ describe("Prisma run repository search evidence", () => {
       activeLeafMessageId: "assistant-active",
       contextStats: { approximateActiveBranchInputTokens: 3 },
       usageStats: {
-        incompleteRunCount: 0,
-        activeBranchMessageCount: 2,
-        cachedInputTokens: 1,
-        cacheWriteInputTokens: 2,
+        hasCompletedAnswer: true,
+        incompleteRecordCount: 0,
+        recordCount: 2,
+        knownCostRecordCount: 1,
+        estimatedCostMicros: 15000,
         totalTokens: 7
       }
     });

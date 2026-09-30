@@ -386,6 +386,10 @@ describe("Prisma Workspace operation admission", () => {
     await prisma.workspaceSession.update({ data: { state: "READY" }, where: { id: value.session.id } });
     const request = await value.plan();
     await expect(admitPreparingRunWithClient(prisma, request)).resolves.toMatchObject({ runId: request.workspaceAdmissionPlan!.runId });
+    expect(await prisma.workspaceRunBinding.findUniqueOrThrow({ where: { modelRunId: request.workspaceAdmissionPlan!.runId } }))
+      .toMatchObject({ guestUsedAt: null });
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } }))
+      .toMatchObject({ lastActiveAt: value.session.lastActiveAt, expiresAt: value.session.expiresAt });
     expect(await prisma.modelRun.count({ where: { chatId: value.chatId } })).toBe(1);
   });
 
@@ -423,6 +427,8 @@ describe("Prisma Workspace operation admission", () => {
     const connection = await receiverFixture(new DeterministicWorkspaceRuntime(config));
     const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
     const before = (await repository.binding({ runId: run.id, userId: value.userId }))!;
+    // This run used the disk before its loss; an untouched turn owes no guest cleanup.
+    expect(await repository.markGuestUsed(before)).toBe(true);
     const entered = barrier();
     const release = barrier();
     const retire = connection.runtime.retireSessionOperation!.bind(connection.runtime);
@@ -464,6 +470,7 @@ describe("Prisma Workspace operation admission", () => {
     });
     const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
     const binding = (await repository.binding({ runId: run.id, userId: value.userId }))!;
+    expect(await repository.markGuestUsed(binding)).toBe(true);
     const claim = await repository.claimExport({ leaseMs: 60_000, operation: { generation: binding.operationGeneration, owner: binding.operationOwner! },
       runId: run.id, runtimeSandboxId: binding.runtimeSandboxId, sessionId: binding.sessionId });
     if (claim.status !== "claimed") throw new Error("fixture_export_claim_failed");
@@ -524,6 +531,7 @@ describe("Prisma Workspace operation admission", () => {
     const admitted = await admitPreparingRunWithClient(prisma, await value.plan());
     const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
     const binding = (await repository.binding({ runId: admitted.runId, userId: value.userId }))!;
+    expect(await repository.markGuestUsed(binding)).toBe(true);
     const oldOperation = { generation: binding.operationGeneration, owner: binding.operationOwner! };
     const runRepository = createPrismaRunRepository(prisma);
     await expect(runRepository.cancelRun({

@@ -22,24 +22,24 @@ export const DEFAULT_DELETION_JOB_LEASE_MINUTES = 15;
 
 export const TERMINAL_MODEL_RUN_STATUSES = ["cancelled", "complete", "error"] as const;
 
-function agedTerminalModelRunEventWhere(cutoff: Date) {
-  return {
-    createdAt: { lt: cutoff },
-    modelRun: { status: { in: [...TERMINAL_MODEL_RUN_STATUSES] } }
-  } satisfies Prisma.ModelRunEventWhereInput;
-}
-
-// Retention may expire only this explicit technical allow-list: replay receipts
-// and context meters. Every other event of a terminal run is its sole durable
-// answer projection (grounding, citations, reasoning, sources, generated cards,
-// compaction, Workspace timeline and checkpoints, images), so an unlisted or
-// unknown type is kept rather than deleted.
-const expirableModelRunEventWhere = {
-  OR: [
-    { eventType: WORKSPACE_ACTIVITY_RECEIPT },
-    { eventType: "artifact", payload: { path: ["artifactType"], equals: "context_status" } }
-  ]
-} satisfies Prisma.ModelRunEventWhereInput;
+// The latest context meter is the durable measurement of this run. Older
+// meters and replay receipts may expire; all other output types fail closed.
+// Selection and deletion share this predicate so even caller-supplied ids
+// cannot remove the final meter, including a sole pre-answer measurement.
+const expirableModelRunEventSql = Prisma.sql`(
+  event."eventType" = ${WORKSPACE_ACTIVITY_RECEIPT}
+  OR (
+    event."eventType" = 'artifact'
+    AND event."payload"->>'artifactType' = 'context_status'
+    AND EXISTS (
+      SELECT 1 FROM "ModelRunEvent" AS later
+      WHERE later."modelRunId" = event."modelRunId"
+        AND later."sequence" > event."sequence"
+        AND later."eventType" = 'artifact'
+        AND later."payload"->>'artifactType' = 'context_status'
+    )
+  )
+)`;
 
 export type AttachmentDeletionClaim = {
   claimToken: string;
@@ -820,21 +820,14 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
         return 0;
       }
 
-      const result = await prisma.modelRunEvent.deleteMany({
-        where: {
-          ...expirableModelRunEventWhere,
-          id: {
-            in: ids
-          },
-          modelRun: {
-            status: {
-              in: [...TERMINAL_MODEL_RUN_STATUSES]
-            }
-          }
-        }
-      });
-
-      return result.count;
+      return prisma.$executeRaw(Prisma.sql`
+        DELETE FROM "ModelRunEvent" AS event
+        USING "ModelRun" AS run
+        WHERE event."modelRunId" = run."id"
+          AND run."status"::text IN (${Prisma.join(TERMINAL_MODEL_RUN_STATUSES)})
+          AND event."id" IN (${Prisma.join(ids)})
+          AND ${expirableModelRunEventSql}
+      `);
     },
     async findClaimableAttachmentDeletionJobIds({ claimableBefore, limit, now = new Date() }) {
       const rows = await prisma.$queryRaw<Array<{ id: string }>>`
@@ -970,30 +963,26 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
       };
     },
     async findPrunableModelRunEventIds({ cutoff, limit }) {
-      const rows = await prisma.modelRunEvent.findMany({
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        select: {
-          id: true
-        },
-        take: limit,
-        where: {
-          ...agedTerminalModelRunEventWhere(cutoff),
-          ...expirableModelRunEventWhere
-        }
-      });
-
+      const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT event."id" FROM "ModelRunEvent" AS event
+        JOIN "ModelRun" AS run ON run."id" = event."modelRunId"
+        WHERE event."createdAt" < ${cutoff}
+          AND run."status"::text IN (${Prisma.join(TERMINAL_MODEL_RUN_STATUSES)})
+          AND ${expirableModelRunEventSql}
+        ORDER BY event."createdAt" ASC, event."id" ASC
+        LIMIT ${limit}
+      `);
       return rows.map((row) => row.id);
     },
     async countExemptModelRunEvents({ cutoff }) {
-      // Two positive counts avoid SQL NULL semantics of a negated JSON path.
-      const [aged, expirable] = await Promise.all([
-        prisma.modelRunEvent.count({ where: agedTerminalModelRunEventWhere(cutoff) }),
-        prisma.modelRunEvent.count({
-          where: { ...agedTerminalModelRunEventWhere(cutoff), ...expirableModelRunEventWhere }
-        })
-      ]);
-
-      return Math.max(0, aged - expirable);
+      const rows = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+        SELECT count(*) AS count FROM "ModelRunEvent" AS event
+        JOIN "ModelRun" AS run ON run."id" = event."modelRunId"
+        WHERE event."createdAt" < ${cutoff}
+          AND run."status"::text IN (${Prisma.join(TERMINAL_MODEL_RUN_STATUSES)})
+          AND NOT COALESCE(${expirableModelRunEventSql}, false)
+      `);
+      return Number(rows[0]?.count ?? 0);
     },
     async inspectOrphanedAttachments({ cutoff, limit }) {
       const candidates = await prisma.attachment.findMany({

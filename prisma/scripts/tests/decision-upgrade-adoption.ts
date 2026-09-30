@@ -19,7 +19,15 @@ DO $$ BEGIN
   END IF;
   IF EXISTS (SELECT 1 FROM "DecisionUpgradeModelsFixture" original
     LEFT JOIN "ProviderModel" model ON model.id = original.id
-    WHERE model.id IS NULL OR original.snapshot <> to_jsonb(model)) THEN
+    -- These predecessor fixtures carry no catalog template rows. The later
+    -- pricing expansion preserves any legacy rate numerically; all other
+    -- columns remain byte-for-byte unchanged.
+    WHERE model.id IS NULL OR original.snapshot ->> 'templateKey' IS NOT NULL OR
+      original.snapshot || jsonb_build_object(
+        'inputTokenPriceUsdPerMillion', NULLIF((original.snapshot ->> 'inputTokenPriceMicros')::numeric, 0),
+        'cachedInputTokenPriceUsdPerMillion', NULL, 'cacheWriteInputTokenPriceUsdPerMillion', NULL,
+        'outputTokenPriceUsdPerMillion', NULLIF((original.snapshot ->> 'outputTokenPriceMicros')::numeric, 0),
+        'priceSource', 'catalog') <> to_jsonb(model)) THEN
     RAISE EXCEPTION 'decision_upgrade_changed_provider_models';
   END IF;
   IF (SELECT column_default FROM information_schema.columns WHERE table_schema = 'public'

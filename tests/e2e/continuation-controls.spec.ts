@@ -15,7 +15,12 @@ test("background continuation shows progress and cancels without losing the curr
     activeLeafMessageId: "source-answer", defaultModelId: matrixCatalog.models[0]!.modelId,
     defaultProvider: matrixCatalog.models[0]!.provider, folderId: null, pinned: false, messageCount: 1, usageStats: null,
     hasContinuationSource: false, workspace: { available: false, enabled: false, internetEnabled: false, sessionState: null },
-    contextStats: { approximateActiveBranchInputTokens: 100 },
+    contextStats: { approximateActiveBranchInputTokens: 100, sessionMessageId: "source-answer", session: {
+      approximateInputTokens: 100, contextWindow: matrixCatalog.models[0]!.contextWindow!,
+      droppedMessages: 0, loadedTools: 0, maxOutputTokens: matrixCatalog.models[0]!.parameterControls.maxOutputTokens.defaultValue,
+      modelId: matrixCatalog.models[0]!.upstreamModelId, phase: "after_answer",
+      provider: matrixCatalog.models[0]!.providerFamily, safetyMarginTokens: 20000, version: 1
+    } },
     pageInfo: { activeLeafMessageId: "source-answer", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: timestamp },
     messages: [{ id: "source-answer", role: "assistant", status: "complete", parentMessageId: null,
       content: "Your source conversation is preserved.", createdAt: timestamp, errorMessage: null,
@@ -44,7 +49,51 @@ test("background continuation shows progress and cancels without losing the curr
   await composer.fill("Keep this unsent draft");
   await page.getByTestId("header-context-indicator").click();
   const dialog = page.getByRole("dialog", { name: "Chat context" });
-  await dialog.getByRole("button", { name: "Summarize and open new chat" }).click();
+  const action = dialog.getByRole("button", { name: "Summarize and open new chat", exact: true });
+  await expect(action).toHaveAttribute("data-tone", "ghost");
+  await expect(dialog.getByText("Based on the last reply and your draft.")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Stay here" })).toHaveCount(0);
+  // With hover the carry-over text is only the action's tooltip; the touch note stays hidden.
+  await expect(dialog.getByText(/A new chat starts with a summary/)).toBeHidden();
+  const methodology = dialog.getByText(/Share of the model's full context window/);
+  await expect(methodology).toBeHidden();
+  await action.hover();
+  await expect.poll(() => action.evaluate((node) => getComputedStyle(node, "::after").visibility)).toBe("visible");
+  await expect(action).toHaveAttribute("data-tooltip", /takes your draft, files and settings/);
+  const tooltipBounds = await action.evaluate((node) => {
+    const button = node.getBoundingClientRect();
+    const popover = node.closest("[role=dialog]")!.getBoundingClientRect();
+    const tooltip = getComputedStyle(node, "::after");
+    const left = button.left + parseFloat(tooltip.left);
+    const top = button.bottom - parseFloat(tooltip.bottom) - parseFloat(tooltip.height);
+    return { left, top, right: left + parseFloat(tooltip.width),
+      popoverLeft: popover.left, popoverRight: popover.right, popoverTop: popover.top };
+  });
+  expect(tooltipBounds.left).toBeGreaterThanOrEqual(tooltipBounds.popoverLeft);
+  expect(tooltipBounds.right).toBeLessThanOrEqual(tooltipBounds.popoverRight);
+  expect(tooltipBounds.top).toBeGreaterThanOrEqual(tooltipBounds.popoverTop);
+  await page.screenshot({ path: testInfo.outputPath("continuation-tooltip-hover.png") });
+  await page.mouse.move(0, 0);
+  await page.keyboard.press("Tab");
+  await expect(action).toBeFocused();
+  await expect.poll(() => action.evaluate((node) => getComputedStyle(node, "::after").visibility)).toBe("visible");
+  await page.screenshot({ path: testInfo.outputPath("continuation-tooltip-keyboard.png") });
+  await page.keyboard.press("Tab");
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 900, height: 1440 },
+      { width: 820, height: 1180 }, { width: 1180, height: 820 },
+      { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(viewport);
+      await expectWithinViewport(page, dialog);
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath(`continuation-ordinary-${theme}-${viewport.width}x${viewport.height}.png`) });
+    }
+  }
+  await dialog.getByText("Advanced details", { exact: true }).click();
+  await expect(methodology).toBeVisible();
+  await dialog.getByText("Advanced details", { exact: true }).click();
+  await action.click();
   await expect(dialog.getByRole("status")).toHaveText("Summarizing conversation · 9 parts processed");
   for (const theme of ["light", "dark"]) {
     await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
@@ -63,7 +112,7 @@ test("background continuation shows progress and cancels without losing the curr
   expect(cancelled).toBe(1);
   expect(requestIds.size).toBe(1);
   await expect(composer).toHaveValue("Keep this unsent draft");
-  await dialog.getByRole("button", { name: "Stay here" }).click();
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("article", { name: "Answer", exact: true })).toContainText("Your source conversation is preserved.");
 });
 

@@ -1,4 +1,6 @@
 import type { ComposerSessionKey } from "@/components/app-shell/composerSessionStore";
+import { isStoredComposerSessionKey, readComposerDraftEpochState } from "./composerDraftStorage";
+import { decodeComposerComments, type PendingComposerComment } from "./composerComments";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 
 export const AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY = "aiqsa.sessionExpiredDraft.v1";
@@ -31,35 +33,14 @@ export function initialStudioSection(available: readonly LibraryTabIdV2[], targe
 }
 
 export type StoredSessionExpiredDraft = {
-  accountEmail: string;
+  accountId: string;
+  /** The logout fence the tab held; null when its localStorage could not hold one. */
+  epoch: string | null;
   draft: string;
+  comments?: readonly PendingComposerComment[];
   savedAt: number;
   sessionKey: ComposerSessionKey;
 };
-
-function isComposerSessionKey(value: unknown): value is ComposerSessionKey {
-  if (value === "blank:root") {
-    return true;
-  }
-  if (typeof value !== "string" || value.length > 512) {
-    return false;
-  }
-
-  const encodedSegment = value.startsWith("blank:folder:")
-    ? value.slice("blank:folder:".length)
-    : value.startsWith("chat:")
-      ? value.slice("chat:".length)
-      : null;
-  if (!encodedSegment) {
-    return false;
-  }
-
-  try {
-    return Boolean(decodeURIComponent(encodedSegment));
-  } catch {
-    return false;
-  }
-}
 
 export function clearSessionExpiredDraft(): void {
   if (typeof window === "undefined") {
@@ -73,13 +54,26 @@ export function clearSessionExpiredDraft(): void {
   }
 }
 
+/** Whether no sign-out of the account is known since the handoff was saved.
+ * With the tab's fence, that fence must still be current. Without one (the
+ * account-only handoff of release 0.2.31), a readable fence must predate the
+ * handoff; the initial fence is dated 0. Unreadable localStorage cannot
+ * record a sign-out either, so it keeps the handoff. */
+function handoffSignedIn(accountId: string, epoch: string | null, savedAt: number): boolean {
+  const current = readComposerDraftEpochState(accountId);
+  if (!current.available) return true;
+  if (current.signedOut) return false;
+  return epoch ? current.epoch === epoch : current.epoch === null || current.savedAt <= savedAt;
+}
+
 export function rememberSessionExpiredDraft(input: StoredSessionExpiredDraft): void {
   if (typeof window === "undefined") {
     return;
   }
 
   try {
-    if (!input.draft) {
+    if ((!input.draft && !input.comments?.length) || !isStoredComposerSessionKey(input.sessionKey) ||
+      !input.accountId || !handoffSignedIn(input.accountId, input.epoch, input.savedAt)) {
       window.sessionStorage.removeItem(AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY);
       return;
     }
@@ -109,22 +103,29 @@ export function storedSessionExpiredDraft(
       return null;
     }
     const value = JSON.parse(raw) as Partial<StoredSessionExpiredDraft>;
+    const comments = decodeComposerComments(value.comments);
     if (
-      typeof value.accountEmail !== "string" ||
-      !value.accountEmail ||
+      typeof value.accountId !== "string" || !value.accountId ||
+      value.epoch !== null && (typeof value.epoch !== "string" || !value.epoch) ||
       typeof value.draft !== "string" ||
-      !value.draft ||
+      !comments ||
+      (!value.draft && !comments.length) ||
       typeof value.savedAt !== "number" ||
       !Number.isFinite(value.savedAt) ||
       value.savedAt > now ||
       now - value.savedAt > SESSION_EXPIRED_DRAFT_MAX_AGE_MS ||
-      !isComposerSessionKey(value.sessionKey)
+      !isStoredComposerSessionKey(value.sessionKey)
     ) {
       clearSessionExpiredDraft();
       return null;
     }
 
-    return value as StoredSessionExpiredDraft;
+    if (!handoffSignedIn(value.accountId, value.epoch, value.savedAt)) {
+      clearSessionExpiredDraft();
+      return null;
+    }
+
+    return { ...value, ...(comments.length ? { comments } : {}) } as StoredSessionExpiredDraft;
   } catch {
     clearSessionExpiredDraft();
     return null;

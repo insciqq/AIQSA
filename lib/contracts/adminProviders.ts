@@ -309,8 +309,12 @@ export type AdminProviderModelEditGuard = Readonly<{
 export type AdminProviderModelRename = AdminProviderModelEditGuard & Readonly<{
   displayName: string;
 }>;
+export type AdminProviderModelMetadata = AdminProviderModelRename & Readonly<{
+  pricing: import("./adminProviderModelPrices").AdminModelPriceChange;
+}>;
 
 export type AdminProviderModel = {
+  pricing: import("./adminProviderModelPrices").AdminModelPricing;
   nativeRoutingAdoption?: import("./nativeRoutingAdoption").NativeRouteAdoptionStatus;
   activatedAt: string | null;
   activeConfig: AdminProviderModelConfiguration | null;

@@ -8,10 +8,11 @@ import {
 import type { RunEventView } from "./types";
 
 const usageStats = {
-  incompleteRunCount: 0,
-  activeBranchMessageCount: 1,
-  cachedInputTokens: 3,
-  cacheWriteInputTokens: 2,
+  hasCompletedAnswer: true,
+  incompleteRecordCount: 0,
+  recordCount: 1,
+  knownCostRecordCount: 0,
+  estimatedCostMicros: null,
   totalTokens: 13
 };
 

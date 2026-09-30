@@ -4,6 +4,24 @@ import { modelFormFrom } from "./modelSheetView";
 import { reconcileModelForm } from "./modelSaveReconciliation";
 
 describe("confirmed model fields", () => {
+  it("acknowledges only exact saved prices and reconciles decimal formatting without overwriting later fields", () => {
+    const model = fixtureModel({ connectionId: "provider", displayName: "Original", id: "model" });
+    const baseline = modelFormFrom(model);
+    const submitted = { ...baseline, priceSource: "admin" as const,
+      prices: { ...baseline.prices, inputTokenPriceUsdPerMillion: "0.25000000" } };
+    const pricing = { ...model.pricing, source: "admin" as const,
+      prices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "0.25" } };
+    const receipt = { connectionId: "provider", modelId: "model", displayName: "Original", draftVersion: 1,
+      saved: "metadata" as const, publication: "not_requested" as const, checks: "not_requested" as const, pricing };
+    expect(reconcileModelForm(baseline, submitted, { receipt, model: null }))
+      .toMatchObject({ baseline: submitted, complete: true, confirmed: true, guardModel: null });
+    expect(reconcileModelForm(baseline, submitted, { receipt: null, model: { ...model, pricing } }))
+      .toMatchObject({ complete: true, confirmed: true, guardModel: { pricing } });
+    const different = { ...receipt, pricing: { ...pricing, prices: { ...pricing.prices, inputTokenPriceUsdPerMillion: "9" } } };
+    expect(reconcileModelForm(baseline, submitted, { receipt: different, model: null }))
+      .toMatchObject({ complete: false, baseline: { prices: baseline.prices } });
+  });
+
   it("cleans only the persisted name while keeping JSON, capability and timeout changes dirty", () => {
     const model = fixtureModel({ connectionId: "provider", displayName: "Old name", id: "model" });
     const baseline = modelFormFrom(model);

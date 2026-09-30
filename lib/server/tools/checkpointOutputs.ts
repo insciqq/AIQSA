@@ -1,10 +1,15 @@
 import type { RunTool } from "./types";
+import type { NormalizedRunRequest } from "../providers/types";
 
 export const CHECKPOINT_OUTPUTS_TOOL_NAME = "checkpoint_outputs";
 export const WORKSPACE_CHECKPOINT_LIMITS = Object.freeze({ files: 8, perRun: 16, descriptionCharacters: 300 });
+const LEGACY_CHECKPOINT_DESCRIPTION = "Save selected deliverables as downloadable intermediate results before a long or risky next step and before your final answer. " +
+  "Choose exact files under /workspace/project/ or this run's /workspace/output/ directory. Inbox, hidden files and temporary/service directories are excluded. " +
+  "Success confirms immutable stored bytes, not visual quality or task completion. The files remain available if this answer later fails or stops. " +
+  "A later version requires a new checkpoint; equal filenames do not identify the same version. If reusing an existing capture, supply its exact capture_id and the same files.";
 export const checkpointOutputsTool: RunTool = {
   capability: "workspace", name: CHECKPOINT_OUTPUTS_TOOL_NAME, strict: false,
-  description: "Save selected deliverables as downloadable intermediate results before a long or risky next step and before your final answer. " +
+  description: "When you create or change a deliverable file, save selected deliverables as downloadable intermediate results before a long or risky next step and before your final answer. " +
     "Choose exact files under /workspace/project/ or this run's /workspace/output/ directory. Inbox, hidden files and temporary/service directories are excluded. " +
     "Success confirms immutable stored bytes, not visual quality or task completion. The files remain available if this answer later fails or stops. " +
     "A later version requires a new checkpoint; equal filenames do not identify the same version. If reusing an existing capture, supply its exact capture_id and the same files.",
@@ -17,7 +22,17 @@ export const checkpointOutputsTool: RunTool = {
   } }
 };
 
-export const WORKSPACE_CHECKPOINT_GUIDANCE = "Use checkpoint_outputs to save a useful intermediate deliverable before long or risky work and before the final answer. " +
+/** Recovery and Agent discovery must use the description frozen at admission. */
+export function checkpointOutputsToolForRequest(request: Pick<NormalizedRunRequest, "workspaceCheckpointToolDescription">): RunTool {
+  return { ...checkpointOutputsTool, description: request.workspaceCheckpointToolDescription ?? LEGACY_CHECKPOINT_DESCRIPTION };
+}
+
+export const LEGACY_WORKSPACE_CHECKPOINT_GUIDANCE = "Use checkpoint_outputs to save a useful intermediate deliverable before long or risky work and before the final answer. " +
+  "Only a successful checkpoint result confirms durable downloadable bytes. A file on guest disk alone may be lost. " +
+  "Checkpoints preserve exact versions independently of this answer's outcome; saving is not a quality check. " +
+  "Continue from the exact authorized saved attachment when needed, without repeating completed preparation merely to recreate it.";
+
+export const WORKSPACE_CHECKPOINT_GUIDANCE = "When you create or change a deliverable file, use checkpoint_outputs to save it before long or risky work and before the final answer. " +
   "Only a successful checkpoint result confirms durable downloadable bytes. A file on guest disk alone may be lost. " +
   "Checkpoints preserve exact versions independently of this answer's outcome; saving is not a quality check. " +
   "Continue from the exact authorized saved attachment when needed, without repeating completed preparation merely to recreate it.";

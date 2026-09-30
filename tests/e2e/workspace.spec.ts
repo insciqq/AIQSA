@@ -115,7 +115,7 @@ async function assertGeneratedZip(page: Page): Promise<Readonly<{
 
   const chatContext = page.getByRole("dialog", { name: "Chat context" });
   if (await chatContext.isVisible()) {
-    await chatContext.getByRole("button", { name: "Stay here", exact: true }).click();
+    await page.keyboard.press("Escape");
     await expect(chatContext).toBeHidden();
   }
   const [download] = await Promise.all([

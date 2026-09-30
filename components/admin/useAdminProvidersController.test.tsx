@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   discoverCompatibleModels: vi.fn(),
   getConnections: vi.fn(),
   renameModel: vi.fn(),
+  saveModelMetadata: vi.fn(),
   runConnectionAction: vi.fn()
 }));
 
@@ -21,6 +22,7 @@ vi.mock("./adminProvidersApi", () => ({
   discoverAdminCompatibleModels: api.discoverCompatibleModels,
   getAdminProviderConnections: api.getConnections,
   renameAdminProviderModel: api.renameModel,
+  saveAdminProviderModelMetadata: api.saveModelMetadata,
   runAdminProviderConnectionAction: api.runConnectionAction
 }));
 
@@ -60,6 +62,7 @@ describe("useAdminProvidersController", () => {
     api.discoverCompatibleModels.mockReset();
     api.getConnections.mockReset();
     api.renameModel.mockReset();
+    api.saveModelMetadata.mockReset();
     api.runConnectionAction.mockReset();
   });
 
@@ -207,6 +210,38 @@ describe("useAdminProvidersController", () => {
       }]);
     });
     expect(api.discoverCompatibleModels).toHaveBeenCalledWith(original.id, "credential-1");
+  });
+
+  it.each(["success", "failed_refresh", "ambiguous", "mismatched"] as const)("reconciles exact price metadata after %s", async mode => {
+    const original = connection("provider", "Provider");
+    const model = fixtureModel({ connectionId: original.id, displayName: "Model", id: "model", enabled: false });
+    original.models = [model];
+    const prices = { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "0.25", cachedInputTokenPriceUsdPerMillion: "0.025" };
+    const pricing = { ...model.pricing, prices, source: "admin" as const };
+    const current = { ...model, pricing, updatedAt: "2026-09-30T12:00:00.000Z" };
+    const body = { displayName: model.displayName, expectedActiveVersion: model.activeVersion,
+      expectedDisplayName: model.displayName, expectedDraftVersion: model.draftVersion, expectedUpdatedAt: model.updatedAt,
+      pricing: { mode: "manual" as const, prices } };
+    api.getConnections.mockResolvedValueOnce({ ok: true, data: [original] });
+    api.getConnections.mockResolvedValue(mode === "failed_refresh"
+      ? { ok: false, error: { code: "network_error", blockers: [], resourceIds: [] } }
+      : { ok: true, data: [{ ...original, models: [current] }] });
+    api.saveModelMetadata.mockResolvedValue(mode === "ambiguous"
+      ? { ok: false, error: { code: "network_error", blockers: [], resourceIds: [] } }
+      : { ok: true, data: { connectionId: original.id, modelId: model.id, displayName: model.displayName,
+        draftVersion: model.draftVersion, saved: "metadata", publication: "not_requested", checks: "not_requested",
+        pricing: mode === "mismatched" ? model.pricing : pricing } });
+    const { result } = renderHook(() => useAdminProvidersController(true));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    await act(async () => {
+      const saved = await result.current.actions.saveModelMetadata(original.id, model.id, body);
+      expect(saved.ok).toBe(mode === "success" || mode === "ambiguous");
+      if (mode === "failed_refresh") expect(saved.persistence).toMatchObject({ model: null, receipt: { pricing } });
+      if (mode === "mismatched") expect(saved.persistence).toEqual({ model: null, receipt: null });
+    });
+    expect(api.saveModelMetadata).toHaveBeenCalledOnce();
+    expect(api.createModel).not.toHaveBeenCalled();
+    expect(api.runConnectionAction).not.toHaveBeenCalled();
   });
 
   it("saves a model with Test & Save in one request and starts background checks without a toast", async () => {

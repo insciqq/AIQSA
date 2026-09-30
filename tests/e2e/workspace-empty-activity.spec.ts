@@ -86,4 +86,50 @@ for (const viewport of [
     await page.reload();
     await expect(process).toHaveAttribute("open");
   });
+
+  test(`an untouched second turn has no Workspace activity after an earlier guest turn at ${viewport.width}px`, async ({ page, context }, testInfo) => {
+    await page.setViewportSize(viewport);
+    await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
+    const previous = {
+      id: "previous-workspace-answer", role: "assistant", status: "complete", parentMessageId: null,
+      createdAt: timestamp, content: "The earlier file is ready.", errorMessage: null,
+      citationMessageId: null, modelId: "gpt-5.5", modelRunId: "previous-workspace-run", provider: "openai",
+      workspaceActivity: { entries: [{ id: "earlier-command", kind: "command", phase: "succeeded",
+        command: { preview: "Create a report", exitCode: 0 } }], outputStatus: { state: "complete", revision: timestamp } }
+    };
+    await installMatrixCatalogFixture(page, { folders: [], chats: [{
+      ...chat, activeLeafMessageId: previous.id, messageCount: 1, messages: [previous]
+    }] });
+    await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
+    await page.route(`**/api/model-runs/${runId}`, route => route.fulfill({ json: { version: 1, run: { id: runId, status: "streaming" } } }));
+    const stream = createGatedRunStreamFixture({ key: "untouched-second-turn", abortMessage: "Synthetic stream stopped", notReadyError: "unused_stream_not_ready" });
+    await stream.install(page, chatId);
+    await signInWithLocalToken(page, `/c/${chatId}`);
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("Explain the result briefly.");
+    await composer.press("Enter");
+    await stream.waitForRequestCount(page, 1);
+    await stream.emit(page, "run_start", { provider: "openai", modelId: "gpt-5.5", runId, status: "streaming" });
+    await stream.emit(page, "message_start", { assistantMessageId: answerId, userMessageId: "second-question" });
+    await stream.emit(page, "token", { delta: "Here is the explanation." });
+    const answer = page.locator('article[data-role="assistant"]').last();
+    await expect(answer).toContainText("Here is the explanation.");
+    await expect(answer.getByTestId("workspace-activity-section")).toHaveCount(0);
+    await expect(answer.getByTestId("tool-activity-disclosure")).toHaveCount(0);
+    await installMatrixCatalogFixture(page, { folders: [], chats: [{
+      ...chat, activeLeafMessageId: answerId, messageCount: 2, messages: [previous, {
+        ...previous, id: answerId, modelRunId: runId, parentMessageId: previous.id, content: "Here is the explanation.",
+        workspaceActivity: { entries: [], outputStatus: { state: "complete", revision: timestamp } }
+      }]
+    }] });
+    await stream.emit(page, "done", { runId, status: "complete" });
+    await stream.close(page);
+    await page.reload();
+    await expect(answer).toContainText("Here is the explanation.");
+    await expect(answer.getByTestId("workspace-activity-section")).toHaveCount(0);
+    await expect(answer.getByTestId("tool-activity-disclosure")).toHaveCount(0);
+    await expect(page.locator('article[data-role="assistant"]').first().getByTestId("tool-activity-disclosure")).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath("untouched-second-turn-reloaded.png") });
+  });
 }

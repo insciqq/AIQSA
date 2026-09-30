@@ -154,6 +154,9 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
           references: { create: { consumerRunId: input.runId, consumerKey: input.consumerKey } }
         } });
       }
+      if (capture.state !== "CAPTURED") await tx.workspaceRunBinding.updateMany({
+        where: { modelRunId: input.runId, guestUsedAt: null }, data: { guestUsedAt: new Date() }
+      });
       return { current, capture, created };
     });
     if (reserved.capture.state === "CAPTURED") return lookup({ ...input, captureId: reserved.capture.id });
@@ -225,6 +228,9 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
       if (current.capture.state !== "CAPTURED") throw unavailable();
       const file = await tx.workspaceCapturedFile.findUnique({ where: { captureId_relativePath: { captureId: input.captureId, relativePath: input.relativePath } } });
       if (!file) throw unavailable();
+      if (file.storageState !== "READY" || !file.storageKey) await tx.workspaceRunBinding.updateMany({
+        where: { modelRunId: input.runId, guestUsedAt: null }, data: { guestUsedAt: new Date() }
+      });
       if (await tx.workspaceCaptureReadLease.count({ where: { captureId: input.captureId, expiresAt: { gt: new Date() } } }) >= 16) throw limit();
       const token = randomUUID();
       await tx.workspaceCaptureReadLease.create({ data: { token, captureId: input.captureId, expiresAt: new Date(Date.now() + LEASE_MS) } });

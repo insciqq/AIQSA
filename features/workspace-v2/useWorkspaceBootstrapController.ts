@@ -1,6 +1,7 @@
 "use client";
 
 import type { ChatRoute } from "@/components/app-shell/chatRoute";
+import { composerDraftPersistenceAllowed, startComposerDraftPersistence } from "@/components/app-shell/composerDraftPersistence";
 import {
   chatIdFromComposerSessionKey,
   folderIdFromComposerSessionKey,
@@ -220,11 +221,12 @@ export function useWorkspaceBootstrapController({
 
   useEffect(() => {
     activeScopeRef.current = scope.token;
+    const stopDraftPersistence = startComposerDraftPersistence(accountId);
     if (useWorkspaceStore.getState().catalogAccountId !== accountId) setCatalog(null, accountId);
 
     async function bootstrap() {
       const recoveredDraft = storedSessionExpiredDraft();
-      const ownedRecoveredDraft = recoveredDraft?.accountEmail === accountEmail
+      const ownedRecoveredDraft = recoveredDraft?.accountId === accountId
         ? recoveredDraft
         : null;
       if (recoveredDraft && !ownedRecoveredDraft) {
@@ -236,11 +238,18 @@ export function useWorkspaceBootstrapController({
       if (activeScopeRef.current !== scope.token || !ownedRecoveredDraft) {
         return;
       }
+      // Recheck after async route/catalog loading: logout may have invalidated
+      // a handoff that was valid at the beginning of bootstrap.
+      if (storedSessionExpiredDraft()?.epoch !== ownedRecoveredDraft.epoch) {
+        clearSessionExpiredDraft();
+        return;
+      }
 
       // The draft returns to its own session key whatever the address shows.
       const recoveredChatId = chatIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey);
       const recoveredFolderId = folderIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey);
       if (
+        !composerDraftPersistenceAllowed(ownedRecoveredDraft.sessionKey) ||
         (recoveredChatId && !useWorkspaceStore.getState().chats.some((chat) => chat.id === recoveredChatId)) ||
         (recoveredFolderId && !useWorkspaceStore.getState().folders.some((folder) => folder.id === recoveredFolderId))
       ) {
@@ -268,9 +277,10 @@ export function useWorkspaceBootstrapController({
         useComposerSessionStore.getState(),
         ownedRecoveredDraft.sessionKey
       );
-      if (!target.draft && !target.pendingSend && !target.pendingEdit) {
+      if (!target.draft && !target.comments.length && !target.pendingSend && !target.pendingEdit) {
         composerState.updateSession(ownedRecoveredDraft.sessionKey, {
-          draft: ownedRecoveredDraft.draft
+          draft: ownedRecoveredDraft.draft,
+          comments: [...(ownedRecoveredDraft.comments ?? [])]
         });
       }
       clearSessionExpiredDraft();
@@ -280,6 +290,7 @@ export function useWorkspaceBootstrapController({
 
     return () => {
       activeScopeRef.current = null;
+      stopDraftPersistence();
     };
   }, [accountEmail, accountId, activateBlankWorkspaceEvent, loadCatalog, resolveInitialRouteEvent, scope, setCatalog]);
 

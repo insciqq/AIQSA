@@ -438,8 +438,8 @@ function createHarness(options: Readonly<{
   providerAdmission?: RunRecoveryDeps["providerAdmission"];
   providerDispatchRecoveryRequest?: NormalizedRunRequest | null;
   pricing?: {
-    inputTokenPriceMicros: number;
-    outputTokenPriceMicros: number;
+    inputTokenPriceUsdPerMillion: number;
+    outputTokenPriceUsdPerMillion: number;
   } | null;
   pricingError?: Error;
   providers?: Readonly<Record<string, ProviderAdapter>>;
@@ -611,8 +611,8 @@ function createHarness(options: Readonly<{
       if (options.pricingError) throw options.pricingError;
       return options.pricing === undefined
         ? {
-            inputTokenPriceMicros: 10,
-            outputTokenPriceMicros: 20
+            inputTokenPriceUsdPerMillion: 10,
+            outputTokenPriceUsdPerMillion: 20
           }
         : options.pricing;
     },
@@ -1698,7 +1698,7 @@ describe("run recovery", () => {
     expect(harness.state.failed).toMatchObject([{ error: { code: "followup_executor_lost" } }]);
   });
 
-  it("reconstructs the accepted browser guidance unchanged after a process restart", async () => {
+  it.each([undefined, "Accepted checkpoint description"])("reconstructs accepted browser and checkpoint guidance after restart (saved=%s)", async workspaceCheckpointToolDescription => {
     const requests: ProviderRunRequest[] = [];
     const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
     const harness = createHarness({ providers: { openai: adapter } });
@@ -1706,7 +1706,8 @@ describe("run recovery", () => {
     const { mcp: _mcp, ...normalized } = base.normalizedRequest;
     const prompt = { developer: null, system: `Synthetic accepted baseline\n${WORKSPACE_BROWSER_GUIDANCE}` };
     installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, prompt, workspace: completionWorkspace,
-      sessionStatusTool: true, toolMode: "none", searchPlan: { mode: "all_selected", options: [] } } });
+      workspaceCheckpoints: true, ...(workspaceCheckpointToolDescription ? { workspaceCheckpointToolDescription } : {}),
+      sessionStatusTool: true, toolMode: "auto", searchPlan: { mode: "all_selected", options: [] } } });
     const workspace: NonNullable<RunRecoveryDeps["workspace"]> = {
       accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff: vi.fn(async () => ({ status: "ready" as const })),
       recoverExports: vi.fn(), settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })), tools: async () => []
@@ -1715,6 +1716,9 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
     expect(requests).toHaveLength(1);
     expect(requests[0]!.prompt).toEqual(prompt);
+    const checkpointDescription = requests[0]!.tools?.find(tool => tool.name === "checkpoint_outputs")?.description;
+    if (workspaceCheckpointToolDescription) expect(checkpointDescription).toBe(workspaceCheckpointToolDescription);
+    else expect(checkpointDescription).toMatch(/^Save selected deliverables as downloadable intermediate results/);
     expect(workspace.handoff).toHaveBeenCalledOnce();
     expect(harness.state.completed).not.toBeNull();
   });

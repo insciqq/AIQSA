@@ -83,6 +83,8 @@ export function useAdminSectionTopbar(topbar: AdminShellTopbar | null): void {
 }
 
 export type AdminShellProps = Readonly<{
+  /** The authenticated administrator; sign-out clears its browser drafts. */
+  accountId: string;
   accountLabel: string;
   attentionCounts?: Partial<Record<AdminSectionId, number>>;
   children: ReactNode;
@@ -256,6 +258,7 @@ function ChatsLink({
 }
 
 export function AdminShell({
+  accountId,
   accountLabel,
   attentionCounts = {},
   children,
@@ -339,7 +342,7 @@ export function AdminShell({
           >
             <UiV2Icon name="shield" />
           </span>
-          <AccountMenuV2 accountLabel={accountLabel} variant="avatar" />
+          <AccountMenuV2 accountId={accountId} accountLabel={accountLabel} variant="avatar" />
         </div>
       </nav>
 
@@ -382,7 +385,7 @@ export function AdminShell({
         </div>
         <div className="v2-navigation-footer md:hidden">
           <ChatsLink onClick={onReturnToChat} returnPath={returnPath} variant="row" />
-          <AccountMenuV2 accountLabel={accountLabel} variant="row" />
+          <AccountMenuV2 accountId={accountId} accountLabel={accountLabel} variant="row" />
         </div>
       </aside>
 

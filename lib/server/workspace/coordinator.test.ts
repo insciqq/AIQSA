@@ -122,6 +122,7 @@ function fixture() {
     turnTimeoutSeconds: config.turnTimeoutSeconds
   };
   let runtimeSandboxId: string | null = null;
+  let guestUsed = false;
   let exportComplete = false;
   let exportPending = false;
   let outputCapture: WorkspaceOutputCapture | null = null;
@@ -141,6 +142,7 @@ function fixture() {
   const binding = (): WorkspaceExecutionBinding => ({
     assistantMessageId: "assistant_1",
     chatId: "chat_1",
+    guestUsed: guestUsed || unregisteredCommands.count > 0,
     imageRef: workspace.imageRef,
     internetEnabled: workspace.internetEnabled,
     mcpVersion: workspace.mcpVersion,
@@ -183,6 +185,12 @@ function fixture() {
       }];
     },
     async binding() { return binding(); },
+    async markGuestUsed() { guestUsed = true; return true; },
+    async retireUnusedRun() {
+      if (binding().guestUsed) return false;
+      operationOwner = null;
+      return true;
+    },
     async generatedFiles() { return files; },
     async claimExport() {
       if (exportComplete) return { status: "complete" as const };
@@ -302,7 +310,8 @@ function fixture() {
     sessionState: () => sessionState,
     settledSessions,
     shellToolName,
-    setRuntimeSandboxId(value: string | null) { runtimeSandboxId = value; },
+    setRuntimeSandboxId(value: string | null) { runtimeSandboxId = value; guestUsed = true; },
+    setUntouchedSession(state: string) { runtimeSandboxId = "runtime_1"; sessionState = state; guestUsed = false; },
     storage,
     tools,
     workspace
@@ -311,6 +320,63 @@ function fixture() {
 
 describe("Workspace coordinator", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it.each(["STOPPED", "READY"])("hands off an untouched run on an existing %s guest without runtime activity", async state => {
+    const f = fixture();
+    f.setUntouchedSession(state);
+    const onActivity = vi.fn();
+    const start = vi.spyOn(f.repository, "markSessionStarting");
+    const ready = vi.spyOn(f.repository, "markSessionReady");
+    await expect(f.coordinator.handoff({ runId: f.runId, userId: "user_1", workspace: f.workspace, onActivity }))
+      .resolves.toEqual({ status: "ready" });
+    expect(f.sessionState()).toBe(state);
+    expect(start).not.toHaveBeenCalled();
+    expect(ready).not.toHaveBeenCalled();
+    expect(onActivity).not.toHaveBeenCalled();
+    for (const method of Object.values(f.runtime)) if (vi.isMockFunction(method)) expect(method).not.toHaveBeenCalled();
+    expect(await f.repository.outputHandoffReady({ runId: f.runId, sessionId: f.workspace.sessionId })).toBe(true);
+    const restarted = createWorkspaceCoordinator({ ...f, repository: f.repository, runtime: f.runtime });
+    await expect(restarted.handoff({ runId: f.runId, userId: "user_1", workspace: f.workspace, onActivity }))
+      .resolves.toEqual({ status: "ready" });
+    expect(onActivity).not.toHaveBeenCalled();
+  });
+
+  it("exports after a crash-ambiguous guest command even without an initialization receipt", async () => {
+    const f = fixture();
+    f.setUntouchedSession("STOPPED");
+    f.unregisteredCommands.count = 1;
+    vi.mocked(f.runtime.collectOutputs).mockResolvedValueOnce([outputStream("kept bytes", "answer.txt")]);
+    const restarted = createWorkspaceCoordinator({ ...f, repository: f.repository, runtime: f.runtime });
+    await expect(restarted.finalize({ runId: f.runId, userId: "user_1" })).resolves.toMatchObject({
+      status: "complete", files: [{ fileName: "answer.txt" }]
+    });
+    expect(f.runtime.ensureSession).toHaveBeenCalled();
+    expect(f.runtime.collectOutputs).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed before guest I/O when the durable use marker cannot be written", async () => {
+    const f = fixture();
+    vi.spyOn(f.repository, "markGuestUsed").mockResolvedValue(false);
+    await expect(f.coordinator.execute({
+      call: { arguments: { command: "pwd" }, id: "call", name: f.shellToolName },
+      modelRunToolCallId: "stored", runId: f.runId, userId: "user_1", workspace: f.workspace
+    })).rejects.toMatchObject({ code: "workspace_operation_stale" });
+    expect(f.runtime.ensureSession).not.toHaveBeenCalled();
+    expect(f.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
+  it("includes guest use persisted between the initial binding read and export ownership", async () => {
+    const f = fixture();
+    f.setUntouchedSession("STOPPED");
+    const claim = f.repository.claimExport;
+    vi.spyOn(f.repository, "claimExport").mockImplementationOnce(async request => {
+      await f.repository.markGuestUsed((await f.repository.binding({ runId: f.runId, userId: "user_1" }))!);
+      return claim(request);
+    });
+    await expect(f.coordinator.finalize({ runId: f.runId, userId: "user_1" })).resolves.toMatchObject({ status: "complete" });
+    expect(f.runtime.ensureSession).toHaveBeenCalledOnce();
+    expect(f.runtime.collectOutputs).toHaveBeenCalledOnce();
+  });
 
   it("interrupts only after a native command settles and resumes without reinitializing Skills or files", async () => {
     const f = fixture(), threadId = randomUUID(), first = randomUUID(), second = randomUUID();
@@ -371,6 +437,9 @@ describe("Workspace coordinator", () => {
     await restarted.skillBundlePath!({ ...request, install: true });
     expect(value.runtime.installSkillBundle).toHaveBeenCalledTimes(2);
     expect(skills.archive).toHaveBeenLastCalledWith(expect.objectContaining({ alias: "review", currentAccess: true }));
+    expect((await value.repository.binding({ runId: value.runId, userId: "user_1" }))!.guestUsed).toBe(true);
+    await expect(restarted.finalize(request)).resolves.toMatchObject({ status: "complete" });
+    expect(value.runtime.collectOutputs).toHaveBeenCalledOnce();
   });
 
   it("does not publish preparation or execute tools after a failed bundle transfer", async () => {
@@ -1058,7 +1127,8 @@ describe("Workspace coordinator settlement", () => {
       userId: "user_1",
       workspace: value.workspace
     })).resolves.toEqual({ quiesced: true, sessionSettled: true, stoppedVm: false });
-    expect(value.settledSessions).toEqual(["pending"]);
+    expect(value.settledSessions).toEqual([]);
+    expect(value.sessionState()).toBe("PENDING");
     expect(value.runtime.terminateExecutions).not.toHaveBeenCalled();
   });
 

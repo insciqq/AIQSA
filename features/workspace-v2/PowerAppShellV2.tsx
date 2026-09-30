@@ -189,6 +189,8 @@ import {
   usePersonalChatDeepLink
 } from "./usePersonalChatDeepLink";
 import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
+import { composerDraftPersistenceAllowed, composerDraftRecoveryBoundary } from "@/components/app-shell/composerDraftPersistence";
+import { buildComposerMessage } from "@/components/app-shell/composerComments";
 import {
   useProjectWorkspaceController,
   type ProjectWorkspaceController
@@ -818,11 +820,18 @@ export function PowerAppShellV2({
     sessionExpiredHandledRef.current = true;
     const composerState = useComposerSessionStore.getState();
     const session = selectComposerSession(composerState, composerState.activeSessionKey);
-    const draft = session.pendingSend?.draft ?? session.draft;
-    if (accountEmail) {
+    const draft = session.pendingSend
+      ? [session.pendingSend.draft, session.draft].filter(Boolean).join("\n\n") : session.draft;
+    const comments = [...(session.pendingSend?.comments ?? []), ...session.comments];
+    // Without a readable fence (blocked or full localStorage) the handoff is
+    // keyed by the account alone, as before browser draft persistence.
+    const boundary = composerDraftRecoveryBoundary(accountId);
+    if (boundary && composerDraftPersistenceAllowed(composerState.activeSessionKey)) {
       rememberSessionExpiredDraft({
-        accountEmail,
+        accountId,
+        epoch: boundary.epoch,
         draft,
+        comments,
         savedAt: Date.now(),
         sessionKey: composerState.activeSessionKey
       });
@@ -837,7 +846,7 @@ export function PowerAppShellV2({
     });
     const destination = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     window.location.assign(sessionExpiredLoginHref(destination));
-  }), [accountEmail]);
+  }), [accountId]);
 
   useEffect(
     () => () => {
@@ -876,7 +885,7 @@ export function PowerAppShellV2({
     attachments,
     catalog,
     chats,
-    draft,
+    draft: buildComposerMessage(draft, composerSession.comments),
     folders,
     maxOutputTokens,
     pendingChatFolderId,
@@ -2106,6 +2115,7 @@ export function PowerAppShellV2({
   } satisfies ShellWorkspaceView;
 
   const threadView = {
+    usageStats: activeThread.usageStats,
     activeChatDetailError,
     activeChatDetailLoading,
     activeChatStreaming,

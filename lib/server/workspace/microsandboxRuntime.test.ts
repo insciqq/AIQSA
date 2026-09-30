@@ -18,6 +18,8 @@ import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { tarGzipStream } from "../chats/tarArchive";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
+import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
+import { workspaceGuideInput } from "./guides";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -116,6 +118,17 @@ function fixture() {
     kill: vi.fn(async () => {}),
     [Symbol.asyncDispose]: vi.fn(async () => {})
   };
+  const guidePipe = {
+    write: vi.fn(async (_bytes: Uint8Array) => {}),
+    close: vi.fn(async () => {}),
+    [Symbol.asyncDispose]: vi.fn(async () => {})
+  };
+  const guideHelper = {
+    takeStdin: vi.fn(async () => guidePipe),
+    wait: vi.fn(async () => ({ code: 0 })),
+    kill: vi.fn(async () => {}),
+    [Symbol.asyncDispose]: vi.fn(async () => {})
+  };
   const fs = {
     exists: vi.fn(async (path: string) => [...files.keys()].some((file) => file.startsWith(path))),
     read: vi.fn(async (path: string) => files.get(path)!),
@@ -144,10 +157,15 @@ function fixture() {
   const sandbox = {
     exec: vi.fn(async () => ({ success: true })),
     execWith: vi.fn(async (_command: string, _configure: unknown) => ({ success: true, stdout: (): string => "{}", stdoutBytes: () => Buffer.from("{}") })),
-    execStreamWith: vi.fn(async (_command: string, _configure: unknown) => secretHelper),
+    execStreamWith: vi.fn(async (_command: string, configure: unknown) => {
+      const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinPipe: vi.fn().mockReturnThis() };
+      (configure as (input: typeof builder) => unknown)(builder);
+      return builder.args.mock.calls[0]?.[0]?.[2] === INSTALL_WORKSPACE_GUIDES ? guideHelper : secretHelper;
+    }),
     fs: () => fs,
     id: runtimeSandboxId,
     name: sandboxName,
+    killWithTimeout: vi.fn(async () => { state = "stopped"; }),
     stopWithTimeout: vi.fn(async () => { state = "stopped"; })
   };
   const handle = {
@@ -163,7 +181,7 @@ function fixture() {
     stopWithTimeout: vi.fn(async () => { state = "stopped"; })
   };
   const builder = {
-    connectOrCreate: vi.fn(async () => sandbox),
+    connectOrCreate: vi.fn(async () => { state = "running"; return sandbox; }),
     detached: vi.fn().mockReturnThis(),
     image: vi.fn().mockReturnThis(),
     rootDisk: vi.fn().mockReturnThis(),
@@ -186,7 +204,7 @@ function fixture() {
     return { content: [{ type: "text", text: "ok" }] };
   });
   return {
-    secretPipe, secretHelper,
+    secretPipe, secretHelper, guidePipe, guideHelper,
     builder, files, fs, handle, sandbox,
     runtime: new MicrosandboxWorkspaceRuntime(config),
     setState(value: string) { state = value; }
@@ -207,6 +225,158 @@ describe("Microsandbox Workspace lifecycle", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await Promise.all(skillDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+  });
+
+  it("delivers release guides on new, cached-running, cached-stopped and receiver-reconnected guests", async () => {
+    const value = fixture(); value.setState("missing");
+    await value.runtime.ensureSession({ ...ensureInput, runtimeSandboxId: null });
+    await value.runtime.ensureSession(ensureInput);
+    value.setState("stopped"); await value.runtime.ensureSession(ensureInput);
+    const restarted = new MicrosandboxWorkspaceRuntime(config);
+    await restarted.callBoundTool(callInput);
+    expect(value.guidePipe.write).toHaveBeenCalledTimes(4);
+    for (const [bytes] of value.guidePipe.write.mock.calls) expect(bytes).toEqual(workspaceGuideInput());
+    expect(value.guideHelper.wait).toHaveBeenCalledTimes(4);
+    expect(value.guidePipe.close).toHaveBeenCalledTimes(4);
+    expect(value.guideHelper.kill).not.toHaveBeenCalled();
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+    await restarted.callBoundTool(callInput);
+    expect(value.guidePipe.write).toHaveBeenCalledTimes(4);
+    value.setState("stopped"); await restarted.callBoundTool(callInput);
+    expect(value.guidePipe.write).toHaveBeenCalledTimes(5);
+  });
+
+  const guideLaunches = (value: ReturnType<typeof fixture>) => value.sandbox.execStreamWith.mock.calls
+    .filter(([, configure]) => {
+      const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinPipe: vi.fn().mockReturnThis() };
+      (configure as (input: typeof builder) => unknown)(builder);
+      return builder.args.mock.calls[0]?.[0]?.[2] === INSTALL_WORKSPACE_GUIDES;
+    }).length;
+  const guestUntouched = (value: ReturnType<typeof fixture>) => {
+    expect(value.sandbox.killWithTimeout).not.toHaveBeenCalled();
+    expect(value.sandbox.stopWithTimeout).not.toHaveBeenCalled();
+    expect(value.handle.stopWithTimeout).not.toHaveBeenCalled();
+    expect(value.handle.connectOrStart).not.toHaveBeenCalled();
+  };
+
+  it.each(["exit", "transfer"] as const)("keeps the guest, dispatches the call and remembers a failed guide installation (%s)", async failure => {
+    const value = fixture();
+    // A non-regular /workspace/guides entry makes the installer exit nonzero every time.
+    if (failure === "exit") value.guideHelper.wait.mockResolvedValue({ code: 1 });
+    else value.guidePipe.write.mockRejectedValue(new Error("guide_transfer_failed"));
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(line => { lines.push(String(line)); return true; });
+    try {
+      await value.runtime.callBoundTool(callInput);
+      await value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_second" });
+    } finally { writer.mockRestore(); }
+    expect(sdk.callTool).toHaveBeenCalledTimes(2);
+    expect(guideLaunches(value)).toBe(1);
+    guestUntouched(value);
+    // Only the helper is retired; a truncated request cannot publish on EOF.
+    await vi.waitFor(() => expect(value.guideHelper.kill).toHaveBeenCalledOnce());
+    const events = lines.map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(events.filter(event => event.code === "workspace_guides_unavailable")).toEqual([expect.objectContaining({
+      event: "runtime_lifecycle", subsystem: "workspace", stage: "prepare", outcome: "degraded", action: "degrade" })]);
+    expect(lines.join("")).not.toContain("guides/office.md");
+    expect(lines.join("")).not.toContain("guide_transfer_failed");
+  });
+
+  it("creates a guest that stays running when its first guide installation fails", async () => {
+    const value = fixture(); value.setState("missing"); value.guideHelper.wait.mockResolvedValue({ code: 1 });
+    await expect(value.runtime.ensureSession({ ...ensureInput, runtimeSandboxId: null })).resolves.toMatchObject({ state: "ready" });
+    expect(value.sandbox.stopWithTimeout).not.toHaveBeenCalled();
+    expect(value.sandbox.killWithTimeout).not.toHaveBeenCalled();
+    // A later run's session check reuses the remembered failure.
+    await value.runtime.ensureSession(ensureInput);
+    await value.runtime.callBoundTool(callInput);
+    expect(guideLaunches(value)).toBe(1);
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+  });
+
+  it.each(["reconnect", "new"] as const)("cancels only the waiting caller while the shared installation completes (%s)", async path => {
+    const value = fixture(); const controller = new AbortController();
+    let release!: () => void;
+    value.guidePipe.write.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    if (path === "new") value.setState("missing");
+    const cancelled = path === "new"
+      ? value.runtime.ensureSession({ ...ensureInput, runtimeSandboxId: null, signal: controller.signal }).catch(error => error)
+      : value.runtime.callBoundTool({ ...callInput, signal: controller.signal }).catch(error => error);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    controller.abort();
+    expect(await cancelled).toMatchObject({ code: "workspace_tool_cancelled" });
+    expect(value.sandbox.killWithTimeout).not.toHaveBeenCalled();
+    expect(value.sandbox.stopWithTimeout).not.toHaveBeenCalled();
+    expect(value.guideHelper.kill).not.toHaveBeenCalled();
+    expect(sdk.callTool).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(value.guideHelper.wait).toHaveBeenCalledOnce());
+    expect(value.guidePipe.close).toHaveBeenCalledOnce();
+    await value.runtime.callBoundTool(callInput);
+    expect(guideLaunches(value)).toBe(1);
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+  });
+
+  it.each(["launch", "stdin", "write", "close", "wait"] as const)("bounds a hung guide %s without stopping the guest and retires a late settlement", async stage => {
+    const value = fixture(); const deadline = new AbortController();
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => ms === 30_000 ? deadline.signal : realTimeout(ms));
+    let release!: () => void;
+    if (stage === "launch") value.sandbox.execStreamWith.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve(value.guideHelper); }));
+    else if (stage === "stdin") value.guideHelper.takeStdin.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve(value.guidePipe); }));
+    else if (stage === "wait") value.guideHelper.wait.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ code: 0 }); }));
+    else value.guidePipe[stage].mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const dispatched = value.runtime.callBoundTool(callInput);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    const calls = () => [value.guideHelper.takeStdin, value.guidePipe.write, value.guidePipe.close, value.guideHelper.wait]
+      .map(operation => operation.mock.calls.length);
+    const before = calls();
+    deadline.abort(new DOMException("Guide deadline", "TimeoutError"));
+    await dispatched;
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+    guestUntouched(value);
+    if (stage !== "launch") await vi.waitFor(() => expect(value.guideHelper.kill).toHaveBeenCalledOnce());
+    // A permanently pending native call cannot hold the call open. If it later
+    // resolves, the installer is retired, never continued with writes or EOF.
+    release(); await new Promise(resolve => setImmediate(resolve));
+    expect(calls()).toEqual(before);
+    await vi.waitFor(() => expect(value.guideHelper.kill).toHaveBeenCalledOnce());
+    vi.restoreAllMocks();
+    await value.runtime.callBoundTool(callInput);
+    expect(guideLaunches(value)).toBe(1);
+    // A new boot installs again; the disk and its guides are unchanged by a stop.
+    value.setState("stopped");
+    await value.runtime.callBoundTool(callInput);
+    expect(guideLaunches(value)).toBe(2);
+    expect(value.guidePipe.write).toHaveBeenCalledTimes(before[1]! + 1);
+    expect(sdk.callTool).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["running", "stopped"] as const)("performs one guide installation for parallel calls on a reconnected %s guest", async state => {
+    const value = fixture();
+    let runtime = value.runtime;
+    if (state === "running") runtime = new MicrosandboxWorkspaceRuntime(config);
+    else {
+      await runtime.callBoundTool(callInput);
+      value.setState("stopped");
+      value.handle.connectOrStart.mockImplementation(async () => {
+        await new Promise(resolve => setImmediate(resolve));
+        value.setState("running");
+        return value.sandbox;
+      });
+    }
+    const launchesBefore = guideLaunches(value);
+    let release!: () => void;
+    value.guidePipe.write.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const calls = [runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_a" }),
+      runtime.callBoundTool({ ...callInput, modelRunToolCallId: "call_b" })];
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await new Promise(resolve => setImmediate(resolve));
+    release();
+    await Promise.all(calls);
+    expect(guideLaunches(value) - launchesBefore).toBe(1);
+    expect(sdk.callTool).toHaveBeenCalledTimes(state === "running" ? 2 : 3);
+    expect(value.sandbox.killWithTimeout).not.toHaveBeenCalled();
   });
 
   it("offers browser states above 512 KiB and stops hashing at the per-file and aggregate budgets", async () => {
@@ -464,6 +634,7 @@ describe("Microsandbox Workspace lifecycle", () => {
 
   it("pipes an exact 8 MiB browser state in sequential bounded chunks before installing it", async () => {
     const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
     const secret = acceptedBrowserState();
     const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinPipe: vi.fn().mockReturnThis() };
     value.sandbox.execStreamWith.mockImplementationOnce(async (_command, configure) => {
@@ -496,6 +667,8 @@ describe("Microsandbox Workspace lifecycle", () => {
 
   it("rejects an over-limit browser state before starting private byte delivery", async () => {
     const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    value.sandbox.execStreamWith.mockClear();
     await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "oversized", secrets: [
       acceptedBrowserState(WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1)
     ] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });

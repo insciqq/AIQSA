@@ -28,6 +28,7 @@ import {
 import { uploadFormatForExtension, type UploadKind } from "@/lib/domain/uploadFormats";
 import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
 import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
+import { workspaceAncestorMessageIds, workspaceInboxAttachmentWhere } from "./inboxSelection";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "@/lib/server/tools/types";
 import {
   getStoredObjectStream,
@@ -87,6 +88,7 @@ type WorkspaceAttachmentRecord = Readonly<{
 export type WorkspaceExecutionBinding = Readonly<{
   assistantMessageId: string;
   chatId: string;
+  guestUsed: boolean;
   imageRef: string;
   internetEnabled: boolean;
   mcpVersion: string;
@@ -161,6 +163,10 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   personalSecrets(binding: WorkspaceExecutionBinding): Promise<readonly AcceptedWorkspaceSecret[]>;
   saveBrowserSessions(input: WorkspaceBrowserSaveInput): Promise<WorkspaceBrowserSaveReport | null>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
+  /** Persist before guest I/O, including attempts with an ambiguous result. */
+  markGuestUsed(binding: WorkspaceExecutionBinding): Promise<boolean>;
+  /** Release an unused run's authority without changing the guest or its activity window. */
+  retireUnusedRun(binding: WorkspaceExecutionBinding): Promise<boolean>;
   claimContinuationSeed?(input: Readonly<{ chatId: string; operation: WorkspaceOperation; sessionId: string }>): Promise<Readonly<{
     id: string; storageKey: string; checksum: string; byteSize: number; token: string;
   }> | null>;
@@ -312,6 +318,8 @@ export function createPrismaWorkspaceCoordinatorRepository(
         userId: true,
         workspaceRunBinding: {
           select: {
+            guestUsedAt: true,
+            _count: { select: { toolCalls: true, selectedCaptures: true } },
             imageRef: true,
             internetEnabled: true,
             mcpVersion: true,
@@ -359,6 +367,8 @@ export function createPrismaWorkspaceCoordinatorRepository(
     return {
       assistantMessageId: run.assistantMessageId,
       chatId: run.chatId,
+      guestUsed: run.workspaceRunBinding.guestUsedAt !== null ||
+        run.workspaceRunBinding._count.toolCalls > 0 || run.workspaceRunBinding._count.selectedCaptures > 0,
       imageRef: run.workspaceRunBinding.imageRef,
       internetEnabled: run.workspaceRunBinding.internetEnabled,
       mcpVersion: run.workspaceRunBinding.mcpVersion,
@@ -411,6 +421,38 @@ export function createPrismaWorkspaceCoordinatorRepository(
     async binding({ runId, userId }) {
       return loadBinding(runId, userId);
     },
+    async markGuestUsed(binding) {
+      if (!binding.operationOwner) return false;
+      return prisma.$transaction(async tx => {
+        const session = await lockWorkspaceSession(tx, binding.sessionId);
+        if (!session || session.operationOwner !== binding.operationOwner || session.version !== binding.operationGeneration ||
+          session.state === "DELETING") return false;
+        const row = await tx.workspaceRunBinding.findFirst({
+          where: { modelRunId: binding.runId, workspaceSessionId: binding.sessionId }, select: { guestUsedAt: true }
+        });
+        if (!row) return false;
+        if (row.guestUsedAt === null) await tx.workspaceRunBinding.update({
+          where: { modelRunId: binding.runId }, data: { guestUsedAt: new Date() }
+        });
+        return true;
+      });
+    },
+    async retireUnusedRun(binding) {
+      if (!binding.operationOwner) return false;
+      return prisma.$transaction(async tx => {
+        const session = await lockWorkspaceSession(tx, binding.sessionId);
+        if (!session || session.operationOwner !== binding.operationOwner || session.version !== binding.operationGeneration ||
+          session.state === "DELETING") return false;
+        const unused = await tx.workspaceRunBinding.findFirst({
+          where: { modelRunId: binding.runId, workspaceSessionId: binding.sessionId, guestUsedAt: null,
+            toolCalls: { none: {} }, selectedCaptures: { none: {} } }, select: { modelRunId: true }
+        });
+        if (!unused) return false;
+        await tx.workspaceSession.update({ where: { id: binding.sessionId },
+          data: { operationOwner: null, operationExpiresAt: null } });
+        return true;
+      });
+    },
     async claimContinuationSeed({ chatId, operation, sessionId }) {
       return prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, sessionId);
@@ -458,16 +500,8 @@ export function createPrismaWorkspaceCoordinatorRepository(
       const imageIds = snapshot?.imageReferences?.map(reference => reference.attachmentId) ?? [];
       // Earlier exported bytes are admitted from this run's immutable message
       // ancestry, not from the mutable current branch or guest output folders.
-      const ancestors = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-        WITH RECURSIVE path AS (
-          SELECT "id", "parentMessageId" FROM "Message"
-          WHERE "chatId" = ${binding.chatId} AND "id" = ${binding.assistantMessageId}
-          UNION ALL
-          SELECT parent."id", parent."parentMessageId"
-          FROM path child INNER JOIN "Message" parent ON parent."id" = child."parentMessageId"
-          WHERE parent."chatId" = ${binding.chatId}
-        ) SELECT "id" FROM path WHERE "id" <> ${binding.assistantMessageId}
-      `);
+      const ancestors = (await workspaceAncestorMessageIds(prisma, binding.chatId, binding.assistantMessageId))
+        .filter(id => id !== binding.assistantMessageId);
       const rows = await prisma.attachment.findMany({
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         select: {
@@ -482,27 +516,8 @@ export function createPrismaWorkspaceCoordinatorRepository(
           origin: true,
           storageKey: true
         },
-        where: {
-          chatId: binding.chatId,
-          checksum: { not: null },
-          messageId: { not: null },
-          OR: [
-            { origin: "USER_UPLOAD" },
-            {
-              origin: "WORKSPACE_OUTPUT",
-              messageId: { in: ancestors.map(({ id }) => id) },
-              OR: [{ producerModelRun: { workspaceRunBinding: { exportState: "COMPLETE" } }, workspaceRunOutput: { isNot: null } },
-                { status: "ready", workspaceCheckpointFile: { checkpoint: { state: "SETTLED" } } }]
-            },
-            {
-              origin: "IMAGE_OUTPUT", status: "ready", savedAt: null,
-              OR: [{ id: { in: imageIds } }, { producerModelRunId: binding.runId }]
-            }
-          ],
-          ...(binding.projectId
-            ? { projectId: binding.projectId }
-            : { projectId: null, userId: binding.userId })
-        }
+        where: workspaceInboxAttachmentWhere({ chatId: binding.chatId, userId: binding.userId, projectId: binding.projectId,
+          ancestorMessageIds: ancestors, imageIds, runId: binding.runId })
       });
       return rows.flatMap((row) =>
         row.checksum && row.messageId &&
@@ -1452,6 +1467,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     }
     skillPlans.delete(binding.runId);
     const operation = (async () => {
+      if (!await input.repository.markGuestUsed(binding)) throw new WorkspaceRuntimeError("workspace_operation_stale");
       const startedAt = new Date();
       const startOrdinal = nextLifecycleOrdinal(binding.runId);
       const lifecycle = (entry: Parameters<typeof workspaceLifecycleActivity>[0]) =>
@@ -1806,6 +1822,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     async imagePath(request) {
       const binding = await requireBinding(request.runId, request.userId, request.workspace);
       if (!binding.runtimeSandboxId || binding.sessionState !== "RUNNING") throw new WorkspaceRuntimeError("workspace_session_lost");
+      if (!await input.repository.markGuestUsed(binding)) throw new WorkspaceRuntimeError("workspace_operation_stale");
       const entries = await stageInputs(binding, request.signal, undefined, request.attachmentId);
       const image = entries.find(entry => entry.attachmentId === request.attachmentId && entry.kind === "image");
       if (!image) throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
@@ -1917,6 +1934,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
       const current = binding.runtimeSandboxId === null && cached?.runtimeSandboxId
         ? { ...binding, runtimeSandboxId: cached.runtimeSandboxId }
         : binding;
+      if (!current.guestUsed && await input.repository.retireUnusedRun(current)) {
+        forgetRun(runId);
+        return { quiesced: true, sessionSettled: true, stoppedVm: false };
+      }
       let quiescence = await quiesceRun(current);
       if (quiescence.proven && !skipBrowserSave && current.operationOwner === workspaceRunOperationOwner(runId)) {
         await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
@@ -2163,7 +2184,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       // Covers a crash after retirement/DB handoff but before run completion.
       // No guest or provider I/O is needed to acknowledge that same obligation.
       const acknowledge = async () => {
-        await request.onActivity?.(workspaceLifecycleActivity({ kind: "execution_status", runId: request.runId,
+        if (binding.guestUsed) await request.onActivity?.(workspaceLifecycleActivity({ kind: "execution_status", runId: request.runId,
           phase: "closed" })).catch(() => undefined);
         return { status: "ready" as const };
       };
@@ -2199,6 +2220,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
         return { code: runtimeCode(error), retryable: true, status: "failed" };
       }
       if (claim.status === "complete") {
+        // Empty capture publication and authority retirement are separate
+        // durable steps. Finish the latter after a crash, without touching a
+        // successor's operation or contacting the runner.
+        if (!initial.guestUsed && (initial.operationOwner === workspaceRunOperationOwner(runId) ||
+          initial.operationOwner?.startsWith(`export:${runId}:`))) {
+          await input.repository.retireUnusedRun(initial);
+        }
         return { files: await input.repository.generatedFiles({ runId, userId }), status: "complete" };
       }
       if (claim.status === "failed") {
@@ -2258,7 +2286,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
         exportSignal.throwIfAborted();
         const capture = await input.repository.reserveOutputCapture(lease);
         if (!capture) throw new WorkspaceRuntimeError("workspace_operation_stale");
-        if (!initial.runtimeSandboxId) {
+        // The claim fences new dispatches. Re-read after it to include a guest
+        // operation that raced our initial binding read.
+        const current = await input.repository.binding({ runId, userId });
+        if (!current || current.operationOwner !== lease.operation.owner || current.operationGeneration !== lease.operation.generation) {
+          throw new WorkspaceRuntimeError("workspace_operation_stale");
+        }
+        if (!current.guestUsed || !initial.runtimeSandboxId) {
           if (!(await input.repository.sealOutputCapture({ ...lease, capture: { id: capture.id, outputs: [] } }))) {
             throw new WorkspaceRuntimeError("workspace_output_export_failed");
           }

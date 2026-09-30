@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import type { SettingsValidationModel, UserSettingsUpdate } from "./handlers";
 import { createPrismaSettingsRepository } from "./prismaRepository";
+import { applySettingsUpdateInTransaction } from "./settingsTransaction";
 import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
 import { provisionActiveUser } from "../auth/provisioning";
 
@@ -233,6 +234,51 @@ describe("Prisma-backed settings repository", () => {
           }
         }
       });
+    });
+  });
+
+  it("preserves keyed patches while an owner-locked admission accepts defaults without a lock cycle", async () => {
+    await withSettingsUser(async ({ userId, validationModels }) => {
+      const repository = createTestSettingsRepository(validationModels);
+      await prisma.userSettings.update({ where: { userId }, data: {
+        defaultControlValues: { "openai:model-a": { maxOutputTokens: "1024" } }
+      } });
+      let patch: ReturnType<typeof repository.updateSettings> | undefined;
+      try {
+        await prisma.$transaction(async tx => {
+          // Run admission already owns this lock before it persists defaults.
+          await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
+          const [owner] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+          patch = repository.updateSettings(userId, { defaultProviderModelId: null,
+            defaultControlValues: { "other:model": { reasoningEffort: "low" } } });
+          void patch.catch(() => undefined);
+          // Observe a real competing transaction blocked by this exact owner,
+          // so the assertion does not depend on request scheduling or sleeps.
+          const deadline = Date.now() + 3000;
+          let waiting = false;
+          while (!waiting && Date.now() < deadline) {
+            await tx.$executeRaw`SELECT pg_stat_clear_snapshot()`;
+            const rows = await tx.$queryRaw<Array<{ pid: number }>>`
+              SELECT pid FROM pg_stat_activity WHERE ${owner!.pid} = ANY(pg_blocking_pids(pid))
+            `;
+            waiting = rows.length > 0;
+            if (!waiting) await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          expect(waiting).toBe(true);
+          // Before the fix the patch held UserSettings and waited for User;
+          // this write then waited for UserSettings, closing the deadlock.
+          expect(await applySettingsUpdateInTransaction(tx, userId,
+            { defaultControlValues: { "openai:model-a": { temperature: "0.2" } } }, validationModels))
+            .toMatchObject({ kind: "updated" });
+        }, { timeout: 10_000 });
+        await expect(patch).resolves.toMatchObject({ kind: "updated" });
+        expect(await prisma.userSettings.findUniqueOrThrow({ where: { userId }, select: {
+          defaultControlValues: true, defaultProviderModelId: true
+        } })).toEqual({ defaultProviderModelId: null, defaultControlValues: {
+          "openai:model-a": { maxOutputTokens: "1024", temperature: "0.2" },
+          "other:model": { reasoningEffort: "low" }
+        } });
+      } finally { await patch?.catch(() => undefined); }
     });
   });
 

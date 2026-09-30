@@ -1,6 +1,7 @@
 import type { AdminProviderModel } from "@/lib/contracts/adminProviders";
 import type { AdminProviderModelSaveReceipt } from "@/lib/contracts/adminProviderModelSave";
 import { modelFormFrom, type ModelForm } from "./modelSheetView";
+import { ADMIN_MODEL_PRICE_FIELDS, normalizeAdminModelPrice } from "@/lib/contracts/adminProviderModelPrices";
 
 export type AdminProviderModelPersistence = Readonly<{
   receipt: AdminProviderModelSaveReceipt | null;
@@ -19,6 +20,8 @@ export function modelSaveValuesEqual(left: unknown, right: unknown): boolean {
 }
 
 function sameField(key: keyof ModelForm, left: ModelForm, right: ModelForm): boolean {
+  if (key === "prices") return ADMIN_MODEL_PRICE_FIELDS.every(field =>
+    normalizeAdminModelPrice(left.prices[field].trim() || null) === normalizeAdminModelPrice(right.prices[field].trim() || null));
   if (key === "defaultParamsText") {
     try { return modelSaveValuesEqual(JSON.parse(left[key]), JSON.parse(right[key])); } catch { return false; }
   }
@@ -37,7 +40,11 @@ export function reconcileModelForm(baseline: ModelForm, submitted: ModelForm, pe
   let confirmed = false;
   for (const key of Object.keys(submitted) as Array<keyof ModelForm>) {
     if (modelSaveValuesEqual(submitted[key], baseline[key])) continue;
-    const acknowledged = persistence.receipt && (key === "displayName" || persistence.receipt.saved === "configuration");
+    const acknowledged = persistence.receipt && (key === "prices"
+      ? persistence.receipt.pricing && ADMIN_MODEL_PRICE_FIELDS.every(field =>
+        normalizeAdminModelPrice(submitted.prices[field].trim() || null) === persistence.receipt!.pricing!.prices[field])
+      : key === "priceSource" ? persistence.receipt.pricing?.source === submitted.priceSource
+      : key === "displayName" || persistence.receipt.saved === "configuration");
     if (acknowledged || server && sameField(key, submitted, server)) {
       Object.assign(next, { [key]: submitted[key] });
       confirmed = true;

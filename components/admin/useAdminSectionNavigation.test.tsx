@@ -8,6 +8,11 @@ import {
   type AdminSectionNavigationOptions
 } from "./useAdminSectionNavigation";
 
+const { signOutCurrentSession } = vi.hoisted(() => ({
+  signOutCurrentSession: vi.fn(async () => ({ ok: true as const }))
+}));
+vi.mock("@/components/app-shell/sessionActions", () => ({ signOutCurrentSession }));
+
 function stubViewport(width: number) {
   vi.stubGlobal("matchMedia", (query: string) => ({
     addEventListener: () => undefined,
@@ -33,6 +38,7 @@ function renderNavigation(options: AdminSectionNavigationOptions = {}) {
           {navigation.sectionIndexOpen ? "open" : "closed"}
         </output>
         <AdminShell
+          accountId="admin-1"
           accountLabel="admin@example.com"
           navigation={navigation}
           releaseStatus={null}
@@ -145,6 +151,7 @@ describe("useAdminSectionNavigation", () => {
       const navigation = useAdminSectionNavigation();
       return (
         <AdminShell
+          accountId="admin-1"
           accountLabel="admin@example.com"
           navigation={navigation}
           releaseStatus={null}
@@ -550,5 +557,15 @@ describe("useAdminSectionNavigation", () => {
     act(() => harness.navigation.restoreFocusAfterMutation());
     await waitFor(() => expect(activeLink).toHaveFocus());
     hiddenOwner.remove();
+  });
+
+  it("signs out the administrator's own account, clearing its drafts without chat-shell state", async () => {
+    stubViewport(1440);
+    renderNavigation();
+    fireEvent.click(screen.getAllByRole("button", { name: "Account menu" })[0]!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    });
+    expect(signOutCurrentSession).toHaveBeenCalledWith({ accountId: "admin-1" });
   });
 });

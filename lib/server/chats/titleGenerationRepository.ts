@@ -1,3 +1,4 @@
+import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
 import { storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
@@ -102,11 +103,11 @@ export function createChatTitleRepository(client: PrismaClient) {
         if (!event || event.usageCompleteness !== "UNAVAILABLE") return;
         const pricing = await tx.providerModel.findUnique({
           where: { id: work.providerSnapshot.providerModelId },
-          select: { inputTokenPriceMicros: true, outputTokenPriceMicros: true }
+          select: { ...modelTokenPricingSelect }
         });
         const estimatedCostMicros = pricing &&
-          (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0)
-          ? estimateCostMicros(usage, pricing) : null;
+          (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
+          ? estimateCostMicros(usage, modelTokenPricing(pricing)) : null;
         await tx.usageEvent.update({ where: { id: event.id }, data: { ...storedTokenUsage(usage), estimatedCostMicros } });
         // The title receipt is separate from answer settlement. Enrichment can
         // neither reopen its terminal state nor replace the answer's events.

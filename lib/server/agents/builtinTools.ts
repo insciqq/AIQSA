@@ -1,4 +1,4 @@
-import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { defaultWorkspaceCheckpoints, type createWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { executionFailure } from "../runs/executionFailure";
 import type { NormalizedRunRequest } from "../providers/types";
@@ -21,7 +21,7 @@ export const AGENT_BUILTIN_TOOL_NAMES = [ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_
 export const agentBuiltinTools = (request: NormalizedRunRequest) => [
   ...(request.toolObservationVersion === 1 ? [readToolResultTool] : []),
   ...(request.artifactTool ? [artifactTool(request.artifactToolDescription), readArtifactTool()] : []),
-  ...(request.workspace && request.workspaceCheckpoints ? [checkpointOutputsTool] : []),
+  ...(request.workspace && request.workspaceCheckpoints ? [checkpointOutputsToolForRequest(request)] : []),
   ...(request.imagePlan ? [imageGenerationTool(request.imagePlan)] : []),
   ...(request.workspace && request.visionAnalysis ? [analyzeImageTool(request.visionAnalysis)] : [])
 ];

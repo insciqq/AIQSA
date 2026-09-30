@@ -58,13 +58,30 @@ describe("persisted catalog selection", () => {
     });
   });
 
+  it("persists fractional catalog prices for a newly added answer model", async () => {
+    await fixture(async ({ connectionId, credentialId, credentialVersionId }) => {
+      const repository = createPrismaAdminProviderRepository(prisma);
+      const candidate = providerSetupModels("openrouter").find(model => model.configuration.upstreamModelId === "openai/gpt-6-luna")!;
+      const id = randomUUID();
+      expect(await repository.addSetupModelsCas({ connectionId, credentialId, credentialVersionId, connectionVersion: 1,
+        now: new Date(), catalogSelectionIds: [candidate.modelId], models: [{ ...candidate, id, templateKey: null,
+          configuration: initialModelConfiguration(candidate.configuration) }] })).toBe("updated");
+      const saved = await prisma.providerModel.findUniqueOrThrow({ where: { id } });
+      expect(saved.inputTokenPriceUsdPerMillion?.toString()).toBe("0.1");
+      expect(saved.cachedInputTokenPriceUsdPerMillion?.toString()).toBe("0.01");
+      expect(saved.cacheWriteInputTokenPriceUsdPerMillion?.toString()).toBe("0.125");
+      expect(saved.outputTokenPriceUsdPerMillion?.toString()).toBe("0.5");
+      expect(saved.priceSource).toBe("catalog");
+    });
+  });
+
   it("deduplicates committed concurrent additions and rejects a selection skipped before insertion", async () => {
     await fixture(async ({ connectionId, credentialId, credentialVersionId }) => {
       const repository = createPrismaAdminProviderRepository(prisma);
       const candidate = presets[0]!;
       const write = { connectionId, credentialId, credentialVersionId, connectionVersion: 1, now: new Date(), catalogSelectionIds: [candidate.modelId] };
       const model = { configuration: initialModelConfiguration(candidate.configuration), displayName: candidate.displayName,
-        inputTokenPriceMicros: 0, outputTokenPriceMicros: 0, templateKey: null };
+        inputTokenPriceUsdPerMillion: 0, outputTokenPriceUsdPerMillion: 0, templateKey: null };
       expect(await Promise.all([1, 2].map(() => repository.addSetupModelsCas({ ...write, models: [{ ...model, id: randomUUID() }] })))).toEqual(["updated", "updated"]);
       expect(await prisma.providerModel.count({ where: { connectionId } })).toBe(1);
       expect(await prisma.providerModelCredentialCheck.count({ where: { connectionId } })).toBe(1);

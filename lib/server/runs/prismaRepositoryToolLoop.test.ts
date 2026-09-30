@@ -12,6 +12,8 @@ import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { freezeSkillManifest } from "../skills/runManifest";
 import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { INITIAL_PROVIDER_CONTINUATION, parseToolLoopCheckpoint, toolLoopCheckpoint } from "./toolLoopPersistence";
+import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
+import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "../workspace/config";
 
 function activityStore() {
   const rows: { eventType: string; payload: unknown; sequence: number }[] = [];
@@ -452,6 +454,52 @@ describe("provider dispatch recovery request loading", () => {
     searchPlan: { mode: "all_selected", options: [] },
     toolMode: "none"
   } satisfies NormalizedRunRequest;
+
+  const workspace: NonNullable<NormalizedRunRequest["workspace"]> = {
+    enabled: true, imageRef: "synthetic:fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: false,
+    mcpVersion: WORKSPACE_MCP_VERSION, runtimeVersion: WORKSPACE_RUNTIME_VERSION, maxToolCalls: 30, maxToolRounds: 12,
+    messageManifestPath: "/workspace/inbox/messages/message-one/manifest.json", outputDirectory: workspaceRunOutputDirectory("run-one"),
+    projectDirectory: "/workspace/project", sessionId: "ws-fixture", syncToolTimeoutSeconds: 60,
+    toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 600
+  };
+
+  it.each([undefined, 1] as const)("round-trips accepted Workspace contract fields through the strict stored-request loader (%s)", async guidanceVersion => {
+    const accepted: NormalizedRunRequest = { ...normalizedRequest, workspace: { ...workspace,
+      ...(guidanceVersion === undefined ? {} : { guidanceVersion }) }, workspaceCheckpoints: true,
+      ...(guidanceVersion === undefined ? {} : { workspaceCheckpointToolDescription: "Exact accepted checkpoint description." }),
+      prompt: { developer: null, system: "Exact accepted Workspace system contract." },
+      imageReferences: [{ attachmentId: "image-one", messageId: "message-one", fileName: "synthetic.png", origin: "upload" }] };
+    const stored = JSON.parse(JSON.stringify(accepted)) as unknown;
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: stored, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
+  });
+
+  it.each([
+    { workspace: { ...workspace, guidanceVersion: 0 } },
+    { workspace: { ...workspace, guidanceVersion: 2 } },
+    { workspace: { ...workspace, guidanceVersion: "1" } },
+    { workspaceCheckpointToolDescription: "" },
+    { workspaceCheckpointToolDescription: "  " },
+    { workspaceCheckpointToolDescription: "a\u0000b" },
+    { workspaceCheckpointToolDescription: "x".repeat(16_385) },
+    { workspaceCheckpointToolDescription: 1 },
+    { workspaceCheckpoints: undefined },
+    { workspace: undefined },
+    { imageReferences: [{ attachmentId: "image-one", messageId: "message-one", fileName: "synthetic.png", origin: "unknown" }] },
+    { imageReferences: [{ attachmentId: "image-one", messageId: "message-one", fileName: "synthetic.png", origin: "upload", path: "/untrusted" }] }
+  ])("rejects malformed or unadmitted persisted Workspace fields (%#)", async patch => {
+    const accepted = { ...normalizedRequest, workspace: { ...workspace, guidanceVersion: 1 }, workspaceCheckpoints: true,
+      workspaceCheckpointToolDescription: "Frozen description", ...patch };
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+      .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
 
   it("keeps historical requests on the legacy path and accepts the explicit Off marker", async () => {
     let accepted: unknown = normalizedRequest;

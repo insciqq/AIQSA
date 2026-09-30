@@ -3,7 +3,7 @@ import { captureMcpObservation, captureWorkspaceObservation, captureSearchObserv
   OBSERVATION_RESTORE_FAILURE, observationRestoreRefused, observationWholeDeliveryBatches, type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
-import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
 import { RunSettlementError, isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
 import { isWorkspaceOperationFailureCode, workspaceOperationFailureMessage } from "@/lib/contracts/workspaceFailure";
@@ -2089,7 +2089,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const tools: RunTool[] = [
           ...(clientToolsEnabled && normalizedRequest.memorySearch ? [memorySearchTool(normalizedRequest.memorySearch)] : []),
           ...skillToolsForRequest(normalizedRequest),
-          ...(normalizedRequest.workspaceCheckpoints ? [checkpointOutputsTool] : []),
+          ...(normalizedRequest.workspaceCheckpoints ? [checkpointOutputsToolForRequest(normalizedRequest)] : []),
           ...(normalizedRequest.visionAnalysis ? [analyzeImageTool(normalizedRequest.visionAnalysis)] : []),
           ...(normalizedRequest.workspaceImageView ? [viewWorkspaceImageTool] : []),
           ...(clientToolsEnabled && normalizedRequest.imagePlan ? [imageGenerationTool(normalizedRequest.imagePlan)] : []),

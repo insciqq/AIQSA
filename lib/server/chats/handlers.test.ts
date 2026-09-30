@@ -397,10 +397,11 @@ describe("chat route handlers", () => {
         title: "Provider error",
         updatedAt: "2026-06-07T09:00:02.000Z",
         usageStats: {
-          incompleteRunCount: 0,
-          activeBranchMessageCount: 2,
-          cachedInputTokens: 4,
-          cacheWriteInputTokens: 1,
+          hasCompletedAnswer: false,
+          incompleteRecordCount: 0,
+          recordCount: 2,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: 19
         }
       }),
@@ -430,10 +431,11 @@ describe("chat route handlers", () => {
     await expect(response.json()).resolves.toMatchObject({
       chat: {
         usageStats: {
-          incompleteRunCount: 0,
-          activeBranchMessageCount: 2,
-          cachedInputTokens: 4,
-          cacheWriteInputTokens: 1,
+          hasCompletedAnswer: false,
+          incompleteRecordCount: 0,
+          recordCount: 2,
+          knownCostRecordCount: 0,
+          estimatedCostMicros: null,
           totalTokens: 19
         },
         messages: [

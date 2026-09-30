@@ -13,6 +13,7 @@ import {
 } from "@/lib/server/auth/adminSerializationPrimitives";
 
 export type AdminUsageAggregateSums = Readonly<{
+  estimatedCostMicros?: number | null;
   cachedInputTokens?: number | null;
   cacheWriteInputTokens?: number | null;
   inputTokens?: number | null;
@@ -22,6 +23,8 @@ export type AdminUsageAggregateSums = Readonly<{
 }>;
 
 export type AdminUsageAggregateSource = Readonly<{
+  recordCount: number;
+  knownCostRecordCount: number;
   incompleteUsageCount: number;
   _count: Readonly<{
     _all: number;
@@ -69,18 +72,26 @@ export type AdminUsageAggregationInput = Readonly<{
 }>;
 
 function emptyUsageTotals(): AdminUsageTokenTotals {
-  return { cachedInputTokens: null, cacheWriteInputTokens: null, inputTokens: null,
+  return {
+    estimatedCostMicros: null, recordCount: 0, knownCostRecordCount: 0,
+    cachedInputTokens: null, cacheWriteInputTokens: null, inputTokens: null,
     lastUsedAt: null, outputTokens: null, reasoningTokens: null, runCount: 0,
-    incompleteUsageCount: 0, totalTokens: null };
+    incompleteUsageCount: 0, totalTokens: null
+  };
 }
 
 function usageTotalsFromAggregate(input: {
   count: number;
+  recordCount: number;
+  knownCostRecordCount: number;
   incompleteUsageCount: number;
   lastUsedAt: Date | null;
   sums: AdminUsageAggregateSums;
 }): AdminUsageTokenTotals {
   return {
+    estimatedCostMicros: input.knownCostRecordCount > 0 ? reportedTokenCount(input.sums.estimatedCostMicros) : null,
+    recordCount: input.recordCount,
+    knownCostRecordCount: input.knownCostRecordCount,
     cachedInputTokens: reportedTokenCount(input.sums.cachedInputTokens),
     cacheWriteInputTokens: reportedTokenCount(input.sums.cacheWriteInputTokens),
     inputTokens: reportedTokenCount(input.sums.inputTokens),
@@ -106,6 +117,9 @@ function addUsageTotals(left: AdminUsageTokenTotals, right: AdminUsageTokenTotal
       : left.lastUsedAt ?? right.lastUsedAt;
 
   return {
+    estimatedCostMicros: sumKnown(left.estimatedCostMicros, right.estimatedCostMicros),
+    recordCount: left.recordCount + right.recordCount,
+    knownCostRecordCount: left.knownCostRecordCount + right.knownCostRecordCount,
     cachedInputTokens: sumKnown(left.cachedInputTokens, right.cachedInputTokens),
     cacheWriteInputTokens: sumKnown(left.cacheWriteInputTokens, right.cacheWriteInputTokens),
     inputTokens: sumKnown(left.inputTokens, right.inputTokens),
@@ -134,6 +148,8 @@ export function serializeAdminUsageDashboard(input: AdminUsageAggregationInput):
     const providerModel = {
       ...usageTotalsFromAggregate({
         count: row._count._all,
+        recordCount: row.recordCount,
+        knownCostRecordCount: row.knownCostRecordCount,
         incompleteUsageCount: row.incompleteUsageCount,
         lastUsedAt: row._max.createdAt,
         sums: row._sum
@@ -154,6 +170,8 @@ export function serializeAdminUsageDashboard(input: AdminUsageAggregationInput):
       row.userId,
       usageTotalsFromAggregate({
         count: row._count._all,
+        recordCount: row.recordCount,
+        knownCostRecordCount: row.knownCostRecordCount,
         incompleteUsageCount: row.incompleteUsageCount,
         lastUsedAt: row._max.createdAt,
         sums: row._sum

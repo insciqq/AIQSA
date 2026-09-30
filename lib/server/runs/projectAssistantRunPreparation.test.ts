@@ -194,6 +194,7 @@ function harness(options: Readonly<{
     providers: { openai_compatible: fakeAdapter },
     repository: {
       loadAssistantRowContext,
+      loadWorkspaceFileFacts: async () => ({ hasFiles: false, hasEarlierExports: false }),
       loadAttachments: vi.fn(async () => []),
       loadConversationContextForExpectedLeaf: vi.fn(async () => []),
       loadConversationContextForLeaf: vi.fn(async () => []),

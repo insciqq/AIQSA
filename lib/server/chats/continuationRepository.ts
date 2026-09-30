@@ -1,3 +1,4 @@
+import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
 import { storedTokenUsage } from "../usage";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -503,13 +504,13 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
 
     async recordUsage({ claim, ordinal, source, provider, modelId, providerModelId, usage }) {
       const pricing = await client.providerModel.findUnique({ where: { id: providerModelId }, select: {
-        inputTokenPriceMicros: true, outputTokenPriceMicros: true
+        ...modelTokenPricingSelect
       } });
       const data = {
         userId: source.userId, chatId: source.chatId, projectId: source.projectId, provider, modelId,
         ...storedTokenUsage(usage),
-        estimatedCostMicros: pricing && (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0)
-          ? estimateCostMicros(normalizeTokenUsage(usage), pricing) : null
+        estimatedCostMicros: pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
+          ? estimateCostMicros(normalizeTokenUsage(usage), modelTokenPricing(pricing)) : null
       };
       await client.usageEvent.upsert({ where: { id: `chat-summary:${claim.id}:${claim.attemptId}:${ordinal}` },
         create: { ...data, id: `chat-summary:${claim.id}:${claim.attemptId}:${ordinal}` }, update: data });

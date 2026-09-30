@@ -1,3 +1,4 @@
+import { catalogModelTokenPricing } from "../../../domain/modelPrices";
 import { ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES } from "../../../contracts/adminProviderCustomSetup";
 import { imageModelConfiguration, initialImageModels } from "../../../domain/imageModels";
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
@@ -13,15 +14,25 @@ export type SetupModel = Readonly<{
   displayName: string;
   modelId: string;
   templateKey: string;
-  inputTokenPriceMicros: number;
-  outputTokenPriceMicros: number;
+  inputTokenPriceUsdPerMillion: number | null;
+  cachedInputTokenPriceUsdPerMillion?: number | null;
+  cacheWriteInputTokenPriceUsdPerMillion?: number | null;
+  outputTokenPriceUsdPerMillion: number | null;
 }>;
+
+/**
+ * codex-lb identity of an `openai_compatible` endpoint. Accepts stored JSON; the
+ * `20260930130000_model_token_prices` migration mirrors this predicate in SQL.
+ */
+export function codexLbEndpoint(connection: Readonly<{ apiRoot?: unknown; responsesRequestIsolationDetected?: unknown }> | null | undefined): boolean {
+  if (typeof connection?.responsesRequestIsolationDetected === "boolean") return connection.responsesRequestIsolationDetected;
+  // Older connections predate the catalog marker; retain their explicit Codex endpoint identity.
+  return typeof connection?.apiRoot === "string" && connection.apiRoot.endsWith("/backend-api/codex");
+}
 
 /** Code-owned candidates only; availability and capabilities still need exact-key checks. */
 export function providerSetupModels(family: string, connection?: Pick<ProviderConnectionConfiguration, "apiRoot" | "responsesRequestIsolationDetected">): readonly SetupModel[] {
-  // Older connections predate the catalog marker; retain their explicit Codex endpoint identity.
-  const codexLb = connection?.responsesRequestIsolationDetected ?? connection?.apiRoot.endsWith("/backend-api/codex");
-  if (family === "openai_compatible" && codexLb) {
+  if (family === "openai_compatible" && codexLbEndpoint(connection)) {
     const answers: SetupModel[] = adminProviderQuickSetupPolicy("openai").candidates.map(candidate => {
       const upstreamModelId = candidate.configuration.upstreamModelId;
       return {
@@ -31,12 +42,13 @@ export function providerSetupModels(family: string, connection?: Pick<ProviderCo
           defaultParams: { reasoning: { effort: "medium" } }
         },
         displayName: candidate.displayName, modelId: `codex-lb:${upstreamModelId}`, templateKey: `codex-lb:${upstreamModelId}`,
-        inputTokenPriceMicros: 0, outputTokenPriceMicros: 0
+        // codex-lb is priced like the OpenAI API for the same upstream model.
+        ...catalogModelTokenPricing(`openai:${upstreamModelId}`)
       };
     });
     return [...answers, {
       configuration: imageModelConfiguration("gpt-image-2", { profile: "codex_lb" }), displayName: "GPT Image 2",
-      modelId: "codex-lb:gpt-image-2", templateKey: "codex-lb:gpt-image-2", inputTokenPriceMicros: 0, outputTokenPriceMicros: 0
+      modelId: "codex-lb:gpt-image-2", templateKey: "codex-lb:gpt-image-2", inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null
     }];
   }
   if (!ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(family as AdminProviderQuickSetupProviderId)) return [];
@@ -45,8 +57,10 @@ export function providerSetupModels(family: string, connection?: Pick<ProviderCo
     displayName: candidate.displayName,
     modelId: candidate.modelId,
     templateKey: candidate.templateKey,
-    inputTokenPriceMicros: candidate.model.inputTokenPriceMicros,
-    outputTokenPriceMicros: candidate.model.outputTokenPriceMicros
+    inputTokenPriceUsdPerMillion: candidate.model.inputTokenPriceUsdPerMillion,
+    cachedInputTokenPriceUsdPerMillion: candidate.model.cachedInputTokenPriceUsdPerMillion ?? null,
+    cacheWriteInputTokenPriceUsdPerMillion: candidate.model.cacheWriteInputTokenPriceUsdPerMillion ?? null,
+    outputTokenPriceUsdPerMillion: candidate.model.outputTokenPriceUsdPerMillion
   }));
   const helpers = family === "openrouter" ? [
     ...embeddingPresetsForFamily(family).filter((preset) => preset.default).map((preset) => ({
@@ -60,14 +74,14 @@ export function providerSetupModels(family: string, connection?: Pick<ProviderCo
     const templateKey = `${family}:${candidate.configuration.upstreamModelId}`;
     const modelId = providerModelTemplateId(templateKey);
     if (!modelId) throw new Error("provider_setup_template_missing");
-    return { ...candidate, modelId, templateKey, inputTokenPriceMicros: 0, outputTokenPriceMicros: 0 };
+    return { ...candidate, modelId, templateKey, inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null };
   }) : [];
   const images = initialImageModels(family).map((preset) => {
     const templateKey = `${family}:${preset.id}`;
     const modelId = providerModelTemplateId(templateKey);
     if (!modelId) throw new Error("provider_setup_template_missing");
     return { configuration: imageModelConfiguration(preset.id, { profile: preset.profile }),
-      displayName: preset.name, templateKey, modelId, inputTokenPriceMicros: 0, outputTokenPriceMicros: 0 };
+      displayName: preset.name, templateKey, modelId, inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null };
   });
   return [...answers, ...helpers, ...images];
 }

@@ -6,7 +6,8 @@ export const workspaceCheckpointProofSql = `
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "_WorkspaceCaptureUpgradeFixture" f
     JOIN "WorkspaceRunBinding" b ON b."modelRunId" = 'checkpoint-adoption-run'
-    JOIN "WorkspaceSession" s ON s.id = b."workspaceSessionId" WHERE f.binding = to_jsonb(b) AND f.session = to_jsonb(s))
+    JOIN "WorkspaceSession" s ON s.id = b."workspaceSessionId"
+    WHERE f.binding = to_jsonb(b) - 'guestUsedAt' AND b."guestUsedAt" IS NOT NULL AND f.session = to_jsonb(s))
     THEN RAISE EXCEPTION 'checkpoint_upgrade_changed_legacy_export'; END IF;
   IF EXISTS (SELECT 1 FROM "WorkspaceOutputCheckpoint") OR EXISTS (SELECT 1 FROM "WorkspaceCheckpointFile")
     THEN RAISE EXCEPTION 'checkpoint_upgrade_invented_publication'; END IF;

@@ -1,4 +1,5 @@
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
+import type { AdminModelPriceChange, AdminModelPricing } from "../../../contracts/adminProviderModelPrices";
 import type {
   AdminProviderCheckStatus,
   AdminProviderConnection,
@@ -219,8 +220,10 @@ export type ProviderCredentialActivationWrite = Readonly<{
     configuration: ProviderModelConfiguration;
     displayName: string;
     id: string;
-    inputTokenPriceMicros: number;
-    outputTokenPriceMicros: number;
+    inputTokenPriceUsdPerMillion: number | null;
+    cachedInputTokenPriceUsdPerMillion?: number | null;
+    cacheWriteInputTokenPriceUsdPerMillion?: number | null;
+    outputTokenPriceUsdPerMillion: number | null;
     templateKey: string | null;
   }>[];
   bootstrap?: Readonly<{
@@ -337,7 +340,8 @@ export type AdminProviderRepository = Readonly<{
     displayName: string;
     family: AdminProviderFamily;
     id: string;
-  }): Promise<"connection_not_found" | "created" | "family_mismatch">;
+    pricing?: AdminModelPriceChange;
+  }): Promise<"connection_not_found" | "created" | "family_mismatch" | "pricing_unavailable" | { status: "created"; pricing: AdminModelPricing }>;
   deleteConnection(connectionId: string): Promise<AdminProviderDeleteResult>;
   deleteCredential(credentialId: string): Promise<AdminProviderDeleteResult>;
   deleteModel(modelId: string): Promise<AdminProviderDeleteResult>;
@@ -369,6 +373,14 @@ export type AdminProviderRepository = Readonly<{
     modelId: string;
     now: Date;
   }): Promise<ProviderDraftMutationResult>;
+  updateModelMetadataCas(input: Omit<AdminProviderModelEditGuard, "expectedUpdatedAt"> & {
+    connectionId: string;
+    displayName: string;
+    expectedUpdatedAt: Date;
+    modelId: string;
+    now: Date;
+    pricing: AdminModelPriceChange;
+  }): Promise<"not_found" | "stale" | "pricing_unavailable" | { status: "updated"; pricing: AdminModelPricing }>;
   revokeCredentialVersion(input: {
     clearSecret: boolean;
     credentialId: string;
@@ -402,7 +414,8 @@ export type AdminProviderRepository = Readonly<{
     expectedUpdatedAt: Date;
     family: AdminProviderFamily;
     modelId: string;
-  }): Promise<ProviderDraftMutationResult | "family_mismatch" | "model_class_mismatch">;
+    pricing?: AdminModelPriceChange;
+  }): Promise<ProviderDraftMutationResult | "family_mismatch" | "model_class_mismatch" | "pricing_unavailable" | { status: "updated"; pricing: AdminModelPricing }>;
   withLockedCredential<Value>(
     credentialId: string,
     credentialVersionId: string,

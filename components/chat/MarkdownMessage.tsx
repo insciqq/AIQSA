@@ -96,10 +96,11 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
       <span
         className="inline-block max-w-full align-middle text-ink"
         data-math-display="false"
+        data-math-source={source}
         dangerouslySetInnerHTML={{ __html: renderedHtml }}
       />
     ) : (
-      <span data-math-display="false">{raw}</span>
+      <span data-math-display="false" data-math-source={source}>{raw}</span>
     );
   }
 
@@ -107,6 +108,7 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
     <div
       className="max-w-full overflow-x-auto overflow-y-hidden py-1 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [&_.katex-display]:!my-0"
       data-math-display="true"
+      data-math-source={source}
       role="region"
       aria-label="Scrollable mathematical formula"
       tabIndex={0}
@@ -325,31 +327,31 @@ function renderHeading(
   switch (level) {
     case 1:
       return (
-        <h2 className={className} key={keyPrefix}>
+        <h2 className={className} data-markdown-heading={level} key={keyPrefix}>
           {children}
         </h2>
       );
     case 2:
       return (
-        <h3 className={className} key={keyPrefix}>
+        <h3 className={className} data-markdown-heading={level} key={keyPrefix}>
           {children}
         </h3>
       );
     case 3:
       return (
-        <h4 className={className} key={keyPrefix}>
+        <h4 className={className} data-markdown-heading={level} key={keyPrefix}>
           {children}
         </h4>
       );
     case 4:
       return (
-        <h5 className={className} key={keyPrefix}>
+        <h5 className={className} data-markdown-heading={level} key={keyPrefix}>
           {children}
         </h5>
       );
     default:
       return (
-        <h6 className={className} key={keyPrefix}>
+        <h6 className={className} data-markdown-heading={level} key={keyPrefix}>
           {children}
         </h6>
       );
@@ -820,8 +822,8 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
   }
 
   return (
-    <div className="group/code min-w-0 max-w-full overflow-hidden rounded-panel border border-trace-subtle bg-answer-paper">
-      <div className="flex min-h-control items-center justify-between gap-3 border-b border-trace-subtle px-3">
+    <div className="group/code min-w-0 max-w-full overflow-hidden rounded-panel border border-trace-subtle bg-answer-paper" data-markdown-code-language={language}>
+      <div className="flex min-h-control items-center justify-between gap-3 border-b border-trace-subtle px-3" data-markdown-chrome="">
         {displayLanguage ? (
           <span className="truncate font-mono text-metadata text-ink-secondary">{displayLanguage}</span>
         ) : (

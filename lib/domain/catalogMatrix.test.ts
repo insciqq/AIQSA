@@ -196,8 +196,8 @@ describe("catalog capability matrix", () => {
             mode: "standard"
           }
         },
-        inputTokenPriceMicros: 0,
-        outputTokenPriceMicros: 0,
+        inputTokenPriceUsdPerMillion: expect.any(Number),
+        outputTokenPriceUsdPerMillion: expect.any(Number),
         parameterControls: {
           maxOutputTokens: {
             defaultValue: 65_536,

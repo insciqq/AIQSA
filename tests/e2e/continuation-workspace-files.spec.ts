@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "../../prisma/local-seed-auth";
+import { prepareWorkspaceFakeContext, configureWorkspaceOnlyTools, waitForWorkspaceExport, cleanupWorkspaceFixtureChat } from "./support/workspaceFixture";
 import {
   activeChatId,
   loginWithPassword,
@@ -14,8 +15,11 @@ import {
 } from "./support/workspace";
 
 const prisma = new PrismaClient();
+let restoreFakeContext: (() => Promise<void>) | null = null;
 
-test.afterAll(() => prisma.$disconnect());
+test.afterAll(async () => {
+  try { await restoreFakeContext?.(); } finally { await prisma.$disconnect(); }
+});
 test.setTimeout(240_000);
 
 test("continues a Workspace chat with its project files and runs in the new chat", async ({ page }) => {
@@ -61,6 +65,7 @@ test("continues a Workspace chat with its project files and runs in the new chat
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 
   try {
+    restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
     await prisma.workspacePolicy.update({ where: { id: "installation" }, data: { enabled: true } });
     await loginWithPassword(page, { email: LOCAL_OPERATOR_EMAIL, password: LOCAL_OPERATOR_PASSWORD });
     const configured = await page.request.post("/api/admin/providers/custom-setup", { timeout: 90_000, data: {
@@ -80,6 +85,7 @@ test("continues a Workspace chat with its project files and runs in the new chat
     await loginWithPassword(page, LOCAL_MCP_MEMBER);
     await startNewChat(page);
     await selectFakeModel(page);
+    await configureWorkspaceOnlyTools(page);
     const workspaceDetails = page.getByRole("button", { name: /Workspace details/u });
     await workspaceDetails.click();
     const workspaceOn = page.getByRole("menuitemcheckbox", { name: /Turn off Workspace/u });
@@ -95,12 +101,15 @@ test("continues a Workspace chat with its project files and runs in the new chat
       mimeType: "text/plain",
       name: "continuation-input.txt"
     });
+    await expect(page.getByRole("region", { name: "Attachments" }).getByRole("listitem").filter({ hasText: "continuation-input.txt" }))
+      .toHaveAttribute("data-attachment-status", "ready", { timeout: 15_000 });
     await sendAndExpect(
       page,
       "[AIQSA_WORKSPACE_E2E:deterministic_prepare]",
       "Workspace read the staged input and created result.zip"
     );
     sourceChatId = await activeChatId(page);
+    await waitForWorkspaceExport(prisma, sourceChatId);
     const sourceSession = await prisma.workspaceSession.findUniqueOrThrow({
       select: { runtimeSandboxId: true, state: true },
       where: { chatId: sourceChatId }
@@ -112,10 +121,15 @@ test("continues a Workspace chat with its project files and runs in the new chat
     await expect(indicator).toBeVisible();
     if (await indicator.getAttribute("aria-expanded") !== "true") await indicator.click();
     const dialog = page.getByRole("dialog", { name: "Chat context" });
-    await expect(dialog).toContainText("project files are copied into the new chat");
+    const continuationAction = dialog.getByRole("button", { name: "Summarize and open new chat", exact: true });
+    if (await continuationAction.getAttribute("data-tooltip")) {
+      await expect(continuationAction).toHaveAttribute("data-tooltip", /Workspace files, if on/);
+    } else {
+      await expect(dialog.getByText(/A new chat starts with a summary/)).toContainText("Workspace files, if on");
+    }
     const continuationResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(`/api/chats/${sourceChatId}/continue`), { timeout: 90_000 });
     await dialog.getByRole("button", { name: "Summarize and open new chat" }).click();
-    expect((await continuationResponse).status()).toBe(200);
+    expect([200, 202]).toContain((await continuationResponse).status());
 
     await expect.poll(async () => page.evaluate(() => window.location.pathname), {
       timeout: 90_000
@@ -131,6 +145,7 @@ test("continues a Workspace chat with its project files and runs in the new chat
 
     // Restoration is performed as part of the first run in the destination.
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:state_probe]", "Workspace state persisted.");
+    await waitForWorkspaceExport(prisma, destinationChatId);
     const activity = page.getByTestId("tool-activity-disclosure").last();
     if (await activity.getAttribute("open") === null) await activity.locator(":scope > summary").click();
     await expect(activity).toContainText("Read project/persisted.txt");
@@ -180,6 +195,10 @@ test("continues a Workspace chat with its project files and runs in the new chat
     expect(await activeChatId(page)).toBe(sourceChatId);
   } finally {
     const chatIds = [sourceChatId, destinationChatId].filter((id): id is string => Boolean(id));
+    // A failure before capturing the source id can still leave its admitted
+    // run alive. Browser navigation does not own that run's lifetime.
+    await cleanupWorkspaceFixtureChat(prisma, page);
+    for (const chatId of chatIds) await cleanupWorkspaceFixtureChat(prisma, page, chatId);
     if (chatIds.length) {
       await prisma.$transaction(async (tx) => {
         const runs = await tx.modelRun.findMany({ select: { id: true }, where: { chatId: { in: chatIds } } });

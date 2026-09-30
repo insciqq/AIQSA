@@ -256,6 +256,7 @@ export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolA
 }
 
 export type ThreadToolActivityCall = {
+  details?: { roundIndex: number; ordinal: number };
   memorySearchCall?: number;
   memorySearchOutcome?: MemorySearchActivityOutcome;
   skillId?: string;
@@ -350,10 +351,13 @@ export type WorkspaceChatSummary = {
 };
 
 export type ChatUsageStats = {
-  incompleteRunCount: number;
-  activeBranchMessageCount: number;
-  cachedInputTokens: number | null;
-  cacheWriteInputTokens: number | null;
+  hasCompletedAnswer: boolean;
+  /** A title receipt may settle after its presentation no longer says pending. */
+  titleUsagePending?: boolean;
+  recordCount: number;
+  knownCostRecordCount: number;
+  incompleteRecordCount: number;
+  estimatedCostMicros: number | null;
   totalTokens: number | null;
 };
 
@@ -361,6 +365,8 @@ export type ChatContextStats = {
   approximateActiveBranchInputTokens: number;
   session?: SessionContextStatus | null;
   sessionMessageId?: string | null;
+  sessionBranchLeafId?: string | null;
+  approximateInputTokensAfterSession?: number;
 };
 
 export type ChatMessagePageInfo = {
@@ -698,17 +704,22 @@ function nonNegativeInteger(value: unknown): number | null {
     : null;
 }
 
-function decodeUsageStats(value: unknown): ChatUsageStats | null | undefined {
+export function decodeChatUsageStats(value: unknown): ChatUsageStats | null | undefined {
   if (value === null) return null;
   if (!isRecord(value)) return undefined;
-  const activeBranchMessageCount = nonNegativeInteger(value.activeBranchMessageCount);
-  const incompleteRunCount = nonNegativeInteger(value.incompleteRunCount);
-  const fields = ["cachedInputTokens", "cacheWriteInputTokens", "totalTokens"] as const;
-  if (activeBranchMessageCount === null || incompleteRunCount === null ||
-    fields.some((field) => value[field] !== null && nonNegativeInteger(value[field]) === null)) return undefined;
-  return { activeBranchMessageCount, incompleteRunCount,
-    cachedInputTokens: value.cachedInputTokens as number | null,
-    cacheWriteInputTokens: value.cacheWriteInputTokens as number | null,
+  const recordCount = nonNegativeInteger(value.recordCount);
+  const knownCostRecordCount = nonNegativeInteger(value.knownCostRecordCount);
+  const incompleteRecordCount = nonNegativeInteger(value.incompleteRecordCount);
+  const fields = ["estimatedCostMicros", "totalTokens"] as const;
+  if (typeof value.hasCompletedAnswer !== "boolean" || value.titleUsagePending !== undefined && typeof value.titleUsagePending !== "boolean" ||
+    recordCount === null || knownCostRecordCount === null || incompleteRecordCount === null ||
+    ![recordCount, knownCostRecordCount, incompleteRecordCount].every(Number.isSafeInteger) ||
+    knownCostRecordCount > recordCount || incompleteRecordCount > recordCount ||
+    (knownCostRecordCount === 0) !== (value.estimatedCostMicros === null) ||
+    fields.some((field) => value[field] !== null && (nonNegativeInteger(value[field]) === null || !Number.isSafeInteger(value[field])))) return undefined;
+  return { hasCompletedAnswer: value.hasCompletedAnswer, recordCount, knownCostRecordCount, incompleteRecordCount,
+    ...(value.titleUsagePending === true ? { titleUsagePending: true } : {}),
+    estimatedCostMicros: value.estimatedCostMicros as number | null,
     totalTokens: value.totalTokens as number | null };
 }
 
@@ -719,7 +730,11 @@ function isoTimestamp(value: unknown): string | null {
 }
 
 function decodeContextStats(value: unknown): ChatContextStats | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["approximateActiveBranchInputTokens", ...("session" in value ? ["session"] : []), ...("sessionMessageId" in value ? ["sessionMessageId"] : [])])) {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "approximateActiveBranchInputTokens",
+    ...["session", "sessionMessageId", "sessionBranchLeafId", "approximateInputTokensAfterSession"]
+      .filter((key) => key in value)
+  ])) {
     return null;
   }
   const approximateActiveBranchInputTokens = nonNegativeInteger(
@@ -729,10 +744,18 @@ function decodeContextStats(value: unknown): ChatContextStats | null {
   if (value.session != null && session === null) return null;
   const sessionMessageId = value.sessionMessageId === undefined ? null : nullableId(value.sessionMessageId);
   if (sessionMessageId === undefined || (sessionMessageId !== null && !session)) return null;
+  const sessionBranchLeafId = value.sessionBranchLeafId === undefined ? null : nullableId(value.sessionBranchLeafId);
+  const approximateInputTokensAfterSession = value.approximateInputTokensAfterSession === undefined
+    ? 0 : nonNegativeInteger(value.approximateInputTokensAfterSession);
+  if (sessionBranchLeafId === undefined || approximateInputTokensAfterSession === null ||
+    !Number.isSafeInteger(approximateInputTokensAfterSession) ||
+    ((sessionBranchLeafId !== null || approximateInputTokensAfterSession > 0) && (!session || !sessionMessageId))) return null;
   return approximateActiveBranchInputTokens === null
     ? null
     : { approximateActiveBranchInputTokens, ...(session ? { session } : {}),
-        ...(sessionMessageId ? { sessionMessageId } : {}) };
+        ...(sessionMessageId ? { sessionMessageId } : {}),
+        ...(sessionBranchLeafId ? { sessionBranchLeafId } : {}),
+        ...(session ? { approximateInputTokensAfterSession } : {}) };
 }
 
 function decodeMessagePageInfo(value: unknown): ChatMessagePageInfo | null {
@@ -1047,7 +1070,17 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
     if (candidate.memorySearchCall !== undefined &&
       (!Number.isSafeInteger(candidate.memorySearchCall) || Number(candidate.memorySearchCall) < 1)) return null;
     if (candidate.memorySearchOutcome !== undefined && !isMemorySearchActivityOutcome(candidate.memorySearchOutcome)) return null;
+    let details: ThreadToolActivityCall["details"];
+    if (candidate.details !== undefined) {
+      if (candidate.origin !== "mcp" || !isRecord(candidate.details)) return null;
+      const roundIndex = nonNegativeInteger(candidate.details.roundIndex);
+      const ordinal = nonNegativeInteger(candidate.details.ordinal);
+      if (roundIndex === null || !Number.isSafeInteger(roundIndex) || roundIndex < 1 || roundIndex !== round ||
+        ordinal === null || !Number.isSafeInteger(ordinal)) return null;
+      details = { roundIndex, ordinal };
+    }
     calls.push({
+      ...(details ? { details } : {}),
       ...(candidate.origin === "memory" && candidate.toolName === "memory_search" ? {
         ...(candidate.memorySearchCall !== undefined ? { memorySearchCall: Number(candidate.memorySearchCall) } : {}),
         ...(isMemorySearchActivityOutcome(candidate.memorySearchOutcome) ? { memorySearchOutcome: candidate.memorySearchOutcome } : {})
@@ -1476,7 +1509,7 @@ export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null 
     ? null
     : decodeChatAssistantProjection(value.chat.assistant);
   const contextStats = decodeContextStats(value.chat.contextStats);
-  const usageStats = decodeUsageStats(value.chat.usageStats);
+  const usageStats = decodeChatUsageStats(value.chat.usageStats);
   const page = decodeMessagePage(value.chat.messages, value.chat.pageInfo, {
     requireActiveLeaf: true
   });
@@ -1811,7 +1844,7 @@ export function decodeChatUpdateData(value: unknown): ChatUpdateDataWire | null 
 
   const chat = decodeWorkspaceChatSummaryWire(value.chat);
   const contextStats = decodeContextStats(value.chat.contextStats);
-  const usageStats = decodeUsageStats(value.chat.usageStats);
+  const usageStats = decodeChatUsageStats(value.chat.usageStats);
   if (!chat || !contextStats || usageStats === undefined) {
     return null;
   }

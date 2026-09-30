@@ -14,6 +14,8 @@ export async function register(): Promise<void> {
     startNativeRoutingAdoption();
     const { startDecisionModelAdoption } = await import("./lib/server/bootstrap/decisionModelAdoption");
     startDecisionModelAdoption();
+    const { startCatalogCostBackfill } = await import("./lib/server/bootstrap/catalogCostBackfill");
+    startCatalogCostBackfill();
     const { startDefaultRunRecoveryScheduler } = await import(
       "./lib/server/runs/defaultRecoveryScheduler"
     );

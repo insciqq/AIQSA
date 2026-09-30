@@ -5,6 +5,12 @@ export type ComposerContextStats = Readonly<{
   safeInputBudgetTokens: number | null;
   totalContextTokens: number | null;
   session?: SessionContextStatus;
+  /** A historical measurement remains useful even when the next request differs. */
+  basis?: "measured" | "settings_changed" | "preliminary";
+  snapshotSource?: "live" | "persisted";
+  /** A request-phase measurement whose run is still in flight; otherwise it describes the last request. */
+  requestInFlight?: boolean;
+  approximateInputTokensAfterSession?: number;
   /** Bounded estimate for the next unsent message, added to session when present. */
   draftInputTokens?: number;
   answerReserveTokens?: number | null;
