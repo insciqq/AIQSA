@@ -1034,9 +1034,9 @@ describe("admin provider draft tester", () => {
       ...(adapterKind === "openai_responses_native" ? { background: false } : {}),
       max_output_tokens: 128,
       store: false,
-      stream: false,
       text: { format: { strict: true, type: "json_schema" } }
     });
+    expect(requestBody).not.toHaveProperty("stream");
     if (adapterKind === "openai_responses_compatible") {
       expect(requestBody).not.toHaveProperty("background");
     }
