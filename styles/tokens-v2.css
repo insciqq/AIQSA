@@ -18,6 +18,10 @@
   --v2-dark-color-accent-dim: rgb(56 223 208 / 0.12);
   --v2-dark-color-selection: rgb(56 223 208 / 0.3);
   --v2-dark-color-selection-code: rgb(56 223 208 / 0.2);
+  /* Pending comment marks: a warm marker wash, distinct from the cyan
+     selection; the open comment's mark is stronger. */
+  --v2-dark-color-comment-mark: rgb(242 196 107 / 0.26);
+  --v2-dark-color-comment-mark-active: rgb(242 196 107 / 0.34);
   /* Accent-coloured text on the accent-dim wash (active filter counters). */
   --v2-dark-color-accent-text: #38dfd0;
   --v2-dark-color-accent2: #b08cff;
@@ -48,6 +52,8 @@
   --v2-light-color-accent-dim: rgb(10 108 101 / 0.1);
   --v2-light-color-selection: rgb(10 108 101 / 0.24);
   --v2-light-color-selection-code: rgb(10 108 101 / 0.18);
+  --v2-light-color-comment-mark: rgb(244 184 40 / 0.32);
+  --v2-light-color-comment-mark-active: rgb(244 184 40 / 0.56);
   --v2-light-color-accent-text: #0a6f68;
   /* Slightly deeper than the dark theme's violet so code keywords keep 4.5:1
      on the light code background. */
@@ -120,6 +126,8 @@
   --v2-color-accent-dim: var(--v2-light-color-accent-dim);
   --v2-color-selection: var(--v2-light-color-selection);
   --v2-color-selection-code: var(--v2-light-color-selection-code);
+  --v2-color-comment-mark: var(--v2-light-color-comment-mark);
+  --v2-color-comment-mark-active: var(--v2-light-color-comment-mark-active);
   --v2-color-accent-text: var(--v2-light-color-accent-text);
   --v2-color-accent2: var(--v2-light-color-accent2);
   --v2-color-accent2-dim: var(--v2-light-color-accent2-dim);
@@ -152,6 +160,8 @@
   --v2-color-accent-dim: var(--v2-dark-color-accent-dim);
   --v2-color-selection: var(--v2-dark-color-selection);
   --v2-color-selection-code: var(--v2-dark-color-selection-code);
+  --v2-color-comment-mark: var(--v2-dark-color-comment-mark);
+  --v2-color-comment-mark-active: var(--v2-dark-color-comment-mark-active);
   --v2-color-accent-text: var(--v2-dark-color-accent-text);
   --v2-color-accent2: var(--v2-dark-color-accent2);
   --v2-color-accent2-dim: var(--v2-dark-color-accent2-dim);
@@ -185,6 +195,8 @@
     --v2-color-accent-dim: var(--v2-dark-color-accent-dim);
     --v2-color-selection: var(--v2-dark-color-selection);
     --v2-color-selection-code: var(--v2-dark-color-selection-code);
+    --v2-color-comment-mark: var(--v2-dark-color-comment-mark);
+    --v2-color-comment-mark-active: var(--v2-dark-color-comment-mark-active);
     --v2-color-accent-text: var(--v2-dark-color-accent-text);
     --v2-color-accent2: var(--v2-dark-color-accent2);
     --v2-color-accent2-dim: var(--v2-dark-color-accent2-dim);

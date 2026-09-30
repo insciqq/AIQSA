@@ -13,7 +13,8 @@ describe("account-scoped browser drafts", () => {
   it("retains the full comment count with long fragments and comments in one record", () => {
     const comments = Array.from({ length: MAX_PENDING_COMMENTS }, (_, index) => ({
       id: `max-comment-${index}`, quote: `q${"\u0001".repeat(index === 0 ? 9_999 : 99)}`,
-      text: `c${"\u0001".repeat(index === 0 ? 4_999 : 99)}`
+      text: `c${"\u0001".repeat(index === 0 ? 4_999 : 99)}`,
+      anchor: { messageId: "m".repeat(128), start: 9_000_000, end: 9_999_999, fingerprint: "0a1b2c3d" }
     }));
     const draft = "ordinary text ".repeat(4800);
     expect(composerInputFitsStoredRecord(key, { draft, comments })).toBe(true);
