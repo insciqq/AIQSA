@@ -186,17 +186,24 @@ for (const width of [1440, 390]) {
     await page.getByLabel("Attach files").setInputFiles([1, 2].map((number) => ({
       name: `draft-${number}.pdf`, mimeType: "application/pdf", buffer: Buffer.from("Synthetic upload fixture")
     })));
-    const indicator = page.getByTestId("header-context-indicator");
-    await indicator.click();
+    if (width === 1440) await page.getByTestId("header-context-indicator").click();
+    else {
+      // A phone has no gauge: "⋯" opens the context panel as a bottom sheet.
+      await page.getByTestId("header-more-trigger").click();
+      await page.getByRole("menuitem", { name: /^Context · \d+%$/u }).click();
+    }
     const dialog = page.getByRole("dialog", { name: "Chat context" });
     const action = dialog.getByRole("button", { name: "Summarize and open new chat" });
     await expect(action).toBeDisabled();
     await expect(dialog).toContainText("Wait for uploads to finish.");
     releaseUpload();
     await expect(action).toBeEnabled();
-    await expect(page.getByRole("button", { name: "Remove draft-2.pdf" })).toBeVisible();
+    // On a phone the chip sits behind the modal sheet.
+    await expect(page.getByRole("button", { name: "Remove draft-2.pdf", includeHidden: true })).toBeVisible();
     await action.click();
     await expect.poll(() => selected).toEqual({ provider: chosen.provider, modelId: chosen.modelId });
+    // The phone sheet is modal; the summary keeps running after it closes.
+    if (width !== 1440) await dialog.getByRole("button", { name: "Close chat context" }).click();
     await composer.fill("Changed while the summary was running");
     releaseSummary();
     await expect(page.getByRole("article", { name: "Answer", exact: true })).toContainText("Conversation summary ready.");

@@ -86,7 +86,12 @@ function contextDialog(page: Page) {
 }
 
 async function openSpent(page: Page) {
-  await page.getByTestId("header-context-indicator").click();
+  if (page.viewportSize()!.width >= 768) await page.getByTestId("header-context-indicator").click();
+  else {
+    // A phone has no gauge: "⋯" opens the context panel as a bottom sheet.
+    await page.getByTestId("header-more-trigger").click();
+    await page.getByRole("menuitem", { name: /^Context · \d+%$/u }).click();
+  }
   const spent = contextDialog(page).getByRole("group", { name: "Spent", exact: true });
   await expect(spent).toBeVisible();
   return spent;
@@ -280,6 +285,8 @@ test("cold entry keeps following delayed title accounting after the visible titl
   await expect(spent).toContainText("Approximate cost≈ $0.150");
   await expect(spent).not.toContainText(/known for|incomplete/iu);
   expect(detailRequests).toBe(loadedDetails);
+  // The phone sheet is modal: the composer behind it returns once it closes.
+  if (page.viewportSize()!.width < 768) await page.keyboard.press("Escape");
   await expect(composer).toHaveValue("Keep this draft after the cold reload.");
   await expect(page.getByTestId("header-title")).toHaveText("Chat spending");
   await expect(page.locator(`article[data-message-id="${answerId}"]`)).toContainText("The first answer.");

@@ -41,6 +41,7 @@ import {
   type ComposerAttachmentItemV2
 } from "@/features/attachments-v2/attachmentPresentation";
 import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
+import { touchInputPrimaryV2 } from "@/components/ui-v2/touchInputV2";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
@@ -806,8 +807,11 @@ export function ComposerV2({
           : layer === "search"
             ? focusableElements(layerRef.current)[0]
             : initialOption(layerRef.current);
-      // A menu opens at its first line: focus never scrolls it.
-      (target ?? layerRef.current).focus({ preventScroll: true });
+      // A search field opens the touch keyboard over the list, so a touch
+      // screen opens the layer on itself. A menu opens at its first line:
+      // focus never scrolls it.
+      const field = target?.matches("input, textarea") && touchInputPrimaryV2();
+      ((field ? null : target) ?? layerRef.current).focus({ preventScroll: true });
     });
     const dismiss = (event: PointerEvent) => {
       const target = event.target;
